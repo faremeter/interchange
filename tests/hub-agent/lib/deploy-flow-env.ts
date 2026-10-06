@@ -86,6 +86,7 @@ import {
 import {
   buildInertProjectionStepSources,
   deriveRunAddress,
+  deriveWorkflowRunRepoId,
 } from "@intx/workflow-deploy";
 import { decodeToolName } from "@intx/inference";
 import type {
@@ -96,7 +97,6 @@ import type {
 import type { WorkflowDefinitionAssetSource } from "@intx/types/workflow-sources";
 import type { ApprovalSet } from "@intx/workflow-deploy";
 import type { WorkflowDefinition } from "@intx/workflow";
-import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
 import {
   resolveFrameSenderKey,
   resolveSenderKey,
@@ -2172,7 +2172,7 @@ export async function deployWorkflowSourceForTest(
 
   const workflowRunRepoId: RepoId = {
     kind: "workflow-run",
-    id: deriveDeploymentId(agentAddress),
+    id: deriveWorkflowRunRepoId(agentAddress),
   };
   const handle: DeploymentHandle = {
     anchorRunId: opts.anchorRunId,

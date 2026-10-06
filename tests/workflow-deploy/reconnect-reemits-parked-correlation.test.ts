@@ -109,9 +109,9 @@ import { seedAsset, seedPrincipal, seedTenants } from "@intx/test-harness/seed";
 import {
   createApprovalSet,
   deriveRunAddress,
+  deriveWorkflowRunRepoId,
   type ApprovalSet,
 } from "@intx/workflow-deploy";
-import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
 
 import {
   SESSION_ID,
@@ -309,7 +309,7 @@ function createRegisterSignalCorrelation(db: TestDb["db"]) {
     // The frame's `anchorRunId` is the workflow-run repo slug the child stamps;
     // cross-check it against the slug the recipient address derives, mirroring
     // production's addressSlug check.
-    const addressSlug = deriveDeploymentId(agentAddress);
+    const addressSlug = deriveWorkflowRunRepoId(agentAddress);
     if (addressSlug !== anchorRunId) {
       throw new Error(
         `Anchor run id mismatch registering signal correlation ${correlationId}: frame claims "${anchorRunId}" but address "${agentAddress}" derives the workflow-run repo slug "${addressSlug}"`,

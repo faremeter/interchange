@@ -32,12 +32,12 @@ import {
   createSpawnObserver,
   createChangeNotifier,
 } from "@intx/workflow-host/testing";
+import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 
 import {
   assembleRunCredentialsSnapshot,
   createSidecarDeployRouter,
   createSidecarWorkflowSupervisor,
-  deriveDeploymentId,
   STEP_INFERENCE_SOURCES_ENV_KEY,
   validateWorkflowProjection,
 } from "./workflow-host-wiring";
@@ -564,7 +564,7 @@ function toLiveClosureDefinition(
 function makeMultistepFrame(args: MultistepDeployArgs): AgentDeployFrame {
   const agentAddress = args.agentAddress ?? "multi@example.com";
   deployDefinitionRegistry.set(
-    deriveDeploymentId(agentAddress),
+    deriveWorkflowRunRepoId(agentAddress),
     toLiveClosureDefinition(args.definition),
   );
   return {
@@ -1154,7 +1154,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       sources,
       agentAddress: "run_concurrent@example.com",
     });
-    const anchorRunId = deriveDeploymentId(frame.agentAddress);
+    const anchorRunId = deriveWorkflowRunRepoId(frame.agentAddress);
     const recordFile = path.join(
       multiDataDir,
       "workflow-runs",
@@ -1459,7 +1459,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
 
     // The write lands in the deployment's workflow-run repo at
     // `runs/<runId>/grants.json`, the run-owned sibling of `events/`.
-    const anchorRunId = deriveDeploymentId(frame.agentAddress);
+    const anchorRunId = deriveWorkflowRunRepoId(frame.agentAddress);
     const grantsFile = path.join(
       tempBase,
       "workflow-run",
@@ -1561,7 +1561,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     return {
       grantsRouter,
       agentAddress: frame.agentAddress,
-      anchorRunId: deriveDeploymentId(frame.agentAddress),
+      anchorRunId: deriveWorkflowRunRepoId(frame.agentAddress),
       tempBase,
     };
   }
@@ -1792,7 +1792,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const recordFile = path.join(
       dataDir,
       "workflow-runs",
-      deriveDeploymentId(agentAddress),
+      deriveWorkflowRunRepoId(agentAddress),
       "deployment.json",
     );
     expect(
@@ -2530,7 +2530,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // deployment's closure materialization fault (the pinned code no longer
     // resolves) so its restore soft-fails, while the good one materializes and
     // re-spawns.
-    const badDeploymentId = deriveDeploymentId(badHead);
+    const badDeploymentId = deriveWorkflowRunRepoId(badHead);
     const second = makeReadyDrivingSpawner(9400);
     const freshTransport = createInMemoryTransport();
     const { router: routerB } = await buildMultistepFixture({
@@ -2569,13 +2569,15 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     expect(isRegistered(freshTransport, badHead)).toBe(false);
     // The failed record is KEPT on disk -- never deleted, unlike a
     // soft-failed deploy -- so a later boot can retry it.
-    expect(await recordExists(dataDir, deriveDeploymentId(badHead))).toBe(true);
+    expect(await recordExists(dataDir, deriveWorkflowRunRepoId(badHead))).toBe(
+      true,
+    );
   });
 
   test("restore rejects a closure-derived definition whose stepOrder names a step with no matching entry", async () => {
     const dataDir = await createTempBaseDir("sidecar-restore-validator-data-");
     const head = "run_validator@example.com";
-    const anchorRunId = deriveDeploymentId(head);
+    const anchorRunId = deriveWorkflowRunRepoId(head);
 
     // Write a well-formed source-ref record: it clears the record schema and the
     // scan boundary, so restore reaches the projection gate. The closure it
@@ -2645,7 +2647,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
   test("restore soft-skips a malformed source-ref record (missing sourceRef) at the scan boundary", async () => {
     const dataDir = await createTempBaseDir("sidecar-restore-srcref-bad-");
     const head = "run_srcref@example.com";
-    const deploymentId = deriveDeploymentId(head);
+    const deploymentId = deriveWorkflowRunRepoId(head);
 
     // A source-ref record MUST carry a sourceRef pin + approvedWireHash -- the
     // record schema's discriminated union on `lineage` requires them. Write a
@@ -2692,7 +2694,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
   test("restore re-materializes a source-ref deployment's closure and re-spawns it as source-ref", async () => {
     const dataDir = await createTempBaseDir("sidecar-restore-srcref-ok-");
     const head = "run_srcref_ok@example.com";
-    const deploymentId = deriveDeploymentId(head);
+    const deploymentId = deriveWorkflowRunRepoId(head);
 
     // A well-formed source-ref record: lineage source-ref with a sourceRef pin
     // (source + closure) + approvedWireHash, exactly what the deploy path
@@ -2837,7 +2839,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
   test("a second deploy for a live address is rejected without orphaning its restore record", async () => {
     const dataDir = await createTempBaseDir("sidecar-restore-dup-data-");
     const head = "run_dup@example.com";
-    const anchorRunId = deriveDeploymentId(head);
+    const anchorRunId = deriveWorkflowRunRepoId(head);
 
     const spawner = makeReadyDrivingSpawner(9700);
     const { router, transport } = await buildMultistepFixture({
@@ -2866,7 +2868,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
   test("a self-terminated deployment is reclaimed so its address redeploys without a manual undeploy", async () => {
     const dataDir = await createTempBaseDir("sidecar-self-term-redeploy-data-");
     const head = "run_selfterm@example.com";
-    const anchorRunId = deriveDeploymentId(head);
+    const anchorRunId = deriveWorkflowRunRepoId(head);
 
     const spawner = makeReadyDrivingSpawner(9750);
     const { router, transport } = await buildMultistepFixture({
@@ -2920,7 +2922,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
   test("cancelling a self-terminated deployment prevents boot restore", async () => {
     const dataDir = await createTempBaseDir("sidecar-self-term-cancel-data-");
     const head = "run_selfterm_cancel@example.com";
-    const deploymentId = deriveDeploymentId(head);
+    const deploymentId = deriveWorkflowRunRepoId(head);
     const spawner = makeReadyDrivingSpawner(9780);
     const { router } = await buildMultistepFixture({
       spawner: spawner.spawner,
@@ -3035,7 +3037,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // a subsequent `resolve` still returns the address the commit needs.
     const dataDir = await createTempBaseDir("sidecar-self-term-mapping-data-");
     const head = "run_selfterm_mapping@example.com";
-    const runId = deriveDeploymentId(head);
+    const runId = deriveWorkflowRunRepoId(head);
 
     const registry = createDeploymentAddressRegistry();
 
@@ -3131,7 +3133,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       "sidecar-restore-unbuildable-data-",
     );
     const head = "run_unbuildable_restore@example.com";
-    const anchorRunId = deriveDeploymentId(head);
+    const anchorRunId = deriveWorkflowRunRepoId(head);
 
     // First process: a permissive gate lets the deploy through, persisting
     // the record and its workflow.json.
@@ -3175,8 +3177,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     );
     const healthyHead = "run_healthy_isolate@example.com";
     const unbuildableHead = "run_unbuildable_isolate@example.com";
-    const healthyId = deriveDeploymentId(healthyHead);
-    const unbuildableId = deriveDeploymentId(unbuildableHead);
+    const healthyId = deriveWorkflowRunRepoId(healthyHead);
+    const unbuildableId = deriveWorkflowRunRepoId(unbuildableHead);
 
     // The unbuildable deployment pins a source whose provider the restart's
     // gate will reject; the healthy deployment keeps the default `anthropic`
@@ -3283,7 +3285,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
   test("a deploy whose child never signals ready times out and rejects", async () => {
     const dataDir = await createTempBaseDir("sidecar-ready-timeout-data-");
     const head = "run_readytimeout@example.com";
-    const anchorRunId = deriveDeploymentId(head);
+    const anchorRunId = deriveWorkflowRunRepoId(head);
 
     // A spawner whose child is created but never driven through the `ready`
     // handshake. With a small threaded readyTimeoutMs the supervisor times
@@ -3538,7 +3540,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const recordFile = path.join(
       dataDir,
       "workflow-runs",
-      deriveDeploymentId(addr),
+      deriveWorkflowRunRepoId(addr),
       "deployment.json",
     );
     await fs.rm(recordFile);
@@ -3639,7 +3641,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       dataDir,
       createNoopCredentialCipher(),
     );
-    const record = scanned.find((s) => s.runId === deriveDeploymentId(addr));
+    const record = scanned.find(
+      (s) => s.runId === deriveWorkflowRunRepoId(addr),
+    );
     expect(record?.record.sources).toEqual({ "step-1": [rotated] });
   });
 
@@ -3724,8 +3728,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     ).toEqual({ "step-1": [makeInferenceSource("step-1")] });
   });
 
-  test("two addresses whose deriveDeploymentId slugs collide are rejected at the second deploy", async () => {
-    // deriveDeploymentId substitutes every disallowed character with
+  test("two addresses that project to the same workflow-run repo id are rejected at the second deploy", async () => {
+    // deriveWorkflowRunRepoId substitutes every disallowed character with
     // `-`, so two distinct addresses can collapse to the same slug. The slug
     // IS the workflow-run repoId, so a silent collision would let the second
     // deploy overwrite the first deploy's repo state. claimSlug rejects the
@@ -3748,7 +3752,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
 
     await expect(
       router.deploy(singleStepFrame("run_col-a@example.com", "wf-collide")),
-    ).rejects.toThrow(/deriveDeploymentId collision/);
+    ).rejects.toThrow(/workflow-run repo id collision/);
     expect(spawner.spawnCount()).toBe(1);
   });
 

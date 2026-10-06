@@ -35,13 +35,11 @@ import {
   createMemoryFrameStream,
   createMemoryNdjsonStream,
 } from "@intx/workflow-host/testing";
+import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 
 import { type } from "arktype";
 
-import {
-  createSidecarDeployRouter,
-  deriveDeploymentId,
-} from "./workflow-host-wiring";
+import { createSidecarDeployRouter } from "./workflow-host-wiring";
 import { WorkflowRunRecord } from "./workflow-run-record";
 import {
   createMultistepDrainRouter,
@@ -296,7 +294,7 @@ describe("agent signing-key registration lifecycle on the host transport", () =>
     // (b') The deploy persisted a schema-valid restore record for the
     // deployment, carrying the head address so a boot-time restore can
     // re-establish it.
-    const anchorRunId = deriveDeploymentId(AGENT_ADDRESS);
+    const anchorRunId = deriveWorkflowRunRepoId(AGENT_ADDRESS);
     const recordFile = path.join(
       dataDir,
       "workflow-runs",
