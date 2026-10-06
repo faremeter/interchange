@@ -77,7 +77,7 @@ import {
 import {
   createDurableConversationRegistry,
   reconstructDurableConversation,
-} from "@intx/sidecar-app/src/conversation-state";
+} from "@intx/workflow-host";
 import {
   createAgentRepoStore,
   type WorkflowRunWorkflowProcessPrincipal,

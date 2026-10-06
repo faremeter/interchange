@@ -58,8 +58,7 @@ export interface WarmEventSinkRef {
  * `waitForReplyAfter(snapshot)` so the run parks -- and the supervisor
  * consumes the inbound mail -- only after the reply is durably sent. This is
  * the structural subset of the harness `ConnectorReplyDrain` the warm path
- * needs; declaring it here keeps the workflow-host package independent of
- * `@intx/harness`, while the drain the sidecar builds satisfies it.
+ * needs. The drain the sidecar builds satisfies it.
  */
 export type WarmReplySettlement =
   | { readonly ok: true }

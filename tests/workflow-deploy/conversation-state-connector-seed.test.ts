@@ -35,7 +35,7 @@ import {
   createDurableConversationStore,
   reconstructDurableConversation,
   type DurableConversationStore,
-} from "@intx/sidecar-app/src/conversation-state";
+} from "@intx/workflow-host";
 
 const WORKFLOW_RUN_REF = "refs/heads/main";
 const AGENT_KEY = "step-1";

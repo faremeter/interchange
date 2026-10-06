@@ -18,8 +18,9 @@ import { join as pathJoin } from "node:path";
 
 import { type } from "arktype";
 
-import type { RepoStore } from "@intx/hub-sessions";
-import { isErrnoNotFound } from "@intx/workflow-host";
+import type { RepoStore } from "@intx/hub-sessions/substrate";
+
+import { isErrnoNotFound } from "./supervisor/credentials";
 
 /**
  * Path inside a deployment's `workflow-run` repo that carries a single

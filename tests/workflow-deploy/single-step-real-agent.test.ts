@@ -32,7 +32,7 @@ import {
   deriveRunAddress,
   type ApprovalSet,
 } from "@intx/workflow-deploy";
-import { reconstructDurableConversation } from "@intx/sidecar-app/src/conversation-state";
+import { reconstructDurableConversation } from "@intx/workflow-host";
 import { tenant as tenantTable } from "@intx/db/schema";
 import {
   createTestDb,

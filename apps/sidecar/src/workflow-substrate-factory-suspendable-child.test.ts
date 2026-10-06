@@ -47,13 +47,12 @@ import {
   type WorkflowEvent,
 } from "@intx/workflow";
 
-import { createWorkflowRunRepoStore } from "@intx/workflow-host";
+import { createWorkflowRunRepoStore, runGrantsPath } from "@intx/workflow-host";
 
 import {
   createSidecarSpawnSuspendableChild,
   type SidecarChildStepInvoker,
 } from "./workflow-substrate-factory";
-import { runGrantsPath } from "./run-grants";
 
 const REF = "refs/heads/main";
 const DEPLOYMENT_ID = "deployment-suspendable-child";
