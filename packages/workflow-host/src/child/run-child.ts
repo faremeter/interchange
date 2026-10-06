@@ -103,7 +103,6 @@ import type { CredentialDelivery } from "@intx/types/sidecar";
 
 import { createWorkflowRunRepoStore } from "../adapters/repo-store";
 import { createWorkflowRunBlobSubstrate } from "../adapters/blob-substrate";
-import { createMailPartReader } from "../adapters/mail-part-store";
 import type {
   HostSpawnSuspendableChild,
   HostSpawnChild,
@@ -144,6 +143,7 @@ import {
 } from "./parked-correlations";
 import type { ChildOutboundMailBridge } from "./outbound-mail-bridge";
 import type { ChildMailboxCallBridge } from "./mailbox-call-bridge";
+import { createSupervisorBackedMailPartReader } from "./supervisor-backed-mail-part-reader";
 import type { ChildMailboxMutationBridge } from "./mailbox-mutation-bridge";
 import type { MailboxWatchRegistry } from "./mailbox-watch-registry";
 import { createWarmAgentCache, type WarmAgentCache } from "./warm-agent-cache";
@@ -942,6 +942,9 @@ export async function runWorkflowChild(
       warmCache,
       sourcesRef,
       credentialWiring,
+      ...(opts.mailboxCallBridge !== undefined
+        ? { mailboxCallBridge: opts.mailboxCallBridge }
+        : {}),
       onEvent: (event) => {
         void eventSender.send(event).catch((cause) => {
           logger.error`event-channel send failed during resume run ${run.runId}: ${String(cause)}`;
@@ -1225,6 +1228,9 @@ async function handleControlPayload(
         warmCache: ctx.warmCache,
         sourcesRef: ctx.sourcesRef,
         credentialWiring: ctx.credentialWiring,
+        ...(ctx.mailboxCallBridge !== undefined
+          ? { mailboxCallBridge: ctx.mailboxCallBridge }
+          : {}),
         onEvent: (event) => {
           void ctx.eventSender.send(event).catch((cause) => {
             logger.error`event-channel send failed during run ${payload.data.runId}: ${String(cause)}`;
@@ -1663,6 +1669,18 @@ function eagerlyResolveActionHandlers(
   for (const def of definitions) visit(def);
 }
 
+function unwiredMailPartReader(): MailPartReader {
+  return {
+    read(ref) {
+      return Promise.reject(
+        new Error(
+          `mail part reader: this child has no mailbox call bridge; cannot read ${ref}`,
+        ),
+      );
+    },
+  };
+}
+
 function buildRuntimeEnv(args: {
   runId: string;
   bindings: RunWorkflowChildBindings;
@@ -1681,6 +1699,7 @@ function buildRuntimeEnv(args: {
   warmCache: WarmAgentCache | undefined;
   sourcesRef: SourcesSnapshotRef;
   credentialWiring: CredentialWiring;
+  mailboxCallBridge?: ChildMailboxCallBridge;
   onEvent: (event: EventPayload) => void;
   upstreamSender: ControlChannelSender;
 }): WorkflowRuntimeEnv {
@@ -1701,17 +1720,16 @@ function buildRuntimeEnv(args: {
     runId: args.runId,
     ref: args.bindings.workflowRunRef,
   });
-  // Reader for inbound-mail parts, a sibling of `blobs` over the same
-  // workflow-run repo. The step invoker resolves a `Mail` part's `ref` to its
-  // bytes through it at `agent.send` time; the supervisor committed the bytes
-  // before the trigger. Deployment-scoped (the ref encodes the owning run), so
-  // one reader resolves any run's parts.
-  const mailPartReader = createMailPartReader({
-    substrate: args.bindings.substrate,
-    repoId: args.bindings.workflowRunRepoId,
-    principal: args.bindings.principal,
-    ref: args.bindings.workflowRunRef,
-  });
+  // The supervisor committed each part before the trigger. A step asks it
+  // for the bytes. A child with no call bridge cannot read them; inlined
+  // text never asks.
+  const mailPartReader =
+    args.mailboxCallBridge === undefined
+      ? unwiredMailPartReader()
+      : createSupervisorBackedMailPartReader({
+          callBridge: args.mailboxCallBridge,
+          runId: args.runId,
+        });
   // Wrap the step invoker so every `InferenceEvent` the harness emits
   // funnels through the per-run `onEvent` closure, which forwards
   // the event up the HMAC-authenticated event channel. The wrap is
