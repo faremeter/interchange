@@ -109,9 +109,8 @@ function createMinimalStubRepoStore(): RepoStore {
       return "/tmp/unused";
     },
     async writeTreePreservingPrefix(_p, _id, _ref, args) {
-      // The wiring test exercises signature attribution by driving a
-      // requestCancel; the merge callback runs once with an empty
-      // pre-image.
+      // The wiring test drives signature attribution via requestCancel; the
+      // merge callback runs once with an empty pre-image.
       await args.merge(new Map());
       return { commitSha: "stub-sha", newlyTerminalRuns: [] };
     },
@@ -173,9 +172,7 @@ describe("createSidecarWorkflowSupervisor", () => {
 
   test("routeInbound rejects when no subscriber is registered so undelivered mail is withheld", async () => {
     const transport = createInMemoryTransport();
-    // generateKeyPair is async; this test only exercises the
-    // mail-routing path so we synthesize a 32-byte seed without
-    // calling crypto.
+    // Avoid the async generateKeyPair; this test only needs a seed.
     const fakeSeed = new Uint8Array(32);
     const repoStore = createMinimalStubRepoStore();
     const wired = createSidecarWorkflowSupervisor({
@@ -198,18 +195,16 @@ describe("createSidecarWorkflowSupervisor", () => {
       },
     });
     // Without a subscriber the delivery is not durably accepted, so
-    // routeInbound rejects: the hub-link then withholds the ack and the hub
-    // redelivers, rather than silently dropping (which under the ack model
-    // would be an acked loss).
+    // routeInbound rejects: the hub-link withholds the ack and the hub
+    // redelivers rather than dropping under an ack model.
     await expect(
       wired.routeInbound(new TextEncoder().encode("hello")),
     ).rejects.toThrow(/no active mail subscriber/);
   });
 
   test("onRunStart fails a poisoned run and passes an unpoisoned one", async () => {
-    // A poisoned run (its `run.grants` write failed) must be rejected at the
-    // barrier rather than started under the deploy-time grant set. An
-    // unpoisoned run with a per-run grants file on disk resolves normally.
+    // A poisoned run (its `run.grants` write failed) is rejected at the
+    // barrier rather than started under the deploy-time grant set.
     const tempBase = await createTempBaseDir("sidecar-poison-barrier-");
     const anchorRunId = "dep-poison";
     const cleanRunId = "run-clean";
@@ -342,9 +337,8 @@ describe("createSidecarDeployRouter provision-step (no-spawn) mode", () => {
       >[0]["config"],
     });
 
-    // The step's agent-state repo is initialized and the hub key recorded,
-    // so the follow-up full-closure deploy pack applies into a repo and
-    // verifies against the recorded key.
+    // The repo was initialized and the hub key recorded, so the follow-up
+    // deploy pack can apply and verify against the recorded key.
     expect(initRepoCalls).toEqual([STEP_ADDR]);
     expect(recordHubKeyCalls).toEqual([
       { address: STEP_ADDR, hubKey: HUB_KEY },
@@ -363,15 +357,13 @@ describe("createSidecarDeployRouter provision-step (no-spawn) mode", () => {
 // Multi-step branch tests
 // --------------------------------------------------------------------
 
-// The child-process stream trio every deploy test wires. Registered here
-// rather than per test so the three streams are always reachable for
-// teardown: the deploy starts pumps that read them for as long as they stay
-// open, and a test that fails before its own teardown line leaves those pumps
-// running in a worker that is shared across files. Each test destructures
-// only the handles it drives; the rest stay owned by the reaper below, which
-// is why no test needs a `void` to silence the unused-binding rule any more.
+// The child-process stream trio every deploy test wires, registered here so
+// the streams are always reachable for teardown: a deploy starts pumps that
+// read them as long as they stay open, and a test failing before its own
+// teardown would leave those pumps running in a shared worker. Tests use only
+// the handles they drive; the reaper below owns the rest.
 //
-// The exit resolver is deliberately NOT registered here. The reaper must not
+// The exit resolver is deliberately NOT registered here: the reaper must not
 // settle an exit (see below), and a test that settles its own takes the
 // resolver off `createChildStreams()`'s return.
 const liveChildStreams: {
@@ -411,16 +403,15 @@ function createChildStreams() {
 }
 
 afterEach(() => {
-  // Close both directions so the deploy's pumps unwind. Closing is
-  // idempotent, so the tests that already tear themselves down are
-  // unaffected.
+  // Close both directions so the deploy's pumps unwind. Closing is idempotent,
+  // so tests that already tear themselves down are unaffected.
   //
-  // The exit is deliberately left unsettled. Settling it tells a supervisor
+  // The exit is deliberately left unsettled: settling it tells a supervisor
   // whose deploy SUCCEEDED that its child died unexpectedly, which it answers
-  // by respawning -- and the spawner doubles here hand every spawn the same
-  // streams, so the replacement child reads a closed stream and dies on its
-  // handshake. The one test that settles its own exit does so after a deploy
-  // that fails mid-handshake, where there is no live supervisor to respawn.
+  // by respawning -- and the spawner hands every spawn the same streams, so
+  // the replacement child reads a closed stream and dies on its handshake.
+  // Only the test that fails mid-handshake settles its own exit; there is no
+  // live supervisor to respawn.
   for (const streams of liveChildStreams.splice(0)) {
     streams.childToSupervisor.close();
     streams.eventChildToSupervisor.close();
@@ -432,17 +423,14 @@ function createTempBaseDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
 }
 
-// The supervisor's `parked-correlations.request` control-frame discriminator.
-// The re-emit-parked-correlations tests assert this reaches the downstream
-// (supervisor -> child) stream when Trigger B fires.
+// The `parked-correlations.request` control-frame discriminator the re-emit
+// tests assert reaches the downstream (supervisor -> child) stream.
 const PARKED_REQUEST_TYPE = "parked-correlations.request";
 
-// One downstream control line is the JSON serialization of a signed envelope:
-// `{ envelope: { seq, channelId, payload }, sig }`. The re-emit tests inspect
+// Downstream control lines are signed envelopes `{ envelope, sig }`; read
 // `envelope.payload.type` to detect a `parked-correlations.request` without
-// verifying the signature (the supervisor's IPC public key is not exposed to
-// the test). Structurally validate the envelope-carrying shape and return the
-// payload discriminator, or `undefined` when the line is not a typed frame.
+// verifying the signature (the supervisor's IPC public key is not exposed).
+// Return the payload discriminator, or `undefined` for a non-typed frame.
 const DownstreamFrameShape = type({
   envelope: {
     payload: {
@@ -462,11 +450,9 @@ function downstreamPayloadType(line: string): string | undefined {
 }
 
 /**
- * Build a stub RepoStore whose `getRepoDir` resolves under the supplied
- * tempBase. The multi-step branch's `assembleCredentialsSnapshot`
- * reads `state/grants.json` from disk -- missing files are treated as
- * empty grants, so a freshly-created tempBase produces an empty
- * credentials snapshot which is what the wiring test wants.
+ * Stub RepoStore whose `getRepoDir` resolves under the supplied tempBase.
+ * Missing `state/grants.json` reads as empty grants, so a fresh tempBase
+ * yields the empty credentials snapshot these tests expect.
  */
 function createSpawnTestRepoStore(tempBase: string): RepoStore {
   const stub: Partial<RepoStore> = {
@@ -477,10 +463,8 @@ function createSpawnTestRepoStore(tempBase: string): RepoStore {
       await args.merge(new Map());
       return { commitSha: "stub-sha", newlyTerminalRuns: [] };
     },
-    // The deploy router's grants bridge writes `state/grants.json` to
-    // each step's agent-state repo before `spawn()`. Mirror the
-    // `getRepoDir` layout so the write lands where the subsequent
-    // `assembleCredentialsSnapshot` working-tree read looks for it.
+    // Mirror the `getRepoDir` layout so the grants write lands where the
+    // subsequent `assembleCredentialsSnapshot` working-tree read looks.
     async writeTree(_p, repoId, _ref, content) {
       const dir = path.join(tempBase, repoId.kind, repoId.id);
       for (const [relPath, contents] of Object.entries(content.files)) {
@@ -506,8 +490,8 @@ function createSpawnTestRepoStore(tempBase: string): RepoStore {
 }
 
 type WorkflowProjection = NonNullable<AgentDeployFrame["workflow"]>;
-// A single source: each step's `sources` value is an ordered failover chain,
-// so the fixture element type is the chain's member.
+// Each step's `sources` is an ordered failover chain; the fixture element is
+// the chain's member type.
 type InferenceSourceFixture = WorkflowProjection["sources"][string][number];
 
 type MultistepDeployArgs = {
@@ -519,26 +503,21 @@ type MultistepDeployArgs = {
     steps: Record<string, unknown>;
   };
   /**
-   * Override the deploy frame's `agentAddress`. Single-step projections
-   * are the agent-launch identity path: the deploy router derives the
-   * sole step's agent-state repo from `parseAgentId(agentAddress)`, which
-   * requires the canonical `run_<id>@<domain>` shape. Tests that drive a
-   * single-step projection supply a valid instance address here; the
-   * default keeps the historical multi-step address for the multi-step
-   * tests (whose derived per-step repos do not parse the frame address).
+   * Override the deploy frame's `agentAddress`. Single-step tests supply a
+   * canonical `run_<id>@<domain>` address (the deploy derives the sole step's
+   * agent-state repo from `parseAgentId`); the default keeps the multi-step
+   * address.
    */
   agentAddress?: string;
   /**
-   * Hub-approved wire hash to stamp on the deploy frame's workflow -- the
-   * child's `DEFINITION_HASH`. Production always stamps it, so the helper
-   * defaults to a placeholder when unset; a test exercising re-verify passes a
-   * real computed hash here instead.
+   * Hub-approved wire hash stamped on the deploy frame's workflow (the
+   * child's `DEFINITION_HASH`). Defaults to a placeholder; a re-verify test
+   * passes a real computed hash.
    */
   approvedWireHash?: string;
   /**
    * Build a frame with NO `approvedWireHash` to exercise the deploy path's
-   * fail-loud guard (the sidecar refuses to recompute a hub-authority hash).
-   * Overrides the helper's default placeholder.
+   * fail-loud guard against recomputing a hub-authority hash.
    */
   omitApprovedWireHash?: boolean;
 };
@@ -555,20 +534,16 @@ function makeInferenceSource(id: string): InferenceSourceFixture {
 
 /**
  * Live definitions the source-ref deploy/restore path reconstructs, keyed by
- * derived deployment id. `makeMultistepFrame` registers one per frame it builds;
- * `buildMultistepFixture`'s default closure stub returns the matching entry so a
- * deploy or restore evaluates the exact topology the test described. Module-level
- * so a restore fixture built over the same on-disk data dir (a simulated
- * restart) reads the same entry the deploy fixture registered.
+ * derived deployment id. Module-level so a restore fixture over the same data
+ * dir (a simulated restart) reads the same entry the deploy fixture
+ * registered.
  */
 const deployDefinitionRegistry = new Map<string, WorkflowDefinition>();
 
 /**
- * Upgrade a test's inert-ish definition to a valid LIVE definition: every step
- * gets a real agent so the definition survives `projectLiveToInert` (a bare
- * `{ kind: "step" }` with no agent throws). `stepOrder` is preserved verbatim,
- * so a definition whose `stepOrder` names a step absent from `steps` still
- * projects to the same "no such entry" throw the deploy path rejects on.
+ * Upgrade an inert definition to a valid LIVE definition (every step needs a
+ * real agent to survive `projectLiveToInert`). `stepOrder` is preserved
+ * verbatim.
  */
 function toLiveClosureDefinition(
   definition: MultistepDeployArgs["definition"],
@@ -597,16 +572,12 @@ function toLiveClosureDefinition(
 }
 
 /**
- * Build a source-ref deploy frame. The deploy lineage is source-ref only, so the
- * frame carries NO inline `definition`: it pins each step's inference sources,
- * the hub-approved wire hash, and a placeholder source-ref pin. The runnable
- * definition is decoupled from the frame exactly as production decouples it --
- * the sidecar re-materializes it through the injected `applyFrozenWorkflowClosure`.
- * The helper registers the intended live definition (the caller's `definition`
- * arg, upgraded so each step carries a valid agent) under the frame's derived
- * deployment id; `buildMultistepFixture`'s default closure stub looks it up by
- * that id, so a deploy or restore reconstructs the exact topology the caller
- * described without threading it through the frame.
+ * Build a source-ref deploy frame: no inline `definition`, but pinned
+ * inference sources, the hub-approved wire hash, and a placeholder source-ref
+ * pin. The runnable definition is decoupled from the frame exactly as in
+ * production -- re-materialized via the injected `applyFrozenWorkflowClosure`.
+ * Registers the caller's definition (upgraded to live) under the frame's
+ * derived deployment id so the default closure stub finds it.
  */
 function makeMultistepFrame(args: MultistepDeployArgs): AgentDeployFrame {
   const agentAddress = args.agentAddress ?? "multi@example.com";
@@ -619,26 +590,21 @@ function makeMultistepFrame(args: MultistepDeployArgs): AgentDeployFrame {
     agentAddress,
     agentId: "multi-agent",
     hubPublicKey: "hub-pk",
-    // The wire-side HarnessConfig has many required fields. On the
-    // workflow deploy path the router reads only `config.sessionId`
-    // and `config.grants`, both of which tolerate the empty
-    // placeholder (they resolve to `undefined`), so an opaque `{}`
-    // satisfies the surface contract for these tests.
+    // The router reads only `config.sessionId` and `config.grants`, which
+    // tolerate an empty placeholder, so an opaque `{}` satisfies the contract.
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the workflow path reads only config.sessionId/config.grants, which tolerate undefined
     config: {} as AgentDeployFrame["config"],
     workflow: {
       sources: args.sources,
-      // Placeholder source-ref pin. The deploy/restore path re-materializes the
-      // definition through the injected closure stub, which keys off the
-      // deployment id -- not this pin's contents -- so the pin only has to be a
-      // well-formed `SourceRefPin`.
+      // Placeholder source-ref pin: the deploy/restore path re-materializes
+      // the definition through the closure stub keyed by deployment id, so
+      // the pin only has to be well-formed.
       sourceRef: {
         source: { kind: "registry", registry: "test-registry" },
         closure: { schemaVersion: "1", topLevel: [], entries: [] },
       },
-      // Production always stamps the hub-approved hash; default a placeholder
-      // so a deploy test need not compute one, and only omit it when a test
-      // explicitly exercises the fail-loud guard.
+      // Default the hub-approved hash to a placeholder so deploy tests need
+      // not compute one; omit it only to exercise the fail-loud guard.
       ...(args.omitApprovedWireHash
         ? {}
         : { approvedWireHash: args.approvedWireHash ?? "a".repeat(64) }),
@@ -742,9 +708,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     multistepMailRouter?: MultistepMailRouter;
     multistepGrantsRouter?: MultistepGrantsRouter;
     /**
-     * Injectable sender-key cache. The co-delivery tests pass a spy (or a
-     * throwing stub) to observe the grants handler's cache write; omitted, a
-     * no-op cache satisfies the dependency without persisting anything.
+     * Injectable sender-key cache. Co-delivery tests pass a spy or throwing
+     * stub to observe the grants handler's cache write; omitted, a no-op cache
+     * satisfies the dependency.
      */
     senderKeyCache?: Parameters<
       typeof createSidecarDeployRouter
@@ -755,11 +721,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       agentAddress: string;
     }) => void;
     /**
-     * Injectable deployment-address unregister hook. Defaults to a no-op.
-     * The self-termination retention test wires this to a real
-     * `deploymentAddressRegistry` so it can assert the reclaim does NOT
-     * remove the mapping (the buggy reclaim called this hook, which would
-     * strand the supervisor's terminal `RunFailed` commit).
+     * Injectable deployment-address unregister hook, defaults to no-op. The
+     * self-termination retention test wires a real `deploymentAddressRegistry`
+     * to assert the reclaim does NOT remove the mapping.
      */
     unregisterDeployment?: (args: {
       runId: string;
@@ -772,36 +736,34 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       typeof createSidecarDeployRouter
     >[0]["assertSourceBuildable"];
     /**
-     * Reuse an existing transport instead of a fresh one. The restore
-     * tests deploy through one fixture, then build a SECOND fixture over
-     * the same on-disk data dir with a FRESH transport to model a sidecar
-     * process restart (the in-memory transport is process-local, so a
-     * restart starts with an empty registration table).
+     * Reuse an existing transport instead of a fresh one. Restore tests deploy
+     * through one fixture, then build a SECOND over the same data dir with a
+     * FRESH transport to model a process restart (the in-memory transport is
+     * process-local).
      */
     transport?: ReturnType<typeof createInMemoryTransport>;
     /**
-     * Spawn ready-handshake timeout (ms) threaded to every supervisor the
-     * router constructs. The ready-timeout test uses a small value with a
-     * spawner that never drives `ready`, asserting the deploy rejects with
-     * the threaded value echoed in the message.
+     * Spawn ready-handshake timeout (ms) threaded to every supervisor. The
+     * ready-timeout test uses a small value with a spawner that never drives
+     * `ready`.
      */
     readyTimeoutMs?: number;
     /**
-     * Fixed keypair the keyStore's `loadOrGenerateKey` returns for the head.
-     * The B-key test pins the single-step deploy ack to this agent key; when
-     * omitted a fresh keypair is minted per call as before.
+     * Fixed keypair `loadOrGenerateKey` returns for the head. Pins the
+     * single-step deploy ack to this agent key; omitted, a fresh keypair is
+     * minted per call.
      */
     headKeyPair?: Awaited<ReturnType<typeof generateKeyPair>>;
     /**
-     * Injectable deployment-record writer. The rotation-interleave tests
-     * pass a blockable/failing stub so a recycle can be driven into the
-     * rotation's persist window; omitted, the router uses the real writer.
+     * Injectable deployment-record writer. Rotation tests pass a
+     * blockable/failing stub to drive a recycle into the rotation's persist
+     * window; omitted, the real writer is used.
      */
     writeWorkflowRunRecord?: typeof writeWorkflowRunRecord;
     /**
-     * Injectable closure materializer. A source-ref deploy/restore test passes
-     * a stub so the path runs without a live registry; omitted, the router
-     * uses the real `applyFrozenWorkflowClosure`.
+     * Injectable closure materializer. Source-ref deploy/restore tests pass a
+     * stub so the path runs without a live registry; omitted, the real
+     * `applyFrozenWorkflowClosure` is used.
      */
     applyFrozenWorkflowClosure?: Parameters<
       typeof createSidecarDeployRouter
@@ -811,19 +773,12 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const keyPair = await generateKeyPair();
     const tempBase = await createTempBaseDir("sidecar-multistep-");
     const repoStore = createSpawnTestRepoStore(tempBase);
-    // The deploy router's source-ref branch materializes the pinned closure
-    // under `${SIDECAR_DATA_DIR}/workflow-definition-closures/<id>/` before
-    // invoking the spawner. The test fixture defaults the data dir to a
-    // per-test mkdtemp so the wiring tests do not have to touch a real /tmp
-    // path; callers can override `SIDECAR_DATA_DIR` (and any other key) by
-    // passing `multistepSubstrateEnv`.
+    // Default the data dir to a per-test mkdtemp so deploy tests avoid /tmp;
+    // callers can override `SIDECAR_DATA_DIR` via `multistepSubstrateEnv`.
     const defaultSubstrateEnv: Record<string, string> = {
       SIDECAR_DATA_DIR: await createTempBaseDir("sidecar-multistep-data-"),
-      // Source-ref is the only deploy lineage: every deploy materializes the
-      // pin's frozen closure, and the materializer requires both substrate byte
-      // caps in the env. Default them so a deploy test need not thread them; a
-      // test that overrides `multistepSubstrateEnv` keeps these unless it sets
-      // its own.
+      // The closure materializer requires both substrate byte caps; default
+      // them so a deploy test need not thread them.
       SIDECAR_CACHE_MAX_BYTES: "1000000",
       SIDECAR_REGISTRY_MAX_TARBALL_BYTES: "1000000",
     };
@@ -831,13 +786,10 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       ...defaultSubstrateEnv,
       ...(opts.multistepSubstrateEnv ?? {}),
     };
-    // The source-ref deploy/restore path derives the runnable definition by
-    // materializing the pin's closure through this injected dependency. The
-    // default stub returns the live definition `makeMultistepFrame` registered
-    // under the deployment id (the last segment of the per-deployment
-    // instance dir), so the deploy/restore evaluates the exact topology the
-    // frame described. A test that hand-writes a record (no frame) or wants a
-    // bespoke closure result passes its own `applyFrozenWorkflowClosure`.
+    // Default stub returns the live definition `makeMultistepFrame` registered
+    // under the deployment id, so the deploy/restore evaluates the topology
+    // the frame described. Tests that hand-write a record or want a bespoke
+    // closure result pass their own `applyFrozenWorkflowClosure`.
     const defaultApplyFrozenWorkflowClosure: NonNullable<
       Parameters<
         typeof createSidecarDeployRouter
@@ -879,9 +831,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
           keyPair: opts.headKeyPair ?? (await generateKeyPair()),
           isNew: false,
         }),
-        // A single-step spawn failure unwinds the recorded hub key via
-        // forgetAgent; the fixture exercises that unwind, so the stub must
-        // honor the call.
+        // A spawn failure unwinds the recorded hub key via forgetAgent; the
+        // fixture exercises that unwind, so honor the call.
         forgetAgent: () => undefined,
       } as unknown as Parameters<
         typeof createSidecarDeployRouter
@@ -977,8 +928,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     };
 
     const multiDataDir = await createTempBaseDir("sidecar-multi-data-");
-    // The deployment address's own key -- what `loadOrGenerateKey` mints.
-    // Pin it so the ack assertion below is deterministic.
+    // Pin the deployment address's own key so the ack assertion is
+    // deterministic.
     const deploymentKeyPair = await generateKeyPair();
     const { router } = await buildMultistepFixture({
       spawner,
@@ -989,14 +940,10 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       },
     });
 
-    // Hijack the supervisor's ipc keypair factory by routing through
-    // the test-construction surface: the router constructs the
-    // supervisor via createSidecarWorkflowSupervisor which does not
-    // expose ipcKeyPairFactory. The supervisor's default keypair is
-    // generated with generateKeyPair; the test signs the `ready` frame
-    // with whatever channelId the spawn-time env carries plus the
-    // child's keypair, and the supervisor accepts a bootstrap
-    // signature from any childPublicKey carried in the `ready` payload.
+    // createSidecarWorkflowSupervisor does not expose ipcKeyPairFactory, so
+    // the fixture keys the `ready` frame with the child's keypair; the
+    // supervisor accepts a bootstrap signature from any childPublicKey in the
+    // `ready` payload.
 
     const sources = defaultMultistepSources();
     const definition = {
@@ -1005,9 +952,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       stepOrder: ["step-1", "step-2"],
       steps: { "step-1": { kind: "step" }, "step-2": { kind: "step" } },
     };
-    // The sidecar sources DEFINITION_HASH from the frame's hub-approved hash
-    // verbatim (never a recompute), so stamp the real wire hash and assert the
-    // child receives it.
+    // The child's DEFINITION_HASH is the frame's hub-approved hash verbatim
+    // (never a recompute); stamp the real wire hash and assert it arrives.
     const approvedWireHash = await computeWireDefinitionHash(definition);
     const frame = makeMultistepFrame({ definition, sources, approvedWireHash });
 
@@ -1051,11 +997,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     });
 
     const result = await deployPromise;
-    // Every deployment -- single- or multi-step -- acks the deployment
-    // address's own public key, so the hub can verify ownership on
-    // reconnect. A multi-step deployment previously acked the supervisor
-    // principal key, which the hub discarded. The hex is a 64-character
-    // lowercase string.
+    // Every deployment acks the deployment address's own public key so the
+    // hub can verify ownership on reconnect (multi-step previously acked the
+    // supervisor principal key, which the hub discarded).
     expect(result.publicKey).toMatch(/^[0-9a-f]{64}$/);
     expect(result.publicKey).toBe(hexEncode(deploymentKeyPair.publicKey));
     void supervisorIpcKeyPair;
@@ -1103,9 +1047,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       stepOrder: ["step-1", "step-2"],
       steps: { "step-1": { kind: "step" }, "step-2": { kind: "step" } },
     };
-    // A sentinel that is deliberately NOT the wire hash of `definition`, so an
-    // assertion that the child received it proves the value came from the
-    // frame (the hub authority) and was not recomputed at the sidecar.
+    // Deliberately NOT the wire hash of `definition`, so the child receiving
+    // it proves the value came from the frame, not a sidecar recompute.
     const HUB_APPROVED_HASH = "hub-approved-sentinel-hash";
     const recomputed = await computeWireDefinitionHash(definition);
     expect(HUB_APPROVED_HASH).not.toBe(recomputed);
@@ -1122,9 +1065,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // The child's DEFINITION_HASH is the frame's hub-approved hash, verbatim.
     expect(env.DEFINITION_HASH).toBe(HUB_APPROVED_HASH);
 
-    // Drive the child to exit so the deploy's spawn pumps unwind, then let the
-    // deploy settle (it rejects once the child dies mid-handshake, which is
-    // fine -- the env assertion above is the subject under test).
+    // Drive the child to exit so the spawn pumps unwind; the deploy settles
+    // (rejecting mid-handshake is fine -- the env assertion is the subject).
     const channelId = env.IPC_CHANNEL_ID;
     if (channelId === undefined) {
       throw new Error("IPC_CHANNEL_ID not set in spawn-time env");
@@ -1136,14 +1078,10 @@ describe("createSidecarDeployRouter multi-step branch", () => {
   });
 
   test("a second same-address deploy is rejected mid-spawn and never deletes the live run record", async () => {
-    // Pins the synchronous single-flight reservation guard. The first
-    // deploy runs its durable writes and then suspends inside
-    // supervisor.spawn awaiting the child's `ready` handshake -- the window
-    // in which its reservation is held but `activeSupervisors` is not yet
-    // populated. A second same-address frame arriving in that window must be
-    // rejected at the reservation guard (its own message, distinct from the
-    // spawn-core backstop) before it touches durable state, so it cannot
-    // delete the first deploy's live record via the soft-fail catch.
+    // Pins the synchronous single-flight guard: a second same-address frame
+    // arriving while the first deploy suspends in the `ready` handshake (its
+    // reservation held, `activeSupervisors` not yet populated) must be
+    // rejected before it touches durable state or deletes the live record.
     const childIpcKeyPair = await generateKeyPair();
     const {
       supervisorToChild,
@@ -1207,8 +1145,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     );
 
     const firstDeploy = router.deploy(frame);
-    // Wait until the first deploy has spawned: its record is on disk and it
-    // is now suspended in the ready handshake with the reservation held.
+    // Wait until the first deploy suspends in the ready handshake with its
+    // reservation held.
     observedEnv = await spawnObserver.first();
     const recordBefore = await fs.readFile(recordFile, "utf8");
     expect(recordBefore.length).toBeGreaterThan(0);
@@ -1226,8 +1164,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       }),
     ).rejects.toThrow(WORKFLOW_CONTROL_INITIALIZING_ERROR);
 
-    // The loser is rejected at the reservation guard, not the spawn-core
-    // backstop -- the guard's message is the one asserted here.
+    // Rejected at the reservation guard, not the spawn-core backstop -- its
+    // message is the one asserted.
     await expect(router.deploy(frame)).rejects.toThrow(
       /is already deployed; undeploy it before redeploying/,
     );
@@ -1303,15 +1241,10 @@ describe("createSidecarDeployRouter multi-step branch", () => {
   });
 
   test("registers a multistepMailRouter handler against the deployment address once spawn succeeds", async () => {
-    // Drives the spawn handshake the same way the first multi-step
-    // test does, but injects a `multistepMailRouter` and asserts the
-    // deploy router registered a handler against the deployment's
-    // mail address by the time `deploy(frame)` resolves. The handler
-    // is what the sidecar hub-link's `mail.inbound` path dispatches
-    // through; without this registration, an inbound mail aimed at
-    // the deployment address falls into the legacy session path,
-    // which has no transport entry and no `sessions` row for the
-    // deployment address.
+    // Same spawn handshake as the first multi-step test, but with a
+    // `multistepMailRouter`: asserts the deploy registered a handler against
+    // the deployment's mail address by the time `deploy(frame)` resolves.
+    // Without it, inbound mail falls into the legacy session path.
     const childIpcKeyPair = await generateKeyPair();
     const {
       supervisorToChild,
@@ -1385,27 +1318,22 @@ describe("createSidecarDeployRouter multi-step branch", () => {
 
     await deployPromise;
 
-    // The handler must be installed against the deployment's mail
-    // address (`frame.agentAddress`), and tryRoute must claim it.
+    // The handler must be installed at `frame.agentAddress` and tryRoute must
+    // claim it.
     const claimed = mailRouter.tryRoute(
       frame.agentAddress,
       new Uint8Array([1, 2, 3]),
     );
     expect(claimed).not.toBeNull();
-    // Settle the durable promise so its resolution/rejection is not left as an
-    // unhandled rejection; this assertion only checks the address is claimed,
-    // not the enqueue outcome for this synthetic payload.
+    // Settle the durable promise to avoid an unhandled rejection; this test
+    // only asserts the address is claimed.
     await claimed?.catch(() => undefined);
   });
 
   test("a run.grants frame writes the run's grants to runs/<runId>/grants.json in the workflow-run repo", async () => {
-    // Drives the same spawn handshake as the mail-router test, then routes
-    // a `run.grants` frame through the injected `multistepGrantsRouter` and
-    // asserts the handler the deploy router installed wrote the run's
-    // grants to `runs/<runId>/grants.json` inside the deployment's
-    // `workflow-run` repo -- sibling to the run's `runs/<runId>/events/`
-    // subtree. Nothing reads the grants back yet; the assertion is on the
-    // on-disk write (right repo, right path, right content).
+    // Same spawn handshake as the mail-router test, then routes a `run.grants`
+    // frame through `multistepGrantsRouter` and asserts the handler wrote
+    // `runs/<runId>/grants.json` in the deployment's `workflow-run` repo.
     const childIpcKeyPair = await generateKeyPair();
     const {
       supervisorToChild,
@@ -1501,8 +1429,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     });
     expect(routed).toBe(true);
 
-    // The write lands in the deployment's workflow-run repo at
-    // `runs/<runId>/grants.json`, the run-owned sibling of `events/`.
+    // The write lands at `runs/<runId>/grants.json`, the run-owned sibling of
+    // `events/`.
     const anchorRunId = deriveWorkflowRunRepoId(frame.agentAddress);
     const grantsFile = path.join(
       tempBase,
@@ -1517,8 +1445,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
   });
 
   // Deploy a multi-step deployment through the full spawn/ready handshake so
-  // the deploy router installs its grants handler, then hand back the pieces a
-  // co-delivery test needs to route a `run.grants` frame and inspect the write.
+  // the grants handler is installed, then hand back what a co-delivery test
+  // needs to route a `run.grants` frame and inspect the write.
   async function deployMultistepForGrants(
     definitionId: string,
     senderKeyCache: Parameters<
@@ -1611,12 +1539,10 @@ describe("createSidecarDeployRouter multi-step branch", () => {
   }
 
   test("caches each co-delivered sender key before the run's grants land", async () => {
-    // The grants handler must cache the sender key BEFORE writing grants.json,
-    // so a durable grant is never missing the key its recipient verifies
-    // against. The spy records whether grants.json already exists when its
-    // `put` runs; it must not.
-    // A holder the spy reads at `put` time; its path is filled in only once the
-    // deploy resolves the run's on-disk location, so it starts empty.
+    // The sender key must be cached BEFORE grants.json is written, so a
+    // durable grant never misses the key its recipient verifies against.
+    // `grantsFileRef`'s path fills in once the deploy resolves the run's
+    // on-disk location; the spy reads it at `put` time.
     const grantsFileRef: { path: string | undefined } = { path: undefined };
     const puts: { address: string; grantsExisted: boolean }[] = [];
     const senderKeyCache = {
@@ -1673,9 +1599,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
   });
 
   test("a sender-key cache-write failure fails the run's grants", async () => {
-    // The cache write gates the grants write: if the key cannot be cached, the
-    // run must not start under a grant whose sender the recipient cannot
-    // verify. The handler's throw propagates and grants.json never lands.
+    // The cache write gates the grants write: a throw propagates and
+    // grants.json never lands, so the run cannot start under an unverifiable
+    // grant.
     const senderKeyCache = {
       get: () => undefined,
       put: async () => {
@@ -1721,10 +1647,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
   });
 
   test("skips a malformed co-delivered key without failing the run's grants", async () => {
-    // A malformed key is a hub-side defect, keyless from the sidecar's view.
-    // Unlike a disk fault it must NOT poison the run -- otherwise a persistently
-    // bad key would wedge the run on every replay. The valid siblings still
-    // cache and the grants still land.
+    // A malformed key is a hub-side defect, not a disk fault: it must NOT
+    // poison the run (a persistently bad key would wedge every replay). The
+    // valid siblings still cache and the grants still land.
     const puts: string[] = [];
     const senderKeyCache = {
       get: () => undefined,
@@ -1826,10 +1751,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
 
     await expect(router.deploy(frame)).rejects.toThrow(/ENOENT/);
 
-    // The record is written before the spawn, so the soft-failure catch must
-    // delete it -- a boot-time restore must not re-spawn a deploy that never
-    // completed. (A hard crash mid-spawn, by contrast, deliberately leaves
-    // the record for the restore to re-drive.)
+    // The record is written before the spawn, so a soft failure must delete
+    // it: a boot-time restore must not re-spawn a deploy that never completed.
+    // (A hard crash mid-spawn deliberately leaves the record to re-drive.)
     const dataDir = substrateEnv.SIDECAR_DATA_DIR;
     if (dataDir === undefined)
       throw new Error("fixture SIDECAR_DATA_DIR unset");
@@ -1848,11 +1772,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
   });
 
   test("rejects a deploy whose step pins an unbuildable provider before spawning", async () => {
-    // The source-admission gate runs before any state is claimed or the
-    // child is spawned. A step whose pinned source names a provider the
-    // sidecar cannot build must reject the whole deploy synchronously --
-    // the admission control property -- rather than spawning a child that
-    // fails when the step's inference first resolves.
+    // The admission gate runs before any state is claimed or child spawned:
+    // a step pinning an unbuildable provider rejects the deploy synchronously
+    // rather than spawning a child that fails at first inference.
     let spawnCount = 0;
     const trackingSpawner: SubprocessSpawner = () => {
       spawnCount++;
@@ -1894,9 +1816,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
   });
 
   test("a spawner that throws synchronously surfaces a structured rejection rather than hanging in starting", async () => {
-    // Simulates `Bun.spawn` failing to launch (binary missing,
-    // permissions error). The router must surface the rejection
-    // through `deploy(frame)` without leaving the supervisor wedged.
+    // Simulates `Bun.spawn` failing to launch; the router must surface the
+    // rejection through `deploy(frame)` without wedging the supervisor.
     const crashSpawner: SubprocessSpawner = () => {
       throw new Error("ENOENT: binary missing");
     };
@@ -1943,11 +1864,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       },
     });
 
-    // The closure-derived definition is structurally invalid: `stepOrder` names
-    // `step-missing`, which the `steps` record does not define. Source-ref is the
-    // only deploy lineage, so the definition is projected from the materialized
-    // closure BEFORE the projection guard; the live->inert projector rejects the
-    // dangling stepOrder entry at the router boundary, before any spawn fires.
+    // `stepOrder` names `step-missing`, which `steps` does not define. The
+    // live->inert projector rejects the dangling entry at the router boundary,
+    // before any spawn fires.
     await expect(router.deploy(frame)).rejects.toThrow(
       /stepOrder names "step-missing" .* the steps record has no such entry/,
     );
@@ -1955,13 +1874,10 @@ describe("createSidecarDeployRouter multi-step branch", () => {
   });
 
   test("refuses to deploy a workflow frame carrying no approvedWireHash rather than recomputing it", async () => {
-    // The child re-verifies its own recompute against the HUB-approved wire
-    // hash. A frame that carries none is a wiring bug, not a legacy case: the
-    // sidecar must fail loud rather than substitute its own recompute, which
-    // would collapse the re-verify to a self-check. Production always stamps
-    // it, so only a malformed frame reaches this guard. Source-ref is the only
-    // deploy lineage, so the durable run record the deploy path builds before
-    // the spawn is the first gate to reject the missing hash.
+    // The child re-verifies its recompute against the HUB-approved wire hash.
+    // A frame carrying none is a wiring bug: the sidecar must fail loud rather
+    // than substitute its own recompute (a self-check). Only a malformed frame
+    // reaches this guard.
     let spawnerInvoked = false;
     const spawner: SubprocessSpawner = () => {
       spawnerInvoked = true;
@@ -1971,9 +1887,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const { router } = await buildMultistepFixture({ spawner });
 
     const frame = makeMultistepFrame({
-      // A single-step deploy parses the frame address as a run address, so use
-      // the canonical `run_<id>@<domain>` shape to reach the approved-wire-hash
-      // guard rather than tripping address parsing first.
+      // Single-step parses the frame address as a run address; use the
+      // canonical `run_<id>@<domain>` shape to reach the hash guard.
       agentAddress: "run_nohash@example.com",
       definition: {
         id: "wf-no-hash",
@@ -1992,19 +1907,12 @@ describe("createSidecarDeployRouter multi-step branch", () => {
   });
 
   test("does not drop the first upstream control frame the child sends after ready", async () => {
-    // The supervisor's `pumpUpstreamControl` consumes the same
-    // control-receive iterator `waitForReady` initialised. A buggy
-    // `waitForReady` that finalised the iterator on `ready` would
-    // silently drop the next upstream frame; a correct handoff
-    // surfaces a `recycle.request` as a real supervisor.recycle()
-    // call, which the supervisor implements by spawning a new child
-    // via the injected subprocessSpawner. Counting spawner
-    // invocations is the cleanest observable: 1 means the upstream
-    // frame was dropped; >=2 means the pump consumed it.
-    //
-    // The mock spawner serves a fresh control/event pair per call so
-    // the recycle path's own ready handshake completes; the test's
-    // child sender signs `ready` once per spawn.
+    // `pumpUpstreamControl` consumes the same control-receive iterator
+    // `waitForReady` initialised; a buggy handoff that finalised it on `ready`
+    // would drop the next upstream frame. Counting spawner invocations is the
+    // observable: 1 means the frame was dropped, >=2 means the pump consumed
+    // it. The mock spawner serves a fresh stream pair per call so the recycle
+    // path's own handshake completes.
     type SpawnFixture = {
       supervisorToChild: ReturnType<typeof createMemoryNdjsonStream>;
       childToSupervisor: ReturnType<typeof createMemoryNdjsonStream>;
@@ -2034,17 +1942,15 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         },
         exited,
       };
-      // Capture the per-spawn streams synchronously so the test can
-      // drive the child side once the supervisor has wired the
-      // receiver.
+      // Capture the per-spawn streams synchronously so the test can drive the
+      // child side once the supervisor wires the receiver.
       const fixture: SpawnFixture = {
         supervisorToChild,
         childToSupervisor,
         eventChildToSupervisor,
         env,
-        // Mint a fresh child keypair per spawn; the supervisor's
-        // receiveControlChannel opens in bootstrap mode and pins on
-        // the per-spawn ready frame's `childPublicKey`.
+        // Fresh child keypair per spawn; the bootstrap-mode control channel
+        // pins on the ready frame's `childPublicKey`.
         childIpcKeyPair: {
           publicKey: new Uint8Array(),
           privateKey: new Uint8Array(),
@@ -2066,8 +1972,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     };
     const frame = makeMultistepFrame({ definition, sources });
 
-    // Helper to drive the child side of one spawn fixture's ready
-    // handshake, optionally chaining an upstream `recycle.request`.
+    // Drive the child side of one spawn's ready handshake, optionally chaining
+    // an upstream `recycle.request`.
     async function driveReady(
       fixture: SpawnFixture,
       opts: { sendRecycleRequest: boolean },
@@ -2112,17 +2018,15 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // Drive ready + immediate recycle.request on the first spawn.
     await driveReady(first, { sendRecycleRequest: true });
 
-    // The initial deploy's spawn() resolves once `ready` lands. The
-    // supervisor's pump consumes the recycle.request and kicks off a
-    // recycle, which calls the spawner a second time.
+    // The pump consumes the recycle.request and kicks off a recycle, calling
+    // the spawner a second time.
     await deployPromise;
 
     // Wait for the recycle's respawn.
     await spawnsChanges.until(() => spawns.length >= 2);
     const second = spawns[1];
     if (second === undefined) throw new Error("unreachable");
-    // Drive ready on the second (recycle's) spawn so the recycle path
-    // unwinds cleanly. We do not assert on this spawn's effects; the
+    // Drive ready on the recycle's spawn so the path unwinds cleanly; the
     // assertion below covers the iterator-handoff invariant.
     await driveReady(second, { sendRecycleRequest: false });
 
@@ -2209,16 +2113,11 @@ describe("createSidecarDeployRouter multi-step branch", () => {
   });
 
   test("a registerDeployment failure before spawn unwinds the slug and leaves the address claimable", async () => {
-    // The multi-step partial-state unwind for the address-registry step.
-    // `registerDeployment` runs BEFORE `supervisor.spawn` -- the replay the
-    // spawn kicks off writes through the pack-pushing facade, which must
-    // resolve the deployment-address mapping, so the mapping has to exist
-    // before the spawn. A `registerDeployment` failure therefore throws
-    // before any child is spawned; the unwind must release the slug (and
-    // reverse nothing else, since nothing after it ran). The observable
-    // evidence is that (a) NO child was spawned for the failed deploy and
-    // (b) a subsequent deploy on the SAME address succeeds, which is only
-    // possible if the slug was released.
+    // `registerDeployment` runs BEFORE `supervisor.spawn` (the spawn's replay
+    // writes through the pack-pushing facade, which must resolve the address
+    // mapping), so a failure throws before any child is spawned. The unwind
+    // must release the slug: the observable is that no child spawned, and a
+    // re-deploy on the SAME address succeeds.
     const childIpcKeyPair = await generateKeyPair();
     const spawnedHandlesChanges = createChangeNotifier();
     const spawnedHandles: {
@@ -2321,9 +2220,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     };
     const frame = makeMultistepFrame({ definition, sources });
 
-    // The first deploy throws at `registerDeployment`, which now runs before
-    // `supervisor.spawn`, so it rejects WITHOUT spawning a child -- no ready
-    // handshake to drive.
+    // The first deploy throws at `registerDeployment`, before spawn -- no
+    // ready handshake to drive.
     let firstCaught: unknown;
     try {
       await router.deploy(frame);
@@ -2338,11 +2236,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // No child was spawned for the failed deploy: the throw preceded spawn.
     expect(spawnedHandles).toHaveLength(0);
 
-    // Re-deploy on the SAME address must succeed. If the unwind missed the
-    // slug release, the second deploy would surface a phantom collision. The
-    // router's public contract is that a failed deploy leaves the address
-    // claimable again. This is the first deploy that actually spawns, so its
-    // ready handshake is at index 0.
+    // Re-deploy on the SAME address must succeed: a missed slug release would
+    // surface a phantom collision. A failed deploy leaves the address
+    // claimable again.
     const secondDeploy = router.deploy(frame);
     await driveReadyFor(0, 9000);
     const secondResult = await secondDeploy;
@@ -2354,10 +2250,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
   // Boot-time restore of persisted workflow deployments
   // ------------------------------------------------------------------
 
-  // A mock spawner that serves a fresh control/event channel per spawn and
-  // lets the test complete each child's `ready` handshake. Both `deploy` and
-  // `restoreWorkflowRuns` block on `supervisor.spawn` until `ready`
-  // lands, so every spawned child needs its handshake driven.
+  // Mock spawner serving a fresh control/event channel per spawn, with each
+  // child's `ready` handshake completed by the test. Both `deploy` and
+  // `restoreWorkflowRuns` block on spawn until `ready` lands.
   function makeReadyDrivingSpawner(pidBase: number) {
     type Spawn = {
       env: Record<string, string>;
@@ -2367,10 +2262,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     };
     const spawnsChanges = createChangeNotifier();
     const spawns: Spawn[] = [];
-    // One-shot spawn failure. When armed, the NEXT spawner invocation throws
-    // instead of returning a handle, then disarms. Used to fail a recycle
-    // respawn so the supervisor tears down to `stopped` (a self-termination)
-    // without waiting on a ready-handshake timeout.
+    // One-shot spawn failure: when armed, the next spawner invocation throws
+    // then disarms. Fails a recycle respawn so the supervisor self-terminates
+    // without a ready-handshake timeout.
     let failNext = false;
     const spawner: SubprocessSpawner = ({ env }) => {
       if (failNext) {
@@ -2424,8 +2318,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
           },
         },
       });
-      // Retain the sender so a later recycle.request (recycleRequestFor)
-      // signs with the SAME keypair the supervisor pinned from this ready.
+      // Retain the sender so a later recycle.request signs with the SAME
+      // keypair the supervisor pinned from this ready.
       spawn.childSender = childSender;
       await childSender.send({
         type: "ready",
@@ -2518,8 +2412,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const dataDir = await createTempBaseDir("sidecar-restore-restart-data-");
     const head = "run_restart@example.com";
 
-    // First process: deploy a single-step workflow. The deploy persists a
-    // restore record under `dataDir` and materializes its `workflow.json`.
+    // First process: deploy a single-step workflow, persisting its restore
+    // record and `workflow.json` under `dataDir`.
     const first = makeReadyDrivingSpawner(9100);
     const { router: routerA } = await buildMultistepFixture({
       spawner: first.spawner,
@@ -2529,9 +2423,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     await first.driveReadyFor(0);
     await deployPromise;
 
-    // Second process (simulated restart): a FRESH transport (empty
-    // registration table) and fresh in-memory router state over the SAME
-    // on-disk data dir.
+    // Second process (simulated restart): a FRESH transport and in-memory
+    // router state over the SAME on-disk data dir.
     const second = makeReadyDrivingSpawner(9200);
     const freshTransport = createInMemoryTransport();
     const { router: routerB } = await buildMultistepFixture({
@@ -2569,11 +2462,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     await first.driveReadyFor(1);
     await deployBad;
 
-    // Source-ref is the only deploy lineage: a restore re-materializes each
-    // record's pinned closure to derive its definition. Make the bad
-    // deployment's closure materialization fault (the pinned code no longer
-    // resolves) so its restore soft-fails, while the good one materializes and
-    // re-spawns.
+    // Make the bad deployment's closure materialization fault (its pinned
+    // code no longer resolves) so its restore soft-fails; the good one
+    // materializes and re-spawns.
     const badDeploymentId = deriveWorkflowRunRepoId(badHead);
     const second = makeReadyDrivingSpawner(9400);
     const freshTransport = createInMemoryTransport();
@@ -2602,8 +2493,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       },
     });
 
-    // The good deployment re-spawns (exactly one handshake to drive);
-    // scan order is filesystem-dependent, but only the good record spawns.
+    // Only the good record spawns (one handshake to drive); scan order is
+    // filesystem-dependent.
     const restorePromise = routerB.restoreWorkflowRuns();
     await second.driveReadyFor(0);
     await restorePromise;
@@ -2611,8 +2502,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     expect(second.spawnCount()).toBe(1);
     expect(isRegistered(freshTransport, goodHead)).toBe(true);
     expect(isRegistered(freshTransport, badHead)).toBe(false);
-    // The failed record is KEPT on disk -- never deleted, unlike a
-    // soft-failed deploy -- so a later boot can retry it.
+    // The failed record is KEPT on disk (unlike a soft-failed deploy) so a
+    // later boot can retry it.
     expect(await recordExists(dataDir, deriveWorkflowRunRepoId(badHead))).toBe(
       true,
     );
@@ -2623,13 +2514,11 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const head = "run_validator@example.com";
     const anchorRunId = deriveWorkflowRunRepoId(head);
 
-    // Write a well-formed source-ref record: it clears the record schema and the
-    // scan boundary, so restore reaches the projection gate. The closure it
-    // re-materializes, though, evaluates to a structurally invalid definition --
-    // its `stepOrder` names a step the `steps` record does not define. The
-    // source-ref restore arm projects the closure-derived definition
-    // (`projectLiveToInert`) before spawning, so it rejects the dangling
-    // stepOrder entry and never spawns a child for a broken definition.
+    // A well-formed source-ref record clears the scan boundary, but its
+    // closure evaluates to a structurally invalid definition (`stepOrder`
+    // names a step `steps` does not define). The restore arm projects the
+    // closure-derived definition before spawning, so it rejects the dangling
+    // entry and never spawns for a broken definition.
     const record: WorkflowRunRecord = {
       version: 1,
       agentAddress: head,
@@ -2693,13 +2582,10 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const head = "run_srcref@example.com";
     const deploymentId = deriveWorkflowRunRepoId(head);
 
-    // A source-ref record MUST carry a sourceRef pin + approvedWireHash -- the
-    // record schema's discriminated union on `lineage` requires them. Write a
-    // raw malformed one (lineage source-ref, none of the required fields)
-    // straight to the record path, bypassing the typed writer.
-    // `scanWorkflowRunRecords` validates against the schema and
-    // soft-skips it as corruption, so restore never reaches a spawn -- there is
-    // no bespoke source-ref guard in the restore loop to lean on.
+    // Write a raw source-ref record with none of the schema-required fields
+    // (sourceRef pin, approvedWireHash) straight to the record path, bypassing
+    // the typed writer. The scan soft-skips it as corruption, so restore never
+    // reaches a spawn.
     const recordPath = path.join(
       dataDir,
       "workflow-runs",
@@ -2740,9 +2626,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const head = "run_srcref_ok@example.com";
     const deploymentId = deriveWorkflowRunRepoId(head);
 
-    // A well-formed source-ref record: lineage source-ref with a sourceRef pin
-    // (source + closure) + approvedWireHash, exactly what the deploy path
-    // persists.
+    // A well-formed source-ref record: sourceRef pin + approvedWireHash,
+    // exactly what the deploy path persists.
     const record: WorkflowRunRecord = {
       version: 1,
       agentAddress: head,
@@ -2763,12 +2648,10 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       createNoopCredentialCipher(),
     );
 
-    // The source-ref restore arm reconstructs the definition from the
-    // re-materialized closure, NOT from the on-disk inert workflow.json. Write a
-    // DELIBERATELY-CORRUPT workflow.json to prove the arm never reads it: were
-    // the restore path to parse this file it would throw and soft-skip the
-    // record, so a successful restore below is proof the closure is the source
-    // of truth for the definition on this lineage.
+    // The restore arm reconstructs the definition from the re-materialized
+    // closure, NOT the on-disk inert workflow.json. Write a DELIBERATELY-CORRUPT
+    // workflow.json: a successful restore proves the closure is the source of
+    // truth.
     const workflowJsonPath = path.join(
       dataDir,
       "assets",
@@ -2779,13 +2662,10 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     await fs.mkdir(path.dirname(workflowJsonPath), { recursive: true });
     await fs.writeFile(workflowJsonPath, "}{ not valid json", "utf8");
 
-    // Stub the closure materializer: record its inputs, and return a fake
-    // package dir plus the evaluated live definition the restore arm now
-    // projects to the inert wire shape -- the SAME
-    // `WorkflowProjectionDefinition(projectLiveToInert(...))` computation the
-    // deploy path applies. The definition (not the on-disk workflow.json) is the
-    // source of truth for the restored definition, so it must be a valid live
-    // definition whose projection covers the record's sources (`step-1`).
+    // Stub the closure materializer: return a fake package dir plus the
+    // evaluated live definition the restore arm projects to the inert wire
+    // shape -- the SAME `projectLiveToInert` computation the deploy path
+    // applies. The projection must cover the record's sources (`step-1`).
     const fakePackageDir = path.join(dataDir, "fake-closure-package");
     const closureDefinition = {
       id: "wf-srcref",
@@ -2847,10 +2727,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     expect(applyCalls).toEqual([{ registry: "test-registry", entryCount: 0 }]);
     expect(spawner.spawnCount()).toBe(1);
     expect(isRegistered(freshTransport, head)).toBe(true);
-    // The child came back on the source-ref (evaluate-the-closure) load path:
-    // the spawn env carries the freshly re-materialized closure package dir, so
-    // the child evaluates the pinned code rather than reading a definition off
-    // disk. Source-ref is the only lineage now, so the env always carries it.
+    // The spawn env carries the re-materialized closure package dir, so the
+    // child evaluates the pinned code rather than reading a definition off
+    // disk.
     const spawnEnv = spawner.envFor(0);
     expect(spawnEnv?.CLOSURE_PACKAGE_DIR).toBe(fakePackageDir);
   });
@@ -2870,10 +2749,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     await deployPromise;
     expect(spawner.spawnCount()).toBe(1);
 
-    // The record is on disk and the address is live in this same process. A
-    // restore pass must NOT spawn a second child for an address the core's
-    // double-spawn guard already owns (the transition guard the B-reroute
-    // follow-up leans on).
+    // The address is already live in this process; a restore pass must NOT
+    // spawn a second child for an address the core's double-spawn guard owns.
     await router.restoreWorkflowRuns();
 
     expect(spawner.spawnCount()).toBe(1);
@@ -2896,11 +2773,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     await deployPromise;
     expect(await recordExists(dataDir, anchorRunId)).toBe(true);
 
-    // A second deploy for the already-live address must be rejected WITHOUT
-    // touching the running deployment's durable state. The reject fires
-    // before any overwrite; without it, deployMultiStep's catch would delete
-    // the live deployment's record and release its slug, silently breaking
-    // the next restart for a still-running agent.
+    // A second deploy for an already-live address must reject WITHOUT touching
+    // the running deployment's durable state: without the guard, the catch
+    // would delete its record and release its slug.
     await expect(
       router.deploy(singleStepFrame(head, "wf-dup")),
     ).rejects.toThrow(/already deployed/);
@@ -2927,33 +2802,24 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     expect(router.activeAddresses()).toEqual([head]);
     expect(isRegistered(transport, head)).toBe(true);
 
-    // Drive a self-termination: a child-initiated recycle whose respawn spawn
-    // fails tears the supervisor down to `stopped` through the recycle-failure
-    // path, which fires `onSelfTerminate`. That drives the reclaim.
+    // Drive a self-termination: a recycle whose respawn fails tears the
+    // supervisor down to `stopped` through the recycle-failure path, firing
+    // `onSelfTerminate` and driving the reclaim.
     spawner.failNextSpawn();
     await spawner.recycleRequestFor(0);
 
     // The reclaim drops the address from the active map and releases its
-    // transport registration.
-    //
-    // No signal exists for this one. The reclaim runs off the supervisor's
-    // control pump, and the router wires its own self-termination sink
-    // straight to the reclaim without chaining a caller's, so nothing
-    // observable fires when it completes. Exposing one means changing that
-    // wiring, which is a bigger change than this wait justifies.
-    //
-    // So this stays a poll, but it carries no deadline of its own: a reclaim
-    // that never lands is caught by the lane timeout, per "Synchronizing on
-    // State, Not Time" in CONVENTIONS.md.
+    // transport registration. No completion signal exists, so this stays a
+    // deadline-free poll ("Synchronizing on State, Not Time" in
+    // CONVENTIONS.md); a reclaim that never lands is caught by the lane
+    // timeout.
     await waitUntil(() => !router.activeAddresses().includes(head));
     expect(router.activeAddresses()).toEqual([]);
     expect(isRegistered(transport, head)).toBe(false);
 
-    // The redeploy succeeds with no prior undeploy: the map slot is free and
-    // the transport is no longer registered (a stale registration would make
-    // the spawn core's `transport.register` throw "already registered"). The
-    // self-terminated deployment left its durable record and its step-state
-    // scratch behind; the redeploy overwrites the record destructively.
+    // Redeploy with no prior undeploy succeeds: the map slot is free and the
+    // transport is no longer registered (a stale registration would throw
+    // "already registered"). The redeploy overwrites the durable record.
     expect(await recordExists(dataDir, anchorRunId)).toBe(true);
     const redeployPromise = router.deploy(singleStepFrame(head, "wf-selfterm"));
     await spawner.driveReadyFor(1);
@@ -2978,8 +2844,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     await deploying;
     spawner.failNextSpawn();
     await spawner.recycleRequestFor(0);
-    // The reclaim exposes no completion signal; use the existing deadline-free
-    // wait for its active-address transition, as the neighboring tests do.
+    // No completion signal; use the deadline-free wait for the
+    // active-address transition, as the neighboring tests do.
     await waitUntil(() => !router.activeAddresses().includes(head));
     expect(await recordExists(dataDir, deploymentId)).toBe(true);
 
@@ -3037,23 +2903,15 @@ describe("createSidecarDeployRouter multi-step branch", () => {
 
     spawner.failNextSpawn();
     await spawner.recycleRequestFor(0);
-    // No signal exists for this one. The reclaim runs off the supervisor's
-    // control pump, and the router wires its own self-termination sink
-    // straight to the reclaim without chaining a caller's, so nothing
-    // observable fires when it completes. Exposing one means changing that
-    // wiring, which is a bigger change than this wait justifies.
-    //
-    // So this stays a poll, but it carries no deadline of its own: a reclaim
-    // that never lands is caught by the lane timeout, per "Synchronizing on
-    // State, Not Time" in CONVENTIONS.md.
+    // No completion signal exists, so this stays a deadline-free poll
+    // ("Synchronizing on State, Not Time" in CONVENTIONS.md); a reclaim that
+    // never lands is caught by the lane timeout.
     await waitUntil(() => !router.activeAddresses().includes(head));
     expect(router.activeAddresses()).toEqual([]);
 
-    // An operator undeploy following the reclaim is a clean no-op: the reclaim
-    // already dropped the supervisor and the transport registration, so
-    // undeploy's idempotent unregisters neither throw nor double-remove. This
-    // is the observable form of the reclaim/undeploy race resolution -- both
-    // are "if present, drop", so the loser no-ops.
+    // An operator undeploy after the reclaim is a clean no-op: undeploy's
+    // idempotent unregisters neither throw nor double-remove. This is the
+    // observable form of the reclaim/undeploy race resolution.
     const undeploy = router.undeploy;
     if (undeploy === undefined) {
       throw new Error("router.undeploy is undefined");
@@ -3070,15 +2928,13 @@ describe("createSidecarDeployRouter multi-step branch", () => {
   });
 
   test("the reclaim retains the deployment-address mapping so the terminal RunFailed commit can still resolve its run address", async () => {
-    // Regression guard for the reclaim/terminal-commit ordering hazard. The
+    // Regression guard for the reclaim/terminal-commit ordering hazard: the
     // crash-loop latch commits its `RunFailed` tombstone AFTER teardown fires
-    // `onSelfTerminate`, and that commit resolves the deployment-address
-    // mapping to route the outbound pack push. A reclaim that dropped the
-    // mapping (via `unregisterDeployment`) stranded the commit with "no run
-    // address registered". This wires a REAL `deploymentAddressRegistry`
-    // through the register/unregister hooks -- the same registry the sidecar
-    // wires in `index.ts` -- and asserts the mapping survives the reclaim, so
-    // a subsequent `resolve` still returns the address the commit needs.
+    // `onSelfTerminate`, and the commit resolves the deployment-address
+    // mapping for the outbound pack push. A reclaim that dropped the mapping
+    // stranded the commit with "no run address registered". Wires a REAL
+    // `deploymentAddressRegistry` through the hooks and asserts the mapping
+    // survives the reclaim.
     const dataDir = await createTempBaseDir("sidecar-self-term-mapping-data-");
     const head = "run_selfterm_mapping@example.com";
     const runId = deriveWorkflowRunRepoId(head);
@@ -3100,42 +2956,32 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const deployPromise = router.deploy(singleStepFrame(head, "wf-st-mapping"));
     await spawner.driveReadyFor(0);
     await deployPromise;
-    // The deploy recorded the mapping before spawn (the replay's pack push
-    // resolves it), so it is resolvable while the supervisor is live.
+    // The deploy recorded the mapping before spawn, so it resolves while the
+    // supervisor is live.
     expect(registry.resolve(runId)).toBe(head);
 
     // Drive the supervisor to a self-termination via the recycle-failure path.
     spawner.failNextSpawn();
     await spawner.recycleRequestFor(0);
-    // No signal exists for this one. The reclaim runs off the supervisor's
-    // control pump, and the router wires its own self-termination sink
-    // straight to the reclaim without chaining a caller's, so nothing
-    // observable fires when it completes. Exposing one means changing that
-    // wiring, which is a bigger change than this wait justifies.
-    //
-    // So this stays a poll, but it carries no deadline of its own: a reclaim
-    // that never lands is caught by the lane timeout, per "Synchronizing on
-    // State, Not Time" in CONVENTIONS.md.
+    // No completion signal exists, so this stays a deadline-free poll
+    // ("Synchronizing on State, Not Time" in CONVENTIONS.md); a reclaim that
+    // never lands is caught by the lane timeout.
     await waitUntil(() => !router.activeAddresses().includes(head));
     expect(router.activeAddresses()).toEqual([]);
 
     // The reclaim dropped the redeploy gate but RETAINED the address mapping:
-    // the supervisor's own terminal `RunFailed` commit is the sole remaining
-    // consumer and must still resolve the address. A reclaim that unregistered
-    // the mapping would fail this assertion (and strand that commit).
+    // the supervisor's terminal `RunFailed` commit must still resolve it.
     expect(registry.resolve(runId)).toBe(head);
   });
 
   test("restore skips a record whose address does not derive its directory name", async () => {
     const dataDir = await createTempBaseDir("sidecar-restore-mismatch-data-");
     const head = "run_mismatch@example.com";
-    // A record filed under a directory that is NOT its own derived slug --
-    // a corrupt or misplaced record that must not be restored under the
-    // wrong slug.
+    // A record under a directory that is NOT its own derived slug -- a corrupt
+    // or misplaced record that must not restore under the wrong slug.
     const wrongDir = "not-the-right-slug";
-    // Otherwise-valid source-ref record so the scan admits it and the restore
-    // loop reaches (and rejects on) the address-vs-directory mismatch -- not the
-    // schema. Source-ref is the only lineage, so it must carry the pin + hash.
+    // Otherwise-valid source-ref record so the scan admits it and restore
+    // reaches the address-vs-directory mismatch, not the schema.
     const record: WorkflowRunRecord = {
       version: 1,
       agentAddress: head,
@@ -3180,7 +3026,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const anchorRunId = deriveWorkflowRunRepoId(head);
 
     // First process: a permissive gate lets the deploy through, persisting
-    // the record and its workflow.json.
+    // its record and workflow.json.
     const first = makeReadyDrivingSpawner(9900);
     const { router: routerA } = await buildMultistepFixture({
       spawner: first.spawner,
@@ -3210,8 +3056,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
 
     expect(second.spawnCount()).toBe(0);
     expect(isRegistered(freshTransport, head)).toBe(false);
-    // The record survives so a later boot, once the provider is buildable
-    // again, can retry it.
+    // The record survives so a later boot can retry once the provider is
+    // buildable again.
     expect(await recordExists(dataDir, anchorRunId)).toBe(true);
   });
 
@@ -3224,10 +3070,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const healthyId = deriveWorkflowRunRepoId(healthyHead);
     const unbuildableId = deriveWorkflowRunRepoId(unbuildableHead);
 
-    // The unbuildable deployment pins a source whose provider the restart's
-    // gate will reject; the healthy deployment keeps the default `anthropic`
-    // source the gate admits. Distinguishing on `provider` lets one
-    // `assertSourceBuildable` reject exactly one of the two restored records.
+    // The unbuildable deployment pins a provider the restart's gate rejects;
+    // the healthy one keeps the default `anthropic` source. One gate rejects
+    // exactly one of the two records.
     const unbuildableProvider = "phantom-provider";
     function unbuildableSingleStepFrame(): AgentDeployFrame {
       return makeMultistepFrame({
@@ -3247,7 +3092,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     }
 
     // First process: a permissive gate lets BOTH deploys through, persisting
-    // each record and its workflow.json.
+    // each record.
     const first = makeReadyDrivingSpawner(11400);
     const { router: routerA } = await buildMultistepFixture({
       spawner: first.spawner,
@@ -3264,10 +3109,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     expect(await recordExists(dataDir, healthyId)).toBe(true);
     expect(await recordExists(dataDir, unbuildableId)).toBe(true);
 
-    // Restart: a fresh transport plus a gate that rejects ONLY the phantom
-    // provider. Capture the module's warn output through the default console
-    // sink (threshold "warning" routes `logger.warn` to `console.warn`) so we
-    // can assert the failure is surfaced loudly rather than silently dropped.
+    // Restart: a fresh transport plus a gate rejecting ONLY the phantom
+    // provider. Capture `logger.warn` output (threshold "warning" routes to
+    // `console.warn`) to assert the failure is surfaced, not silently dropped.
     const warnCaptured: string[] = [];
     // eslint-disable-next-line no-console -- intentionally spy on the default sink's warn target to prove the restore failure is surfaced
     const originalWarn = console.warn;
@@ -3291,28 +3135,27 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         },
       });
 
-      // Only the healthy deployment spawns, so its handshake is the sole one
-      // to drive; the unbuildable record faults before its spawner is ever
-      // reached. Restore is serial and per-record isolated, so scan order does
-      // not change the outcome.
+      // Only the healthy deployment spawns (the unbuildable record faults
+      // before its spawner is reached); restore is serial and per-record
+      // isolated, so scan order does not change the outcome.
       const restorePromise = routerB.restoreWorkflowRuns();
       await second.driveReadyFor(0);
       await restorePromise;
 
       // The unbuildable record did NOT strand the healthy one: it re-spawned
-      // exactly once and its head is routable again on the fresh transport.
+      // and its head is routable on the fresh transport.
       expect(second.spawnCount()).toBe(1);
       expect(isRegistered(freshTransport, healthyHead)).toBe(true);
 
       // The unbuildable deployment was not stood up: no spawn, no route.
       expect(isRegistered(freshTransport, unbuildableHead)).toBe(false);
 
-      // Its record survives -- restore keeps an unrestorable record so a later
-      // boot with the provider restored can retry it.
+      // Its record survives so a later boot can retry once the provider is
+      // buildable again.
       expect(await recordExists(dataDir, unbuildableId)).toBe(true);
 
-      // The failure is surfaced loudly: a warning naming the failed deployment
-      // and the provider rejection reason, not a silent drop.
+      // The failure is surfaced: a warning naming the deployment and the
+      // rejection reason, not a silent drop.
       const failureWarn = warnCaptured.find(
         (line) =>
           line.includes(unbuildableId) &&
@@ -3331,11 +3174,10 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const head = "run_readytimeout@example.com";
     const anchorRunId = deriveWorkflowRunRepoId(head);
 
-    // A spawner whose child is created but never driven through the `ready`
-    // handshake. With a small threaded readyTimeoutMs the supervisor times
-    // out, kills the child, and rejects the spawn. The message echoes the
-    // threaded value, so this also proves readyTimeoutMs reaches the
-    // supervisor across the router's forwarding.
+    // A spawner whose child is never driven through `ready`. With a small
+    // threaded readyTimeoutMs the supervisor times out, kills the child, and
+    // rejects the spawn; the message echoing the threaded value also proves
+    // the timeout reaches the supervisor.
     const spawner = makeReadyDrivingSpawner(10100);
     const { router } = await buildMultistepFixture({
       spawner: spawner.spawner,
@@ -3347,14 +3189,14 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       router.deploy(singleStepFrame(head, "wf-readytimeout")),
     ).rejects.toThrow(/did not emit ready within 40ms/);
 
-    // The deploy soft-failed, so its restore record was cleaned up -- a
-    // wedged deploy leaves nothing for a later boot to re-spawn.
+    // The deploy soft-failed, so its restore record was cleaned up: a wedged
+    // deploy leaves nothing for a later boot to re-spawn.
     expect(await recordExists(dataDir, anchorRunId)).toBe(false);
   });
 
   test("a single-step deploy acks the agent key, not the supervisor key", async () => {
-    // The single-step head is the deployed agent identity, so the ack must
-    // surface the agent key rather than the supervisor principal key.
+    // The single-step head is the deployed agent identity, so the ack carries
+    // the agent key, not the supervisor principal key.
     const headKeyPair = await generateKeyPair();
     const spawner = makeReadyDrivingSpawner(10300);
     const { router, keyPair: fixtureKeyPair } = await buildMultistepFixture({
@@ -3438,7 +3280,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     await deployPromise;
 
     // A multi-step deployment has no single warm agent to rotate, so no
-    // handler is registered and the inbound rotation is unrouted.
+    // handler is registered and the rotation is unrouted.
     expect(
       await sourcesRouter.tryRoute({
         type: "sources.update",
@@ -3450,10 +3292,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
   });
 
   test("a source rotation survives a recycle respawn", async () => {
-    // End-to-end guard for the rotation-survives-recycle fix: the single-step
-    // rotation handler mutates `currentSources`, `dynamicSpawnEnv`
-    // re-serializes it, and the recycle respawn's STEP_INFERENCE_SOURCES
-    // carries the ROTATED table -- not the frozen deploy-time one.
+    // End-to-end guard for rotation-survives-recycle: the recycle respawn's
+    // STEP_INFERENCE_SOURCES carries the ROTATED table, not the frozen
+    // deploy-time one.
     const sourcesRouter = createMultistepSourcesRouter();
     const spawner = makeReadyDrivingSpawner(10800);
     const { router } = await buildMultistepFixture({
@@ -3493,8 +3334,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     await spawner.driveReadyFor(1);
 
     // The recycle respawn's sources are the ROTATED table, proving the
-    // rotation survived the recycle (before the fix it reverted to the
-    // deploy-time list frozen in substrateEnv).
+    // rotation survived the recycle.
     const respawnEnv = spawner.envFor(1);
     if (respawnEnv === undefined) throw new Error("respawn env missing");
     expect(
@@ -3503,9 +3343,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
   });
 
   test("a source rotation survives a full sidecar restart", async () => {
-    // Restart-durability: a rotation is persisted into the run record,
-    // so a fresh sidecar process (a restore over the same data dir) respawns
-    // the deployment on the ROTATED sources, not the deploy-time ones.
+    // Restart-durability: the rotation is persisted into the run record, so
+    // a restore over the same data dir respawns on the ROTATED sources.
     const dataDir = await createTempBaseDir("sidecar-rot-restart-");
     const addr = "run_rotrestart@example.com";
 
@@ -3533,8 +3372,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       }),
     ).toBe(true);
 
-    // Second process (simulated restart): a fresh router over the SAME data
-    // dir restores the deployment from its durable record.
+    // Second process (simulated restart): a fresh router restores the
+    // deployment from the durable record over the SAME data dir.
     const second = makeReadyDrivingSpawner(11000);
     const { router: routerB } = await buildMultistepFixture({
       spawner: second.spawner,
@@ -3557,13 +3396,10 @@ describe("createSidecarDeployRouter multi-step branch", () => {
   });
 
   test("a rotation whose persist fails leaves no partial effect", async () => {
-    // Atomicity: if the durable write rejects, the rotation takes NO net
-    // effect. The handler swaps currentSources synchronously, then rolls it
-    // back on a failed persist, so once the handler throws currentSources is
-    // on the deploy-time table (a recycle respawn AFTER the failure is
-    // unrotated) and deliverSources is never reached. Rolling the in-memory
-    // hint back keeps currentSources and the record in agreement in this
-    // no-interleaved-recycle failure case.
+    // Atomicity: on a failed persist the handler rolls currentSources back to
+    // the deploy-time table and rethrows before deliverSources, so the
+    // rotation takes no net effect (a recycle respawn after the failure is
+    // unrotated).
     const dataDir = await createTempBaseDir("sidecar-rot-failatomic-");
     const addr = "run_rotfailatomic@example.com";
     const sourcesRouter = createMultistepSourcesRouter();
@@ -3578,9 +3414,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     await spawner.driveReadyFor(0);
     await deployPromise;
 
-    // Replace the run record file with a directory so the rotation's
-    // writeWorkflowRunRecord rejects (EISDIR) -- a deterministic,
-    // root-immune write fault (a chmod guard would be bypassed under root).
+    // Replace the run record file with a directory so the rotation's persist
+    // rejects (EISDIR) -- a deterministic, root-immune write fault.
     const recordFile = path.join(
       dataDir,
       "workflow-runs",
@@ -3602,8 +3437,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     ).rejects.toThrow();
 
     // currentSources was rolled back: a recycle respawn AFTER the failed
-    // rotation carries the DEPLOY-TIME sources, proving the failed rotation
-    // left no net in-memory effect.
+    // rotation carries the DEPLOY-TIME sources, proving no net effect.
     await spawner.recycleRequestFor(0);
     await spawner.awaitSpawnCount(2);
     await spawner.driveReadyFor(1);
@@ -3615,19 +3449,17 @@ describe("createSidecarDeployRouter multi-step branch", () => {
   });
 
   test("a recycle interleaving the rotation persist respawns on the rotated sources", async () => {
-    // Interleave guard: the rotation swaps currentSources synchronously
-    // BEFORE the durable persist, so a recycle that lands inside the persist
-    // window respawns the child on the ROTATED sources -- consistent with
-    // what is being persisted -- rather than the stale deploy-time table.
+    // Interleave guard: currentSources swaps synchronously BEFORE the persist,
+    // so a recycle landing inside the persist window respawns on the ROTATED
+    // sources -- consistent with what is being persisted.
     const dataDir = await createTempBaseDir("sidecar-rot-interleave-ok-");
     const addr = "run_rotinterok@example.com";
     const sourcesRouter = createMultistepSourcesRouter();
     const spawner = makeReadyDrivingSpawner(11200);
 
     // A persist that blocks on a test-controlled gate once armed, so a recycle
-    // can be driven into the rotation's persist window. The deploy's own
-    // persist (before the gate is armed) passes straight through to the real
-    // writer.
+    // can be driven into the persist window. Before the gate is armed the
+    // deploy's own persist passes through to the real writer.
     let gate: Promise<void> | null = null;
     let release: () => void = () => undefined;
     const persist: typeof writeWorkflowRunRecord = async (
@@ -3656,8 +3488,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       release = resolve;
     });
 
-    // Start the rotation but do not await it: the handler swaps currentSources
-    // synchronously, then parks on the blocked persist before deliverSources.
+    // Start the rotation without awaiting: the handler swaps currentSources
+    // synchronously, then parks on the blocked persist.
     const rotated = makeInferenceSource("rotated");
     const rotatePromise = sourcesRouter.tryRoute({
       type: "sources.update",
@@ -3666,8 +3498,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       defaultSource: "rotated",
     });
 
-    // Drive a recycle while the persist is blocked. The respawn env must carry
-    // the ROTATED sources, because the synchronous swap already ran.
+    // Drive a recycle while the persist is blocked: the respawn env must carry
+    // the ROTATED sources, since the synchronous swap already ran.
     await spawner.recycleRequestFor(0);
     await spawner.awaitSpawnCount(2);
     await spawner.driveReadyFor(1);
@@ -3677,8 +3509,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       JSON.parse(respawnEnv[STEP_INFERENCE_SOURCES_ENV_KEY] ?? "null"),
     ).toEqual({ "step-1": [rotated] });
 
-    // Release the persist; the rotation completes without throwing and the
-    // durable record converges on the rotated sources.
+    // Release the persist; the rotation completes and the durable record
+    // converges on the rotated sources.
     release();
     await rotatePromise;
     const scanned = await scanWorkflowRunRecords(
@@ -3692,11 +3524,10 @@ describe("createSidecarDeployRouter multi-step branch", () => {
   });
 
   test("a recycle interleaving a failed rotation persist respawns on new sources then rolls back", async () => {
-    // The benign residual, pinned: a persist that fails WHILE a recycle
+    // The benign residual, pinned: a persist failing WHILE a recycle
     // interleaves leaves the just-respawned child transiently ahead on the
-    // rotated sources (the intended, self-healing direction), while
-    // currentSources rolls back to the deploy-time table so the NEXT recycle
-    // reverts the child to durable truth.
+    // rotated sources (the self-healing direction); currentSources rolls back
+    // so the NEXT recycle reverts the child to durable truth.
     const dataDir = await createTempBaseDir("sidecar-rot-interleave-fail-");
     const addr = "run_rotinterfail@example.com";
     const sourcesRouter = createMultistepSourcesRouter();
@@ -3743,7 +3574,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     });
 
     // A recycle interleaves the about-to-fail persist: the respawn still
-    // carries the ROTATED sources, because the swap already ran.
+    // carries the ROTATED sources since the swap already ran.
     await spawner.recycleRequestFor(0);
     await spawner.awaitSpawnCount(2);
     await spawner.driveReadyFor(1);
@@ -3759,7 +3590,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     await expect(rotatePromise).rejects.toThrow(/rotation persist boom/);
 
     // A SECOND recycle now respawns on the ROLLED-BACK deploy-time sources,
-    // healing the transient down to durable truth.
+    // healing the transient.
     await spawner.recycleRequestFor(1);
     await spawner.awaitSpawnCount(3);
     await spawner.driveReadyFor(2);
@@ -3773,11 +3604,10 @@ describe("createSidecarDeployRouter multi-step branch", () => {
   });
 
   test("two addresses that project to the same workflow-run repo id are rejected at the second deploy", async () => {
-    // deriveWorkflowRunRepoId substitutes every disallowed character with
-    // `-`, so two distinct addresses can collapse to the same slug. The slug
-    // IS the workflow-run repoId, so a silent collision would let the second
-    // deploy overwrite the first deploy's repo state. claimSlug rejects the
-    // second deploy at the router edge, before any spawn or repo write.
+    // deriveWorkflowRunRepoId substitutes every disallowed character with `-`,
+    // so two distinct addresses can collapse to the same slug -- which IS the
+    // workflow-run repoId. claimSlug rejects the collision at the router edge,
+    // before any spawn or repo write.
     const spawner = makeReadyDrivingSpawner(10400);
     const { router } = await buildMultistepFixture({
       spawner: spawner.spawner,
@@ -3801,14 +3631,11 @@ describe("createSidecarDeployRouter multi-step branch", () => {
   });
 
   test("reEmitParkedCorrelations reaches the live supervisor and sends a parked-correlations.request downstream", async () => {
-    // Trigger B: the hub-reconnect fan-out. After a deploy populates
-    // `activeSupervisors` for the deployment address, the router's
-    // address-dispatch wrapper must reach the live supervisor's own no-arg
-    // `reEmitParkedCorrelations`, which the supervisor implements by sending a
-    // `parked-correlations.request` control frame down to the child. The mock
-    // child never answers, so the supervisor's watchdog eventually fires; the
-    // router's fire-and-forget contract means the request frame lands on the
-    // downstream stream regardless, which is the observable evidence here.
+    // Trigger B: the hub-reconnect fan-out. The router's address-dispatch
+    // wrapper must reach the live supervisor's no-arg `reEmitParkedCorrelations`,
+    // which sends a `parked-correlations.request` control frame down to the
+    // child. The mock child never answers, so the request frame landing on the
+    // downstream stream is the observable evidence.
     const childIpcKeyPair = await generateKeyPair();
     const {
       supervisorToChild,
@@ -3879,16 +3706,14 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     });
     await deployPromise;
 
-    // `activeSupervisors` is keyed by the frame's run address; the router
-    // routes the re-emit through that same key.
+    // `activeSupervisors` is keyed by the frame's run address; the re-emit
+    // routes through that same key.
     expect(router.activeAddresses()).toEqual([frame.agentAddress]);
 
-    // Each downstream line is a signed envelope `{ envelope: { seq, channelId,
-    // payload }, sig }`; read `envelope.payload.type` without verifying the
-    // signature (the supervisor's IPC public key is not exposed to the test).
-    // The supervisor emits its own `parked-correlations.request` on spawn (a
-    // fresh child becoming addressable), so the trigger is observed as an
-    // increase in the downstream request count, not its first appearance.
+    // Read `envelope.payload.type` without verifying the signature (the
+    // supervisor's IPC public key is not exposed to the test). The supervisor
+    // emits its own request on spawn, so the trigger is an increase in the
+    // request count, not its first appearance.
     function parkedRequestCount(): number {
       return supervisorToChild
         .flushed()
@@ -3896,10 +3721,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         .length;
     }
 
-    // The baseline has to include the spawn-time request, which is a frame on
-    // this same stream -- so wait for it rather than for fifty milliseconds,
-    // which on a slow enough machine would have banked a baseline of zero and
-    // made the assertion below pass on the spawn-time frame alone.
+    // Wait for the spawn-time request so the baseline includes it; a fixed
+    // wait could bank zero on a slow machine and pass on the spawn frame
+    // alone.
     while (parkedRequestCount() < 1) {
       await supervisorToChild.nextWrite();
     }
@@ -3907,9 +3731,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
 
     router.reEmitParkedCorrelations(frame.agentAddress);
 
-    // The request frame reaching the downstream stream is the event. The
+    // The request frame reaching the downstream stream is the event; the
     // bounded poll this replaces made a wiring break indistinguishable from
-    // slowness, since both ended at the same deadline.
+    // slowness.
     while (parkedRequestCount() <= baseline) {
       await supervisorToChild.nextWrite();
     }
@@ -3917,9 +3741,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
   });
 
   test("reEmitParkedCorrelations for an address with no active supervisor is a no-op", async () => {
-    // The edge boundary: the hub reports an address routable, but no live
-    // supervisor owns it (a torn-down or not-yet-respawned deployment). The
-    // router must skip it -- neither throw nor drive any downstream frame.
+    // Edge boundary: the hub reports an address routable but no live
+    // supervisor owns it (torn down or not yet respawned). The router must
+    // skip it -- neither throw nor drive a downstream frame.
     const childIpcKeyPair = await generateKeyPair();
     const {
       supervisorToChild,
@@ -3993,19 +3817,17 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const missAddress = "run_nonexistent@wf.example";
     expect(router.activeAddresses()).not.toContain(missAddress);
 
-    // The deployed supervisor emits its own `parked-correlations.request` on
-    // spawn; the miss-address re-emit must add nothing on top of that
-    // baseline. Count downstream requests before and after the no-op call.
+    // The supervisor emits its own request on spawn; the miss-address re-emit
+    // must add nothing. Count downstream requests before and after the no-op.
     function parkedRequestCount(): number {
       return supervisorToChild
         .flushed()
         .filter((line) => downstreamPayloadType(line) === PARKED_REQUEST_TYPE)
         .length;
     }
-    // The baseline has to include the spawn-time request, which is a frame on
-    // this same stream -- so wait for it rather than for fifty milliseconds,
-    // which on a slow enough machine would have banked a baseline of zero and
-    // made the assertion below pass on the spawn-time frame alone.
+    // Wait for the spawn-time request so the baseline includes it; a fixed
+    // wait could bank zero on a slow machine and pass on the spawn frame
+    // alone.
     while (parkedRequestCount() < 1) {
       await supervisorToChild.nextWrite();
     }
@@ -4014,21 +3836,16 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // The no-op skip must not throw for an address with no live supervisor.
     expect(() => router.reEmitParkedCorrelations(missAddress)).not.toThrow();
 
-    // No pause. The skip path returns without starting any work -- the
-    // assertion above is that the call does not even throw -- so there is no
-    // fire-and-forget in flight for an interval to catch. A pause would only
-    // have given an unrelated frame time to arrive and make this flaky in the
-    // other direction.
+    // No pause: the skip path starts no work for an interval to catch, and a
+    // pause would only give an unrelated frame time to arrive.
     expect(parkedRequestCount()).toBe(baseline);
   });
 });
 
 describe("assembleRunCredentialsSnapshot", () => {
-  // getRepoDir mirrors the production `<base>/<kind>/<id>` layout that
-  // `createSpawnTestRepoStore` uses, so a file written at
-  // `<base>/workflow-run/<anchorRunId>/runs/<runId>/grants.json` lands where
-  // the sink's working-tree read looks, and a step's deploy-time grants land
-  // at `<base>/agent-state/<repoId>/state/grants.json`.
+  // Mirror the production `<base>/<kind>/<id>` layout so a grants file written
+  // at `<base>/workflow-run/<anchorRunId>/runs/<runId>/grants.json` lands
+  // where the sink's working-tree read looks.
   function createReadStubRepoStore(tempBase: string): RepoStore {
     const stub: Partial<RepoStore> = {
       getRepoDir(repoId: RepoId): string {
@@ -4126,9 +3943,8 @@ describe("assembleRunCredentialsSnapshot", () => {
     const tempBase = await createTempBaseDir("sidecar-run-grants-");
     const repoStore = createReadStubRepoStore(tempBase);
 
-    // No per-run file. A deploy-time file is present so a silent fallback
-    // would surface deploy-time grants rather than failing; the run must fail
-    // closed instead of running against them.
+    // No per-run file; a deploy-time file is present so a silent fallback
+    // would surface deploy-time grants. The run must fail closed instead.
     await writeDeployTimeStepGrants(
       tempBase,
       "step-1",
@@ -4150,8 +3966,8 @@ describe("assembleRunCredentialsSnapshot", () => {
     const tempBase = await createTempBaseDir("sidecar-run-grants-");
     const repoStore = createReadStubRepoStore(tempBase);
 
-    // The file exists but is not valid JSON. A deploy-time file is present so
-    // a swallowed error would silently fall back rather than surface.
+    // The file exists but is not valid JSON; a deploy-time file is present so
+    // a swallowed error would silently fall back.
     await writeRunGrantsFile(tempBase, "{ not valid json");
     await writeDeployTimeStepGrants(
       tempBase,
@@ -4169,9 +3985,9 @@ describe("assembleRunCredentialsSnapshot", () => {
       }),
     ).rejects.toThrow(/is not valid JSON/);
 
-    // A file that is valid JSON but violates the `{ grants: [] }` envelope
-    // also throws, rather than falling back -- the presence of the file
-    // implies a grants frame was delivered.
+    // Valid JSON that violates the `{ grants: [] }` envelope also throws
+    // rather than falling back -- the file's presence implies a grants frame
+    // was delivered.
     await writeRunGrantsFile(tempBase, JSON.stringify({ grants: "not-array" }));
     await expect(
       assembleRunCredentialsSnapshot({
@@ -4185,14 +4001,11 @@ describe("assembleRunCredentialsSnapshot", () => {
   });
 
   test("a re-dispatched run re-reads the durable per-run grants, not the deploy-time fallback", async () => {
-    // On a child respawn the supervisor's `replayProcessingToInbox` moves an
-    // already-consumed run's orphaned `processing/` entry back to `inbox/`,
-    // so the fresh dispatch loop re-dequeues it and the `onRunStart` grants
-    // barrier fires AGAIN for the same runId. The per-run grants file is a
-    // durable commit -- `readRunGrants` never deletes it -- so this second
+    // On a child respawn the supervisor re-dequeues an already-consumed run,
+    // so the grants barrier fires AGAIN for the same runId. The per-run grants
+    // file is durable (`readRunGrants` never deletes it), so this second
     // resolution must still read `runs/<runId>/grants.json` and win over the
-    // deploy-time fallback, rather than inheriting the deployment's grants as
-    // if the run had never carried its own.
+    // deploy-time fallback.
     const tempBase = await createTempBaseDir("sidecar-run-grants-");
     const repoStore = createReadStubRepoStore(tempBase);
 
@@ -4200,9 +4013,8 @@ describe("assembleRunCredentialsSnapshot", () => {
       { id: "run-grant", resource: "tool:send-mail", effect: "allow" },
     ];
     await writeRunGrantsFile(tempBase, JSON.stringify({ grants: runGrants }));
-    // A deploy-time file is present so a spurious fallback (a deleted or
-    // missed per-run file on the second read) would surface as the wrong
-    // grants rather than an empty set.
+    // A deploy-time file is present so a spurious fallback on the second read
+    // would surface the wrong grants rather than an empty set.
     await writeDeployTimeStepGrants(
       tempBase,
       "step-1",
@@ -4217,8 +4029,7 @@ describe("assembleRunCredentialsSnapshot", () => {
       deriveStepAddress,
     });
 
-    // The re-dispatch: resolve the same run a second time with no rewrite of
-    // the grants file in between.
+    // The re-dispatch: resolve the same run again with no rewrite in between.
     const second = await assembleRunCredentialsSnapshot({
       repoStore,
       anchorRunId,
@@ -4233,8 +4044,8 @@ describe("assembleRunCredentialsSnapshot", () => {
         expect(step.grants).toEqual(runGrants);
       }
     }
-    // The second resolution is byte-identical to the first: same flat grant
-    // set, same content hash across every step.
+    // The second resolution is byte-identical to the first: same grant set,
+    // same content hash across every step.
     expect(second.steps.map((s) => s.contentHash)).toEqual(
       first.steps.map((s) => s.contentHash),
     );
