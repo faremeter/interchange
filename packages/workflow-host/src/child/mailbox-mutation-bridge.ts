@@ -5,29 +5,19 @@
 // substrate mailbox store and is the only writer to the workflow-run
 // ref. Flag writes (`\Seen`, `\Deleted`, ...) and `expunge` route up
 // to the supervisor through this bridge rather than being flushed from
-// the child. A second writer flushing the same
-// ref from the child would race the supervisor's in-memory mirror and
-// break uid / modseq monotonicity, so the child never writes the
-// mailbox directly.
+// the child: a second writer flushing the same ref would race the
+// supervisor's in-memory mirror and break uid / modseq monotonicity,
+// so the child never writes the mailbox directly.
 //
-// Lifecycle of one mutation:
-//
-//   1. The agent's mail tool (flag or expunge) calls the
-//      supervisor-backed transport's `setFlags` / `clearFlags` /
-//      `expunge`. The transport calls `bridge.submit(mutation)`.
-//   2. `submit` mints a `requestId`, registers a pending awaiter, and
-//      emits `mailbox.mutate.request` upstream carrying the op and its
-//      operands.
-//   3. The supervisor applies the op to its owned mailbox store,
-//      flushes, and replies with `mailbox.mutate.response`. The reply is
-//      sent only after the flush, so a later read of the committed
-//      mailbox observes the mutation (the same flush-before-signal ordering
-//      `mailbox.notify` relies on).
-//   4. The bridge resolves / rejects the pending awaiter; the
-//      transport method returns to the mail tool. A supervisor-side
-//      failure (unknown uid, substrate fault) surfaces as a rejection so
-//      the agent's mail-tool call fails loudly rather than silently
-//      dropping the mutation.
+// Lifecycle of one mutation: `submit` mints a `requestId`, registers a
+// pending awaiter, and emits `mailbox.mutate.request` upstream; the
+// supervisor applies the op to its owned store, flushes, and replies
+// with `mailbox.mutate.response` (only after the flush, so a later read
+// observes the mutation -- the same flush-before-signal ordering
+// `mailbox.notify` relies on); the bridge resolves/rejects the awaiter.
+// A supervisor-side failure surfaces as a rejection so the agent's
+// mail-tool call fails loudly rather than silently dropping the
+// mutation.
 
 import { getLogger } from "@intx/log";
 

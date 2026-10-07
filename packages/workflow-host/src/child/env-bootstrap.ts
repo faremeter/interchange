@@ -21,14 +21,12 @@ import { IPC_CRYPTO } from "../ipc/index";
 /**
  * The required spawn-time env keys, named once so the supervisor-side
  * producer (`buildChildSpawnEnv`) and this child-side parser share a
- * single required-key contract. `WARM_KEEP` is optional and lives only in
- * the shape below. The producer types its output against this list
+ * single required-key contract. `WARM_KEEP` is optional and lives only
+ * in the shape below. The producer types its output against this list
  * (`Record<RequiredSpawnEnvKey, string>`), so omitting a listed key is a
- * compile error. That this list stays in step with the validator shape
- * below -- a hand-maintained arktype object -- is covered by the recycle
- * env-contract regression test, which drives the real producer through
- * this parser. This is the contract whose drift once omitted `STEP_COUNT`
- * from the recycle env and broke every recycle.
+ * compile error. Keeping this list in step with the validator shape is
+ * covered by the recycle env-contract regression test; drift once
+ * omitted `STEP_COUNT` from the recycle env and broke every recycle.
  */
 export const REQUIRED_SPAWN_ENV_KEYS = [
   "IPC_CHANNEL_ID",
@@ -56,25 +54,24 @@ const SpawnTimeEnvShape = type({
   DEFINITION_HASH: "string > 0",
   MAILBOX_ADDRESS: "string > 0",
   // Step count of the deployed `WorkflowDefinition` (`stepOrder.length`),
-  // stringified by the supervisor. The child's deploy-tree read collapses
-  // onto the head for a single-step deployment (`resolveStepAddress`), so
-  // producer and consumer never derive divergent step addresses. Parsed to
-  // a positive integer below; a non-integer or non-positive value throws.
+  // stringified by the supervisor; the deploy-tree read collapses onto
+  // the head for a single-step deployment (`resolveStepAddress`). Parsed
+  // to a positive integer below; a non-integer or non-positive value
+  // throws.
   STEP_COUNT: "string > 0",
-  // Warm-keep signal (design §3b). The supervisor sets this to the
-  // string `"true"` only for the single-step long-lived deployment the
-  // deploy projection marked a warm candidate; any other value (or the
-  // key's absence) means cold instantiate-send-teardown per message.
-  // Carried explicitly rather than re-derived heuristically in the child
-  // so the warm-keep decision is deterministic and a multi-step agent is
-  // never warm-kept by a silent default.
+  // Warm-keep signal (design §3b): `"true"` only for the single-step
+  // long-lived deployment the deploy projection marked a warm candidate;
+  // any other value (or absence) means cold instantiate-send-teardown.
+  // Carried explicitly rather than re-derived heuristically so the
+  // decision is deterministic and a multi-step agent is never warm-kept
+  // by a silent default.
   "WARM_KEEP?": "string",
-  // Sidecar-local directory of the materialized workflow-definition closure the
-  // deployment evaluates. Source-ref is the only deploy lineage, so the child
-  // always evaluates a pinned code closure to a LIVE definition and re-verifies
-  // it by project-then-hash; there is nothing to evaluate without this dir, so
-  // it is required. The sidecar computes it when it applies the frozen closure
-  // and threads it here; it never travels on the hub deploy frame.
+  // Sidecar-local directory of the materialized workflow-definition
+  // closure the deployment evaluates. Source-ref is the only deploy
+  // lineage, so the child always evaluates a pinned code closure to a
+  // LIVE definition and re-verifies it by project-then-hash; without
+  // this dir there is nothing to evaluate, so it is required. It never
+  // travels on the hub deploy frame.
   CLOSURE_PACKAGE_DIR: "string > 0",
 }).onUndeclaredKey("ignore");
 
@@ -95,11 +92,11 @@ export interface SpawnTimeEnv {
   /** Anchor run id the supervisor manages. */
   anchorRunId: string;
   /**
-   * Content hash of the deployed `WorkflowDefinition`. This is the
-   * hub-approved wire hash the deploy frame carried
-   * (`AgentDeployWorkflow.approvedWireHash`), not a sidecar recompute -- the
-   * hub is the authority, so the child re-verifies its own recompute against
-   * this value.
+   * Content hash of the deployed `WorkflowDefinition`: the hub-approved
+   * wire hash the deploy frame carried
+   * (`AgentDeployWorkflow.approvedWireHash`), not a sidecar recompute.
+   * The hub is the authority; the child re-verifies its own recompute
+   * against this value.
    */
   definitionHash: string;
   /** Mail address the deployment registered on the bus. */
@@ -159,11 +156,9 @@ export function parseSpawnTimeEnv(
       `workflow-child HOST_PUBKEY must decode to ${String(IPC_CRYPTO.ED25519_KEY_BYTES)} bytes; got ${String(hostPublicKey.length)}`,
     );
   }
-  // The channelId is supervisor-minted and the receiver compares it
-  // byte-for-byte against incoming frames. Hex-decoding here would
-  // surface a malformed value but the IPC primitives expect the
-  // hex-encoded string form, so we only verify the encoded length
-  // matches the documented channelId byte width.
+  // The IPC primitives expect the hex-encoded string form, so only the
+  // encoded length is verified against the documented channelId byte
+  // width.
   const expectedChannelIdHex = IPC_CRYPTO.CHANNEL_ID_BYTES * 2;
   if (validated.IPC_CHANNEL_ID.length !== expectedChannelIdHex) {
     throw new Error(
@@ -184,9 +179,9 @@ export function parseSpawnTimeEnv(
     definitionHash: validated.DEFINITION_HASH,
     mailboxAddress: validated.MAILBOX_ADDRESS,
     stepCount,
-    // Strict `=== "true"` so any other value (including the key's
-    // absence) reads false. Warm-keep is opt-in and deterministic; a
-    // typo'd or partial value must not silently enable it.
+    // Strict `=== "true"` so any other value (including absence) reads
+    // false: warm-keep is opt-in and deterministic, and a typo'd value
+    // must not silently enable it.
     warmKeep: validated.WARM_KEEP === "true",
     closurePackageDir: validated.CLOSURE_PACKAGE_DIR,
   };

@@ -967,10 +967,9 @@ describe("runWorkflowChild", () => {
     // emit. Waiting for `terminal.event` therefore proves the continuation
     // executed -- so a subsequent `cleaned` assertion fires at exactly the
     // point the cold path WOULD have deleted, making the suppression proof
-    // non-vacuous rather than passing merely because the continuation never
-    // ran. The receiver bootstraps the child's verifying key from `ready`;
-    // `flushed()`-based waits elsewhere are non-consuming, so `ready` is
-    // still queued for this iterator.
+    // non-vacuous. The receiver bootstraps the child's verifying key from
+    // `ready`; `flushed()`-based waits elsewhere are non-consuming, so
+    // `ready` is still queued for this iterator.
     const recvIter = receiveControlChannel({
       publicKey: { bootstrapFromReady: true },
       channelId,

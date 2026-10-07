@@ -1,12 +1,11 @@
 // Supervisor-backed `MessageTransport` for a unified-host step agent.
 //
-// The supervisor owns the durable inbox and the signing key. This transport
-// does not open the mailbox and does not decide which mailbox exists. Every
-// method other than `send` asks the supervisor and returns that answer,
-// including a refusal. `send` still goes through the outbound-mail bridge.
-// Flag writes and `expunge` still go through the mailbox-mutation bridge,
-// because those frames already exist. The rest go through the mailbox-call
-// bridge.
+// The supervisor owns the durable inbox and the signing key; this
+// transport does not open the mailbox and does not decide which mailbox
+// exists. Every method other than `send` asks the supervisor and returns
+// that answer, including a refusal: `send` goes through the outbound-mail
+// bridge, flag writes and `expunge` through the mailbox-mutation bridge,
+// and the rest through the mailbox-call bridge.
 //
 // `watch` registers its callback before the round trip. `mailbox.notify` is
 // not queued: a callback installed only after the supervisor accepts would
@@ -14,9 +13,9 @@
 // then wait until its timeout. A refusal unregisters the callback and
 // rejects, so nothing stays armed for a mailbox the supervisor refused.
 //
-// When the sidecar constructs the transport without `inbound`, every inbound
-// method fails with `SERVERBUG` "not wired". A spawned child has no inbox
-// surface, and that failure is the wiring error, not a mailbox policy.
+// Without `inbound`, every inbound method fails with `SERVERBUG`
+// "not wired": a spawned child has no inbox surface, and that failure is
+// the wiring error, not a mailbox policy.
 
 import { base64Decode, deriveWorkflowRunId } from "@intx/types";
 import type {

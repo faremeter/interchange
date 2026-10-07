@@ -8,31 +8,20 @@
 // `writeTreePreservingPrefix` calls over the control IPC into the
 // supervisor's substrate.
 //
-// Lifecycle of one proxied write:
-//
-//   1. The child's proxy `RepoStore.writeTreePreservingPrefix` mints a
-//      `requestId`, registers a pending entry holding the caller's
-//      original merge closure plus resolve/reject hooks, and emits
-//      `substrate.write.request` upstream.
-//   2. The supervisor receives the request and invokes its own wrapped
-//      `writeTreePreservingPrefix` against the supervisor's repoStore.
-//      Inside the supervisor's merge callback, the supervisor sends
-//      `substrate.merge.request` back to the child carrying the
-//      existing prefix entries.
-//   3. The bridge resolves the existing entries through the pending
-//      entry's merge closure, encodes the resulting tree as
-//      base64-coded files, and replies with `substrate.merge.response`.
-//   4. The supervisor's merge callback returns the decoded files; the
-//      substrate commits the prospective tree under the per-repo lock.
-//   5. The supervisor sends `substrate.write.response` with the
-//      resulting `commitSha` (or the structured failure). The bridge
-//      resolves / rejects the pending awaiter; the child's substrate
-//      proxy returns the result to its caller.
+// Lifecycle of one proxied write: `writeTreePreservingPrefix` mints a
+// `requestId`, registers a pending entry holding the caller's merge
+// closure, and emits `substrate.write.request` upstream; the
+// supervisor invokes its own wrapped write, whose merge callback sends
+// `substrate.merge.request` back to the child; the bridge runs the
+// closure locally and replies with `substrate.merge.response`; the
+// supervisor commits the prospective tree under the per-repo lock and
+// sends `substrate.write.response` with the `commitSha` (or a
+// structured failure), which the bridge resolves against the awaiter.
 //
 // The bridge does NOT serialize the merge closure: the closure lives
 // in the child's address space, so the merge invocation always runs
-// here. The IPC carries the bytes the closure consumes and the bytes
-// the closure produces, both base64-encoded.
+// here. The IPC carries the bytes the closure consumes and produces,
+// both base64-encoded.
 
 import { getLogger } from "@intx/log";
 import { base64Decode, base64Encode } from "@intx/types";
@@ -157,8 +146,8 @@ export function createChildSubstrateWriteBridge(
       if (entry === undefined) {
         logger.warn`substrate.merge.request landed with no pending entry; requestId=${data.requestId} dropped`;
         // Reply with a structured failure so the supervisor's merge
-        // callback can short-circuit rather than wedge waiting on a
-        // response that will never come.
+        // callback can short-circuit rather than wedge on a response
+        // that will never come.
         void opts.upstreamSender
           .send({
             type: "substrate.merge.response",

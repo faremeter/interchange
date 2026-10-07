@@ -2,36 +2,31 @@
 //
 // A long-lived single-step agent is built once -- tools materialized,
 // plugins instantiated, the LSP subprocess spawned -- and reused across
-// every inbound message. Re-materializing tools and re-spawning the LSP
-// per message is the instantiate-send-teardown cost the warm cache
-// removes; keeping the agent alive across messages is also what
-// preserves in-memory conversation continuity (durability across child
-// respawns lands in §3c, a later sub-step).
+// every inbound message, removing the instantiate-send-teardown cost and
+// preserving in-memory conversation continuity (durability across child
+// respawns lands in §3c).
 //
 // Ownership and lifetime. The cache lives in the child's address space,
-// owned by the run-loop (`run-child.ts`), NOT the supervisor. The
-// step-invoker consults it on every step invocation: a cache hit reuses
-// the warm agent, a miss builds and stores one lazily. The cached agent
-// is torn down -- the wrapped `agent.close()` runs, disposing plugins
-// and killing the LSP subprocess -- only at the run-loop's eviction
-// points (child shutdown, deployment undeploy, recycle, post-drain
-// teardown), never between messages. On recycle the child process dies,
-// killing the LSP grandchild regardless; the respawned child starts with
-// an empty cache and re-warms lazily.
+// owned by the run-loop (`run-child.ts`), not the supervisor. The
+// step-invoker consults it on every step invocation: a hit reuses the
+// warm agent, a miss builds and stores one lazily. The cached agent is
+// torn down -- the wrapped `agent.close()` disposes plugins and kills
+// the LSP subprocess -- only at the run-loop's eviction points, never
+// between messages. On recycle the child process dies, killing the LSP
+// grandchild regardless; the respawned child starts with an empty cache
+// and re-warms lazily.
 //
 // Per-message event sink. The agent's `stream()` is consumed once, for
 // the agent's whole life, by a single forwarder owned by the entry. The
-// per-step `onEvent` sink the runtime threads in differs per message
-// (it carries the run id in its error-log path), so the forwarder routes
-// through a mutable reference the step-invoker rewrites before each
-// `agent.send`. The forwarder loop ends only when the agent closes at an
-// eviction point.
+// per-step `onEvent` sink differs per message (its error-log path
+// carries the run id), so the forwarder routes through a mutable
+// reference the step-invoker rewrites before each `agent.send`. The
+// forwarder loop ends only when the agent closes at an eviction point.
 //
 // Warm-keep is gated explicitly: the cache is constructed only when the
-// deploy projection marks the deployment a warm candidate (the
-// single-step launched agent). Multi-step deployments pass no cache and
-// keep instantiate-send-teardown per step. The decision is never a
-// silent default -- a multi-step agent is never warm-kept.
+// deploy projection marks the deployment a warm candidate. Multi-step
+// deployments pass no cache and keep instantiate-send-teardown per
+// step -- a multi-step agent is never warm-kept.
 
 import { getLogger } from "@intx/log";
 import type { Agent } from "@intx/agent";
@@ -257,20 +252,15 @@ export function createWarmAgentCache(): WarmAgentCache {
     if (entries.size === 0) return;
     const toEvict = [...entries.values()];
     entries.clear();
-    // Close every entry before surfacing any failure. The wrapped close
-    // (see `createToolBearingAgentFactory`) runs the agent's own close and
-    // then the plugin + tool-bundle disposers, killing the LSP subprocess,
-    // and it rejects when a disposer fails. One entry's close rejecting
-    // must not strand the remaining entries' teardown -- that would leak
-    // exactly the LSP subprocesses warm-keep risks. Collect failures and
-    // throw them together once every agent has been closed and drained.
-    // (Warm-keep is single-step today, so the cache holds 0 or 1 entry;
-    // this keeps the contract honest if warm-keep ever spans steps.)
+    // Close every entry before surfacing any failure: the wrapped close
+    // rejects when a disposer fails, and one entry's failure must not
+    // strand the remaining entries' teardown (leaking the LSP subprocesses
+    // warm-keep risks). Collect failures and throw them together once
+    // every agent is closed and drained.
     const failures: unknown[] = [];
     for (const entry of toEvict) {
-      // Clear the sink first so any event emitted during the agent's
-      // shutdown window is dropped rather than delivered to a per-run
-      // channel the run-loop is tearing down.
+      // Clear the sink first so events emitted during the agent's shutdown
+      // window are dropped rather than delivered to a torn-down channel.
       entry.eventSinkRef.current = null;
       try {
         await entry.agent.close();
@@ -279,9 +269,8 @@ export function createWarmAgentCache(): WarmAgentCache {
         logger.error`warm-agent eviction (${reason}): agent.close failed: ${message}`;
         failures.push(cause);
       } finally {
-        // `agent.close()` terminates the stream iterator, so the
-        // forwarder loop has ended (or is about to). Await it so no
-        // forwarder outlives the eviction.
+        // `agent.close()` terminates the stream iterator; await the
+        // forwarder so none outlives the eviction.
         await entry.eventForward;
       }
     }

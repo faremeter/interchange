@@ -2,20 +2,15 @@
 //
 // The supervisor owns the deployment mailbox. Every read, listing, append,
 // move, copy, watch acceptance, and distribution-list call goes up through
-// this bridge and comes back as the supervisor's answer, including a refusal.
-// The child does not open the mailbox to produce that answer.
+// this bridge and comes back as the supervisor's answer, including a
+// refusal; the child does not open the mailbox to produce that answer.
 //
-// Lifecycle of one call:
-//
-//   1. A mail tool calls a method on the supervisor-backed transport. The
-//      transport calls `bridge.submit(call)`.
-//   2. `submit` mints a `requestId`, registers a pending awaiter, and emits
-//      `mailbox.call.request` upstream. `op` discriminates the operands.
-//   3. The supervisor answers with `mailbox.call.response`, echoing `op`.
-//   4. The bridge resolves the success, or rejects. A response that carries
-//      `condition` rejects with that `MessageTransportError`. A failure with
-//      no condition stays a plain error: the supervisor had no IMAP condition
-//      to name (a missing uid, a bad date, a bad part ref).
+// Lifecycle of one call: `submit` mints a `requestId`, registers a pending
+// awaiter, and emits `mailbox.call.request` upstream; the supervisor
+// answers with `mailbox.call.response` echoing `op`; the bridge resolves
+// the success or rejects. A response carrying `condition` rejects with
+// that `MessageTransportError`; a failure with no condition stays a plain
+// error (the supervisor had no IMAP condition to name).
 
 import { getLogger } from "@intx/log";
 
