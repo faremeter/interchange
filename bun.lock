@@ -642,7 +642,6 @@
       "dependencies": {
         "@intx/agent": "workspace:*",
         "@intx/authz": "workspace:*",
-        "@intx/tool-packaging": "workspace:*",
         "@intx/types": "workspace:*",
         "@intx/workflow": "workspace:*",
       },
