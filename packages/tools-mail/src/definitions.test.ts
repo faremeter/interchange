@@ -1,8 +1,9 @@
-// The schema a mail tool advertises in definitions.ts is the only description
-// of its arguments a model ever sees, and every argument shape in handlers.ts
-// carries arktype's `"+": "reject"`. A parameter the schema omits is therefore
-// unreachable, and a key the model guesses costs the call instead of being
-// ignored, so the two descriptions have to agree key for key.
+// The schema a mail tool advertises in definitions.ts is the only
+// description of its arguments a model ever sees, and every argument shape
+// in handlers.ts carries arktype's `"+": "reject"`. A parameter the schema
+// omits is therefore unreachable, and a key the model guesses costs the
+// call instead of being ignored, so the two descriptions have to agree key
+// for key.
 //
 // Both sides are derived rather than listed here: the advertised side by
 // parsing TOOL_DEFINITIONS, the accepted side by introspecting the arktype
@@ -10,33 +11,18 @@
 // fallback the handler applies. A shape that gains a key fails these tests
 // until the schema catches up.
 //
-// arktype 2.2 key introspection, all public members of the Type surface:
+// The comparison works on arktype's public Type surface: `props` yields one
+// entry per declared key, `extract`/`exclude`/`equals` select and compare
+// branches, `in` is the input side of a morph, and `select(kind)` yields
+// compiled constraint nodes. `toJsonSchema` looks like the shorter route
+// but is not usable here: it renders the recursive query shape with a `$ref`
+// to a `$defs` entry it never emits, and throws on the date filters' morph.
 //
-//   - `props` yields one entry per declared key, carrying `key`, `kind`
-//     ("required" or "optional") and `value` (the key's own Type).
-//   - `extract` and `exclude` select the branches of a union, and `equals`
-//     compares against a definition, which is how a branch is tested for
-//     emptiness.
-//   - `in` is the input side of a morph, and `select(kind)` yields the nodes of
-//     one kind a shape compiled to: `"divisor"`, `"min"`, `"max"` and
-//     `"pattern"` the constraints a bounded or matched shape carries.
-//     `distribute` yields a union's own branches. `select("unit")` also finds
-//     literals nested inside an object or an array element, which this
-//     comparison does not cover.
-//
-// `toJsonSchema` looks like the shorter route and is not usable here: it
-// renders the recursive query shape with a `$ref` to a `$defs` entry it never
-// emits, and throws on the date filters' morph before reaching it.
-//
-// What the comparison below covers is therefore each key, whether it is
-// required, which JSON types it accepts, the constraints it puts on the value,
-// the values of an enumerated key, and the default the key advertises.
-// The element type of an array key is not compared: the query's 'and' and 'or'
-// filters are arrays of the query shape itself, and arktype answers no question
-// about that element -- `extends("object[]")` is false, `extract("object[]")`
-// is never, and `allows([{}])` raises a TypeError from inside the compiled
-// validator -- so an element check would hold for some array keys and not
-// others.
+// What is compared: each key, whether it is required, which JSON types it
+// accepts, the constraints it puts on the value, the values of an enumerated
+// key, and the default it advertises. The element type of an array key is
+// not compared: arktype answers no question about the query's 'and'/'or'
+// element, which is the query shape itself.
 
 import { describe, expect, test } from "bun:test";
 import { scope, type } from "arktype";
@@ -98,19 +84,13 @@ function renderConstraints(constraints: Constraints): string {
 // The advertised side: the JSON Schema subset definitions.ts uses
 // ---------------------------------------------------------------------------
 
-// Both shapes below reject a keyword they do not declare. A keyword nothing
-// compares is how the two descriptions drift while looking guarded: it steers a
-// model applying constrained decoding, no handler is held to it, and an open
-// shape here would accept it in silence. Rejecting it fails these tests until
-// the comparison below learns to derive an enforced counterpart for it.
-//
-// Two of the declared keywords are carried rather than compared. 'description'
-// is prose, and the enforced side has none to disagree with. 'items' names an
-// array's element type, which is not compared for the reason the header gives.
-// Every other keyword is held to an enforced counterpart: the types and the
-// constraints to the arktype shape, and 'default' to the fallback the handler
-// applies -- which `props` cannot see, so it is read from the handler's own
-// text instead; see ARGUMENT_FALLBACK.
+// Both shapes below reject a keyword they do not declare: a keyword nothing
+// compares is how the two descriptions drift while looking guarded.
+// 'description' is prose and 'items' an array's element type; both are
+// carried rather than compared. Every other keyword is held to an enforced
+// counterpart: the types and the constraints to the arktype shape, and
+// 'default' to the fallback the handler applies -- which `props` cannot
+// see, so it is read from the handler's own text (see ARGUMENT_FALLBACK).
 
 const AdvertisedObject = type({
   "+": "reject",
@@ -256,14 +236,12 @@ function acceptedTypes(value: type.Any, where: string): Set<string> {
 
   if (types.size > 0) return types;
 
-  // A key whose shape is a bare reference to an alias of its own scope -- the
-  // query's 'not' filter, which is the query shape itself -- is opaque to
-  // these predicates: every domain answers false, the object domain included,
-  // where the resolved shape answers true. arktype renders such a reference as
-  // "$name", and an array of one still answers "array" above, so only the bare
-  // reference reaches here. SCOPE_ALIASES names the shape behind it, which is
-  // classified in its place, so the type the schema advertises for such a key
-  // is still held to something.
+  // A key whose shape is a bare reference to an alias of its own scope --
+  // the query's 'not' filter, which is the query shape itself -- is opaque
+  // to these predicates: every domain answers false, the object domain
+  // included. arktype renders such a reference as "$name", and an array of
+  // one still answers "array" above, so only the bare reference reaches
+  // here. SCOPE_ALIASES names the shape behind it, classified in its place.
   const resolved = SCOPE_ALIASES.get(value.expression);
   if (resolved !== undefined) return acceptedTypes(resolved, where);
 
@@ -287,21 +265,19 @@ function soleNode<T>(nodes: readonly T[], where: string): T | undefined {
 }
 
 // The constraints a shape enforces for one key, in the same rendering as
-// advertisedConstraints. `select` answers for each kind of constraint node the
-// shape compiled to: `number.integer` compiles to a divisor of 1, `atLeast` and
-// `atMost` to a min and a max, and `matching` to a pattern.
+// advertisedConstraints. `select` answers for each kind of constraint node
+// the shape compiled to: `number.integer` compiles to a divisor of 1,
+// `atLeast`/`atMost` to a min and a max, `matching` to a pattern.
 //
-// A `narrow` compiles to an opaque predicate and answers none of these, so a
-// constraint written as a narrow is one this comparison cannot see. That is why
-// the shapes in handlers.ts state what they can as bounds and patterns: a
-// narrow is unavoidable where the rule spans two keys, and a schema cannot
-// advertise those either.
+// A `narrow` compiles to an opaque predicate and answers none of these, so
+// a constraint written as a narrow is one this comparison cannot see; the
+// shapes in handlers.ts state what they can as bounds and patterns.
 //
-// Each kind is selected from the branch that can carry it -- the number branch
-// for the numeric bounds, the string branch for the pattern -- because
-// selecting across a whole union would report one branch's constraint as the
-// key's. `in` and the Date exclusion are there for the reasons acceptedTypes
-// gives.
+// Each kind is selected from the branch that can carry it -- the number
+// branch for the numeric bounds, the string branch for the pattern --
+// because selecting across a whole union would report one branch's
+// constraint as the key's. `in` and the Date exclusion are there for the
+// reasons acceptedTypes gives.
 function acceptedConstraints(value: type.Any, where: string): Constraints {
   const callable = value.in.exclude("Date");
   const numbers = callable.extract("number");
@@ -329,14 +305,12 @@ function acceptedConstraints(value: type.Any, where: string): Constraints {
 }
 
 // The literal values an enumerated key accepts, empty for every other key.
-// This is what holds the 'type' parameter's enum to the InterchangeType union
-// the handlers validate against.
+// This is what holds the 'type' parameter's enum to the InterchangeType
+// union the handlers validate against.
 //
-// Only a unit that is itself a branch of the key counts. `select("unit")`
+// Only a unit that is itself a branch of the key counts: `select("unit")`
 // also finds literals nested inside an object or an array element, and those
-// describe a field this comparison does not cover: the header says an array's
-// element type is carried, not compared. A branch is that unit when the only
-// unit it contains is the branch itself.
+// describe a field this comparison does not cover.
 function acceptedValues(value: type.Any): string[] {
   const values: string[] = [];
   for (const branchValues of value.distribute((branch) => {
@@ -355,25 +329,20 @@ function acceptedValues(value: type.Any): string[] {
 // The enforced side: the value substituted for an omitted argument
 // ---------------------------------------------------------------------------
 
-// A default is the one advertised fact a model acts on by leaving the argument
-// out: it reads `default: 20`, sends no 'limit', and expects the 20 back. What
-// it gets is the fallback the handler applies at the tool-argument boundary --
-// `args.limit ?? 20` -- which sits inside the handler closure, where no shape
-// describes it and no call reports it without a transport to run the handler
-// against.
+// A default is the one advertised fact a model acts on by leaving the
+// argument out: it reads `default: 20`, sends no 'limit', and expects the
+// 20 back. What it gets is the fallback the handler applies at the
+// tool-argument boundary -- `args.limit ?? 20` -- which sits inside the
+// handler closure, where no shape describes it and no call reports it
+// without a transport to run the handler against.
 //
-// So it is read from the handler's own text. A factory's `toString` is the body
-// bun compiled from handlers.ts, which is the code that runs: the comments are
-// gone and the declarations are merged, so what the match sees is the
-// statements rather than their formatting.
+// So it is read from the handler's own text: a factory's `toString` is the
+// body bun compiled from handlers.ts -- comments gone, declarations merged.
 //
-// The alternatives are both worse. A list of expected values written here would
-// restate the schema and assert nothing. Driving each handler for the value it
-// substitutes needs a MessageTransport stub -- one exists in tools-mail.test.ts
-// and another in mail-wait-settlement.test.ts, and importing either runs that
-// file's suite -- and mail_wait's default would stay out of reach even with one,
-// because the only place a 120-second deadline is observable is at the end of
-// it.
+// A list of expected values written here would restate the schema and
+// assert nothing, and driving each handler needs a MessageTransport stub
+// (mail_wait's default would stay out of reach even with one, because the
+// only place a 120-second deadline is observable is at the end of it).
 const ARGUMENT_FALLBACK =
   /\bargs\.([A-Za-z_$][\w$]*)\s*\?\?\s*("(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?|\[\]|\{\}|true|false|null)/g;
 
@@ -400,13 +369,12 @@ type EnforcedDefaults = ReadonlyMap<string, unknown>;
 // with the keys inside them left as the caller sent them.
 const NO_ENFORCED_DEFAULTS: EnforcedDefaults = new Map();
 
-// The fallbacks that advertise no default, and should not. A 'default' promises
-// a value the caller can use, and an empty container is not one: an omitted
-// 'query' becomes the empty query, which the query schema's own description
-// already names as matching every message, and an omitted 'set' or 'clear'
-// becomes an empty flag list that the flag handler then refuses as a call
-// mutating nothing. Advertising either would read as permission to omit the
-// argument, so a default appearing on one of these fails the pairing below.
+// The fallbacks that advertise no default, and should not. A 'default'
+// promises a value the caller can use, and an empty container is not one:
+// an omitted 'query' becomes the empty query (whose schema description
+// already names it as matching every message), and an omitted 'set' or
+// 'clear' becomes an empty flag list the flag handler then refuses.
+// Advertising either would read as permission to omit the argument.
 const UNADVERTISED_FALLBACKS: ReadonlySet<string> = new Set([
   "mail_search.query",
   "mail_wait.query",
@@ -582,14 +550,15 @@ function advertisedSchemaAt(path: string): unknown {
 
 // The seven tool rows come from ARGUMENT_SHAPES, so a tool cannot be added
 // without one. The nested rows are named: a nested shape is reached with
-// `Type.get`, and `props` is only typed on a Type whose inferred object type
-// names its keys, so the descent cannot be written as a loop. 'query' is the
-// one nested schema whose shape is not reached this way -- the arguments accept
-// it as an opaque object and the handler validates it against SearchQueryArgs
-// in a second step -- so the query filters are paired with that shape directly.
+// `Type.get`, and `props` is only typed on a Type whose inferred object
+// type names its keys, so the descent cannot be written as a loop. 'query'
+// is the one nested schema whose shape is not reached this way -- the
+// arguments accept it as an opaque object and the handler validates it
+// against SearchQueryArgs in a second step -- so the query filters are
+// paired with that shape directly.
 //
-// A tool row carries the defaults its handler substitutes; the nested rows carry
-// none, for the reason NO_ENFORCED_DEFAULTS gives.
+// A tool row carries the defaults its handler substitutes; the nested rows
+// carry none, for the reason NO_ENFORCED_DEFAULTS gives.
 const PAIRINGS: [
   path: string,
   props: readonly AcceptedProp[],
@@ -650,8 +619,8 @@ describe("mail tool schemas describe what the handlers accept", () => {
   // The pairing above holds an advertised default to the value the handler
   // substitutes. This holds it to the shape as well, because the two ways of
   // asking for a default have to agree: a model that reads `default: 0` may
-  // send the 0 explicitly on its next call -- the same value, now stated -- and
-  // a shape that refuses it turns the documented default into an
+  // send the 0 explicitly on its next call -- the same value, now stated --
+  // and a shape that refuses it turns the documented default into an
   // invalid_arguments error.
   test("every advertised default is a value its own shape accepts", () => {
     const refused: string[] = [];
@@ -683,10 +652,10 @@ describe("mail tool schemas describe what the handlers accept", () => {
     expect(refused).toEqual([]);
   });
 
-  // UNADVERTISED_FALLBACKS is the one list here a hand keeps, and an entry that
-  // no longer names a fallback is an exemption granted to nothing -- it would go
-  // on excusing whatever key later took the name. So each entry has to name a
-  // substitution the handlers still make.
+  // UNADVERTISED_FALLBACKS is the one list here a hand keeps, and an entry
+  // that no longer names a fallback is an exemption granted to nothing -- it
+  // would go on excusing whatever key later took the name. So each entry has
+  // to name a substitution the handlers still make.
   test("every exempted fallback is one the handlers still apply", () => {
     const applied = new Set(
       [...HANDLER_FACTORIES.keys()].flatMap((tool) =>

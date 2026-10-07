@@ -352,9 +352,8 @@ describe("createMailTools", () => {
   });
 
   test("mail_wait reports a bare watch failure as internal_error", async () => {
-    // A watch install that throws a bare error names no transport condition.
-    // mail_wait classifies that as a defect in this package. The result is
-    // internal_error, carrying the thrown message.
+    // A watch install that throws a bare error names no condition: a defect
+    // in this package, reported as internal_error.
     const transport = makeMockTransport();
     transport.watch = () => {
       throw new Error("synthetic watch failure");
@@ -462,11 +461,9 @@ describe("mail_send handler", () => {
   });
 
   test("rejects a call naming neither content nor payload and sends nothing", async () => {
-    // The advertised schema requires only 'to', because either body field
-    // satisfies the tool and neither is individually required. Nothing else
-    // obliges a caller to name one, and the transport resolves the omission
-    // into an empty body rather than refusing it, so an accepted call would
-    // sign and deliver an empty message and report the send as a success.
+    // Neither body field is individually required, and the transport
+    // resolves the omission into an empty body, so an accepted call would
+    // deliver an empty message and report the send as a success.
     const transport = makeMockTransport();
     const handler = makeMailSendHandler(transport);
 
@@ -483,9 +480,8 @@ describe("mail_send handler", () => {
   });
 
   test("rejects a structured type naming no payload and sends nothing", async () => {
-    // The structured half of the same omission: the transport would turn the
-    // absent payload into an empty 'body' under the declared type, which a
-    // recipient cannot tell from a body the agent meant to send empty.
+    // The structured half of the same omission: the absent payload would
+    // become an empty 'body' under the declared type.
     const transport = makeMockTransport();
     const handler = makeMailSendHandler(transport);
 
@@ -506,11 +502,10 @@ describe("mail_send handler", () => {
   });
 
   test("a body contradicting the declared type is invalid_arguments, not send_failed", async () => {
-    // Both shapes are self-contradictory calls, which is what
-    // `invalid_arguments` covers. Reaching the transport with either would code
-    // the refusal `send_failed` instead -- "the transport rejected the
-    // submission" -- which tells the model its arguments were fine and the peer
-    // was at fault, and invites it to retry the same call.
+    // Both shapes are self-contradictory, which `invalid_arguments` covers.
+    // Reaching the transport with either would code the refusal
+    // `send_failed` -- "the transport rejected the submission" -- blaming
+    // the peer and inviting a retry of the same call.
     const contradictions: [
       label: string,
       id: string,
@@ -546,12 +541,11 @@ describe("mail_send handler", () => {
   });
 
   test("stamps a correlation id onto the outbound message", async () => {
-    // The correlation machinery is reachable only if the id survives the tool
-    // boundary: the serializer reads OutboundMessage.correlationId to write
-    // Interchange-Correlation-ID, and the reactor's tryCorrelate matches an
-    // inbound response on that header alone. Declaring the key is not enough
-    // -- the handler builds the outbound from named properties -- so assert on
-    // the message the transport received, not on the accepted arguments.
+    // The correlation id must survive the tool boundary: the serializer
+    // reads OutboundMessage.correlationId to write Interchange-Correlation-ID,
+    // and the reactor's tryCorrelate matches an inbound response on that
+    // header alone. Assert on the message the transport received, not on the
+    // accepted arguments.
     const transport = makeMockTransport();
     const handler = makeMailSendHandler(transport);
 
@@ -577,11 +571,10 @@ describe("mail_send handler", () => {
   });
 
   test("refuses a correlation id no header can carry and sends nothing", async () => {
-    // The id becomes an Interchange-Correlation-ID field body, and RFC 5322
-    // § 2.2 allows no CR and no LF there outside folding. The MIME writer
-    // refuses it too, three layers down, but from there it can only reach the
-    // caller as `send_failed` -- which blames the peer for the caller's own
-    // argument and invites a retry of the same call.
+    // The id becomes an Interchange-Correlation-ID field body, which RFC 5322
+    // § 2.2 allows no CR and no LF in outside folding. The MIME writer
+    // refuses it too, but from there it can only reach the caller as
+    // `send_failed` -- blaming the peer for the caller's own argument.
     const transport = makeMockTransport();
     const handler = makeMailSendHandler(transport);
 
@@ -609,8 +602,8 @@ describe("mail_send handler", () => {
 
   test("refuses a subject or an inReplyTo no header can carry", async () => {
     // Both become field bodies, like the correlation id above, and the MIME
-    // writer refuses a CR or an LF in one three layers down -- from where it
-    // reaches the caller as `send_failed`, naming no argument to fix.
+    // writer refuses a CR or an LF in one -- from where it reaches the
+    // caller as `send_failed`, naming no argument to fix.
     const transport = makeMockTransport();
     const handler = makeMailSendHandler(transport);
 
@@ -984,13 +977,12 @@ describe("mail_send handler", () => {
 // mail_send over a transport that assembles the message
 // ---------------------------------------------------------------------------
 
-// The mock transport above keeps every OutboundMessage it is handed, so no case
-// written against it reaches the layer that decides whether a recipient is
-// writable as an RFC 5322 field body. These cases bind the handler to
-// @intx/mail-memory, which assembles and signs the message as a transport does,
-// and they assert the recipient's mailbox as well: a refusal that still
-// delivered to the recipients it could carry would satisfy the code assertion
-// alone.
+// The mock transport above keeps every OutboundMessage it is handed, so no
+// case reaches the layer that decides whether a recipient is writable as an
+// RFC 5322 field body. These cases bind the handler to @intx/mail-memory,
+// which assembles and signs the message as a transport does, and assert the
+// recipient's mailbox as well: a refusal that still delivered would satisfy
+// the code assertion alone.
 describe("mail_send over a transport that assembles the message", () => {
   const SENDER = "alpha@test.interchange";
   const RECIPIENT = "beta@test.interchange";
@@ -1079,11 +1071,9 @@ describe("mail_send over a transport that assembles the message", () => {
 
   test("an inReplyTo names that one parent in References, where a reply names the ancestry", async () => {
     // `mail_send` takes `inReplyTo` as an argument and never fetches the
-    // message it names, so the chain it emits holds that one identifier. Only
-    // `mail_reply` has the parent in hand and can extend the chain from the
-    // parent's own References. Nothing distinguished the two paths, which is
-    // how a claim that `mail_send` extends the chain by fetching the parent's
-    // References survived in the message documentation.
+    // message it names, so the chain it emits holds that one identifier.
+    // Only `mail_reply` has the parent in hand and can extend the chain from
+    // the parent's own References.
     const { senderTransport, recipientTransport } = await boundSend();
     const betaSend = makeMailSendHandler(recipientTransport);
     const betaReply = makeMailReplyHandler(recipientTransport);
@@ -1298,12 +1288,12 @@ describe("mail_reply handler", () => {
   });
 
   test("carries the parent's correlation id onto the reply", async () => {
-    // The reply half of a correlated exchange. The reactor's tryCorrelate
-    // matches a response on Interchange-Correlation-ID alone and derives
-    // nothing from inReplyTo or References, so a reply that drops the id
-    // leaves the requester's suspended operation unresolved forever. Assert on
-    // the message the transport received: the serializer reads
-    // OutboundMessage.correlationId to write that header.
+    // The reactor's tryCorrelate matches a response on
+    // Interchange-Correlation-ID alone and derives nothing from inReplyTo or
+    // References, so a reply that drops the id leaves the requester's
+    // suspended operation unresolved forever. Assert on the message the
+    // transport received: the serializer reads OutboundMessage.correlationId
+    // to write that header.
     const transport = makeMockTransport();
 
     const parentRef: MessageRef = { uid: 15, mailbox: "INBOX" };
@@ -1340,9 +1330,9 @@ describe("mail_reply handler", () => {
   });
 
   test("omits correlationId when the parent carries none", async () => {
-    // Replying to ordinary uncorrelated mail is the common case. The reply
-    // must still send, and must leave the key absent rather than carrying an
-    // empty Interchange-Correlation-ID that no pending operation matches.
+    // Replying to ordinary uncorrelated mail: the reply must still send, and
+    // must leave the key absent rather than carrying an empty
+    // Interchange-Correlation-ID that no pending operation matches.
     const transport = makeMockTransport();
 
     const parentRef: MessageRef = { uid: 16, mailbox: "INBOX" };
@@ -1390,8 +1380,8 @@ describe("mail_reply handler", () => {
 
   test("rejects a reply naming neither content nor payload and sends nothing", async () => {
     // The advertised schema requires only 'ref' for the reason mail_send's
-    // requires only 'to', so nothing but this guard keeps a bodiless reply from
-    // being signed, delivered as an empty message, and reported as sent.
+    // requires only 'to', so nothing but this guard keeps a bodiless reply
+    // from being signed, delivered as an empty message, and reported as sent.
     const transport = makeMockTransport();
 
     const parentRef: MessageRef = { uid: 17, mailbox: "INBOX" };
@@ -1422,10 +1412,10 @@ describe("mail_reply handler", () => {
   });
 
   test("a bodiless reply naming an unfetchable parent reports the argument error, not not_found", async () => {
-    // Two faults in one call, and only one of them is the caller's to fix. If
-    // the parent lookup runs first the caller is told the message is missing,
-    // which sends it hunting for a ref that was never the problem. Count the
-    // fetch as well as reading the code: a handler that fetched, discarded the
+    // Two faults in one call, and only one is the caller's to fix. The body
+    // checks must run before the lookup: a parent fetch first would report
+    // not_found for a ref that was never the problem. Count the fetch as
+    // well as reading the code -- a handler that fetched, discarded the
     // failure, and then reported the argument error would satisfy the code
     // assertion while still paying for a round-trip it can never use.
     const transport = makeMockTransport();
@@ -1454,10 +1444,9 @@ describe("mail_reply handler", () => {
   });
 
   test("an unfetchable parent named by an otherwise valid reply is still not_found", async () => {
-    // The other half of the pair above. Moving the body checks ahead of the
-    // lookup must not cost the lookup its own code: when the arguments are
-    // sound, a parent the transport cannot read is exactly what `not_found`
-    // reports, and the fetch has to be attempted to learn that.
+    // The other half of the pair above: with sound arguments, a parent the
+    // transport cannot read is exactly what `not_found` reports, and the
+    // fetch has to be attempted to learn that.
     const transport = makeMockTransport();
     let fetches = 0;
     transport.fetchHeaders = async () => {
@@ -1488,8 +1477,8 @@ describe("mail_reply handler", () => {
 
   test("a reply body contradicting the declared type is invalid_arguments, not send_failed", async () => {
     // The reply carries the same body contract as the send, and the same
-    // consequence for miscoding it: `send_failed` would blame the peer for a
-    // contradiction in the reply the agent composed.
+    // consequence for miscoding it: `send_failed` would blame the peer for
+    // a contradiction in the reply the agent composed.
     const contradictions: [
       label: string,
       id: string,
@@ -1539,7 +1528,7 @@ describe("mail_reply handler", () => {
   });
 
   test("sends a structured reply carrying only a payload", async () => {
-    // The positive case the body rule must leave reachable. Making 'content'
+    // The positive case the body rule must leave reachable: making 'content'
     // mandatory would satisfy every refusal above while refusing this reply
     // too, so the two are asserted together.
     const transport = makeMockTransport();
@@ -1582,11 +1571,9 @@ describe("mail_reply handler", () => {
 
   test("refuses a reply to a parent carrying no From, and sends nothing", async () => {
     // A reply is addressed to the parent's originator. When the parent names
-    // none there is nobody to reply to, and the alternative -- choosing an
-    // address here -- puts the agent's words in front of a peer it never
-    // named. Both halves matter: the caller must see the refusal AND no
-    // message may leave, because a guard that reported an error but still
-    // sent would satisfy the first half alone.
+    // none there is nobody to reply to, and choosing an address here would
+    // put the agent's words in front of a peer it never named. Both halves
+    // matter: the caller must see the refusal AND no message may leave.
     const transport = makeMockTransport();
 
     const parentRef: MessageRef = { uid: 13, mailbox: "INBOX" };
@@ -1788,10 +1775,9 @@ describe("mail_search handler", () => {
   test("reports a failure of the transport itself under the code its condition earns", async () => {
     // The transport says which case it is by naming its condition, and the
     // three cases are not one. A mailbox that is not there is the caller's to
-    // fix. An operation the transport refused outright is nobody's to fix by
-    // reissuing it, so it does not get a code that invites that. Only a
-    // condition that leaves the outcome unknown, and a rejection naming none,
-    // is a failure the caller can do nothing about but retry the same call.
+    // fix; an operation refused outright does not get a code that invites a
+    // retry; only a rejection that leaves the outcome unknown is a failure
+    // the caller can do nothing about but retry the same call.
     const failures: [label: string, cause: Error, code: string][] = [
       [
         "a transport that violated its own invariant",
@@ -1838,9 +1824,9 @@ describe("mail_search handler", () => {
       { uid: 3, date: new Date("2026-09-01T00:00:00Z") },
     ];
     // Shaped like the mailbox matcher, which excludes a message that falls
-    // outside the window. A query date that is not a Date turns the comparison
-    // into a not-a-number test, so nothing is excluded and the caller gets the
-    // whole mailbox back.
+    // outside the window. A query date that is not a Date turns the
+    // comparison into a not-a-number test, so nothing is excluded and the
+    // caller gets the whole mailbox back.
     const withinWindow = (date: Date, query: SearchQuery) => {
       if (query.before !== undefined && date >= query.before) return false;
       return true;
@@ -2163,8 +2149,7 @@ describe("mail_search handler", () => {
     // `refs.slice(0, limit)` accepts every one of these and answers with a set
     // the caller is told is the whole match: -1 drops the last result, 0 and
     // -100 drop them all, and a fraction truncates. None of those is
-    // distinguishable from a mailbox that holds no more, which is what makes
-    // the refusal the only answer that tells the truth.
+    // distinguishable from a mailbox that holds no more.
     const handler = makeMailSearchHandler(transport);
     for (const limit of [-1, -4, 0, -100, 0.5, 1.5]) {
       const result = await handler(
@@ -2214,9 +2199,9 @@ describe("mail_search handler", () => {
   });
 
   test("reports a result set the limit cut short", async () => {
-    // A slice the caller cannot measure is the whole problem: 20 results out of
-    // 20 matches and 20 out of 50 are the same array, and the caller is told
-    // both are the whole match.
+    // A slice the caller cannot measure is the whole problem: 20 results out
+    // of 20 matches and 20 out of 50 are the same array, and the caller is
+    // told both are the whole match.
     const transport = makeMockTransport();
     transport.search = async (mailbox) =>
       Array.from({ length: 50 }, (_unused, index) => ({
@@ -2273,10 +2258,10 @@ describe("mail_search handler", () => {
   });
 
   test("names the summary whose headers could not be read", async () => {
-    // A discarded read leaves the summary with its header fields absent, which
-    // is what a message carrying no headers looks like, so a corrupt index
-    // reads as ordinary mail. The failure belongs on the summary it happened
-    // to, because the other results are still answers.
+    // A discarded read leaves the summary with its header fields absent,
+    // which is what a message carrying no headers looks like, so a corrupt
+    // index reads as ordinary mail. The failure belongs on the summary it
+    // happened to, because the other results are still answers.
     const transport = makeMockTransport();
     transport.search = async (mailbox) =>
       [1, 2].map((uid) => ({ uid, mailbox }));
@@ -2416,13 +2401,12 @@ describe("mail_read handler", () => {
 
   test("discloses the correlation id in the header modes, never in payload", async () => {
     // The handler hands back whatever the transport decoded, so which 'parts'
-    // mode the caller picks is the whole of what keeps Interchange-Correlation-ID
-    // out of the model's context. With no validator wired a correlation resolves
-    // on that id alone, so whoever reads one can answer it (MESSAGE.md,
-    // Correlation Security), and mail_search projects a fixed summary where this
-    // handler projects nothing. The payload half is the load-bearing assertion:
-    // the default mode returns no header set at all, and must keep returning
-    // none whatever the correlation design becomes.
+    // mode the caller picks is the whole of what keeps
+    // Interchange-Correlation-ID out of the model's context: mail_search
+    // projects a fixed summary where this handler projects nothing. The
+    // payload half is the load-bearing assertion: the default mode returns no
+    // header set at all, and must keep returning none whatever the
+    // correlation design becomes.
     const correlationId = "b2e5f1a4-7c3d-4e8b-9a06-5d1f2c3b4a97";
     const transport = makeMockTransport();
     const base = makeInboundMessage();
@@ -2489,10 +2473,10 @@ describe("mail_read handler", () => {
   });
 
   test("rejects a misnamed 'parts' instead of reading the default", async () => {
-    // A dropped 'partPath' leaves 'parts' absent, which defaults to the payload
-    // and returns a message body the caller never asked for -- reported as the
-    // read of a MIME part it did ask for. Count every retrieval the handler
-    // could make, so the test fails if the refusal still reaches the transport.
+    // A dropped 'partPath' leaves 'parts' absent, which defaults to the
+    // payload and returns a message body the caller never asked for. Count
+    // every retrieval the handler could make, so the test fails if the
+    // refusal still reaches the transport.
     const transport = makeMockTransport();
     let fetches = 0;
     const baseFetchHeaders = transport.fetchHeaders.bind(transport);
@@ -2827,8 +2811,8 @@ describe("mail_wait handler", () => {
   });
 
   test("a read-back the transport refuses as NONEXISTENT is invalid_mailbox", async () => {
-    // The search answered for the mailbox, so a NONEXISTENT from the read-back
-    // says the mailbox went while the wait held it. `fetch_failed` sends the
+    // The search answered for the mailbox, so a NONEXISTENT read-back says
+    // the mailbox went while the wait held it. `fetch_failed` would send the
     // caller to re-read a message in a mailbox that is not there.
     const transport = makeMockTransport();
     transport.setSearchResult([{ uid: 42, mailbox: "INBOX" }]);
@@ -2860,9 +2844,9 @@ describe("mail_wait handler", () => {
 
   test("a mailbox the initial search rejects is invalid_mailbox, as in mail_search", async () => {
     const transport = makeMockTransport();
-    // The transport names the condition; the tools map it. Wording the message
-    // to say "does not exist" would test this file's prose rather than the
-    // mapping, and every transport words it differently.
+    // The transport names the condition; the tools map it. Wording the
+    // message would test this file's prose rather than the mapping, and every
+    // transport words it differently.
     transport.search = async () => {
       throw new MessageTransportError(
         "NONEXISTENT",
@@ -3261,8 +3245,8 @@ describe("mail_flag handler", () => {
   test("rejects an argument the shape does not declare and touches no transport", async () => {
     // The mailbox of a flag write is the one named in 'ref'. A caller that
     // names a second one has asked for a mutation somewhere other than where
-    // the write would land, so an accepted key would flag a message in INBOX
-    // and report it as the Archive write the caller asked for.
+    // the write would land: an accepted key would flag INBOX and report it as
+    // the Archive write the caller asked for.
     const transport = makeMockTransport();
     const handler = makeMailFlagHandler(transport);
     const result = await handler(
@@ -3316,9 +3300,9 @@ describe("mail_expunge handler", () => {
   });
 
   test("a transport that failed for its own reason keeps expunge_failed", async () => {
-    // Two conditions are mapped away from the operation's own code -- a mailbox
-    // that is not there, and an operation the transport refused outright. This
-    // is neither: a transport that violated its own invariant may have swept
+    // A mailbox that is not there, and an operation the transport refused
+    // outright, are mapped away from the operation's own code. This is
+    // neither: a transport that violated its own invariant may have swept
     // the INBOX and lost the reply, so the outcome is genuinely unknown.
     const transport = makeMockTransport();
     transport.expunge = async () => {
@@ -3364,11 +3348,7 @@ describe("mail_expunge handler", () => {
 // RFC 5530's `NONEXISTENT` is raised before the operation is attempted, so
 // nothing was read and nothing was written, and the mailbox the call named is
 // the only thing that can change. Each tool's own failure code says something
-// else, and each wrong thing sends the caller somewhere: `not_found` after a
-// message that was never looked for, `invalid_part` to rewrite a part path
-// that was never parsed, and `flag_failed` to re-read a message to learn
-// whether the flag stuck -- a re-read that meets the same refusal and never
-// names the mailbox either.
+// else, and each wrong thing sends the caller somewhere.
 describe("a mailbox the transport says is not there", () => {
   const ref = { uid: 7, mailbox: "Nope" };
 
@@ -3455,8 +3435,8 @@ describe("a mailbox the transport says is not there", () => {
   test("a transport that failed for its own reason keeps the operation's own code", async () => {
     // The carve-out covers a mailbox that is not there and an operation the
     // transport refused outright. A transport that violated its own invariant
-    // has told the caller neither, and a flag write that failed that way still
-    // leaves the outcome unknown.
+    // has told the caller neither, and a flag write that failed that way
+    // still leaves the outcome unknown.
     const transport = makeMockTransport();
     transport.setFlags = async () => {
       throw new MessageTransportError(
@@ -3484,23 +3464,22 @@ describe("a mailbox the transport says is not there", () => {
 // Names Object.prototype carries
 // ---------------------------------------------------------------------------
 
-// Each shape's `"+": "reject"` refuses an undeclared key by asking whether the
-// key is one the shape declares, and a shape declaring at least one key asks
-// that of an ordinary object, so every name Object.prototype carries answers
-// "declared" and is let through. The handlers refuse those names ahead of the
-// shape. These tests hold that second path to the same contract as the first:
-// the same refusal, with the same wording, and before the transport is touched.
+// Each shape's `"+": "reject"` refuses an undeclared key by asking whether
+// the key is one the shape declares, and a shape declaring at least one key
+// asks that of an ordinary object, so every name Object.prototype carries
+// answers "declared" and is let through. The handlers refuse those names
+// ahead of the shape. These tests hold that second path to the same contract
+// as the first: the same refusal, with the same wording, before the
+// transport is touched.
 //
 // Every block runs an ordinary key alongside the inherited names, as the
-// control on the block itself: where the block asserts a refusal the ordinary
-// key is refused the same way, and where it asserts an acceptance the ordinary
-// key is accepted the same way.
+// control on the block itself.
 
 describe("inherited argument names", () => {
-  // `{ __proto__: value }` in source sets the object's prototype instead of
-  // adding a key, so the name is installed rather than written. The other five
-  // names need no such care, but they are installed the same way to keep one
-  // construction for the whole table.
+  // `{ __proto__: value }` in source sets the prototype instead of adding
+  // a key, so the name is installed rather than written; the other five
+  // names are installed the same way to keep one construction for the
+  // whole table.
   function withKey(
     base: Record<string, unknown>,
     key: string,
@@ -3649,10 +3628,10 @@ describe("inherited argument names", () => {
     // The tool takes no parameters, so every key a caller sends is undeclared
     // and an accepted one reads as a scope the sweep does not have. This is
     // the one shape whose refusal does not depend on the handler's own check:
-    // a shape declaring no keys compiles to a check with no declared-key table
-    // to consult, so `"+": "reject"` refuses an inherited name here as readily
-    // as an ordinary one, and refuses it with the same wording. The case below
-    // therefore pins the contract rather than the path that enforces it.
+    // a shape declaring no keys compiles to a check with no declared-key
+    // table to consult, so `"+": "reject"` refuses an inherited name here as
+    // readily as an ordinary one. The case below therefore pins the contract
+    // rather than the path that enforces it.
     {
       tool: "mail_expunge",
       makeHandler: makeMailExpungeHandler,
@@ -3871,8 +3850,8 @@ describe("inherited argument names", () => {
     test("mail_send refuses an ordinary element the shape cannot take", async () => {
       // The control for the block above. An object holding no inherited name
       // is refused for what it is rather than for what it holds, so the two
-      // refusals are told apart by their wording and not only by the fact that
-      // both failed.
+      // refusals are told apart by their wording and not only by the fact
+      // that both failed.
       const { transport, touched } = makeTracedTransport();
       const handler = makeMailSendHandler(transport);
 

@@ -7,7 +7,7 @@
 // capabilities bag carrying a mock `mail.transport` (the factory's
 // `requires: ["capabilities", "address"]`) plus the BaseEnv contract
 // fields. Plugin/env-injected tools are intentionally out of scope for
-// the static declaration — the walk never sees them.
+// the static declaration -- the walk never sees them.
 
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
