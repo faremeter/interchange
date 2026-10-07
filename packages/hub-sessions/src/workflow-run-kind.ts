@@ -1,166 +1,60 @@
 // KindHandler for the `workflow-run` repo kind.
 //
-// A workflow-run repo holds per-deployment runtime state for one or
-// more in-flight workflow runs. `RepoId.id` is the owning deployment
-// id. The repo's top-level layout is:
+// A workflow-run repo holds per-deployment runtime state for in-flight
+// workflow runs. `RepoId.id` is the owning deployment id. Top-level
+// layout:
 //
-//   - `runs/<runId>/events/<seq>.json` — per-run event log entries.
-//     Each entry is a JSON object whose body carries a `type`
-//     discriminator (the on-disk event vocabulary used by the
-//     workflow-run repo) and a `seq` field that matches the integer
-//     in the filename. Filenames are decimal integers ranging from
-//     `0` upward; the on-disk seq numbering owns the ordering and
-//     the per-blob `seq` field is the redundant cross-check.
+//   - `runs/<runId>/events/<seq>.json` — append-only event log; the
+//     filename seq must match the body `seq`.
 //   - `runs/<runId>/blobs/<sha256-hex>` — content-addressed step
-//     outputs the production `BlobSubstrate` adapter spills here when
-//     a value's JSON-stringified form exceeds the inline-encoding
-//     threshold. The filename is a lowercase 64-character sha256 hex
-//     string; the blob value is opaque bytes. Blobs are append-only
-//     and immutable: any blob present in the prior tree must carry
-//     byte-identical contents in the prospective tree.
-//   - `addresses/<urlEncoded(address)>/inbox/<receivedAt>-<messageId>.json`
-//     — pending inbound mail for the address, FIFO-ordered by the
-//     filename's parsed numeric `receivedAt` prefix (with a
-//     lexicographic messageId tiebreak). The filename keeps the
-//     decimal `<receivedAt>` form unpadded; the substrate sorts by
-//     parsed integer rather than string so the FIFO invariant holds
-//     for non-uniform digit widths (e.g. `99-…` precedes `100-…`).
-//   - `addresses/<urlEncoded(address)>/processing/<receivedAt>-<messageId>.json`
-//     — messages currently being handled. Same filename shape and
-//     JSON envelope as the inbox entry; a `dequeueToProcessing`
-//     commit atomically removes the inbox entry and adds the
-//     processing entry preserving the filename key.
-//   - `addresses/<urlEncoded(address)>/consumed/<messageId>.json` —
-//     dedup index keyed by messageId. A `markConsumed` commit
-//     atomically removes the matching processing entry and writes
-//     this dedup entry. The dedup index is bounded by a per-address
-//     retention watermark (see `watermark.json`): a `markConsumed`
-//     commit prunes consumed entries whose `receivedAt` falls below
-//     the watermark so the index reaches a bounded steady state
-//     instead of growing one entry per message forever.
-//   - `addresses/<urlEncoded(address)>/watermark.json` — the
-//     per-address retention watermark. Carries a single
-//     `receivedAt`-horizon value: the oldest `receivedAt` a consumed
-//     entry may still retain. The watermark only ever advances
-//     (monotonic non-decreasing). `enqueueInbox` rejects any inbound
-//     whose `receivedAt` is strictly below the watermark as
-//     definitively-stale (its dedup entry may have been pruned, so a
-//     duplicate cannot be ruled out -- refuse loudly rather than risk
-//     reprocessing). Above the watermark the `consumed/` index is
-//     authoritative; below it, refuse. The watermark advances only as
-//     the prune advances, both under the single writer, so the two
-//     never diverge. The stale-reject applies ONLY to fresh inbound at
-//     `enqueueInbox`; `replayProcessingToInbox` is intentionally exempt
-//     (a recovered in-flight `processing/` entry is already past dedup
-//     -- see that function's note).
+//     outputs, opaque bytes, append-only and immutable.
+//   - `addresses/<urlEncoded(address)>/inbox|processing/<receivedAt>-<messageId>.json`
+//     — claim-check FIFO queues; `consumed/<messageId>.json` is the
+//     dedup index, pruned by the per-address `watermark.json`.
+//   - `agent-state/<agentKey>/` — mutable per-agent conversation
+//     snapshots.
+//   - `mailbox/INBOX/` — the warm agent's durable inbox.
 //   - `.gitignore` — supplied by the asset routes' genesis init body.
 //
-// The control-plane subtree (`control/...`) is not part of this
-// commit's surface and has no v1 use case.
+// `control/...` is reserved and has no v1 use case.
 //
-// Event-log invariants enforced at push:
-//   - Each event body's `seq` matches the integer in its filename.
-//   - Per-run event filenames are unique decimal integers (guaranteed
-//     by the tree shape) and validatePush verifies the body's `seq`
-//     field carries the same number, so the on-disk seq sequence and
-//     the per-blob seq cannot diverge.
-//   - Terminal-phase lock: once a run's events include a `RunCompleted`,
-//     `RunFailed`, or `RunCancelled` entry, no event with a strictly
-//     greater seq may appear for the same run.
-//   - Append-only via prior-tree byte comparison: every event blob
-//     that exists at the same path in the parent commit's tree must
-//     match the prospective blob byte-for-byte. Newly-added event
-//     paths (those absent from the prior tree) are accepted. The
-//     substrate exposes the prior tree via `priorReadBlob` /
-//     `priorListDir` on the validatePush args so the constraint is
-//     owned by this handler rather than relying on caller-layer
-//     discipline.
-//   - A `CancelRequested` event must carry an `origin` in the known
-//     set (`self`, `supervisor-drain`, `supervisor-operator`,
-//     `hub-admin`) and a non-empty `reason`.
-//   - Principal-vs-origin enforcement for `CancelRequested`: a
-//     `hub-admin` origin requires the signing principal to be `hub`;
-//     the other three
-//     origins (`self`, `supervisor-drain`, `supervisor-operator`)
-//     require the signing principal to be `supervisor` — the
-//     supervisor signs on the child's behalf for `self`, and signs
-//     for itself on the drain / operator cases. A principal that does
-//     not match the declared origin produces a rejection naming both
-//     sides so a misconfigured writer surfaces at the boundary
-//     rather than as a downstream mystery.
+// Invariants enforced at push:
+//   - Event blobs are append-only: any path present in the prior tree
+//     must reappear byte-identical.
+//   - Terminal-phase lock: once a run carries a `RunCompleted`,
+//     `RunFailed`, or `RunCancelled` entry, no higher-seq event may
+//     appear for the same run.
+//   - `CancelRequested` events carry a known `origin` (`self`,
+//     `supervisor-drain`, `supervisor-operator`, `hub-admin`) and a
+//     non-empty `reason`; the signing principal must match the origin
+//     (`hub-admin` -> `hub`, the rest -> `supervisor`).
+//   - Claim-check: `addresses/` segments must round-trip URL-encoding;
+//     an address holds only `inbox/`, `processing/`, `consumed/`, and
+//     `watermark.json`; queue filenames carry `<receivedAt>-<messageId>`
+//     and consumed filenames `<messageId>`, all matching their body
+//     fields. A messageId appears at most once across the three states.
+//     Consumed entries are immutable and may be deleted only by a
+//     watermark-passed retention prune. Newly added processing entries
+//     must match a prior inbox entry; newly added consumed entries must
+//     match a prior processing entry.
+//   - The watermark is monotonic: it only advances, and `enqueueInbox`
+//     refuses inbound strictly below it (its dedup entry may have been
+//     pruned). `replayProcessingToInbox` is exempt: an in-flight
+//     `processing/` entry is already past dedup.
+//   - `agent-state/` entries must be non-empty `<agentKey>/` directories
+//     that round-trip URL-encoding; their contents are opaque.
+//   - Mailbox: `mailbox/` holds only `INBOX/`, which holds `index.json`
+//     (mutable, must persist once written) and `<uid>.eml` blobs
+//     (immutable; a prior blob may vanish as a legal expunge).
+//   - `runs/<runId>/` allows only `events/`, `blobs/`, `events.jsonl`,
+//     `grants.json`, and `parts/`. A sealed run (combined
+//     `events.jsonl`) must fold its prior per-event blobs byte-for-byte
+//     in seq order.
 //
-// Claim-check subtree invariants enforced at push:
-//   - The `<urlEncoded>` segment under `addresses/` must round-trip
-//     cleanly through `decodeURIComponent` followed by
-//     `encodeURIComponent`. A segment that does not round-trip is
-//     rejected so consumers can rely on a single canonical encoding.
-//   - The only entries permitted under an `addresses/<urlEncoded>/`
-//     subtree are the directories `inbox`, `processing`, and
-//     `consumed`, plus the single `watermark.json` file. Other names
-//     under an address fail the push.
-//   - Inbox and processing filenames must match
-//     `<receivedAt>-<messageId>.json` where `receivedAt` is a decimal
-//     epoch-ms integer. The body's `receivedAt` matches the filename
-//     `receivedAt` and the body's `messageId` matches the filename
-//     `messageId`. The body's `address` field must decode to the
-//     URL-encoded segment.
-//   - Consumed filenames must match `<messageId>.json`. The body's
-//     `messageId` matches the filename `messageId`. The body carries
-//     a `consumedBy` run id and the `receivedAt` of the original
-//     consume for audit.
-//   - Atomicity: a given `<messageId>` appears in at most one
-//     filename across `inbox`, `processing`, and `consumed` combined,
-//     per address per prospective commit. Two inbox entries with the
-//     same `<messageId>` but different `<receivedAt>` are rejected as
-//     a same-state collision; the cross-state check fires when the
-//     same messageId appears in inbox+processing, inbox+consumed, or
-//     processing+consumed.
-//   - `consumed/<messageId>.json` bytes are immutable: a prospective
-//     commit that mutates the bytes of a consumed entry RETAINED from
-//     the prior tree is rejected by the same prior-tree byte-equality
-//     guard used for run events. A retained consumed entry may be
-//     DELETED only as a watermark-consistent retention prune (see the
-//     watermark invariants below); any other deletion is rejected.
-//   - Retention prune (the bounded-`consumed/` contract): the consumed
-//     dedup index may shrink only by a watermark-passed prune. A
-//     consumed entry present in the prior tree may be absent from the
-//     prospective tree only when (a) its `receivedAt` is strictly
-//     below the prospective `watermark.json` value (you may prune only
-//     what the watermark passed) and (b) the watermark did not regress
-//     (`prospective watermark >= prior watermark`). A RETAINED entry is
-//     NOT required to sit at or above the watermark: a message consumed
-//     long after receipt (or one replayed back in-flight after a crash)
-//     may legitimately carry a below-watermark `receivedAt` and survive
-//     until a later commit prunes it. Retaining it gives only EXTRA
-//     dedup -- a re-submission at or above the watermark still hits the
-//     entry, one below it is stale-rejected at enqueue -- so it never
-//     weakens exactly-once.
-//   - Inbox→processing transition: a processing entry that is newly
-//     added (not present in the prior tree) must be backed by a
-//     matching inbox entry in the prior tree at the same
-//     `<receivedAt>-<messageId>.json` key. If the prior tree does
-//     not show that inbox entry the transition is rejected so a
-//     direct write into `processing/` cannot bypass the inbox.
-//   - Processing→consumed transition: a consumed entry that is
-//     newly added (not present in the prior tree) must be backed by
-//     a processing entry in the prior tree at the same address with
-//     the same messageId. The receivedAt and messageId carried in
-//     the prior processing envelope must equal the values carried in
-//     the new consumed envelope so the audit trail is unambiguous.
-//
-// Authz:
-//   - `hub` principal: full access.
-//   - `workflow-process` principal: read/write its own deployment's
-//     event log. The principal carries `{ anchorRunId, runId? }`;
-//     this handler verifies `repoId.id === anchorRunId`.
-//   - `supervisor` principal: read/write its own deployment's event
-//     log. The principal carries `{ anchorRunId }`; this handler
-//     verifies `repoId.id === anchorRunId`.
-//   - `sidecar` principal: read-only (createPack, resolveRef) for
-//     resume.
-//   - `user` principal: gated by bearer-token claims and the route
-//     layer's pre-resolved authz verdict, mirroring the convention
-//     used by the other kinds.
+// Authz: `hub` has full access; `workflow-process` and `supervisor`
+// read/write their own deployment's event log (verified via
+// `repoId.id === anchorRunId`); `sidecar` is read-only (createPack,
+// resolveRef); `user` is gated by the route layer's pre-resolved verdict.
 
 import fs from "node:fs";
 import git from "isomorphic-git";
@@ -234,116 +128,63 @@ export const WORKFLOW_RUN_PROCESSING_DIR = "processing";
 export const WORKFLOW_RUN_CONSUMED_DIR = "consumed";
 
 /**
- * Per-run inbound mail-part subtree. Non-text inbound mail content
- * (image/audio/video/document mail parts) is committed here as real
- * files rather than inlined into the JSON event log, whose serialization
- * boundary would corrupt binary bytes. The layout is
- * `runs/<runId>/parts/<urlEncoded(messageId)>/<index>-<name>`: one
- * directory per inbound message (so a long-lived run's successive turns
- * never collide), and one file per mail part carrying its verbatim
- * bytes. The workflow-host ingest writes the bytes and records a
- * lightweight `{ name, contentType, ref }` reference into the run's
- * trigger / signal payload; the step invoker reads the bytes back at
- * `agent.send` time. Files are immutable once written, like `blobs/`.
+ * Inbound-mail part bytes committed as real files at
+ * `runs/<runId>/parts/<urlEncoded(messageId)>/<index>-<name>` so binary
+ * content survives the JSON event log. One directory per message, one
+ * file per part. Immutable once written, like `blobs/`.
  */
 export const WORKFLOW_RUN_PARTS_DIR = "parts";
 
 /**
- * Filename of the per-address retention watermark blob, a direct child
- * of `addresses/<urlEncoded>/` (a file, not a directory). Carries the
- * monotonic `receivedAt`-horizon below which consumed entries may be
- * pruned and at-or-below which inbound enqueues are refused as stale.
+ * Per-address retention watermark blob: the `receivedAt` horizon below
+ * which consumed entries may be pruned and inbound enqueues are refused
+ * as stale. Monotonic.
  */
 export const WORKFLOW_RUN_WATERMARK_FILE = "watermark.json";
 
 /**
  * Default retention horizon for the consumed dedup index, in
- * milliseconds. The boot edge resolves the operator's
- * `CONSUMED_RETENTION_MS` config to a concrete value and threads it
- * into `markConsumed`; this default applies only when no operator
- * value is supplied. 24 hours is the conservative default: long enough
- * that a duplicate from a retrying upstream within a day is still
- * deduped by a retained consumed entry, short enough that `consumed/`
- * reaches a bounded steady state of one day's message volume.
+ * milliseconds. Used only when no operator `CONSUMED_RETENTION_MS` is
+ * supplied; 24h keeps a day's volume of dedup entries while letting a
+ * duplicate from a retrying upstream still hit one.
  *
- * INVARIANT (operator-owned): the horizon must be >= the longest window in
- * which the same `messageId` could legitimately be re-submitted and still must
- * be caught as a duplicate. The hub now redelivers un-acked inbound mail
- * (connected-window retry and reconnect-redelivery), so an at-least-once
- * internal source DOES exist -- but the dedup guarantee against it does not
- * rest on window arithmetic. It rests on a STRUCTURAL fact: `enqueueInbox` is
- * only ever called with a freshly stamped `receivedAt` (a redelivery
- * re-enters `onMailMessage` and re-stamps `Date.now()`, never carrying the
- * original), and the watermark only ever advances to at most
- * `consumedAt - retentionHorizonMs`, which is <= now, so a fresh `receivedAt`
- * always sits a full horizon above the watermark and can never be stale-
- * refused. A redelivery instead hits the `consumed/`/`processing/`/`inbox/`
- * dedup index and is deduped there. The sole path that carries an original
- * (old) `receivedAt` back into the queue is `replayProcessingToInbox`, which
- * writes straight to `inbox/` and bypasses the stale gate entirely. So
- * `claim_check_stale_enqueue` is unreachable via redelivery today. If any
- * redelivery source is ever changed to carry the ORIGINAL `receivedAt` into
- * `enqueueInbox`, stale becomes reachable, the horizon must then be >= that
- * source's maximum redelivery window, and `StaleInboxEnqueueError`'s
- * withhold-not-ack handling becomes load-bearing; a breach surfaces LOUDLY (an
- * old-`receivedAt` re-submission is refused at enqueue) rather than as silent
- * double-processing.
+ * INVARIANT (operator-owned): a redelivery re-stamps `Date.now()` at
+ * enqueue, so a fresh `receivedAt` always sits a full horizon above the
+ * watermark and can never be stale-refused; duplicates are caught by the
+ * dedup index instead. Only `replayProcessingToInbox` carries an old
+ * `receivedAt` back, and it bypasses the stale gate. If a redelivery
+ * source ever carries the original `receivedAt` into `enqueueInbox`,
+ * the horizon must cover that source's maximum redelivery window.
  */
 export const DEFAULT_CONSUMED_RETENTION_MS = 24 * 60 * 60 * 1000;
 
 /**
- * Per-agent durable conversation-state subtree (design §3c). A
- * long-lived single-step agent's multi-turn conversation context is
- * committed under `agent-state/<agentKey>/...` so it survives child
- * respawn: on respawn the rebuilt warm agent reads its prior
- * conversation back from here before the resumed run replays.
- *
- * Unlike `runs/` (append-only events, immutable blobs) this subtree is
- * MUTABLE: each run boundary overwrites the agent's conversation
- * snapshot with the latest turns. It is therefore exempt from the
- * append-only / deletion-direction walks `runs/` is subject to; the
- * only push-time constraint is segment shape (a single round-trip-safe
- * `<agentKey>` directory layer below the prefix).
+ * Per-agent conversation-state subtree (design §3c): the warm agent's
+ * durable multi-turn context, surviving child respawn. MUTABLE — each
+ * run boundary overwrites the snapshot — so it is exempt from the
+ * append-only walks `runs/` is subject to; the only push-time
+ * constraint is the `<agentKey>` directory-layer shape.
  */
 export const WORKFLOW_RUN_AGENT_STATE_PREFIX = "agent-state";
 
 /**
- * Conversational-mailbox subtree for the warm single-step agent. The
- * substrate mailbox backing commits the agent's durable inbox under
- * `mailbox/INBOX/` so the full message history replicates to the hub
- * alongside the run state. The layout is:
+ * Warm single-step agent's durable inbox, replicated to the hub under
+ * `mailbox/INBOX/`:
  *
- *   - `mailbox/INBOX/index.json` — the mailbox index. MUTABLE: the
- *     backing rewrites it on every flush, so it is exempt from the
- *     retained-blob byte-equality walk the `<uid>.eml` blobs are subject
- *     to. It must nonetheless PERSIST once it existed: dropping it drops
- *     the whole mailbox and resets uidValidity/uidNext on the next open.
- *   - `mailbox/INBOX/<uid>.eml` — one message per file, carrying the
- *     raw signed message bytes. `<uid>` is a decimal integer >= 1. A
- *     RETAINED `<uid>.eml` (present in both prior and prospective) is
- *     opaque and IMMUTABLE: it must reappear byte-identically, exactly
- *     like `runs/<runId>/blobs/`. A prior `<uid>.eml` may be ABSENT from
- *     the prospective tree — that is the warm agent expunging a message.
- *     The raw bytes are not lost: they stay reachable through the parent
- *     commit, and a `workflow-run` repo's objects are never GC'd (its
- *     kind is off the GC allow-list), so an expunged message survives in
- *     history for the life of the run repo. The audit trail rests on
- *     "these objects are never pruned", not on the live tree being
- *     monotonic.
+ *   - `index.json` — MUTABLE (rewritten each flush), but must persist
+ *     once written: dropping it resets uidValidity/uidNext on reopen.
+ *   - `<uid>.eml` — one message per file, opaque and IMMUTABLE: a
+ *     retained file must reappear byte-identically, like `blobs/`. A
+ *     prior file may vanish — a legal expunge; the bytes stay in git
+ *     history (workflow-run repos are never GC'd).
  *
- * The only entries permitted under `mailbox/` are the `INBOX/`
- * directory; the only entries permitted under `mailbox/INBOX/` are
- * `index.json` and `<uid>.eml` message files. Anything else fails the
- * push.
+ * Only these two entry kinds are permitted under `mailbox/INBOX/`.
  */
 export const WORKFLOW_RUN_MAILBOX_PREFIX = "mailbox";
 export const WORKFLOW_RUN_MAILBOX_INBOX_DIR = "INBOX";
 export const WORKFLOW_RUN_MAILBOX_INDEX_FILE = "index.json";
 
-/**
- * Allowed top-level entries in the prospective tree. Anything else
- * fails the push. `control/` has no v1 use and stays absent.
- */
+/** Allowed top-level entries; anything else fails the push. `control/` stays absent (no v1 use). */
 const ALLOWED_TOP_LEVEL = new Set<string>([
   WORKFLOW_RUN_RUNS_PREFIX,
   WORKFLOW_RUN_ADDRESSES_PREFIX,
@@ -352,12 +193,7 @@ const ALLOWED_TOP_LEVEL = new Set<string>([
   WORKFLOW_RUN_GITIGNORE_PATH,
 ]);
 
-/**
- * Per-message filename shape for the `mailbox/INBOX/` subtree:
- * `<uid>.eml`, where `<uid>` is a decimal integer >= 1 (no leading zero,
- * never `0`). Pins the shape so a malformed message name fails the push
- * at the boundary rather than landing silently.
- */
+/** `<uid>.eml` filename shape: `<uid>` is a decimal integer >= 1. */
 const MAILBOX_EML_FILENAME_RE = /^[1-9][0-9]*\.eml$/;
 
 const CLAIM_CHECK_SUBDIRS = new Set<string>([
@@ -370,14 +206,9 @@ const CLAIM_CHECK_SUBDIRS = new Set<string>([
 const EVENT_FILENAME_RE = /^(0|[1-9][0-9]*)\.json$/;
 
 /**
- * Parse the seq from a per-event log filename `<seq>.json` under
- * `runs/<runId>/events/`. Returns the non-negative integer seq, or
- * `null` when the name is not a legal per-event filename. This is the
- * one place the filename shape is defined; every reader of the event log
- * narrows names through it rather than re-encoding the regex. Callers
- * decide what an illegal name means -- a foreign entry to skip, or a
- * substrate-invariant violation to surface -- since `validatePush` is
- * the authority that keeps illegal names from landing in the first place.
+ * Parse the seq from an event filename `<seq>.json`, or `null` for an
+ * illegal name. The single definition of the filename shape; callers
+ * decide what an illegal name means (skip vs. surface).
  */
 export function parseEventSeq(filename: string): number | null {
   const match = EVENT_FILENAME_RE.exec(filename);
@@ -388,14 +219,10 @@ export function parseEventSeq(filename: string): number | null {
 }
 
 /**
- * Narrow a per-event filename to its seq, throwing when it is illegal.
- * A reader that enumerates the committed event log to act on its entries
- * uses this rather than `parseEventSeq`: `validatePush` is the authority
- * that keeps an illegal name from ever landing under
- * `runs/<runId>/events/`, so a name that reaches a reader is corruption,
- * and silently skipping it would drop an event from processing. `context`
- * is the repo-root-relative blob path, surfaced in the error so the
- * offending entry is identifiable.
+ * Narrow an event filename to its seq, throwing when illegal. A name
+ * reaching a reader is corruption (validatePush keeps illegal names from
+ * landing), so skipping it would silently drop an event. `context` names
+ * the offending path in the error.
  */
 export function requireEventSeq(filename: string, context: string): number {
   const seq = parseEventSeq(filename);
@@ -405,36 +232,20 @@ export function requireEventSeq(filename: string, context: string): number {
   return seq;
 }
 
-/**
- * Per-blob filename shape for the `runs/<runId>/blobs/` subtree: a
- * lowercase 64-character sha256 hex string. Pins the regex to the key
- * the production `BlobSubstrate` adapter computes via `sha256Hex` so a
- * non-canonical key (uppercase hex, truncated digest, alternate
- * encoding) fails the push at the boundary rather than landing
- * silently.
- */
+/** Blob filename shape: a lowercase 64-character sha256 hex string. */
 const BLOB_FILENAME_RE = /^[0-9a-f]{64}$/;
 
 /**
- * Per-mail-part filename shape for the
- * `runs/<runId>/parts/<urlEncoded(messageId)>/` subtree:
- * `<index>-<name>`, where `index` is the decimal position of the
- * mail part within its inbound message and `name` is a non-empty
- * (possibly sanitized) filename. The workflow-host ingest owns the exact
- * encoding and sanitizes untrusted names to satisfy this shape; this regex
- * pins the shape so a malformed name fails the push rather than landing
- * silently. The bytes themselves are opaque and immutable, exactly like
- * `blobs/`.
+ * Mail-part filename shape: `<index>-<name>` under
+ * `runs/<runId>/parts/<urlEncoded(messageId)>/`. The workflow-host
+ * ingest owns the encoding; bytes are opaque and immutable like `blobs/`.
  */
 const PART_FILENAME_RE = /^(0|[1-9][0-9]*)-(.+)$/;
 
 /**
- * Maximum byte length of a single mail part path component (the
- * URL-encoded message segment, and each `<index>-<name>` filename).
- * messageIds and mail part names arrive from untrusted inbound mail;
- * an over-long RFC 5322 message-id URL-encodes past the filesystem's
- * 255-byte component limit and would otherwise fail at disk-write time,
- * downstream of validation. Reject it at the boundary instead.
+ * Byte cap on mail-part path components (message segment and
+ * `<index>-<name>` filenames): untrusted message-ids can URL-encode
+ * past the filesystem's 255-byte limit, so reject at the boundary.
  */
 export const MAX_MAIL_PART_PATH_COMPONENT_BYTES = 255;
 
@@ -443,15 +254,11 @@ function mailPartComponentByteLength(component: string): number {
 }
 
 /**
- * Entries the kind handler accepts under `runs/<runId>/`. The `events/`
- * subtree carries the append-only event log; the `blobs/` subtree carries
- * opaque, content-addressed step outputs the `BlobSubstrate` adapter spills
- * there when a value exceeds the inline-encoding threshold; `grants.json`
- * carries the run's authorization grants, delivered by the hub's
- * `run.grants` frame ahead of the trigger and read back by the sidecar's
- * `onRunStart` barrier. The grants file is a run-dir sibling of `events/`,
- * not part of the event log, so the event-shape and blob-immutability walks
- * treat it as inert.
+ * Allowed entries under `runs/<runId>/`: the append-only `events/` log,
+ * the content-addressed `blobs/`, the sealed `events.jsonl` (compaction),
+ * the grants file (written by the hub's `run.grants` frame ahead of the
+ * trigger), and the mail-part `parts/` subtree. The walks treat
+ * `grants.json` as inert, not part of the event log.
  */
 const RUN_DIR_ALLOWED_CHILDREN = new Set<string>([
   WORKFLOW_RUN_EVENTS_DIR,
@@ -466,37 +273,20 @@ const RUN_DIR_ALLOWED_CHILDREN = new Set<string>([
   WORKFLOW_RUN_PARTS_DIR,
 ]);
 
-/**
- * Filename shape for inbox and processing entries:
- * `<receivedAt>-<messageId>.json`. `receivedAt` is a decimal integer
- * (epoch ms); `messageId` is captured as the rest of the basename and
- * is validated separately against the body's `messageId`.
- */
+/** Filename shape for inbox/processing entries: `<receivedAt>-<messageId>.json`. */
 const QUEUE_FILENAME_RE = /^(0|[1-9][0-9]*)-(.+)\.json$/;
 
 /** Filename shape for consumed entries: `<messageId>.json`. */
 const CONSUMED_FILENAME_RE = /^(.+)\.json$/;
 
 /**
- * JSON envelope carried by inbox and processing entries. Keys:
- *   - `messageId`: dedup key for the inbound message.
- *   - `receivedAt`: epoch-ms timestamp the reactor accepted the
- *     message; sortable FIFO key prefix.
- *   - `address`: decoded canonical address (not URL-encoded).
- *   - `mailAuditRef`: pointer to the raw mail bytes in the mail-audit
- *     store. For the in-process single-agent path a separate
- *     `MailAuditStore` holds the authoritative bytes and this ref joins
- *     onto it.
- *   - `rawMessage`: base64 of the inbound mail's raw MIME bytes,
- *     inlined so the workflow-process child can read its step input by
- *     messageId at `trigger.fired` time. The supervisor is the sole
- *     mail owner under the unified-execution host (§3a); it has no
- *     separate durable byte store the child can read, so the bytes ride
- *     the claim-check envelope itself. Present whenever the supervisor
- *     enqueued the entry; omitted by callers that only stamp the audit
- *     ref. The bytes survive the inbox→processing transition verbatim
- *     (the dequeue copies the entry bytes), so a `trigger.fired` for a
- *     processing entry can always recover the input.
+ * JSON envelope for inbox and processing entries: `messageId` (dedup
+ * key), `receivedAt` (FIFO key prefix), `address` (decoded), and
+ * `mailAuditRef`. `rawMessage` is the base64 raw MIME bytes, inlined so
+ * the workflow-process child can read its step input by messageId at
+ * `trigger.fired` time — the supervisor is the sole mail owner and has
+ * no separate durable byte store (§3a). Survives the inbox→processing
+ * transition verbatim.
  */
 const ClaimCheckEnvelope = type({
   messageId: "string > 0",
@@ -511,10 +301,9 @@ const ClaimCheckEnvelope = type({
 });
 
 /**
- * JSON envelope carried by consumed entries. The consumed entry is the
- * canonical dedup index keyed by messageId; the envelope preserves
- * the originating receivedAt for audit and carries the runId that
- * consumed the message.
+ * Consumed-entry envelope: the dedup index keyed by messageId,
+ * preserving the original `receivedAt` for audit and carrying the
+ * consuming runId.
  */
 const ConsumedEnvelope = type({
   messageId: "string > 0",
@@ -534,11 +323,9 @@ const ConsumedEnvelope = type({
 });
 
 /**
- * JSON envelope carried by the per-address `watermark.json` blob. The
- * `watermark` is a `receivedAt` horizon (epoch ms): the oldest
- * `receivedAt` a consumed entry may still retain. It only ever
- * advances. A retention prune drops consumed entries strictly below
- * it; `enqueueInbox` refuses any inbound strictly below it.
+ * Watermark envelope: a `receivedAt` horizon, monotonic. Prunes drop
+ * consumed entries strictly below it; `enqueueInbox` refuses inbound
+ * strictly below it.
  */
 const WatermarkEnvelope = type({
   watermark: "number >= 0",
@@ -550,20 +337,12 @@ export type ConsumedEnvelope = typeof ConsumedEnvelope.infer;
 export type WatermarkEnvelope = typeof WatermarkEnvelope.infer;
 
 /**
- * Terminal event discriminators mapped to the `workflow_run.status` value
- * each settles the run into. A run whose log contains an entry with one of
- * these `type` values must not receive any event with a strictly greater
- * seq.
- *
- * This map is a hand-rolled copy of the runtime's terminal-run vocabulary
- * (`isTerminalRunPhase` in `@intx/workflow` state-machine `state.ts`,
- * re-exported from the state-machine index and consumed by `transition.ts`),
- * duplicated here because `@intx/hub-sessions` must not depend on
- * `@intx/workflow`. It is the sole authority for that vocabulary and MUST
- * stay in sync with the canonical runtime definition:
- * if the runtime adds or removes a terminal run phase, update this map too.
- * Drift silently reopens the restore-time double-driver collision that
- * `scanRunsForBoot` (below) exists to prevent.
+ * Terminal event discriminators mapped to the `workflow_run.status`
+ * value each settles. A run carrying one must receive no higher-seq
+ * event. Hand-rolled copy of the runtime's terminal-run vocabulary
+ * (`@intx/workflow`), which `@intx/hub-sessions` must not depend on;
+ * keep in sync or the double-driver collision `scanRunsForBoot` guards
+ * against reopens.
  */
 type TerminalRunStatus = "completed" | "failed" | "cancelled";
 
@@ -573,19 +352,10 @@ const TERMINAL_EVENT_STATUS: ReadonlyMap<string, TerminalRunStatus> = new Map([
   ["RunCancelled", "cancelled"],
 ]);
 
-/**
- * Membership set of terminal event types, derived from
- * `TERMINAL_EVENT_STATUS` so it always covers exactly the mapped types and
- * the two cannot drift apart.
- */
+/** Membership set derived from `TERMINAL_EVENT_STATUS` so the two cannot drift. */
 const TERMINAL_EVENT_TYPES = new Set<string>(TERMINAL_EVENT_STATUS.keys());
 
-/**
- * Classify a workflow-run event type against the terminal-status vocabulary.
- * `TERMINAL_EVENT_STATUS` is the sole authority (see above), so a type absent
- * from it is by definition not terminal: no separate membership set is
- * consulted and no "unmapped terminal type" case can arise.
- */
+/** Classify an event type against the terminal-status vocabulary. */
 export function classifyTerminalEvent(
   eventType: string,
 ): { terminal: true; status: TerminalRunStatus } | { terminal: false } {
@@ -595,12 +365,7 @@ export function classifyTerminalEvent(
     : { terminal: true, status };
 }
 
-/**
- * True when a blob is absent from the prior tree -- i.e. this commit is the
- * one that authored it. Consumers act only on a newly-added blob; a blob
- * already present in the prior tree was carried forward unchanged by a
- * compaction commit and must not be re-acted upon.
- */
+/** True when this commit authors the blob (absent from the prior tree). */
 async function blobIsNewlyAdded(
   blobPath: string,
   priorReadBlob: (path: string) => Promise<Uint8Array | null>,
@@ -608,11 +373,7 @@ async function blobIsNewlyAdded(
   return (await priorReadBlob(blobPath)) === null;
 }
 
-/**
- * Recognised CancelRequested origins. Mirrors the workflow package's
- * `CANCEL_ORIGINS` vocabulary; inlined here so the substrate does
- * not depend on `@intx/workflow`.
- */
+/** Known CancelRequested origins; mirrors `@intx/workflow`'s CANCEL_ORIGINS. */
 const CANCEL_REQUESTED_ORIGINS = new Set<string>([
   "self",
   "supervisor-drain",
@@ -621,13 +382,9 @@ const CANCEL_REQUESTED_ORIGINS = new Set<string>([
 ]);
 
 /**
- * Per-origin signing-principal kind. `hub-admin` is the only origin
- * a `hub` principal may mint; the other three originate inside the
- * supervisor's trust boundary (the supervisor signs `self` on behalf
- * of the workflow-process since the child has no asymmetric keypair,
- * and signs the `supervisor-drain` / `supervisor-operator` audit-
- * distinction
- * cases for itself). Lookup misses fail the push.
+ * Per-origin signing-principal kind. Only `hub-admin` is minted by a
+ * `hub` principal; the supervisor signs the other three (for `self`
+ * on the child's behalf, which has no keypair). Lookup misses fail.
  */
 const CANCEL_ORIGIN_TO_PRINCIPAL_KIND: ReadonlyMap<string, string> = new Map([
   ["self", "supervisor"],
@@ -636,25 +393,14 @@ const CANCEL_ORIGIN_TO_PRINCIPAL_KIND: ReadonlyMap<string, string> = new Map([
   ["hub-admin", "hub"],
 ]);
 
-/**
- * Cross-event shape carried by every blob committed under
- * `runs/<runId>/events/`. The discriminator field on disk is `type`,
- * matching the convention used by the substrate's `subscribeKind`
- * helper and the workflow-host scheduler.
- */
+/** Cross-event shape for `runs/<runId>/events/` blobs. */
 const EventEnvelope = type({
   type: "string",
   seq: "number >= 0",
   "+": "ignore",
 });
 
-/**
- * Structural validator for the `CancelRequested` payload's
- * cancellation-specific fields. The kind handler verifies the origin
- * is a known CancelOrigin and the reason is a non-empty string; the
- * principal-vs-origin map collapses because every origin is
- * supervisor-signed in this design.
- */
+/** Structural validator for the `CancelRequested` payload fields. */
 const CancelRequestedFields = type({
   origin: "string",
   reason: "string > 0",
@@ -685,15 +431,10 @@ type RunEventBlob = {
 };
 
 /**
- * Resolve the substrate's `changedPathPrefixes` into the set of run ids
- * the commit could have touched, or `undefined` to validate every run.
- *
- * Returns `undefined` (validate-all) when the substrate could not bound
- * the change set, or when a change prefix reaches into `runs/` without
- * naming a specific run (`runs` or `runs/` alone). A change prefix that
- * never touches `runs/` -- e.g. a claim-check write under `addresses/`
- * -- contributes no run ids; an empty result set means the commit
- * touched no run, so the per-run walks legitimately validate nothing.
+ * Resolve `changedPathPrefixes` into the run ids the commit could have
+ * touched, or `undefined` to validate every run (when the substrate
+ * could not bound the change set, or a prefix names `runs/` without a
+ * specific run). Non-run prefixes contribute nothing.
  */
 function runScopeFromChangedPrefixes(
   changedPathPrefixes: ReadonlySet<string> | undefined,
@@ -717,12 +458,9 @@ function runScopeFromChangedPrefixes(
 }
 
 /**
- * Build the (runId → events[]) map by walking the prospective tree.
- * The substrate's listDir yields names directly under the given
- * directory, so the walk is `runs/` → run-id subdirs → `events/` →
- * event filenames. Filenames outside the `<seq>.json` shape fail the
- * push. When `scopeRunIds` is supplied, only those runs are walked --
- * see the substrate's `changedPathPrefixes` contract.
+ * Walk the prospective tree into a (runId → events[]) map. Illegal
+ * filenames fail the push; with `scopeRunIds`, only those runs are
+ * walked (see the substrate's `changedPathPrefixes` contract).
  */
 async function enumerateEventBlobs(
   listDir: (path: string) => Promise<string[]>,
@@ -732,15 +470,10 @@ async function enumerateEventBlobs(
   | { ok: false; reason: string }
 > {
   const runs = new Map<string, RunEventBlob[]>();
-  // When the substrate bounds the commit's change set to a specific set
-  // of runs, walk only those `runs/<runId>/` directories instead of
-  // listing every run. An untouched run is carried forward
-  // byte-identical by the substrate's prefix-preserving commit, so its
-  // per-run invariants -- already validated when it was written --
-  // cannot change. `scopeRunIds` may name a run absent from the tree
-  // (e.g. a prior-tree walk for a run the prospective tree dropped);
-  // `listDir` on a missing directory returns `[]`, which the
-  // empty-children guards below handle.
+  // With a scope, walk only the touched runs: untouched runs are carried
+  // forward byte-identical, so their invariants cannot change. A scoped
+  // id may name a run absent from this tree; `listDir` returns `[]` for
+  // it, which the empty-children guards below handle.
   const runIds =
     scopeRunIds === undefined
       ? await listDir(WORKFLOW_RUN_RUNS_PREFIX)
@@ -748,14 +481,8 @@ async function enumerateEventBlobs(
   for (const runId of runIds) {
     const runDirPath = `${WORKFLOW_RUN_RUNS_PREFIX}/${runId}`;
     const runChildren = await listDir(runDirPath);
-    // A scoped run id can name a run that is absent from the tree being
-    // walked -- the substrate's change set is the union of prospective
-    // and prior touched runs, so the prospective walk may receive a run
-    // that exists only in the prior tree (and vice versa). An absent run
-    // directory lists as empty; skip it here so only runs actually
-    // present in this tree are validated. The unscoped walk never
-    // reaches this branch because its run ids come from listing the
-    // present `runs/` directory.
+    // A scoped id may name a run absent from this tree (the change set
+    // is the union of both trees' touched runs); skip the empty listing.
     if (scopeRunIds !== undefined && runChildren.length === 0) continue;
     const offender = runChildren.find((c) => !RUN_DIR_ALLOWED_CHILDREN.has(c));
     if (offender !== undefined) {
@@ -776,14 +503,9 @@ async function enumerateEventBlobs(
     // by the combined-form path, not this per-event enumeration.
     if (hasCombined) continue;
     if (!hasPerEvent) {
-      // The pre-first-event window: `grants.json` (the hub's `run.grants`
-      // frame writes grants ahead of the trigger) and `parts/` (the
-      // supervisor commits inbound-mail mail part bytes before firing the
-      // trigger) may both land before the child emits its first event. Carry
-      // such a run forward untouched -- there is no event log to enumerate
-      // yet, and the mail parts subtree is validated by its own walk. Any
-      // other events-less shape (e.g. a bare `blobs/` with no events) remains
-      // rejected below.
+      // The pre-first-event window: `grants.json` and `parts/` may land
+      // before the child's first event. Carry such a run forward; any
+      // other events-less shape stays rejected below.
       const nonPreEvent = runChildren.filter(
         (c) => c !== WORKFLOW_RUN_GRANTS_FILE && c !== WORKFLOW_RUN_PARTS_DIR,
       );
@@ -827,21 +549,13 @@ async function enumerateEventBlobs(
 }
 
 /**
- * Validate the prospective tree's combined-form (sealed) runs and return
- * the set of run ids that legitimately carry a combined `events.jsonl`.
- * The deletion-direction guard uses that set to allow a run's per-event
- * files to disappear when (and only when) they were folded into the
- * combined file under this same validation.
- *
- * Three prior states are accepted:
- *   - prior already combined  -> the sealed file is immutable; prospective
- *     bytes must equal prior bytes.
- *   - prior per-event         -> the compaction transition; the combined
- *     file must be the byte-for-byte fold of the prior per-event blobs in
- *     seq order. This is the audit-integrity boundary: a loose check here
- *     would let compaction silently rewrite history.
- *   - prior absent            -> a freshly-delivered sealed run (e.g. a
- *     pack receive); its own structure is validated.
+ * Validate combined-form (sealed) runs and return the run ids that
+ * legitimately carry `events.jsonl`, so the deletion-direction guard
+ * allows their per-event files to vanish. Accepted prior states: already
+ * combined (immutable bytes), per-event (the combined file must be the
+ * byte-for-byte fold of the prior blobs in seq order — the audit-
+ * integrity boundary), or absent (a fresh sealed run; own structure
+ * validated).
  */
 async function validateCombinedEventRuns(
   listDir: (path: string) => Promise<string[]>,
@@ -895,13 +609,10 @@ async function validateCombinedEventRuns(
 }
 
 /**
- * The audit-integrity bridge. A compaction commit replaces a run's prior
- * `events/<seq>.json` files with one combined file; this asserts the
- * combined file reproduces those prior blobs' bytes verbatim, in seq
- * order, with nothing added, dropped, reordered, or mutated. It rebuilds
- * the expected combined bytes from the prior tree through the same encoder
- * the writer uses, so the two cannot drift, and compares for exact
- * equality.
+ * Assert a compaction's combined file reproduces the prior per-event
+ * blobs verbatim, in seq order, nothing added/dropped/reordered/mutated.
+ * Rebuilds the expected bytes through the writer's own encoder and
+ * compares exact equality.
  */
 async function checkCompactionFold(
   runId: string,
@@ -954,10 +665,9 @@ async function checkCompactionFold(
 }
 
 /**
- * Validate a combined event log's own structure: every line a valid event
- * envelope, contiguous seqs, exactly one terminal event and it is last
- * (so a sealed run is genuinely terminal). Used for a sealed run with no
- * prior per-event form to bridge against.
+ * Validate a combined log's own structure: valid envelopes, contiguous
+ * seqs, one terminal event and it is last. Used when there is no prior
+ * per-event form to bridge against.
  */
 function checkCombinedStructure(
   runId: string,
@@ -1021,13 +731,9 @@ type RunBlobEntry = {
 };
 
 /**
- * Walk every `runs/<runId>/blobs/` directory and validate each blob
- * filename matches the sha256-hex shape the production `BlobSubstrate`
- * adapter writes. The `blobs/` subdirectory itself is optional: a run
- * that has not yet spilled an output to a blob never produces a
- * `blobs/` directory, and a run with only inline-encoded outputs never
- * will. Returns the flat list of blob entries so the caller can apply
- * immutability checks against the prior tree.
+ * Walk `runs/<runId>/blobs/` (optional) and validate each filename
+ * against the sha256-hex shape. Returns the flat entry list for the
+ * caller's immutability checks.
  */
 async function enumerateRunBlobs(
   listDir: (path: string) => Promise<string[]>,
@@ -1036,9 +742,7 @@ async function enumerateRunBlobs(
   { ok: true; blobs: RunBlobEntry[] } | { ok: false; reason: string }
 > {
   const out: RunBlobEntry[] = [];
-  // See enumerateEventBlobs: a defined `scopeRunIds` walks only the
-  // commit's touched runs; an untouched run's blobs are carried forward
-  // byte-identical and were validated when written.
+  // With a scope, walk only the touched runs (see enumerateEventBlobs).
   const runIds =
     scopeRunIds === undefined
       ? await listDir(WORKFLOW_RUN_RUNS_PREFIX)
@@ -1074,16 +778,10 @@ type RunPartEntry = {
 };
 
 /**
- * Walk every `runs/<runId>/parts/<messageSegment>/` directory and
- * validate each entry: the `<messageSegment>` is a URL-encoded messageId
- * that must round-trip cleanly (the same canonical-encoding discipline the
- * claim-check `addresses/` subtree enforces) and stay within the path-
- * component byte cap, must be a directory rather than a dangling blob, and
- * each filename matches the `<index>-<name>` shape within the same cap. The
- * `parts/` subdirectory is optional: a run that never received a
- * non-text inbound message never produces one. Returns the flat entry list
- * so the caller can apply immutability checks against the prior tree,
- * exactly as it does for blobs.
+ * Walk `runs/<runId>/parts/<messageSegment>/` (optional) and validate:
+ * round-tripping, byte-capped segments; each must be a non-empty
+ * directory; filenames must match `<index>-<name>` within the cap.
+ * Returns the flat entry list for immutability checks.
  */
 async function enumerateRunParts(
   listDir: (path: string) => Promise<string[]>,
@@ -1092,9 +790,7 @@ async function enumerateRunParts(
   { ok: true; parts: RunPartEntry[] } | { ok: false; reason: string }
 > {
   const out: RunPartEntry[] = [];
-  // See enumerateRunBlobs: a defined `scopeRunIds` walks only the commit's
-  // touched runs; an untouched run's mail parts are carried forward
-  // byte-identical and were validated when written.
+  // With a scope, walk only the touched runs (see enumerateEventBlobs).
   const runIds =
     scopeRunIds === undefined
       ? await listDir(WORKFLOW_RUN_RUNS_PREFIX)
@@ -1124,12 +820,9 @@ async function enumerateRunParts(
       }
       const messageDirPath = `${partsDirPath}/${messageSegment}`;
       const filenames = await listDir(messageDirPath);
-      // A message segment must be a directory carrying at least one
-      // mail part file. An empty listing means either a dangling blob
-      // committed directly at `parts/<segment>` (the substrate lists a
-      // blob path as empty, exactly as the agent-state walk detects) or an
-      // empty directory; both are rejected so untrusted inbound content has
-      // no silent-accept path.
+      // A message segment must be a directory carrying at least one part
+      // file; an empty listing is a dangling blob or empty directory, and
+      // both are rejected so untrusted content has no silent-accept path.
       if (filenames.length === 0) {
         return {
           ok: false,
@@ -1152,13 +845,10 @@ async function enumerateRunParts(
             reason: `mail part filename ${messageDirPath}/${filename} exceeds the ${String(MAX_MAIL_PART_PATH_COMPONENT_BYTES)}-byte path-component limit`,
           };
         }
-        // Each mail part entry must be a leaf blob, not a nested directory.
-        // The `<index>-<name>` shape is permissive (`.+`), so a directory
-        // named e.g. `0-foo` would otherwise pass and admit an arbitrarily
-        // nested subtree, breaking the one-file-per-mail-part invariant and
-        // -- on a pack-receive validation with no `listDirOids` -- driving the
-        // immutability resolver to `readBlob` a tree path and throw. A blob
-        // lists as empty; a directory lists its children.
+        // Each part must be a leaf blob: the permissive `<index>-<name>`
+        // shape would otherwise admit a nested directory (breaking the
+        // one-file-per-part invariant, and making the immutability
+        // resolver `readBlob` a tree path and throw).
         const filePath = `${messageDirPath}/${filename}`;
         if ((await listDir(filePath)).length > 0) {
           return {
@@ -1179,17 +869,12 @@ async function enumerateRunParts(
 }
 
 /**
- * Validate the per-run `parts/` subtree's immutability against the
- * prior tree, both directions, mirroring the blobs walk. Mail part files
- * are write-once. A path present in the prior tree must carry the same git
- * blob OID in the prospective tree: unlike `blobs/`, a mail part filename
- * is `<index>-<name>` (not a content hash), so the same path can carry
- * different bytes -- the OID compare is the load-bearing immutability guard,
- * and comparing the OID git already computed avoids re-reading tens of MB of
- * mail part bytes on every commit that merely touches the run. A prior path
- * must reappear (no deletion): run reclaim drops the whole `runs/<runId>/`
- * subtree outside `validatePush`, so a partial mail part deletion is always
- * a violation. Structural shape is enforced by `enumerateRunParts`.
+ * Enforce parts immutability against the prior tree, both directions.
+ * A prior path must carry the same git blob OID (filenames are not
+ * content-addressed, so the OID compare is the load-bearing guard, and
+ * it avoids re-reading the bytes). No deletion: reclaim drops the whole
+ * run subtree outside validatePush. Shape is enforced by
+ * `enumerateRunParts`.
  */
 async function validateRunPartsSubtree(args: {
   listDir: (path: string) => Promise<string[]>;
@@ -1260,12 +945,8 @@ async function validateRunPartsSubtree(args: {
 }
 
 /**
- * Enforce blob immutability via prior-tree byte equality. The blob
- * value itself is opaque bytes (no JSON envelope, no arktype
- * validation); the only structural rule beyond filename shape is that
- * a blob entry present in the prior tree must carry byte-identical
- * contents in the prospective tree. Mirrors the consumed-entry
- * discipline in the claim-check subtree.
+ * Enforce blob immutability via prior-tree byte equality: a blob
+ * present in the prior tree must reappear byte-identical.
  */
 async function checkBlobPriorByteEquality(
   blobPath: string,
@@ -1357,13 +1038,9 @@ async function parseEventBlob(
 }
 
 /**
- * Compare the prospective bytes of `blobPath` against the bytes at
- * the same path in the prior tree. Returns `{ ok: true }` when the
- * blob is newly added (no prior entry) or when the prior and
- * prospective bytes are byte-identical; returns a rejection otherwise.
- * Surfaces append-only at the handler scope: the event log invariant
- * lives here rather than relying on caller-layer discipline at
- * `writeTreePreservingPrefix`.
+ * Prior-tree byte equality for events: newly added passes; a retained
+ * path must reappear byte-identical. Owns the append-only invariant at
+ * the handler scope.
  */
 async function checkPriorByteEquality(
   blobPath: string,
@@ -1391,14 +1068,9 @@ async function checkPriorByteEquality(
 }
 
 /**
- * Round-trip a URL-encoded path segment through decode then encode. A
- * divergence means the segment is not the canonical encoding of any
- * value, which would leave consumers guessing which encoding to use
- * when reading the subtree. Surface as a concrete rejection at push
- * time. Shared by every subtree that keys a directory by an
- * `encodeURIComponent`-encoded identity (`addresses/`, `agent-state/`,
- * and the per-run `parts/` message segment); callers prepend
- * their own subtree context to the returned reason.
+ * Require a URL-encoded segment to round-trip through decode/encode so
+ * consumers can rely on a single canonical encoding. Shared by every
+ * encoded-identity subtree (`addresses/`, `agent-state/`, mail parts).
  */
 function checkUrlSegmentRoundTrip(segment: string):
   | {
@@ -1460,12 +1132,8 @@ type ClaimCheckBlob = {
 };
 
 /**
- * FIFO comparator for inbox/processing entries. Sorts by the parsed
- * numeric `receivedAt` (filename prefix); ties break on the
- * messageId tail. The numeric compare is the load-bearing piece —
- * lexicographic compare on `<receivedAt>-…` filenames with
- * non-uniform digit widths disagrees with chronological order
- * (e.g. `"100-…"` < `"99-…"` because `'1' < '9'`).
+ * FIFO comparator: numeric `receivedAt`, messageId tiebreak. A string
+ * compare would order `"100-…"` before `"99-…"`, breaking FIFO.
  */
 function compareQueueEntries(a: ClaimCheckBlob, b: ClaimCheckBlob): number {
   const aReceivedAt = a.receivedAtFromFilename;
@@ -1613,12 +1281,9 @@ async function enumerateClaimCheckBlobs(
 }
 
 /**
- * Read + validate the per-address `watermark.json` value from a blob
- * reader. `null` means the tree has no watermark blob (treated as
- * watermark 0 -- no entry pruned, nothing refused). The reader may be
- * the prospective `readBlob` or the `priorReadBlob` (the latter
- * returns `null` for an absent path, which is the legitimate
- * never-pruned genesis state).
+ * Read and validate a per-address watermark; an absent blob reads as 0
+ * (never pruned, nothing refused). Works with `readBlob` or
+ * `priorReadBlob`.
  */
 async function readWatermark(
   watermarkPath: string,
@@ -1667,10 +1332,9 @@ async function parseConsumedBlob(
 }
 
 /**
- * Read + validate a consumed entry's envelope from a blob reader that
- * may return `null` for an absent path (the `priorReadBlob` shape).
- * `null` is treated as a read failure: the caller only passes a path
- * the prior tree is known to carry, so a `null` is structural damage.
+ * Read and validate a consumed envelope from a `priorReadBlob`-shaped
+ * reader; `null` (absent) is structural damage, since the caller only
+ * passes paths the prior tree is known to carry.
  */
 async function parseConsumedBlobFrom(
   entry: ClaimCheckBlob,
@@ -1784,28 +1448,17 @@ async function parseQueueBlob(
   return { ok: true, body: validated };
 }
 
-/**
- * Compute the git blob OID of a consumed entry from a byte reader,
- * used only when the delta-scoped path lacks a substrate-provided prior
- * OID listing (e.g. a hand-built test validatePush). `git.hashBlob`
- * reproduces the same content-addressed OID a `git.readTree` listing
- * carries, so the delta path's intersection compare is identical
- * whether the OID came from the tree listing or from hashing the bytes.
- */
+/** Hash a consumed entry's bytes to its git blob OID (the no-listing fallback). */
 async function hashConsumedBlobOid(bytes: Uint8Array): Promise<string> {
   const { oid } = await git.hashBlob({ object: bytes });
   return oid;
 }
 
 /**
- * Resolve each consumed entry's git blob OID for the delta-scoped path.
- * When the substrate supplies a directory OID listing (`listDirOids`) the
- * OID comes straight from the tree — one `readTree` per consumed
- * directory, cached — so that side is not re-read blob-by-blob. When the
- * listing is absent (a hand-built validatePush in a unit test) each OID
- * falls back to hashing the entry's bytes, which preserves identical
- * semantics at O(retained) cost. Both the prior and prospective sides use
- * this; `sideLabel` distinguishes them in the missing-OID error.
+ * Resolve a consumed entry's git blob OID. With a substrate `listDirOids`
+ * listing the OID comes from the tree (one cached `readTree` per
+ * directory); otherwise it falls back to hashing the bytes. `sideLabel`
+ * distinguishes prior vs. prospective in errors.
  */
 function makeListingOidResolver(
   sideLabel: string,
@@ -1858,21 +1511,13 @@ function makePriorConsumedOidResolver(
 }
 
 /**
- * Validate the `addresses/<urlEncoded>/{inbox,processing,consumed}`
- * subtree as a whole. The walk enforces filename shape, JSON envelope
- * structure, address round-trip, per-messageId atomicity across the
- * three queue states, consumed-blob immutability, and the
- * inbox→processing / processing→consumed transition invariants against
- * the prior tree.
- *
- * The consumed dedup index is validated by its per-commit DELTA against
- * the prior tree rather than by re-walking the whole retained set:
- * retained entries (same filename, same blob OID) are skipped as
- * already-validated-and-immutable, added entries are parsed and
- * validated, and removed entries are checked against the retention
- * watermark. `priorListDirOids` and `listDirOids`, when supplied by the
- * substrate, surface the prior and prospective consumed OIDs straight
- * from their tree listings so neither side is re-read blob-by-blob.
+ * Validate the `addresses/...` claim-check subtree: filename shapes,
+ * envelopes, address round-trip, per-messageId atomicity across the
+ * three states, consumed immutability, and the inbox→processing /
+ * processing→consumed transitions against the prior tree. The consumed
+ * index is validated by its per-commit DELTA: retained entries (same
+ * name, same OID) are skipped, added entries are parsed, removed
+ * entries are checked against the watermark.
  */
 async function validateClaimCheckSubtree(
   listDir: (path: string) => Promise<string[]>,
@@ -1922,10 +1567,8 @@ async function validateClaimCheckSubtree(
     consumed: [],
     watermarkPath: null,
   });
-  // Iterate the UNION of prospective and prior address segments so a
-  // prospective tree that wipes an address subtree entirely still
-  // runs the prior-retention checks against that segment's
-  // prior-tree consumed/processing entries.
+  // Iterate the union of both trees' segments so a wiped address still
+  // runs its prior-retention checks.
   const allSegments = new Set<string>([
     ...enumerated.perAddress.keys(),
     ...priorEnumerated.perAddress.keys(),
@@ -1942,13 +1585,10 @@ async function validateClaimCheckSubtree(
       );
     }
     const bucket = prospectiveBucketForSegment ?? emptyBucket(decodedAddress);
-    // Per-messageId atomicity: each messageId may appear at most
-    // once across inbox/processing/consumed combined. The check
-    // keys on (messageId, kind, filename) so two inbox entries with
-    // the same messageId at different `receivedAt` values surface
-    // as a same-state collision (the Set-of-kinds shape would
-    // collapse both into a single "inbox" member and miss the
-    // case).
+    // Atomicity: one entry per messageId across the three states. Keying
+    // on (messageId, kind, filename) keeps two same-messageId inbox
+    // entries at different receivedAt values distinct — a Set-of-kinds
+    // would collapse them and miss the collision.
     const messageIdToLocations = new Map<
       string,
       { kind: "inbox" | "processing" | "consumed"; filename: string }[]
@@ -1961,12 +1601,8 @@ async function validateClaimCheckSubtree(
       messageIdToLocations.set(entry.messageIdFromFilename, list);
     }
     for (const entry of bucket.consumed) {
-      // Cross-state atomicity needs each consumed messageId in the map;
-      // the messageId is the filename stem, so this needs no blob read.
-      // Retained consumed entries are not re-parsed (their envelope was
-      // validated when first written and their bytes are proven
-      // immutable by the OID compare below); added consumed entries are
-      // parsed and validated by the transition check further down.
+      // The messageId is the filename stem, so this needs no blob read;
+      // retained entries are proven immutable by the OID compare below.
       const list = messageIdToLocations.get(entry.messageIdFromFilename) ?? [];
       list.push({ kind: entry.kind, filename: entry.filename });
       messageIdToLocations.set(entry.messageIdFromFilename, list);
@@ -1995,15 +1631,10 @@ async function validateClaimCheckSubtree(
       }
     }
 
-    // Consumed entries are immutable. Compare the git blob OID the
-    // enumeration surfaced: a consumed entry present in the prior tree
-    // at the same path must carry the same OID (git trees are
-    // content-addressed, so equal OID proves byte-equality without
-    // reading either blob). A diverging OID is an immutability
-    // violation. Immutability is load-bearing for exactly-once: a
-    // mutated `receivedAt` on a retained consumed entry could fake it
-    // below the watermark, get it pruned, and let a re-submission miss
-    // dedup -- so this compare is not optional.
+    // Consumed entries are immutable: a retained path must carry the
+    // same OID (content-addressed, so no byte re-read). Load-bearing for
+    // exactly-once — a mutated `receivedAt` could fake a below-watermark
+    // prune and let a re-submission miss dedup.
     const priorConsumedOidByPath = new Map<string, string>();
     for (const e of priorBucket?.consumed ?? []) {
       if (e.oid === undefined) {
@@ -2048,20 +1679,10 @@ async function validateClaimCheckSubtree(
     for (const e of bucket.consumed)
       prospectiveConsumedByMessageId.set(e.messageIdFromFilename, e);
 
-    // Deletion-direction guards: walk every entry the prior tree
-    // carried under `consumed/`, `processing/`, and `inbox/` and reject
-    // any prior path that vanishes from the prospective tree except via
+    // Deletion direction: reject any prior path that vanishes except via
     // a permitted transition (or, for consumed, a watermark-passed
-    // retention prune). Without this walk a prospective tree that
-    // simply omits a prior entry would slip past the prospective-tree
-    // by-presence checks above.
-    //
-    // Retention-watermark contract for the consumed dedup index. The
-    // watermark is a monotonic `receivedAt` horizon; a `markConsumed`
-    // commit may drop the oldest consumed tail (entries strictly below
-    // the watermark) and the watermark may only advance. Resolve both
-    // the prospective and prior watermark up front so the consumed
-    // deletion check below can bind every drop to the watermark.
+    // prune). The watermark is a monotonic `receivedAt` horizon;
+    // resolve both sides up front so every drop is bound to it.
     let prospectiveWatermark = 0;
     if (bucket.watermarkPath !== null) {
       const wm = await readWatermark(bucket.watermarkPath, (p) => readBlob(p));
@@ -2082,29 +1703,12 @@ async function validateClaimCheckSubtree(
     }
 
     if (priorBucket !== undefined) {
-      // The consumed dedup index may shrink only by a watermark-passed
-      // prune: a consumed entry dropped from the prior tree must have a
-      // receivedAt strictly below the prospective watermark (you may
-      // prune only what the watermark passed). Combined with the
-      // already-verified watermark monotonicity, this is the whole of
-      // the exactly-once retention contract: pruning is bound to the
-      // watermark and the watermark only advances.
-      //
-      // The suffix relation (dropped entries older than every retained
-      // entry) is deliberately NOT enforced. A RETAINED entry is NOT
-      // required to sit at or above the watermark: a message consumed
-      // long after receipt (or replayed back in-flight) may
-      // legitimately carry a below-watermark receivedAt and survive
-      // until a later commit prunes it. Holding it gives EXTRA dedup (a
-      // re-submission at or above the watermark still hits the retained
-      // entry; one below is stale-rejected at enqueue), so a hole left
-      // by an out-of-order prune weakens nothing.
-      //
-      // Only the dropped entries are read. A retained entry (present in
-      // both trees) is proven byte-identical by the OID compare above,
-      // so its receivedAt is unchanged and need not be read. The
-      // receivedAt lives in the body; read it from the prior tree
-      // (retained bytes are immutable, so prior and prospective agree).
+      // A dropped consumed entry must be strictly below the prospective
+      // watermark — prune only what the watermark passed. The suffix
+      // relation is deliberately NOT enforced: a retained entry may sit
+      // below the watermark (a late-consumed or replayed message), which
+      // gives only extra dedup. Only dropped entries are read; retained
+      // entries are proven byte-identical by the OID compare above.
       for (const e of priorBucket.consumed) {
         if (prospectiveConsumedPaths.has(e.blobPath)) continue;
         const priorParsed = await parseConsumedBlobFrom(e, priorReadBlob);
@@ -2119,12 +1723,9 @@ async function validateClaimCheckSubtree(
       }
       for (const e of priorBucket.processing) {
         if (prospectiveProcessingPaths.has(e.blobPath)) continue;
-        // A processing entry may legitimately disappear in two
-        // shapes: (1) markConsumed wrote a matching consumed entry
-        // keyed by the same messageId, or (2) replayProcessingToInbox
-        // moved the entry back to inbox preserving the
-        // `<receivedAt>-<messageId>.json` filename. Anything else is
-        // an in-flight loss.
+        // A processing entry may vanish only into a matching consumed
+        // entry (markConsumed) or back to inbox under the same filename
+        // (replayProcessingToInbox); anything else is an in-flight loss.
         const consumedMatch = prospectiveConsumedByMessageId.get(
           e.messageIdFromFilename,
         );
@@ -2137,11 +1738,9 @@ async function validateClaimCheckSubtree(
       }
       for (const e of priorBucket.inbox) {
         if (prospectiveInboxPaths.has(e.blobPath)) continue;
-        // A prior inbox entry may legitimately disappear when it
-        // transitions to processing (same `<receivedAt>-<messageId>`
-        // filename) or directly to consumed (matching messageId).
-        // Anything else is an inbound-mail loss — the FIFO claim-check
-        // contract requires the entry to reappear somewhere.
+        // A prior inbox entry may vanish only into processing (same
+        // filename) or consumed (same messageId); anything else is an
+        // inbound-mail loss.
         const processingMatch = prospectiveProcessingByFilename.get(e.filename);
         const consumedMatch = prospectiveConsumedByMessageId.get(
           e.messageIdFromFilename,
@@ -2170,10 +1769,8 @@ async function validateClaimCheckSubtree(
       (priorBucket?.consumed ?? []).map((e) => e.blobPath),
     );
 
-    // Newly-added processing entries must match an inbox entry that
-    // existed in the prior tree at the same `<receivedAt>-<messageId>`
-    // filename. This makes inbox→processing the only legal way to
-    // grow processing/.
+    // A newly-added processing entry must match a prior-tree inbox entry
+    // at the same filename: inbox→processing is the only way to grow it.
     for (const entry of bucket.processing) {
       if (priorProcessingPaths.has(entry.blobPath)) continue;
       const priorInbox = priorInboxByFilename.get(entry.filename);
@@ -2185,10 +1782,8 @@ async function validateClaimCheckSubtree(
       }
     }
 
-    // Newly-added consumed entries must match a processing entry that
-    // existed in the prior tree at the same address+messageId, and
-    // the receivedAt carried in the consumed envelope must equal the
-    // receivedAt the processing entry's filename carried.
+    // A newly-added consumed entry must match a prior-tree processing
+    // entry at the same address+messageId, with matching receivedAt.
     for (const entry of bucket.consumed) {
       if (priorConsumedPaths.has(entry.blobPath)) continue;
       const priorProcessing = priorProcessingByMessageId.get(
@@ -2216,11 +1811,8 @@ async function validateClaimCheckSubtree(
 }
 
 /**
- * Enforce the Q3 principal-vs-origin map for a parsed
- * `CancelRequested` event. The principal kind is matched against the
- * origin's required-signer kind; a mismatch rejects with both the
- * declared origin and the actual principal kind in the message so a
- * misconfigured writer surfaces concretely at the push boundary.
+ * Enforce the principal-vs-origin map for `CancelRequested`: the
+ * signing principal kind must match the origin's required signer.
  */
 function checkCancelOriginPrincipal(
   blobPath: string,
@@ -2244,17 +1836,10 @@ function checkCancelOriginPrincipal(
 }
 
 /**
- * Path-scoping for the `workflow-process` principal. A workflow-process
- * proxies writes for the workflow-run repo's `runs/<runId>/` subtree
- * only; the supervisor owns the `addresses/...` claim-check subtree.
- * If the principal carries a `runId`, every prospective `runs/<X>/`
- * subtree must use `X === principal.runId`. A workflow-process that
- * touches the `addresses/...` subtree is rejected outright so the
- * single-writer contract on inbox/processing/consumed holds at the
- * substrate boundary.
- *
- * The check only fires for `workflow-process` principals; `hub` and
- * `supervisor` have broader write authority by design.
+ * Path-scope a `workflow-process` principal to its own `runs/<runId>/`
+ * subtree; `addresses/` is rejected outright (the supervisor owns the
+ * claim-check single-writer contract). Only fires for `workflow-process`
+ * principals.
  */
 async function enforceWorkflowProcessPathScope(
   principal: Principal,
@@ -2264,12 +1849,9 @@ async function enforceWorkflowProcessPathScope(
   if (principal.kind !== "workflow-process") return { ok: true };
   const parsed = WorkflowProcessPrincipal(principal);
   if (parsed instanceof type.errors) {
-    // `workflowRunAuthorize` already rejects malformed
-    // `workflow-process` principals at `gateAccess`, so this branch is
-    // unreachable when the substrate is wired against the real
-    // authorize callback. Fail closed so a future wiring that supplies
-    // a permissive authorize (e.g. test substrates using `allowAll`)
-    // cannot silently bypass the path-scope enforcement below.
+    // Unreachable against the real authorize callback; fail closed so a
+    // permissive substitute (e.g. a test `allowAll`) cannot bypass the
+    // path-scope enforcement.
     return {
       ok: false,
       reason: `workflow-process principal is malformed: ${parsed.summary}`,
@@ -2299,19 +1881,9 @@ async function enforceWorkflowProcessPathScope(
 }
 
 /**
- * Validate the `agent-state/` subtree shape (design §3c). The subtree
- * holds one MUTABLE per-agent conversation snapshot directory per agent
- * below the prefix; each entry directly under `agent-state/` must be a
- * `<agentKey>/` DIRECTORY (not a dangling blob), and each `<agentKey>`
- * segment must round-trip URL-encoding so a reader can recover the
- * agent's identity from the path. The conversation blobs inside a
- * `<agentKey>/` directory are opaque to the substrate (the warm agent's
- * ContextStore owns their shape), so no file-level shape is enforced
- * here.
- *
- * A blob written DIRECTLY at `agent-state/<name>` (with no `<agentKey>/`
- * layer) is rejected: it would not be keyed by an agent and would not be
- * recoverable by any reader walking the per-agent layout.
+ * Validate `agent-state/` shape (design §3c): each entry must be a
+ * round-tripping `<agentKey>/` directory, not a dangling blob; contents
+ * are opaque (the warm agent's ContextStore owns them).
  */
 async function validateAgentStateSubtree(
   topLevelTreePaths: readonly string[],
@@ -2329,10 +1901,8 @@ async function validateAgentStateSubtree(
         reason: `agent-state ${roundTrip.reason}`,
       };
     }
-    // Reject a blob dangling directly at `agent-state/<segment>`: every
-    // entry under the prefix must be a `<agentKey>/` directory carrying
-    // the agent's snapshot files. A directory has children under
-    // `agent-state/<segment>/`; a direct blob has none.
+    // Every entry must be a `<agentKey>/` directory: a directory lists
+    // its children, a dangling blob lists as empty.
     const children = await listDir(
       `${WORKFLOW_RUN_AGENT_STATE_PREFIX}/${segment}`,
     );
@@ -2347,12 +1917,8 @@ async function validateAgentStateSubtree(
 }
 
 /**
- * Enforce mailbox `<uid>.eml` immutability via prior-tree byte equality.
- * A message blob RETAINED from the prior tree (present in both) must carry
- * byte-identical contents in the prospective tree. A prior blob absent
- * from the prospective tree is a legal expunge and never reaches here
- * (the caller only checks retained paths). Mirrors the blob-immutability
- * discipline (`checkBlobPriorByteEquality`) with mailbox-specific wording.
+ * Enforce retained `<uid>.eml` byte equality; an absent prior blob (a
+ * legal expunge) never reaches here. Mirrors the blobs walk.
  */
 async function checkMailboxEmlPriorByteEquality(
   emlPath: string,
@@ -2380,17 +1946,10 @@ async function checkMailboxEmlPriorByteEquality(
 }
 
 /**
- * Walk the `mailbox/INBOX/` subtree and validate its shape. The only
- * entry permitted directly under `mailbox/` is the `INBOX/` directory;
- * the only entries permitted under `mailbox/INBOX/` are the mutable
- * `index.json` file and `<uid>.eml` message files. Each entry must be a
- * leaf blob rather than a nested directory (a blob lists as empty, a
- * directory lists its children -- the same discrimination the agent-state
- * and mail-parts walks use). Returns the flat set of `<uid>.eml` blob
- * paths so the caller can hold retained messages immutable against the
- * prior tree, plus `indexPresent` -- whether `index.json` exists under
- * the INBOX -- so the caller can enforce index continuity. An absent
- * `mailbox/` subtree lists as empty and contributes no message paths.
+ * Walk and validate `mailbox/INBOX/`: only `index.json` and `<uid>.eml`
+ * files, each a leaf blob (a directory lists its children, a blob lists
+ * as empty). Returns the `.eml` paths plus `indexPresent` for the
+ * index-continuity guard. An absent subtree contributes nothing.
  */
 async function enumerateMailboxInbox(
   listDir: (path: string) => Promise<string[]>,
@@ -2412,10 +1971,8 @@ async function enumerateMailboxInbox(
   }
   const inboxPath = `${WORKFLOW_RUN_MAILBOX_PREFIX}/${WORKFLOW_RUN_MAILBOX_INBOX_DIR}`;
   const inboxEntries = await listDir(inboxPath);
-  // A `mailbox/` top-level whose `INBOX` child carries no entries is a
-  // dangling blob committed directly at `mailbox/INBOX` (a blob lists as
-  // empty), not the required directory. Git never records an empty
-  // directory, so a present-but-empty listing is always the blob case.
+  // An empty `INBOX` listing is a dangling blob at `mailbox/INBOX`, not
+  // a directory: git never records an empty directory.
   if (inboxEntries.length === 0) {
     return {
       ok: false,
@@ -2452,25 +2009,12 @@ async function enumerateMailboxInbox(
 }
 
 /**
- * Validate the `mailbox/INBOX/` subtree (design conversational-mailbox).
- * Enforces the subtree shape via `enumerateMailboxInbox`, then holds a
- * RETAINED `<uid>.eml` message blob byte-identical against the prior tree.
- * A prior `<uid>.eml` absent from the prospective tree is a legal expunge:
- * the warm agent physically removes a message from the live INBOX. The raw
- * bytes are not lost -- they stay reachable through the parent commit, and
- * a `workflow-run` repo's objects are never GC'd (its kind is excluded
- * from the GC allow-list; see `DEFAULT_GC_KINDS` in `agent-repo`), so the
- * expunged message survives in history for the life of the run repo. The
- * audit trail therefore rests on "these objects are never pruned", not on
- * the live tree being monotonic.
- *
- * The `index.json` entry is mutable, but must PERSIST once it existed: if
- * the prior tree carried an index and the prospective tree drops it, the
- * whole mailbox has vanished, which would reset `uidValidity` / `uidNext`
- * on the next open and force uid reuse from 1. That is rejected. A
- * well-behaved backing always rewrites `index.json` on flush, so the guard
- * fails no legitimate push. Mirrors the blob-immutability discipline the
- * `runs/<runId>/blobs/` subtree uses, minus the deletion direction.
+ * Validate `mailbox/INBOX/` (conversational-mailbox design): shape via
+ * `enumerateMailboxInbox`, retained `.eml` byte-equality, and index
+ * continuity. An absent prior blob is a legal expunge (the bytes stay in
+ * git history — workflow-run repos are never GC'd); a dropped
+ * `index.json` is rejected because it would reset uidValidity/uidNext on
+ * the next open.
  */
 async function validateMailboxSubtree(
   listDir: (path: string) => Promise<string[]>,
@@ -2521,19 +2065,11 @@ export const workflowRunKindHandler: KindHandler = {
     priorListDirOids,
     changedPathPrefixes,
   }): Promise<ValidatePushResult> {
-    // Bound the per-run event/blob walks to the runs this commit could
-    // have touched. The substrate guarantees a prefix-preserving commit
-    // mutates only paths under `changedPathPrefixes`; every run outside
-    // them is carried forward byte-identical, so its per-run invariants
-    // (seq-contiguity, terminal-lock, append-only, blob-immutability)
-    // cannot change and were already validated when the run was last
-    // written. `scopeRunIds` is the set of run ids under a
-    // `runs/<runId>/` change prefix. It stays `undefined` -- validate
-    // every run -- whenever the substrate could not bound the change set
-    // (`changedPathPrefixes` is undefined) OR a change prefix touches the
-    // `runs/` subtree at a coarser-than-per-run granularity (a bare
-    // `runs/` prefix, which cannot identify which run changed), so the
-    // scoping never narrows below what the substrate can prove.
+    // Bound the per-run walks to the runs this commit touched: a
+    // prefix-preserving commit carries every other run forward
+    // byte-identical, so their invariants were validated when last
+    // written. Stays `undefined` (validate all) when the substrate
+    // could not bound the change set.
     const scopeRunIds = runScopeFromChangedPrefixes(changedPathPrefixes);
     for (const entry of topLevelTreePaths) {
       if (
@@ -2577,11 +2113,9 @@ export const workflowRunKindHandler: KindHandler = {
       topLevelTreePaths.includes(WORKFLOW_RUN_ADDRESSES_PREFIX) ||
       priorTopLevels.includes(WORKFLOW_RUN_ADDRESSES_PREFIX);
     if (addressesPresent) {
-      // Enter claim-check validation when the prospective OR prior
-      // tree carries an `addresses/` subtree. A prospective tree that
-      // omits `addresses/` while the prior tree had consumed or
-      // processing entries must still go through the subtree walk so
-      // those prior entries' deletion-direction invariants fire.
+      // Enter claim-check validation when either tree carries
+      // `addresses/`; a prospective tree that omits it must still run
+      // the walk so prior entries' deletion-direction invariants fire.
       const claimCheck = await validateClaimCheckSubtree(
         listDir,
         readBlob,
@@ -2600,12 +2134,8 @@ export const workflowRunKindHandler: KindHandler = {
       topLevelTreePaths.includes(WORKFLOW_RUN_MAILBOX_PREFIX) ||
       priorTopLevels.includes(WORKFLOW_RUN_MAILBOX_PREFIX);
     if (mailboxPresent) {
-      // Enter mailbox validation when the prospective OR prior tree
-      // carries a `mailbox/` subtree. A prospective tree that drops the
-      // subtree while the prior tree held one must still go through the
-      // walk so the index-continuity guard fires on the vanished
-      // `index.json` (a message-only expunge is legal; dropping the whole
-      // mailbox is not).
+      // Enter mailbox validation when either tree carries `mailbox/`;
+      // dropping the subtree must still trip the index-continuity guard.
       const mailboxCheck = await validateMailboxSubtree(
         listDir,
         readBlob,
@@ -2622,11 +2152,9 @@ export const workflowRunKindHandler: KindHandler = {
       topLevelTreePaths.includes(WORKFLOW_RUN_RUNS_PREFIX) ||
       priorTopLevels.includes(WORKFLOW_RUN_RUNS_PREFIX);
     if (!runsPresent) {
-      // A workflow-run repo without any `runs/` directory in either
-      // the prior or the prospective tree is a genesis state for the
-      // events subtree — `.gitignore`-only or claim-check-only trees
-      // are accepted so the asset routes' init can land before any
-      // run has produced an event.
+      // No `runs/` in either tree is the genesis state: `.gitignore`-only
+      // or claim-check-only trees are accepted so the asset routes' init
+      // can land before any run produced an event.
       return { ok: true };
     }
 
@@ -2644,12 +2172,9 @@ export const workflowRunKindHandler: KindHandler = {
           reason: `run ${runId} has an empty events directory`,
         };
       }
-      // Sequence contiguity: per-run events must run contiguously
-      // through the tip from whatever seq the first entry uses. Without
-      // this, a downstream consumer that iterates the log by seq would
-      // skip past a gap silently. `entries` is sorted by filenameSeq
-      // above. Producers start new logs at seq 1; the substrate checks
-      // contiguity independently of the first entry's sequence number.
+      // Contiguity: per-run events must run without gaps from the
+      // first entry's seq, or a consumer iterating by seq would skip
+      // silently. `entries` is sorted above.
       const firstEntry = entries[0];
       if (firstEntry === undefined) throw new Error("unreachable");
       const baseSeq = firstEntry.filenameSeq;
@@ -2690,20 +2215,12 @@ export const workflowRunKindHandler: KindHandler = {
               reason: `event ${entry.blobPath} CancelRequested origin must be a string`,
             };
           }
-          // Enforce the cancel-origin principal only for a NEWLY-ADDED blob.
-          // A CancelRequested's origin-vs-signer rule is a write-time
-          // authorization: it belongs to the commit that authors the event. A
-          // later commit that merely carries the event forward -- e.g. the
-          // run's own workflow-process cascade write of CancelPropagated /
-          // RunCancelled, which re-lists the whole events prefix -- must not be
-          // rejected because the carried-forward cancel was authored under a
-          // different (supervisor) signer. Re-checking it protects nothing: the
-          // byte-equality check above already proves a carried-forward blob is
-          // unchanged, and the deletion-direction check proves it cannot be
-          // dropped. A tampered (byte-diverged) blob never reaches here --
-          // checkPriorByteEquality rejects it first. Mirrors the newly-terminal
-          // gate below, which likewise acts only on a blob absent from the
-          // prior tree.
+          // The origin-vs-signer rule is a write-time check on the commit
+          // that authors the event; a later commit carrying the cancel
+          // forward (e.g. the run's own cascade write) is signed
+          // differently and must not be rejected. Byte equality already
+          // proves a carried-forward blob unchanged. Mirrors the
+          // newly-terminal gate below.
           if (await blobIsNewlyAdded(entry.blobPath, priorReadBlob)) {
             const principalCheck = checkCancelOriginPrincipal(
               entry.blobPath,
@@ -2726,14 +2243,9 @@ export const workflowRunKindHandler: KindHandler = {
         if (classified.terminal) {
           terminalSeq = entry.filenameSeq;
           terminalType = parsed.parsed.body.type;
-          // Surface the run as newly terminal only when this commit is
-          // the one that ADDS the terminal event -- i.e. the terminal
-          // blob is absent from the prior tree. A commit that carries an
-          // already-terminal run forward unchanged (a later compaction
-          // commit folding the per-event files into one) finds the
-          // terminal blob already present in the prior tree and emits no
-          // signal, so a downstream consumer keyed on the signal does
-          // not double-fire.
+          // Emit the signal only when this commit adds the terminal
+          // blob; a commit carrying an already-terminal run forward
+          // (e.g. compaction) must not double-fire.
           if (await blobIsNewlyAdded(entry.blobPath, priorReadBlob)) {
             const terminalBytes = await readBlob(entry.blobPath);
             newlyTerminalRuns.push({
@@ -2775,12 +2287,8 @@ export const workflowRunKindHandler: KindHandler = {
       }
     }
 
-    // Append-only / immutability extended to the deletion direction
-    // for the runs subtree. The prospective-tree walks above only
-    // see paths PRESENT in the prospective tree; a prospective tree
-    // that omits a prior `runs/<runId>/events/<seq>.json` or
-    // `runs/<runId>/blobs/<sha>` slips past those iterations
-    // entirely. Enumerate the prior tree's runs subtree under the
+    // Deletion direction for the runs subtree: the prospective walks
+    // only see present paths, so enumerate the prior tree under the
     // same shapes and reject any prior path that does not reappear.
     const priorEnumerated = await enumerateEventBlobs(
       priorListDir,
@@ -2799,9 +2307,8 @@ export const workflowRunKindHandler: KindHandler = {
     for (const entries of priorEnumerated.runs.values()) {
       for (const e of entries) {
         if (prospectiveEventPaths.has(e.blobPath)) continue;
-        // A run sealed into its combined events.jsonl by this commit
-        // legitimately drops its per-event files; the fold was validated
-        // byte-for-byte against these same prior blobs above.
+        // A run sealed by this commit legitimately drops its per-event
+        // files; the fold was validated byte-for-byte above.
         if (combinedRuns.combinedRunIds.has(e.runId)) continue;
         return {
           ok: false,
@@ -2971,9 +2478,8 @@ export const workflowRunAuthorize: AuthorizeFn = (
   }
 
   // Fail closed on any kind not handled above. The tenant-level
-  // `workflow` principal kind (`@intx/types` principalKinds) is a
-  // grant owner, not a workflow-run repo bearer, and never carries a
-  // workflow-run push here -- so it is intentionally left denied.
+  // `workflow` principal kind is a grant owner, never a workflow-run
+  // bearer, so it is intentionally left denied.
   return {
     allowed: false,
     reason: `unknown principal kind: ${principal.kind}`,
@@ -2983,47 +2489,24 @@ export const workflowRunAuthorize: AuthorizeFn = (
 // ---------------------------------------------------------------------
 // Claim-check API.
 //
-// Four operations layer on top of `RepoStore.writeTreeDelta` to give
-// the workflow runtime a FIFO claim-check queue per address:
-//
-//   enqueueInbox          — append a new inbox entry for an inbound
-//                           message.
-//   dequeueToProcessing   — pick the lexicographically-first inbox
-//                           entry and atomically move it to
-//                           processing.
-//   markConsumed          — atomically remove the processing entry
-//                           and write the canonical
-//                           consumed/<messageId>.json dedup index
-//                           entry.
-//   replayProcessingToInbox — recovery path that moves every
-//                           processing entry back to inbox preserving
-//                           its `<receivedAt>-<messageId>` filename
-//                           key so FIFO ordering survives a crash.
-//
-// All four route through `writeTreeDelta`, scoped to the per-address
-// subtree via `changedPathPrefixes`. The substrate serializes concurrent
-// claim-check operations on the per-repo lock and invokes each
-// operation's `computeDelta` callback with a `prior` view of the
-// committed tree. The callback reads only what it needs directly --
-// `prior.listDirOids` for a directory's names and OIDs, and
-// `prior.readBlobByOid` for a specific entry's bytes -- and returns a
-// TARGETED delta (the `puts` and `deletes` for the paths that change),
-// not the full subtree. The substrate applies that delta atomically over
-// the prior tree, carrying every untouched entry forward by OID and
-// landing the whole delta in a single commit, which is the atomic-commit
-// guarantee these operations require.
+// Four operations over `RepoStore.writeTreeDelta` give the workflow
+// runtime a FIFO claim-check queue per address: `enqueueInbox`,
+// `dequeueToProcessing`, `markConsumed`, and `replayProcessingToInbox`
+// (recovery). Each is scoped to its per-address subtree via
+// `changedPathPrefixes`; the substrate runs each `computeDelta` under
+// the per-repo lock against a `prior` view and applies the returned
+// targeted delta in one atomic commit, carrying untouched entries
+// forward by OID.
 
 function claimCheckCommitRef(): string {
-  // Every claim-check operation targets the same canonical ref used by
-  // the workflow-run kind handler's event log so subscribers see a
-  // single coherent commit stream.
+  // All claim-check operations commit to one canonical ref so
+  // subscribers see a single commit stream.
   return "refs/heads/events";
 }
 
 function addressSegmentFor(address: string): string {
-  // The substrate boundary is the only place URL-encoding happens.
-  // `validatePush` rejects non-round-trip segments; mirroring the same
-  // encoder here is the only legitimate way to produce one.
+  // Mirror the encoder `validatePush` requires (it rejects
+  // non-round-trip segments).
   return encodeURIComponent(address);
 }
 
@@ -3061,17 +2544,10 @@ type AddressListing = {
 };
 
 /**
- * Read one address's claim-check listing from the parent commit: the
- * filenames and blob OIDs directly under
- * `addresses/<addressSegment>/{inbox,processing,consumed}/` (NOT their
- * bytes), plus the retention watermark. The bytes of the single entry a
- * leg actually moves are read separately by OID via
- * `prior.readBlobByOid`, so the unbounded consumed/ dedup index is
- * enumerated (one `listDirOids` per bucket, names and OIDs only) but
- * never read blob-by-blob. Every read goes through the store's
- * cache-backed `prior` closures under the write lock. An empty listing
- * covers the repo/ref/address-absent first-write states -- all
- * legitimate for a brand-new operation.
+ * Read one address's listing from the parent commit: filenames and OIDs
+ * under `{inbox,processing,consumed}/` plus the watermark, names and
+ * OIDs only — the entry a leg moves is read separately by OID. An empty
+ * listing covers the address-absent first-write states.
  */
 async function readAddressListing(
   prior: PriorDeltaReads,
@@ -3148,11 +2624,7 @@ function decodeConsumedReceivedAtOrThrow(
   return validated.receivedAt;
 }
 
-/**
- * Decode the per-address retention watermark from its blob bytes. The
- * caller treats an absent watermark blob as 0 (the address has never
- * pruned; nothing refused).
- */
+/** Decode a watermark blob; callers treat an absent blob as 0. */
 function parseWatermark(bytes: Uint8Array, watermarkFull: string): number {
   let parsed: unknown;
   try {
@@ -3191,10 +2663,9 @@ export type EnqueueInboxResult = {
 };
 
 /**
- * Which already-present state an `enqueueInbox` call found the messageId
- * in. Every value is POSITIVE evidence the message's bytes are durably on
- * disk (inbox/processing) or were already consumed -- so a caller gating a
- * receipt on the enqueue may safely acknowledge on any of them.
+ * Which state an `enqueueInbox` call found the messageId in. Every value
+ * is positive evidence the bytes are durably on disk, so a caller gating
+ * a receipt on the enqueue may safely acknowledge on any of them.
  */
 export type EnqueueAlreadyPresentReason =
   | "duplicate"
@@ -3203,23 +2674,20 @@ export type EnqueueAlreadyPresentReason =
   | "consumed";
 
 /**
- * Outcome of an `enqueueInbox` call. Modeled as a value (not an exception)
- * precisely because the return/throw boundary is the ack/withhold boundary
- * for a caller gating a durable-receipt ack: a returned outcome is safe to
- * acknowledge (the bytes are on disk -- freshly written or already present),
- * a throw is not (the write could not complete or its disposition cannot be
- * decided). `enqueued` is the only outcome that added a new inbox entry, so
- * it is the only one a dispatch-driving caller wakes its loop on.
+ * `enqueueInbox` outcome. A value (not an exception) because the
+ * return/throw boundary is the ack/withhold boundary: a returned outcome
+ * is safe to ack, a throw is not. Only `enqueued` added a new entry, so
+ * only it wakes a dispatch-driving loop.
  */
 export type EnqueueInboxOutcome =
   | ({ outcome: "enqueued" } & EnqueueInboxResult)
   | { outcome: "already-present"; reason: EnqueueAlreadyPresentReason };
 
 /**
- * Internal signal thrown from the `enqueueInbox` merge callback when the
- * messageId is already present in a queue state. Caught at the `enqueueInbox`
- * boundary and turned into an `already-present` outcome; never escapes. It
- * carries the specific `reason` so the boundary maps it without re-deriving.
+ * Internal signal from the `enqueueInbox` merge callback when the
+ * messageId is already present; caught at the boundary into an
+ * `already-present` outcome. Carries the reason so the boundary need not
+ * re-derive it.
  */
 class InboxEntryAlreadyPresent extends Error {
   constructor(
@@ -3232,27 +2700,18 @@ class InboxEntryAlreadyPresent extends Error {
 }
 
 /**
- * Thrown by `enqueueInbox` when the inbound's `receivedAt` is strictly below
- * the address's retention watermark. This is refusal under UNCERTAINTY, not
- * proof of prior receipt: the consumed dedup entry that would rule out a
- * duplicate may have been pruned, so the substrate can no longer tell a
- * duplicate from a never-processed message and refuses rather than risk
- * reprocessing. A caller gating a durable-receipt ack MUST NOT acknowledge on
- * this -- acking an "I cannot tell" would terminally drop a message that was
- * never written. It is its own type (not a generic Error) so that a caller,
- * and monitoring, can surface it as a distinct loud signal rather than
- * blending it into ordinary I/O-failure noise.
+ * Thrown by `enqueueInbox` when the inbound's `receivedAt` is strictly
+ * below the retention watermark. Refusal under uncertainty, not proof of
+ * prior receipt: the dedup entry may have been pruned, so a duplicate
+ * cannot be ruled out. A caller gating a durable-receipt ack MUST NOT
+ * acknowledge on this. Its own type so it surfaces as a distinct signal.
  *
- * Structurally unreachable on the mail-inbound path today: `enqueueInbox` is
- * only ever called with a freshly stamped `receivedAt` (a redelivery
- * re-stamps `Date.now()` rather than carrying the original), and the watermark
- * only ever advances to at most `consumedAt - retentionHorizonMs <= now`, so a
- * fresh `receivedAt` sits a full horizon above it. The sole path that carries
- * an original (old) `receivedAt` back into the queue is
- * `replayProcessingToInbox`, which writes straight to `inbox/` and bypasses
- * this gate entirely. If any redelivery source is ever changed to carry the
- * original `receivedAt` into `enqueueInbox`, this becomes reachable and its
- * withhold-not-ack handling becomes load-bearing.
+ * Structurally unreachable on the mail-inbound path today: enqueues
+ * always carry a freshly stamped `receivedAt`, a full horizon above the
+ * watermark, and the only path that carries an old `receivedAt` back
+ * (`replayProcessingToInbox`) bypasses this gate. If a redelivery source
+ * ever carries the original `receivedAt` here, this becomes reachable and
+ * the withhold-not-ack handling becomes load-bearing.
  */
 export class StaleInboxEnqueueError extends Error {
   constructor(message: string) {
@@ -3262,17 +2721,10 @@ export class StaleInboxEnqueueError extends Error {
 }
 
 /**
- * Append a new inbox entry for `address`. The merge callback reads
- * the address subtree under the per-repo lock, augments the inbox
- * with the new entry, and returns the full set of address files. The
- * substrate replaces the address subtree wholesale.
- *
- * Rejects if a same-messageId entry already exists in any queue
- * state at the address — including a prior inbox entry at a
- * different `receivedAt`. The caller is expected to consult the
- * dedup index (consumed/) before calling, but enforcing the
- * invariant here also catches the concurrent-enqueue race that the
- * per-repo lock alone cannot surface.
+ * Append a new inbox entry for `address`. Rejects when a same-messageId
+ * entry already exists in any queue state — including a prior inbox
+ * entry at a different `receivedAt` — catching the concurrent-enqueue
+ * race the per-repo lock alone cannot surface.
  */
 export async function enqueueInbox(
   store: RepoStore,
@@ -3294,14 +2746,9 @@ export async function enqueueInbox(
   const inboxFname = `${inboxKey}.json`;
   const consumedFname = `${args.messageId}.json`;
   const messageIdSuffix = `-${args.messageId}.json`;
-  // The already-present cases throw `InboxEntryAlreadyPresent` from the merge
-  // callback and are caught here into an `already-present` outcome; the
-  // stale-refusal throws `StaleInboxEnqueueError`, and a substrate/I/O failure
-  // throws a generic error -- both of those propagate. The return/throw split
-  // is deliberate and load-bearing: it is the ack/withhold boundary for a
-  // caller gating a durable-receipt ack (return = safe to ack, throw =
-  // withhold), so `stale` sits with I/O on the throw side, NOT with the
-  // already-present cases (see `StaleInboxEnqueueError`).
+  // Already-present throws are caught into an outcome; stale-refusal and
+  // I/O failures propagate. The split is the ack/withhold boundary:
+  // return = safe to ack, throw = withhold.
   let commitSha: string;
   try {
     ({ commitSha } = await store.writeTreeDelta(principal, repoId, ref, {
@@ -3309,11 +2756,8 @@ export async function enqueueInbox(
       message: `enqueue inbox ${args.address} ${args.messageId}`,
       computeDelta: async (_parentCommitSha, prior) => {
         const listing = await readAddressListing(prior, addressSegment);
-        // Refuse a definitively-stale enqueue: a message whose receivedAt
-        // is strictly below the retention watermark could have had its
-        // consumed/ dedup entry pruned, so a duplicate can no longer be
-        // ruled out. Reject it LOUDLY rather than risk reprocessing. This
-        // is the second half of the exactly-once guarantee: above the
+        // Refuse enqueue below the watermark: the dedup entry may have
+        // been pruned, so a duplicate cannot be ruled out. Above the
         // watermark the consumed/ index is authoritative; below it, refuse.
         if (args.receivedAt < listing.watermark) {
           throw new StaleInboxEnqueueError(
@@ -3326,8 +2770,7 @@ export async function enqueueInbox(
             `claim_check_duplicate_inbox: ${newInboxPath} already exists`,
           );
         }
-        // consumed/ is keyed by messageId alone, so this is an exact
-        // filename lookup against the dedup index.
+        // consumed/ is keyed by messageId alone, so this is an exact lookup.
         if (listing.consumed.some((e) => e.name === consumedFname)) {
           throw new InboxEntryAlreadyPresent(
             "consumed",
@@ -3341,9 +2784,8 @@ export async function enqueueInbox(
           );
         }
         // Reject a second inbox entry for the same messageId at a
-        // different receivedAt. The validatePush atomicity check also
-        // catches this on the commit path, but surfacing it here gives the
-        // caller a precise error and keeps the bad tree off the substrate.
+        // different receivedAt; surfacing it here keeps the bad tree off
+        // the substrate.
         const inboxDup = listing.inbox.find((e) =>
           e.name.endsWith(messageIdSuffix),
         );
@@ -3375,15 +2817,10 @@ export type DequeueToProcessingResult = {
 } | null;
 
 /**
- * Move the FIFO-first inbox entry for `address` to processing.
- * Returns `null` when the inbox is empty so the caller can
- * distinguish "nothing to do" from "operation failed".
- *
- * FIFO is keyed on the parsed numeric `receivedAt` prefix of the
- * inbox filename, with a lexicographic messageId tiebreak. The
- * substrate does NOT rely on uniform digit widths — sorting raw
- * filenames would put `"100-…"` ahead of `"99-…"` since `'1' < '9'`,
- * which violates the FIFO invariant.
+ * Move the FIFO-first inbox entry for `address` to processing; `null`
+ * when the inbox is empty. FIFO is the numeric `receivedAt` prefix with
+ * a messageId tiebreak — raw string sorting would put `"100-…"` ahead of
+ * `"99-…"`.
  */
 export async function dequeueToProcessing(
   store: RepoStore,
@@ -3400,9 +2837,8 @@ export async function dequeueToProcessing(
     computeDelta: async (_parentCommitSha, prior) => {
       const listing = await readAddressListing(prior, addressSegment);
       const inboxDir = `${addressPrefix(addressSegment)}${WORKFLOW_RUN_INBOX_DIR}/`;
-      // Sort by numeric receivedAt with a messageId tiebreak. A raw
-      // string sort would not agree with chronological order when
-      // receivedAt values have non-uniform digit widths.
+      // Sort by numeric receivedAt, messageId tiebreak; a raw string
+      // sort misorders non-uniform digit widths.
       type InboxCandidate = {
         entry: ClaimCheckEntry;
         receivedAt: number;
@@ -3430,8 +2866,7 @@ export async function dequeueToProcessing(
       });
       const first = candidates[0];
       if (first === undefined) {
-        // Empty inbox: nothing to move. The commit is a no-op rewrite of
-        // the same tree; the caller reads `dequeued === null`.
+        // Empty inbox: no-op commit; the caller reads `dequeued === null`.
         dequeued = null;
         return { puts: {}, deletes: [] };
       }
@@ -3456,29 +2891,13 @@ export type ReadProcessingEntryResult = {
 } | null;
 
 /**
- * Read the processing-queue entry for `messageId` at `address` without
- * mutating the tree. Returns the decoded claim-check envelope (carrying
- * `mailAuditRef` and, when the enqueuer inlined them, the base64
- * `rawMessage` bytes) or `null` when no processing entry exists for the
- * messageId.
- *
- * This is the read half of mailbox ownership (§3a): the supervisor's
- * dispatch loop moves an inbox entry to processing and forwards a
- * `trigger.fired{messageId}` to the workflow-process child; the child
- * calls this to recover the inbound message bytes that become its step
- * input.
- *
- * The read is a flat working-tree read of
- * `addresses/<seg>/processing/`. The substrate materializes each
- * claim-check commit's touched paths into the repo's working tree (the
- * delta write removes each deleted path and writes each put after
- * validation passes), so a read issued after `dequeueToProcessing`
- * committed -- which is exactly when the supervisor forwards
- * `trigger.fired` -- observes the processing entry. Reading the working tree (rather than walking the
- * committed git tree) matches the workflow-process child's sibling
- * read of `runs/<runId>/events/`. Because the
- * read issues no commit it cannot race the supervisor's `markConsumed`
- * write; it returns a point-in-time snapshot of the directory.
+ * Read the processing entry for `messageId` at `address` without
+ * mutating the tree; `null` when none exists. The read half of mailbox
+ * ownership (§3a): the supervisor forwards `trigger.fired{messageId}` to
+ * the child, which recovers the inbound bytes here. A flat working-tree
+ * read of `addresses/<seg>/processing/` (the substrate materializes
+ * claim-check commits there); issues no commit, so it cannot race
+ * `markConsumed`.
  */
 export async function readProcessingEntry(
   store: RepoStore,
@@ -3555,25 +2974,13 @@ export type MarkConsumedResult = {
 };
 
 /**
- * Atomically remove the processing entry for `messageId` at `address`,
- * write the canonical `consumed/<messageId>.json` dedup index entry,
- * advance the per-address retention watermark, and prune consumed
- * entries the watermark has passed. The caller is expected to have
- * called `dequeueToProcessing` for this messageId; calling
- * `markConsumed` without a matching processing entry throws.
- *
- * The consumed envelope preserves the original `receivedAt` and
- * `mailAuditRef` from the processing entry so the dedup index doubles
- * as an audit record.
- *
- * Retention (the bounded-`consumed/` contract): the watermark advances
- * to `max(priorWatermark, min(consumedAt - retentionHorizonMs,
- * thisEntry.receivedAt))` -- monotonic, and never past the entry being
- * written so the new entry is always retained. Every consumed entry
- * whose `receivedAt` is strictly below the new watermark is dropped
- * (the oldest age-ordered tail). `consumed/` therefore reaches a
- * bounded steady state of roughly one horizon's worth of entries
- * instead of growing one entry per message forever.
+ * Atomically remove the processing entry for `messageId`, write the
+ * `consumed/<messageId>.json` dedup entry (preserving the processing
+ * envelope's `receivedAt`/`mailAuditRef` as audit), advance the
+ * watermark to `max(prior, min(consumedAt - horizon, thisEntry.receivedAt))`
+ * — monotonic, never past the new entry — and prune consumed entries
+ * strictly below it, keeping `consumed/` bounded to ~one horizon's
+ * volume. Throws if no matching processing entry exists.
  */
 export async function markConsumed(
   store: RepoStore,
@@ -3626,11 +3033,9 @@ export async function markConsumed(
       };
       consumedEnvelope = envelope;
 
-      // The watermark may only advance, and never past the entry this
-      // commit writes (so the new entry is always retained -- a message
-      // consumed long after receipt may legitimately sit below
-      // `consumedAt - horizon`, and it is pruned on a later commit once
-      // the watermark passes ITS receivedAt).
+      // The watermark only advances, never past the entry this commit
+      // writes (a late-consumed message may sit below the horizon and is
+      // pruned once the watermark passes its receivedAt).
       const horizonBoundary = args.consumedAt - retentionHorizonMs;
       const newWatermark = Math.max(
         listing.watermark,
@@ -3638,13 +3043,10 @@ export async function markConsumed(
       );
       advancedWatermark = newWatermark;
 
-      // Prune the oldest consumed tail: read each retained consumed
-      // entry's receivedAt and drop any that has fallen strictly below
-      // the new watermark. This is the one leg that must scan the
-      // consumed index — its filenames carry only the messageId, so the
-      // receivedAt lives in the bytes — and is the residual the
-      // consumed-shard lever removes. The new entry (added via puts) is
-      // never below the watermark by construction.
+      // Prune the consumed tail: drop any retained entry strictly below
+      // the new watermark. The one leg that must scan the index, since
+      // filenames carry only the messageId and the receivedAt lives in
+      // the bytes.
       const consumedDir = `${addressPrefix(addressSegment)}${WORKFLOW_RUN_CONSUMED_DIR}/`;
       const deletes: string[] = [processingFull];
       for (const entry of listing.consumed) {
@@ -3691,29 +3093,20 @@ export type ScanRunsForBootResult = {
 };
 
 /**
- * Walk `runs/` once and return the two boot-recovery inputs the supervisor's
- * spawn needs, from a single traversal of the working tree via `getRepoDir`:
+ * One working-tree walk of `runs/` returning the spawn-time recovery
+ * inputs:
  *
- * - `ownedMessageIds`: the `consumedMessageId`s of NON-terminal runs -- the
- *   messages a live run still owns. Spawn feeds this into
- *   `replayProcessingToInbox`'s `ownedMessageIds` so a parked run's message is
- *   not re-admitted to inbox and dispatched a second time while the run is
- *   recovered by re-driving its durable log. Without this, the re-drive AND the
- *   re-triggered fresh run both re-park the same awaitSignal gate on the same
- *   runId, and the two concurrent runtime bodies race to a corrupt terminal.
- * - `pendingSealRunIds`: runs that are terminal but still in per-event form --
- *   an interrupted fold left them unsealed. Spawn hands these to the recovery
- *   sweep, which re-runs the idempotent fold. A terminal event is a *proposal*:
- *   the authoritative decision is `compactRunEvents`, which independently
- *   re-checks the run's max-seq event and no-ops a run that is not actually
- *   terminal, so this scan may be loose.
+ * - `ownedMessageIds`: `consumedMessageId`s of non-terminal runs, fed to
+ *   `replayProcessingToInbox` so a live run's message is not re-admitted
+ *   and dispatched a second time while its durable log is re-driven —
+ *   two runtime bodies racing on one runId corrupt the terminal.
+ * - `pendingSealRunIds`: terminal runs still in per-event form (an
+ *   interrupted fold); the recovery sweep re-runs the idempotent fold.
  *
- * The working tree tracks the run-event ref (`refs/heads/main`); the
- * claim-check ref (`refs/heads/events`) cannot see it, which is why this lives
- * at the caller rather than inside `replayProcessingToInbox`'s single-ref
- * delta. A run whose log is sealed (combined `events.jsonl`, only permitted for
- * a terminated run) contributes to neither set; an absent `runs/` directory
- * yields empty results.
+ * The run logs live on a different ref (`refs/heads/main`) than the
+ * claim-check subtree (`refs/heads/events`), so this lives at the caller.
+ * A sealed run contributes to neither set; an absent `runs/` yields empty
+ * results.
  */
 export async function scanRunsForBoot(
   store: RepoStore,
@@ -3736,18 +3129,15 @@ export async function scanRunsForBoot(
   const pendingSealRunIds: string[] = [];
   for (const runId of runIds) {
     const runDir = path.join(runsDir, runId);
-    // A sealed run (combined events file) is terminal by the handler's
-    // own invariant -- only a terminated run is sealed -- so it owns
-    // nothing and is already folded. Its presence also means the per-event
-    // directory is absent.
+    // A sealed run is terminal by the handler's invariant — only a
+    // terminated run is sealed — so it owns nothing and is already folded.
     let sealed = false;
     try {
       await fs.access(path.join(runDir, WORKFLOW_RUN_EVENTS_FILE));
       sealed = true;
     } catch (cause) {
-      // ENOENT is the normal "not sealed" case. Any other stat error leaves
-      // the run to fall through to the events-dir read below, which resolves
-      // it, so this catch is benign; warn so the anomaly is still visible.
+      // ENOENT is the normal "not sealed" case; any other error falls
+      // through to the events-dir read below, so warn and continue.
       if (
         !(cause instanceof Error) ||
         !("code" in cause) ||
@@ -3763,13 +3153,11 @@ export async function scanRunsForBoot(
     try {
       files = await fs.readdir(eventsDir);
     } catch (cause) {
-      // ENOENT means the run has neither a sealed log nor a per-event
-      // directory (grants may be staged before the first event); skip it.
-      // A non-ENOENT error drops the run from BOTH result sets, and a live
-      // run dropped from ownedMessageIds gets its message re-admitted and
-      // dispatched a second time on the same runId -- the double-driver
-      // corruption this scan exists to prevent. Surface it, but still skip:
-      // aborting the whole boot scan over one run is worse.
+      // ENOENT means no events yet (grants may be staged first); skip.
+      // A non-ENOENT error drops the run from both sets — a live run
+      // dropped from ownedMessageIds gets re-admitted and double-dispatched
+      // on the same runId. Surface it, but still skip: aborting the whole
+      // scan over one run is worse.
       if (
         !(cause instanceof Error) ||
         !("code" in cause) ||
@@ -3789,11 +3177,10 @@ export async function scanRunsForBoot(
           await fs.readFile(path.join(eventsDir, file), "utf8"),
         );
       } catch (cause) {
-        // A corrupt or unreadable event file drops this run's
-        // classification: a missed RunStarted re-admits its message (a
-        // second run on the same runId), a missed terminal event skips a
-        // needed seal. Surface it, but skip the file rather than abort the
-        // scan. ENOENT here is a benign race (the file vanished mid-scan).
+        // A corrupt event drops this run's classification: a missed
+        // RunStarted re-admits its message (second run on the same runId),
+        // a missed terminal skips a needed seal. Surface it, but skip the
+        // file. ENOENT is a benign vanish-mid-scan race.
         if (
           !(cause instanceof Error) ||
           !("code" in cause) ||
@@ -3833,13 +3220,10 @@ export async function scanRunsForBoot(
 export type WorkflowRunLifecycle = "absent" | "live" | "terminal";
 
 /**
- * Classify a run's lifecycle from a read surface. The committed (git-object)
- * and working-tree (node:fs) readers share this core: a sealed combined log is
- * terminal; otherwise the latest per-event file decides terminal-vs-live, and a
- * run with no events is absent. The surface owns every read detail -- the
- * absent/ENOENT discrimination, the per-surface entry filter, and wrapping an
- * unreadable latest event as `workflow_run_event_unreadable` -- so this core
- * never sees a raw read error.
+ * Classify a run's lifecycle from a read surface shared by the committed
+ * and working-tree readers: sealed log = terminal; otherwise the latest
+ * event decides, and no events = absent. The surface owns all read
+ * details, so this core never sees a raw read error.
  */
 async function classifyRunLifecycle<
   E extends { readonly seq: number },
@@ -3910,16 +3294,11 @@ export async function readCommittedWorkflowRunLifecycle(
 }
 
 /**
- * Read the durable lifecycle of one run from the workflow-run working tree.
- * `grants.json` alone is still an absent run: grants are staged before the
- * first trigger, while the first event is the durable proof that the run was
- * fired. A sealed event log is terminal by the kind handler's compaction
- * invariant.
- *
- * The supervisor uses this when in-memory cohort membership is empty. That
- * happens both for a genuinely new deployment and briefly during recovery,
- * so treating both states as "fire" would start a second driver for a live
- * log or reuse a terminal run.
+ * Read one run's lifecycle from the working tree. `grants.json` alone is
+ * still absent — grants are staged before the first event, the durable
+ * proof of firing; a sealed log is terminal. The supervisor consults this
+ * when in-memory cohort membership is empty (a new deployment, or briefly
+ * during recovery), so the distinction decides fire-vs-not.
  */
 export async function readWorkflowRunLifecycle(
   store: RepoStore,
@@ -3984,42 +3363,29 @@ export async function readWorkflowRunLifecycle(
 
 export type ReplayProcessingToInboxOpts = {
   /**
-   * MessageIds whose run is still LIVE (non-terminal) and therefore owns
-   * its inbound message: recovery re-drives that run against the durable
-   * log, so re-admitting the message to `inbox/` would dispatch a SECOND
-   * run for it, colliding with the re-drive on the shared runId. Entries
-   * in this set are left in `processing/` untouched; the run's eventual
-   * `markConsumed` clears them. The caller computes this by reading the
-   * run event logs, which live on a DIFFERENT ref (`refs/heads/main`)
-   * than the claim-check subtree this operation commits to
-   * (`refs/heads/events`). Empty/absent means replay every processing
-   * entry (the pre-existing behaviour: recover all orphans).
+   * MessageIds whose run is still live and owns the message: re-admitting
+   * it would dispatch a second run on the same runId, so these entries
+   * stay in `processing/` until the run's `markConsumed`. The caller
+   * computes the set from the run logs on `refs/heads/main`, which this
+   * operation's ref (`refs/heads/events`) cannot see. Absent = replay
+   * every processing entry.
    */
   ownedMessageIds?: ReadonlySet<string>;
 };
 
 /**
  * Recovery path: move every processing entry at `address` back to
- * inbox preserving the original `<receivedAt>-<messageId>` filename
- * key so FIFO ordering survives a workflow-process crash. Returns
- * the set of keys that were moved; when nothing was in processing
- * the returned `replayedKeys` is empty (and the commit is a no-op
- * rewrite of the same tree).
- *
- * The replay is atomic across all processing entries — a partial
- * replay that left some entries in processing would corrupt the
- * FIFO discipline (the next dequeue would pull the wrong entry).
+ * inbox under its original `<receivedAt>-<messageId>` key so FIFO
+ * ordering survives a crash. Atomic across all entries — a partial
+ * replay would corrupt the FIFO discipline. Returns the moved keys;
+ * empty when nothing was in processing (a no-op commit).
  *
  * Watermark carve-out (load-bearing — do NOT "tighten" this): the
- * replay deliberately does NOT apply the `receivedAt < watermark`
- * stale-reject that `enqueueInbox` applies. A `processing/` entry was
- * already dequeued past the dedup index, so re-admitting it to
- * `inbox/` even when its `receivedAt` has fallen below an advanced
- * watermark is correct — the message is a legitimately in-flight one
- * recovered after a crash, not a fresh inbound that could be a
- * duplicate. Applying the stale-reject here would silently LOSE that
- * message. The watermark only ever gates fresh inbound at the enqueue
- * boundary; the recovery replay is exempt by design.
+ * replay skips the `receivedAt < watermark` stale-reject that
+ * `enqueueInbox` applies. A processing entry is already past dedup, so
+ * re-admitting a below-watermark one is correct; applying the reject
+ * here would silently lose a legitimately in-flight message. The
+ * watermark only gates fresh inbound at the enqueue boundary.
  */
 export async function replayProcessingToInbox(
   store: RepoStore,
@@ -4044,14 +3410,10 @@ export async function replayProcessingToInbox(
       const deletes: string[] = [];
       for (const entry of listing.processing) {
         const bytes = await prior.readBlobByOid(entry.oid);
-        // A processing entry whose run is still live (non-terminal durable
-        // log) is owned by the recovery re-drive of that same run. Re-
-        // admitting the message to inbox would dispatch a SECOND run for
-        // it, colliding with the re-drive on the shared runId. Leave such
-        // an entry in processing untouched; the run's eventual
-        // `markConsumed` clears it. Only genuinely orphaned entries (no
-        // run, or a terminal run) are replayed. The run logs live on a
-        // different ref, so the caller precomputes the owned set.
+        // An entry owned by a live run stays in processing (its re-drive
+        // already owns the message; re-admitting would dispatch a second
+        // run on the same runId). Only genuinely orphaned entries are
+        // replayed; the caller precomputed the owned set.
         const envelope = decodeQueueEnvelopeOrThrow(
           bytes,
           `${processingDir}${entry.name}`,
@@ -4065,11 +3427,9 @@ export async function replayProcessingToInbox(
             `claim_check_replay_collision: ${inboxFull} already exists; cannot replay processing entry`,
           );
         }
-        // Re-admit the in-flight entry WITHOUT the watermark stale-reject
-        // enqueueInbox applies: it was already past dedup, so a
-        // below-watermark receivedAt is no reason to refuse it. Applying
-        // the stale-check here would lose a legitimately in-flight
-        // message after a crash. Do not tighten this.
+        // Re-admit without the enqueue stale-reject: the entry is already
+        // past dedup, so a below-watermark receivedAt is no reason to
+        // refuse it. Do not tighten this.
         puts[inboxFull] = bytes;
         deletes.push(`${processingDir}${entry.name}`);
         replayedKeys.push(entry.name.slice(0, -".json".length));
