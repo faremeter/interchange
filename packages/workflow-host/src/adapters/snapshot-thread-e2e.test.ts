@@ -1,20 +1,16 @@
 // In-process end-to-end thread of the approval snapshot, no DB, no subprocess.
 //
-// This drives the REAL step-invoker adapter (wrapping the REAL `createAgent`)
-// inside a REAL `runtimeRun`, with a real authz `ask` suspension, and asserts
+// Drives the REAL step-invoker adapter (wrapping the REAL `createAgent`)
+// inside a REAL `runtimeRun`, with a real authz `ask` suspension, asserting
 // the snapshot the authz extension builds reaches `env.onPark`/`WorkflowPark`.
-// It chains: authz-ask -> reactor gate.blocked -> agent SendResult -> step
-// invoker StepInvokeResult -> parkOnSignal -> onPark, closing the gap between
-// the agent-layer test (which stops at SendResult) and the workflow park-notify
-// test (which starts from a mock suspend).
+// Chain: authz-ask -> reactor gate.blocked -> agent SendResult -> step invoker
+// StepInvokeResult -> parkOnSignal -> onPark.
 //
-// CEILING: this stops at `onPark`. The remaining hops -- park.notify IPC frame
-// -> supervisor registration -> sidecar->hub register frame -> the DB co-write
-// -- cross the workflow-process child subprocess boundary and terminate in
-// Postgres. They are covered separately (the supervisor park-notify test, the
-// hub-link frame test, and the CI-gated real-DB co-write test). Do NOT extend
-// this test across the subprocess boundary; reach for the deploy harness for
-// that.
+// CEILING: stops at `onPark`. The remaining hops -- park.notify IPC frame ->
+// supervisor registration -> sidecar->hub register frame -> the DB co-write --
+// cross the child subprocess boundary and terminate in Postgres; they are
+// covered separately (supervisor park-notify, hub-link frame, CI-gated real-DB
+// co-write). Do NOT extend this test across the subprocess boundary.
 
 import { describe, test, expect } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -63,10 +59,9 @@ const INPUT_SCHEMA = {
 };
 
 // Counts how many times the tool's `run` fires within a single `runOnce`.
-// `runOnce` resets it. It is the load-bearing witness that distinguishes the
-// two arms: on `ask` the authz gate suspends BEFORE `run` (count stays 0); on
-// `allow` the tool actually executes (count reaches 1). Without it, an empty
-// `parks` is ambiguous -- a failed or tool-less run yields the same emptiness.
+// `runOnce` resets it. It is the witness that distinguishes the two arms: on
+// `ask` the authz gate suspends BEFORE `run` (count stays 0); on `allow` the
+// tool executes (count reaches 1). Without it, an empty `parks` is ambiguous.
 let toolRunCount = 0;
 
 const chargeTool = defineTool<BaseEnv>({
@@ -199,9 +194,7 @@ async function runOnce(
   // The step builds the agent and dispatches the tool, and then the authz
   // decision splits the arms: `ask` suspends before the tool body and the
   // park reaches `onPark`, `allow` lets the body run and bump the counter.
-  // Wait for whichever of those this arm expects. Each lands AFTER the
-  // decision, so the counterpart assertion the caller makes ("the tool did
-  // not run" / "nothing parked") reads state the decision has settled.
+  // Wait for whichever of those this arm expects.
   await waitUntil(() =>
     effect === "ask" ? parks.length >= 1 : toolRunCount >= 1,
   );
@@ -233,17 +226,15 @@ describe("approval snapshot in-process end-to-end thread", () => {
   test("an allowed tool runs without parking or a snapshot", async () => {
     // The counterpart to the ask arm. With an `allow` decision the authz gate
     // does not suspend, so the tool body actually runs (`toolRuns` reaches 1)
-    // and no control-plane park fires -- the thread parks and snapshots only on
-    // the ask rail. Asserting `toolRuns === 1` is what makes the empty `parks`
-    // load-bearing: it proves the allow decision was exercised and the tool
-    // reached execution, distinguishing this from a run that failed or never
-    // dispatched the call (both of which would also leave `parks` empty).
+    // and no control-plane park fires. Asserting `toolRuns === 1` makes the
+    // empty `parks` load-bearing: it proves the allow decision was exercised
+    // and the tool reached execution, distinguishing this from a run that
+    // failed or never dispatched the call.
     //
-    // The run's own terminal outcome is deliberately not asserted: after the
-    // tool returns, the real agent proceeds to an inference cycle against an
+    // The run's terminal outcome is deliberately not asserted: after the tool
+    // returns, the real agent proceeds to an inference cycle against an
     // unreachable source and is torn down by the cancel. That is orthogonal to
-    // the park/snapshot invariant under test, which is settled by the time the
-    // tool has run.
+    // the park/snapshot invariant under test.
     const { parks, toolRuns } = await runOnce("allow");
     expect(toolRuns).toBe(1);
     expect(parks).toEqual([]);

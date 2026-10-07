@@ -1,31 +1,16 @@
-// Production `WorkflowRuntimeEnv.RepoStore` adapter.
+// Production `WorkflowRuntimeEnv.RepoStore` adapter: translates
+// `read` / `append` / `subscribe` into operations against the
+// workflow-run substrate for one deployment's repo. On-disk envelopes
+// carry `{ seq, type, ...rest }` (`type` = workflow-event
+// discriminator); the state-machine `WorkflowEvent` uses `kind`, and
+// the adapter performs the `kind` <-> `type` translation at the
+// substrate boundary.
 //
-// The runtime body sees the runtime-env shape: `read(runId)`,
-// `append(runId, event)`, `subscribe(runId, opts)`. This adapter
-// translates each call into operations against the workflow-run
-// substrate (`@intx/hub-sessions` RepoStore plus the workflow-run kind
-// handler) for a single deployment's workflow-run repo.
-//
-// On-disk envelope shape: every event blob committed under
-// `runs/<runId>/events/<seq>.json` carries `{ seq, type, ...rest }`
-// where `type` is the workflow-event discriminator (matching the
-// substrate's `subscribeKind` `type` field and the workflow-run kind
-// handler's `EventEnvelope` contract). The state-machine `WorkflowEvent`
-// uses `kind` as its discriminator; the adapter performs the
-// `kind` <-> `type` translation at the substrate boundary so the
-// runtime body and state machine never see a mismatched discriminator.
-//
-// Append-result error translation (interface-decisions Bonus 1):
-//   - `seq_conflict`: the caller supplied an `event.seq` that does not
-//     match the seq computed from the substrate's prior tree. The
-//     runtime body is the single writer to the run's event log; a
-//     mismatch here means a parallel writer landed in between the
-//     caller's read and the merge under the substrate's per-repo lock.
-//     Translated into a thrown Error naming the run and the diverging
-//     seqs. No retries: the runtime decides higher up.
-//   - `validate_failed`: the substrate's kind handler rejected the
-//     prospective tree via `validatePush`. Translated into a thrown
-//     Error carrying the handler's `reason` text. No retries.
+// Error translation: `seq_conflict` (caller seq diverges from the
+// prior tree -- a single-writer violation) throws naming the run and
+// both seqs; `validate_failed` (kind-handler `validatePush`
+// rejection) throws carrying the handler's `reason`. No retries: the
+// runtime decides higher up.
 
 import { type } from "arktype";
 
@@ -43,11 +28,9 @@ import {
 import type { RepoStore, WorkflowEvent } from "@intx/workflow";
 
 /**
- * Local handle for the runtime-env subscribe options. The workflow
- * package's `RepoStore` interface declares the shape inline but does
- * not export the `SubscribeOpts` alias at the package root; reach in
- * via the parameter-utility so the adapter does not redeclare an
- * incompatible shape.
+ * Subscribe options from the workflow `RepoStore` interface, which does
+ * not export the alias; reach in via the parameter-utility so the
+ * adapter does not redeclare an incompatible shape.
  */
 type SubscribeOpts = Parameters<RepoStore["subscribe"]>[1];
 
@@ -55,14 +38,11 @@ const RUNS_PREFIX = "runs";
 const EVENTS_DIR = "events";
 
 /**
- * On-disk envelope shape committed under
- * `runs/<runId>/events/<seq>.json`. Carries the seq cross-check the
- * workflow-run kind handler validates against the filename, the `type`
- * discriminator the substrate's `subscribeKind` filters on, and an
- * open object for the rest of the workflow-event fields. Switching
- * from the catch-all `"+": "ignore"` to `"+": "delete"` would strip
- * unknown fields; the adapter wants them preserved so the round-trip
- * back into `WorkflowEvent` carries every state-machine field.
+ * On-disk envelope under `runs/<runId>/events/<seq>.json`: the seq the
+ * kind handler cross-checks against the filename, the `type`
+ * discriminator `subscribeKind` filters on, and an open object for the
+ * rest of the workflow-event fields. `"+": "delete"` would strip
+ * unknown fields; the round-trip into `WorkflowEvent` wants them kept.
  */
 const OnDiskEnvelope = type({
   seq: "number >= 0",
@@ -70,13 +50,7 @@ const OnDiskEnvelope = type({
   "[string]": "unknown",
 });
 
-/**
- * Every state-machine `WorkflowEvent` kind. Used to populate
- * `subscribeKind`'s `kinds` filter so the substrate's typed tail
- * surfaces every event blob the runtime cares about (the substrate
- * helper filters on the `type` field; an empty filter would yield
- * nothing).
- */
+/** Every `WorkflowEvent` kind, for `subscribeKind`'s `kinds` filter. */
 const ALL_WORKFLOW_EVENT_TYPES: readonly string[] = [
   "RunStarted",
   "StepStarted",
@@ -99,54 +73,24 @@ const ALL_WORKFLOW_EVENT_TYPES: readonly string[] = [
 ];
 
 export type WorkflowRunRepoStoreOpts = {
-  /**
-   * Substrate handle the adapter reads from and writes to. The caller
-   * wires this against the substrate's registered workflow-run kind
-   * handler -- the adapter's writes land under
-   * `runs/<runId>/events/<seq>.json` and the handler's `validatePush`
-   * is the layer that catches structural rejections.
-   */
+  /** Substrate handle the adapter reads from and writes to. */
   substrate: SubstrateRepoStore;
-  /**
-   * Workflow-run repo identifying the owning deployment. A single
-   * adapter instance services every run inside this deployment; the
-   * adapter's `read` / `append` / `subscribe` calls take a `runId` to
-   * route within the repo.
-   */
+  /** Workflow-run repo identifying the owning deployment. */
   repoId: RepoId;
-  /**
-   * Principal the adapter presents to the substrate. The workflow-run
-   * kind handler accepts a workflow-process principal scoped to the
-   * deployment as the runtime body's writer; that is the principal
-   * shape the production wiring supplies.
-   */
+  /** Principal the adapter presents to the substrate. */
   principal: Principal;
   /**
-   * Principal used for a control-plane cancel append (a batch that is
-   * entirely `CancelRequested`). The workflow-run kind handler requires a
-   * `CancelRequested` be signed by a `supervisor` principal -- a
-   * `workflow-process` principal may write run-body events but not a cancel.
-   * An in-process child runs under real supervisor authority, so its host
-   * supplies a supervisor principal here while run-body events keep their
-   * `workflow-process` attribution. Absent when the writer issues no
-   * in-process cancel, in which case a cancel fails loud at the push boundary
-   * rather than being silently mis-attributed.
+   * Principal for a control-plane cancel append (a batch that is
+   * entirely `CancelRequested`): the kind handler requires a cancel be
+   * signed by a `supervisor` principal. Absent, a cancel fails loud at
+   * the push boundary rather than being silently mis-attributed.
    */
   controlPlanePrincipal?: Principal;
-  /**
-   * Events ref the adapter reads from and writes to. The workflow-run
-   * repo layout pins all `runs/<runId>/events/` blobs under a single
-   * moving ref. Callers typically supply `"refs/heads/main"`.
-   */
+  /** Ref the adapter reads from and writes to (typically `"refs/heads/main"`). */
   ref: string;
 };
 
-/**
- * Construct the production `WorkflowRuntimeEnv.RepoStore` adapter for
- * the supplied deployment. The returned object satisfies the
- * runtime-env interface; the substrate handle and per-deployment
- * routing live in closure.
- */
+/** Construct the production `WorkflowRuntimeEnv.RepoStore` adapter. */
 export function createWorkflowRunRepoStore(
   opts: WorkflowRunRepoStoreOpts,
 ): RepoStore {
@@ -170,19 +114,12 @@ async function readAllEventsForRun(
   opts: WorkflowRunRepoStoreOpts,
   runId: string,
 ): Promise<readonly WorkflowEvent[]> {
-  // Read the committed tree through the substrate, never the working
-  // checkout under `getRepoDir`. `openCommittedReads` pins the ref to its
-  // tip commit and serves every read from the git object store, so an
-  // enumerate-then-read sequence is a single coherent snapshot even while
-  // a concurrent append re-materializes the checkout. The prior
-  // implementation read the working tree directly (raw readdir/readFile)
-  // and raced that materialization: a blob `readdir` had just enumerated
-  // could vanish before `readFile` on a contended filesystem, surfacing a
-  // spurious ENOENT. Reading under the substrate's per-repo write lock was
-  // the alternative considered and rejected -- it would serialize every
-  // read behind the single writer and couple read latency to write
-  // contention, whereas the pinned committed tree is lock-free and already
-  // consistent because every append lands as exactly one commit.
+  // Read the pinned committed tree, never the lagging working checkout:
+  // `openCommittedReads` serves one coherent snapshot even while a
+  // concurrent append re-materializes the checkout. The prior direct
+  // readdir/readFile raced that materialization (a just-enumerated blob
+  // could vanish before readFile); the per-repo write lock was rejected
+  // as it would serialize every read behind the single writer.
   const reads = await opts.substrate.openCommittedReads(
     opts.principal,
     opts.repoId,
@@ -197,10 +134,10 @@ async function readAllEventsForRun(
   const decoder = new TextDecoder();
   const entries: { seq: number; event: WorkflowEvent }[] = [];
 
-  // A terminated run is sealed into a single combined `events.jsonl`; an
-  // in-flight run keeps per-event `events/<seq>.json` files. The two forms
-  // are mutually exclusive; a run carrying both is a botched seal, and
-  // silently reading only the combined file would mask it, so surface it.
+  // A terminated run is sealed into a combined `events.jsonl`; an
+  // in-flight run keeps per-event `events/<seq>.json` files. The forms
+  // are mutually exclusive; a run carrying both is a botched seal, so
+  // surface it.
   const combined = runChildren.find(
     (e) => e.type === "blob" && e.name === WORKFLOW_RUN_EVENTS_FILE,
   );
@@ -226,8 +163,7 @@ async function readAllEventsForRun(
     return entries.map((e) => e.event);
   }
 
-  // Per-event form. `listDir` on an absent or non-tree path returns the
-  // empty array, so a run with no events reads as the empty log.
+  // Per-event form; an absent path lists as the empty log.
   const eventBlobs = await reads.listDir(`${runDir}/${EVENTS_DIR}`);
   for (const child of eventBlobs) {
     if (child.type !== "blob") continue;
@@ -247,10 +183,9 @@ async function readAllEventsForRun(
   return entries.map((e) => e.event);
 }
 
-// Parse one on-disk event envelope -- a per-event file's bytes or one line
-// of a combined `events.jsonl` (which holds the same bytes verbatim). The
-// per-event caller additionally cross-checks the seq against the filename;
-// the combined form carries the seq only in the body.
+// Parse one on-disk envelope (a per-event file's bytes or one line of a
+// combined `events.jsonl`; the per-event caller also cross-checks the
+// seq against the filename).
 function parseEventEnvelope(
   raw: string,
   source: string,
@@ -273,40 +208,27 @@ function parseEventEnvelope(
 }
 
 /**
- * Translate a validated on-disk envelope (`{seq, type, ...rest}`) into
- * the state-machine `WorkflowEvent` shape (`{seq, kind, ...rest}`).
- * The state-machine `WorkflowEvent` discriminated union is narrowed by
- * the next layer (`applyEvent` / `resumeFromLog`); the adapter
- * surfaces a structural object that carries the discriminator under
- * its state-machine field name without re-asserting through the
- * discriminated union here.
+ * Translate a validated on-disk envelope into the state-machine
+ * `WorkflowEvent` shape (`type` -> `kind`). The discriminated union is
+ * narrowed downstream by `applyEvent` / `resumeFromLog`, not here.
  */
 function onDiskToWorkflowEvent(
   envelope: typeof OnDiskEnvelope.infer,
 ): WorkflowEvent {
   const { seq, type: typeStr, ...rest } = envelope;
   const built: Record<string, unknown> = { ...rest, kind: typeStr, seq };
-  // The runtime body and state machine read events through
-  // `WorkflowEvent`'s `kind` discriminator; the adapter has confirmed
-  // the on-disk envelope carries a string `type` and integer `seq`, so
-  // the constructed object satisfies the discriminator contract. The
-  // narrow against the discriminated-union variants lives in the
-  // state machine (`applyEvent` / `resumeFromLog`), not here -- the
-  // in-memory store in `runlocal` follows the same pattern and stores
-  // `WorkflowEvent` objects opaquely. Synthesizing a 17-variant
-  // arktype validator at the adapter layer would duplicate the
-  // state-machine narrow.
+  // The on-disk envelope carries a string `type` and integer `seq`, so
+  // the built object satisfies the discriminator contract; narrowing
+  // the union variants lives in the state machine (`applyEvent` /
+  // `resumeFromLog`), not here.
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- WorkflowEvent's discriminated union is narrowed downstream by the state machine; no runtime validator at this layer
   return built as unknown as WorkflowEvent;
 }
 
 /**
- * Translate a state-machine `WorkflowEvent` (using `kind` as the
- * discriminator) into the on-disk envelope shape (`{seq, type,
- * ...rest}`) the workflow-run kind handler validates and the
- * substrate's `subscribeKind` helper filters on. Exported so the
- * supervisor's terminal-commit path encodes a supervisor-authored
- * `RunFailed` through the same single source of the on-disk shape.
+ * Translate a state-machine `WorkflowEvent` into the on-disk envelope
+ * shape (`kind` -> `type`). Exported so the supervisor's terminal-commit
+ * path encodes a `RunFailed` through the same single source.
  */
 export function workflowEventToOnDisk(
   event: WorkflowEvent,
@@ -317,16 +239,10 @@ export function workflowEventToOnDisk(
 }
 
 /**
- * Append one or more contiguous events to a run's event log in a
- * SINGLE durable commit. The events must carry strictly-monotonic,
- * gap-free seqs continuing the prior tree's tip (the first event's seq
- * is `priorLastSeq + 1`); the merge writes every `events/<seq>.json`
- * blob into one `writeTreePreservingPrefix` tree-rewrite, so N events
- * cost one tree-rewrite + one ref-advance instead of N. An empty
- * `events` array is a no-op. The seq-contiguity check is performed
- * against the supplied events themselves so a caller that buffered a
- * gap surfaces a single-writer conflict rather than a silent gap in
- * the tree.
+ * Append contiguous events to a run's event log in a SINGLE durable
+ * commit: strictly-monotonic, gap-free seqs continuing the prior tree's
+ * tip, written as one `writeTreePreservingPrefix` tree-rewrite. An
+ * empty array is a no-op.
  */
 async function appendBatchEvents(
   opts: WorkflowRunRepoStoreOpts,
@@ -339,11 +255,9 @@ async function appendBatchEvents(
   if (firstEvent === undefined) throw new Error("unreachable");
   const lastEvent = events[events.length - 1];
   if (lastEvent === undefined) throw new Error("unreachable");
-  // A control-plane cancel append (an isolated `CancelRequested`, which the
-  // kind handler requires be signed by a supervisor principal) is written under
-  // `controlPlanePrincipal` when the host supplied one; every other batch --
-  // including run-body events -- keeps the workflow-process `principal`. A mixed
-  // batch is never a cancel, so it stays on `principal`.
+  // A batch that is entirely `CancelRequested` is signed by
+  // `controlPlanePrincipal` when supplied; everything else keeps the
+  // workflow-process `principal`.
   const principal =
     opts.controlPlanePrincipal !== undefined &&
     events.every((event) => event.kind === "CancelRequested")
@@ -358,13 +272,9 @@ async function appendBatchEvents(
       {
         preservePrefix: prefix,
         merge: async (existing) => {
-          // The runtime body emits events at `state.lastSeq + 1` and
-          // `emptyState.lastSeq = 0`, so the first append on an empty
-          // events tree carries seq=1. The adapter mirrors that
-          // convention: the prior tree's lastSeq is the maximum seq
-          // observed under the prefix, or 0 when no events exist yet;
-          // the expected next seq is `priorLastSeq + 1`. Every event
-          // in the batch must continue contiguously from there.
+          // The runtime body emits at `state.lastSeq + 1` (first
+          // append on an empty tree carries seq=1); the expected next
+          // seq is the prior tree's max seq plus one.
           let priorLastSeq = 0;
           for (const filepath of existing.keys()) {
             const name = filepath.slice(prefix.length);
@@ -377,14 +287,9 @@ async function appendBatchEvents(
           let expectedSeq = priorLastSeq + 1;
           for (const event of events) {
             if (event.seq !== expectedSeq) {
-              // Capture the divergence and return an unchanged tree so
-              // the substrate's commit short-circuits (the kind handler
-              // accepts an empty diff against the same prior tree); the
-              // throw happens outside the merge callback so the
-              // adapter's error carries the full context. The empty
-              // tree returned here preserves the existing prefix
-              // bit-for-bit so the rollback path inside the substrate
-              // does not need to fire.
+              // Record the divergence and return the tree unchanged so
+              // the commit short-circuits; the throw happens outside
+              // the merge callback so the error carries full context.
               seqConflict = { expected: expectedSeq, supplied: event.seq };
               const passthrough: Record<string, string | Uint8Array> = {};
               for (const [k, v] of existing) passthrough[k] = v;
@@ -424,14 +329,10 @@ async function* subscribeRun(
   runId: string,
   subOpts: SubscribeOpts,
 ): AsyncIterableIterator<{ seq: number; event: WorkflowEvent }> {
-  // `subscribeKind` requires a `kinds` filter; supplying every known
-  // workflow-event `type` keeps the runtime body's contract intact (it
-  // wants every event for the run, not a subset). The substrate helper
-  // also surfaces per-run attribution via the entry's `runId`, which
-  // we use to filter just this run's events. Replay-then-live mode
-  // mirrors `SubscribeOpts.from`: `"head"` emits only events committed
-  // strictly after subscription, `{ seq }` enumerates prior events at
-  // or after the supplied seq before transitioning to live.
+  // `subscribeKind` requires a `kinds` filter; every known type keeps
+  // the runtime body's contract (it wants every event for the run).
+  // Entries are filtered to this run via `runId`; `from` semantics
+  // mirror `SubscribeOpts.from` (`"head"` or a prior seq).
   const kindOpts: Parameters<typeof subscribeKind>[5] = {
     signal: subOpts.signal,
     from: subOpts.from,

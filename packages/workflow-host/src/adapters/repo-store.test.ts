@@ -49,12 +49,9 @@ const allowAll: AuthorizeFn = () => ({ allowed: true });
 
 // The kind handler does principal-vs-event-origin checks only on
 // `CancelRequested` events; this well-formed `workflow-process`
-// principal (kind + anchorRunId) is enough for the
-// RunStarted/StepStarted shapes the tests here exercise, and the
-// substrate's allow-all authorize callback gates every action. The
-// `anchorRunId` matches the `enforceWorkflowProcessPathScope`
-// fail-closed contract; without it the validatePush path would
-// reject the principal as malformed.
+// principal (kind + anchorRunId) is enough for the run-body event
+// shapes the tests here exercise. The `anchorRunId` matches the
+// `enforceWorkflowProcessPathScope` fail-closed contract.
 const WORKFLOW_PROCESS_PRINCIPAL_SHAPE = {
   kind: "workflow-process",
   anchorRunId: "test-deployment",
@@ -150,9 +147,8 @@ describe("workflow-host RepoStore adapter — happy path", () => {
 
     // Drive a terminal run, then read it before and after the supervisor
     // seals it. Compaction is the only path that produces a combined
-    // `events.jsonl`: it commits the fold and drops the per-event blobs,
-    // so reading the sealed run exercises the adapter's combined-form read
-    // against the committed tree.
+    // `events.jsonl`, so reading the sealed run exercises the
+    // combined-form read against the committed tree.
     const runId = "run-combined";
     await adapter.append(runId, freshRunStarted(runId, 1));
     await adapter.append(runId, freshStepStarted(2));
@@ -282,8 +278,6 @@ describe("workflow-host RepoStore adapter — append-result error translation", 
     await adapter.append(runId, freshRunStarted(runId, 1));
     // The next append's caller-supplied seq is 1 (stale); the adapter
     // sees the prior tree already has seq 1 and the next seq is 2.
-    // The single-writer-invariant violation must surface as a thrown
-    // Error naming both the expected and supplied seqs.
     const stale = freshStepStarted(1);
     await expect(adapter.append(runId, stale)).rejects.toThrow(
       /seq conflict on append to run-seq-conflict.*single-writer invariant violated.*expected seq 2.*caller supplied 1/,
@@ -299,11 +293,9 @@ describe("workflow-host RepoStore adapter — append-result error translation", 
     const principal: Principal = { kind: "test" };
 
     // Custom kind handler that accepts everything except a `kind`
-    // equal to "RunStarted". The adapter writes the on-disk envelope
-    // with `type: "RunStarted"`; the handler reads the file via
-    // `readBlob`, parses, and rejects with a known reason. The
-    // adapter must translate the substrate's `path_violation:`
-    // surface into a thrown Error carrying the handler's reason.
+    // equal to "RunStarted". The adapter must translate the substrate's
+    // `path_violation:` surface into a thrown Error carrying the
+    // handler's reason.
     const failingHandler: KindHandler = {
       kind: "agent-state",
       directoryPrefix: "validate-failed",
@@ -375,9 +367,8 @@ describe("workflow-host RepoStore adapter — read coherence", () => {
       handlers: { "workflow-run": workflowRunKindHandler },
       authorize: allowAll,
     });
-    // No genesis write -- the substrate's on-disk repo does not yet
-    // exist. The adapter's read must surface an empty list rather than
-    // throw.
+    // No genesis write -- the on-disk repo does not yet exist; read
+    // must surface an empty list rather than throw.
     const adapter = createWorkflowRunRepoStore({
       substrate,
       repoId,
@@ -391,11 +382,10 @@ describe("workflow-host RepoStore adapter — read coherence", () => {
 
 describe("workflow-host RepoStore adapter — first-seq contract against runtime body", () => {
   test("append with seq=1 on an empty events tree (the runtime body's actual first event)", async () => {
-    // The runtime body emits events at `state.lastSeq + 1` and
+    // The runtime body emits at `state.lastSeq + 1` with
     // `emptyState.lastSeq = 0`, so the first append on a fresh run
-    // carries seq=1. The adapter must accept that against an empty
-    // events tree rather than rejecting on a seq-conflict against an
-    // off-by-one baseline.
+    // carries seq=1 and must be accepted, not rejected as an
+    // off-by-one conflict.
     const dataDir = await makeTempDir("repo-store-adapter-first-seq-");
     const repoId: RepoId = {
       kind: "workflow-run",

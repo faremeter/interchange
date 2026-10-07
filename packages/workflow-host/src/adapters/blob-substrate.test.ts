@@ -42,12 +42,10 @@ const REF = "refs/heads/main";
 const allowAll: AuthorizeFn = () => ({ allowed: true });
 
 // The blob substrate writes under `runs/<runId>/blobs/<sha256>`, which
-// the workflow-run kind handler's strict `runs/<runId>/` schema
-// rejects (only `events/` is permitted alongside event blobs). The
-// adapter tests target the adapter's behavior, not the kind handler's
-// schema, so a permissive `agent-state`-shaped handler stands in for
-// the production wiring -- the same pattern the sibling repo-store
-// adapter test uses for its permissive smoke case.
+// the workflow-run kind handler's strict `runs/<runId>/` schema rejects
+// (only `events/` is permitted). These tests target the adapter, not the
+// handler's schema, so a permissive `agent-state`-shaped handler stands
+// in for the production wiring.
 const permissiveHandler: KindHandler = {
   kind: "agent-state",
   directoryPrefix: "blob-substrate-test",
@@ -91,9 +89,8 @@ describe("workflow-host BlobSubstrate adapter — inline path", () => {
     const value = { hello: "world", n: 42 };
     const { ref } = await adapter.recordOutput("step-a", 1, value);
     expect(ref.startsWith("inline:")).toBe(true);
-    // The inline ref's body is the verbatim JSON payload, matching
-    // the in-memory adapter's shape. This is the contract resolveRef
-    // round-trips against.
+    // The inline ref's body is the verbatim JSON payload, the shape
+    // resolveRef round-trips against.
     expect(ref.slice("inline:".length)).toBe(JSON.stringify(value));
   });
 
@@ -133,10 +130,8 @@ describe("workflow-host BlobSubstrate adapter — blob path", () => {
       "run-spill",
       "deployment-spill",
     );
-    // Construct a value whose JSON representation comfortably exceeds
-    // 1 MiB so the adapter takes the blob path. A 1.5 MiB payload of
-    // a repeating filler keeps the test fast while crossing the
-    // threshold by a healthy margin.
+    // A 1.5 MiB payload of repeating filler crosses the threshold by a
+    // healthy margin while keeping the test fast.
     const filler = "x".repeat(1_500_000);
     const value = { big: filler };
     const { ref } = await adapter.recordOutput("step-big", 1, value);
@@ -168,20 +163,13 @@ describe("workflow-host BlobSubstrate adapter — blob path", () => {
   });
 
   test("blob key is the independently-derived sha256 of the encoded JSON", async () => {
-    // The blob key is the hex SHA-256 of the encoded JSON bytes the
-    // adapter writes (`sha256Hex` in blob-substrate.ts). A drift in the
-    // digest or hex encoding silently relocates every blob and breaks
-    // resolveRef. The spill tests above recompute nothing against a
-    // fixed input, so they would survive such a drift. Force the blob
-    // path with a tiny inline threshold and a fixed value, then pin the
-    // key to a literal from an independent oracle:
+    // Pin the key to a literal from an independent oracle:
     //
     //   printf '%s' '"golden-blob-value"' | shasum -a 256
-    //   printf '%s' '"golden-blob-value"' | openssl dgst -sha256
     //
-    // The value JSON-stringifies to `"golden-blob-value"` (the quotes
-    // are part of the JSON string), which is exactly the byte string
-    // hashed above.
+    // The value JSON-stringifies to `"golden-blob-value"` (quotes
+    // included), which is exactly the byte string hashed. A drift in
+    // the digest or hex encoding silently relocates every blob.
     const { adapter } = await makeAdapter("run-golden", "deployment-golden", 4);
     const { ref } = await adapter.recordOutput(
       "step-golden",

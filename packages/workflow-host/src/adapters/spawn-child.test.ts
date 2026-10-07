@@ -27,8 +27,8 @@ import {
 
 const tempDirs: string[] = [];
 
-// These tests exercise the adapter's resolution/abort/forwarding, not event
-// emission, so the terminal `HostSpawnChild` sink is a no-op.
+// These tests exercise the adapter's resolution/abort/forwarding, not
+// event emission, so the terminal `HostSpawnChild` sink is a no-op.
 const noopOnEvent = (): void => {
   /* the event sink is not asserted in these tests */
 };
@@ -43,10 +43,8 @@ let signingKey: KeyPair;
 
 // This adapter is the TERMINAL childWorkflow resolver: an owned inline child is
 // lifted to an internal ref at child boot and resolved from the parent's
-// in-memory closure map with no on-disk read and no separate per-child
-// re-verify (the parent's re-verify already covers the inline child). It drives
-// the child terminal-only; the onTrigger-body re-verify gate lives on the
-// suspendable adapter and is covered in `reverify.test.ts`.
+// in-memory closure map, driving the child terminal-only; the onTrigger-body
+// re-verify gate lives on the suspendable adapter (`reverify.test.ts`).
 
 beforeAll(async () => {
   signingKey = await generateKeyPair();
@@ -64,9 +62,9 @@ const REF = "refs/heads/main";
 const allowAll: AuthorizeFn = () => ({ allowed: true });
 
 /**
- * Minimum-valid child definition: the terminal resolver copies the definition
- * by reference and hands it to the `runChild` stub, so the runtime body's
- * primitive narrow is not exercised here.
+ * Minimum-valid child definition: the terminal resolver copies the
+ * definition by reference and hands it to the `runChild` stub, so the
+ * runtime body's primitive narrow is not exercised here.
  */
 function childDefinition(id: string): WorkflowDefinition {
   const definition = {
