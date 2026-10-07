@@ -109,7 +109,7 @@ The constructor argument shape:
 
 The sidecar's deploy router is the single ingress for inbound
 `agent.deploy` frames; its production wiring lives at
-`apps/sidecar/src/workflow-host-wiring.ts` in
+`src/deploy/workflow-host-wiring.ts` in
 `createSidecarDeployRouter`. Every deploy stages through the
 workflow-run substrate, and the router decides between two frame
 shapes:
@@ -223,11 +223,12 @@ host that reads the stopped deployment's history finds it.
 ### Host wiring
 
 A host that wants to instantiate a supervisor constructs the
-bindings against its own infrastructure. The reference
-implementation for the in-tree sidecar lives at
-`apps/sidecar/src/workflow-host-wiring.ts` and is intentionally
-thin — anything that would benefit a future alternative-sidecar
-implementation belongs inside this package, not in the wiring.
+bindings against its own infrastructure. The in-tree sidecar's
+supervisor and deploy router live in this package
+(`src/deploy/workflow-host-wiring.ts`). The host entry passes the Bun
+spawners from `apps/sidecar/src/workflow-child-spawner.ts` and
+`apps/sidecar/src/workflow-probe-spawner.ts`. The child binary
+closes the factory in `apps/sidecar/src/workflow-child-bindings.ts`.
 
 ## Child Entry
 
@@ -333,7 +334,7 @@ Example host binary (`apps/<host>/bin/workflow-child`):
 ```ts
 #!/usr/bin/env bun
 import { runWorkflowChildFromProcessEnv } from "@intx/workflow-host";
-import { createSubstrate } from "../src/workflow-substrate-factory";
+import { createSubstrate } from "../src/workflow-child-bindings";
 
 await runWorkflowChildFromProcessEnv(createSubstrate, {
   substrateConfigKeys: ["SIDECAR_DATA_DIR" /* ... */],
@@ -345,11 +346,15 @@ await runWorkflowChildFromProcessEnv(createSubstrate, {
 });
 ```
 
-The reference in-tree implementation lives in `apps/sidecar`. An
-alternative-sidecar implementer follows the same pattern: write a
-substrate factory against its own infrastructure, ship a ~5-line
-entry script, and resolve the `binaryPath` binding to that script
-in its supervisor-wiring module.
+The reference in-tree binary imports `createSubstrate` from
+`apps/sidecar/src/workflow-child-bindings.ts`, which closes this
+package's `createSidecarSubstrateFactory` over the app's tool
+materializer and the grant cap from `@intx/workflow-deploy`. The child
+binary path is resolved in
+`apps/sidecar/src/workflow-child-spawner.ts`. An alternative host
+follows the same pattern: write a substrate factory against its own
+infrastructure, ship a short entry script, and pass that script as
+`binaryPath`.
 
 ### Scheduler adapter
 

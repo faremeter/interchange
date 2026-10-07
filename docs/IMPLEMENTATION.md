@@ -432,7 +432,7 @@ object whose shape is:
 - `mailBus` — `MailBusBindings` (`registerAddress`,
   `unregisterAddress`, `subscribeMailForAddress`).
 - `subprocessSpawner` — invoked once per spawn against the
-  package-owned `packages/workflow-host/bin/workflow-child` script.
+  host-owned `apps/sidecar/bin/workflow-child` script.
   Production wires it against `Bun.spawn`; tests inject a mock.
 - Per-deployment configuration: `binaryPath`, `substrateEnv`,
   `workflowRunRepoId`, `workflowRunRef`, `anchorRunId`,
@@ -605,19 +605,19 @@ nobody can send.
 The in-tree seams are the worked example. `buildRuntimeEnv`
 (`packages/workflow-host/src/child/run-child.ts`) declares `true`
 for the deployment's own run. In
-`apps/sidecar/src/workflow-substrate-factory.ts`,
+`packages/workflow-host/src/child/substrate-factory.ts`,
 `createSidecarRunChild` declares `false` and
 `createSidecarSpawnSuspendableChild` declares `true`.
 
 The supervisor's `binaryPath` binding resolves to the host's own
-binary statically. In the sidecar's wiring
-(`apps/sidecar/src/workflow-host-wiring.ts`) the resolution lives
-in a wiring-module-load-time constant computed via
+binary statically. In the sidecar
+(`apps/sidecar/src/workflow-child-spawner.ts`) the resolution lives
+in a load-time constant computed via
 `import.meta.resolve("../bin/workflow-child")`; the same pattern
 applies to any alternative-sidecar implementation.
 
 The in-tree sidecar's substrate factory is
-`apps/sidecar/src/workflow-substrate-factory.ts` and the binary
+`packages/workflow-host/src/child/substrate-factory.ts` and the binary
 is `apps/sidecar/bin/workflow-child`. An alternative-sidecar
 implementer ships its own factory + binary and points its
 supervisor's `binaryPath` at the alternative binary.
@@ -884,7 +884,7 @@ The sidecar's deploy router is the single ingress for inbound
 `agent.deploy` frames. The hub-link surface at
 `packages/hub-agent/src/ws/hub-link.ts` consumes a `DeployRouter`
 binding whose production implementation is `createSidecarDeployRouter`
-in `apps/sidecar/src/workflow-host-wiring.ts`. Routing lives on the
+in `packages/workflow-host/src/deploy/workflow-host-wiring.ts`. Routing lives on the
 router side of the seam; the hub-link hands the frame off and folds the
 returned public key into the outbound `agent.deploy.ack`.
 
@@ -923,8 +923,8 @@ The workflow-run repo's substrate `repoId.id` is constrained to
 `packages/hub-sessions/src/repo-store/types.ts`), which the
 run-address shape (`run_<id>@<domain>`) does not satisfy. The sidecar
 wiring derives the deploy-phase repo slug by substituting disallowed
-characters with `-`; see `deriveDeploymentId` in
-`apps/sidecar/src/workflow-host-wiring.ts`. The supervisor principal's
+characters with `-`; see `deriveWorkflowRunRepoId` in
+`packages/workflow-deploy/src/orchestrator.ts`. The supervisor principal's
 `anchorRunId` and the workflow-run `repoId.id` are kept equal so the
 workflow-run kind handler's principal-vs-repo authz check holds for
 every supervisor-authored event commit.
@@ -1002,14 +1002,12 @@ child for the signature.
 ### Host Wiring (Sidecar Reference Implementation)
 
 The in-tree sidecar's wiring lives at
-`apps/sidecar/src/workflow-host-wiring.ts`. The module is
-intentionally thin -- it composes the sidecar's existing
-`HubTransport`, signing keypair, and substrate `RepoStore` handle
-into the bindings shape the supervisor expects, and exposes
-`createSidecarWorkflowSupervisor(opts)` for the deploy handler to
-invoke per workflow deployment. Anything that would benefit a
-future alternative-sidecar implementer belongs inside the
-`@intx/workflow-host` package, not in the wiring.
+`packages/workflow-host/src/deploy/workflow-host-wiring.ts`. The module
+composes the sidecar's `HubTransport`, signing keypair, and substrate
+`RepoStore` handle into the bindings shape the supervisor expects, and
+exposes `createSidecarWorkflowSupervisor(opts)` for the deploy handler to
+invoke per workflow deployment. The app passes the Bun spawner and the
+child binary path from `apps/sidecar/src/workflow-child-spawner.ts`.
 
 ### How This Differs From The Hub-Sidecar WebSocket Boundary
 

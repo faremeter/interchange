@@ -1993,7 +1993,7 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
     // The real run-loop wiring: the child's `invokeStep` binding builds
     // a fresh `createWorkflowStepInvoker` per invocation and forwards the
     // run-loop's warm cache to it. This mirrors the sidecar's production
-    // binding (`workflow-substrate-factory.ts`) minus the tool-bearing
+    // binding (`substrate-factory.ts`) minus the tool-bearing
     // factory -- here the agentFactory is a spy that counts builds.
     const invokeStep: ChildStepInvoker = async (
       req,

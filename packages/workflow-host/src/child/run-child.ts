@@ -1,6 +1,6 @@
 // `runWorkflowChild` -- the workflow-process child's runtime body.
 //
-// The package-owned binary at `packages/workflow-host/bin/workflow-child`
+// The sidecar binary at `apps/sidecar/bin/workflow-child`
 // is a thin wrapper that parses `process.env`, opens stdin/stdout for
 // the control channel, accepts the inherited event-channel fd, builds
 // the substrate `RepoStore`, and invokes this function. Tests bypass

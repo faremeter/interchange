@@ -306,10 +306,10 @@ type StepStrategy = {
  * NOTE: the supervisor's `deriveStepAddress` feeds the credentials
  * snapshot's per-step mail `address` and the grants-repo derivation. It
  * does NOT feed the child's on-disk tool read (`stepDeployTreeDir` in
- * `step-agent-tools.ts`), which re-derives the step address from the
- * deployment mailbox address independently. The deploy tree must
- * therefore be staged at the address `stepDeployTreeDir` computes,
- * regardless of this strategy's address choice.
+ * `apps/sidecar/src/step-tool-materialization.ts`), which re-derives the
+ * step address from the deployment mailbox address independently. The
+ * deploy tree must therefore be staged at the address `stepDeployTreeDir`
+ * computes, regardless of this strategy's address choice.
  */
 function createStepStrategy(args: {
   legacyAddress: string;
@@ -937,7 +937,7 @@ export function createSidecarDeployRouter<THost, TRegistries>(deps: {
   /**
    * Substrate-config env keys the multi-step branch propagates into
    * the workflow-process child's spawn-time env (see
-   * `SIDECAR_SUBSTRATE_CONFIG_KEYS` in `workflow-substrate-factory.ts`).
+   * `SIDECAR_SUBSTRATE_CONFIG_KEYS` in `substrate-factory.ts`).
    * The router merges `STEP_INFERENCE_SOURCES` on top per multi-step
    * frame. Defaults to an empty record so a router built without
    * substrate config (e.g. a test) needs no boot-edge threading.
@@ -1691,7 +1691,7 @@ export function createSidecarDeployRouter<THost, TRegistries>(deps: {
       }
       const definitionHash = spec.approvedWireHash;
 
-      // Per-deployment substrate-config keys the workflow-substrate-factory
+      // Per-deployment substrate-config keys the substrate factory
       // validator requires. The boot edge's `multistepSubstrateEnv` carries
       // the boot-edge constants; the two workflow-run identity keys are
       // derived per-deploy here.

@@ -11,12 +11,16 @@ with an in-memory mail transport (`@intx/mail-memory`), the Web
 Crypto provider (`@intx/crypto`), and a deploy router; on each
 inbound deploy the router creates an `@intx/workflow-host` supervisor
 for the deployment and spawns a supervised workflow-process child.
-The child assembles the step's runtime across two seams:
-`src/step-agent-tools.ts` materializes the pinned tool-package
-closure and composes the POSIX and LSP plugin chain, and
-`src/workflow-substrate-factory.ts` builds the per-step environment —
-the isomorphic-git context store and the supervisor-backed mail
-transport the tools bind to. `src/default-harness.ts` provides only
+The child assembles the step's runtime across two seams. The app's
+`src/step-tool-materialization.ts` materializes the pinned tool-package
+closure. `@intx/workflow-host` composes the POSIX and LSP plugin chain
+(`packages/workflow-host/src/child/step-tools.ts`) and builds the
+per-step environment
+(`packages/workflow-host/src/child/substrate-factory.ts`) — the
+isomorphic-git context store and the supervisor-backed mail transport
+the tools bind to. The binary closes that factory over the materializer
+and `@intx/workflow-deploy`'s grant cap in
+`src/workflow-child-bindings.ts`. `src/default-harness.ts` provides only
 the `HarnessBuilder` source-admission check (`canBuildSource`) the
 deploy router uses to reject an unbuildable inference source before
 spawning.
