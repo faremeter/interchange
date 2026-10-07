@@ -4,6 +4,7 @@
 // arguments. This module is the process that owns both: it resolves
 // `bin/workflow-probe-child` and launches it with a fresh env.
 
+import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import type {
@@ -14,10 +15,24 @@ import type {
 /**
  * Path of this package's `bin/workflow-probe-child`. Resolved at load so
  * the boot edge can hand the probe executor a concrete path.
+ *
+ * A dev-worktree build step (`make build-test-binaries`) bundles this
+ * binary into `dist-test/workflow-probe-child.js`; a single-file bundle
+ * boots faster than the extensionless shebang source because the whole
+ * `@intx/*` module graph is loaded from one pre-bundled file instead of
+ * being transpiled module-by-module. Prefer the bundle when it exists;
+ * the source binary remains the fallback, so a worktree that never ran
+ * the build step behaves exactly as before. The bundle is built from
+ * this same source, so the executed code is identical either way.
  */
-export const SIDECAR_WORKFLOW_PROBE_CHILD_BINARY: string = fileURLToPath(
-  import.meta.resolve("../bin/workflow-probe-child"),
+const BUNDLED_PROBE_BINARY = fileURLToPath(
+  new URL("../dist-test/workflow-probe-child.js", import.meta.url),
 );
+export const SIDECAR_WORKFLOW_PROBE_CHILD_BINARY: string = existsSync(
+  BUNDLED_PROBE_BINARY,
+)
+  ? BUNDLED_PROBE_BINARY
+  : fileURLToPath(import.meta.resolve("../bin/workflow-probe-child"));
 
 /**
  * Real `Bun.spawn`-backed probe-child spawner. The caller assembles a

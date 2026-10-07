@@ -16,3 +16,4 @@ opencode-*.md
 dispatch/
 tmp/
 .claude
+apps/sidecar/dist-test/

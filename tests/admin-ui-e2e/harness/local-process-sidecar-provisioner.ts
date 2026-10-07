@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -55,8 +56,21 @@ function spawnSidecarProcess({
   request,
   dataDir,
 }: Parameters<SpawnLocalSidecar>[0]): LocalSidecarProcess {
+  // Prefer the bundled sidecar (`apps/sidecar/dist-test/index.js`, built
+  // by `make build-test-binaries`) for the same reason the workflow-deploy
+  // harness does: it boots faster than the TypeScript source. The source
+  // entry remains the fallback. The `--conditions=intx-src` flag stays on
+  // both paths because the sidecar dynamically imports operator-configured
+  // adapter modules whose own `@intx/*` imports need it.
+  const bundledSidecar = path.join(
+    REPO_ROOT,
+    "apps/sidecar/dist-test/index.js",
+  );
+  const sidecarTarget = existsSync(bundledSidecar)
+    ? bundledSidecar
+    : "apps/sidecar/src/index.ts";
   const childProcess = Bun.spawn(
-    ["bun", "run", "--conditions=intx-src", "apps/sidecar/src/index.ts"],
+    ["bun", "run", "--conditions=intx-src", sidecarTarget],
     {
       cwd: REPO_ROOT,
       env: {
