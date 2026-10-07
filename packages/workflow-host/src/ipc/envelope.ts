@@ -1,28 +1,26 @@
 // Frame envelope shared by both IPC channels.
 //
-// Every signed/HMACed frame carries `{ seq, channelId, payload }`
-// inside the bytes the receiver authenticates. `seq` is a monotonic
-// u64 counter the sender maintains per channel; `channelId` is the
-// 16-byte hex identity the supervisor mints at every spawn and rotates
-// at every recycle; `payload` is the channel-specific JSON value.
+// Every signed/HMACed frame carries `{ seq, channelId, payload }` inside
+// the bytes the receiver authenticates. `seq` is a monotonic u64 counter
+// the sender maintains per channel; `channelId` is the 16-byte hex
+// identity the supervisor mints at every spawn and rotates at every
+// recycle; `payload` is the channel-specific JSON value.
 //
-// Wire shape on disk for the control channel: one NDJSON line per
-// frame, each line `{ envelope: <canonical-json-of-envelope>, sig:
-// <hex Ed25519 signature> }`. For the event channel: a 4-byte big-
-// endian length prefix, then `{ envelope, mac }` JSON in the same
-// shape with `mac` carrying the hex HMAC tag. Both wires sign the
-// canonical-JSON serialization of the envelope as a single bytestring.
-// The on-wire byte representation of the envelope is exactly what the
-// signer signs and the verifier verifies.
+// Wire shape: one NDJSON line per control-channel frame, each line
+// `{ envelope: <canonical-json-of-envelope>, sig: <hex Ed25519> }`; for
+// the event channel, `{ envelope, mac }` in the same shape with `mac`
+// carrying the hex HMAC tag. Both wires sign the canonical-JSON
+// serialization of the envelope as a single bytestring; the on-wire byte
+// representation is exactly what the signer signs and the verifier
+// verifies.
 //
-// Canonical JSON: keys appear in fixed insertion order (seq,
-// channelId, payload). The payload's internal structure is preserved
-// as the sender produced it; no recursive canonicalization is
-// performed because the verifier never compares two structurally
-// different serializations of the same logical value. Senders and
-// receivers see the same bytes by construction (sender computes the
-// signature over the exact serialization it then transmits; receiver
-// verifies the signature over the exact bytes it received).
+// Canonical JSON: keys appear in fixed insertion order (seq, channelId,
+// payload); no recursive canonicalization of the payload is performed
+// because the verifier never compares two structurally different
+// serializations of the same logical value. Senders and receivers see
+// the same bytes by construction: the sender computes the signature over
+// the exact serialization it transmits, and the receiver verifies over
+// the exact bytes it received.
 
 import { type } from "arktype";
 
@@ -62,11 +60,10 @@ export const MacedEnvelope = type({
 export type MacedEnvelope = typeof MacedEnvelope.infer;
 
 /**
- * Produce the canonical byte serialization of an envelope. The
- * sender signs these bytes; the receiver verifies against these
- * bytes. Both sides reach the same bytestring deterministically
- * because the JSON serialization runs in insertion order over a
- * fixed-shape object.
+ * Produce the canonical byte serialization of an envelope. The sender
+ * signs these bytes; the receiver verifies against these bytes. Both
+ * sides reach the same bytestring deterministically because the JSON
+ * serialization runs in insertion order over a fixed-shape object.
  */
 export function encodeEnvelope(envelope: FrameEnvelope): Uint8Array {
   const ordered = {
@@ -78,11 +75,11 @@ export function encodeEnvelope(envelope: FrameEnvelope): Uint8Array {
 }
 
 /**
- * Parse a canonical envelope byte serialization back into the
- * structured shape. Used on the receiver side after the per-frame
- * MAC/signature check passes -- a structural failure on a frame
- * whose authentication tag matched is a programming bug at the
- * sender, not a tampering signal.
+ * Parse a canonical envelope byte serialization back into the structured
+ * shape. Used on the receiver side after the per-frame MAC/signature
+ * check passes -- a structural failure on a frame whose authentication
+ * tag matched is a programming bug at the sender, not a tampering
+ * signal.
  */
 export function decodeEnvelope(bytes: Uint8Array): FrameEnvelope {
   let parsed: unknown;

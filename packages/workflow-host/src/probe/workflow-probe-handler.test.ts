@@ -261,12 +261,12 @@ describe("createWorkflowProbeExecutor", () => {
   );
 
   test("returns a written result even when the child exit resolves before the read", async () => {
-    // A one-shot child writes its result line and then exits promptly, so both
-    // the buffered line and `handle.exited` become ready together. A handle
-    // whose `exited` is ALREADY resolved and whose stdout carries a valid signed
-    // result reproduces that race deterministically: the former `exit` race arm
-    // would win and discard the written result; racing only the line must
-    // return it.
+    // A one-shot child writes its result line and then exits promptly, so
+    // both the buffered line and `handle.exited` become ready together. A
+    // handle whose `exited` is ALREADY resolved and whose stdout carries a
+    // valid signed result reproduces that race deterministically: the
+    // former `exit` race arm would win and discard the written result;
+    // racing only the line must return it.
     const projection = {
       id: "race-fixture",
       triggers: [],

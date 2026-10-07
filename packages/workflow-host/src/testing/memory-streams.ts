@@ -3,46 +3,44 @@
 //
 // Seventeen copies of these two factories accumulated across this package,
 // `apps/sidecar`, and the deploy tests, in nine variants apiece. The
-// divergences were almost entirely cosmetic, but the copies disagreed on one
-// thing that matters: whether `inject` appends the newline terminator that
-// delimits a wire frame.
+// divergences were almost entirely cosmetic, but the copies disagreed on
+// one thing that matters: whether `inject` appends the newline terminator
+// that delimits a wire frame.
 //
-// The two doubles answer that differently, because the two channels carry the
-// terminator differently. The event channel is byte-oriented and its
-// terminator is part of the payload, so `createMemoryFrameStream` separates
-// three roles and a caller says which one it means:
+// The two doubles answer that differently, because the two channels carry
+// the terminator differently. The event channel is byte-oriented and its
+// terminator is part of the payload, so `createMemoryFrameStream`
+// separates three roles and a caller says which one it means:
 //
 //   `writer`    what production writes through; bytes go in verbatim
 //   `inject`    one complete frame arriving on the wire, terminator supplied
 //   `injectRaw` bytes verbatim, for a deliberately malformed wire
 //
-// The control channel is line-oriented: one NDJSON line is one frame, and the
-// terminator is the line break the buffer does not store. So
-// `createMemoryNdjsonStream` has no third role -- `writer.write` and `inject`
-// are the same function -- and it strips one trailing newline, so a caller
-// that spells the terminator and one that omits it buffer the same line. A
-// malformed control frame is spelled as a malformed line, which `inject`
-// passes through unchanged apart from that newline, so there is no separate
-// raw role for a caller to reach for.
+// The control channel is line-oriented: one NDJSON line is one frame, and
+// the terminator is the line break the buffer does not store. So
+// `createMemoryNdjsonStream` has no third role -- `writer.write` and
+// `inject` are the same function -- and it strips one trailing newline, so
+// a caller that spells the terminator and one that omits it buffer the
+// same line. A malformed control frame is spelled as a malformed line,
+// which `inject` passes through unchanged apart from that newline.
 //
-// A reader supports ONE `read()` iteration. Both channels are single-consumer
-// by construction -- the supervisor starts one pump per stream per child --
-// and the buffer is drained by whoever iterates, so a second iteration would
-// silently steal frames from the first. `read()` enforces that rather than
-// trusting it, because the way it gets violated is invisible: a spawner
-// double that hands the same streams to a respawned child re-reads them, and
-// the second iteration returns immediately off the closed stream instead of
-// receiving the new child's frames. The child then looks like it died on its
-// handshake, which is indistinguishable from the failure such a test is
-// usually written to examine.
+// A reader supports ONE `read()` iteration. Both channels are
+// single-consumer by construction (the supervisor starts one pump per
+// stream per child), and the buffer is drained by whoever iterates, so a
+// second iteration would silently steal frames from the first. `read()`
+// enforces that rather than trusting it, because the way it gets violated
+// is invisible: a spawner double that hands the same streams to a respawned
+// child re-reads them, and the second iteration returns immediately off the
+// closed stream instead of receiving the new child's frames. The child then
+// looks like it died on its handshake.
 
 import type { NdjsonReader, NdjsonWriter } from "../ipc/control-channel";
 import type { FrameReader, FrameWriter } from "../ipc/event-channel";
 
 /**
- * Observers of the buffer growing, distinct from the reader's own waiter: a
- * test watches for a line arriving so it can re-read `flushed` when there is
- * something new, rather than on a timer.
+ * Observers of the buffer growing, distinct from the reader's own waiter:
+ * a test watches for a line arriving so it can re-read `flushed` when
+ * there is something new, rather than on a timer.
  */
 type WriteObservers = { list: (() => void)[] };
 
@@ -56,12 +54,10 @@ function announce(observers: WriteObservers): void {
  * Resolves on the next item to reach the buffer, from either direction.
  *
  * Edge-triggered: it does not see an item already buffered. A caller reads
- * `flushed`, arms this, and re-checks in a loop, with the read and the arm in
- * ONE synchronous block -- an `await` between them is what loses an item.
- * Which of the two comes first inside that block decides nothing, because
- * nothing can land between two synchronous statements. Both orders are in use
- * here (`waitForUpstreamPayload` arms first, the park-notify waits in
- * `apps/sidecar` read first) and both are safe for that reason.
+ * `flushed`, arms this, and re-checks in a loop, with the read and the arm
+ * in ONE synchronous block -- an `await` between them is what loses an
+ * item. Which of the two comes first inside that block decides nothing,
+ * because nothing can land between two synchronous statements.
  */
 function nextWriteOf(observers: WriteObservers): Promise<void> {
   return new Promise<void>((resolve) => {
@@ -89,8 +85,7 @@ export type MemoryNdjsonStream = {
    * `for await` loop does only after its body returns -- so the guarantee is
    * exactly as strong as the loop body is. A body that dispatches work with
    * `void` and returns has finished in this sense while its handler is still
-   * in flight, and a consumer that stops iterating never asks again, so its
-   * last line stays uncounted.
+   * in flight, and a consumer that stops iterating never asks again.
    *
    * Level-triggered on a count rather than edge-triggered on the next read,
    * so a caller that arms it after the read already happened is not left
@@ -136,10 +131,10 @@ export function createMemoryNdjsonStream(): MemoryNdjsonStream {
             // Counted here, on re-entry, rather than beside the `yield`. A
             // `for await` loop calls `next()` only after its body has run to
             // completion, so re-entry is the point at which the previous line
-            // is finished with. Counting at the `yield` instead resolves a
+            // is finished with. Counting at the `yield` would resolve a
             // waiter whose continuation is queued AHEAD of the consumer's, so
-            // the one assertion the count exists for -- that a frame was
-            // ignored -- would run before the consumer had looked at it.
+            // the assertion the count exists for -- that a frame was ignored
+            // -- would run before the consumer had looked at it.
             handedOut = false;
             reads += 1;
             announce(readObservers);
@@ -172,9 +167,9 @@ export function createMemoryNdjsonStream(): MemoryNdjsonStream {
     async awaitReadCount(count: number) {
       for (;;) {
         // Re-checked on every pass: level-triggered on the count, so a read
-        // that happened before this call resolves it. An edge wait on the next
-        // read deadlocks here, because the consumer usually reads an injected
-        // frame before a test can ask to be told about it.
+        // that happened before this call resolves it. An edge wait on the
+        // next read deadlocks here, because the consumer usually reads an
+        // injected frame before a test can ask to be told about it.
         const read = nextWriteOf(readObservers);
         if (reads >= count) return;
         await read;
@@ -184,7 +179,8 @@ export function createMemoryNdjsonStream(): MemoryNdjsonStream {
       done = true;
       wake();
       // A closed stream takes nothing further, so release anyone still
-      // watching rather than leaving them parked on a write that cannot come.
+      // watching rather than leaving them parked on a write that cannot
+      // come.
       announce(observers);
       announce(readObservers);
     },

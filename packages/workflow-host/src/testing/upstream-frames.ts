@@ -54,12 +54,11 @@ export type UpstreamFrameSource = {
 };
 
 /**
- * Resolve with the first payload of `type_` that `match` accepts, whether it
- * is already buffered or arrives later.
- *
- * The buffer is re-read only when a line actually arrives, and the wait
- * carries no deadline: a frame that never comes is caught by the lane
- * timeout, per "Synchronizing on State, Not Time" in CONVENTIONS.md.
+ * Resolve with the first payload of `type_` that `match` accepts, whether
+ * it is already buffered or arrives later. The buffer is re-read only when
+ * a line actually arrives, and the wait carries no deadline: a frame that
+ * never comes is caught by the lane timeout, per "Synchronizing on State,
+ * Not Time" in CONVENTIONS.md.
  */
 export async function waitForUpstreamPayload<T extends string>(
   stream: UpstreamFrameSource,
@@ -80,11 +79,10 @@ export async function waitForUpstreamPayload<T extends string>(
 
 /**
  * Resolve once at least `count` payloads of `type_` have been written, with
- * every matching payload in arrival order.
- *
- * The count form exists because most waits here are for the Nth frame rather
- * than for a particular one; a caller wanting a specific frame should use
- * `waitForUpstreamPayload` with a predicate.
+ * every matching payload in arrival order. The count form exists because
+ * most waits here are for the Nth frame rather than a particular one; a
+ * caller wanting a specific frame should use `waitForUpstreamPayload` with
+ * a predicate.
  */
 export async function waitForUpstreamPayloads<T extends string>(
   stream: UpstreamFrameSource,
@@ -100,8 +98,8 @@ export async function waitForUpstreamPayloads<T extends string>(
 }
 
 /**
- * Resolve once at least `count` `trigger.fire` frames have been written, with
- * every runId seen in order.
+ * Resolve once at least `count` `trigger.fire` frames have been written,
+ * with every runId seen in order.
  */
 export async function waitForTriggerFireRunIds(
   stream: UpstreamFrameSource,

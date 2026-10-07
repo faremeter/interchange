@@ -1,22 +1,20 @@
-// Workflow-definition loader: the code-evaluation step the sidecar
-// child performs during probe and deploy.
+// Workflow-definition loader: the code-evaluation step the sidecar child
+// performs during probe and deploy.
 //
-// The closure-materialization machinery in `@intx/tool-packaging`
-// fetches, verifies, extracts, and lays out an installed workflow
-// package (and its dependency closure) into a resolvable
-// `node_modules/` tree. This module takes that materialized package
-// directory, reads its `package.json`, imports the module named by the
-// `interchange.workflow` field, and evaluates it: the module's
-// `defineWorkflow(...)` call produces a `WorkflowDefinition`, which is
-// validated at this boundary before being returned.
+// The closure-materialization machinery in `@intx/tool-packaging` fetches,
+// verifies, extracts, and lays out an installed workflow package (and its
+// dependency closure) into a resolvable `node_modules/` tree. This module
+// takes that materialized package directory, reads its `package.json`,
+// imports the module named by the `interchange.workflow` field, and
+// evaluates it: the module's `defineWorkflow(...)` call produces a
+// `WorkflowDefinition`, validated at this boundary before being returned.
 //
-// Materialization is deliberately NOT done here. `@intx/workflow-host`
-// stays free of a `@intx/tool-packaging` dependency (that layer lives
-// in `packages/tool-packaging/src/tool-materialization.ts`), so the
-// caller runs the closure machinery and hands the resulting package
-// directory in. This module only performs the import + evaluate +
-// validate step, which is the part that must run inside the child's
-// address space because it evaluates author code.
+// Materialization is deliberately NOT done here: `@intx/workflow-host`
+// stays free of a `@intx/tool-packaging` dependency, so the caller runs
+// the closure machinery and hands the resulting package directory in.
+// This module only performs the import + evaluate + validate step -- the
+// part that must run inside the child's address space because it
+// evaluates author code.
 
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -43,28 +41,24 @@ const logger = getLogger(["workflow-host", "definition-loader"]);
 export interface LoadWorkflowDefinitionFromClosureArgs {
   /**
    * Directory of the materialized workflow package within the closure:
-   * the directory holding the package's `package.json`, with its
-   * `node_modules/` already laid out by the closure-materialization
-   * machinery so the entry module's bare-specifier imports resolve.
+   * holds the package's `package.json`, with `node_modules/` already
+   * laid out so the entry module's bare-specifier imports resolve.
    */
   readonly packageDir: string;
   /**
    * Optional token mixed into the import URL's query string to bust
-   * Node's ESM module cache. Node keys the ESM cache by resolved
-   * URL/path, not by content: a process that imports the same package
-   * directory twice with different bytes underneath (a rare re-apply in
-   * a reused child) would otherwise resolve to the first-imported module
-   * instance. Passing a per-materialization token (the closure's
-   * integrity SRI is the natural choice) makes each materialization a
-   * distinct ESM cache entry. Omit it when the process imports a given
-   * package directory at most once.
+   * Node's ESM module cache, which is keyed by resolved URL, not
+   * content: re-importing a package directory with different bytes
+   * underneath would resolve the first-imported instance. A
+   * per-materialization token (the closure's integrity SRI) makes each
+   * materialization a distinct cache entry. Omit when the package
+   * directory is imported at most once per process.
    */
   readonly importCacheKey?: string;
   /**
-   * Test seam for dynamic import. Production omits this and the loader
-   * uses the native dynamic-import expression. The argument is the
-   * `file://` URL the loader resolves for the `interchange.workflow`
-   * entry.
+   * Test seam for dynamic import. Production omits this and uses the
+   * native dynamic-import expression. The argument is the `file://` URL
+   * the loader resolves for the `interchange.workflow` entry.
    */
   readonly importModule?: (importUrl: string) => Promise<unknown>;
 }
@@ -74,9 +68,6 @@ export interface LoadWorkflowDefinitionFromClosureArgs {
  * package closure, evaluate it, and return the validated
  * `WorkflowDefinition` its `defineWorkflow(...)` call produced.
  *
- * @param args - the materialized package directory plus optional import
- *   seams
- * @returns the validated `WorkflowDefinition`
  * @throws if the package.json is missing/malformed, declares no
  *   `interchange.workflow` entry, the entry path escapes the package
  *   directory, the module cannot be imported, or its evaluation does not
@@ -144,18 +135,16 @@ export interface LoadWorkflowDirectorRegistryFromClosureArgs {
 /**
  * Compose the `DirectorRegistry` for a workflow closure from the closure
  * package's OWN `interchange.directors` module (if any), alongside the
- * built-in default director. A package with no `interchange.directors`
- * field composes to the built-ins-only registry -- absence is valid, a
- * workflow need not ship a director. A present-but-empty directors module
- * is malformed and throws, matching the tool-package loader.
+ * built-in default director. Absence is valid (built-ins only); a
+ * present-but-empty directors module is malformed and throws, matching
+ * the tool-package loader.
  *
- * Only the workflow's OWN package directors are loaded here. Directors
- * shipped by PINNED dependency packages are deliberately not resolved on
- * the source-ref path yet: the airlocked probe does not materialize pinned
- * packages, so loading them here would let the runtime resolve a director
- * the probe never advertised for approval. A workflow referencing a
- * pinned-package director fails closed (the capability walk reports it as
- * unresolved).
+ * Directors shipped by PINNED dependency packages are deliberately not
+ * resolved on the source-ref path yet: the airlocked probe does not
+ * materialize pinned packages, so loading them here would let the runtime
+ * resolve a director the probe never advertised for approval. A workflow
+ * referencing a pinned-package director fails closed (the capability
+ * walk reports it as unresolved).
  *
  * @throws if the directors entry path escapes the package, the module
  *   cannot be imported, or it exports no `AnnotatedDirectorFactory` value
@@ -223,20 +212,20 @@ export interface LoadWorkflowLoopFnsFromClosureArgs {
 
 /**
  * Compose the `LoopFnRegistry` for a workflow closure from the closure
- * package's OWN `interchange.loops` module. A `loop` primitive's `while` and
- * `carry` refs resolve by EXPORT NAME against that module's exports.
+ * package's OWN `interchange.loops` module. A `loop` primitive's `while`
+ * and `carry` refs resolve by EXPORT NAME against that module's exports.
  *
- * Unlike directors there is NO built-in default: a package with no
- * `interchange.loops` field composes to an EMPTY registry that throws on any
- * ref lookup. A workflow that declares a `loop` but ships no loops module thus
- * fails closed when its refs are resolved (eagerly, at establish); a workflow
- * with no `loop` primitive never resolves a ref, so an absent field is valid
- * there. Loading OUTSIDE the definition-hash re-verify is safe: the approved
+ * Unlike directors there is no built-in default: a package with no
+ * `interchange.loops` field composes to an empty registry that throws on
+ * any ref lookup, so a workflow that declares a `loop` but ships no loops
+ * module fails closed when its refs are resolved (eagerly, at establish).
+ * Loading OUTSIDE the definition-hash re-verify is safe: the approved
  * hash pins each ref string, and the closure's SRI pins the module bytes.
  *
- * @throws (from the returned registry) if a requested ref names no export, or
- *   names an export that is not a function.
- * @throws if the loops entry path escapes the package or cannot be imported.
+ * @throws (from the returned registry) if a requested ref names no
+ *   export, or names an export that is not a function.
+ * @throws if the loops entry path escapes the package or cannot be
+ *   imported.
  */
 export async function loadWorkflowLoopFnsFromClosure(
   args: LoadWorkflowLoopFnsFromClosureArgs,
@@ -306,21 +295,23 @@ export interface LoadWorkflowActionHandlersFromClosureArgs {
 }
 
 /**
- * Compose the action-handler resolver for a workflow closure from the closure
- * package's OWN `interchange.actions` module. An `action` primitive's `handler`
- * ref resolves by EXPORT NAME against that module's exports.
+ * Compose the action-handler resolver for a workflow closure from the
+ * closure package's OWN `interchange.actions` module. An `action`
+ * primitive's `handler` ref resolves by EXPORT NAME against that module's
+ * exports.
  *
- * Mirrors {@link loadWorkflowLoopFnsFromClosure}: there is NO built-in default,
- * so a package with no `interchange.actions` field composes to a resolver that
- * throws on any lookup. A workflow that declares an `action` but ships no
- * actions module fails closed when its handler is resolved (eagerly, at
- * establish); a workflow with no `action` primitive never resolves a handler.
- * Loading OUTSIDE the definition-hash re-verify is safe: the approved hash pins
- * each handler ref string, and the closure's SRI pins the module bytes.
+ * Mirrors {@link loadWorkflowLoopFnsFromClosure}: no built-in default, so
+ * a package with no `interchange.actions` field composes to a resolver
+ * that throws on any lookup. A workflow that declares an `action` but
+ * ships no actions module fails closed when its handler is resolved
+ * (eagerly, at establish). Loading outside the definition-hash re-verify
+ * is safe: the approved hash pins each handler ref string, and the
+ * closure's SRI pins the module bytes.
  *
- * @throws (from the returned resolver) if a requested ref names no export, or an
- *   export that is not a function.
- * @throws if the actions entry path escapes the package or cannot be imported.
+ * @throws (from the returned resolver) if a requested ref names no
+ *   export, or an export that is not a function.
+ * @throws if the actions entry path escapes the package or cannot be
+ *   imported.
  */
 export async function loadWorkflowActionHandlersFromClosure(
   args: LoadWorkflowActionHandlersFromClosureArgs,
@@ -401,15 +392,16 @@ export interface LoadWorkflowPluginsFromClosureArgs {
 }
 
 /**
- * Import each declared plugin package's `interchange.tools` module from the
- * materialized workflow closure and collect the `AnnotatedPluginFactory`
- * values it exports. This is the run-child counterpart to the tool-package
- * loader's plugin channel: a source-ref workflow contributes no plugin factory
- * through its agent definition (a plugin has no agent slot), so the child
- * materializes the declared plugins straight from the already-laid-out closure
- * -- no re-download, no manifest -- and feeds them into the existing per-step
- * plugin chain. The closure bytes were SRI-verified when the deploy applied the
- * frozen closure, and resolution walks the same `node_modules/` graph the
+ * Import each declared plugin package's `interchange.tools` module from
+ * the materialized workflow closure and collect the
+ * `AnnotatedPluginFactory` values it exports. This is the run-child
+ * counterpart to the tool-package loader's plugin channel: a source-ref
+ * workflow contributes no plugin factory through its agent definition (a
+ * plugin has no agent slot), so the child materializes the declared
+ * plugins straight from the already-laid-out closure -- no re-download,
+ * no manifest -- and feeds them into the existing per-step plugin chain.
+ * The closure bytes were SRI-verified when the deploy applied the frozen
+ * closure, and resolution walks the same `node_modules/` graph the
  * workflow entry's imports use.
  *
  * @throws if a declared plugin package cannot be resolved, declares no
@@ -440,16 +432,16 @@ export async function loadWorkflowPluginFactoriesFromClosure(
  * Read the static tool `definitions` each declared plugin package
  * contributes, keyed by plugin-package name, WITHOUT retaining the plugin
  * factory (so the caller never instantiates a plugin, which for LSP would
- * start a subprocess). This is the probe/capability-walk counterpart to
- * `loadWorkflowPluginFactoriesFromClosure`: it loads the SAME plugin module
- * from the SAME frozen closure so the tool grant surface the walk approves
- * matches the plugin the run-child materializes.
+ * start a subprocess). The probe/capability-walk counterpart to
+ * `loadWorkflowPluginFactoriesFromClosure`: loads the SAME plugin module
+ * from the SAME frozen closure so the tool grant surface the walk
+ * approves matches the plugin the run-child materializes.
  *
- * A plugin package that exports plugin factories but declares no tool
- * definitions (a middleware-only plugin) maps to an empty array -- valid,
- * it contributes no tool grant.
+ * A plugin package that exports factories but declares no tool
+ * definitions (a middleware-only plugin) maps to an empty array.
  *
- * @throws under the same conditions as `loadWorkflowPluginFactoriesFromClosure`
+ * @throws under the same conditions as
+ *   `loadWorkflowPluginFactoriesFromClosure`
  */
 export async function loadWorkflowPluginToolDefinitionsFromClosure(
   args: LoadWorkflowPluginsFromClosureArgs,
@@ -484,8 +476,8 @@ async function loadPluginPackageFactories(args: {
   // Resolve the plugin package from the workflow package's laid-out
   // `node_modules/`. The closure materializer symlinks each direct
   // dependency into the requirer's `node_modules/`, so a declared plugin
-  // package (which must be a workflow dependency) sits here. Realpath it so
-  // a plugin whose entry-path containment is checked below compares
+  // package (which must be a workflow dependency) sits here. Realpath it
+  // so a plugin whose entry-path containment is checked below compares
   // realpath-vs-realpath.
   const linkedDir = path.join(
     args.workflowPackageDir,
@@ -581,11 +573,10 @@ async function readPackageJSON(packageDir: string): Promise<PackageJSON> {
  * `package.json` and crosses the trust boundary into the child process,
  * so a `..`-traversal, an absolute path, or a `node_modules` symlink
  * escape would let a malicious package import any file the child can
- * read. The string-level check rejects `..`/absolute paths; the
- * realpath check rejects an escape through a symlink in the closure's
- * `node_modules` layout. Both sides are realpath'd so the comparison
- * holds even when the closure lives under a symlinked temp root (macOS
- * resolves `/tmp` to `/private/tmp`).
+ * read. The string-level check rejects `..`/absolute paths; the realpath
+ * check rejects a symlink escape. Both sides are realpath'd so the
+ * comparison holds even under a symlinked temp root (macOS resolves
+ * `/tmp` to `/private/tmp`).
  */
 async function resolveContainedEntry(
   packageDir: string,

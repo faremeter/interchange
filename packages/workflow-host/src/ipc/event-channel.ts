@@ -1,27 +1,23 @@
 // Event channel: UNIX socketpair, HMAC-SHA256 authenticated.
 //
-// The workflow-process child sends InferenceEvents (high rate, plus
-// the per-message `message.run.started` / `message.run.ended`
-// brackets) to the supervisor. The supervisor verifies each frame's
-// MAC and forwards into the hub via the existing `agent.event`
-// session-channel path. The shared 32-byte HMAC key is minted by the
-// supervisor at spawn time and passed to the child in spawn-time env.
-// Both sides authenticate every frame: a malformed or tampered frame
-// is a crash signal, not a recoverable error.
+// The workflow-process child sends InferenceEvents (high rate, plus the
+// per-message `message.run.started` / `message.run.ended` brackets) to the
+// supervisor, which verifies each frame's MAC and forwards into the hub via
+// the existing `agent.event` session-channel path. The shared 32-byte HMAC
+// key is minted by the supervisor at spawn time and passed to the child in
+// spawn-time env. Both sides authenticate every frame: a malformed or
+// tampered frame is a crash signal, not a recoverable error.
 //
 // Backpressure: the supervisor keeps a bounded userspace ring (default
-// 1024 frames). On overrun the supervisor logs the saturation, fires
-// the caller-supplied crash callback, and the workflow-process kills
-// itself on the next signal cycle. Observability lost equals
-// invariant violated equals crash; the audit chain cannot tolerate a
-// silent drop, and a blocking writer would deadlock against the
-// reactor's emit path.
+// 1024 frames). On overrun it logs the saturation, fires the caller-supplied
+// crash callback, and the workflow-process kills itself on the next signal
+// cycle: the audit chain cannot tolerate a silent drop, and a blocking
+// writer would deadlock against the reactor's emit path.
 //
-// Mixing failure mode: the payload union here covers InferenceEvent
-// shapes only. A "control message" structurally shaped as `drain` or
-// `recycle` will not satisfy this union and the receiver will crash.
-// The discriminated arktype validators in `control-channel.ts` and
-// here are disjoint by construction.
+// Mixing failure mode: this payload union covers InferenceEvent shapes
+// only. A frame structurally shaped as `drain` or `recycle` will not
+// satisfy it and the receiver crashes -- the discriminated validators here
+// and in `control-channel.ts` are disjoint by construction.
 
 import { type } from "arktype";
 
@@ -37,11 +33,11 @@ import {
 import { signHmac, verifyHmac } from "./crypto";
 
 /**
- * The event channel additionally carries the two bracket events the
- * reactor emits per message run. They are part of the InferenceEvent
- * union upstream; re-exporting the union directly keeps this channel
- * structurally identical to what the hub's `agent.event` frame
- * carries today.
+ * The event channel carries the two bracket events the reactor emits per
+ * message run in addition to InferenceEvents. They are part of the
+ * InferenceEvent union upstream; re-exporting the union directly keeps
+ * this channel structurally identical to what the hub's `agent.event`
+ * frame carries today.
  */
 export const EventPayload = InferenceEvent;
 export type EventPayload = typeof EventPayload.infer;
@@ -66,9 +62,9 @@ export interface EventChannelSender {
 }
 
 /**
- * Construct the child-side event-channel sender. The shared HMAC
- * key lives in closure. The child mints monotonic seq values per
- * channelId; the receiver enforces strict monotonicity.
+ * Construct the child-side event-channel sender. The shared HMAC key
+ * lives in closure. The child mints monotonic seq values per channelId;
+ * the receiver enforces strict monotonicity.
  */
 export function createEventChannelSender(
   opts: EventChannelSenderOpts,
@@ -76,13 +72,13 @@ export function createEventChannelSender(
   let seq = 0;
   // Serialize sends. `signHmac` is async, so without a lock two
   // concurrent callers could each assign seq, suspend on the signer, and
-  // resume in HMAC-resolution order — writing frames out of seq order,
+  // resume in HMAC-resolution order -- writing frames out of seq order,
   // which the receiver rejects as a gap and crashes the channel. The
   // production caller fires events without awaiting (`void send(event)`),
   // so this is the live case. The promise chain makes each send await the
-  // previous send's completion before it assigns seq, signs, and writes,
-  // keeping that critical section atomic. Mirrors the control channel's
-  // sender, whose Ed25519 signing has the same shape.
+  // previous send's completion before it assigns seq, signs, and writes.
+  // Mirrors the control channel's sender, whose Ed25519 signing has the
+  // same shape.
   let tail: Promise<void> = Promise.resolve();
   return {
     get seq() {
@@ -111,12 +107,12 @@ export function createEventChannelSender(
           };
           // Newline-delimit each frame. The channel rides a byte-stream
           // pipe (fd3) where the kernel may coalesce successive writes into
-          // one read or split one write across reads -- the one-write-equals-
-          // one-frame assumption does not hold under the burst of events a
-          // real step emits. `JSON.stringify` never emits a literal newline
-          // (newlines inside strings are escaped as `\n`), so `\n` is an
-          // unambiguous frame terminator the receiver splits on, mirroring
-          // the control channel's NDJSON discipline.
+          // one read or split one write across reads, so one-write-equals-
+          // one-frame does not hold under the burst a real step emits.
+          // `JSON.stringify` never emits a literal newline (newlines inside
+          // strings are escaped as `\n`), so `\n` is an unambiguous frame
+          // terminator the receiver splits on, mirroring the control
+          // channel's NDJSON discipline.
           await opts.writer.write(
             new TextEncoder().encode(`${JSON.stringify(maced)}\n`),
           );
@@ -133,10 +129,9 @@ export interface EventChannelReceiverOpts {
   channelId: string;
   reader: FrameReader;
   /**
-   * Userspace bound on the in-flight buffer between substrate read
-   * and caller consume. Overrun calls `onCrash` and stops the
-   * iterator. Default 1024 matches the discipline documented in
-   * the IPC threat model.
+   * Userspace bound on the in-flight buffer between substrate read and
+   * caller consume. Overrun calls `onCrash` and stops the iterator.
+   * Default 1024 matches the IPC threat-model discipline.
    */
   bufferLimit?: number;
   onCrash: (reason: string) => void;
@@ -144,10 +139,10 @@ export interface EventChannelReceiverOpts {
 
 /**
  * Construct the supervisor-side event-channel receiver. Yields one
- * verified, in-order `EventPayload` per call. Any frame that fails
- * HMAC verification, carries a non-current channelId, arrives out
- * of order, or arrives faster than the consumer drains -- triggers
- * `onCrash` and ends the iterator.
+ * verified, in-order `EventPayload` per call. Any frame that fails HMAC
+ * verification, carries a non-current channelId, arrives out of order, or
+ * arrives faster than the consumer drains triggers `onCrash` and ends the
+ * iterator.
  */
 export async function* receiveEventChannel(
   opts: EventChannelReceiverOpts,
@@ -167,12 +162,12 @@ export async function* receiveEventChannel(
 
   const pump = (async () => {
     // The channel rides a byte-stream pipe: the kernel can coalesce
-    // several sender writes into one read chunk or split one write
-    // across chunks, so a chunk boundary is not a frame boundary. The
-    // sender newline-delimits every frame; this decoder accumulates raw
-    // bytes and splits on `\n` so each complete line is exactly one
-    // envelope, mirroring the control channel's NDJSON reader. A partial
-    // trailing line stays buffered until its terminator arrives.
+    // several sender writes into one read chunk or split one write across
+    // chunks, so a chunk boundary is not a frame boundary. The sender
+    // newline-delimits every frame; this decoder accumulates raw bytes and
+    // splits on `\n` so each complete line is exactly one envelope,
+    // mirroring the control channel's NDJSON reader. A partial trailing
+    // line stays buffered until its terminator arrives.
     const decoder = new TextDecoder("utf-8");
     let pending = "";
     try {
@@ -205,8 +200,8 @@ export async function* receiveEventChannel(
       }
       // A non-empty trailing buffer at EOF is a truncated final frame:
       // the sender always terminates a frame with `\n`, so unterminated
-      // bytes mean the writer died mid-frame. Surface it as a crash
-      // rather than silently dropping a partial envelope.
+      // bytes mean the writer died mid-frame. Surface it as a crash rather
+      // than silently dropping a partial envelope.
       if (pending.length > 0) {
         crashed = true;
         opts.onCrash(
@@ -221,8 +216,8 @@ export async function* receiveEventChannel(
     }
 
     // Process one decoded frame through the verify/order/validate
-    // pipeline. Returns `true` when the frame tripped a crash (the
-    // caller must stop pumping), `false` on a clean buffered push.
+    // pipeline. Returns `true` when the frame tripped a crash (the caller
+    // must stop pumping), `false` on a clean buffered push.
     async function processLine(raw: unknown): Promise<boolean> {
       const maced = MacedEnvelope(raw);
       if (maced instanceof type.errors) {
@@ -349,7 +344,7 @@ function errorMessage(cause: unknown): string {
 export const DEFAULT_EVENT_BUFFER_LIMIT = 1024;
 
 /**
- * Re-export the envelope decoder for callers that need raw access
- * to a frame's envelope outside the receiver iterator.
+ * Re-export the envelope decoder for callers that need raw access to a
+ * frame's envelope outside the receiver iterator.
  */
 export { decodeEnvelope };

@@ -1,42 +1,35 @@
 // Production workflow-host scheduler (Seam 1, event-sourced wait).
 //
-// The scheduler is a singleton per host process. It is the single
-// writer of `TimerFired` to every active deployment's workflow-run
-// log. The runtime body's `waitForTimer` helper subscribes to the
-// run's log via `subscribeKind` and resolves when this scheduler
-// commits the matching `TimerFired` event. No other component in
-// the host -- workflow-process child, supervisor, sidecar handler --
-// commits `TimerFired`. This single-writer invariant is what makes
-// the recovery story work: at startup the scheduler walks the
-// persisted log for unfired `TimerSet` events and re-queues them,
-// confident that any `TimerFired` it does not find was never
-// committed and is its responsibility to commit now.
+// The scheduler is a singleton per host process and the single writer of
+// `TimerFired` to every active deployment's workflow-run log. The runtime
+// body's `waitForTimer` helper subscribes to the run's log via
+// `subscribeKind` and resolves when this scheduler commits the matching
+// `TimerFired` event; no other host component commits `TimerFired`. This
+// single-writer invariant is what makes recovery work: at startup the
+// scheduler walks the persisted log for unfired `TimerSet` events and
+// re-queues them, confident that any `TimerFired` it does not find was
+// never committed and is its responsibility to commit now.
 //
 // Recovery semantics:
 //   - One-shot timers (`TimerSet` without a `cron` discriminator) on
-//     resume are queued with their stored `fireAt`. If `fireAt` is
-//     already in the past the scheduler fires immediately so the
-//     paired `TimerFired` lands and the awaiting runtime body
-//     unblocks. The runtime is responsible for its own jitter
-//     tolerance.
+//     resume are queued with their stored `fireAt`; if that is already in
+//     the past the scheduler fires immediately so the paired `TimerFired`
+//     lands and the awaiting runtime body unblocks (the runtime owns its
+//     jitter tolerance).
 //   - Cron-style timers whose `fireAt` is in the past on resume are
-//     SKIPPED -- per the spec, missed cron ticks do not replay. The
-//     scheduler waits for the next future tick to be committed and
-//     queues that one.
+//     SKIPPED -- missed cron ticks do not replay. The scheduler waits for
+//     the next future tick to be committed and queues that one.
 //
-// The scheduler reads workflow-event blobs at the canonical layout
-// `runs/<runId>/events/<seq>.json` and writes a fresh blob at the
-// next-seq slot for each `TimerFired` commit. The blob envelope is
-// FLAT -- `{ seq, type, ...eventFields }` -- matching the runtime
+// Event blobs live at `runs/<runId>/events/<seq>.json` with a FLAT
+// envelope -- `{ seq, type, ...eventFields }` -- matching the runtime
 // repo-store's `workflowEventToOnDisk` and the workflow-run kind
-// handler's `EventEnvelope` contract: `seq` is the integer that also
-// appears in the filename, `type` is the `subscribeKind` discriminator
-// the scheduler narrows on, and the timer fields (`timerId`, `fireAt`,
-// ...) sit alongside them, NOT under a nested `data` object. The kind
-// handler's `validatePush` enforces that every event blob's body `seq`
-// matches the filename's seq, so the scheduler mints the next seq
-// inside the `writeTreePreservingPrefix` merge step and writes both
-// into the envelope and the filename.
+// handler's `EventEnvelope` contract: `seq` is the integer in the
+// filename, `type` is the `subscribeKind` discriminator, and the timer
+// fields sit alongside, NOT under a nested `data` object. The kind
+// handler's `validatePush` enforces that a blob's body `seq` matches the
+// filename's seq, so the scheduler mints the next seq inside the
+// `writeTreePreservingPrefix` merge step and writes it into both the
+// envelope and the filename.
 
 import { type } from "arktype";
 
@@ -54,21 +47,21 @@ import {
 
 /**
  * Substrate-shape envelope for the workflow-event blob committed to
- * `runs/<runId>/events/<seq>.json`. The validator covers the two
- * event types the scheduler reads (TimerSet, TimerFired) and the
- * single type it writes (TimerFired). Non-timer blobs at the same
- * path prefix do not match this validator and are skipped silently
- * by the recovery walk. `seq` mirrors the integer in the filename,
- * matching the workflow-run kind handler's `EventEnvelope` contract.
+ * `runs/<runId>/events/<seq>.json`. Covers the two event types the
+ * scheduler reads (TimerSet, TimerFired) and the single type it writes
+ * (TimerFired). Non-timer blobs at the same path prefix do not match and
+ * are skipped silently by the recovery walk. `seq` mirrors the integer in
+ * the filename, matching the `EventEnvelope` contract.
  */
 export const TimerEventEnvelope = type({
   seq: "number >= 0",
   type: "'TimerSet' | 'TimerFired'",
-  // FLAT on-disk shape, matching the runtime repo-store's `workflowEventToOnDisk`
-  // ({ seq, type, ...eventFields }) and the substrate's enforced `EventEnvelope`
-  // contract -- NOT a nested `data` object. The scheduler was the lone component
-  // writing/reading a nested `data` envelope; nothing else parsed it, so a
-  // deployed timer never round-tripped until this was aligned.
+  // FLAT on-disk shape, matching `workflowEventToOnDisk`
+  // ({ seq, type, ...eventFields }) and the substrate's enforced
+  // `EventEnvelope` contract -- NOT a nested `data` object. The scheduler
+  // was the lone component writing/reading a nested `data` envelope;
+  // nothing else parsed it, so a deployed timer never round-tripped until
+  // this was aligned.
   timerId: "string",
   "fireAt?": "string",
   "stepId?": "string | null",
@@ -79,24 +72,22 @@ export type TimerEventEnvelope = typeof TimerEventEnvelope.infer;
 
 export type SchedulerOpts = {
   /**
-   * Substrate handle the scheduler reads from and writes to. The
-   * caller wires this against the workflow-run kind handler's
-   * registered substrate -- the scheduler does not care about the
-   * kind discriminator, but the handler's `validatePush` must accept
-   * the `runs/<runId>/events/<seq>.json` writes the scheduler emits.
+   * Substrate handle the scheduler reads from and writes to. The caller
+   * wires this against the workflow-run kind handler's registered
+   * substrate -- the scheduler does not care about the kind discriminator,
+   * but the handler's `validatePush` must accept the
+   * `runs/<runId>/events/<seq>.json` writes it emits.
    */
   repoStore: RepoStore;
   /**
-   * Principal the scheduler presents to the substrate. The substrate
-   * gates every operation behind `authorize`; the scheduler's
-   * principal must be granted `writeTree` and `resolveRef` against
-   * the workflow-run repos it services.
+   * Principal the scheduler presents to the substrate, which gates every
+   * operation behind `authorize`; it must be granted `writeTree` and
+   * `resolveRef` against the workflow-run repos it services.
    */
   principal: Principal;
   /**
-   * Callback that enumerates the active deployment workflow-run
-   * repos the scheduler is responsible for. The scheduler invokes
-   * this at `start()` time to seed its recovery walk and again on
+   * Enumerates the active deployment workflow-run repos the scheduler is
+   * responsible for. Invoked at `start()` to seed the recovery walk and on
    * every `TimerFired` commit to attribute the runId to its owning
    * deployment.
    */
@@ -113,15 +104,15 @@ export type SchedulerOpts = {
    */
   clock: () => Date;
   /**
-   * Arms a one-shot timer and returns its canceller. Defaults to the global
-   * timer, which is what production wants.
+   * Arms a one-shot timer and returns its canceller. Defaults to the
+   * global timer, which is what production wants.
    *
-   * The clock above decides WHEN a timer should fire; this decides what
-   * actually fires it. Without both, a caller can compute a deterministic
-   * delay and still have to wait out the real interval to observe the
-   * firing -- which left this module's own tests waiting past a `fireAt`,
-   * and, in one case, waiting longer than a cancelled timer's delay to argue
-   * from silence that the cancel had worked.
+   * The clock decides WHEN a timer should fire; this decides what actually
+   * fires it. Without both, a caller can compute a deterministic delay and
+   * still have to wait out the real interval to observe the firing -- which
+   * left this module's own tests waiting past a `fireAt`, and, in one case,
+   * waiting longer than a cancelled timer's delay to argue from silence
+   * that the cancel had worked.
    */
   scheduleTimeout?: (handler: () => void, ms: number) => () => void;
 };
@@ -131,13 +122,12 @@ type QueuedTimer = {
   timerId: string;
   fireAtMs: number;
   /**
-   * Disarms this timer.
-   *
-   * Runs at most once per queued timer, which is why it need not be
-   * idempotent and `scheduleTimeout` does not ask its implementations for
+   * Disarms this timer. Runs at most once per queued timer, which is why
+   * it need not be idempotent and `scheduleTimeout` does not ask for
    * that: `stop` and `cancelQueued` drop the queue entry in the same
-   * synchronous block as the cancel, and a fired timer drops its own entry
-   * before awaiting anything, so nothing can reach it to cancel it again.
+   * synchronous block as the cancel, and a fired timer drops its own
+   * entry before awaiting anything, so nothing can reach it to cancel it
+   * again.
    */
   cancelTimeout: () => void;
   cron: boolean;
@@ -145,33 +135,31 @@ type QueuedTimer = {
 
 export type SchedulerHandle = {
   /**
-   * Run start-time recovery against every active deployment. After
-   * the recovery walk completes, every unfired one-shot timer is
-   * queued and every missed cron tick has been skipped per the spec.
-   * Idempotent: a second `start()` is a no-op while the first is
-   * still pending.
+   * Run start-time recovery against every active deployment. After the
+   * recovery walk completes, every unfired one-shot timer is queued and
+   * every missed cron tick has been skipped per the spec. Idempotent: a
+   * second `start()` is a no-op while the first is still pending.
    */
   start(): Promise<void>;
   /**
-   * Tear down every queued timer. Idempotent. Outstanding
-   * `setTimeout` handles are cancelled. After `stop()` the scheduler
-   * holds no host resources.
+   * Tear down every queued timer. Idempotent. Outstanding `setTimeout`
+   * handles are cancelled; after `stop()` the scheduler holds no host
+   * resources.
    */
   stop(): Promise<void>;
   /**
    * Cancel any queued timer matching `(runId, timerId)`. The
-   * runtime-shaped `Scheduler.scheduleIn` returns a disposer the
-   * runtime body invokes when the awaiting site settles on a sibling
-   * event before the timer's deadline; the adapter routes that
-   * disposer here so the host scheduler does not commit a
-   * `TimerFired` after the runtime has moved on. Idempotent: a call
-   * for an unknown key is a no-op.
+   * runtime-shaped `Scheduler.scheduleIn` returns a disposer the runtime
+   * body invokes when the awaiting site settles on a sibling event before
+   * the timer's deadline; the adapter routes that disposer here so the
+   * host scheduler does not commit a `TimerFired` after the runtime has
+   * moved on. Idempotent: a call for an unknown key is a no-op.
    */
   cancelQueued(runId: string, timerId: string): void;
   /**
    * Test-visible view of currently-queued timers. The shape is
-   * intentionally narrow: the runtime body never inspects the
-   * scheduler's queue; tests assert on it directly.
+   * intentionally narrow: the runtime body never inspects the scheduler's
+   * queue; tests assert on it directly.
    */
   queuedTimers(): readonly {
     runId: string;
@@ -183,8 +171,8 @@ export type SchedulerHandle = {
 export function createWorkflowHostScheduler(
   opts: SchedulerOpts,
 ): SchedulerHandle {
-  // Production arms the global timer; a caller supplying its own can fire a
-  // queued timer on demand instead of waiting out its delay.
+  // Production arms the global timer; a caller supplying its own can
+  // fire a queued timer on demand instead of waiting out its delay.
   const schedule =
     opts.scheduleTimeout ??
     ((handler: () => void, ms: number) => {
@@ -228,8 +216,8 @@ export function createWorkflowHostScheduler(
     const cancelTimeout = schedule(() => {
       void fireTimer(runId, timerId).catch((cause) => {
         // The scheduler's commit failed. Surface as unhandled so
-        // operators see it; the runtime body's awaiter will hang
-        // until restart triggers recovery.
+        // operators see it; the runtime body's awaiter hangs until
+        // restart triggers recovery.
         throw cause instanceof Error
           ? cause
           : new Error(
@@ -285,9 +273,9 @@ export function createWorkflowHostScheduler(
 
   async function recoverDeployment(repoId: RepoId): Promise<void> {
     const events = await readAllEvents(opts, repoId);
-    // Build per-(runId, timerId) ledger: a TimerSet without a
-    // matching TimerFired is unfired. The walk is order-insensitive
-    // because the second pass deletes matched entries.
+    // Build the per-(runId, timerId) ledger: a TimerSet without a
+    // matching TimerFired is unfired. Order-insensitive because the
+    // second pass deletes matched entries.
     const unfired = new Map<
       string,
       { runId: string; timerId: string; fireAtMs: number; cron: boolean }
@@ -320,9 +308,9 @@ export function createWorkflowHostScheduler(
     const now = opts.clock().getTime();
     for (const entry of unfired.values()) {
       if (entry.cron && entry.fireAtMs < now) {
-        // Spec: missed cron ticks are skipped on resume. The next
-        // cron tick will be committed by whoever owns the cron
-        // emitter; the scheduler simply does not replay this one.
+        // Spec: missed cron ticks are skipped on resume. The next cron
+        // tick will be committed by whoever owns the cron emitter; the
+        // scheduler simply does not replay this one.
         continue;
       }
       enqueue(repoId, entry.runId, entry.timerId, entry.fireAtMs, entry.cron);
@@ -341,16 +329,15 @@ export function createWorkflowHostScheduler(
       // per-deployment `subscribeKind` loop against the workflow-run
       // events ref with `from: "head"` and `kinds: ["TimerSet"]`. Each
       // yielded entry carries its owning runId (the substrate's
-      // `SubscribeKindEntry` surfaces the path-derived runId
-      // alongside the workflow-event seq), and the TimerSet payload
-      // carries the wall-clock `fireAt` plus the optional `cron`
-      // discriminator. `enqueue` is idempotent on `(runId, timerId)`,
-      // so a TimerSet that the recovery walk already queued (i.e.
-      // committed before subscribe could install its watcher) is
-      // safely re-yielded without duplicating the queue entry.
-      // `TimerFired` is not in the `kinds` filter: the scheduler
-      // commits `TimerFired` itself and does not need to ingest its
-      // own writes.
+      // `SubscribeKindEntry` surfaces the path-derived runId alongside
+      // the workflow-event seq), and the TimerSet payload carries the
+      // wall-clock `fireAt` plus the optional `cron` discriminator.
+      // `enqueue` is idempotent on `(runId, timerId)`, so a TimerSet the
+      // recovery walk already queued (committed before subscribe could
+      // install its watcher) is safely re-yielded without duplicating the
+      // queue entry. `TimerFired` is not in the `kinds` filter: the
+      // scheduler commits `TimerFired` itself and does not need to ingest
+      // its own writes.
       for (const repoId of repoIds) {
         startLiveSubscription(repoId);
       }
@@ -410,13 +397,12 @@ async function readAllEvents(
   for (const r of records) {
     const env = TimerEventEnvelope(r.payload);
     if (env instanceof type.errors) {
-      // A non-timer event blob (StepStarted, RunStarted, ...) at the
-      // same path prefix is expected -- the scheduler skips it
-      // silently. A timer-shaped blob whose narrow fails is a
-      // substrate-level invariant violation; the kind handler's
-      // validatePush is the layer that should catch it. Here we skip
-      // to avoid crashing the scheduler over a single bad blob; a
-      // separate audit pass surfaces the integrity problem.
+      // A non-timer event blob (StepStarted, RunStarted, ...) at the same
+      // path prefix is expected -- skip silently. A timer-shaped blob
+      // whose narrow fails is a substrate-level invariant violation the
+      // kind handler's validatePush should catch; skip it here so the
+      // scheduler does not crash over a single bad blob (a separate audit
+      // pass surfaces the integrity problem).
       continue;
     }
     entries.push({ runId: r.runId, envelope: env });

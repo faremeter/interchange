@@ -1,12 +1,12 @@
-// In-memory MailBusBindings, for supervisor tests that need mail delivered to
-// a deployment address without a real bus.
+// In-memory MailBusBindings, for supervisor tests that need mail delivered
+// to a deployment address without a real bus.
 //
 // Seven copies of this had accumulated in five variants. Beyond cosmetics
 // they differed in what they let a test observe: one kept a register/
 // unregister history, one kept only the current set. Both observables are
 // here, because a test asking "is it registered now" and one asking "was it
-// ever unregistered" are asking different questions and the second cannot be
-// answered from the first.
+// ever unregistered" are asking different questions and the second cannot
+// be answered from the first.
 
 import type { MailBusBindings } from "../supervisor/types";
 
@@ -23,10 +23,9 @@ export type MockMailBus = MailBusBindings & {
   deliver(address: string, message: Uint8Array): void;
   /**
    * Resolve once `address` is registered, whether it already is or is
-   * registered later.
-   *
-   * The registration is the event a test waiting for a deployment to come up
-   * actually wants; polling `registered()` on a timer was standing in for it.
+   * registered later. The registration is the event a test waiting for a
+   * deployment to come up actually wants; polling `registered()` on a timer
+   * was standing in for it.
    */
   awaitRegistered(address: string): Promise<void>;
 };
@@ -58,11 +57,12 @@ export function createMockMailBus(): MockMailBus {
       subscribers.delete(address);
       history.push(`unregister:${address}`);
       // Every mutation of the registration set is announced, which is what
-      // makes an arbitrary predicate over that set awaitable: a waiter re-reads
-      // on any change rather than on the subset of changes someone remembered
-      // to report. `awaitRegistered` is the only waiter today, and an
-      // unregister can only falsify its predicate, so this wake settles nothing
-      // for it -- a fact about that one predicate, not a gap in the reporting.
+      // makes an arbitrary predicate over that set awaitable: a waiter
+      // re-reads on any change rather than on the subset of changes someone
+      // remembered to report. `awaitRegistered` is the only waiter today, and
+      // an unregister can only falsify its predicate, so this wake settles
+      // nothing for it -- a fact about that one predicate, not a gap in the
+      // reporting.
       announce();
     },
     subscribeMailForAddress(

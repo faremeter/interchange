@@ -1,12 +1,12 @@
-// Records the environment each spawn was invoked with, and lets a caller wait
-// for the first one.
+// Records the environment each spawn was invoked with, and lets a caller
+// wait for the first one.
 //
 // A test that needs the spawn-time env -- almost always to read the IPC
-// channel id and mint a child-side sender -- has to wait for the spawner to
-// be called. Twenty-two sites did that by assigning a mutable binding inside
-// the spawner and re-reading it on a one-millisecond timer until it stopped
-// being undefined. The spawner being called IS the event, so it is reported
-// rather than inferred.
+// channel id and mint a child-side sender -- has to wait for the spawner
+// to be called. Twenty-two sites did that by assigning a mutable binding
+// inside the spawner and re-reading it on a one-millisecond timer until it
+// stopped being undefined. The spawner being called IS the event, so it is
+// reported rather than inferred.
 
 export type SpawnObserver = {
   /** Call from inside the spawner double with the env it received. */

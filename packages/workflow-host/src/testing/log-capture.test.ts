@@ -42,10 +42,10 @@ describe("createLogCapture", () => {
     stopCapture(second);
 
     // Two captures from one factory share nothing. A module-level record
-    // array would put both messages in both lists, which is the failure this
-    // pins: the unit pass gives a worker one module registry across files, so
-    // shared state here would mix files together as readily as it mixes these
-    // two captures.
+    // array would put both messages in both lists, which is the failure
+    // this pins: the unit pass gives a worker one module registry across
+    // files, so shared state here would mix files together as readily as it
+    // mixes these two captures.
     expect(first.records().map((r) => r.message)).toContain("first-window");
     expect(first.records().map((r) => r.message)).not.toContain(
       "second-window",
@@ -71,9 +71,9 @@ describe("createLogCapture", () => {
     const capture = startCapture();
     logger.info`already logged`;
     // Nothing further is logged, so only the scan of the already-captured
-    // records can settle this. A purely edge-triggered waiter deadlocks here,
-    // which is what makes a caller have to arm the wait before the code under
-    // test runs -- and that ordering is not always available.
+    // records can settle this. A purely edge-triggered waiter deadlocks
+    // here, which is what makes a caller have to arm the wait before the
+    // code under test runs -- and that ordering is not always available.
     const record = await capture.waitForRecord("already logged");
     expect(record.message).toBe("already logged");
   });
@@ -122,9 +122,9 @@ describe("createLogCapture", () => {
 
     capture.reset();
     expect(capture.records()).toEqual([]);
-    // Rejected rather than dropped: a waiter carried into the next test could
-    // never settle, and the test that awaited it would hang until the lane
-    // timeout rather than report what it was waiting for.
+    // Rejected rather than dropped: a waiter carried into the next test
+    // could never settle, and the test that awaited it would hang until the
+    // lane timeout rather than report what it was waiting for.
     await expect(abandoned).rejects.toThrow(/never-logged/);
   });
 
@@ -133,17 +133,17 @@ describe("createLogCapture", () => {
 
     // Stands in for work a previous test left running: `reset` marks the
     // boundary, and this record lands on the far side of it, exactly as a
-    // fire-and-forget teardown's does. Nothing in the record says which test
-    // caused it, so the wait below cannot refuse it.
+    // fire-and-forget teardown's does. Nothing in the record says which
+    // test caused it, so the wait below cannot refuse it.
     capture.reset();
     logger.info`teardown finished for the previous subject`;
 
     await capture.waitForRecord("teardown finished");
 
-    // That is why `waitForRecord`'s contract puts the burden on the caller:
-    // the needle has to be unique to its own test, and a test that starts
-    // fire-and-forget work has to await that work before it returns. This
-    // test pins the hazard those two rules exist for, so a change that
+    // That is why `waitForRecord`'s contract puts the burden on the
+    // caller: the needle has to be unique to its own test, and a test that
+    // starts fire-and-forget work has to await that work before it returns.
+    // This test pins the hazard those two rules exist for, so a change that
     // claims to remove them has something to contradict.
     expect(capture.records()).toHaveLength(1);
   });

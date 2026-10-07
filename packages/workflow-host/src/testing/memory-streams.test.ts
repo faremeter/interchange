@@ -11,9 +11,9 @@ describe("createMemoryNdjsonStream", () => {
     stream.reader.read();
     // Both channels are single-consumer, and the buffer is drained by
     // whoever iterates. A spawner double that hands the same streams to a
-    // respawned child re-reads them, and the second iteration returns off the
-    // closed stream instead of receiving the new child's frames -- which
-    // reads as a child that died on its handshake.
+    // respawned child re-reads them, and the second iteration returns off
+    // the closed stream instead of receiving the new child's frames --
+    // which reads as a child that died on its handshake.
     expect(() => stream.reader.read()).toThrow(/second read/);
   });
 
@@ -49,8 +49,8 @@ describe("createMemoryNdjsonStream", () => {
     stream.close();
     await iterator.next();
     expect(stream.readCount()).toBe(1);
-    // Level-triggered: the read completed before this call, and an edge wait
-    // on the next read would hang here. That is the shape the stale-frame
+    // Level-triggered: the read completed before this call, and an edge
+    // wait on the next read would hang here -- the shape the stale-frame
     // test needs, because the pump usually reads an injected frame before
     // the test can ask to be told about it.
     await stream.awaitReadCount(1);
@@ -69,11 +69,12 @@ describe("createMemoryNdjsonStream", () => {
     stream.inject("frame-1");
     await stream.awaitReadCount(1);
 
-    // The negative assertion this counter exists for -- that the consumer
-    // IGNORED an injected frame -- is only worth making once the consumer has
-    // run its body on it. Counting the dequeue instead resolves the wait from
-    // inside the generator, queueing the waiter AHEAD of the consumer, so
-    // `processed` would still be empty here for the wrong reason.
+    // The negative assertion this counter exists for -- that the
+    // consumer IGNORED an injected frame -- is only worth making once
+    // the consumer has run its body on it. Counting the dequeue instead
+    // resolves the wait from inside the generator, queueing the waiter
+    // AHEAD of the consumer, so `processed` would still be empty here
+    // for the wrong reason.
     expect(processed).toEqual(["frame-1"]);
 
     stream.close();
@@ -129,10 +130,10 @@ describe("createMemoryNdjsonStream", () => {
     })();
 
     stream.inject("");
-    // A dropped line never reaches the outermost body, so the count has to
-    // come from the intermediate generator asking for the next one. This is
-    // the case the negative assertion rests on: the barrier has to hold for a
-    // frame the consumer ignored, which is the only kind it is ever used on.
+    // A dropped line never reaches the outermost body, so the count has
+    // to come from the intermediate generator asking for the next one.
+    // The negative assertion rests on this: the barrier has to hold for
+    // a frame the consumer ignored.
     await stream.awaitReadCount(1);
     expect(processed).toEqual([]);
 
@@ -152,10 +153,9 @@ describe("createMemoryNdjsonStream", () => {
     stream.inject("b");
     await stream.awaitReadCount(2);
 
-    // `flushed` slices the same array the reader shifts from, so it is the
-    // unconsumed remainder rather than an arrival log. `waitForUpstreamPayload`
-    // re-reads it on every pass, which is why those waiters only work on a
-    // direction nothing iterates.
+    // `flushed` slices the same array the reader shifts from, so it is
+    // the unconsumed remainder, not an arrival log; the payload waiters
+    // re-read it on every pass.
     expect(stream.flushed()).toEqual([]);
 
     stream.close();

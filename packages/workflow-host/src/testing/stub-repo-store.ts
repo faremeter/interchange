@@ -1,15 +1,15 @@
-// A RepoStore that implements only what a test declares it needs, and throws
-// for everything else.
+// A RepoStore that implements only what a test declares it needs, and
+// throws for everything else.
 //
-// The throw is the point. These stubs assert, by failing, that the code under
-// them touches nothing beyond the named surface -- so the narrow ones are not
-// an incomplete version of the broad ones, and substituting a working store
-// would silently permit paths that currently fail loudly.
+// The throw is the point. These stubs assert, by failing, that the code
+// under them touches nothing beyond the named surface -- so the narrow
+// ones are not an incomplete version of the broad ones, and substituting a
+// working store would silently permit paths that currently fail loudly.
 //
-// Only the two capability sets that were byte-identical across several files
-// live here. The rest of this repo's stub stores are genuinely different
-// fidelities, up to a 218-line in-memory implementation, and merging those
-// would trade a real assertion for a smaller diff.
+// Only the two capability sets that were byte-identical across several
+// files live here. The rest of this repo's stub stores are genuinely
+// different fidelities, up to a 218-line in-memory implementation, and
+// merging those would trade a real assertion for a smaller diff.
 
 import path from "node:path";
 

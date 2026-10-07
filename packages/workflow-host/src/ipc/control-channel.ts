@@ -1,38 +1,24 @@
 // Control channel: NDJSON over stdio, Ed25519-signed per direction.
 //
 // Two Ed25519 keypairs flow per spawn:
-//   - Supervisor's keypair. The supervisor holds the private half and
-//     signs every downstream (supervisor->child) frame. The matching
-//     public half is passed to the child in spawn-time env
-//     (`HOST_PUBKEY`) and the child verifies downstream frames
-//     against it. The supervisor's PRIVATE KEY NEVER LEAVES THE
-//     SUPERVISOR'S ADDRESS SPACE.
-//   - Child's keypair. The child mints it at startup, holds the
-//     private half in its own address space, and signs every upstream
-//     (child->supervisor) frame. The matching public half rides as
-//     `childPublicKey` on the upstream `ready` frame's payload; the
-//     supervisor extracts it on receive and uses it to verify
-//     subsequent upstream frames. The CHILD'S PRIVATE KEY NEVER
-//     LEAVES THE CHILD'S ADDRESS SPACE.
+//   - Supervisor's keypair: holds the private half, signs every downstream
+//     (supervisor->child) frame; the public half rides spawn-time env
+//     (`HOST_PUBKEY`) and the child verifies against it. The private key
+//     never leaves the supervisor's address space.
+//   - Child's keypair: minted at startup, signs every upstream
+//     (child->supervisor) frame; the public half rides as `childPublicKey`
+//     on the upstream `ready` frame, which bootstraps the supervisor's
+//     receiver: the first frame's envelope is parsed structurally to
+//     extract the key, then the signature is verified against it and all
+//     subsequent frames verify against the same key. The private key never
+//     leaves the child's address space.
 //
-// Upstream `ready` bootstraps the supervisor's view of the child's
-// public key. The supervisor's receiver opens in bootstrap mode:
-// the first frame's envelope is parsed structurally so the
-// supervisor can extract `childPublicKey` from the payload, then the
-// signature is verified against that key. Subsequent upstream frames
-// verify against the same key. A child-signed frame whose claimed
-// `childPublicKey` does not match the bootstrap value (or any
-// non-`ready` first frame) crashes the receiver.
-//
-// Wire format: one signed envelope per line. Each line is the JSON
-// serialization of `{ envelope: { seq, channelId, payload }, sig:
-// <hex Ed25519> }`. The signature covers the canonical bytes of the
-// envelope sub-object (see `envelope.ts`).
-//
-// Payload union: every legal payload's discriminator lives in this
-// module. The mixing-the-two-channels failure mode -- a "control"
-// frame whose payload is structurally an InferenceEvent -- is
-// prevented at the type level by the disjoint discriminated union.
+// Wire format: one signed envelope per line -- the JSON serialization of
+// `{ envelope: { seq, channelId, payload }, sig: <hex Ed25519> }`; the
+// signature covers the canonical envelope bytes (see `envelope.ts`). The
+// payload union's discriminated `type` lives in this module, which keeps
+// the mixing-the-two-channels failure mode (a "control" frame whose
+// payload is structurally an InferenceEvent) out at the type level.
 
 import { type } from "arktype";
 
@@ -56,14 +42,12 @@ import {
 import { signEd25519, verifyEd25519 } from "./crypto";
 
 /**
- * Wire-shape of one per-step credentials entry the supervisor pushes
- * inside a `grants-updated` frame. Mirrors `CredentialsSnapshotStep`
- * in `supervisor/credentials.ts` -- duplicated here as an arktype
- * validator so the control-channel module stays free of a
- * compile-time import on the supervisor module (the IPC module sits
- * underneath the supervisor and child modules in the dependency
- * graph). The contentHash pins the per-step grants so the child can
- * detect a stale push and ignore an out-of-order one.
+ * Wire shape of one per-step credentials entry inside a `grants-updated`
+ * frame. Mirrors `CredentialsSnapshotStep` in `supervisor/credentials.ts`;
+ * duplicated here as an arktype validator so the IPC module stays free of
+ * a compile-time import on the supervisor module (it sits underneath it in
+ * the dependency graph). `contentHash` pins the per-step grants so the
+ * child can detect a stale push and ignore an out-of-order one.
  */
 export const CredentialsSnapshotStepPayload = type({
   stepId: "string",
@@ -86,8 +70,8 @@ export const CredentialsSnapshotPayload = type({
  *
  * The `narrow` pins two frame-structural invariants at this boundary so
  * every consumer can trust them without re-checking: source ids are
- * unique, and the first element is the default source. The head-is-default
- * rule is what keeps the two rotation paths in agreement -- a warm agent's
+ * unique, and the first element is the default source. Head-is-default is
+ * what keeps the two rotation paths in agreement -- a warm agent's
  * `setSources` activates the matched default index, while a cold rebuild
  * pins element 0 -- so they pick the same active source only when the
  * default is the head.
@@ -120,26 +104,21 @@ export const SourcesUpdatedData = type({
  * channel is text, so the bytes ride base64-encoded under `dataBase64`.
  * The child encodes on send; the supervisor decodes before handing the
  * `OutboundMessage` to the host transport.
- */
-export const OutboundAttachmentPayload = type({
+ */ export const OutboundAttachmentPayload = type({
   name: "string",
   contentType: "string",
   dataBase64: "string",
 });
 
 /**
- * Wire projection of `@intx/types/runtime`'s `OutboundMessage`. Mirrors
- * that type field-for-field with two adjustments for the NDJSON wire:
- * attachment bytes are base64 strings (see `OutboundAttachmentPayload`),
- * and every optional field is spelled with the `"?"` suffix so an
- * absent field round-trips as absent rather than `null`. The supervisor
- * reconstructs the runtime `OutboundMessage` from this shape before
- * invoking `MailBusBindings.sendOutbound`.
- *
- * Duplicated here as an arktype validator (rather than importing the
- * TypeScript `OutboundMessage` type) so the IPC module validates the
- * child-supplied payload at the wire boundary -- the child is a separate
- * process and its frames are untrusted input the receiver must parse.
+ * Wire projection of `@intx/types/runtime`'s `OutboundMessage`: mirror
+ * that type field-for-field with two adjustments for the NDJSON wire --
+ * attachment bytes are base64 strings (see `OutboundAttachmentPayload`)
+ * and every optional field is spelled with `"?"` so an absent field
+ * round-trips as absent rather than `null`. Duplicated here as an arktype
+ * validator so the IPC module validates the child-supplied payload at the
+ * wire boundary -- the child is a separate process and its frames are
+ * untrusted input the receiver must parse.
  */
 export const OutboundMessagePayload = type({
   to: "string | string[]",
@@ -160,15 +139,14 @@ export const OutboundMessagePayload = type({
 export type OutboundMessagePayload = typeof OutboundMessagePayload.infer;
 
 /**
- * Wire shape of the parsed `MessageHeaders` the supervisor rides inline on a
- * `mailbox.notify` frame. Mirrors `@intx/types/runtime`'s `MessageHeaders`
- * field-for-field so a child watcher gets the arrived message's envelope for
- * its `exists` `MailboxEvent` without a substrate round-trip. Only `to` is
- * required; the rest are optional, matching the runtime type.
- *
- * Duplicated here as an arktype validator (rather than importing the TypeScript
- * `MessageHeaders` type) so the IPC module validates the header block at the
- * wire boundary, exactly as `OutboundMessagePayload` does for outbound mail.
+ * Wire shape of the parsed `MessageHeaders` the supervisor rides inline on
+ * a `mailbox.notify` frame, mirroring `@intx/types/runtime`'s
+ * `MessageHeaders` field-for-field so a child watcher gets the arrived
+ * message's envelope for its `exists` `MailboxEvent` without a substrate
+ * round-trip. Only `to` is required, matching the runtime type. Duplicated
+ * here as an arktype validator so the IPC module validates the header block
+ * at the wire boundary, exactly as `OutboundMessagePayload` does for
+ * outbound mail.
  */
 export const MailboxNotifyHeaders = type({
   "from?": "string",
@@ -245,11 +223,11 @@ const MailboxCallMessageRef = type({
 });
 
 /**
- * Caller-supplied message coordinates. They are not bounded: a frame this
- * schema rejects crashes the child, and the supervisor is what refuses a
- * mailbox name or a uid. Refs the supervisor emits stay on
- * `MailboxCallMessageRef`, which admits only a positive uid and a non-empty
- * mailbox.
+ * Caller-supplied message coordinates. Unbounded on purpose: a frame this
+ * schema rejects crashes the child, and the supervisor refuses a mailbox
+ * name or a uid. Refs the supervisor emits stay on
+ * `MailboxCallMessageRef`, which admits only a positive uid and a
+ * non-empty mailbox.
  */
 const MailboxCallRequestRef = type({
   uid: "number",
@@ -349,9 +327,9 @@ const MailboxCallListInfo = type({
 });
 
 /**
- * Operands the child forwards are unbounded. A frame this schema rejects
- * crashes the child, and the supervisor refuses a mailbox, a uid, or a part
- * it does not own. Results the supervisor emits stay bounded.
+ * Operands the child forwards are unbounded: a frame this schema rejects
+ * crashes the child, and the supervisor refuses a mailbox, a uid, or a
+ * part it does not own. Results the supervisor emits stay bounded.
  */
 const MailboxCallRequestData = type.or(
   {
@@ -456,8 +434,8 @@ const MailboxCallRequestData = type.or(
 /**
  * `op` is echoed so `value` is checked under that operation. A shared value
  * union would let a structure object match a part fetch and drop
- * `contentBase64`. Operations with no result omit `value` rather than sending
- * null. Part and attachment bytes are base64.
+ * `contentBase64`. Operations with no result omit `value` rather than
+ * sending null. Part and attachment bytes are base64.
  */
 const MailboxCallResponseData = type.or(
   {
@@ -561,11 +539,10 @@ const MailboxCallResponseData = type.or(
 );
 
 /**
- * Discriminated union of every control-channel payload kind. The
- * `type` discriminator namespaces the control-plane vocabulary so a
- * future addition (e.g. `connector-bind`) lands by extending this
- * union and not by widening the envelope shape. Inference events
- * NEVER appear here; they ride the event channel.
+ * Discriminated union of every control-channel payload kind. The `type`
+ * discriminator namespaces the control-plane vocabulary so a future
+ * addition lands by extending this union, not by widening the envelope
+ * shape. Inference events never appear here; they ride the event channel.
  */
 export const ControlPayload = type.or(
   {
@@ -576,11 +553,10 @@ export const ControlPayload = type.or(
       receivedAt: "number",
       // The run's inbound-mail input, resolved by the supervisor (the sole
       // mail owner) before the frame: a decoded `Mail` (headers plus part
-      // descriptors that reference the part bytes committed to the workflow-run
-      // substrate). The child hands this straight to the runtime as the trigger
-      // payload. Refs, not raw mail bytes, ride here; the committed part files
-      // stay in the substrate. Typed `unknown` -- `Mail` is a nested structural
-      // type validated at the consumption boundary by `isMail`.
+      // descriptors referencing part bytes committed to the workflow-run
+      // substrate). Refs, not raw mail bytes, ride here. Typed `unknown` --
+      // `Mail` is a nested structural type validated at the consumption
+      // boundary by `isMail`.
       payload: "unknown",
     },
   },
@@ -593,10 +569,10 @@ export const ControlPayload = type.or(
       // The resume decision in FINAL form -- the child commits it as the
       // SignalReceived payload verbatim. Each sender owns any
       // provenance-specific preparation BEFORE this frame: the dispatch loop
-      // resolves an inbound mail to a decoded `Mail` (headers plus part
-      // references, like the turn-1 trigger), while `deliverSignal` ships a
-      // structured signal payload unchanged -- so this field stays
-      // polymorphic. Do NOT ship raw inbound mail bytes through here.
+      // resolves an inbound mail to a decoded `Mail` (like the turn-1
+      // trigger), while `deliverSignal` ships a structured signal payload
+      // unchanged -- so this field stays polymorphic. Do NOT ship raw
+      // inbound mail bytes through here.
       payload: "unknown",
     },
   },
@@ -630,19 +606,18 @@ export const ControlPayload = type.or(
       /**
        * Full credentialsSnapshot the supervisor assembled. The child
        * replaces its in-memory snapshot wholesale on receive so the
-       * authorize closure binds to the new per-step grants on the
-       * next step invocation. Carried inline rather than by reference
-       * because the snapshot is per-step grants payload -- the
-       * supervisor is the only producer and the child is the only
-       * consumer, so the substrate round-trip would just add latency.
+       * authorize closure binds to the new per-step grants on the next
+       * step invocation. Carried inline because the snapshot is per-step
+       * grants payload -- the supervisor is the only producer and the
+       * child the only consumer, so a substrate round-trip would just add
+       * latency.
        */
       snapshot: CredentialsSnapshotPayload,
       /**
-       * Per-step content hashes the supervisor expects the snapshot
-       * to pin to. Surfaced separately so receivers can cheap-compare
-       * a push against the snapshot they already have without rehashing
-       * each step's grants. Optional; the receiver does not require it
-       * but uses it for the staleness cross-check when present.
+       * Per-step content hashes the supervisor expects the snapshot to pin
+       * to, surfaced separately so a receiver can cheap-compare a push
+       * against the snapshot it already has without rehashing each step's
+       * grants. Optional; used for the staleness cross-check when present.
        */
       "stepHashes?": "Record<string, string>",
     },
@@ -652,18 +627,17 @@ export const ControlPayload = type.or(
     data: SourcesUpdatedData,
   },
   {
-    // Refreshed credential material for the deployment's inference sources and
-    // tools. The child MERGES this into its in-memory cell (see
-    // `mergeCredentialDelivery`): `delivery.materials` upsert by credentialId
-    // and `delivery.bindings` upsert by (consumer, handle); `revoke` names
-    // credentialIds to drop, and dropping one drops every binding referencing
-    // it. Merge rather than wholesale-replace because the cell has several
-    // independently-scoped producers (the deploy frame, an inference rotation,
-    // a tool-grant push), each carrying only its own slice -- a swap would let
-    // one evict another's credentials. Revocation is therefore explicit, never
-    // by omission. Carried inline like the grants and sources snapshots. The
-    // secret rides this frame and the in-memory cell only; it is never
-    // persisted.
+    // Refreshed credential material for the deployment's inference sources
+    // and tools. The child MERGES this into its in-memory cell (see
+    // `mergeCredentialDelivery`): `delivery.materials` upsert by
+    // credentialId and `delivery.bindings` upsert by (consumer, handle);
+    // `revoke` names credentialIds to drop, and dropping one drops every
+    // binding referencing it. Merge rather than wholesale-replace because
+    // the cell has several independently-scoped producers (the deploy
+    // frame, an inference rotation, a tool-grant push), each carrying only
+    // its own slice -- a swap would let one evict another's credentials.
+    // Revocation is therefore explicit, never by omission. The secret rides
+    // this frame and the in-memory cell only; it is never persisted.
     type: "'credentials-updated'",
     data: {
       delivery: CredentialDelivery,
@@ -675,41 +649,39 @@ export const ControlPayload = type.or(
     data: {
       childPid: "number",
       /**
-       * Hex-encoded Ed25519 public key the child minted at startup.
-       * The supervisor extracts this on receive and uses it to verify
-       * every subsequent upstream control frame's signature. The
-       * child's private key never leaves the child's address space.
+       * Hex-encoded Ed25519 public key the child minted at startup. The
+       * supervisor extracts it on receive and uses it to verify every
+       * subsequent upstream control frame's signature. The child's private
+       * key never leaves the child's address space.
        */
       childPublicKey: "string",
     },
   },
   {
-    // Child-initiated request to recycle the workflow-process. The
-    // child emits this when its own self-check decides it needs to be
-    // recycled (an internal consistency error it can't recover from,
-    // a watchdog tripping); the supervisor receives it on its
-    // upstream control-channel reader and funnels it into the same
-    // `triggerRecycle` code path the operator and policy origins use.
-    // The `reason` rides verbatim into the supervisor's reason field;
-    // the supervisor does not interpret it beyond logging and
-    // attaching it to the recycle attempt.
+    // Child-initiated request to recycle the workflow-process. The child
+    // emits it when its own self-check decides it needs recycling (an
+    // internal consistency error it cannot recover from, a watchdog
+    // tripping); the supervisor receives it on its upstream reader and
+    // funnels it into the same `triggerRecycle` code path the operator and
+    // policy origins use. `reason` rides verbatim into the supervisor's
+    // reason field; the supervisor only logs it and attaches it to the
+    // recycle attempt.
     type: "'recycle.request'",
     data: {
       reason: "string",
     },
   },
   {
-    // Child-initiated `writeTreePreservingPrefix` request. The child
-    // does not hold a substrate write authority for the workflow-run
-    // repo (single-writer at the ref tip belongs to the supervisor);
-    // its workflow-run substrate proxy forwards every write through
-    // this frame. The supervisor receives the request, runs its own
-    // wrapped `writeTreePreservingPrefix`, and reaches back to the
-    // child for the merge bytes via `substrate.merge.request` so the
-    // child's merge closure (which knows about seq computation,
-    // duplicate detection, etc.) keeps producing the prospective tree.
-    // The supervisor resolves the child's awaiter with
-    // `substrate.write.response`.
+    // Child-initiated `writeTreePreservingPrefix` request. The child does
+    // not hold substrate write authority for the workflow-run repo
+    // (single-writer at the ref tip belongs to the supervisor); its
+    // workflow-run substrate proxy forwards every write through this
+    // frame. The supervisor runs its own wrapped
+    // `writeTreePreservingPrefix` and reaches back to the child for the
+    // merge bytes via `substrate.merge.request` so the child's merge
+    // closure (which knows seq computation, duplicate detection, etc.)
+    // keeps producing the prospective tree. The supervisor resolves the
+    // child's awaiter with `substrate.write.response`.
     type: "'substrate.write.request'",
     data: {
       requestId: "string > 0",
@@ -723,14 +695,13 @@ export const ControlPayload = type.or(
     },
   },
   {
-    // Supervisor-initiated request for the child's merge bytes. Fired
-    // from inside the supervisor's `writeTreePreservingPrefix` merge
-    // callback while the per-repo lock is held; the child receives the
-    // existing prefix entries (base64-encoded bytes), invokes its merge
-    // closure, and replies with the prospective tree on
-    // `substrate.merge.response`. Carrying the entries inline preserves
-    // the lock window: the supervisor blocks inside the merge callback
-    // until the response lands.
+    // Supervisor-initiated request for the child's merge bytes. Fired from
+    // inside the supervisor's `writeTreePreservingPrefix` merge callback
+    // while the per-repo lock is held; the child receives the existing
+    // prefix entries (base64-encoded bytes), invokes its merge closure,
+    // and replies on `substrate.merge.response`. Carrying the entries
+    // inline preserves the lock window: the supervisor blocks inside the
+    // merge callback until the response lands.
     type: "'substrate.merge.request'",
     data: {
       requestId: "string > 0",
@@ -743,8 +714,8 @@ export const ControlPayload = type.or(
   {
     // Child's merge result. `requestId` correlates with the
     // `substrate.write.request` that started the write; the supervisor
-    // resumes its merge callback with the supplied entries (or
-    // propagates the structured failure).
+    // resumes its merge callback with the supplied entries (or propagates
+    // the structured failure).
     type: "'substrate.merge.response'",
     data: {
       requestId: "string > 0",
@@ -766,13 +737,12 @@ export const ControlPayload = type.or(
   },
   {
     // Supervisor's terminal reply to a child's `substrate.write.request`.
-    // The `requestId` echoes the child's allocated correlation id so
-    // the child's pending-id map resolves the awaiter. A successful
-    // write surfaces `commitSha`; the child's proxy returns that to its
-    // caller. A failed write (substrate rejection, validatePush
-    // violation, the supervisor's pack-push wrap's downstream
-    // `HubLink.pushWorkflowRunPack` rejection) surfaces a structured
-    // `{ ok: false, reason }` the child's proxy rethrows.
+    // `requestId` echoes the child's allocated correlation id so the
+    // child's pending-id map resolves the awaiter. A successful write
+    // surfaces `commitSha`, which the child's proxy returns to its caller;
+    // a failed write (substrate rejection, validatePush violation, the
+    // pack-push wrap's downstream `HubLink.pushWorkflowRunPack` rejection)
+    // surfaces a structured `{ ok: false, reason }` the proxy rethrows.
     type: "'substrate.write.response'",
     data: {
       requestId: "string > 0",
@@ -791,29 +761,24 @@ export const ControlPayload = type.or(
   },
   {
     // Child-initiated outbound-mail request (OUTBOUND half of mailbox
-    // ownership, §3a). The workflow-process child never holds the
-    // agent's signing key and never calls `transport.send` itself. When
-    // a step agent produces a reply or invokes a mail-send tool, the
-    // child forwards the structured outbound message plus the sender
-    // (agent) address up over the control channel; the supervisor
-    // performs the actual signed send through the host's real transport
-    // (`MailBusBindings.sendOutbound`), which signs with the sender's
-    // `CryptoProvider` exactly as the in-process path does. The
-    // supervisor is the sole mail owner and the only process that can
-    // emit signed mail on the agent's behalf.
+    // ownership, §3a). The child never holds the agent's signing key and
+    // never calls `transport.send` itself. When a step agent produces a
+    // reply or invokes a mail-send tool, the child forwards the structured
+    // outbound message plus the sender (agent) address up over the control
+    // channel; the supervisor performs the actual signed send through the
+    // host's real transport (`MailBusBindings.sendOutbound`), which signs
+    // with the sender's `CryptoProvider` exactly as the in-process path
+    // does. `requestId` correlates the supervisor's `outbound.result` reply
+    // so the child's mail-tool `send()` resolves with the real
+    // `SendReceipt` (or rejects with the supervisor's structured failure).
+    // Attachment bytes ride base64-encoded so the NDJSON wire stays
+    // text-safe.
     //
-    // `requestId` correlates the supervisor's `outbound.result` reply so
-    // the child's mail-tool `send()` resolves with the real
-    // `SendReceipt` (or rejects with the supervisor's structured
-    // failure). The message is carried as a JSON-projected
-    // `OutboundMessage`; attachment bytes ride base64-encoded so the
-    // NDJSON wire stays text-safe.
-    //
-    // `completeReferences` is set only by a connector reply. The
-    // supervisor then fills References from the committed mailbox when
-    // `inReplyTo` is set and `references` is absent. A send without the
-    // flag is left alone: `mail_send` is the same shape, and completing
-    // it would replace its one-parent chain with the full ancestry.
+    // `completeReferences` is set only by a connector reply. The supervisor
+    // then fills References from the committed mailbox when `inReplyTo` is
+    // set and `references` is absent. A send without the flag is left
+    // alone: `mail_send` is the same shape, and completing it would replace
+    // its one-parent chain with the full ancestry.
     type: "'outbound.message'",
     data: {
       requestId: "string > 0",
@@ -824,13 +789,13 @@ export const ControlPayload = type.or(
     },
   },
   {
-    // Supervisor's terminal reply to a child's `outbound.message`. The
-    // `requestId` echoes the child's correlation id so the child's
-    // pending mail-tool awaiter resolves. A successful send surfaces the
+    // Supervisor's terminal reply to a child's `outbound.message`.
+    // `requestId` echoes the child's correlation id so the child's pending
+    // mail-tool awaiter resolves. A successful send surfaces the
     // `SendReceipt` (messageId + status); a failed send (unregistered
-    // sender, signing failure, transport rejection) surfaces a
-    // structured `{ ok: false, reason }` the child's transport rethrows
-    // so the mail-tool call fails loudly rather than dropping the send.
+    // sender, signing failure, transport rejection) surfaces a structured
+    // `{ ok: false, reason }` the child's transport rethrows so the
+    // mail-tool call fails loudly rather than dropping the send.
     type: "'outbound.result'",
     data: {
       requestId: "string > 0",
@@ -849,21 +814,18 @@ export const ControlPayload = type.or(
     },
   },
   {
-    // Child-initiated terminal-run notification. The workflow-process
-    // child emits this when one of its runs reaches a terminal phase
-    // (`RunCompleted`, `RunFailed`, `RunCancelled`) so the supervisor's
-    // dispatch loop and drain accumulators can settle without re-reading
-    // the workflow-run substrate from the supervisor process. The child
-    // commits the terminal event to its own substrate through the
-    // workflow-run pack-push pipeline; this frame is the peer-channel
-    // notification that mirrors the commit so the supervisor's
-    // in-process consumers do not have to round-trip the substrate.
-    //
-    // The `seq` mirrors the on-disk EventBase.seq the child assigned at
-    // commit time. The supervisor does not authoritatively verify the
-    // commit landed -- the pack-push response covers that contract --
-    // but the field is carried so a downstream consumer can correlate
-    // the notification with the substrate blob.
+    // Child-initiated terminal-run notification. The child emits this when
+    // one of its runs reaches a terminal phase (`RunCompleted`,
+    // `RunFailed`, `RunCancelled`) so the supervisor's dispatch loop and
+    // drain accumulators can settle without re-reading the workflow-run
+    // substrate from the supervisor process. The child commits the
+    // terminal event to its own substrate through the workflow-run
+    // pack-push pipeline; this frame is the peer-channel notification that
+    // mirrors the commit. `seq` mirrors the on-disk EventBase.seq the
+    // child assigned at commit time -- carried so a downstream consumer
+    // can correlate the notification with the substrate blob; the
+    // supervisor does not authoritatively verify the commit landed (the
+    // pack-push response covers that contract).
     type: "'terminal.event'",
     data: {
       runId: "string > 0",
@@ -876,16 +838,16 @@ export const ControlPayload = type.or(
     },
   },
   {
-    // Child-initiated control-plane suspension notification. The
-    // workflow-process child emits this when a workflow agent step parks
-    // on a reserved `signalName(correlationId)` channel (`env.onPark`),
-    // so the supervisor can register the correlation out-of-band before
-    // the parked run can be resumed. The supervisor stamps the
-    // deployment identity it owns (`runId` + `agentAddress`) and
-    // forwards a `signal.correlation.register` frame to the hub, which
-    // co-writes the run's routing + approval rows. Mirrors
-    // `terminal.event`: a peer-channel notification the supervisor fans
-    // out, distinct from the substrate commit the run also produces.
+    // Child-initiated control-plane suspension notification. The child
+    // emits this when a workflow agent step parks on a reserved
+    // `signalName(correlationId)` channel (`env.onPark`), so the
+    // supervisor can register the correlation out-of-band before the
+    // parked run can be resumed. The supervisor stamps the deployment
+    // identity it owns (`runId` + `agentAddress`) and forwards a
+    // `signal.correlation.register` frame to the hub, which co-writes the
+    // run's routing + approval rows. Mirrors `terminal.event`: a
+    // peer-channel notification the supervisor fans out, distinct from the
+    // substrate commit the run also produces.
     //
     // `signalName` is deliberately NOT carried: it is a pure function of
     // `correlationId` (`signalName(correlationId)`), recomputed by every
@@ -895,22 +857,24 @@ export const ControlPayload = type.or(
       runId: "string > 0",
       correlationId: "string > 0",
       parkKind: ControlParkKind,
-      // Approver-facing snapshot of the parked tool call, size-capped at this
-      // process boundary. Optional: only an ask-rail suspension carries one.
+      // Approver-facing snapshot of the parked tool call, size-capped at
+      // this process boundary. Optional: only an ask-rail suspension
+      // carries one.
       "snapshot?": BoundedApprovalSnapshot,
     },
   },
   {
     // Supervisor-initiated request: enumerate the child's currently-parked
-    // approval correlations. The supervisor fires this after a
-    // re-establishment (child respawn, or hub-link reconnect fanned out to
-    // this deployment) so it can re-register at the hub every correlation
-    // whose original `park.notify`-driven register may have been lost while
-    // the hub was down. Modeled on `substrate.merge.request`: a
-    // supervisor->child request the child answers on `parked-correlations.
-    // response`, correlated by `requestId`. Carries no filter -- one child
-    // owns one deployment, so the child enumerates everything parked and the
-    // supervisor re-emits all; the hub co-write is idempotent.
+    // approval correlations. Fired after a re-establishment (child respawn,
+    // or hub-link reconnect fanned out to this deployment) so the
+    // supervisor can re-register at the hub every correlation whose
+    // original `park.notify`-driven register may have been lost while the
+    // hub was down. Modeled on `substrate.merge.request`: a
+    // supervisor->child request the child answers on
+    // `parked-correlations.response`, correlated by `requestId`. Carries no
+    // filter -- one child owns one deployment, so the child enumerates
+    // everything parked and the supervisor re-emits all; the hub co-write
+    // is idempotent.
     type: "'parked-correlations.request'",
     data: {
       requestId: "string > 0",
@@ -923,10 +887,11 @@ export const ControlPayload = type.or(
     // onto -- so the supervisor's re-emit path shares one transform with the
     // `park.notify` arm. Only reduced-state approval parks appear here: the
     // child enumerates steps whose reduced phase is `awaiting-signal` on a
-    // control-plane `signalName(correlationId)` channel, each of which carries
-    // a durable snapshot by construction (a snapshot-less correlated suspend
-    // reduces to `failed`, not `awaiting-signal`). `snapshot` is therefore
-    // required, and size-capped at this process boundary like `park.notify`.
+    // control-plane `signalName(correlationId)` channel, each of which
+    // carries a durable snapshot by construction (a snapshot-less correlated
+    // suspend reduces to `failed`, not `awaiting-signal`). `snapshot` is
+    // therefore required, and size-capped at this process boundary like
+    // `park.notify`.
     type: "'parked-correlations.response'",
     data: {
       requestId: "string > 0",
@@ -940,10 +905,10 @@ export const ControlPayload = type.or(
     },
   },
   {
-    // Child reports self-discovered runs after reconnect or recycle.
-    // The supervisor seeds its cohort tracking from these runIds so
-    // drain accumulators and dispatch routing account for runs the
-    // supervisor did not personally trigger.fire.
+    // Child reports self-discovered runs after reconnect or recycle. The
+    // supervisor seeds its cohort tracking from these runIds so drain
+    // accumulators and dispatch routing account for runs the supervisor
+    // did not personally trigger.fire.
     type: "'resumed.runs'",
     data: {
       runIds: type("string > 0").array(),
@@ -952,13 +917,14 @@ export const ControlPayload = type.or(
   {
     // Supervisor-to-child one-way notification that new mail landed in a
     // deployment mailbox (INBOUND half of mailbox ownership, §3b). One-way
-    // like `grants-updated`/`sources-updated`: no correlation id, no response.
-    // The supervisor -- the sole mail owner -- commits the arrived message to
-    // the workflow-run substrate mailbox, then fires this frame so a registered
-    // `watch` observes the arrival decoupled from the FIFO trigger dispatch
-    // that resolves a run's first input. `headers` rides inline and is copied
-    // onto the `exists` event. The frame is not a copy of the message: a later
-    // fetch is its own mailbox call. The frame carries no commit pin.
+    // like `grants-updated`/`sources-updated`: no correlation id, no
+    // response. The supervisor -- the sole mail owner -- commits the
+    // arrived message to the workflow-run substrate mailbox, then fires
+    // this frame so a registered `watch` observes the arrival decoupled
+    // from the FIFO trigger dispatch that resolves a run's first input.
+    // `headers` rides inline and is copied onto the `exists` event. The
+    // frame is not a copy of the message: a later fetch is its own mailbox
+    // call, and the frame carries no commit pin.
     type: "'mailbox.notify'",
     data: {
       runId: "string > 0",
@@ -970,16 +936,16 @@ export const ControlPayload = type.or(
   {
     // Child-initiated mailbox-mutation request (INBOUND half of mailbox
     // ownership, §3b). The supervisor is the sole writer to the
-    // workflow-run mailbox. Flag writes and `expunge` route up here so
-    // the supervisor applies them to its owned store. A child flushing the
-    // same ref would race the supervisor's in-memory mirror and break
-    // uid / modseq monotonicity.
+    // workflow-run mailbox. Flag writes and `expunge` route up here so the
+    // supervisor applies them to its owned store; a child flushing the same
+    // ref would race the supervisor's in-memory mirror and break uid /
+    // modseq monotonicity.
     //
     // `data` is discriminated on `op`: an `addFlags` / `removeFlags`
     // carries the target `uid` and the `flags` to change, so the wire
     // boundary rejects a flag frame that omits them; an `expunge` sweeps
     // every `\Deleted` message in the mailbox and the child constructs it
-    // with neither. The mailbox name and the flag uid are not bounded. A
+    // with neither. The mailbox name and the flag uid are not bounded; a
     // frame this schema rejects crashes the child, and the supervisor
     // refuses a mailbox other than INBOX and an unknown uid. `requestId`
     // correlates the supervisor's `mailbox.mutate.response` reply.
@@ -1004,15 +970,15 @@ export const ControlPayload = type.or(
   },
   {
     // Supervisor's terminal reply to a child's `mailbox.mutate.request`.
-    // The `requestId` echoes the child's correlation id so the child's
-    // pending mail-tool awaiter resolves. The reply is sent only after
-    // the supervisor flushes the mutation, so the child's next committed
-    // read observes it -- the same flush-before-signal ordering
-    // `mailbox.notify` relies on. A successful `expunge` carries the
-    // `expungedUids` it swept so the agent tool can report the count; a
-    // flag write carries no operand echo. A failed mutation (unknown
-    // uid, substrate fault) surfaces a structured `{ ok: false, reason }`
-    // the child's bridge rethrows so the mail-tool call fails loudly.
+    // `requestId` echoes the child's correlation id so the child's pending
+    // mail-tool awaiter resolves. Sent only after the supervisor flushes
+    // the mutation, so the child's next committed read observes it -- the
+    // same flush-before-signal ordering `mailbox.notify` relies on. A
+    // successful `expunge` carries the `expungedUids` it swept so the
+    // agent tool can report the count; a flag write carries no operand
+    // echo. A failed mutation (unknown uid, substrate fault) surfaces a
+    // structured `{ ok: false, reason }` the child's bridge rethrows so
+    // the mail-tool call fails loudly.
     type: "'mailbox.mutate.response'",
     data: {
       requestId: "string > 0",
@@ -1034,8 +1000,8 @@ export const ControlPayload = type.or(
   },
   {
     // A child asks the supervisor to answer one mailbox operation. The
-    // supervisor owns the deployment mailbox, so the answer — including a
-    // refusal — is its decision. `data` is discriminated on `op`, and each
+    // supervisor owns the deployment mailbox, so the answer -- including a
+    // refusal -- is its decision. `data` is discriminated on `op`, and each
     // operation carries only the operands it uses. `requestId` correlates
     // the `mailbox.call.response`.
     type: "'mailbox.call.request'",
@@ -1071,9 +1037,9 @@ export interface ControlChannelSender {
 }
 
 /**
- * JSON has no NaN or Infinity: `JSON.stringify` emits `null` for both.
- * The receiver then rejects the frame and crashes the child. Refuse
- * before `seq` advances. A skipped sequence is itself a crash on the
+ * JSON has no NaN or Infinity: `JSON.stringify` emits `null` for both,
+ * and the receiver then rejects the frame and crashes the child. Refuse
+ * before `seq` advances -- a skipped sequence is itself a crash on the
  * next frame.
  */
 function rejectNonFiniteNumbers(value: unknown, path: string): void {
@@ -1099,20 +1065,20 @@ function rejectNonFiniteNumbers(value: unknown, path: string): void {
 }
 
 /**
- * Construct the supervisor-side control-channel sender. The
- * supervisor's Ed25519 seed lives in closure. The matching public
- * key flows to the child through spawn-time env -- never the seed.
+ * Construct the supervisor-side control-channel sender. The supervisor's
+ * Ed25519 seed lives in closure; the matching public key flows to the
+ * child through spawn-time env -- never the seed.
  */
 export function createControlChannelSender(
   opts: ControlChannelSenderOpts,
 ): ControlChannelSender {
   let seq = 0;
-  // Serialize sends. Signing is async, so without a lock two concurrent
+  // Serialize sends: signing is async, so without a lock two concurrent
   // callers could each assign seq, suspend on `signEd25519`, and resume in
-  // signature-resolution order — writing frames out of seq order, which the
-  // receiver rejects as a gap and crashes the channel. The promise chain
-  // makes each send await the previous send's completion before it assigns
-  // seq, signs, and writes, keeping that critical section atomic.
+  // signature-resolution order -- writing frames out of seq order, which
+  // the receiver rejects as a gap and crashes the channel. The promise
+  // chain makes each send await the previous send's completion before it
+  // assigns seq, signs, and writes.
   let tail: Promise<void> = Promise.resolve();
   return {
     get seq() {
@@ -1151,37 +1117,36 @@ export function createControlChannelSender(
 
 export interface ControlChannelReceiverOpts {
   /**
-   * Public key used to verify every inbound frame. When `Uint8Array`
-   * the value is fixed at construction time (the child's downstream
-   * receiver uses the supervisor's pubkey from `HOST_PUBKEY`). When
-   * `{ bootstrapFromReady: true }` the receiver opens in
-   * bootstrap mode: the first frame must be `ready` and must carry
-   * a `childPublicKey` hex-encoded Ed25519 public key in its payload.
-   * The receiver extracts the key, verifies the first frame's
-   * signature against it, then continues verifying subsequent frames
-   * against the same key. The supervisor's upstream receiver opens
-   * in bootstrap mode so the child can publish its own public key
-   * over the wire without the supervisor ever holding the matching
-   * private half.
+   * Public key used to verify every inbound frame. When `Uint8Array` the
+   * value is fixed at construction time (the child's downstream receiver
+   * uses the supervisor's pubkey from `HOST_PUBKEY`). When
+   * `{ bootstrapFromReady: true }` the receiver opens in bootstrap mode:
+   * the first frame must be `ready` and must carry a `childPublicKey`
+   * hex-encoded Ed25519 public key in its payload. The receiver extracts
+   * the key, verifies the first frame's signature against it, then
+   * verifies subsequent frames against the same key. The supervisor's
+   * upstream receiver opens in bootstrap mode so the child can publish
+   * its own public key over the wire without the supervisor ever holding
+   * the matching private half.
    */
   publicKey: Uint8Array | { bootstrapFromReady: true };
   channelId: string;
   reader: NdjsonReader;
   /**
-   * Invoked when any invariant is violated: signature failure,
-   * channelId mismatch, non-monotonic seq, malformed payload. The
-   * receiver's contract is to crash on any such violation. The
-   * caller wires this to a process-exit path; tests inject a
-   * recorder to assert on the failure mode.
+   * Invoked when any invariant is violated: signature failure, channelId
+   * mismatch, non-monotonic seq, malformed payload. The receiver's
+   * contract is to crash on any such violation; the caller wires this to a
+   * process-exit path, and tests inject a recorder to assert on the
+   * failure mode.
    */
   onCrash: (reason: string) => void;
 }
 
 /**
- * Construct the child-side control-channel receiver. Yields one
- * verified, in-order `ControlPayload` per call. Any frame that
- * fails verification, carries a non-current channelId, or arrives
- * out of order calls `onCrash` and ends the iterator.
+ * Construct the child-side control-channel receiver. Yields one verified,
+ * in-order `ControlPayload` per call. Any frame that fails verification,
+ * carries a non-current channelId, or arrives out of order calls `onCrash`
+ * and ends the iterator.
  */
 export async function* receiveControlChannel(
   opts: ControlChannelReceiverOpts,
@@ -1233,10 +1198,9 @@ export async function* receiveControlChannel(
 
     if (activePublicKey === null) {
       // Bootstrap mode: the first frame must be `ready`. Extract the
-      // child's public key from the payload, then verify the
-      // first frame's signature against it. The receiver crashes if
-      // the payload is not a `ready` frame or carries a malformed
-      // `childPublicKey`.
+      // child's public key from the payload, then verify the first
+      // frame's signature against it. Crash if the payload is not a
+      // `ready` frame or carries a malformed `childPublicKey`.
       const candidate = ControlPayload(signed.envelope.payload);
       if (candidate instanceof type.errors) {
         opts.onCrash(
@@ -1309,8 +1273,8 @@ function errorMessage(cause: unknown): string {
 }
 
 /**
- * Re-export the envelope decoder for callers that need to inspect
- * a control frame's envelope without going through the receiver
- * iterator (testing harnesses that fuzz the wire format).
+ * Re-export the envelope decoder for callers that need to inspect a
+ * control frame's envelope without going through the receiver iterator
+ * (testing harnesses that fuzz the wire format).
  */
 export { decodeEnvelope };

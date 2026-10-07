@@ -5,10 +5,10 @@ import { createChangeNotifier } from "./change-notifier";
 describe("createChangeNotifier", () => {
   test("until returns without waiting when the predicate already holds", async () => {
     const changes = createChangeNotifier();
-    // No notify will ever arrive, so only the initial check can resolve this.
-    // A bare wait on the next notify hangs here, which is the failure mode
-    // that makes a report-based wait deadlock when the state it wants arrived
-    // before the wait did.
+    // No notify will ever arrive, so only the initial check can resolve
+    // this. A bare wait on the next notify hangs here -- the failure mode
+    // that makes a report-based wait deadlock when the state it wanted
+    // arrived before the wait did.
     await changes.until(() => true);
   });
 
@@ -48,8 +48,8 @@ describe("createChangeNotifier", () => {
     let ticks = 0;
     const seen: number[] = [];
     // Signalled by the chained waiter itself, so this test waits on its
-    // progress rather than on a count of microtask turns -- which is the
-    // same bet on timing the notifier exists to remove.
+    // progress rather than on a count of microtask turns -- the same bet on
+    // timing the notifier exists to remove.
     const firstWaitDone = Promise.withResolvers<boolean>();
     const chained = (async () => {
       await changes.until(() => ticks >= 1);
