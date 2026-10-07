@@ -2195,25 +2195,22 @@ describe("RepoStore", () => {
     expect(targetHandler.onRefUpdatedCalls).toHaveLength(0);
   });
 
-  // A workflow-run pack whose oldest new commit declares a parent
-  // SHA the receiver does not have in its object store — and that
-  // the pack itself does not carry — leaves the substrate with no
-  // way to reconstruct the prior tree the kind handler validates
-  // append-only invariants against. Silently collapsing to "no
-  // prior" is unsafe: a handler enforcing append-only against a
-  // missing prior entry accepts only a genuinely new path; a path
-  // that contradicts a prior-tree entry the handler cannot read
-  // would slip through unchecked. The substrate refuses workflow-run
-  // packs with a dangling parent outright; the production
+  // A workflow-run pack whose oldest new commit declares a parent SHA
+  // the receiver does not have in its object store — and that the pack
+  // itself does not carry — leaves no way to reconstruct the prior tree
+  // the kind handler validates append-only invariants against. Silently
+  // collapsing to "no prior" is unsafe: a handler enforcing append-only
+  // accepts only a genuinely new path, so a path contradicting an
+  // unreadable prior entry would slip through. The substrate refuses
+  // workflow-run packs with a dangling parent outright; the production
   // workflow-run `createPack` ships the full parent chain, so the
   // branch is unreachable on the production path.
   //
-  // The substrate keeps the silent-degrade behavior for other kinds
-  // (e.g. agent-state) whose deploy-shape packs intentionally omit
-  // the parent chain and whose handlers do not read prior bytes;
-  // gating the rejection on `repoId.kind === "workflow-run"` is what
-  // keeps the agent-state state-push flow working through the same
-  // substrate primitive.
+  // Other kinds (e.g. agent-state) keep the silent-degrade behavior:
+  // their deploy-shape packs intentionally omit the parent chain and
+  // their handlers do not read prior bytes; gating the rejection on
+  // `repoId.kind === "workflow-run"` keeps the agent-state state-push
+  // flow working through the same substrate primitive.
   test("receivePack rejects a workflow-run pack with a dangling parent", async () => {
     const wfRepoId: RepoId = { kind: "workflow-run", id: "subject" };
     // Permissive test handler stamped as the workflow-run kind so
@@ -2307,13 +2304,13 @@ describe("RepoStore", () => {
   });
 
   // A workflow-run pack transfer cancelled by a reconnect never lands
-  // an ack. The send-side "last shipped tip" must therefore advance on
-  // the ack, not when the pack is built: an un-acked build has to leave
-  // the tip where it was so the next rebuild re-ships the un-acked
-  // commit. If the tip advanced at build time, the rebuild would walk
-  // its incremental chain back only as far as the un-acked commit and
-  // omit that commit's own object from the pack, stranding the receiver
-  // with a dangling parent it can never resolve.
+  // an ack, so the send-side "last shipped tip" must advance on the
+  // ack, not when the pack is built: an un-acked build leaves the tip
+  // where it was so the next rebuild re-ships the un-acked commit. A
+  // build-time advance would make the rebuild walk its incremental
+  // chain back only to the un-acked commit, omit that commit's own
+  // object from the pack, and strand the receiver with a dangling
+  // parent it can never resolve.
   test("createPack advances the packed tip on commitPackedTip, not at build time, so a cancelled transfer re-ships the un-acked commit", async () => {
     const makePermissiveWorkflowRunHandler = (): TestHandler => {
       const onRefUpdatedCalls: RefUpdateRecord[] = [];

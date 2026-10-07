@@ -1,14 +1,12 @@
-// Recursion coverage for the delete_type_mismatch guards in assembleTree.
-// delta-adversarial.test.ts exercises the two mismatch shapes only at the
-// tree root; these two cover paths it misses:
+// Recursion coverage for the delete_type_mismatch guards in assembleTree,
+// which delta-adversarial.test.ts exercises only at the tree root:
 //
-//   1. A NESTED no-slash delete of a directory -- proves the guard is
+//   1. A nested no-slash delete of a directory — proves the guard is
 //      carried through assembleTree's recursion and the thrown path
-//      string reflects the full nested prefix, not just the leaf name.
-//   2. A single-trailing-slash delete naming a base BLOB directly
-//      ("foo/"), as opposed to the two-level descent into a blob
-//      ("foo/bar/"). This is the minimal trailing-slash-over-blob shape
-//      and hits the child-extraction branch at the root.
+//      string is the full nested prefix, not just the leaf name.
+//   2. A single-trailing-slash delete naming a base blob directly
+//      ("foo/"), the minimal trailing-slash-over-blob shape, hitting the
+//      child-extraction branch at the root.
 
 import { test, expect, beforeAll, afterAll } from "bun:test";
 import fs from "node:fs";

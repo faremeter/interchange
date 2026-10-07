@@ -5,23 +5,10 @@ import type { RepoKind, RepoId, RepoAction } from "@intx/types/sidecar";
 export type { RepoKind, RepoId, RepoAction };
 
 /**
- * arktype validator for the `user` principal variant. The substrate
- * only requires the `kind` discriminant; kind handlers that accept
- * user-token-authenticated requests rely on this shape to
- * cross-check the pre-resolved authz verdict against the bearer
- * token's claims. The validator is exported alongside the type so
- * handlers can call it for a structural narrow without re-declaring
- * the shape.
- *
- * Field semantics:
- *   - `authz`: the pre-resolved grant verdict from the route layer.
- *     The kind handler does NOT re-query the grant store; it only
- *     sanity-checks that the verdict targets the right resource and
- *     grant verb, then defers to `effect`.
- *   - `tokenClaims`: the bearer-token's scope. The kind handler
- *     verifies the requested `(ref, action)` falls inside this scope
- *     synchronously (`actions.includes(action)`,
- *     `glob.match(refPattern, ref)`, `Date.now() < expiresAt`).
+ * arktype validator for the `user` principal variant, exported so kind
+ * handlers can narrow a principal structurally. The route layer already
+ * resolved the grant verdict (`authz`); the handler only cross-checks it
+ * against the bearer-token's claims (`tokenClaims`).
  */
 export const UserPrincipal = type({
   kind: "'user'",
@@ -41,39 +28,23 @@ export const UserPrincipal = type({
 
 export type UserPrincipal = typeof UserPrincipal.infer;
 
-/**
- * Regex defining the shape of a valid `RepoId.id`. The substrate
- * validates against this at every public operation and throws an Error
- * prefixed with `"repo_id_invalid: "` on mismatch.
- */
+/** Valid `RepoId.id` shape; the substrate rejects mismatches with `repo_id_invalid:`. */
 export const SAFE_REPO_ID = /^[a-zA-Z0-9_-]+$/;
 
 /**
- * Principal is a discriminated-union extension point. The substrate
- * requires only the `kind` discriminant; concrete principal shapes live
- * in kind-handler packages and are narrowed via `principal.kind === "..."`
- * checks plus arktype validation in the handler. No index signature is
- * declared here so that handlers do not need `as Type` casts to access
- * their own fields.
+ * Discriminated-union extension point: the substrate needs only `kind`;
+ * concrete shapes live in kind handlers, narrowed by `kind` checks plus
+ * arktype validation.
  */
 export type Principal = { readonly kind: string };
 
 /**
- * Authorization callback supplied to the repo-store. Called once per
- * substrate operation that requires gating (`writeTree`, `receivePack`,
- * `createPack`, `resolveRef`, plus the bulk-read variants below). The
- * substrate translates an `allowed: false` verdict into a thrown Error
- * prefixed with `"authorize_denied: "` carrying the supplied reason.
- *
- * The substrate passes the literal string `"*"` as `ref` when it calls
- * the authorize hook on behalf of the bulk-read methods `listRefs` and
- * `resolveHead`. Both methods enumerate refs across the whole repo and
- * have no single ref to feed into a per-ref claim check; the sentinel
- * lets kind handlers recognise the call and skip the per-ref
- * `refPattern` match while still gating on `action` (always
- * `"resolveRef"` for the bulk case) and expiry. Per-ref refPattern
- * filtering for the response payload is the responsibility of the
- * caller (the advertise-refs layer), not the authorize hook.
+ * Authorization callback for gated substrate operations (`writeTree`,
+ * `receivePack`, `createPack`, `resolveRef`, bulk reads). An
+ * `allowed: false` verdict throws `authorize_denied: <reason>`.
+ * Bulk reads (`listRefs`, `resolveHead`) pass `"*"` as `ref`: they
+ * have no single ref for a per-ref claim check; per-ref filtering is
+ * the advertise-refs layer's job.
  */
 export type AuthorizeFn = (
   principal: Principal,
@@ -83,18 +54,12 @@ export type AuthorizeFn = (
 ) => { allowed: true } | { allowed: false; reason: string };
 
 /**
- * A run whose terminal event (e.g. `RunCompleted`) is *newly added* by the
- * commit under validation -- present in the prospective tree and absent from
- * the prior tree. The kind handler authoritatively detects this during its
- * validation walk and surfaces it so callers do not re-derive terminal-ness
- * by sniffing committed path shapes. `status` is the terminal run state the
- * terminal event maps to, matching the `workflow_run.status` vocabulary, so a
- * caller flips the run's row without re-parsing the event type.
- * `terminalEventJson` carries the raw bytes of the terminal event blob so a
- * caller that needs the full event (the supervisor's terminal-write broadcast)
- * can reconstruct it without a second read. A commit that carries an
- * already-terminal run forward unchanged (e.g. a later compaction commit) is
- * NOT newly terminal and does not appear here.
+ * A run whose terminal event is newly added by the commit under validation
+ * (present in the prospective tree, absent from the prior). Detected
+ * authoritatively by the kind handler so callers do not re-derive
+ * terminal-ness from path shapes; `status` matches `workflow_run.status`;
+ * `terminalEventJson` carries the raw event bytes. Already-terminal runs
+ * carried forward unchanged are NOT newly terminal and do not appear.
  */
 export type NewlyTerminalRun = {
   runId: string;
@@ -107,11 +72,9 @@ export type ValidatePushResult =
   | { ok: false; reason: string };
 
 /**
- * Result of a `writeTree` / `writeTreePreservingPrefix` commit. `commitSha` is
- * the new commit. `newlyTerminalRuns` surfaces the kind handler's terminal
- * detection (empty for handlers and commits that produce none) so callers can
- * react to a run reaching a terminal event without re-deriving it from the
- * committed path shape.
+ * Result of a writeTree commit: the new commit SHA plus the terminal runs
+ * the kind handler detected (empty for handlers and commits that produce
+ * none).
  */
 export type WriteResult = {
   commitSha: string;
@@ -119,39 +82,26 @@ export type WriteResult = {
 };
 
 /**
- * Per-call options for `initRepo`. Currently a single override —
- * `gitignore` — that overrides the body written to `.gitignore` in
- * the genesis tree. When omitted, the substrate's default body is
- * used. The asset REST handler supplies a richer body that includes
- * OS/editor cruft, common build output, and `keys/`.
+ * Per-call `initRepo` options: `gitignore` overrides the genesis
+ * `.gitignore` body (the asset REST handler supplies a richer one).
  */
 export type InitRepoOpts = {
   gitignore?: string;
 };
 
-/**
- * A single ref entry returned by `RepoStore.listRefs`. `name` is the
- * fully-qualified ref name (`refs/heads/main`, `refs/tags/v1`, ...);
- * `sha` is the SHA-1 the ref currently resolves to.
- */
+/** One `RepoStore.listRefs` entry: fully-qualified ref name and the SHA it resolves to. */
 export type RefEntry = {
   readonly name: string;
   readonly sha: string;
 };
 
 export type TreeContent = {
-  /**
-   * Map of repo-relative path to file contents. Each entry is written
-   * to the working tree and staged before commit.
-   */
+  /** Repo-relative path to contents, written to the working tree and staged. */
   files: Record<string, string | Uint8Array>;
   /**
-   * Optional directory-subtree prefix to clear before staging. When
-   * set, every tracked path beginning with this prefix is removed
-   * from the git index and the corresponding directory on disk is
-   * deleted before `files` is written. Must end with `/` and must
-   * not contain `..` or absolute path components. When unset,
-   * writeTree is purely additive.
+   * Subtree prefix to clear before staging: every tracked path under it
+   * is removed and the directory deleted. Must end with `/`, no `..` or
+   * absolute components. Unset = purely additive.
    */
   clearPrefix?: string;
   /** Commit message for the resulting commit. */
@@ -159,30 +109,22 @@ export type TreeContent = {
 };
 
 /**
- * Per-call options for `RepoStore.writeTreePreservingPrefix`. The
- * substrate enumerates existing blobs under `preservePrefix` from the
- * current ref tip while holding the per-repo lock, calls the caller's
- * `merge` callback with those entries, and writes the returned set as
- * the new value of the prefix subtree. Two concurrent callers
- * targeting the same prefix serialize at the lock so neither one
- * observes a stale pre-image of the other's commit.
+ * Options for `writeTreePreservingPrefix`. The substrate enumerates
+ * blobs under `preservePrefix` under the per-repo lock, calls `merge`,
+ * and commits the returned set as the prefix's new value; concurrent
+ * callers serialize so no one sees a stale pre-image.
  */
 export type WriteTreePreservingPrefixArgs = {
   /**
-   * Directory-subtree prefix whose existing blobs are surfaced to
-   * `merge` and then replaced wholesale by its return value. Must end
-   * with `/` and must not contain `..` or absolute path components.
+   * Subtree prefix surfaced to `merge` and replaced by its return
+   * value. Must end with `/`, no `..` or absolute components.
    */
   preservePrefix: string;
   /**
-   * Called under the per-repo lock with the current set of blobs
-   * directly under `preservePrefix` (keyed by repo-root-relative
-   * path, including the prefix). Returns the full set of files the
-   * substrate should write at the prefix; the prefix subtree is
-   * cleared and replaced with this set in a single commit. Paths
-   * outside the prefix are passed through unchanged. The callback may
-   * throw to abort the write; the substrate releases the lock and
-   * propagates the error.
+   * Called under the per-repo lock with the current blobs under
+   * `preservePrefix`; returns the full replacement set (paths outside
+   * the prefix pass through unchanged). May throw to abort; the
+   * substrate releases the lock and propagates the error.
    */
   merge: (
     existing: ReadonlyMap<string, Uint8Array>,
@@ -192,25 +134,16 @@ export type WriteTreePreservingPrefixArgs = {
 };
 
 /**
- * Per-call options for `RepoStore.writeTreeDelta`. `computeDelta` runs
- * under the per-repo lock against the pinned parent tip (`parentCommitSha`,
- * null when the ref does not yet exist) and returns the exact files to
- * write and paths to delete; the substrate carries every other entry
- * forward by its object id. A delete ending in `/` clears that subtree;
- * any other delete clears the single file at that path. A delete whose
- * base entry is the wrong type -- a no-slash delete naming a directory,
- * or a trailing-slash delete descending into a file -- is rejected.
+ * Options for `writeTreeDelta`. `computeDelta` runs under the per-repo
+ * lock against the pinned parent tip (`parentCommitSha`, null when the
+ * ref does not yet exist) and returns the exact files to put and paths
+ * to delete; everything else is carried forward by oid. A delete ending
+ * in `/` clears a subtree; other deletes clear a single file; a delete
+ * whose base entry is the wrong type is rejected.
  *
- * `changedPathPrefixes` is the validation scoping hint for the touched
- * region (e.g. `addresses/<seg>/`), supplied by the caller because a
- * delta has no single clear-prefix to derive it from; `undefined` means
- * validate the whole tree.
- *
- * The `prior` argument exposes cache-backed reads of that pinned parent
- * tree -- `listDirOids` for a directory's `{name, oid}` children and
- * `readBlobByOid` for a blob by its object id -- so the callback reads
- * through the store's per-repo object cache under the same lock rather
- * than re-opening the repo.
+ * `changedPathPrefixes` scopes validation to the touched region
+ * (`undefined` = validate the whole tree). `prior` exposes
+ * cache-backed reads of the pinned parent tree under the same lock.
  */
 export type PriorDeltaReads = {
   readBlobByOid: (oid: string) => Promise<Uint8Array>;
@@ -232,76 +165,29 @@ export type WriteTreeDeltaArgs = {
 export interface KindHandler {
   kind: RepoKind;
   /**
-   * On-disk directory under `dataDir` for repos of this kind. Allows
-   * each kind to declare its own layout (e.g. "agents") so the
+   * On-disk directory under `dataDir` for repos of this kind, so the
    * substrate does not hard-code a `<kind>/<id>` path.
    */
   directoryPrefix: string;
   /**
-   * Inspect the prospective commit's tree before the ref is
-   * advanced. Return `{ ok: false, reason }` to reject the write.
-   * The substrate translates rejection into a thrown Error whose
-   * message begins with `"path_violation: "`.
+   * Inspect a prospective commit's tree before the ref advances; return
+   * `{ ok: false, reason }` to reject (thrown as `path_violation: <reason>`).
+   * Runs on every receivePack and writeTree independently of authorize:
+   * authorize gates access, validatePush enforces content rules.
    *
-   * Runs on every `receivePack` and every `writeTree` independently
-   * of the authorize verdict: authorize gates access, validatePush
-   * enforces content rules.
-   *
-   * `topLevelTreePaths` lists the names directly under the prospective
-   * tree root. `readBlob` reads any blob in the prospective tree by
-   * repo-root-relative POSIX path (e.g. `greet/SKILL.md`). `listDir`
-   * enumerates the names directly under a tree-root-relative POSIX
-   * directory path (no trailing slash, no leading slash); pass the
-   * empty string to list the root. Handlers that only need path-level
-   * checks can ignore `readBlob` and `listDir`.
-   *
-   * `priorReadBlob` and `priorListDir` mirror `readBlob` / `listDir`
-   * against the parent commit's tree — the ref's tip at the moment
-   * validatePush runs. Handlers use these to compare prospective
-   * content against the immediately-prior bytes (e.g. enforcing
-   * append-only invariants by rejecting any path whose prior bytes
-   * differ from the prospective bytes). `priorReadBlob` returns
-   * `null` when the path did not exist at the prior tree (or the
-   * ref has no prior commit — first push). `priorListDir` returns
-   * an empty array in the same cases.
-   *
-   * `principal` is the principal performing the push, the same value
-   * fed to the `authorize` hook. Handlers use it for principal-vs-
-   * payload cross-checks that a structural shape validator cannot
-   * express (e.g. "only a `hub` principal may write a `CancelRequested`
-   * whose origin is `hub-admin`").
-   *
-   * `changedPathPrefixes` is the set of repo-root-relative POSIX path
-   * prefixes (each ending in `/`) under which this commit could have
-   * mutated tree entries -- the cleared prefix for a `writeTree`
-   * carrying a `clearPrefix`, or the subtrees whose object differs from
-   * the parent commit for a received pack. Every path the commit can
-   * have changed relative to its parent is under one of these prefixes;
-   * any path outside them is carried forward byte-identical by the
-   * substrate. It is `undefined` when the substrate cannot bound the
-   * change set (no parent to diff against and no `clearPrefix`), in
-   * which case the handler must validate the whole prospective tree. A
-   * handler with per-subtree invariants that cannot be affected by a
-   * commit outside that subtree (workflow-run's per-run append-only
-   * log) uses this to skip re-validating subtrees the commit provably
-   * did not touch; a handler with no such structure ignores it and
-   * validates unconditionally.
-   *
-   * `priorListDirOids` mirrors `priorListDir` but returns each child
-   * entry's git object id alongside its name, read straight from the
-   * prior commit's tree (git trees are content-addressed, so the listing
-   * already carries the OID). A handler that validates a large retained
-   * subtree by its per-commit delta uses it to prove a retained entry is
-   * byte-unchanged by OID equality instead of re-reading the blob. It is
-   * `undefined` when no prior commit exists.
-   *
-   * `listDirOids` is the prospective-side mirror of `priorListDirOids`:
-   * each child entry's OID read straight from the prospective tree's
-   * listing, so a handler comparing a retained subtree by OID gets the
-   * prospective OID without re-reading and hashing every entry's bytes.
-   * It is `undefined` on paths that do not surface it (a hand-built
-   * validatePush in a test), in which case the handler falls back to
-   * hashing the prospective bytes.
+   * `topLevelTreePaths` lists the root's names; `readBlob`/`listDir` walk
+   * the prospective tree by repo-root-relative POSIX path (empty string =
+   * root). `priorReadBlob`/`priorListDir` mirror them against the parent
+   * commit's tree (null/empty when the ref has no prior commit) so a
+   * handler can enforce append-only invariants against the prior bytes.
+   * `principal` is the push's principal, as fed to the authorize hook.
+   * `changedPathPrefixes` bounds the paths the commit can have changed
+   * (repo-root-relative prefixes ending in `/`); `undefined` means the
+   * change set is unbounded and the whole tree must be validated.
+   * `priorListDirOids`/`listDirOids` return child entries with their git
+   * object ids so a handler can prove byte-unchanged retention by OID
+   * equality without re-reading blobs (absent when there is no prior
+   * commit / the path does not surface it).
    */
   validatePush: (args: {
     repoId: RepoId;
@@ -318,10 +204,7 @@ export interface KindHandler {
     ) => Promise<{ name: string; oid: string }[]>;
     changedPathPrefixes?: ReadonlySet<string> | undefined;
   }) => Promise<ValidatePushResult> | ValidatePushResult;
-  /**
-   * Fired after a successful ref update from any operation. `oldSha`
-   * is `null` when the ref did not exist before the update.
-   */
+  /** Called after a successful ref update from any operation; `oldSha` is null when the ref did not exist before. */
   onRefUpdated: (args: {
     repoId: RepoId;
     ref: string;
@@ -331,11 +214,8 @@ export interface KindHandler {
 }
 
 /**
- * A single child entry returned by `CommittedReads.listDir`. `name` is
- * the entry's own path segment (no parent prefix); `oid` is its git
- * object id; `type` is the git tree-entry kind. `oid` lets a consumer
- * read a blob's bytes via `readBlobByOid` without re-resolving the path,
- * and lets it prove a subtree byte-unchanged by OID equality.
+ * One `CommittedReads.listDir` child: the entry's own path segment,
+ * its git object id, and its git tree-entry kind.
  */
 export type CommittedTreeEntry = {
   readonly name: string;
@@ -344,45 +224,30 @@ export type CommittedTreeEntry = {
 };
 
 /**
- * Cache-backed reads pinned to the commit a ref resolved to at the
- * moment `openCommittedReads` was called. Every read resolves against
- * the git object store, never the materialized working tree, so a
- * consumer observes committed state even when the on-disk checkout lags
- * the committed tree. The pin is fixed at open time: a concurrent commit
- * that advances the ref afterwards does not shift the reads, so an
- * enumerate-then-read sequence sees a single coherent snapshot.
- *
- * `listDir` returns the direct children of a repo-root-relative POSIX
- * directory path (no leading or trailing slash; the empty string lists
- * the root). A path that is absent, or resolves to a non-tree, lists as
- * the empty array — mirroring the prior-tree closures the substrate
- * hands a kind handler. `readBlobByOid` reads a blob's bytes by its
- * object id; a read fault surfaces as a thrown error rather than an
- * empty result so a consumer cannot silently degrade a missing object
- * into an absent event.
+ * Cache-backed reads pinned to the commit a ref resolved to when
+ * `openCommittedReads` was called; every read resolves through the git
+ * object store, never the materialized working tree, so a concurrent
+ * ref advance does not shift the snapshot. `listDir` returns direct
+ * children (absent or non-tree paths list as `[]`); `readBlobByOid`
+ * reads by object id and throws on a read fault rather than returning
+ * an empty result.
  */
 export type CommittedReads = {
   listDir(relPath: string): Promise<CommittedTreeEntry[]>;
   readBlobByOid(oid: string): Promise<Uint8Array>;
   /**
-   * The git tree object id of the subtree at `relPath` (the empty string
-   * or "." is the commit's root tree), or `null` when `relPath` is absent
-   * or resolves to a non-tree. This is the content identity a source
-   * closure freezes for a package materialized from the tree: the sidecar
-   * re-checks the checked-out subtree against it.
+   * Git tree object id of the subtree at `relPath` ("" or "." = the
+   * commit's root tree), or null when absent or non-tree. This is the
+   * content identity a source closure freezes for a materialized package.
    */
   treeOid(relPath: string): Promise<string | null>;
 };
 
 export interface RepoStore {
   /**
-   * Bookkeeping primitive. Idempotent. Creates the repo directory
-   * and initializes git when not already present. Not gated by
-   * `authorize`: the only state it can produce is an empty repo, so
-   * the higher-level question of who may mint a new `<kind>/<id>`
-   * lives at the caller. The substrate also calls `initRepo`
-   * internally from `writeTree` and `receivePack`, so first-touch
-   * operations succeed without an explicit init call.
+   * Idempotent bookkeeping: create the repo directory and initialize
+   * git when absent. Not authorize-gated (it can only produce an empty
+   * repo); also called internally by `writeTree` and `receivePack`.
    */
   initRepo(repoId: RepoId, opts?: InitRepoOpts): Promise<void>;
   writeTree(
@@ -392,20 +257,13 @@ export interface RepoStore {
     content: TreeContent,
   ): Promise<WriteResult>;
   /**
-   * Read-then-write variant for use cases that mutate a single
-   * directory subtree against its current contents (overwrite one
-   * entry, delete one entry, augment by one entry). The substrate
-   * enumerates blobs under `args.preservePrefix` while holding the
-   * per-repo lock, invokes `args.merge` with those entries, and
-   * commits the returned set as the new value of the prefix.
-   *
-   * Two concurrent callers targeting the same prefix serialize at the
-   * lock, so the merge callback's pre-image is always the previous
-   * commit's tip — there is no read-outside-the-lock window where one
-   * caller could base its write on a stale view of the prefix.
-   *
-   * The substrate handles `clearPrefix` and the commit internally;
-   * paths outside the prefix are untouched.
+   * Read-then-write for mutating one subtree against its current
+   * contents. Enumerates blobs under `args.preservePrefix` under the
+   * per-repo lock, calls `args.merge`, and commits the returned set;
+   * concurrent callers serialize so the merge pre-image is always the
+   * previous tip — no read-outside-the-lock window. `clearPrefix` and
+   * the commit are handled internally; paths outside the prefix are
+   * untouched.
    */
   writeTreePreservingPrefix(
     principal: Principal,
@@ -415,13 +273,11 @@ export interface RepoStore {
   ): Promise<WriteResult>;
   /**
    * Delta variant for mutating a few named entries in a large subtree
-   * without re-materializing the untouched siblings. `computeDelta` runs
-   * under the per-repo lock against the pinned parent tip and returns the
-   * files to put and the paths to delete; everything else is carried
-   * forward by object id. Use this over `writeTreePreservingPrefix` when
-   * the untouched remainder of the prefix is large (e.g. a claim-check
-   * move that adds one entry and deletes another while the consumed dedup
-   * index carries forward unchanged).
+   * without re-materializing the untouched siblings: `computeDelta` runs
+   * under the per-repo lock against the pinned parent tip and returns
+   * the files to put and paths to delete; everything else is carried
+   * forward by oid. Prefer over `writeTreePreservingPrefix` when the
+   * untouched remainder is large (e.g. a claim-check move).
    */
   writeTreeDelta(
     principal: Principal,
@@ -432,24 +288,15 @@ export interface RepoStore {
   /**
    * Receive a packfile and advance `ref` to `commitSha`.
    *
-   * `expectedOldSha` is a compare-and-set guard the substrate runs
-   * under the per-repo lock. Pass a SHA string to require the ref
-   * currently points there; pass `null` to require the ref does not
-   * yet exist. On mismatch the call throws with a `non_fast_forward:`
-   * prefix and leaves the ref untouched.
+   * `expectedOldSha` is a CAS guard under the per-repo lock: a SHA
+   * string requires the ref to point there, `null` requires it not to
+   * exist yet; on mismatch the call throws `non_fast_forward:` and
+   * leaves the ref untouched. Resolve the old SHA via `resolveRef`
+   * first; there is no force-write mode.
    *
-   * Callers that do not have the old SHA in hand should resolve it
-   * via `resolveRef` first; the substrate exposes no force-write
-   * mode because silently overwriting a losing concurrent update is
-   * never the right behavior.
-   *
-   * Returns the runs the received pack drove to a terminal event,
-   * aggregated across every commit it carried. The kind handler
-   * detects terminal-ness authoritatively during validation; the
-   * substrate forwards it so a caller can react (flip the run's DB
-   * row, deactivate its principal) without re-deriving terminal-ness
-   * from the committed path shape. Empty for kinds and packs that
-   * produce none.
+   * Returns the runs the pack drove to a terminal event, detected
+   * authoritatively by the kind handler, so callers can react without
+   * re-deriving terminal-ness from the committed path shape.
    */
   receivePack(
     principal: Principal,
@@ -465,16 +312,12 @@ export interface RepoStore {
     ref: string,
   ): Promise<{ pack: Uint8Array; commitSha: string; ref: string }>;
   /**
-   * Commit the "last shipped tip" for an incremental (`workflow-run`)
-   * pack ref, advancing the cursor `createPack` walks back to. The
-   * caller invokes this only once the receiver has acked the transfer
-   * that shipped `commitSha`, so an incremental pack the receiver never
-   * acknowledged — a transfer a reconnect cancelled before its ack —
-   * leaves the cursor where it was and the next `createPack` re-ships
-   * the un-acked commits. Building a pack must NOT advance the cursor
-   * itself: a built-but-un-acked transfer would then strand the
-   * receiver with a chain whose base commit the pack omits. A no-op for
-   * kinds whose packs are not incremental.
+   * Commit the receiver-acked "last shipped tip" for an incremental
+   * (`workflow-run`) pack ref, advancing the cursor `createPack` walks
+   * back to. Called only once the receiver has acked the transfer that
+   * shipped `commitSha`, so a cancelled transfer re-ships the un-acked
+   * commits; building a pack must NOT advance the cursor itself. No-op
+   * for kinds whose packs are not incremental.
    */
   commitPackedTip(repoId: RepoId, ref: string, commitSha: string): void;
   resolveRef(
@@ -484,55 +327,35 @@ export interface RepoStore {
   ): Promise<string | null>;
   /**
    * Enumerate the repo's refs (branches and tags), lexicographically
-   * sorted by name. The principal is gated under the same
-   * `resolveRef` action that `resolveRef` itself enforces — the
-   * substrate does not duplicate the check on a per-ref basis. When
-   * the on-disk repo does not yet exist (the bookkeeping primitive
-   * `initRepo` has never been called), the result is the empty list.
+   * sorted. Gated under the same `resolveRef` action as `resolveRef`;
+   * the substrate does not duplicate the check per ref. Empty list
+   * when the on-disk repo does not yet exist.
    */
   listRefs(principal: Principal, repoId: RepoId): Promise<RefEntry[]>;
   /**
-   * Resolve HEAD into the ref it symbolically points at plus the SHA
-   * that ref currently resolves to. The principal is gated under the
-   * same `resolveRef` action that `resolveRef` and `listRefs`
-   * enforce. Returns `null` when:
-   *   - The on-disk repo does not yet exist (mirrors `listRefs`'s
-   *     empty-list contract for uninitialised repos).
-   *   - HEAD is detached (no symbolic target).
-   *   - HEAD's symbolic target does not resolve (unborn ref).
-   * The smart-HTTP advertise layer uses the result to emit
-   * `symref=HEAD:<target>` so stock `git clone` lands on a real
-   * branch instead of leaving the working tree unborn.
+   * Resolve HEAD to its symbolic target plus the SHA that ref resolves
+   * to. Gated under `resolveRef`. Returns null when the repo does not
+   * exist, HEAD is detached, or the target ref is unborn. The
+   * smart-HTTP advertise layer uses this to emit `symref=HEAD:<target>`
+   * so stock `git clone` lands on a real branch.
    */
   resolveHead(
     principal: Principal,
     repoId: RepoId,
   ): Promise<{ symbolicTarget: string; sha: string } | null>;
   /**
-   * Synchronously return the on-disk directory backing the repo.
-   * The path is the result of composing the substrate's `dataDir`,
-   * the kind handler's `directoryPrefix`, and the validated
-   * `repoId.id`. This carries no authorize gate: it is a pure path
-   * computation. Consumers of the path (the smart-HTTP wire
-   * handlers) remain authorize-gated through the substrate methods
-   * they reach into for ref-listing and pack negotiation.
+   * Synchronously return the on-disk repo dir: the substrate's
+   * `dataDir`, the kind handler's `directoryPrefix`, and the validated
+   * `repoId.id`. Not authorize-gated (pure path computation); consumers
+   * of the path remain gated through the substrate methods they call.
    */
   getRepoDir(repoId: RepoId): string;
   /**
-   * Open cache-backed reads of the committed tree at `ref`'s tip. The
-   * ref is resolved once, at call time, and every read the returned
-   * handle serves is pinned to that commit and resolves through the git
-   * object store — not the materialized working tree `getRepoDir` points
-   * at. A consumer that must observe committed state (e.g. start-time
-   * recovery reconstructing a ledger from the persisted log) reads
-   * through this rather than the working tree, which a non-atomic
-   * post-commit materialization can leave lagging on a contended
-   * filesystem.
-   *
-   * Gated under the same `resolveRef` action as `resolveRef` / `listRefs`
-   * / `subscribe`. Returns `null` when the repo does not yet exist
-   * (mirrors `listRefs`'s empty-list contract for uninitialised repos)
-   * or when `ref` does not resolve to a commit.
+   * Open cache-backed reads pinned to `ref`'s tip at call time,
+   * resolving through the git object store — not the materialized
+   * working tree, which a non-atomic post-commit materialization can
+   * leave lagging. Gated under `resolveRef`. Null when the repo does
+   * not exist or `ref` does not resolve to a commit.
    */
   openCommittedReads(
     principal: Principal,
@@ -540,20 +363,13 @@ export interface RepoStore {
     ref: string,
   ): Promise<CommittedReads | null>;
   /**
-   * Open cache-backed reads of the committed tree at an explicit commit,
-   * the by-SHA counterpart of `openCommittedReads`. A consumer that
-   * already holds a commit id — e.g. the `newSha`/`oldSha` of a
-   * ref-update event it is diffing — reads that exact commit through
-   * this, even after the ref has advanced past it. Every read the handle
-   * serves resolves through the git object store, pinned to `commitSha`.
-   *
-   * Gated under the same `resolveRef` action as `openCommittedReads`.
-   * `commitSha` is validated at the boundary: a malformed SHA throws
-   * `commit_sha_invalid`. Returns `null` when the repo does not yet exist
-   * or when `commitSha` names no commit in the object store (a commit a
-   * concurrent GC pruned between the caller learning of it and reading
-   * it), so a caller diffing a possibly-vanished commit gets an empty
-   * view rather than a mid-walk throw.
+   * By-SHA counterpart of `openCommittedReads`: read the exact commit
+   * a consumer already holds (e.g. a ref-update event's newSha), even
+   * after the ref has advanced past it. Gated under `resolveRef`;
+   * malformed SHAs throw `commit_sha_invalid`. Null when the repo does
+   * not exist or the commit is missing from the object store (a
+   * concurrent GC prune), so a diffing caller gets an empty view rather
+   * than a mid-walk throw.
    */
   openCommittedReadsAtCommit(
     principal: Principal,
@@ -561,36 +377,20 @@ export interface RepoStore {
     commitSha: string,
   ): Promise<CommittedReads | null>;
   /**
-   * Tail a ref's commit log. Returns an async iterator that emits
-   * `{ seq, event }` entries: one per commit on the ref. `seq` is
-   * zero-indexed at the ref's root commit and counts ancestors
-   * walking forward to HEAD, so the same commit always carries the
-   * same `seq` across restarts. The emitted `event` is the
-   * substrate-level commit descriptor; consumers that need richer
-   * shapes layer their own decoding on top.
+   * Tail a ref's commit log: one `{ seq, event }` entry per commit.
+   * `seq` is zero-indexed at the root commit and stable across
+   * restarts; the emitted `event` is the substrate-level commit
+   * descriptor. On `opts.signal` abort the iterator ends cleanly and
+   * the watcher slot is released on the same tick.
    *
-   * Cancellation: when `opts.signal` aborts, the iterator ends
-   * cleanly (no throw from the consumer's `for await`). The
-   * substrate releases the watcher slot on the same abort tick.
+   * Replay vs live: `from: { seq }` enumerates every prior commit with
+   * seq >= the given number then goes live; `from: "head"` records the
+   * tip at subscribe time and emits only commits that land strictly
+   * after.
    *
-   * Replay vs live:
-   *   - `from: { seq: number }` enumerates every prior commit on the
-   *     ref whose computed `seq` is >= the supplied number, then
-   *     transitions to live mode and continues with new commits.
-   *   - `from: "head"` records HEAD-of-ref at subscribe time and
-   *     emits only commits that land strictly after.
-   *
-   * Backpressure: events are buffered in userspace bounded by
-   * `bufferLimit` (default 1024). On overrun the iterator throws a
-   * loud error; silent drop would corrupt audit. Consumers that
+   * Backpressure: events buffer in userspace up to `bufferLimit`
+   * (default 1024); on overrun the iterator throws. Consumers that
    * cannot keep up are expected to abort.
-   *
-   * The substrate's vocabulary is the ref-update envelope. Consumers
-   * that need to filter on a richer event kind (e.g. a workflow-event
-   * `type` discriminator committed at the new ref) layer a decoder on
-   * top — see `subscribeKind` for the typed entrypoint that loads the
-   * committed payload, narrows it with an arktype validator, and
-   * applies a per-call kind filter.
    */
   subscribe(
     principal: Principal,
@@ -605,11 +405,9 @@ export interface RepoStore {
 }
 
 /**
- * Substrate-level event shape emitted by `RepoStore.subscribe`.
- * Each successful commit on a watched ref produces one event with
- * this shape. The substrate is schema-agnostic; higher layers that
- * want to surface richer event vocabularies build their own decoders
- * on top (see `subscribeKind` for the workflow-event entrypoint).
+ * Substrate-level event shape emitted by `RepoStore.subscribe` per
+ * successful commit on a watched ref. Higher layers decode richer
+ * vocabularies on top (see `subscribeKind`).
  */
 export type RepoStoreSubscribeEvent = {
   readonly type: "ref.updated";

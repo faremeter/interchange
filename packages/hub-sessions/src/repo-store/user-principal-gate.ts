@@ -2,18 +2,13 @@
 // every kind handler that accepts user-token-authenticated requests
 // (workflow, skill, agent-state, workflow-run).
 //
-// The route layer has already pre-resolved the grant verdict and
-// attached it as `authz`; the kind handlers do NOT re-query the grant
-// store here. This gate (a) checks the bearer-token's claims bound the
-// requested (ref, action) and have not expired, and (b) sanity-checks
-// that the pre-resolved verdict targets this exact resource and grant
-// verb. Both gates must pass before the verdict's `effect` is honoured.
-//
-// Funnelling every kind through this one gate keeps the security-
-// critical claim/verdict cross-check from drifting between kinds. The
-// only per-kind input is the `resourcePrefix` the verdict's `resource`
-// must carry (`asset:<id>` for the codebase kinds, `agent-state:<id>`,
-// `workflow-run:<id>`).
+// The route layer pre-resolved the grant verdict and attached it as
+// `authz`; this gate checks the bearer-token's claims bound the requested
+// (ref, action) and have not expired, and sanity-checks the verdict
+// targets this exact resource and grant verb, before honouring `effect`.
+// Funnelling every kind through one gate keeps the security-critical
+// cross-check from drifting; the only per-kind input is the
+// `resourcePrefix` the verdict's `resource` must carry.
 
 import { type } from "arktype";
 import { glob, repoActionToGrantVerb } from "@intx/hub-common";
@@ -26,19 +21,18 @@ export type AuthorizeUserPrincipalArgs = {
   ref: string;
   action: RepoAction;
   /**
-   * The resource-kind prefix the pre-resolved authz verdict must carry
-   * for this kind: the verdict's `resource` is compared against
-   * `<resourcePrefix>:<repoId.id>`.
+   * Resource-kind prefix the pre-resolved authz verdict's `resource`
+   * must carry: compared against `<resourcePrefix>:<repoId.id>`.
    */
   resourcePrefix: string;
 };
 
 /**
  * Verdict for a `user` principal performing `action` on `ref` of
- * `repoId`, in the shape the substrate's `AuthorizeFn` contract
- * expects. The caller dispatches on `principal.kind === "user"` first;
- * this function narrows with `UserPrincipal` and applies the full
- * claim/verdict cross-check.
+ * `repoId`, in the shape the substrate's `AuthorizeFn` expects. The
+ * caller dispatches on `principal.kind === "user"` first; this function
+ * narrows with `UserPrincipal` and applies the full claim/verdict
+ * cross-check.
  */
 export function authorizeUserPrincipal({
   principal,
@@ -63,9 +57,8 @@ export function authorizeUserPrincipal({
     };
   }
   // `ref === "*"` is the substrate's sentinel for the bulk read
-  // performed by `listRefs`. Per-ref filtering is the advertise-refs
-  // layer's responsibility, so the bulk read is gated on action and
-  // expiry alone.
+  // performed by `listRefs`; per-ref filtering is the advertise-refs
+  // layer's job, so the bulk read is gated on action and expiry alone.
   if (ref !== "*" && !glob.match(parsed.tokenClaims.refPattern, ref)) {
     return {
       allowed: false,

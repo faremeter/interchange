@@ -1,8 +1,8 @@
 // Adversarial correctness tests for writeTreeDelta / assembleTree. The
-// oracle here is isomorphic-git's INDEX-based writeTree (git.add +
-// git.commit), which is genuinely independent of assembleTree — unlike
-// write-tree-delta.test.ts, whose full-replace comparison also runs
-// through assembleTree, so a shared bug would pass both sides.
+// oracle is isomorphic-git's index-based writeTree (git.add + git.commit),
+// genuinely independent of assembleTree — unlike write-tree-delta.test.ts,
+// whose full-replace comparison also runs through assembleTree, so a
+// shared bug would pass both sides.
 
 import { test, expect, afterAll, beforeAll } from "bun:test";
 import fs from "node:fs";
