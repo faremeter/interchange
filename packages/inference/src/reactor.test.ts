@@ -1061,15 +1061,14 @@ describe("createReactor — gate lifecycle", () => {
   });
 
   test("does not emit reactor.gate.blocked until the suspend is durably committed", async () => {
-    // Persist-before-settle. The `reactor.gate.blocked` event resolves the
-    // `send()` awaiter as "suspended", and a downstream consumer (the warm
-    // agent's run-boundary durability mirror) reads the pending operation back
-    // out of the context store the instant `send()` settles. So the durable
-    // commit must land BEFORE the event is emitted -- otherwise the mirror
-    // reads an uncommitted store and durably loses the approval snapshot. This
-    // test gates the commit's `writeMetadata`: `blocked` must not appear while
-    // the commit is pending, and must appear once it is released. A regression
-    // that emits before committing would fire `blocked` while the gate is held.
+    // Persist-before-settle: `reactor.gate.blocked` resolves the `send()`
+    // awaiter as "suspended", and a downstream consumer (the warm agent's
+    // run-boundary durability mirror) reads the pending operation back out of
+    // the context store the instant `send()` settles. So the durable commit
+    // must land BEFORE the event is emitted — otherwise the mirror reads an
+    // uncommitted store and durably loses the approval snapshot. This test
+    // gates the commit's `writeMetadata`: `blocked` must not appear while the
+    // commit is pending, and must appear once it is released.
     let releaseCommit: (() => void) | undefined;
     const commitGate = new Promise<void>((resolve) => {
       releaseCommit = resolve;
@@ -1142,13 +1141,14 @@ describe("createReactor — gate lifecycle", () => {
   });
 
   test("defers a gate clear racing the commit until after blocked", async () => {
-    // blocked-before-cleared. A gate whose timeout timer elapses while the
+    // blocked-before-cleared: a gate whose timeout timer elapses while the
     // suspend's durable commit is still in flight must not have its clear take
-    // effect before `reactor.gate.blocked` is emitted: downstream status
+    // effect before `reactor.gate.blocked` is emitted — downstream status
     // derivation and the send-awaiter assume a gate's `blocked` precedes any
-    // effect of its clearing. This holds the commit's `writeMetadata` open long
-    // enough for a short gate timeout to fire inside the window, then asserts
-    // `blocked` is emitted before the `reactor.gate.cleared` it belongs to.
+    // effect of its clearing. This holds the commit's `writeMetadata` open
+    // long enough for a short gate timeout to fire inside the window, then
+    // asserts `blocked` is emitted before the `reactor.gate.cleared` it
+    // belongs to.
     let releaseCommit: (() => void) | undefined;
     const commitGate = new Promise<void>((resolve) => {
       releaseCommit = resolve;
@@ -1186,13 +1186,12 @@ describe("createReactor — gate lifecycle", () => {
     reactor.deliver(makeInboundMessage());
 
     // The gate timer firing inside the commit window is the race under test,
-    // and nothing observable reports it -- a deferred clear is by definition
+    // and nothing observable reports it — a deferred clear is by definition
     // not emitted. So the wait below is ordered against the timer rather than
     // sized to outlast it: the gate's 30ms deadline was set before
     // `commitEntered` resolved, and this timer's 80ms deadline is set after,
     // so the gate's deadline is the earlier of the two and the event loop
-    // fires it first no matter how loaded the machine is. Neither the block
-    // nor the clear may surface until the commit is released.
+    // fires it first no matter how loaded the machine is.
     await commitEntered;
     await new Promise((r) => setTimeout(r, 80));
     expect(events.some((e) => e.type === "reactor.gate.blocked")).toBe(false);
@@ -3418,12 +3417,11 @@ function makeInferenceRunner(
 
 // ---------------------------------------------------------------------------
 // afterInferenceDone abort/halt policy, end to end
-//
-// These drive the real DefaultDirector so the action sets its abort and
-// halt branches build are validated by the reactor, not just asserted in
+// These drive the real DefaultDirector so the action sets its abort and halt
+// branches build are validated by the reactor, not just asserted in
 // isolation. The bug was that those sets were rejected, so the reactor
-// crashed with a fatal "Invalid action set" instead of terminating
-// (abort) or pausing and replying (halt).
+// crashed with a fatal "Invalid action set" instead of terminating (abort)
+// or pausing and replying (halt).
 // ---------------------------------------------------------------------------
 
 describe("createReactor — afterInferenceDone abort and halt", () => {

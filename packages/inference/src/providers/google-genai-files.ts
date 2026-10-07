@@ -2,32 +2,31 @@ import { type } from "arktype";
 
 // Google's Generative Language Files API endpoint for raw single-part
 // uploads. The "raw" upload protocol (declared via
-// `X-Goog-Upload-Protocol: raw`) accepts the bytes as the request
-// body and returns the file resource (uri + metadata) on the
-// response. The resumable and multipart protocols target larger
-// files and a different endpoint vocabulary; the helper here covers
-// only the raw shape because it maps cleanly onto a single fetch.
+// `X-Goog-Upload-Protocol: raw`) accepts the bytes as the request body and
+// returns the file resource (uri + metadata) on the response. The resumable
+// and multipart protocols target larger files and a different endpoint
+// vocabulary; the helper here covers only the raw shape because it maps
+// cleanly onto a single fetch.
 const FILES_API_UPLOAD_DEFAULT_URL =
   "https://generativelanguage.googleapis.com/upload/v1beta/files";
 
-// Parseable-integer pattern. Accepts an optional minus sign followed
-// by digits and nothing else. Excludes whitespace, trailing
-// non-digits, scientific notation, decimals. `Number.parseInt`
-// alone is permissive on all four ("42abc" parses to 42, "  42"
-// parses to 42); this guard makes the wire schema honest.
+// Parseable-integer pattern. Accepts an optional minus sign followed by
+// digits and nothing else. Excludes whitespace, trailing non-digits,
+// scientific notation, decimals. `Number.parseInt` alone is permissive on all
+// four ("42abc" parses to 42, "  42" parses to 42); this guard makes the
+// wire schema honest.
 const PARSEABLE_INTEGER = /^-?\d+$/;
 
 const FilesApiUploadResponse = type({
   file: {
-    // `> 0` rejects empty strings -- a "" uri is not dereferenceable
-    // and would slip through a `"string"` validator. Same for the
-    // mime type.
+    // `> 0` rejects empty strings — a "" uri is not dereferenceable and
+    // would slip through a `"string"` validator. Same for the mime type.
     uri: "string > 0",
     mimeType: "string > 0",
-    // `sizeBytes` lands as a stringified number on the wire. The
-    // schema accepts string or number; the parser normalizes both
-    // to a runtime integer at extraction time and throws on any
-    // value that is not a parseable integer.
+    // `sizeBytes` lands as a stringified number on the wire. The schema
+    // accepts string or number; the parser normalizes both to a runtime
+    // integer at extraction time and throws on any value that is not a
+    // parseable integer.
     "sizeBytes?": "string | number",
     "name?": "string",
     "state?": "string",
@@ -41,10 +40,10 @@ const FilesApiUploadResponse = type({
 
 /**
  * Callable shape the helper accepts for `fetch` injection. Mirrors
- * `Dependencies.fetch` on the inference harness, so test doubles
- * stay structurally compatible across both surfaces. Bun's global
- * `typeof fetch` carries non-callable members (e.g. `preconnect`)
- * that test doubles would otherwise have to satisfy gratuitously.
+ * `Dependencies.fetch` on the inference harness, so test doubles stay
+ * structurally compatible across both surfaces. Bun's global `typeof fetch`
+ * carries non-callable members (e.g. `preconnect`) that test doubles would
+ * otherwise have to satisfy gratuitously.
  */
 export type UploadGoogleGenAIFileFetch = (
   input: string | URL | Request,
@@ -91,22 +90,16 @@ export interface UploadedGoogleGenAIFile {
   state?: string;
 }
 
-// Header values must be free of control characters (CR/LF are
-// the smuggling-relevant ones, but NUL and other CTL bytes are
-// also illegal per RFC 9110 §5.5 visible-US-ASCII rule). The
-// downstream `fetch` typically rejects CR/LF but not NUL, so
-// catching the broader set here keeps the diagnostic specific
-// to the offending input. This is the boundary that turns
-// caller strings into HTTP request structure (per the style
-// skill's Data Validation rule), so the check belongs here.
+// Header values must be free of control characters (CR/LF are the
+// smuggling-relevant ones, but NUL and other CTL bytes are also illegal per
+// RFC 9110 §5.5 visible-US-ASCII rule). The downstream `fetch` typically
+// rejects CR/LF but not NUL, so catching the broader set here keeps the
+// diagnostic specific to the offending input. This is the boundary that turns
+// caller strings into HTTP request structure, so the check belongs here.
 //
-// `apiKey` flows through the same guard because the rule is
-// "validate at the boundary" -- the boundary cannot know an
-// input's provenance, and the caller may not have run their own
-// sanity check.
-// The guard's whole purpose is to reject CR/LF/NUL/other CTL
-// bytes before they reach the downstream fetch, so the regex
-// MUST match those code points.
+// `apiKey` flows through the same guard because the rule is "validate at the
+// boundary" — the boundary cannot know an input's provenance, and the caller
+// may not have run their own sanity check.
 // eslint-disable-next-line no-control-regex
 const FORBIDDEN_HEADER_CHARS = /[\x00-\x1f\x7f]/;
 function assertHeaderValueSafe(name: string, value: string): void {
@@ -123,25 +116,22 @@ function assertHeaderValueSafe(name: string, value: string): void {
 /**
  * Upload bytes to the Gemini Files API and return the file URI.
  *
- * The Files API is the dereferencable handle path for Gemini media:
- * upload once, reference the returned `fileUri` on subsequent
- * inference requests via a `fileData.fileUri` part (or a
- * `MediaSource` of `kind: "file-reference"` whose `reference` is the
- * URI). The trade-off relative to inline `base64` is bytes-on-the-wire:
- * inline payloads ship with every request, file references ship
- * once and are then quoted.
+ * The Files API is the dereferencable handle path for Gemini media: upload
+ * once, reference the returned `fileUri` on subsequent inference requests via
+ * a `fileData.fileUri` part (or a `MediaSource` of `kind: "file-reference"`
+ * whose `reference` is the URI). The trade-off relative to inline `base64` is
+ * bytes-on-the-wire: inline payloads ship with every request, file references
+ * ship once and are then quoted.
  *
- * The helper exclusively uses the "raw" upload protocol (one
- * `POST` carries the full bytes). The resumable and multipart
- * protocols are out of scope; large-file workflows that need them
- * should compose against the Gemini SDK directly.
+ * The helper exclusively uses the "raw" upload protocol (one `POST` carries
+ * the full bytes). The resumable and multipart protocols are out of scope;
+ * large-file workflows that need them should compose against the Gemini SDK
+ * directly.
  *
- * @throws an Error when the upload returns non-2xx, when the
- *   response is not JSON, or when the response shape does not
- *   carry a non-empty `file.uri` + `file.mimeType`. The thrown
- *   error's message names the failure mode; HTTP errors include
- *   the status code and a snippet of the response body, and
- *   schema/JSON failures carry a snippet of the response body too.
+ * @throws an Error when the upload returns non-2xx, when the response is not
+ *   JSON, or when the response shape does not carry a non-empty
+ *   `file.uri` + `file.mimeType`. The message names the failure mode; HTTP
+ *   errors include the status code and a snippet of the response body.
  */
 export async function uploadGoogleGenAIFile(
   opts: UploadGoogleGenAIFileOpts,
@@ -181,11 +171,10 @@ export async function uploadGoogleGenAIFile(
   }
   const response = await fetchImpl(url, init);
 
-  // Read the body as text first, then parse JSON ourselves. This
-  // keeps a snippet of the actual server response available for
-  // both the JSON-parse and schema-mismatch error paths; reading
-  // through `response.json()` would consume the stream before the
-  // error site can sample it.
+  // Read the body as text first, then parse JSON ourselves. This keeps a
+  // snippet of the actual server response available for both the JSON-parse
+  // and schema-mismatch error paths; reading through `response.json()` would
+  // consume the stream before the error site can sample it.
   let body: string;
   try {
     body = await response.text();
@@ -228,17 +217,16 @@ export async function uploadGoogleGenAIFile(
 
   const { file } = validated;
   // Normalize `sizeBytes` from `string | number | undefined` to
-  // `number | undefined`. The wire ships an integer as a string
-  // ("4193"); the helper rejects strings that are not exactly a
-  // parseable integer and numbers that are not integers (a size
-  // in bytes by definition is not fractional). `Number.parseInt`
-  // alone is permissive ("42abc" parses to 42) so the regex guard
-  // is what makes the contract honest. The final integer must
-  // also be non-negative (bytes count up from zero) and within
-  // JavaScript's safe-integer range -- Files API docs call this
-  // field int64, and a string like "9007199254740993" silently
-  // rounds when coerced to a JS number, so a precision check at
-  // the boundary keeps the returned value faithful to the wire.
+  // `number | undefined`. The wire ships an integer as a string ("4193");
+  // the helper rejects strings that are not exactly a parseable integer and
+  // numbers that are not integers (a size in bytes by definition is not
+  // fractional). `Number.parseInt` alone is permissive ("42abc" parses to 42)
+  // so the regex guard is what makes the contract honest. The final integer
+  // must also be non-negative and within JavaScript's safe-integer range —
+  // Files API docs call this field int64, and a string like
+  // "9007199254740993" silently rounds when coerced to a JS number, so a
+  // precision check at the boundary keeps the returned value faithful to the
+  // wire.
   function assertSafeNonNegativeInteger(n: number, raw: string | number): void {
     if (n < 0) {
       throw new Error(
