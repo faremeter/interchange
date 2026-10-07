@@ -7,9 +7,9 @@
 // settles the entry, settle it early when the matching reply frame arrives,
 // and sweep every entry owned by a connection when that connection drops.
 // The sites differ only in the key, the resolved value, and the per-site
-// cleanup their resolve/reject closures capture — the map + timer lifecycle
-// is identical. `PendingTracker` owns that lifecycle so timeouts and
-// disconnect sweeps behave uniformly and a fix to either lands in one place.
+// cleanup their resolve/reject closures capture. `PendingTracker` owns the
+// map + timer lifecycle so timeouts and disconnect sweeps behave uniformly
+// and a fix to either lands in one place.
 
 // Minimal handle so the router doesn't depend on a specific WebSocket impl.
 export type WsHandle = {
@@ -54,11 +54,10 @@ export type PendingEntry<Key, Value, Meta> = {
   /**
    * Disarms this entry's timeout.
    *
-   * Runs at most once per entry, which is why it need not be idempotent and
-   * `ScheduleTimeout` does not ask its implementations for that: each of the
-   * four settle paths cancels and drops the entry from the map in one
-   * synchronous block, and a timeout that fires drops the entry itself, so
-   * nothing can reach the entry to cancel it a second time.
+   * Runs at most once per entry: each of the settle paths cancels and drops
+   * the entry from the map in one synchronous block, and a timeout that
+   * fires drops the entry itself, so nothing can reach the entry to cancel
+   * it a second time.
    */
   cancelTimeout(): void;
 };
@@ -90,11 +89,8 @@ export class PendingTracker<Key, Value = void, Meta = undefined> {
    * before the caller sends its frame, so a synchronous reply (loopback
    * transports, tests) settles it. When `timeoutMs` elapses the entry is
    * dropped and `reject` is invoked with `timeoutMessage` — the same
-   * rejection path an error reply frame uses, so per-site cleanup (routing
-   * rollback, address bookkeeping) runs exactly once either way.
-   *
-   * `meta` is the opaque per-entry payload settle-time ownership checks read
-   * off `get`; pass `undefined` when the round-trip carries none.
+   * rejection path an error reply frame uses, so per-site cleanup runs
+   * exactly once either way.
    */
   register(
     key: Key,

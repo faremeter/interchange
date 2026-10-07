@@ -973,12 +973,11 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
     // address is byte-identical to the sender address the run's mail was sent
     // under. Prove the interlock is key-sensitive: a settle for any other
     // address does NOT wake this sender's parked mail; only the exact address
-    // does. A diverging key would silently drop the mail to the TTL.
+    // does.
     //
     // `recordedKey` models the durable public-key write the settle reports: null
     // while the run is pre-ack (mail parks), then the key once recorded, so the
-    // settle-driven re-drive resolves it exactly as production does after the
-    // write happens-before the settle.
+    // settle-driven re-drive resolves it exactly as production does.
     let recordedKey: string | null = null;
     const router = createInterlockRouter(async () => recordedKey);
     const senderWs = await connectAs(router, "sc-sender", SENDER);

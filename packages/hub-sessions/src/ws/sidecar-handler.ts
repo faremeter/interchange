@@ -1,8 +1,4 @@
 // Hub-side websocket handler for sidecar connections.
-//
-// Accepts websocket upgrades, processes register frames, maintains a routing
-// table of agentAddress → sidecar connection, and dispatches frames between
-// sidecars and the hub's internal systems.
 
 import { getLogger } from "@intx/log";
 import {
@@ -64,12 +60,10 @@ import { workflowRunRepoIdForAddress } from "../workflow-run-kind";
 const logger = getLogger(["hub", "ws", "sidecar"]);
 
 /**
- * A deploy-frame send failure, tagged with whether the `agent.deploy` frame
- * reached the wire. `frameSent: false` means the send was refused before
- * `conn.send` (a guard failed, or the send threw synchronously) -- the deploy
- * provably never started, so a caller may safely roll back anything it staged.
- * `frameSent: true` means the frame was sent and the failure came afterward (ack
- * timeout, sidecar disconnect), so the sidecar may hold a live agent.
+ * A deploy-frame send failure tagged with whether the `agent.deploy` frame
+ * reached the wire. `false` means the send was refused before `conn.send`;
+ * `true` means the frame went out and the failure came after (ack timeout,
+ * disconnect), so the sidecar may hold a live agent.
  */
 export interface DeployFrameFailure extends Error {
   readonly frameSent: boolean;
@@ -106,11 +100,9 @@ export class SidecarIdentityValidationError extends Error {
   }
 }
 
-/**
- * This Hub holds no current connection for the allocation generation, or the
- * connection closed before the worker answered. The worker may be healthy
- * behind another connection, so callers must retry rather than escalate.
- */
+/** No current connection for the allocation generation, or it closed before
+ * the worker answered. The worker may be healthy behind another connection,
+ * so callers must retry rather than escalate. */
 export class WorkflowControlUnreachableError extends Error {
   constructor(message: string, cause?: unknown) {
     super(message, { cause });
@@ -126,11 +118,9 @@ export class WorkflowControlInitializingError extends Error {
   }
 }
 
-/**
- * The worker acknowledged the control command, but the Hub could not process
- * the acknowledgement in time. The worker answered, so this never counts as
- * the worker failing to comply.
- */
+/** The worker acknowledged the control command, but the Hub could not
+ * process the acknowledgement in time. The worker answered, so this never
+ * counts as the worker failing to comply. */
 export class WorkflowControlUnconfirmedError extends Error {
   constructor(message: string) {
     super(message);
@@ -154,10 +144,8 @@ export class WorkflowControlRejectedError extends Error {
   }
 }
 
-/**
- * The worker stopped, but the Hub does not hold the history it reported. The
- * stop stays unconfirmed and unfenced, so that history can still land.
- */
+/** The worker stopped, but the Hub does not hold the history it reported.
+ * The stop stays unconfirmed and unfenced, so that history can still land. */
 export class WorkflowControlHistoryPendingError extends Error {
   constructor(message: string) {
     super(`Workflow history has not reached the Hub: ${message}`);
@@ -170,8 +158,8 @@ export type SidecarConnection = {
   identity: SidecarAuthIdentity;
   // Allocated workflows do not populate this legacy set.
   agentAddresses: Set<string>;
-  // Allocated deployment routes (including first deploy and reconnect) and
-  // transient step routes.
+  // Allocated deployment routes (first deploy and reconnect) and transient
+  // step routes.
   workflowAddresses: Set<string>;
   // Deploy frames the worker has not answered, kept past the Hub's own deploy
   // timeout. The worker handles frames in order, so a control frame sent
@@ -180,11 +168,8 @@ export type SidecarConnection = {
   send(frame: HubFrame): void;
 };
 
-/**
- * Whether this connection owns `address` for routing/lifecycle purposes.
- * Ownership readers cover both address sets. Allocated workflow deployments
- * use `workflowAddresses` from their initial deploy.
- */
+/** Whether this connection owns `address` for routing/lifecycle purposes.
+ * Ownership readers cover both address sets. */
 function connOwnsAddress(conn: SidecarConnection, address: string): boolean {
   return (
     conn.agentAddresses.has(address) || conn.workflowAddresses.has(address)
@@ -193,8 +178,7 @@ function connOwnsAddress(conn: SidecarConnection, address: string): boolean {
 
 /**
  * Bind pack writes to the repository implied by the authenticated address.
- * An allocated credential is narrower still: it may only write its one
- * deployment's workflow-run repository and never a standalone agent-state
+ * An allocated credential may only write its one deployment's workflow-run
  * repository. That credential authorizes the write even when the address is
  * not routed: a stopped worker no longer announces its address, but its stop
  * is confirmed only once its remaining history reaches the Hub.
@@ -214,38 +198,26 @@ function connCanPushRepo(
   );
 }
 
-/** The deduped set of every address this connection owns (session + workflow). */
+/** The deduped set of every address this connection owns. */
 function ownedAddresses(conn: SidecarConnection): Set<string> {
   return new Set([...conn.agentAddresses, ...conn.workflowAddresses]);
 }
 
 export type SendPackOptions = {
-  /**
-   * Repo-relative mount path under the sidecar's per-agent workspace.
-   * When set, the receiving sidecar materializes the pack as plain
-   * files at `<workspaceRoot>/<mountPath>/` and does NOT apply it to
-   * the agent's deploy git tree. Absent for agent-state deploy/state
-   * packs, which continue to apply to the deploy tree.
-   */
+  /** Repo-relative mount path; the sidecar materializes the pack as plain
+   * files at `<workspaceRoot>/<mountPath>/` instead of applying it to the
+   * agent's deploy git tree. */
   mountPath?: string;
-  /**
-   * Override the `repoId` emitted on the wire. The agent-state flow
-   * defaults to `{ kind: "agent-state", id: agentAddress }`; asset
-   * packs must pass the SOURCE asset's id so audit can correlate the
-   * pack back to its hub-side origin. Workflow-run restoration uses a
-   * dedicated allocation-bound sender that supplies its derived repo id.
-   */
+  /** Override the `repoId` emitted on the wire. The agent-state flow defaults
+   * to `{ kind: "agent-state", id: agentAddress }`; asset packs must pass the
+   * SOURCE asset's id so audit can correlate the pack to its hub-side origin. */
   repoId?: RepoId;
 };
 
-/**
- * Everything a `sendProbe` caller supplies to populate the outbound
- * `workflow.probe.request` frame: where the definition's bytes come from, the
- * frozen dependency closure the hub already resolved, and the
- * `interchange.workflow` entry-module path whose evaluation produces the
- * `WorkflowDefinition`. The `requestId` is minted inside `sendProbe`, not
- * supplied here.
- */
+/** Everything a `sendProbe` caller supplies for the outbound
+ * `workflow.probe.request` frame: the definition source, the frozen
+ * dependency closure the hub already resolved, and the entry-module path
+ * whose evaluation produces the `WorkflowDefinition`. */
 export type SendProbeArgs = {
   source: WorkflowDefinitionSource;
   closure: ToolPackageManifest;
@@ -254,12 +226,8 @@ export type SendProbeArgs = {
   assets?: WorkflowSourceAssetMount[];
 };
 
-/**
- * The payload a `sendProbe` promise resolves with, lifted off the sidecar's
- * `workflow.probe.result` frame: the inert needs-surface projection of the
- * probed workflow, the inert grant set derived from it, the un-flattened grant
- * walk snapshot the set is derived from, and the projection's content hash.
- */
+/** The payload a `sendProbe` promise resolves with, lifted off the sidecar's
+ * `workflow.probe.result` frame. */
 export type WorkflowProbeResult = {
   projection: WorkflowProjectionDefinition;
   grants: string[];
@@ -268,12 +236,9 @@ export type WorkflowProbeResult = {
 };
 
 /**
- * The result of a run-address sender's deploy, reported to the router once the
- * deploy's key write is durable. `recorded` carries the sender's now-persisted
- * public key and wakes the sender's parked pre-ack mail for redelivery;
- * `failed` carries a failure reason and drains that mail to
- * `mail.outbound.undelivered`. Modeled as a discriminated result so a settle is
- * unambiguous about which side of the deploy it reports.
+ * The result of a run-address sender's deploy, reported once the deploy's key
+ * write is durable. `recorded` wakes the sender's parked pre-ack mail for
+ * redelivery; `failed` drains it to `mail.outbound.undelivered`.
  */
 export type SenderDeploySettledOutcome =
   | { recorded: string }
@@ -302,15 +267,10 @@ export type SidecarRouter = {
   /**
    * Update a run's authorization grants independently of mail. For a trigger,
    * pass `runGrants` to `routeMail` so both frames share one admission decision.
-   * Sends on the live connection. Allocated workflows do not create disconnect
-   * queues, so an unroutable workflow returns `false`. The caller keeps any
-   * stable-run grant reservation so a later first-delivery attempt reuses it.
-   *
+   * Sends on the live connection; an unroutable workflow returns `false`.
    * `senderIdentities` co-delivers the run's authorized senders' resolved keys
-   * on the same barrier as the grant, so a recipient that caches from this
-   * frame binds each sender address to the hub-vouched key. The caller passes
-   * `undefined` when there is no sender to co-deliver (a standing-grant refresh)
-   * or the sender has no resolvable key; a null key is never carried.
+   * on the same barrier as the grant. Pass `undefined` when there is no sender
+   * to co-deliver or it has no resolvable key; a null key is never carried.
    */
   sendRunGrants(
     agentAddress: string,
@@ -333,12 +293,13 @@ export type SidecarRouter = {
     outcome: SenderDeploySettledOutcome,
   ): void;
   /**
-   * Mark a run-address sender's ALLOCATED deploy as mid-flight, before the deploy
-   * emit and its anchor-key update. An allocated run records its key later than
-   * the deploy ack clears `pendingDeploys`, so this marker covers the allocated
-   * pre-ack window that `pendingDeploys` alone under-covers. `noteSenderDeploySettled`
-   * clears it only when the durable outcome is known. Cancellation leaves it
-   * pending for recovery, so a lost publication response cannot discard mail.
+   * Mark a run-address sender's ALLOCATED deploy as mid-flight, before the
+   * deploy emit and its anchor-key update. An allocated run records its key
+   * later than the deploy ack clears `pendingDeploys`, so this marker covers
+   * the allocated pre-ack window that `pendingDeploys` alone under-covers.
+   * `noteSenderDeploySettled` clears it only when the durable outcome is known.
+   * Cancellation leaves it pending for recovery, so a lost publication
+   * response cannot discard mail.
    */
   noteSenderDeployStarted(
     address: string,
@@ -347,11 +308,10 @@ export type SidecarRouter = {
   /**
    * Returns the current connector-thread state for the named agent, or
    * `null` if the agent has no active connector thread (or if the
-   * sidecar has not yet reported any state — e.g. mid-reconnect, before
-   * the harness has loaded its context store). The state is cached
-   * from `connector.state.changed` frames; callers should treat `null`
-   * as "no threading info available" and fall through to whatever
-   * default the calling path uses.
+   * sidecar has not yet reported any state -- e.g. mid-reconnect, before
+   * the harness has loaded its context store). Cached from
+   * `connector.state.changed` frames; callers should treat `null` as
+   * "no threading info available" and fall through to their default.
    */
   getConnectorState(agentAddress: string): ConnectorThreadState | null;
   sendAgentUndeploy(agentAddress: string, reason: string): Promise<void>;
@@ -369,13 +329,11 @@ export type SidecarRouter = {
   /**
    * Deliver a workflow-run signal to the sidecar that hosts the named
    * deployment-level mail address. The sidecar's hub-link routes the
-   * frame through its `signalInboundRouter` into the deployment's
-   * supervisor, which sends a `signal.deliver` control IPC frame to
-   * the workflow-process child. The child commits the resulting
-   * `SignalReceived` event through its own substrate -- the single
-   * writer of the workflow-run repo on the sidecar side -- so the
-   * pack-push pipeline that propagates the commit to the hub never
-   * sees a concurrent writer at the same ref.
+   * frame into the deployment's supervisor, which sends a `signal.deliver`
+   * control IPC frame to the workflow-process child. The child commits the
+   * resulting `SignalReceived` event through its own substrate -- the single
+   * writer of the workflow-run repo on the sidecar side -- so the pack-push
+   * pipeline never sees a concurrent writer at the same ref.
    *
    * Throws when no sidecar is registered for `agentAddress`; the
    * caller is responsible for ensuring the deployment is live.
@@ -390,13 +348,12 @@ export type SidecarRouter = {
   /**
    * Deliver a workflow-host drain control payload to the sidecar that
    * hosts the named deployment-level mail address. The sidecar's
-   * hub-link routes the frame through its `drainInboundRouter` into
-   * the deployment's supervisor, which sends a `drain` control IPC
-   * frame to the workflow-process child and arms one `drainTimeout`
-   * accumulator per in-flight run. Cancel-mode steps abort on the
-   * child side; wait-mode steps continue. Accumulators commit a
-   * signed `CancelRequested{origin: "supervisor-drain"}` against the
-   * workflow-run repo when the deadline expires.
+   * hub-link routes the frame into the deployment's supervisor, which
+   * sends a `drain` control IPC frame to the workflow-process child and
+   * arms one `drainTimeout` accumulator per in-flight run. Cancel-mode
+   * steps abort on the child side; wait-mode steps continue. Accumulators
+   * commit a signed `CancelRequested{origin: "supervisor-drain"}` against
+   * the workflow-run repo when the deadline expires.
    *
    * Throws when no sidecar is registered for `agentAddress`; the
    * caller is responsible for ensuring the deployment is live.
@@ -423,8 +380,8 @@ export type SidecarRouter = {
  * `sidecarId` is the connection's own trusted id; it is not the untrusted
  * `sidecarId` claimed on the register/reconnect frame, and it carries no
  * tenant scope. Modeled as a discriminated union so a future non-sidecar
- * principal (e.g. an operator user) can be added as an additional arm
- * without changing existing consumers.
+ * principal (e.g. an operator user) can be added without changing existing
+ * consumers.
  */
 export type SidecarAuthIdentity = SidecarCredentialIdentity;
 
@@ -457,11 +414,9 @@ export type SidecarAllocationRouter = {
     timeoutMs: number,
     onValidation?: (validation: Promise<boolean>) => void,
   ): Promise<void>;
-  /**
-   * Check exact allocated readiness without parking a reconciliation worker.
+  /** Check exact allocated readiness without parking a reconciliation worker.
    * Throws `SidecarIdentityValidationError` when identity validation fails;
-   * `false` means the worker is confirmed absent or stale.
-   */
+   * `false` means the worker is confirmed absent or stale. */
   isAllocatedSidecarReady(target: AllocatedSidecarTarget): Promise<boolean>;
   /** Check for an active supervisor, throwing when identity validation fails. */
   isAllocatedWorkflowActive(target: AllocatedSidecarTarget): Promise<boolean>;
@@ -548,7 +503,7 @@ export type SidecarAllocationRouter = {
  * Resolves the credentials a sidecar presents on the handshake to a
  * verified identity, or `null` when the credentials are not recognized.
  * The claimed `sidecarId` is an unauthenticated hint; the authenticator
- * derives the trusted identity from the `token` and the returned
+ * derives the trusted identity from the `token`, and the returned
  * `sidecarId` is what the router keys connection state off of.
  */
 export type SidecarAuthenticator = (claim: {
@@ -578,8 +533,7 @@ export type SidecarRouterConfig = {
   ) => Promise<boolean>;
   /** Timeout for a `sendProbe` round-trip. A probe materializes a workflow's
    * dependency closure and evaluates it on the sidecar, so it can run longer
-   * than a routine `sendRequest`; it gets its own timeout rather than sharing
-   * the request timeout. */
+   * than a routine `sendRequest`; it gets its own timeout. */
   probeTimeoutMs?: number;
   disconnectQueueMaxSize?: number;
   disconnectQueueTTLMs?: number;
@@ -589,15 +543,12 @@ export type SidecarRouterConfig = {
   mailAckRetryIntervalMs?: number;
   /**
    * Arms the mail-redelivery retry and the connection-liveness timers, and
-   * returns each one's canceller. Defaults to the global timer, which is what
-   * production wants.
+   * returns each one's canceller. Defaults to the global timer.
    *
-   * The intervals beside it say how long until something should happen; this
-   * says what makes it happen. With only the intervals injectable, a test had
-   * to shorten one and then sleep past it, which turns an assertion about
-   * WHETHER something happened into a bet on how much the machine got through
-   * -- and, for the liveness deadline, on a pause landing inside a window
-   * rather than past it.
+   * With only the intervals injectable, a test had to shorten one and then
+   * sleep past it, which turns an assertion about WHETHER something happened
+   * into a bet on how much the machine got through -- and, for the liveness
+   * deadline, on a pause landing inside a window rather than past it.
    *
    * REQUIRED of the returned canceller: calling it more than once must be
    * harmless. A pending-mail entry outlives a disconnect, so the disconnect
@@ -616,8 +567,7 @@ export type SidecarRouterConfig = {
 };
 
 // Re-exported so existing consumers keep importing the handle type from the
-// router module; the definition now lives in `pending-tracker.ts`, which also
-// operates on it.
+// router module; the definition now lives in `pending-tracker.ts`.
 export type { WsHandle };
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
@@ -635,13 +585,12 @@ const DEFAULT_MAIL_ACK_MAX_RETRIES = 5;
 // reports on (re)connect. A legitimate sidecar caches keys for tens, maybe low
 // hundreds of distinct user senders, so this cap sits well above ten times that
 // ceiling: it NEVER truncates a real report -- dropping a genuine sender would
-// leave its key stale, the exact failure this refresh exists to prevent. It
-// bounds only a hostile or buggy sidecar, since a compromised authenticated
-// sidecar could otherwise report an unbounded set and drive that many sequential
-// DB resolves on every reconnect. The cap lives in the handler, not on the
-// arktype frame schema, on purpose: rejecting an over-cap frame at parse would
-// fail the whole reconnect (a hard outage) rather than degrade gracefully to a
-// bounded refresh.
+// leave its key stale. It bounds only a hostile or buggy sidecar, since a
+// compromised authenticated sidecar could otherwise report an unbounded set
+// and drive that many sequential DB resolves on every reconnect. The cap lives
+// in the handler, not on the arktype frame schema, on purpose: rejecting an
+// over-cap frame at parse would fail the whole reconnect (a hard outage)
+// rather than degrade gracefully to a bounded refresh.
 export const MAX_RESYNC_SENDER_ADDRESSES = 2048;
 
 export function createSidecarRouter(
@@ -747,7 +696,7 @@ export function createSidecarRouter(
   const addressIndex = new Map<string, WsHandle>();
   // requestId → pending promise (resolved by session.ack, rejected by
   // session.error). `PendingTracker` owns the register/timeout/settle/sweep
-  // lifecycle shared by all five pending round-trips below; each entry's
+  // lifecycle shared by all pending round-trips below; each entry's
   // resolve/reject closures carry the per-round-trip cleanup.
   const pendingRequests = new PendingTracker<string>();
   // agentAddress → pending deploy promise (matched by agent.deploy.ack/agent.error)
@@ -772,11 +721,10 @@ export function createSidecarRouter(
   // `mail.inbound.ack`. A `mail.inbound` delivered over a LIVE connection with
   // a hub-minted messageId is tracked here and redelivered -- identical bytes,
   // same messageId -- on a timer until the sidecar acknowledges its durable
-  // inbox write, so a frame silently dropped in the connected window (a socket
-  // that half-died before the sidecar wrote the message) is recovered rather
-  // than lost. The sidecar inbox is idempotent on messageId, so a redelivery
-  // of a message the sidecar already wrote is deduped there: at-least-once
-  // redelivery is effectively-once.
+  // inbox write, so a frame silently dropped in the connected window is
+  // recovered rather than lost. The sidecar inbox is idempotent on messageId,
+  // so a redelivery of a message the sidecar already wrote is deduped there:
+  // at-least-once redelivery is effectively-once.
   type PendingMailEntry = {
     agentAddress: string;
     messageId: string;
@@ -839,8 +787,7 @@ export function createSidecarRouter(
   // agentAddress → cached connector-thread state, populated by
   // connector.state.changed frames. Hub-side mail composition reads this
   // to set threading headers on user-originated mail. Absent entries mean
-  // "no state reported yet" (e.g. mid-reconnect); callers must treat that
-  // identically to a null entry (no active thread).
+  // "no state reported yet" (e.g. mid-reconnect).
   const connectorStates = new Map<string, ConnectorThreadState | null>();
   // ws handle → liveness timer (reset on each ping from the sidecar)
   const livenessTimers = new Map<WsHandle, () => void>();
@@ -1000,8 +947,7 @@ export function createSidecarRouter(
   // since it signed, so re-resolving would check the fixed signed bytes against
   // a newer key and turn a valid message into a false `invalid`; such a sender
   // lacking a captured key stays keyless (an honest `unknown`). An entry that
-  // captured `senderIdentities` at track time replays that snapshot as-is: it
-  // holds the signing-time key and is never re-resolved.
+  // captured `senderIdentities` at track time replays that snapshot as-is.
   //
   // Awaits any key resolve so the caller sends the returned frame and the mail
   // back-to-back with no await between them, keeping the co-delivered key ahead
@@ -1051,7 +997,7 @@ export function createSidecarRouter(
   // resolver is wired or the sender has no durable key.
   //
   // This relies on `lookups.resolveSenderKey` being the BEST-EFFORT,
-  // NEVER-THROWS resolver (the contract at sidecar-events.ts:274-279, wired to
+  // NEVER-THROWS resolver (the contract at sidecar-events.ts, wired to
   // resolveFrameSenderKey, which swallows faults to null). That contract is
   // load-bearing here: `redeliverPendingMail` clears the retention TTL up-front
   // and re-arms each entry's per-entry timer only on a successful send, so a
@@ -1059,9 +1005,7 @@ export function createSidecarRouter(
   // not-yet-processed entries with no timer and no TTL until a process restart.
   // A strict/throwing resolver must NOT be wired here. Do not add a try/catch:
   // the boundary owns the never-throws contract; duplicating it here would
-  // violate that ownership. The dispatch-time resolveSenderKey call
-  // (sendWorkflowRunDispatchToAllocation path) carries the same dependency
-  // note.
+  // violate that ownership.
   async function reresolveRunSenderKey(
     authenticatedSender: string,
   ): Promise<string | null> {
@@ -1086,14 +1030,13 @@ export function createSidecarRouter(
     // `mail.inbound.ack` can advance and run `resolvePendingMail` (delete +
     // clearTimeout) on this entry. The window is opened by the timer-macrotask
     // retry path, NOT by any bypass: `mail.inbound.ack` is a QUEUED frame
-    // (frameBypassesQueue returns false for it). It can interleave because the
-    // retry runs as an independent setTimeout macrotask (retryPendingMail), so
-    // the owning ws's message chain is free to advance the ack during the
-    // resolve await. On the reconnect/redeliver path the ack cannot interleave
-    // at all -- it queues behind the still-running reconnect handler on the
-    // same ws -- so here this guard is pure defense-in-depth. Re-confirm it is
-    // still the tracked entry before sending, or a post-ack redelivery would
-    // arm a retry timer on a detached entry.
+    // (frameBypassesQueue returns false for it), and the retry runs as an
+    // independent setTimeout macrotask, so the owning ws's message chain is
+    // free to advance the ack during the resolve await. On the
+    // reconnect/redeliver path the ack cannot interleave at all, so here this
+    // guard is pure defense-in-depth. Re-confirm it is still the tracked entry
+    // before sending, or a post-ack redelivery would arm a retry timer on a
+    // detached entry.
     if (pendingMail.get(entry.agentAddress)?.get(entry.messageId) !== entry) {
       return false;
     }
@@ -1384,9 +1327,7 @@ export function createSidecarRouter(
   // an inbound payload whose order matters, so it queues. A workflow stop
   // acknowledgement queues too: it ends the worker's history, so the packs the
   // worker sent before it must land before the stop resolves and later packs
-  // are fenced. The exhaustive switch + assertNever makes adding a SidecarFrame
-  // variant without classifying it a compile error, not a latent deadlock or a
-  // silent bypass hole.
+  // are fenced.
   function frameBypassesQueue(frame: SidecarFrame): boolean {
     switch (frame.type) {
       case "ping":
@@ -1599,12 +1540,11 @@ export function createSidecarRouter(
   }
 
   // Authenticate a register/reconnect handshake exactly once, then run the
-  // frame's handler with the verified identity. The claimed `sidecarId` on
-  // the frame is an unauthenticated hint: it is logged if it disagrees with
-  // the verified id but never trusted -- routing keys off the verified id.
-  // Fails closed by closing the connection when the authenticator rejects
-  // (returns null) or throws (e.g. a database failure), so a handshake never
-  // proceeds on unverified credentials.
+  // frame's handler with the verified identity. The claimed `sidecarId` on the
+  // frame is an unauthenticated hint: it is logged if it disagrees with the
+  // verified id but never trusted -- routing keys off the verified id. Fails
+  // closed by closing the connection when the authenticator rejects (null) or
+  // throws (e.g. a database failure).
   async function authenticateHandshake(
     ws: WsHandle,
     frame: { type: string; sidecarId: string; token: string },
@@ -1802,13 +1742,12 @@ export function createSidecarRouter(
     }
     // Reconcile the sidecar's cached sender keys, closing the offline window: a
     // user-principal key that rotated while the sidecar was disconnected is
-    // re-resolved and re-pushed, and a sender whose principal was DELETED while
-    // the sidecar was disconnected is evicted, so the recipient stops verifying
-    // either against a key the hub no longer vouches for. Only allocated
-    // sidecars host a sender cache worth reconciling. Resolve and push
-    // SEQUENTIALLY in one detached task: registration is never blocked, and a
-    // large cache cannot fan out into one concurrent DB query per reported
-    // sender on every reconnect.
+    // re-resolved and re-pushed, and a sender whose principal was DELETED is
+    // evicted, so the recipient stops verifying either against a key the hub no
+    // longer vouches for. Only allocated sidecars host a sender cache worth
+    // reconciling. Resolve and push SEQUENTIALLY in one detached task:
+    // registration is never blocked, and a large cache cannot fan out into one
+    // concurrent DB query per reported sender on every reconnect.
     const resolveSenderKeyStrict = lookups.resolveSenderKeyStrict;
     if (identity.kind === "allocated" && resolveSenderKeyStrict !== undefined) {
       const rotatableSenders = new Set(cachedSenderAddresses);
@@ -1932,9 +1871,7 @@ export function createSidecarRouter(
   // Remove one parked entry by identity, clearing its TTL timer. Returns whether
   // THIS call removed it. The inline-deliver path, a settle, and the TTL all
   // race to claim the same entry; only the claimer acts on it, so a claim that
-  // finds nothing (already claimed) is a no-op. This is the idempotent
-  // remove-by-key that keeps a settle and the inline non-null branch from both
-  // delivering the same message.
+  // finds nothing (already claimed) is a no-op.
   function claimDeferredSenderEntry(entry: DeferredSenderMailEntry): boolean {
     const parked = deferredSenderMail.get(entry.authenticatedSender);
     if (parked === undefined) return false;
@@ -2044,10 +1981,10 @@ export function createSidecarRouter(
   }
 
   // Resolve the co-delivered sender identities for a message, applying the
-  // register-before-read interlock for a pre-ack run sender. Returns either
-  // `deliver: true` with the resolved identities (undefined when there is no
-  // resolvable key), or `deliver: false` when the message is parked and will be
-  // driven later by a settle (`noteSenderDeploySettled`) or the TTL.
+  // register-before-read interlock for a pre-ack run sender. Returns `deliver:
+  // true` with the resolved identities (undefined when there is no resolvable
+  // key), or `deliver: false` when the message is parked and will be driven
+  // later by a settle (`noteSenderDeploySettled`) or the TTL.
   async function resolveSenderIdentitiesOrPark(
     rawMessage: string,
     authenticatedSender: string,
@@ -2075,10 +2012,11 @@ export function createSidecarRouter(
       };
     }
 
-    // Park a run sender ONLY while a key-record settle is guaranteed to arrive -- a
-    // deploy is in flight. Without one, a null resolve is a transient fault or a
-    // genuine absence on an already-settled run: no settle is coming, so parking
-    // would strand the mail to the TTL. Deliver on the normal path instead.
+    // Park a run sender ONLY while a key-record settle is guaranteed to arrive
+    // -- a deploy is in flight. Without one, a null resolve is a transient fault
+    // or a genuine absence on an already-settled run: no settle is coming, so
+    // parking would strand the mail to the TTL. Deliver on the normal path
+    // instead.
     const settleGuaranteed =
       pendingDeploys.has(authenticatedSender) ||
       allocatedKeyRecordInFlight.has(authenticatedSender);
@@ -2123,18 +2061,17 @@ export function createSidecarRouter(
     recordedSenderKey?: string,
   ): Promise<void> {
     // A mail addressed to more than one workflow deployment would birth a
-    // run per recipient from a single inbound mail. The stable runId
-    // removed the Message-ID collision that originally forced this guard --
-    // each recipient now derives its own per-deployment runId (its mail
-    // address), so it is no longer a runId-collision guard. It stays a
-    // deliberate one-workflow-recipient-per-mail restriction because the
-    // fan-out is not verified end-to-end: per-recipient grants
-    // materialization, consumed-tracking, and reply-addressing all assume a
-    // single workflow recipient today. Lifting it means proving those three
-    // hold per recipient, not just relaxing this check -- so fail loudly
-    // rather than materialize a partial set. The guard only applies when a
-    // materializer is wired -- absent one, no run is born from the mail, so
-    // there is nothing to restrict.
+    // run per recipient from a single inbound mail. The stable runId removed
+    // the Message-ID collision that originally forced this guard -- each
+    // recipient now derives its own per-deployment runId (its mail address), so
+    // it is no longer a runId-collision guard. It stays a deliberate
+    // one-workflow-recipient-per-mail restriction because the fan-out is not
+    // verified end-to-end: per-recipient grants materialization,
+    // consumed-tracking, and reply-addressing all assume a single workflow
+    // recipient today. Lifting it means proving those three hold per recipient,
+    // not just relaxing this check -- so fail loudly rather than materialize a
+    // partial set. The guard only applies when a materializer is wired -- absent
+    // one, no run is born from the mail, so there is nothing to restrict.
     if (lookups.materializeMailTriggeredRunGrants !== undefined) {
       // A workflow recipient is one this hub owns: its address parses as a run
       // address. An external/federated address does not, and is not ours to
@@ -2236,11 +2173,10 @@ export function createSidecarRouter(
       // reserves and commits the run's grants (the mail IS the trigger);
       // every later delivery only RE-READS the current committed grants
       // (`loadCommittedRunGrants`) and re-asserts them ahead of the dispatch.
-      // The committed rows already carry any standing-approval change (an
-      // approve/reject-with-`always` resolution mutates them through its own
-      // path), so this re-send is idempotent -- it re-establishes the run's
-      // current floor on the sidecar, self-healing a `grants.json` a sidecar
-      // may have lost, and never overwrites it with anything staler.
+      // The committed rows already carry any standing-approval change, so this
+      // re-send is idempotent -- it re-establishes the run's current floor on
+      // the sidecar, self-healing a `grants.json` a sidecar may have lost, and
+      // never overwrites it with anything staler.
       const result = await lookups.materializeMailTriggeredRunGrants({
         agentAddress: recipient,
         runId,
@@ -2259,9 +2195,7 @@ export function createSidecarRouter(
         // the `run.grants` frame binds the sender address to the key and can
         // verify the sender's mail locally. A null key is never carried (the
         // list is undefined then), so the "authorized-with-a-key implies key
-        // cached" invariant holds; a recipient with no cached key resolves such
-        // mail as `unknown`, which its admission policy rejects by default (a
-        // workflow may relax `unknown` to admit).
+        // cached" invariant holds.
         // Finish asynchronous preparation before sending the grants and mail
         // together, keeping another delivery's key out of the gap between them.
         const messageId = await deriveMessageId(base64Decode(rawMessage));
@@ -2394,19 +2328,14 @@ export function createSidecarRouter(
         addressIndex.delete(addr);
         // Drop cached connector state for the same reason: a takeover
         // sidecar's state lives in connectorStates under the same key,
-        // and only this owner's close should evict it. The next
-        // reconnect re-bootstraps via the router's
-        // restore-fires-callback path.
+        // and only this owner's close should evict it.
         connectorStates.delete(addr);
         // Retain this address's un-acked pending mail across the disconnect:
         // its in-flight retry timers target a dead socket (cleared), but the
-        // entries are held so a verified reconnect redelivers them, closing the
-        // connected-window drop rather than losing the mail. Bounded by a
-        // retention TTL.
+        // entries are held so a verified reconnect redelivers them.
         retainPendingMailForAddress(addr);
         // Create a queue entry so messages can accumulate while the
-        // sidecar is disconnected. Skip if the agent is being undeployed --
-        // there is no point queuing messages for an agent being torn down.
+        // sidecar is disconnected. Skip if the agent is being undeployed.
         if (!pendingUndeploys.has(addr)) {
           const timer = setTimeout(() => {
             const expired = disconnectedAgents.get(addr);
@@ -2434,8 +2363,7 @@ export function createSidecarRouter(
         addressIndex.delete(addr);
         connectorStates.delete(addr);
         // Retain already-sent trigger mail until an authenticated reconnect
-        // can redeliver it. This retries unacknowledged deliveries; it does
-        // not create a disconnect queue for new frames.
+        // can redeliver it.
         retainPendingMailForAddress(addr);
       }
     }
@@ -2856,18 +2784,9 @@ export function createSidecarRouter(
   }
 
   /**
-   * Bind a per-step workflow-substrate address to a sidecar for the staging
-   * window of a multi-step deploy, so `sendPack` can route the step's deploy
-   * and asset packs before the deployment-level frame spawns the child.
-   *
-   * The address is Hub-minted and workflow-derived, so it enters the
-   * `workflowAddresses` set rather than the legacy `agentAddresses` set and is
-   * torn down by `unbindStepRoute` once the
-   * step's packs land. `handleClose` reclaims it if the sidecar drops
-   * mid-stage. Per-step addresses are not runtime-routed (mail, signals, and
-   * drains use the deployment address), so the binding is transient: it is
-   * never persisted into the reconnect set and never resurrected on
-   * reconnect.
+   * Advance the in-memory trust boundary for an allocation generation before
+   * provisioning it: closes stale connections, fails older in-flight deploy
+   * attempts, and rejects waiters of older generations.
    */
   function fenceAllocation(allocationId: string, generation: number): void {
     const existing = allocationFences.get(allocationId);
@@ -3306,19 +3225,15 @@ export function createSidecarRouter(
   ): Promise<boolean> {
     // `authenticatedSender` is hub-assigned by the caller from a hub-verified
     // value (the ownership-gated sender of a relayed mail, or the triggering
-    // principal's address) -- never the message's own MIME `From`. It rides
-    // the frame as the hub-verified sender of record, so a recipient can take
-    // the sender from it rather than the forgeable `From`. The recipient's
-    // signature check reads it as the sender of record -- resolving the
-    // sender's key from its local cache to verify the signature -- and its
-    // admission policy gates delivery on the verdict.
+    // principal's address) -- never the message's own MIME `From`. It rides the
+    // frame as the hub-verified sender of record, so a recipient takes the
+    // sender from it rather than the forgeable `From`.
     //
     // Carry the hub-minted messageId on the frame so the sidecar's durable-
     // receipt ack (`mail.inbound.ack`) keys on the same id the hub tracks, and
     // a redelivery replays identical bytes for the downstream RunStarted dedup.
-    // Optional: the workflow-trigger and session-conversation callers supply
-    // it (they participate in the ack/retry handshake); a caller without a
-    // hub-minted id omits it and the delivery is not tracked for redelivery.
+    // The workflow-trigger and session-conversation callers supply it; a caller
+    // without a hub-minted id omits it and the delivery is not tracked.
     const frame: HubFrame = {
       type: "mail.inbound",
       agentAddress,
@@ -3440,10 +3355,9 @@ export function createSidecarRouter(
     // caches the sender's current hub-held key. A run sender's deployment key
     // is immutable once acked; a user sender's key rotating mid-flight would
     // leave the fixed signed bytes checked against the new key, which the
-    // recipient logs as unverifiable. Null when unresolvable (no resolver
-    // wired, or the sender has no durable key). The lookup contract (see
-    // SidecarLookups.resolveSenderKey) is best-effort and never throws, so
-    // resolving ahead of the run.grants send cannot block it.
+    // recipient logs as unverifiable. Null when unresolvable. The lookup
+    // contract (SidecarLookups.resolveSenderKey) is best-effort and never
+    // throws, so resolving ahead of the run.grants send cannot block it.
     const authenticatedSenderPublicKey =
       lookups.resolveSenderKey !== undefined
         ? await lookups.resolveSenderKey(authenticatedSender)
@@ -3589,8 +3503,7 @@ export function createSidecarRouter(
           // is observed only here. Drain any pre-ack sender mail parked on
           // this address so it surfaces as undelivered rather than waiting out
           // the TTL. An allocated deployment's failure is drained by its
-          // session-service owner instead, so skip it here to keep one owner
-          // per case.
+          // session-service owner instead, so skip it here.
           if (conn.identity.kind !== "allocated") {
             drainDeferredSenderMail(agentAddress, `deploy failed: ${error}`);
           }

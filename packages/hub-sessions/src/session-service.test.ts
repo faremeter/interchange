@@ -50,9 +50,8 @@ type Call = { method: string; args: unknown[] };
  * nested body's grants into the record of the step that carries the body, so a
  * probe answer whose snapshot omits a top-level step describes a deployment
  * that would run steps nobody approved anything for. The probe gate refuses
- * that, which is why these fixtures cannot hand it an empty snapshot. They are
- * about the deploy hand-off rather than about grant content, so the records
- * carry the step ids the gate must account for and no grants.
+ * that, which is why these fixtures cannot hand it an empty snapshot. The
+ * records carry the step ids the gate must account for and no grants.
  */
 function snapshotForProjection(projection: WorkflowProjectionDefinition) {
   return {
@@ -1315,12 +1314,11 @@ describe("deployCodeSourcedWorkflow", () => {
   // These unit tests assert FRAME logic plus the SHAPE of the anchor
   // workflow_run row the composed entrypoint writes (status, self-ref, born
   // null-key) and its post-ack public-key stamp -- not its persistence (the
-  // real anchor-in-a-live-DB proof, including the prepare-before-deploy ordering,
-  // lives in tests/db/workflow-allocation-service.test.ts). A capturing db
-  // records the anchor insert and the success-path public-key update, and
-  // answers the persisted-definition
-  // guard's existence query with a matching row; the fail-path tests throw
-  // before reaching the insert.
+  // real anchor-in-a-live-DB proof, including the prepare-before-deploy
+  // ordering, lives in tests/db/workflow-allocation-service.test.ts). A
+  // capturing db records the anchor insert and the success-path public-key
+  // update, and answers the persisted-definition guard's existence query with
+  // a matching row; the fail-path tests throw before reaching the insert.
   let capturedAnchorRow: Record<string, unknown> | undefined;
   let capturedAnchorUpdate: Record<string, unknown> | undefined;
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub: only the definition existence query, the anchor insert, and the success-path public-key update are exercised

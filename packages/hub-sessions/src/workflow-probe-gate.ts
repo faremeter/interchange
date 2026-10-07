@@ -327,10 +327,6 @@ type ExecutableReach = StepWithoutGrantRecord;
  * function sees only step positions; whether the walk folded the right grants
  * into a record is not observable from the inert projection and is not checked
  * anywhere on this path.
- *
- * The position each step was reached at is the walk's own `path`, for the same
- * reason. The head of that path is the top-level step the entry descends from,
- * which is exactly the `perStep` key the capability walk folds its grants into.
  */
 function collectExecutableReaches(
   projection: WorkflowProjectionDefinition,
@@ -412,10 +408,7 @@ export type GateAndFreezeArgs = {
  * projection whose triggers include a reserved-but-unimplemented type -- not a
  * security check, but the layer a pinned closure cannot carry a stale copy of,
  * so it is where a workflow that could only sit inert is caught -- and one
- * whose executable closure reaches a step the grant walk left no record for --
- * the layer holding both halves of the probe answer at once, and a presence
- * check on those records rather than a check that any record's contents are
- * sufficient.
+ * whose executable closure reaches a step the grant walk left no record for.
  * Only then does it freeze the recomputed hash onto the version row and return
  * the approved grant set.
  */
@@ -468,9 +461,7 @@ export async function gateAndFreezeProbeResult(
   // then refused for lack of any grant, and the tool runner turns that refusal
   // into an error tool result rather than a failure, so the run completes
   // having done none of the work. This is the check that makes that
-  // unreachable: it is total over the closure and it runs on every deploy,
-  // rather than depending on some test happening to invoke a tool from the
-  // affected step.
+  // unreachable: it is total over the closure and it runs on every deploy.
   //
   // Placed after the trigger check and before the operator-policy checks
   // below. A deploy that trips this is a defect in the deploy path, not a

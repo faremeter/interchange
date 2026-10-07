@@ -632,8 +632,7 @@ describe("SidecarRouter allocation mail durability", () => {
     // while its keyless run-sender replay awaits resolveSenderKey a queued
     // mail.inbound.ack can advance on the owning ws and run resolvePendingMail
     // (delete + clearTimeout). The post-await guard in replaySendPendingMail
-    // must observe the entry is gone and skip the send, so the acked mail is
-    // neither redelivered nor re-armed onto a detached entry. Drive that race
+    // must observe the entry is gone and skip the send. Drive that race
     // deterministically by parking resolveSenderKey on a deferred, acking while
     // it is parked, then releasing it.
     const runSender = "run_peer@tenant.example";
