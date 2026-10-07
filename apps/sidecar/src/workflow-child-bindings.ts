@@ -5,6 +5,7 @@
 // forwards. The binary imports this module and the workflow-host barrel.
 
 import {
+  collectDeclaredCredentialConsumers,
   collectDeclaredResources,
   filterGrantsToDeclaredResources,
 } from "@intx/workflow-deploy";
@@ -20,5 +21,6 @@ export { SIDECAR_SUBSTRATE_CONFIG_KEYS };
 export const createSubstrate = createSidecarSubstrateFactory({
   materializeStepTools,
   collectDeclaredResources,
+  collectDeclaredCredentialConsumers,
   filterGrantsToDeclaredResources,
 });

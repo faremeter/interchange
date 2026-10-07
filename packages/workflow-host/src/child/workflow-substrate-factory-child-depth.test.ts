@@ -270,6 +270,7 @@ describe("createSidecarRunChild spawn-depth ceiling", () => {
         builtinCredentialProviders(),
       ),
       collectDeclaredResources: () => new Set<string>(),
+      collectDeclaredCredentialConsumers: () => new Set<string>(),
       filterGrantsToDeclaredResources: (parentGrants: readonly unknown[]) =>
         parentGrants,
     });

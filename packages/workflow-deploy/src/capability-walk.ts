@@ -61,6 +61,7 @@ import {
   toolApprovalEffect,
   UnknownDirectorIdError,
 } from "@intx/agent";
+import { toolConsumer } from "@intx/authz";
 import type { GrantEffect } from "@intx/types";
 import {
   EXECUTABLE_STEP_DESCENT,
@@ -127,6 +128,7 @@ export type PluginToolDefinitions = ReadonlyMap<
 interface GrantSet {
   readonly grants: Set<string>;
   readonly effects: Map<string, GrantEffect>;
+  readonly credentialConsumers: Set<string>;
 }
 
 /**
@@ -162,9 +164,42 @@ export function walkCapabilities(
   registry: DirectorRegistry,
   pluginDefs: PluginToolDefinitions = new Map(),
 ): CapabilityWalkResult {
+  const walked = walkDefinition(workflow, registry, pluginDefs);
+  return Object.freeze({
+    perStep: walked.perStep,
+    unresolvedDirectors: Object.freeze([...walked.unresolved]),
+  });
+}
+
+/**
+ * Consumer identities (`toolConsumer(factory.id)`) for every tool factory
+ * the definition instantiates, including factories that appear only inside
+ * an inline nested body. This is the credential-cap input. It is not part
+ * of `CapabilityWalkResult`: those strings are not operator-facing grants.
+ * Plugin names are absent. A factory with an empty `definitions` array is
+ * still present, because the source arm keys Gate 2 on the factory id.
+ */
+export function collectCredentialConsumers(
+  workflow: WorkflowDefinition,
+  registry: DirectorRegistry,
+  pluginDefs: PluginToolDefinitions = new Map(),
+): ReadonlySet<string> {
+  return walkDefinition(workflow, registry, pluginDefs).credentialConsumers;
+}
+
+function walkDefinition(
+  workflow: WorkflowDefinition,
+  registry: DirectorRegistry,
+  pluginDefs: PluginToolDefinitions,
+): {
+  readonly perStep: Map<string, GrantDeclarations>;
+  readonly unresolved: Set<string>;
+  readonly credentialConsumers: ReadonlySet<string>;
+} {
   const triggerGrants = collectTriggerGrants(workflow);
   const unresolved = new Set<string>();
   const perStep = new Map<string, GrantDeclarations>();
+  const credentialConsumers = new Set<string>();
 
   for (const stepId of workflow.stepOrder) {
     const primitive = workflow.steps[stepId];
@@ -176,10 +211,9 @@ export function walkCapabilities(
     // Every top-level step gets a fresh grant set; `collectPrimitiveGrants`
     // routes the step and any nested bodies it carries through one dispatch,
     // so an approval covers every agent, action, and effect the step can run.
-    const collected: GrantSet = {
-      grants: new Set<string>(),
-      effects: new Map(),
-    };
+    // The consumer set is the same object the nested visit writes into, then
+    // unioned here, so a factory that exists only on an inline body survives.
+    const collected = emptyGrantSet();
     collectPrimitiveGrants(
       primitive,
       registry,
@@ -188,12 +222,20 @@ export function walkCapabilities(
       collected,
     );
     perStep.set(stepId, freezeDeclarations(collected, triggerGrants));
+    for (const consumer of collected.credentialConsumers) {
+      credentialConsumers.add(consumer);
+    }
   }
 
-  return Object.freeze({
-    perStep,
-    unresolvedDirectors: Object.freeze([...unresolved]),
-  });
+  return { perStep, unresolved, credentialConsumers };
+}
+
+function emptyGrantSet(): GrantSet {
+  return {
+    grants: new Set<string>(),
+    effects: new Map(),
+    credentialConsumers: new Set<string>(),
+  };
 }
 
 /**
@@ -300,6 +342,9 @@ function collectAgentGrants(
   // packages/agent/src/agent.ts) after the deploy has already gone out.
   const seenToolNames = new Set<string>();
   for (const factory of agent.toolFactories) {
+    // Gate 2 keys the consumer on the factory id, including a factory whose
+    // `definitions` array is empty and therefore emits no `tool:` grant.
+    collected.credentialConsumers.add(toolConsumer(factory.id));
     // Intra-factory: a repeated name within one factory's declarations
     // is a declaration bug; the runtime would collapse the two into one
     // dispatch entry, leaving one tool unreachable. Surface it at walk

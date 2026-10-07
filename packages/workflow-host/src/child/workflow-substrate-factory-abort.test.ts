@@ -237,6 +237,7 @@ function sharedDeps(
       builtinCredentialProviders(),
     ),
     collectDeclaredResources: () => new Set<string>(),
+    collectDeclaredCredentialConsumers: () => new Set<string>(),
     filterGrantsToDeclaredResources: (parentGrants: readonly unknown[]) =>
       parentGrants,
   };
