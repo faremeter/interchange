@@ -1,18 +1,10 @@
 // Shared run-grant materialization: the sequence a workflow run's
-// authorization is derived and committed through, used by BOTH the
-// external trigger route and the hub's mail-triggered run path so the two
-// cannot drift.
-//
-// A run's grant set is the definition-pure runtime grants (the capability
-// walk's `tool:`/`effect:` rows) plus the resolved declared grant
-// requirements (creator- and invoker-sourced). This module stages those
-// rows and commits them idempotently on the run id, minting the run
-// principal and anchoring the run row in one transaction.
-//
-// Delivery (`run.grants` frame, trigger mail / inbound mail forwarding) is
-// NOT owned here: the two call sites order those differently for their
-// transport, so each orchestrates delivery itself around the shared
-// staging and commit below.
+// authorization is derived and committed through, used by the external
+// trigger route and the hub's mail-triggered run path so the two cannot
+// drift. The run's grant set is the definition-pure runtime grants (the
+// capability walk's `tool:`/`effect:` rows) plus the resolved declared
+// grant requirements (creator- and invoker-sourced). Staging and commit
+// live here; each call site orchestrates its own delivery.
 
 import { and, asc, eq } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
@@ -51,16 +43,12 @@ import {
 } from "./grant-materialization";
 
 // The `tool:<name>` rows carry BARE tool names: the walk reads inline
-// `agent.toolFactories`, which have no bundle context. A workflow child gates
-// each tool call on `tool:<call.name>`, and every runnable step tool is a
-// pinned package the loader namespaces to `<bundleId>:<name>`, so the child
-// queries `tool:<bundleId>:<name>`. These bare rows therefore never address a
-// pinned tool's runtime gate; they are inert against a pinned call. A pinned
-// tool's authority (including its `ask` mark) is supplied instead by the
-// sidecar tool-mark floor (`deriveToolMarkFloorGrants`), derived from the
-// loaded factory's already-namespaced definitions. The `effect:<cap>` rows are
-// different: an action's EffectContext authorizes the bare `effect:<cap>` on
-// both sides, so those rows ARE name-matched and operative at run time.
+// `agent.toolFactories`, which have no bundle context. A workflow child
+// gates each call on `tool:<call.name>` and queries
+// `tool:<bundleId>:<name>`, so bare rows never address a pinned tool's
+// runtime gate; its authority comes from the sidecar tool-mark floor.
+// `effect:<cap>` rows differ: an action's EffectContext authorizes the
+// bare name on both sides, so those ARE operative at run time.
 const TOOL_GRANT_PREFIX = "tool:";
 const EFFECT_GRANT_PREFIX = "effect:";
 
@@ -68,20 +56,13 @@ const EFFECT_GRANT_PREFIX = "effect:";
  * Project the frozen grant-walk snapshot into the run's runtime grant rows --
  * the `tool:<name>` and `effect:<cap>` grants the runtime enforces fail-closed.
  * Every distinct grant string across all steps becomes one creator-origin
- * `grant` row with `action: invoke`. The run's runtime authority is
- * definition-pure for the deployment's stable top-level run, so the snapshot
- * alone determines it.
+ * `grant` row with `action: invoke`.
  *
  * Tool grants carry the effect the tool's static declaration requested (`ask`
  * for approval-gated tools, `allow` otherwise) via each step's `grantEffects`
- * record. A tool in more than one step is emitted once; when two steps disagree
- * on its effect, `ask` wins over `allow` so an approval-gated declaration is
- * never silently downgraded.
- *
- * Effect grants are always `allow` -- the `effect.requires` set names the
- * capability floor an action needs, with no per-effect ask/allow distinction,
- * so they are NOT routed through the `grantEffects` record (which covers tool
- * grants only). An `effect:<cap>` in more than one step is emitted once.
+ * record. `ask` wins over `allow` when steps disagree, so an approval-gated
+ * declaration is never silently downgraded. Effect grants are always `allow`
+ * and are not routed through `grantEffects` (which covers tool grants only).
  */
 export function deriveRunRuntimeGrantRows(
   snapshot: GrantWalkSnapshot,
@@ -92,19 +73,16 @@ export function deriveRunRuntimeGrantRows(
   const effectByResource = new Map<string, GrantEffect>();
   for (const step of snapshot.perStep) {
     // The snapshot serializes each step's tool-grant-to-effect map as a plain
-    // object; rehydrate it to a `Map` so the lookup below matches the walk's
-    // original access pattern.
+    // object; rehydrate it to a `Map` for the lookup below.
     const grantEffects = new Map<string, GrantEffect>(
       Object.entries(step.grantEffects),
     );
     for (const grant of step.grants) {
       if (grant.startsWith(TOOL_GRANT_PREFIX)) {
-        // Every `tool:` grant the snapshot emits carries a `grantEffects`
-        // entry (the tool-mark floor: `ask` for an approval-gated tool,
-        // `allow` otherwise). A missing entry means the snapshot's `grants`
-        // and `grantEffects` maps have diverged -- a defaulted `allow`
-        // here would silently DOWNGRADE an `ask` tool below its floor,
-        // defeating the approval gate. Fail loudly instead.
+        // A missing `grantEffects` entry means the snapshot's `grants` and
+        // `grantEffects` maps have diverged; a defaulted `allow` would
+        // silently DOWNGRADE an `ask` tool below its floor, defeating the
+        // approval gate. Fail loudly instead.
         const effect = grantEffects.get(grant);
         if (effect === undefined) {
           throw new Error(
@@ -148,8 +126,8 @@ export function deriveRunRuntimeGrantRows(
 /**
  * Project a materialized run grant row into the `run.grants` wire shape --
  * the same `WireGrantRule` encoding the `agent.deploy` frame's
- * `config.grants` ships. A run grant is always principal-scoped and never
- * role-scoped, so `roleId` is null and `principalId` is the run principal.
+ * `config.grants` ships. Run grants are always principal-scoped, so
+ * `roleId` is null and `principalId` is the run principal.
  */
 export function runGrantToWire(
   row: MaterializedGrantRow,
@@ -168,12 +146,7 @@ export function runGrantToWire(
 }
 
 export type StageRunGrantsFromSnapshotArgs = {
-  /**
-   * The deploy-approved grant-walk snapshot frozen at approval. Its per-step
-   * grants drive the run's runtime `tool:`/`effect:` rows; its
-   * `grantRequirements` are NOT read here -- the caller passes the requirement
-   * slice it wants resolved through `grantRequirements` below.
-   */
+  /** The deploy-approved grant-walk snapshot frozen at approval. */
   snapshot: GrantWalkSnapshot;
   tenantId: string;
   runPrincipalId: string;
@@ -207,12 +180,10 @@ export type StageRunGrantsResult =
 
 /**
  * Stage a run's grant rows from the deploy-approved grant-walk snapshot plus
- * the resolved declared requirements. The snapshot's per-step grants project
- * the run's runtime `tool:`/`effect:` rows; the mail-triggered materializer and
- * the external trigger route both drive this one tail. Returns the staged rows
- * and their wire projection, or a rejection when a declared requirement's
- * authority is insufficient. No database write happens here --
- * `commitRunGrants` performs it once the caller has accepted delivery.
+ * the resolved declared requirements. Returns the staged rows and their wire
+ * projection, or a rejection when a declared requirement's authority is
+ * insufficient. No database write happens here -- `commitRunGrants` performs
+ * it once the caller has accepted delivery.
  */
 export async function stageRunGrantsFromSnapshot(
   args: StageRunGrantsFromSnapshotArgs,
@@ -265,10 +236,10 @@ export async function loadAssetCreatorPrincipalId(
 
 /**
  * Collect a creator's grants only when a creator-sourced requirement
- * exists and the asset records a creator. Mirrors the trigger route: when
- * a creator-sourced requirement exists but the creator is null, the grants
- * stay empty and `resolveGrantMaterialization` fails closed rather than
- * inventing a fallback principal.
+ * exists and the asset records a creator. When the requirement exists but
+ * the creator is null, the grants stay empty and
+ * `resolveGrantMaterialization` fails closed rather than inventing a
+ * fallback principal.
  */
 export async function collectCreatorGrants(
   grantStore: GrantStore,
@@ -286,10 +257,7 @@ export type CommitRunGrantsArgs = {
   principalKeyStore: PrincipalKeyStore;
   tenantId: string;
   anchorRunId: string;
-  /**
-   * The deployment's definition, resolved by the caller off the anchor run.
-   * Anchors the run on its definition. Edge resolves; this interior trusts.
-   */
+  /** The deployment's definition, resolved by the caller off the anchor run. */
   definitionId: string;
   runId: string;
   runPrincipalId: string;
@@ -303,11 +271,10 @@ export type CommittedRunGrants = {
 };
 
 /**
- * Lock and classify one run row owned by a deployment. A live run -- a
- * "deployed" anchor in its pre-trigger window or a "running" run -- classifies
- * as "running" while it accepts work and "stopping" once cancellation is
- * requested or its deadline passes; the started-vs-not distinction is owned by
- * the durable lifecycle, not this status axis.
+ * Lock one run row owned by a deployment and classify it: "running" while
+ * it accepts work, "stopping" once cancellation is requested or its
+ * deadline passes, "terminal" once settled. The started-vs-not distinction
+ * is owned by the durable lifecycle, not this status axis.
  */
 export async function lockWorkflowRunState(
   tx: DBExecutor,
@@ -345,10 +312,10 @@ function unavailableRunResult(
 }
 
 /**
- * Lock a deployment's sidecar allocation `FOR UPDATE` and report whether it is
- * still dispatchable. Serializes a provisioned trigger's commit with concurrent
- * allocation transitions so a durable dispatch is never enqueued against an
- * allocation that has moved to a non-dispatchable state.
+ * Lock a deployment's sidecar allocation `FOR UPDATE` and report whether it
+ * is still dispatchable. Serializes a provisioned trigger's commit with
+ * concurrent allocation transitions so a durable dispatch is never enqueued
+ * against an allocation that has moved to a non-dispatchable state.
  */
 export async function lockDispatchableAllocation(
   tx: DBExecutor,
@@ -427,10 +394,9 @@ export async function loadCommittedRunGrants(
 }
 
 /**
- * The tool name an approval names, read from its `toolDefinition` snapshot. The
- * name lives in untyped jsonb; validate it through the `ToolDefinition` arktype
- * rather than reaching in, so a malformed snapshot fails loudly instead of
- * yielding an unusable name.
+ * The tool name an approval names, read from its `toolDefinition` snapshot.
+ * The name lives in untyped jsonb; validate it through the `ToolDefinition`
+ * arktype rather than reaching in, so a malformed snapshot fails loudly.
  */
 export function approvalToolName(
   toolDefinition: Record<string, unknown>,
@@ -440,21 +406,15 @@ export function approvalToolName(
 
 /**
  * Resolve a run's `ask` checkpoint on one tool into a standing effect -- the
- * durable mutation a `scope: "always"` resolution makes. An operator who
- * approves-always sets `allow` (stop asking, let it through); one who
- * rejects-always sets `deny` (stop asking, block it). The grant stays with the
- * run: every later read (the child's enforcement floor, the authorization view,
- * and the per-dispatch re-establish) sees the standing effect, so the tool is
- * not asked again for the life of the run.
+ * durable mutation a `scope: "always"` resolution makes: `allow` on
+ * approve-always, `deny` on reject-always. The grant stays with the run, so
+ * every later read (the child's enforcement floor, the authorization view,
+ * the per-dispatch re-establish) sees the standing effect.
  *
- * Guarded to only change a grant currently gated `ask`: the `effect = "ask"`
- * predicate means it only ever resolves the checkpoint, never overrides an
- * existing `allow`/`deny` and never touches a tool the run does not already
- * hold. So a standing resolution can only remove the checkpoint on a capability
- * the deploy already granted-with-a-checkpoint -- in the direction the operator
- * chose. Runs against the passed executor, so the caller mutates inside the
- * resolve transaction and a rolled-back resolve rolls back the grant change with
- * it. A run with no principal (nothing to mutate) is a no-op.
+ * Guarded to only change a grant currently gated `ask`, so it never overrides
+ * an existing `allow`/`deny` and never touches a tool the run does not
+ * already hold. Runs against the passed executor so a rolled-back resolve
+ * rolls back the grant change with it; a run with no principal is a no-op.
  */
 export async function setRunToolGrantEffect(
   executor: DBExecutor,
@@ -492,13 +452,9 @@ export async function setRunToolGrantEffect(
  * in one transaction, keyed on the deployment's stable top-level run id.
  *
  * The transaction that wins the unique principal insert owns the grant
- * inserts. A concurrent or later caller returns those exact persisted grants
- * instead of sending its independently staged snapshot. This keeps the
- * database and Git authorization views identical when first deliveries race.
- *
- * On the first commit the `runPrincipalId` is derived deterministically
- * from `(tenantId, runId)` by the caller, so the principal insert and the
- * grant rows that reference it agree on the id even across a retry.
+ * inserts; a concurrent or later caller returns those exact persisted grants
+ * instead of sending its independently staged snapshot, so the database and
+ * Git authorization views stay identical when first deliveries race.
  */
 export async function commitRunGrants(
   args: CommitRunGrantsArgs,
@@ -573,12 +529,10 @@ export type MailTriggeredRunGrantsDeps = {
 };
 
 /**
- * A deployment's deploy-approved grant basis: the grant-walk snapshot frozen at
- * approval, from which the run's runtime `tool:`/`effect:` grants and its
- * declared requirements both derive. The snapshot is a pure function of the
- * approved definition content, keyed by the definition id, so it is read once
- * per deployment and cached; nothing here depends on a live re-read or re-walk
- * of the workflow's `workflow.json`.
+ * A deployment's deploy-approved grant basis: the grant-walk snapshot frozen
+ * at approval, from which the run's runtime `tool:`/`effect:` grants and its
+ * declared requirements both derive. Pure function of the approved definition
+ * content, keyed by the definition id, so it is read once and cached.
  */
 type FrozenRunGrantBasis = {
   readonly snapshot: GrantWalkSnapshot;
@@ -589,19 +543,16 @@ type FrozenRunGrantBasis = {
  * `mail.outbound` handler invokes for each workflow-deployment recipient.
  *
  * A mail-triggered run derives its grants from the RECEIVING deployment's
- * frozen snapshot: the snapshot's `tool:`/`effect:` runtime grants plus the
- * CREATOR-resolved declared requirements. Invoker-sourced requirements are
- * NOT materialized -- no invoker is on the wire -- and the run still
- * launches: a step that needs an invoker grant fails closed at its own
- * authz check. The snapshot's requirements are pre-filtered to
- * `source !== "invoker"` before staging, so `resolveGrantMaterialization`
- * keeps its reject-on-insufficient-invoker contract intact for the external
- * route.
+ * frozen snapshot plus the CREATOR-resolved declared requirements.
+ * Invoker-sourced requirements are NOT materialized -- no invoker is on the
+ * wire -- and the run still launches: a step that needs an invoker grant
+ * fails closed at its own authz check. The snapshot's requirements are
+ * pre-filtered to `source !== "invoker"` before staging.
  *
  * The materializer reserves the stable run and its immutable grants before
- * delivery. A delivery failure can therefore leave a grants-only run, which
- * is intentionally still eligible for its first fire; the durable event log,
- * not the authorization row, is the fired/not-fired authority.
+ * delivery, so a delivery failure can leave a grants-only run that is still
+ * eligible for its first fire; the durable event log, not the authorization
+ * row, is the fired/not-fired authority.
  */
 export function createMailTriggeredRunGrantsMaterializer(
   deps: MailTriggeredRunGrantsDeps,
@@ -610,15 +561,12 @@ export function createMailTriggeredRunGrantsMaterializer(
   runId: string;
 }) => Promise<MailTriggeredRunGrantsResult> {
   // Closure-level cache of each deployment's deploy-approved snapshot, keyed by
-  // the workflow definition's identity. A definition id is content-addressed --
-  // keyed by `(assetId, wireHash)`, frozen at approval -- and the anchor run
+  // the workflow definition's identity. A definition id is content-addressed
+  // (keyed by `(assetId, wireHash)`, frozen at approval) and the anchor run
   // carries that id, so the key names the APPROVED definition content, not the
-  // mutable asset blob behind it. The first trigger of a deployment reads the
-  // frozen snapshot from the version row once and caches it here; every later
-  // trigger consumes the cached snapshot WITHOUT re-reading it. The hub never
-  // walks a live definition on this path: a rewritten asset blob under a stable
-  // asset id cannot change a run's grants, because runs bind to the frozen
-  // snapshot, never a live re-hydrate or re-walk.
+  // mutable asset blob behind it. Runs bind to the frozen snapshot, never a
+  // live re-hydrate or re-walk, so a rewritten asset blob cannot change a
+  // run's grants.
   const frozenBasisByDefinition = new Map<string, FrozenRunGrantBasis>();
 
   return async ({ agentAddress, runId }) => {
@@ -650,16 +598,9 @@ export function createMailTriggeredRunGrantsMaterializer(
       .limit(1);
     if (anchor === undefined) return { outcome: "skip" };
     // A "deployed" anchor is live: mail-triggering it IS its first trigger, so
-    // it must not be rejected as terminal here.
-    //
-    // This preflight inspects the anchor row's status, cancellation, and
-    // deadline, and omits the durable-lifecycle terminal check that the HTTP
-    // trigger route in workflow-run-trigger.ts applies. The supervisor's durable run-ref guard
-    // (rejectTerminalRun / readWorkflowRunLifecycle in supervisor.ts) is the
-    // fired/not-fired authority and never re-fires a durably-settled run, so
-    // this status check is a lagging fast-fail only. The two preflights diverge
-    // inside the status-flip lag window; that asymmetry is tolerable and is
-    // tracked for unification in INTR-456.
+    // it must not be rejected as terminal here. The supervisor's durable
+    // run-ref guard is the fired/not-fired authority and never re-fires a
+    // durably-settled run, so this status check is a lagging fast-fail only.
     const anchorState = workflowRunExecutability({
       status: anchor.anchorStatus,
       expiresAt: anchor.anchorExpiresAt,
@@ -692,9 +633,8 @@ export function createMailTriggeredRunGrantsMaterializer(
 
     let basis = frozenBasisByDefinition.get(definitionId);
     if (basis === undefined) {
-      // First trigger of this deployment: read the frozen snapshot from the
-      // version row once, then cache it. The read never runs again for this
-      // definition id, and no live definition is ever walked here.
+      // First trigger of this deployment: read the frozen snapshot once, then
+      // cache it. The read never runs again for this definition id.
       const snapshot = await loadFrozenGrantSnapshot(deps.db, definitionId);
       if (snapshot === null) {
         // The definition has no approved grant snapshot -- the "not yet
@@ -709,18 +649,17 @@ export function createMailTriggeredRunGrantsMaterializer(
       frozenBasisByDefinition.set(definitionId, basis);
     }
 
-    // Invoker-sourced requirements are not materialized on the mail path:
-    // filter them out BEFORE staging rather than teaching the resolver a skip
-    // mode, so the external route keeps resolving invoker grants.
+    // Invoker-sourced requirements are not materialized on the mail path;
+    // filter them out before staging so the external route keeps resolving
+    // invoker grants.
     const creatorRequirements = basis.snapshot.grantRequirements.filter(
       (r) => r.source !== "invoker",
     );
 
-    // Creator authority is resolved LIVE per run: the definition's grant SHAPE
-    // is frozen in the snapshot, but which grants the creator currently holds
-    // is not part of that shape and can change between triggers. This reads the
-    // asset row's creator column and the creator's grants -- not the snapshot
-    // -- so it is not the read the frozen basis eliminates.
+    // Creator authority is resolved LIVE per run: the snapshot freezes the
+    // grant SHAPE, not which grants the creator currently holds, and that can
+    // change between triggers. This reads the asset row's creator column and
+    // the creator's grants -- not the snapshot.
     const creatorPrincipalId = await loadAssetCreatorPrincipalId(
       deps.db,
       tenantId,
@@ -733,7 +672,7 @@ export function createMailTriggeredRunGrantsMaterializer(
       creatorRequirements,
     );
 
-    // Derive the run principal id from `(tenantId, runId)`. The runId is the
+    // Derive the run principal id from `(tenantId, runId)`: the runId is the
     // stable deployment address, so all trigger occurrences resolve the same
     // principal and canonical grant snapshot.
     const runPrincipalId = await deriveRunPrincipalId(tenantId, runId);

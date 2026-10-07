@@ -99,12 +99,12 @@ function isToolResultTurn(msg: ConversationTurn): boolean {
 }
 
 function extractTextContent(msg: ConversationTurn): string {
-  // Treat refusal and safety_rating blocks as text for timeline-
-  // summary purposes. A refusal-only or safety-only assistant turn
-  // carries human-readable model/filter output; summarising it as
-  // the empty string would render the turn invisible on the timeline.
-  // Structural part kinds stay on the persisted turn-part for any
-  // consumer that wants to render policy declines differently.
+  // Treat refusal and safety_rating blocks as text for timeline-summary
+  // purposes: a refusal-only or safety-only assistant turn carries
+  // human-readable model/filter output, and summarising it as the empty
+  // string would render the turn invisible on the timeline. Structural
+  // part kinds stay on the persisted turn-part for consumers that want to
+  // render policy declines differently.
   return msg.content
     .map((b) => {
       if (b.type === "text") return b.text;
@@ -131,7 +131,7 @@ function extractTurns(
 
   for (const msg of newMessages) {
     if (msg.role === "user" && !isToolResultTurn(msg)) {
-      // New user message (not a tool result) starts a new turn
+      // A new user message (not a tool result) starts a new turn.
       if (current !== null && current.texts.length > 0) {
         events.push({
           kind: "turn",
@@ -145,7 +145,7 @@ function extractTurns(
       if (current === null) {
         current = { texts: [], timestamp: msg.timestamp };
       } else {
-        // Update timestamp to the latest assistant message in this turn
+        // Update the timestamp to the latest assistant message in this turn.
         current.timestamp = msg.timestamp;
       }
       const text = extractTextContent(msg);
@@ -183,7 +183,7 @@ async function readErrorRecordsFromCommit(
   const errors: ErrorRecordType[] = [];
   const corruptFiles: string[] = [];
 
-  // Walk state/errors/ in the commit tree
+  // Walk state/errors/ in the commit tree.
   let sessionTree;
   try {
     sessionTree = await git.readTree({ fs, dir, oid, filepath: ERRORS_DIR });
@@ -254,17 +254,17 @@ export async function reconstructTimeline(
     gaps.push({ kind, description });
   }
 
-  // Walk the full commit log, oldest first
+  // Walk the full commit log, oldest first.
   const commits = await store.log(MAX_LOG_DEPTH);
   commits.reverse();
 
   // Process commits to extract turns and associate errors
   let prevMessageCount = 0;
-  // Track the index of the last turn event so error commits can attach to it
+  // Track the index of the last turn event so error commits can attach to it.
   let lastTurnEventIndex = -1;
 
   for (const commit of commits) {
-    // Handle error commits — associate with the most recent turn
+    // Handle error commits -- associate with the most recent turn.
     if (ERROR_COMMIT_PATTERN.test(commit.message)) {
       const { errors: errorRecords, corruptFiles } =
         await readErrorRecordsFromCommit(dir, commit.hash);
@@ -313,7 +313,7 @@ export async function reconstructTimeline(
         "message-count-regression",
         `Message count dropped from ${prevMessageCount} to ${messages.length} at commit ${commit.hash}`,
       );
-      // Treat the entire message array as new for this checkpoint
+      // Treat the entire message array as new for this checkpoint.
       const turnEvents = extractTurns(messages, status);
       events.push(...turnEvents);
       if (turnEvents.length > 0) {
@@ -335,7 +335,7 @@ export async function reconstructTimeline(
     }
   }
 
-  // Process mail entries
+  // Process mail entries.
   const mailEntries = await listMail(dir);
   // Correlate mail timestamps and checkpoint linkage with git commits.
   // The Checkpoint trailer regex uses $ to anchor at end-of-string. This
@@ -380,7 +380,7 @@ export async function reconstructTimeline(
     });
   }
 
-  // Sort all events by timestamp
+  // Sort all events by timestamp.
   events.sort((a, b) => a.timestamp - b.timestamp);
 
   return { events, gaps };

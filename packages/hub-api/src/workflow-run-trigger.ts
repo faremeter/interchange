@@ -316,9 +316,9 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
       runId,
     );
     if (committedRunGrants !== null) {
-      // This is another trigger occurrence for the one live top-level run.
-      // Reuse its immutable authorization snapshot; recomputing from the new
-      // caller would let one run change authority between sections.
+      // Another trigger occurrence for the one live top-level run: reuse its
+      // immutable authorization snapshot. Recomputing from the new caller would
+      // let one run change authority between sections.
       runPrincipalId = committedRunGrants.runPrincipalId;
       stagedGrantRows = [];
       stepGrants = committedRunGrants.stepGrants;
@@ -362,7 +362,7 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
 
       runPrincipalId = await deriveRunPrincipalId(tenant.id, runId);
       // The external route resolves invoker grants live and passes the
-      // snapshot's FULL requirement list unfiltered, so
+      // snapshot's full requirement list unfiltered, so
       // `resolveGrantMaterialization` keeps its reject-on-insufficient-invoker
       // contract.
       const declaredGrantRequirements = snapshot.grantRequirements;

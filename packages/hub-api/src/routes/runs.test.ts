@@ -61,8 +61,8 @@ const testDefinition = {
 };
 
 // A top-level `workflow_run` (self-anchored: `anchorRunId === id`, with a
-// routing address) as `findRoutableById`'s run query projects it. Its status is
-// the run enum, which the read routes map onto the run-view vocabulary.
+// routing address) as `findRoutableById`'s run query projects it. Its status
+// is the run enum, which the read routes map onto the run-view vocabulary.
 function makeTestRun(overrides: Record<string, unknown> = {}) {
   return {
     id: RUN_ID,
@@ -100,7 +100,7 @@ function makeGrant(overrides: Partial<GrantRule> = {}): GrantRule {
 // Mock factories
 //
 // Each test sets up exactly the canned data it expects. The mock DB does NOT
-// evaluate drizzle where-clauses — it returns the canned data as-is. This
+// evaluate drizzle where-clauses -- it returns the canned data as-is. This
 // is intentional: we're testing route behavior, not drizzle's query builder.
 // If a test wants a 404, it omits the relevant data from the mock.
 // ---------------------------------------------------------------------------
@@ -525,8 +525,8 @@ describe("GET /workflows/runs/:runId/authorization", () => {
     // The view is a direct read of the run's committed floor. A standing
     // approval never overlays here: an approve-always mutates the committed
     // grant in place at resolve time, so a standing-approved tool is already
-    // stored as `allow` (mail_send below); a tool still gated reads `ask`
-    // (charge_card); a plain grant reads its effect (read_file).
+    // stored as `allow`; a tool still gated reads `ask`; a plain grant reads
+    // its effect.
     const app = createTestApp({
       db: {
         tenant: testTenant,
@@ -970,12 +970,12 @@ describe("mail send delegates to the trigger; stop and mail history stay gated",
     return makeGrant({ resource: "workflow-run:*", action: "read" });
   }
 
-  // Mail send is wired: it resolves the run (a tenant-scoped 404 for an unknown
-  // id) and fires it through the run's workflow-native Trigger path. When the
-  // hub runs without the workflow substrate (the default test app has no
-  // repoStore/assetService), the trigger is unavailable and the route answers
-  // 503 -- honestly unavailable, never the old 501 stub and never a silent
-  // no-op.
+  // Mail send is wired: it resolves the run (a tenant-scoped 404 for an
+  // unknown id) and fires it through the run's workflow-native Trigger path.
+  // When the hub runs without the workflow substrate (the default test app has
+  // no repoStore/assetService), the trigger is unavailable and the route
+  // answers 503 -- honestly unavailable, never the old 501 stub and never a
+  // silent no-op.
   test("POST mail 404s for an unknown run", async () => {
     const app = createTestApp({
       grants: [manageGrant()],
@@ -997,8 +997,8 @@ describe("mail send delegates to the trigger; stop and mail history stay gated",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ content: "hello run" }),
     });
-    // No longer 501: the run resolves, and the trigger is consulted. Without the
-    // workflow substrate the default app cannot fire, so it answers 503.
+    // No longer 501: the run resolves, and the trigger is consulted. Without
+    // the workflow substrate the default app cannot fire, so it answers 503.
     expect(res.status).toBe(503);
     expect(await res.json()).toMatchObject({ error: { code: "unavailable" } });
   });

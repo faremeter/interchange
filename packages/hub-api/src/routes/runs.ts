@@ -104,11 +104,9 @@ type WorkflowRunStatus = (typeof workflowRun.$inferSelect)["status"];
 
 // The `workflow_run` statuses that present as a given run-view status filter,
 // derived as the inverse of `mapRunStatusToViewStatus` so the two cannot drift:
-// every run status is bucketed under the view status it maps onto. The
-// `deployed` run status maps onto the `deployed` filter, and the run-list query
-// below now selects top-level anchor runs, so that filter returns the deployed
-// anchors. No run status maps onto `updating`, so that filter selects no runs
-// (empty array) and the caller skips the run query entirely.
+// every run status is bucketed under the view status it maps onto. No run
+// status maps onto `updating`, so that filter selects no runs and the caller
+// skips the run query entirely.
 const RUN_STATUSES_BY_VIEW_STATUS: Record<
   RunStatusFilter,
   WorkflowRunStatus[]
@@ -151,7 +149,7 @@ export type CreateRunRoutesDeps = {
   eventCollectors: EventCollectorRegistry;
   // The workflow-run substrate that backs the durable run-event log the
   // turns/events routes read and the run-event state the mail-send trigger
-  // reads. It is null when the hub runs without the deploy surface; the
+  // reads. Null when the hub runs without the deploy surface; the
   // substrate-backed routes then answer 503 rather than fabricating state,
   // since createRunRoutes mounts unconditionally.
   repoStore: RepoStore | null;
@@ -208,10 +206,9 @@ export function createRunRoutes({
 
   // The turns and events routes project the same top-level run: its committed,
   // git-backed event log, read whole and seq-ordered. `turns` presents that log
-  // as the run's step and lifecycle events (the log carries only those); the
-  // `events` stream is the same projection the admin UI polls, deduplicating on
-  // seq. Both resolve the run first (a 404 tenant-scopes the read) and 503 when
-  // the substrate is absent.
+  // as the run's step and lifecycle events; the `events` stream is the same
+  // projection the admin UI polls, deduplicating on seq. Both resolve the run
+  // first (a 404 tenant-scopes the read) and 503 when the substrate is absent.
   async function serveRunEvents(c: Context<TenantEnv>, runId: string) {
     const tenantCtx = c.get("tenant");
 
@@ -278,9 +275,8 @@ export function createRunRoutes({
       // A run is listed when it is a top-level run: it owns a routing address
       // and self-anchors (`anchorRunId === id`). This is the SQL form of the
       // shared `isTopLevelRun` predicate the detail resolver classifies on, so
-      // the list and the resolver cannot drift. It drops an address-less child
-      // park row, and now includes the deployed/live anchors. When a status
-      // filter selects no run statuses (`updating`), skip the query entirely.
+      // the list and the resolver cannot drift. When a status filter selects no
+      // run statuses (`updating`), skip the query entirely.
       const statusFilter = isRunStatusFilter(status) ? status : undefined;
 
       const runStatuses =

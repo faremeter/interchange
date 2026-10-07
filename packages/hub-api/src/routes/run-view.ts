@@ -1,16 +1,15 @@
 // Shapes a workflow run's routing record into the wire run view -- one shaper,
 // one resolver (`findRoutableById`) -- so a run renders through a single path.
-
 import type { WorkflowRunStatus } from "@intx/types";
 import type { RoutableRecord } from "@intx/hub-sessions";
 
 import { ts } from "../format";
 
 // A workflow run's lifecycle enum differs from the run-view enum the wire
-// contract speaks. A `deployed` (pre-trigger) or `running` run is live and maps
-// to the wire status of the same name; its terminal states map onto the view
-// vocabulary: a clean finish or an operator stop both read as `stopped`, a
-// failure as `error`.
+// contract speaks. A `deployed` (pre-trigger) or `running` run maps to the wire
+// status of the same name; terminal states map onto the view vocabulary: a
+// clean finish or an operator stop both read as `stopped`, a failure as
+// `error`.
 export function mapRunStatusToViewStatus(status: string): WorkflowRunStatus {
   switch (status) {
     case "deployed":

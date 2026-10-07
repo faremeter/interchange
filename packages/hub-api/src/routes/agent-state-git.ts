@@ -18,7 +18,7 @@
  * `git push -v` parses the protocol-level rejection even when no
  * Authorization header is present. The receive-pack denial
  * middleware is mounted BEFORE bearer middleware in the app layer;
- * the substrate's `handleReceivePack` is NOT imported here — agent
+ * the substrate's `handleReceivePack` is NOT imported here -- agent
  * state never accepts writes over HTTP.
  *
  * The resolver verifies the folded run belongs to `:tenantId` and
@@ -272,7 +272,7 @@ async function resolveAgentStateId(
   // anchor/child run keeps its state under `workflow-runs/<slug>` instead, so
   // the shape gate keeps those out of this route. Deliberately NOT gated on
   // status: a stopped run's final state is exactly what a read-only clone
-  // serves, matching the legacy instance route -- do not add a `running` guard.
+  // serves.
   const row = await db.query.workflowRun.findFirst({
     where: and(
       eq(workflowRun.id, paramId),
@@ -304,8 +304,8 @@ async function resolveSmartHttp(
   // The typed env makes this unreachable today, but if the route
   // module is ever mounted without the bearer middleware ahead of
   // it, surface a misconfiguration rather than a downstream
-  // TypeError. A 401 would imply the client was unauthenticated;
-  // a missing claims object means the server is misconfigured.
+  // TypeError: a missing claims object means the server is
+  // misconfigured, not the client unauthenticated.
   if (claims === undefined) {
     throw new Error(
       "smart-HTTP route handler invoked without bearer middleware; check the mount order in app.ts",

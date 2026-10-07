@@ -56,12 +56,12 @@ const log = getLogger(["hub", "approvals"]);
  * `run.grants` handler also refreshes a live child), so the running child sees
  * the change in-flight and any respawn re-reads it.
  *
- * Best-effort relative to the resume: this runs after the resolve committed and
- * the parked run must still be resumed, so a failure is logged loudly but never
- * propagated -- a throw would skip the caller's signal delivery and hang the
- * run. It self-heals regardless: the mutation is already durable in the
- * committed grants, and the next dispatch's per-run re-establish reads the same
- * committed grants, so a missed push only delays the effect, never loses it.
+ * Best-effort relative to the resume: this runs after the resolve committed
+ * and the parked run must still be resumed, so a failure is logged loudly but
+ * never propagated -- a throw would skip the caller's signal delivery and hang
+ * the run. It self-heals regardless: the mutation is already durable in the
+ * committed grants, and the next dispatch's per-run re-establish reads the
+ * same committed grants, so a missed push only delays the effect.
  */
 async function propagateRunGrantsToSidecar(
   deps: CreateApprovalRoutesDeps,
@@ -170,7 +170,7 @@ type PendingFailureKind = Extract<
  * The claim and the resolve happen inside a single transaction so a duplicate
  * delivery cannot observe a claimed-but-unresolved intermediate state. For a
  * provisioned deployment, that transaction also locks the allocation and
- * enqueues the stable signal id and payload. Delivery then follows the
+ * enqueues the stable signal id and payload; delivery then follows the
  * allocation's durable, generation-fenced dispatch path and remains replayable
  * until workflow Git records the signal as received. Deployments without an
  * allocation retain their direct sidecar delivery behavior.

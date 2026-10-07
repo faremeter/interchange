@@ -144,12 +144,11 @@ function createMockDB(state: MockDBState): DB["db"] {
       },
       gitToken: {
         findFirst: async (opts?: { where?: unknown }) => {
-          // Without parsing drizzle's filter representation, we rely on
-          // the test-fixture invariant: each test setup has at most one
-          // matching row for the filters the routes actually issue
-          // (filter by id alone, or by id + tenantId). Returning the
-          // single row keeps the mock simple while exercising the
-          // route's branches.
+          // Without parsing drizzle's filter representation, rely on the
+          // test-fixture invariant: each test setup has at most one matching
+          // row for the filters the routes actually issue (filter by id alone,
+          // or by id + tenantId). Returning the single row keeps the mock
+          // simple while exercising the route's branches.
           void opts;
           return state.gitTokens[0];
         },

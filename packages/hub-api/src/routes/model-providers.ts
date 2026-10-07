@@ -161,11 +161,10 @@ export function createModelProviderRoutes({
       // would store a reference that silently never resolves a source.
       // A catalog provider delivers its credential's secret to any agent
       // launched in the owning subtree, so the reference must be tenant-owned
-      // and reachable in this tenant's hierarchy -- the same ownership rule the
-      // launch enforces. Reject a principal-owned or out-of-chain reference here
-      // rather than let it write and then silently fail closed at launch.
-      // (Wallet-backed providers are not launchable this release, so their
-      // reference is not yet ownership-checked here -- tracked separately.)
+      // and reachable in this tenant's hierarchy. Reject an out-of-chain
+      // reference here rather than let it write and then silently fail
+      // closed at launch. (Wallet-backed providers are not launchable this
+      // release, so their reference is not yet ownership-checked here.)
       if (credentialId !== null) {
         const cred = await resolveTenantOwnedCredentialById(
           db,

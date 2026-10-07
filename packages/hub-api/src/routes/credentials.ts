@@ -226,8 +226,7 @@ export function createCredentialRoutes({
         // `use` authority on creation so the owner can launch agents with
         // their own credential without a separate manual grant. Org
         // credentials (principalId null) are covered by tenant-owner role
-        // inheritance and explicit administrative role grants, so they get
-        // no auto-grant here.
+        // inheritance and explicit role grants, so they get no auto-grant.
         if (ownerPrincipalId !== null) {
           await tx.insert(grantTable).values({
             id: generateId("grant"),
@@ -428,13 +427,12 @@ export function createCredentialRoutes({
       //   - Existence within the tenant is owned by the delete's WHERE clause
       //     (`id` AND `tenantId`). authz cannot own it: the resource string
       //     `credential:{id}` is opaque, so a wildcard grant matches an id in
-      //     any tenant. A foreign or unknown id matches zero rows -> 404,
-      //     disclosing nothing across the tenant boundary.
+      //     any tenant. A foreign or unknown id matches zero rows -> 404.
       //   - "Cannot delete a credential a model provider still references" is
       //     owned by the model_provider.credential_id foreign key, which is
-      //     onDelete "restrict" (catalog.ts). The delete fires it only for a row
-      //     actually being deleted (an in-tenant credential), so the catch maps
-      //     the raw violation to a 409 instead of a 500.
+      //     onDelete "restrict" (catalog.ts). The delete fires it only for a
+      //     row actually being deleted (an in-tenant credential), so the catch
+      //     maps the raw violation to a 409 instead of a 500.
       // The grant delete keys on the exact `credential:{id}` resource, which has
       // no foreign key to `credential` (nothing cascades) and never matches the
       // coarse `credential:*` role grant.

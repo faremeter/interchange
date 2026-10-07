@@ -137,10 +137,9 @@ describe("app", () => {
     // consumes the tokens. With `assetService: null` and
     // `repoStore: null` there is no consumer, so the OpenAPI spec
     // must not advertise the `Git Tokens` tag and the mint paths
-    // must not appear. The HTTP-request shape would test the same
-    // invariant but is noisier — the auth middleware fronts the
-    // `/api/me/*` tree and short-circuits with 401 before the router
-    // matches, masking whether the route exists.
+    // must not appear. (The HTTP-request shape would test the same
+    // invariant but is noisier: auth fronts `/api/me/*` and
+    // short-circuits with 401 before the router matches.)
     const res = await app.request("/openapi.json");
     const spec = OpenAPISpec.assert(await res.json());
 

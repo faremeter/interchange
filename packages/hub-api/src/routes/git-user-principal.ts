@@ -5,18 +5,16 @@
  * Both route groups resolve a URL to a `RepoId`, pre-resolve the
  * authz verdict against the grant store, and construct a
  * `UserPrincipal` carrying that verdict so the substrate's authorize
- * gate only sanity-checks rather than re-querying. The verdict
- * resolution, principal construction, and the two substrate adapters
- * are identical between the groups — the only per-kind input is the
- * verdict's `resource` string (`asset:<id>` vs
+ * gate only sanity-checks rather than re-querying. The only per-kind
+ * input is the verdict's `resource` string (`asset:<id>` vs
  * `agent-state:<id>`). Keeping them here, rather than copy-pasted
  * into each route file, stops the security-critical claim/verdict
  * cross-check boundary from drifting between kinds.
  *
  * Bearer-claim `expiresAt` is a `Date` on the wire; the substrate's
- * `UserPrincipal.tokenClaims.expiresAt` is a `number`. The Date →
- * number conversion happens exactly once, at the route handler
- * boundary, in `buildUserPrincipal`.
+ * `UserPrincipal.tokenClaims.expiresAt` is a `number`. The conversion
+ * happens exactly once, at the route handler boundary, in
+ * `buildUserPrincipal`.
  */
 
 import { authorize } from "@intx/authz";

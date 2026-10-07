@@ -8,15 +8,10 @@
 //
 // The shapes are kept intentionally hand-written: deriving with Pick<>
 // against the better-auth types would re-introduce the type dependency.
-// The trade-off is that a field added upstream in better-auth would not
-// surface here automatically.
-//
 // The optional `?: T | null | undefined` shape (rather than `?: T | null`)
-// is deliberate. Under exactOptionalPropertyTypes, the latter rejects an
+// is deliberate: under exactOptionalPropertyTypes, the latter rejects an
 // explicit `undefined` assignment, but the inferred return of
-// z.string().nullish() in better-auth's user/session schemas is
-// `string | null | undefined`. Without the trailing `| undefined`, the
-// adapter in apps/hub cannot pass the result through structurally.
+// z.string().nullish() is `string | null | undefined`.
 
 export type SessionUser = {
   id: string;

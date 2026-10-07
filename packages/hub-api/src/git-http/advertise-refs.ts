@@ -17,10 +17,9 @@
  *
  * Refs are filtered against `principal.tokenClaims.refPattern` via
  * the shared simple-glob matcher before advertisement so a token
- * cannot learn about refs outside its declared scope. HEAD is itself a
- * symbolic alias and not subject to refPattern filtering, but it is
- * only advertised when its target ref survives that filter — a token
- * that cannot see the target cannot learn about HEAD either.
+ * cannot learn about refs outside its declared scope. HEAD is itself
+ * a symbolic alias and not subject to refPattern filtering, but it is
+ * only advertised when its target ref survives that filter.
  *
  * When no refs survive filtering (or the repo is empty) the
  * advertisement emits a single zero-oid `capabilities^{}` record so
@@ -54,8 +53,8 @@ export type RefEntry = {
  * the ref HEAD symbolically points at (e.g. `refs/heads/main`); `sha`
  * is the SHA that target currently resolves to. Both fields are
  * required: a detached HEAD or an unborn HEAD is signalled by
- * returning `null` from `resolveHead`, not by populating one field and
- * leaving the other empty.
+ * returning `null` from `resolveHead`, not by populating one field
+ * and leaving the other empty.
  */
 export type HeadResolution = {
   readonly symbolicTarget: string;
@@ -73,9 +72,8 @@ export interface RefSource {
    * Resolve HEAD into the ref it symbolically targets plus the SHA
    * that ref currently resolves to. Returns `null` when HEAD is
    * unborn (no commits yet), detached, or the on-disk repo does not
-   * exist. The advertiser uses the result to emit the
-   * `symref=HEAD:<target>` capability so stock `git clone` checks out
-   * a real branch.
+   * exist. Used to emit the `symref=HEAD:<target>` capability so
+   * stock `git clone` checks out a real branch.
    */
   resolveHead(
     principal: AdvertisePrincipal,

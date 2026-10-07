@@ -81,10 +81,10 @@ const log = getLogger(["hub", "app"]);
 
 /**
  * Resolve the credential cipher, falling back to the noop cipher when none is
- * provided. The fallback is expected in tests and local development; it warns so
- * a production deployment that forgot to configure a cipher is not silently
- * storing secrets unencrypted. The composition root (`apps/hub`) always supplies
- * a real env-key cipher, gated by a required `CREDENTIAL_ENCRYPTION_KEY` at boot.
+ * provided. Expected in tests and local development; it warns so a production
+ * deployment that forgot to configure a cipher is not silently storing secrets
+ * unencrypted. The composition root (`apps/hub`) always supplies a real
+ * env-key cipher, gated by a required `CREDENTIAL_ENCRYPTION_KEY` at boot.
  */
 function resolveCredentialCipher(
   provided: CredentialCipher | undefined,
@@ -100,10 +100,8 @@ function resolveCredentialCipher(
  * Resolve the principal key store, falling back to a noop-cipher store when
  * none is provided. The fallback seals nothing, so a minted signing key's
  * private seed is stored in the CLEAR; it is expected only in tests and local
- * development and warns loudly so a production deployment that forgot to
- * configure `PRINCIPAL_KEY_ENCRYPTION_KEY` is not silently persisting private
- * keys unencrypted. The composition root (`apps/hub`) always supplies a real
- * store, gated by a required key at boot.
+ * development and warns loudly. The composition root (`apps/hub`) always
+ * supplies a real store, gated by a required key at boot.
  */
 function resolvePrincipalKeyStore(
   provided: PrincipalKeyStore | undefined,
@@ -121,9 +119,9 @@ export type CreateHubContextMiddlewareDeps = {
 };
 
 /**
- * Builds the per-request context middleware that resolves the
- * authenticated user and session from the incoming request and
- * exposes them via the Hono variable bag.
+ * Builds the per-request context middleware that resolves the authenticated
+ * user and session from the incoming request and exposes them via the Hono
+ * variable bag.
  */
 export function createHubContextMiddleware({
   getSession,
@@ -161,10 +159,10 @@ export type MountHubRoutesDeps = {
   sidecarWsHandler?: Handler<AppEnv>;
   /**
    * The asset REST endpoint and smart-HTTP route group mount under
-   * `/api/tenants/:tenantId/assets` when both are supplied. Tests
-   * that have no reason to exercise the asset surface MUST pass
-   * `null` for both to opt out explicitly; passing only one is a
-   * wiring bug and throws at construction.
+   * `/api/tenants/:tenantId/assets` when both are supplied. Tests that
+   * have no reason to exercise the asset surface MUST pass `null` for
+   * both to opt out explicitly; passing only one is a wiring bug and
+   * throws at construction.
    */
   assetService: AssetService | null;
   repoStore: RepoStore | null;
@@ -248,9 +246,7 @@ export function mountHubRoutes(
   // lets bearer-only requests bypass the session-required path.
   //
   // The gate is `repoStore !== null` rather than the two-dep check;
-  // the XOR throw above already guarantees the deps move as a unit,
-  // so checking either one is equivalent. Keeping a single shape
-  // across every gate site makes the contract obvious to a reader.
+  // the XOR throw above already guarantees the deps move as a unit.
   if (repoStore !== null) {
     // Constrain `:nameDotGit` to the `.git` suffix so the bearer
     // middleware does not capture the REST tarball routes that share
@@ -346,9 +342,7 @@ export function mountHubRoutes(
   );
 
   // Definition version/rollback management needs neither the asset service
-  // nor the repo store, so it mounts unconditionally -- definition management
-  // stays available even when the gated `/workflows` deploy surface is off.
-  // Registered before that surface as a defensive measure: the concrete
+  // nor the repo store, so it mounts unconditionally. The concrete
   // `/workflows/definitions/...` paths do not overlap the deploy router's
   // `/:runId` patterns, so this ordering is belt-and-suspenders.
   app.route(
@@ -362,8 +356,7 @@ export function mountHubRoutes(
   );
 
   // The workflow deploy + signal + listing surface reads the workflow-run
-  // repo through the repo store (its run-observe routes and the mail-send
-  // trigger's terminal-state read). Gate on the repo store being present.
+  // repo through the repo store, so it mounts only when that is present.
   if (repoStore !== null) {
     app.route(
       "/api/tenants/:tenantId/workflows",
@@ -485,12 +478,11 @@ export function mountHubRoutes(
   // stubs that carry no requireGrant of their own, so without this any active
   // tenant member would reach them; a mount-level grant check makes them fail
   // closed instead. No grants are minted for these resources today, so this is
-  // a pure deny until the features ship. When they do, REFINE the resource and
+  // a pure deny until the features ship. When they do, refine the resource and
   // action per route -- agent-data's history restore is a write, not a read,
   // and observability's agent logs/metrics belong under an observability
-  // resource rather than the agent-data one this shared prefix applies -- do
-  // not remove the gate. These two prefixes are stub-only; no live route
-  // resolves under them.
+  // resource rather than the agent-data one this shared prefix applies. These
+  // two prefixes are stub-only; no live route resolves under them.
   app.use(
     "/api/tenants/:tenantId/agents/:agentId/*",
     requireGrant("agent-data:*", "read"),

@@ -106,13 +106,10 @@ const WorkflowRunListResponse = type({
 });
 
 // A deployment's API shape, assembled from its anchor run and the run's
-// definition. The old projection reported a constant "deployed" for every row
-// -- no code path ever wrote another status -- and the anchor run's own status
-// (running -> terminal) is a different, run-level concept, so the deployment
-// status is synthesized as that same constant. `definitionAssetId` comes from
-// the run's definition; a null asset is a corrupt definition the deployment
-// contract cannot represent, so it surfaces loudly rather than emitting null
-// into a string field.
+// definition. The deployment status is synthesized from the allocation row;
+// `definitionAssetId` comes from the run's definition, and a null asset is a
+// corrupt definition the deployment contract cannot represent, so it surfaces
+// loudly rather than emitting null into a string field.
 function formatDeployment(
   row: {
     id: string;
@@ -167,8 +164,7 @@ function formatAllocationStatus(row: {
 
 // A deployment exists iff its anchor run does -- the workflow_run whose id is
 // the deployment id, carrying its routing identity. `anchorRunId` is
-// non-null on a deployment-anchored run, distinguishing it from a folded-agent
-// run (which never shares an anchor run anyway).
+// non-null on a deployment-anchored run.
 async function deploymentAnchorRunExists(
   db: DB["db"],
   anchorRunId: string,
@@ -395,10 +391,9 @@ export function createWorkflowRoutes({
       // filter: allocation lifecycle is separate from run execution status.
       // Deployments without an allocation row retain the legacy "deployed"
       // projection; provisioned deployments derive their public lifecycle from
-      // the allocation joined below. The `id = deployment_id`
-      // predicate (with the explicit non-null, matching
-      // deploymentAnchorRunExists) is the anchor-run identity; child and
-      // folded runs never satisfy it.
+      // the allocation joined below. The `id = deployment_id` predicate (with
+      // the explicit non-null, matching deploymentAnchorRunExists) is the
+      // anchor-run identity; child and folded runs never satisfy it.
       const rows = await db
         .select({
           id: workflowRun.id,

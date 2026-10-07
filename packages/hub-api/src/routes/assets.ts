@@ -1,27 +1,24 @@
 /**
  * Asset REST endpoint and smart-HTTP route group.
  *
- * Two distinct surfaces live in this file. The REST half — `POST /` —
- * is gated by the standard session + `requireGrant("asset:*", "create")`
- * pipeline and provisions the asset row plus the genesis-signed repo
- * via `assetService.createAsset`. The smart-HTTP half — every path
- * under `/:kind/:nameDotGit/...` — is gated by the bearer middleware
- * the app layer mounts ahead of it (`itx_pat_*` / `itx_svc_*` tokens)
- * and serves the four standard endpoints (`info/refs` for upload-pack
- * and receive-pack, then the two POST endpoints themselves).
+ * The REST half -- `POST /` -- is gated by the standard session +
+ * `requireGrant("asset:*", "create")` pipeline and provisions the asset
+ * row plus the genesis-signed repo via `assetService.createAsset`. The
+ * smart-HTTP half -- every path under `/:kind/:nameDotGit/...` -- is gated
+ * by the bearer middleware the app layer mounts ahead of it and serves the
+ * four standard endpoints (`info/refs` for upload-pack and receive-pack,
+ * then the two POST endpoints themselves).
  *
- * The smart-HTTP handler resolves URL `:kind/:name` to a concrete
- * `RepoId` by looking up the asset row `(tenantId, kind, name)`; on
- * miss the request is rejected with `404 not_found`. The handler
- * then resolves the authz verdict against `asset:<asset.id>` and the
- * grant verb derived from the `RepoAction`, and constructs the
- * `UserPrincipal` with the verdict pre-resolved so the substrate's
- * authorize gate only sanity-checks rather than re-querying.
+ * The smart-HTTP handler resolves URL `:kind/:name` to a concrete `RepoId`
+ * by looking up the asset row `(tenantId, kind, name)`; on miss the request
+ * is rejected with `404 not_found`. The authz verdict is resolved against
+ * `asset:<asset.id>` and the grant verb derived from the `RepoAction`, and
+ * the `UserPrincipal` is built with the verdict pre-resolved so the
+ * substrate's authorize gate only sanity-checks rather than re-querying.
  *
  * Bearer-claim `expiresAt` is a `Date` on the wire; the substrate's
- * `UserPrincipal.tokenClaims.expiresAt` is a `number`. The Date →
- * number conversion happens exactly once, at the route handler
- * boundary.
+ * `UserPrincipal.tokenClaims.expiresAt` is a `number`. The Date -> number
+ * conversion happens exactly once, at the route handler boundary.
  */
 
 import { and, eq } from "drizzle-orm";
@@ -84,12 +81,12 @@ import { jsonResponse } from "../openapi";
 const log = getLogger(["hub", "assets"]);
 
 /**
- * Genesis `.gitignore` body shipped with every asset repo. Captures
- * the OS- and editor-cruft families that show up in skill-asset
- * workspaces in practice, plus the `keys/` directory the hub uses to
- * stage materialised credentials at session-start time. The list is
- * a deliberate literal here; new entries are policy decisions
- * reviewed at this file rather than fanned out through configuration.
+ * Genesis `.gitignore` body shipped with every asset repo. Captures the
+ * OS- and editor-cruft families that show up in skill-asset workspaces in
+ * practice, plus the `keys/` directory the hub stages materialized
+ * credentials into at session-start. The list is a deliberate literal;
+ * new entries are policy decisions reviewed at this file rather than
+ * fanned out through configuration.
  */
 export const SANE_GITIGNORE = [
   ".DS_Store",
@@ -214,13 +211,10 @@ function formatAssetWithOrigin(
 /**
  * Drain `request.body` into a single Uint8Array, aborting as soon as
  * the accumulated byte count would exceed `maxBytes`. Returns `null`
- * when the body overruns the cap so the caller can emit 413 without
- * having to thread the cap into the catch path. Returns an empty
- * array when the body is absent.
- *
- * The pre-buffer Content-Length check upstream covers honest clients;
- * this guard catches the rest — clients that omit the header or lie
- * about it — by enforcing the limit as the bytes arrive.
+ * when the body overruns the cap (caller emits 413) and an empty array
+ * when the body is absent. The pre-buffer Content-Length check upstream
+ * covers honest clients; this guard catches clients that omit the
+ * header or lie about it by enforcing the limit as bytes arrive.
  */
 async function readBodyWithLimit(
   request: Request,
@@ -607,8 +601,8 @@ export function createAssetRoutes({
       // stored-blob-integrity by construction at this layer. Any
       // future substrate transformation (compression, re-encoding,
       // metadata stripping) must re-derive integrity from the
-      // post-commit blob; otherwise the value returned here lies
-      // about what the asset will serve back on GET.
+      // post-commit blob, or the value returned here lies about what
+      // the asset serves back on GET.
       const integrity = ssri
         .fromData(bytes, { algorithms: ["sha512"] })
         .toString();
@@ -787,11 +781,11 @@ export function createAssetRoutes({
   // ----- Smart-HTTP route group -------------------------------------
   //
   // The bearer middleware is mounted by the app layer ahead of this
-  // route group (so the `principal`, `tenant`, and `git-token-claims`
-  // context variables are populated before any handler runs). The
-  // handlers here resolve the asset row from `:kind/:nameDotGit`,
-  // build the pre-resolved authz verdict, construct a UserPrincipal,
-  // and dispatch to the wire handlers.
+  // route group, populating `principal`, `tenant`, and
+  // `git-token-claims` before any handler runs. The handlers resolve
+  // the asset row from `:kind/:nameDotGit`, build the pre-resolved
+  // authz verdict, construct a UserPrincipal, and dispatch to the
+  // wire handlers.
 
   async function resolveAssetFromUrl(
     c: { req: { param: (n: string) => string | undefined } },
@@ -842,11 +836,10 @@ export function createAssetRoutes({
     // those repos live on exactly one tenant; an inherited asset's repo
     // lives on its owning ancestor and is reachable only via that
     // tenant's bearer token, not the descendant's. The REST tarball
-    // routes use the tenancy walker (`resolveAssetById` and friends)
-    // because they serve resolver-derived materializations that
-    // descendants legitimately read from inherited rows. Do not widen
-    // this query to the ancestor chain without rethinking how bearer
-    // tokens scope to repo ownership.
+    // routes use the tenancy walker because they serve
+    // resolver-derived materializations that descendants legitimately
+    // read from inherited rows. Do not widen this query without
+    // rethinking how bearer tokens scope to repo ownership.
     const row = await db.query.asset.findFirst({
       where: and(
         eq(assetTable.tenantId, tenantId),
@@ -887,11 +880,10 @@ export function createAssetRoutes({
     };
   }
 
-  // Capture: tenant resolution is normally handled by the tenant
-  // middleware (session-based), but bearer requests skip the user
-  // session pipeline. The bearer middleware itself sets
-  // `principal`/`tenant` on the context, so the handlers here read
-  // straight from `c.get(...)` rather than re-querying the DB.
+  // Tenant resolution is normally handled by the tenant middleware
+  // (session-based), but bearer requests skip the user session pipeline.
+  // The bearer middleware itself sets `principal`/`tenant` on the
+  // context, so the handlers here read straight from `c.get(...)`.
 
   type SmartHttpResolved = {
     principal: UserPrincipal;
@@ -916,8 +908,8 @@ export function createAssetRoutes({
     // The typed env makes this unreachable today, but if the route
     // module is ever mounted without the bearer middleware ahead of
     // it, surface a misconfiguration rather than a downstream
-    // TypeError. A 401 would imply the client was unauthenticated;
-    // a missing claims object means the server is misconfigured.
+    // TypeError: a missing claims object means the server is
+    // misconfigured, not the client unauthenticated.
     if (claims === undefined) {
       throw new Error(
         "smart-HTTP route handler invoked without bearer middleware; check the mount order in app.ts",

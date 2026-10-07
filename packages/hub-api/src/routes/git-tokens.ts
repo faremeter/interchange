@@ -39,8 +39,7 @@ const SECRET_BYTES = 32;
 /**
  * Minimum lifetime of a freshly minted token. The mint endpoint
  * rejects `expiresAt` values that fall within this window so callers
- * cannot accidentally issue a token whose effective lifetime is so
- * short that it cannot be used.
+ * cannot accidentally issue a token too short-lived to use.
  */
 const MIN_LIFETIME_MS = 60_000;
 
@@ -189,8 +188,8 @@ function validateRefPattern(pattern: string): void {
     );
   }
   // Probe the compiler against a benign sample so callers see the
-  // matcher run; any future enrichment of the compiler that adds
-  // throw-on-malformed behaviour surfaces here.
+  // matcher run; any future enrichment that adds throw-on-malformed
+  // behaviour surfaces here.
   glob.match(pattern, "refs/heads/main");
 }
 

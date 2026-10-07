@@ -24,8 +24,7 @@
  * Substrate error prefixes are translated to the report-status
  * `ng <ref> <reason>` vocabulary. The substrate's `non_fast_forward:`
  * prefix covers both stale-oldSha CAS failures and pure
- * non-fast-forward rejections, both of which surface to the client as
- * `non-fast-forward`.
+ * non-fast-forward rejections, both surfacing as `non-fast-forward`.
  */
 
 import type { Principal, RepoId, RepoStore } from "@intx/hub-sessions";
@@ -82,8 +81,8 @@ function parseCommandLine(line: string): RefCommand {
   }
   const oldSha = parts[0];
   const newSha = parts[1];
-  // The ref may not contain a space, but split() guarantees it does
-  // not; everything after the second space is the ref.
+  // split() guarantees the ref contains no space; everything after
+  // the second space is the ref.
   const ref = parts.slice(2).join(" ");
   if (oldSha === undefined || newSha === undefined || ref.length === 0) {
     throw new Error(`malformed receive-pack command: ${JSON.stringify(line)}`);

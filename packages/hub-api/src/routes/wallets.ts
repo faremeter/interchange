@@ -234,8 +234,7 @@ export function createWalletRoutes({
       //   - Existence within the tenant is owned by the delete's WHERE clause
       //     (`id` AND `tenantId`). authz cannot own it: the resource string
       //     `wallet:{id}` is opaque, so a wildcard grant matches an id in any
-      //     tenant. A foreign or unknown id matches zero rows -> 404, disclosing
-      //     nothing across the tenant boundary.
+      //     tenant. A foreign or unknown id matches zero rows -> 404.
       //   - "Cannot delete a wallet a model provider still references" is owned
       //     by the model_provider.wallet_id foreign key (onDelete "restrict",
       //     catalog.ts). The delete fires it only for a row actually being

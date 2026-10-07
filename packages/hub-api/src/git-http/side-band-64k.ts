@@ -6,8 +6,8 @@
  * - channel 2: progress messages (shown by stock git as `remote: ...`)
  * - channel 3: fatal error; the remote terminates the transfer
  *
- * The maximum pkt-line payload is 0xFFF0 (65520) bytes including the
- * channel marker, so each channel-1 frame can carry at most
+ * Maximum pkt-line payload is 0xFFF0 (65520) bytes including the
+ * channel marker, so each channel-1 frame carries at most
  * `SIDE_BAND_CHANNEL_MAX_PAYLOAD` bytes of pack data.
  */
 

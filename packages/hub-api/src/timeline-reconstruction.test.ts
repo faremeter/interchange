@@ -116,18 +116,16 @@ describe("reconstructTimeline", () => {
     const turns = result.events.filter((e) => e.kind === "turn");
     expect(turns).toHaveLength(1);
     expect(turns[0]?.content).toBe("Hi there");
-    // Should use the per-message timestamp, not the git commit timestamp
+    // Per-message timestamp, not the git commit timestamp.
     expect(turns[0]?.timestamp).toBe(t + 1000);
-    // Status derived from checkpoint reason
+    // Status derived from checkpoint reason.
     expect(turns[0]?.kind === "turn" && turns[0].status).toBe("completed");
   });
 
   test("surfaces refusal-only assistant turns in the timeline summary", async () => {
-    // A turn whose only content is a RefusalBlock (OpenAI strict-
-    // mode policy decline) must appear on the timeline with the
-    // refusal text as the turn content. Filtering to text-only
-    // blocks would render the turn invisible even though the model
-    // produced coherent output.
+    // A turn whose only content is a RefusalBlock (OpenAI strict-mode policy
+    // decline) must appear on the timeline with the refusal text as the turn
+    // content; filtering to text-only blocks would render the turn invisible.
     const dir = await makeTempDir();
     await initAgentRepo(dir);
     const store = new IsogitStore(dir);
@@ -186,7 +184,7 @@ describe("reconstructTimeline", () => {
 
     const t = 1700000000000;
 
-    // First turn
+    // First turn.
     const messages1: ConversationTurn[] = [
       userMessage("Hello", t),
       assistantMessage("Hi there", t + 1000),
@@ -195,7 +193,7 @@ describe("reconstructTimeline", () => {
 
     await store.commit({ message: "checkpoint: inference-done" });
 
-    // Second turn (appends to the same message array)
+    // Second turn (appends to the same message array).
     const messages2: ConversationTurn[] = [
       ...messages1,
       userMessage("How are you?", t + 5000),
@@ -212,7 +210,7 @@ describe("reconstructTimeline", () => {
     expect(turns[0]?.content).toBe("Hi there");
     expect(turns[1]?.content).toBe("I'm doing well");
 
-    // Should use per-message timestamps
+    // Per-message timestamps.
     expect(turns[0]?.timestamp).toBe(t + 1000);
     expect(turns[1]?.timestamp).toBe(t + 6000);
   });
@@ -336,7 +334,7 @@ describe("reconstructTimeline", () => {
 
     await store.commit({ message: "checkpoint: inference-done" });
 
-    // Write error records (committed to git by the store)
+    // Write error records (committed to git by the store).
     const errors: ErrorRecord[] = [
       {
         source: "inference",
@@ -352,7 +350,7 @@ describe("reconstructTimeline", () => {
 
     const result = await reconstructTimeline(dir);
 
-    // Errors should be attached to the preceding turn, not a synthetic one
+    // Errors attach to the preceding turn, not a synthetic one.
     const turns = result.events.filter((e) => e.kind === "turn");
     expect(turns).toHaveLength(1);
     const turn = turns[0];
@@ -379,7 +377,7 @@ describe("reconstructTimeline", () => {
 
     await store.commit({ message: "checkpoint: inference-done" });
 
-    // Second checkpoint with only 2 messages (regression)
+    // Second checkpoint with only 2 messages (regression).
     const messages2: ConversationTurn[] = [
       userMessage("Fresh start"),
       assistantMessage("OK"),
@@ -390,7 +388,7 @@ describe("reconstructTimeline", () => {
 
     const result = await reconstructTimeline(dir);
 
-    // Should not crash — should produce a gap record
+    // Should not crash -- should produce a gap record.
     const regressionGap = result.gaps.find(
       (g) => g.kind === "message-count-regression",
     );

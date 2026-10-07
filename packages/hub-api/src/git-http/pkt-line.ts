@@ -7,8 +7,8 @@
  * - `0000` flush packet (end of a logical message)
  * - `0001` delim packet (separator inside a message)
  *
- * Maximum total frame length is 0xFFF0; thus the maximum payload
- * size is 0xFFF0 - 4 = 65520.
+ * Maximum total frame length is 0xFFF0; maximum payload is
+ * 0xFFF0 - 4 = 65520.
  */
 
 const HEADER_BYTES = 4;
@@ -73,8 +73,7 @@ function sliceBytes(a: Uint8Array, start: number, end?: number): Uint8Array {
  * `{ value, done }` results when `.read()` is called. The DOM
  * `ReadableStreamDefaultReader<Uint8Array>` and the Node
  * `node:stream/web` reader both satisfy this shape, so callers can
- * pass `stream.getReader()` directly without type-juggling between
- * the two reader flavours.
+ * pass `stream.getReader()` directly.
  */
 export interface PktLineByteReader {
   read(): Promise<{ done: boolean; value?: Uint8Array | undefined }>;
