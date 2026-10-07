@@ -88,7 +88,7 @@ const DEFINITION_ASSET_ID = "ast_fifo_mail_load_wf";
 //      Originally every supervisor `writeTreePreservingPrefix`
 //      awaited the hub's pack-push ack before returning, so a run
 //      with K events paid K round-trips of latency in series. The
-//      boot-edge facade (`apps/sidecar/src/workflow-run-pack-client.ts`,
+//      boot-edge facade (`packages/workflow-host/src/deploy/workflow-run-pack-client.ts`,
 //      `createWorkflowRunPackPushingRepoStore`) COALESCES pushes
 //      per `(repoId, ref)`: a write returns as soon as the local
 //      commit lands, and pushes that arrive while a prior push is

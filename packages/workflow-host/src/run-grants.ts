@@ -2,16 +2,15 @@
 // resolve a run's authorization from disk: the supervisor wiring
 // (`workflow-host-wiring.ts`), which reads a run's grants at the
 // `onRunStart` barrier, and the in-process child runtime
-// (`workflow-substrate-factory.ts`), which reads the PARENT run's grants
+// (`substrate-factory.ts`), which reads the PARENT run's grants
 // to bind a spawned child's authorize. Both destinations read the same
 // `runs/<runId>/grants.json` file in a deployment's `workflow-run` repo,
 // so the read lives in one place.
 //
 // The module's dependency surface is deliberately narrow -- node fs/path,
 // arktype, and the substrate `RepoStore` type -- so importing it into the
-// child subprocess module does not drag the hub-agent deploy-router
-// surface `workflow-host-wiring.ts` also depends on into the child
-// binary.
+// child subprocess module does not drag the supervisor wiring
+// (`workflow-host-wiring.ts`) into the child binary.
 
 import { readFile } from "node:fs/promises";
 import { join as pathJoin } from "node:path";

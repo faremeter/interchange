@@ -5,7 +5,7 @@
 // a fresh in-memory store per rung, so the deepest rung's depth-naming message
 // is asserted separately in the fast child-depth unit test; the real-path
 // (shared-repo, real sidecar spawn seam) message assertion lives in
-// `apps/sidecar/src/workflow-substrate-factory-child-depth.test.ts`.
+// `packages/workflow-host/src/child/workflow-substrate-factory-child-depth.test.ts`.
 
 import { describe, test, expect } from "bun:test";
 

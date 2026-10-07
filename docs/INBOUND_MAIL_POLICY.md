@@ -132,4 +132,4 @@ receives `clean` mail.
 - Enforcement: the `mail.inbound` case of
   `packages/hub-agent/src/ws/hub-link.ts`
 - Per-deployment resolution and registration:
-  `apps/sidecar/src/workflow-host-wiring.ts`
+  `packages/workflow-host/src/deploy/workflow-host-wiring.ts`

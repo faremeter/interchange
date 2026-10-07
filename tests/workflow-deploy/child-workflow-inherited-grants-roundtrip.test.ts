@@ -18,13 +18,13 @@
 // proving the wiring delivered grants at all); the undeclared one is dropped
 // (the cap, the escalation this closes).
 //
-// What this ADDS over the unit coverage. The cap's behavior in isolation --
-// which grants survive, grandchild multi-hop ceiling, and fail-closed-at-spawn
-// when the parent grants file is absent -- is proven directly against a real
-// on-disk substrate in
-// `apps/sidecar/src/workflow-substrate-factory-child-grants.test.ts`, which
-// calls `createSidecarRunChild` with hand-seeded grants, and the filter itself
-// in `packages/workflow-deploy/src/child-grant-filter.test.ts`. This test
+// What this ADDS over the unit coverage. Which grants survive the cap is
+// proven in `packages/workflow-deploy/src/child-grant-filter.test.ts`. The
+// factory's injection of that filter -- the definition it hands the
+// collector, the array it persists, write-once, and fail-closed when the
+// parent grants file is absent -- is proven in
+// `packages/workflow-host/src/child/workflow-substrate-factory-child-grants.test.ts`,
+// which calls `createSidecarRunChild` with hand-seeded grants. This test
 // proves the WIRING composes: that a real mail trigger's delivered grants reach
 // `runs/<parentRunId>/grants.json` through the supervisor, and that the real
 // child-spawn adapter caps them against the child body during an honest

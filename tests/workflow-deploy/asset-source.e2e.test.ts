@@ -11,7 +11,7 @@
 // per-deployment source store rather than fetching tarballs over HTTP. The
 // durable store's restore-from-disk path (re-materializing the closure on a
 // sidecar restart from the pin alone) is unit-covered by
-// `apps/sidecar/src/workflow-host-wiring-source-assets.test.ts`.
+// `packages/workflow-host/src/deploy/workflow-host-wiring-source-assets.test.ts`.
 
 import { promises as fs } from "node:fs";
 import os from "node:os";
