@@ -1,19 +1,13 @@
 // Header line length, non-ASCII header text, and quoted-printable bodies.
 //
-// Two RFC 5322 requirements this assembler did not meet. A line MUST NOT exceed
-// 998 characters (section 2.1.1), and a long `References` chain reaches that on
-// its own -- 20 message ids of 50 characters is 1000. And a header body is
-// ASCII: a non-ASCII subject needs the RFC 2047 encoded-word form, because
-// 8-bit bytes in a header are illegal without an extension no relay here
-// negotiates.
+// RFC 5322 §2.1.1: a line MUST NOT exceed 998 chars -- a long `References`
+// chain reaches that on its own. A header body is ASCII: a non-ASCII subject
+// needs the RFC 2047 encoded-word form, since 8-bit bytes in a header are
+// illegal without an extension no relay here negotiates.
 //
-// Both were latent rather than theoretical. Nothing in the tree writes a
-// subject with an accent in it today, and threads stay short in the tests --
-// which is why neither showed up until a message was put on a real wire.
-//
-// A text part that is not 7-bit is quoted-printable. RFC 2045 section 6.7
-// forbids a literal space or tab at the end of an encoded line, including the
-// line a soft break closes, because a relay may strip it.
+// A text part that is not 7-bit is quoted-printable. RFC 2045 §6.7 forbids a
+// literal space or tab at the end of an encoded line, including the line a
+// soft break closes, because a relay may strip it.
 
 import { describe, expect, test } from "bun:test";
 
@@ -78,8 +72,7 @@ function receivedHeader(raw: Uint8Array, name: string): string | undefined {
 
 describe("no header line exceeds the hard limit", () => {
   test("a long References chain is folded", () => {
-    // 20 ids at 50 characters each: 1000 characters of value, past the 998 a
-    // line may not exceed, before the header name is even counted.
+    // 20 ids at 50 chars each: 1000 chars of value, past the 998 limit.
     const references = Array.from(
       { length: 20 },
       (_, i) => `<${String(i).padStart(44, "0")}@x.test>`,
@@ -92,8 +85,8 @@ describe("no header line exceeds the hard limit", () => {
   });
 
   test("folding preserves the value a receiver reconstructs", () => {
-    // The point of folding at an existing space: unfolding deletes the CRLF and
-    // keeps the space, so the receiver's value is identical to the one given.
+    // Folding at an existing space: unfolding deletes the CRLF and keeps the
+    // space, so the receiver's value is identical to the one given.
     const references = Array.from(
       { length: 20 },
       (_, i) => `<${String(i).padStart(44, "0")}@x.test>`,
@@ -141,8 +134,8 @@ describe("no header line exceeds the hard limit", () => {
   test("a space run that crosses the fold stays intact", () => {
     // The continuation may open with only one space: unfolding deletes the
     // break and every whitespace character after it, then inserts one space.
-    // Spaces from the run that do not fit before the break have to stay on
-    // the line being folded.
+    // Spaces from the run that do not fit before the break stay on the folded
+    // line.
     const subjects = [
       `${"a".repeat(60)}${" ".repeat(10)}b`,
       `${"x".repeat(68)}  y`,
@@ -158,9 +151,9 @@ describe("no header line exceeds the hard limit", () => {
   });
 
   test("a tab-ending run does not hide an earlier fold", () => {
-    // The last space before the target ends a run in a tab, so it cannot
-    // be the fold. An earlier space still can. Keeping the tab run on this
-    // line instead makes one line of 1008 characters.
+    // The last space before the target ends a run in a tab, so it cannot be
+    // the fold; an earlier space still can. Keeping the tab run here instead
+    // makes one line of 1008 characters.
     const subject = `hi ${"a".repeat(64)} \t${"b".repeat(930)}`;
     const raw = assembled({ ...BASE, subject });
 

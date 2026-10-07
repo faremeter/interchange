@@ -215,10 +215,10 @@ describe("decodeMail", () => {
   });
 
   test("records an absent Date and Message-ID as absent, not as empty", () => {
-    // RFC 5322 defines `Date` as `date-time` and `Message-ID` as `msg-id`.
-    // Neither admits an empty body, so a message carrying neither has to come
-    // back with both fields absent: a defaulted empty string reads as a value
-    // downstream and gets written back out as a malformed header line.
+    // RFC 5322 defines `Date` as `date-time` and `Message-ID` as `msg-id`;
+    // neither admits an empty body, so a message carrying neither comes back
+    // with both absent -- a defaulted empty string reads as a value downstream
+    // and is written back out as a malformed header line.
     const mail = decodeMail(
       rawBytes(
         [
@@ -263,9 +263,9 @@ describe("decodeMail", () => {
 
   test("treats a blank In-Reply-To as absent", () => {
     // RFC 5322 defines `In-Reply-To` as `1*msg-id` under the same clause as
-    // `Message-ID`, so a header left blank names no parent. An empty value is
-    // an id no message can carry, so every message whose header was blank
-    // would otherwise read as a reply to one shared nonexistent parent.
+    // `Message-ID`, so a blank header names no parent; an empty value is an id
+    // no message can carry, and every blank-headed message would otherwise read
+    // as a reply to one shared nonexistent parent.
     const mail = decodeMail(
       rawBytes(
         [
@@ -350,9 +350,9 @@ describe("decodeMail", () => {
 
   test("keeps a header named after an Object.prototype member", () => {
     // `__proto__` and `constructor` are well-formed field names (RFC 5322
-    // section 3.6.8), so a peer can send them. Accumulating them into a plain
-    // object reaches inherited members instead of the accumulator's own
-    // properties, which either throws or discards the value.
+    // §3.6.8), so a peer can send them. Accumulating into a plain object
+    // reaches inherited members instead of the accumulator's own properties,
+    // which throws or discards the value.
     const mail = decodeMail(
       rawBytes(
         "From: a@b\r\n" +
@@ -371,11 +371,9 @@ describe("decodeMail", () => {
     expect(Object.hasOwn(mail.rawHeaders, "constructor")).toBe(true);
     expect(mail.rawHeaders["constructor"]).toEqual(["hostile"]);
 
-    // Prototype-free: the map carries no inherited member, so a field name the
-    // message does not carry resolves to nothing rather than to whatever
-    // `Object.prototype` holds under that name -- the declared type promises
-    // `string[] | undefined` for every name, and `toString` would otherwise be
-    // a function. The shared accessor itself is untouched.
+    // Prototype-free: an absent name resolves to nothing rather than to an
+    // `Object.prototype` member (e.g. `toString` would otherwise be a
+    // function). The shared accessor itself is untouched.
     expect(Object.getPrototypeOf(mail.rawHeaders)).toBeNull();
     expect(mail.rawHeaders["toString"]).toBeUndefined();
     expect(mail.rawHeaders["hasOwnProperty"]).toBeUndefined();
@@ -421,11 +419,9 @@ describe("decodeMail", () => {
   });
 
   test("refuses a bare carriage return or line feed before either reading", () => {
-    // RFC 5322 section 2.3 requires CR and LF to occur only together as CRLF,
-    // and RFC 5321 section 4.1.1.4 refuses the lone-LF line ending by name, so a
-    // bare break terminates no field. `decodeMail` reads one header section
-    // twice -- once into the typed subset, once into the raw map a workflow
-    // walks -- and refusing the section ahead of both is what keeps the two from
+    // RFC 5322 §2.3 requires CR and LF only together as CRLF, so a bare break
+    // terminates no field. `decodeMail` reads the header section twice (typed
+    // subset, raw map); refusing the section ahead of both keeps the two from
     // disagreeing about which fields the message carries.
     for (const brk of ["\r", "\n"]) {
       expect(() =>
@@ -488,12 +484,11 @@ describe("decodeMail", () => {
   });
 
   test("names no id in either parser for an LF-only header section", async () => {
-    // A whole-message search for the `CRLF CRLF` separator finds the one in the
-    // body and reads the header section from there: every field after the first
-    // is folded into it, so `Subject` goes missing, the body is truncated to
-    // what followed the separator, and the id absorbs sender-controlled body
-    // bytes. That id is the claim-check dedup key, a stored filename and a
-    // database join value, so nothing from the body may reach it.
+    // A whole-message search for `CRLF CRLF` finds the one in the body and
+    // reads the header section from there: fields after the first fold into
+    // it, the body truncates, and the id absorbs sender-controlled body bytes.
+    // The id is the claim-check dedup key, a stored filename and a database
+    // join value, so nothing from the body may reach it.
     const bodyTerminated = rawBytes(
       "Message-ID: <a@b>\nSubject: Hi\n\nbody\r\n\r\ntail\n",
     );
@@ -542,11 +537,9 @@ describe("decodeMail", () => {
   });
 
   test("treats a Date that does not parse the same as an absent one", () => {
-    // A consumer builds a `Date` from this value and compares it to a search
-    // window's bounds. Every comparison against an Invalid Date is false, so a
-    // kept value places the message inside `before: 1990` and `after: 2999` at
-    // once. The absence reported instead falls outside every window, which is
-    // already how an absent header reads.
+    // Every comparison against an Invalid Date is false, so a kept value places
+    // the message inside `before: 1990` and `after: 2999` at once; the absence
+    // falls outside every window, which is already how an absent header reads.
     const absent = decodeMail(rawBytes("From: a@example.com\r\n\r\nbody"));
     const garbage = decodeMail(
       rawBytes("From: a@example.com\r\nDate: not a date\r\n\r\nbody"),
@@ -726,12 +719,11 @@ describe("Content-Transfer-Encoding normalization", () => {
     expect(email.bodyValues["1"]?.isEncodingProblem).toBe(true);
   });
 
-  // RFC 2045 section 6.4 is one instruction with two halves: an entity whose
-  // mechanism is unrecognised is not interpreted, AND it is treated as
-  // application/octet-stream. The reported content type is the second half.
-  // Each row pairs a mechanism with the type a part reports under it and the
-  // body that mechanism yields, so a recognised mechanism is the control that
-  // keeps its declared type and is decoded.
+  // RFC 2045 §6.4 has two halves: an entity whose mechanism is unrecognised
+  // is not interpreted AND is treated as application/octet-stream. Each row
+  // pairs a mechanism with the type a part reports under it and the body that
+  // mechanism yields, so a recognised mechanism is the control that keeps its
+  // declared type and is decoded.
   const reportedTypeCases: {
     mechanism: string;
     textPartBody: string;
@@ -784,13 +776,12 @@ describe("Content-Transfer-Encoding normalization", () => {
       reportedAttachmentType: "application/octet-stream",
     },
     {
-      // A run of CFWS between two lexical tokens is semantically a single
-      // space (RFC 2822 section 3.2.3), so a comment separates the tokens it
-      // sits between rather than joining them. This value is the two
-      // tokens `ba` and `se64`; neither names a mechanism, and a single
-      // mechanism is all RFC 2045 section 6.1 admits. Replacing the comment
-      // with nothing instead reads it as `base64` and hands an attacker a
-      // body a strict peer leaves opaque and we decode.
+      // A run of CFWS between two tokens is semantically a single space (RFC
+      // 2822 §3.2.3), so a comment separates rather than joins them. This
+      // value is the two tokens `ba` and `se64`; neither names a mechanism,
+      // and RFC 2045 §6.1 admits only a single one. Replacing the comment
+      // with nothing reads `base64` and hands an attacker a body a strict
+      // peer leaves opaque and we decode.
       mechanism: "ba(c)se64",
       textPartBody: "aGVsbG8=",
       decodedText: "aGVsbG8=",
@@ -864,12 +855,11 @@ describe("Content-Transfer-Encoding normalization", () => {
 
   test("reads a single-part message's own transfer encoding on both paths", () => {
     // A single-part message carries its transfer encoding in the message
-    // headers, and `parseMailToEmail` reaches the decoder through a part it
-    // reconstructs from them. A reconstruction that carries only the content
-    // type leaves the decoder with the RFC 2045 section 6.1 default, so a
-    // base64 body arrives still encoded and an unrecognised mechanism's
-    // octets are interpreted as text -- and the two entry points disagree on
-    // the same bytes. Each row asserts the pair agrees.
+    // headers; `parseMailToEmail` reaches the decoder through a part it
+    // reconstructs from them. A reconstruction carrying only the content type
+    // leaves the decoder on the RFC 2045 §6.1 default, so a base64 body
+    // arrives still encoded and the two entry points disagree on the same
+    // bytes. Each row asserts the pair agrees.
     for (const c of reportedTypeCases) {
       const raw = singlePartWithEncoding(c.mechanism, c.textPartBody);
 
@@ -907,18 +897,16 @@ describe("Content-Transfer-Encoding normalization", () => {
   });
 
   test("widens every one of the 256 byte values", () => {
-    // RFC 2045 section 6.4 hands a body under an unrecognised transfer
-    // encoding back as octets, not text. The JMAP string value for such a
-    // body must therefore carry one code unit per byte, with every byte
-    // preserved exactly -- the case above covers one character's worth of the
-    // range, this one covers all of it.
+    // RFC 2045 §6.4 hands a body under an unrecognised transfer encoding back
+    // as octets, not text, so the JMAP string value carries one code unit per
+    // byte with every byte preserved. The case above covers one character's
+    // worth of the range; this one covers all of it.
     //
-    // This is a regression guard against the obvious optimisation.
-    // `new TextDecoder("latin1")` looks like a one-pass replacement for the
-    // widening in `bytesToBinaryString`. It is not: the WHATWG Encoding
-    // Standard makes "latin1" and "iso-8859-1" labels for windows-1252, which
-    // maps 27 of the 256 byte values to a different code point. This test
-    // fails if anyone makes that swap.
+    // Regression guard against the obvious optimisation: `new
+    // TextDecoder("latin1")` looks like a one-pass replacement for the
+    // widening, but the WHATWG Encoding Standard makes "latin1"/"iso-8859-1"
+    // labels for windows-1252, which maps 27 of the 256 byte values elsewhere.
+    // This test fails if anyone makes that swap.
     const body: number[] = [];
     for (let i = 0; i < 256; i++) body.push(i);
     const raw = rawWithBody(
@@ -941,10 +929,8 @@ describe("Content-Transfer-Encoding normalization", () => {
   });
 
   test("names the windows-1252 range a latin1 decode would rewrite", () => {
-    // Documents the trap rather than the product: these are the byte values the
-    // swap would rewrite, asserted against windows-1252 because that is the
-    // encoding the "latin1" label resolves to. Kept beside the test above so
-    // the reason that test exists is visible where it is asserted.
+    // The byte values the swap would rewrite, asserted against windows-1252
+    // because that is the encoding the "latin1" label resolves to.
     const all = new Uint8Array(256);
     for (let i = 0; i < 256; i++) all[i] = i;
     const decoded = new TextDecoder("windows-1252").decode(all);
@@ -1148,11 +1134,10 @@ describe("isMail", () => {
 
   test("accepts the rawHeaders map a hostile field name produces", () => {
     // The `rawHeaders` index signature must still ACCEPT the map the decoder
-    // actually builds. A rejection here is silent: `isMail` returning false
-    // sends the step input down `synthesizeInputContent` instead of the mail
-    // projection, so an inbound mail carrying a `__proto__` header would reach
-    // the agent as stringified text with its parts and threading headers
-    // dropped, and nothing would raise.
+    // builds. A silent rejection sends the step input down
+    // `synthesizeInputContent` instead of the mail projection, so a
+    // `__proto__` header would reach the agent as stringified text with its
+    // parts and threading headers dropped.
     const rawHeaders = hostileRawHeaders();
     expect(Object.getPrototypeOf(rawHeaders)).toBeNull();
     expect(Object.keys(rawHeaders)).toContain("__proto__");

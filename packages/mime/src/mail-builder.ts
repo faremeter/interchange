@@ -1,16 +1,14 @@
 /**
  * Builders for InboundMessage and OutboundMessage shapes.
  *
- * Constructing these by hand requires assembling MessageRef, MessageHeaders,
- * payload envelopes, signature status, and other mail-shaped fields that the
- * transport normally produces after parsing wire bytes. These builders
- * collapse that boilerplate behind two factories with sensible defaults.
+ * Hand-assembling these requires MessageRef, MessageHeaders, payload
+ * envelopes, signature status and other fields the transport normally
+ * produces from wire bytes; these builders collapse that boilerplate behind
+ * two factories with sensible defaults.
  *
- * The builders use the parsed-shape MessageHeaders from
- * @intx/types/runtime (where date is an ISO string), NOT the
- * wire-shape MessageHeaders local to this package (where date is a Date
- * object and headers are serialised to RFC 2822 bytes via assembleMessage).
- *
+ * They use the parsed-shape MessageHeaders from @intx/types/runtime (date is
+ * an ISO string), NOT the wire-shape MessageHeaders local to this package
+ * (date is a Date, serialized to RFC 2822 bytes via assembleMessage).
  * Consumers import the message types from @intx/types directly; the
  * @intx/mime barrel does not re-export them.
  */
@@ -31,10 +29,9 @@ import {
 import { generateMessageId } from "./mime";
 
 /**
- * Default schema version for structured payloads. Matches
- * docs/MESSAGE.md § Payload Structure, which specifies "version": "1" as
- * the current schema version for every Interchange payload type. Audit
- * this default whenever the documented schema version increments.
+ * Default schema version for structured payloads. Matches docs/MESSAGE.md
+ * § Payload Structure ("version": "1" for every payload type). Audit when
+ * that document increments.
  */
 const DEFAULT_PAYLOAD_VERSION = "1";
 
@@ -77,7 +74,7 @@ export type CreateInboundMessageOpts = {
    */
   date?: Date | string;
 
-  /** Defaults to `generateMessageId(from)`. Must be of the form `<id@host>`. */
+  /** Defaults to `generateMessageId(from)`. Must be `<id@host>`. */
   messageId?: string;
 
   inReplyTo?: string;
@@ -86,8 +83,7 @@ export type CreateInboundMessageOpts = {
 
   /**
    * Interchange-Type header value. Auto-derived from `payload.type` when a
-   * payload is supplied; throws if explicitly set to a value that conflicts
-   * with `payload.type`.
+   * payload is supplied; throws if explicitly set to a conflicting value.
    */
   interchangeType?: InterchangeType;
 
@@ -314,8 +310,8 @@ export function createOutboundMessage(
   const fn = "createOutboundMessage";
 
   validateInterchangeType(opts.type, "type", fn);
-  // Validate addresses without mutating the source shape; the OutboundMessage
-  // type preserves `string | string[]` and downstream consumers handle both.
+  // Validate addresses without mutating the source shape; OutboundMessage
+  // preserves `string | string[]` and consumers handle both.
   normalizeAndValidateAddressArray(opts.to, "to", fn, false);
   if (opts.cc !== undefined) {
     normalizeAndValidateAddressArray(opts.cc, "cc", fn, false);

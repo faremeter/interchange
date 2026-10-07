@@ -164,9 +164,9 @@ describe("extractAddrSpec", () => {
   });
 
   test("throws on an angle-bracketed list rather than taking one member", () => {
-    // The reduction this refuses picked the last member, so a `From` naming a
+    // The reduction this refuses picked the last member: a `From` naming a
     // victim first and the sender second read as the sender alone while every
-    // parser of the full header still saw both.
+    // full-header parser still saw both.
     expect(() =>
       extractAddrSpec(
         '"CEO" <ceo@victim.example>, "x" <attacker@evil.example>',
@@ -216,8 +216,8 @@ describe("extractAddrSpec", () => {
   });
 
   test("throws on an address carried in a leading comment", () => {
-    // A comment may hold '@' as text, and extractAddrSpec refuses a comment
-    // wherever it appears, so reading it as a second address costs nothing.
+    // A comment may hold '@' as text; extractAddrSpec refuses comments
+    // wherever they appear, so reading it as a second address costs nothing.
     expect(() =>
       extractAddrSpec("(ceo@victim.example) <attacker@evil.example>"),
     ).toThrow(/address lists are not supported/);
@@ -504,10 +504,10 @@ describe("parseHeaderSection", () => {
   });
 
   test("refuses an LF-terminated message", () => {
-    // RFC 5321 section 2.3.8 forbids recognizing any character or sequence but
-    // CRLF as a line terminator, and section 4.1.1.4 refuses the lone-LF ending
-    // by name. Folding the breaks instead would leave one field whose value
-    // swallows every later field and the body.
+    // RFC 5321 §2.3.8 forbids recognizing anything but CRLF as a line
+    // terminator; §4.1.1.4 refuses the lone-LF ending by name. Folding the
+    // breaks instead leaves one field whose value swallows every later field
+    // and the body.
     const raw = enc.encode("From: alice@test\nTo: bob@test\n\nBody");
     expect(() => parseHeaderSection(raw)).toThrow(
       /must break its lines with CRLF/,
@@ -522,10 +522,9 @@ describe("parseHeaderSection", () => {
   });
 
   test("refuses an LF-only header section that a CRLF CRLF terminates", () => {
-    // The section's own line breaks decide whether it conforms, not the flavour
-    // of the blank line that ends it. Folding these instead leaves one field
-    // whose value swallows `Interchange-Type` and `Subject`, so a sender
-    // suppresses both fields by writing the section with bare LFs.
+    // The section's own line breaks decide conformity, not the flavour of the
+    // blank line that ends it. Folding these leaves one field whose value
+    // swallows `Interchange-Type` and `Subject`.
     const raw = enc.encode(
       "From: alice@x\nInterchange-Type: conversation.message\n" +
         "Subject: Hi\r\n\r\nBody",
@@ -627,14 +626,10 @@ describe("parseHeaderSection", () => {
     expect(headers.size).toBe(0);
   });
 
-  // A bare CR and a bare LF are external input that no field body may carry:
-  // RFC 5322 section 2.2 admits neither inside a field body, and section 2.3
-  // requires the two to occur only together as CRLF. A sender controls every one
-  // of these fields, and each row hides the same second field behind one bare
-  // character. Neither reading of that character is safe -- as a terminator it
-  // resolves a field from a value the sender smuggled inside one it controls,
-  // and folded to a space it suppresses whatever field followed it -- so the
-  // section is refused for every row.
+  // A bare CR or LF in a field body is refused for every row below: RFC 5322
+  // §2.2 admits neither inside a field body and §2.3 requires the two to occur
+  // only as CRLF. Splitting on the bare character resolves a field the sender
+  // smuggled into one it controls; folding it suppresses whatever followed.
   const bareBreaks = ["\r", "\n"];
   const bareBreakHeaders: string[] = bareBreaks.flatMap((brk) => [
     `Subject: hello${brk}Bcc: attacker@evil.test`,
@@ -715,10 +710,8 @@ describe("parseMultipart", () => {
 
   test("splits parts whose delimiter lines are LF-terminated", () => {
     // The boundary scan tolerates an LF-terminated delimiter line. Each part's
-    // own fields are CRLF-terminated, because CRLF is the only field terminator
-    // the header section parse recognizes (RFC 5322 section 2.3); this fixture
-    // keeps the two questions apart rather than asserting both tolerances from
-    // one input.
+    // own fields are CRLF-terminated (the only terminator the header parse
+    // recognizes, RFC 5322 §2.3), so the two tolerances stay apart.
     const body = enc.encode(
       "--boundary\nContent-Type: text/plain\r\n\r\nPart one\n" +
         "--boundary\nContent-Type: text/html\r\n\r\n<p>Part two</p>\n" +
