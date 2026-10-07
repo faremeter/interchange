@@ -3,7 +3,11 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import type { InferenceEvent, InferenceSource } from "@intx/types/runtime";
+import type {
+  InferenceEvent,
+  InferenceSource,
+  RetryPolicy,
+} from "@intx/types/runtime";
 
 import {
   createRecordingHarness,
@@ -396,6 +400,12 @@ describe("createRecordingHarness end-to-end", () => {
     });
     harness.onTool("weather", () => ({ ok: true }));
 
+    // The budget-throwing fetch would otherwise sleep through the default
+    // 500ms + 1000ms retry backoff before the error surfaces. This test is
+    // about the budget guard, not the retry schedule, so abort on the first
+    // attempt.
+    const abortRetry: RetryPolicy = () => ({ kind: "abort" });
+
     let seq = 0;
     const drive = async (): Promise<void> => {
       // Drive turn 1 successfully.
@@ -410,6 +420,7 @@ describe("createRecordingHarness end-to-end", () => {
         ],
         source: ANTHROPIC_SOURCE,
         nextSeq: () => ++seq,
+        inferenceOptions: { retryPolicy: abortRetry },
       })) {
         events.push(ev);
       }
@@ -440,6 +451,7 @@ describe("createRecordingHarness end-to-end", () => {
         ],
         source: ANTHROPIC_SOURCE,
         nextSeq: () => ++seq,
+        inferenceOptions: { retryPolicy: abortRetry },
       })) {
         // drain — the iterator should reject
       }

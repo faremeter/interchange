@@ -18,6 +18,7 @@ import type {
   ConversationTurn,
   InferenceEvent,
   InferenceSource,
+  RetryPolicy,
 } from "@intx/types/runtime";
 
 const SOURCE: InferenceSource = {
@@ -126,6 +127,11 @@ describe("runInference — Dependencies parameter", () => {
       scheduler: createDefaultScheduler(),
       adapters: createBuiltinRegistry(),
     };
+    // This test is about the deps.fetch seam, not the retry schedule: the
+    // default policy would sleep 500ms + 1000ms across three attempts of a
+    // deterministic rejection. Abort on the first attempt; the assertions
+    // below only need the classified error to surface.
+    const abortRetry: RetryPolicy = () => ({ kind: "abort" });
 
     const originalFetch = globalThis.fetch;
     let globalFetchCalled = false;
@@ -143,6 +149,7 @@ describe("runInference — Dependencies parameter", () => {
           source: SOURCE,
           nextSeq: () => ++seq,
           deps,
+          inferenceOptions: { retryPolicy: abortRetry },
           readMaterial: () => ({ secret: "test-secret" }),
         }),
       );

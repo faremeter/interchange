@@ -8,7 +8,15 @@
 // behavioural axis: error event shape, flush timing, multi-batch
 // boundaries, no-op skip, and survives-commit-failure semantics.
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -34,8 +42,15 @@ import type { BaseEnv } from "./env";
 import { permissiveAuthorize } from "./testing/authorize-allow";
 import { waitForReactorDone } from "./testing";
 
-// An unreachable URL causes the inference call to fail with a network
-// error, which the reactor surfaces as an `inference.error` event.
+// A local HTTP server that answers every request with 401. The harness
+// classifies 401 as `credential_failure`, which the default retry policy
+// never retries, so the inference call fails on the first attempt and the
+// reactor surfaces it as an `inference.error` event. A connection-refused
+// URL would classify as `retryable` instead and sleep through the default
+// 500ms + 1000ms backoff across three attempts -- pure wall clock for tests
+// that do not exercise the retry schedule.
+let unreachableServer: ReturnType<typeof Bun.serve> | undefined;
+
 const UNREACHABLE_SOURCE: InferenceSource = {
   id: "anthropic:test-error",
   provider: "anthropic",
@@ -145,6 +160,27 @@ function inboundConversation(): ReturnType<typeof createInboundMessage> {
 
 describe("agent error flushing", () => {
   let workDir: string;
+
+  beforeAll(() => {
+    unreachableServer = Bun.serve({
+      port: 0,
+      fetch: () =>
+        new Response("unauthorized", {
+          status: 401,
+          statusText: "Unauthorized",
+        }),
+    });
+    if (unreachableServer.port === undefined) {
+      throw new Error("unreachableServer.port is undefined");
+    }
+    UNREACHABLE_SOURCE.baseURL = `http://localhost:${String(unreachableServer.port)}`;
+  });
+
+  afterAll(async () => {
+    if (unreachableServer !== undefined) {
+      await unreachableServer.stop();
+    }
+  });
 
   beforeEach(() => {
     workDir = mkdtempSync(join(tmpdir(), "agent-flush-"));

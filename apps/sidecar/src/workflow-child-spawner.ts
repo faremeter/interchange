@@ -4,6 +4,7 @@
 // arguments. This module is the process that owns both: it resolves
 // `bin/workflow-child` and launches it in its own process group.
 
+import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { getLogger } from "@intx/log";
@@ -20,8 +21,23 @@ const logger = getLogger(["interchange", "sidecar", "workflow-host-wiring"]);
 /**
  * Path of this package's `bin/workflow-child`. Resolved at load so the
  * boot edge can hand the deploy program a concrete path.
+ *
+ * A dev-worktree build step (`make build-test-binaries`) bundles this
+ * binary into `dist-test/workflow-child.js`; a single-file bundle boots
+ * faster than the extensionless shebang source because the whole
+ * `@intx/*` module graph is loaded from one pre-bundled file instead of
+ * being transpiled module-by-module. Prefer the bundle when it exists;
+ * the source binary remains the fallback, so a worktree that never ran
+ * the build step behaves exactly as before. The bundle is built from
+ * this same source, so the executed code is identical either way.
  */
+const BUNDLED_WORKFLOW_CHILD_BINARY = fileURLToPath(
+  new URL("../dist-test/workflow-child.js", import.meta.url),
+);
 export const SIDECAR_WORKFLOW_CHILD_BINARY: string = (() => {
+  if (existsSync(BUNDLED_WORKFLOW_CHILD_BINARY)) {
+    return BUNDLED_WORKFLOW_CHILD_BINARY;
+  }
   const url = import.meta.resolve("../bin/workflow-child");
   return fileURLToPath(url);
 })();

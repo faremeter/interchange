@@ -31,7 +31,7 @@
 // tests that exercise the same agent across multiple lifecycle steps can
 // reuse them without re-declaring.
 
-import fs from "node:fs";
+import fs, { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -121,13 +121,22 @@ export const TOKEN = "test-token";
 // recovery must run through the real delayed-reconnect cycle rather than the
 // shortened one pins it back via
 // `sidecarEnv: { SIDECAR_RECONNECT_DELAY_MS: PRODUCTION_RECONNECT_DELAY_MS }`.
+//
+// The pin is only load-bearing where the drop interrupts a mid-flight pack
+// push (or a raw drop whose pushes are still settling): the recovery there
+// (push cancel -> reconnect -> re-drive) assumes the disconnect is fully
+// processed before the reconnect opens, and a faster reconnect can reopen the
+// link while the interrupted push is still being torn down. The
+// interrupted-pack-reconnect-recovery and deploy-window-reconnect-recovery
+// tests keep the pin; the settled-drop reconnect tests use the short delay.
 export const PRODUCTION_RECONNECT_DELAY_MS = "3000";
 
 // The fixture's default reconnect backoff for spawned sidecars: short enough
 // that the reconnect-survival suite does not burn 3s of wall clock per dropped
 // link, long enough that a drop still lands as a genuine disconnect before the
 // reconnect cycle starts. Tests that pin the production delay override it via
-// `sidecarEnv` (see `PRODUCTION_RECONNECT_DELAY_MS`).
+// `sidecarEnv` (see `PRODUCTION_RECONNECT_DELAY_MS`); only the mid-pack and
+// raw-drop scenarios keep the pin.
 const TEST_RECONNECT_DELAY_MS = "250";
 
 // Grace period for each stage of the teardown's sidecar reap (SIGTERM, then
@@ -1299,12 +1308,27 @@ export async function startSidecarSubprocess(opts: {
     ...(opts.extraEnv !== undefined ? { extraEnv: opts.extraEnv } : {}),
   });
 
-  // --conditions=intx-src resolves @intx/* to source; the spawned sidecar
-  // runs from the workspace, where the dev loop builds no dist.
+  // The bundled sidecar (`apps/sidecar/dist-test/index.js`, built by
+  // `make build-test-binaries`) boots faster than the TypeScript source:
+  // the whole `@intx/*` module graph loads from one pre-bundled file
+  // instead of being transpiled module-by-module at start. Prefer it when
+  // present; the source entry remains the fallback so a worktree that
+  // never ran the build step behaves exactly as before. The bundle is
+  // built from the same source, so the executed code is identical either
+  // way. The `--conditions=intx-src` flag stays on both paths: the bundle
+  // carries its own resolved imports, but the sidecar also dynamically
+  // imports operator-configured adapter modules by specifier (e.g. the
+  // custom-adapter fixture), and those raw `.ts` modules need the flag to
+  // resolve their own `@intx/*` imports to source.
+  const repoRoot = path.resolve(import.meta.dir, "../../..");
+  const bundledSidecar = path.join(repoRoot, "apps/sidecar/dist-test/index.js");
+  const sidecarTarget = existsSync(bundledSidecar)
+    ? bundledSidecar
+    : "apps/sidecar/src/index.ts";
   const proc = Bun.spawn(
-    ["bun", "run", "--conditions=intx-src", "apps/sidecar/src/index.ts"],
+    ["bun", "run", "--conditions=intx-src", sidecarTarget],
     {
-      cwd: path.resolve(import.meta.dir, "../../.."),
+      cwd: repoRoot,
       env,
       stdout: "pipe",
       stderr: "pipe",
@@ -2885,7 +2909,7 @@ export async function waitForReconnect(
 export type SettleThenDropOpts = {
   /**
    * Length of the no-new-pack quiet window that must elapse before the drop
-   * fires. Defaults to `500`. The helper waits until no workflow-run pack
+   * fires. Defaults to `300`. The helper waits until no workflow-run pack
    * has been accepted for this long, treating that as the pack-push pipeline
    * having drained.
    */
@@ -2922,7 +2946,7 @@ export async function settleThenDrop(
   address: string,
   opts: SettleThenDropOpts = {},
 ): Promise<void> {
-  const quietMs = opts.quietMs ?? 500;
+  const quietMs = opts.quietMs ?? 300;
   const { timeoutMs } = opts;
   const registration = registerWait(`settleThenDrop(${address})`);
   try {
@@ -2964,7 +2988,7 @@ export async function settleWorkflowRunPacks(
   env: DeployFlowEnv,
   opts: { quietMs?: number; timeoutMs?: number } = {},
 ): Promise<void> {
-  const quietMs = opts.quietMs ?? 500;
+  const quietMs = opts.quietMs ?? 300;
   const { timeoutMs } = opts;
   const registration = registerWait(
     `settleWorkflowRunPacks(quietMs=${String(quietMs)})`,
@@ -2996,10 +3020,11 @@ export async function settleWorkflowRunPacks(
 /**
  * Enumerate the live workflow-process child pids under the sidecar
  * subprocess. The supervisor spawns each child by launching the sidecar's
- * `bin/workflow-child` bun binary; the child is a descendant of the
- * sidecar (`env.sidecar.proc.pid`), identified by `bin/workflow-child` in
- * its argv. The process tree is walked transitively (the sidecar itself is
- * a `bun run` process, so depth is not assumed).
+ * `bin/workflow-child` bun binary (or its `dist-test/workflow-child.js`
+ * bundle when `make build-test-binaries` has been run); the child is a
+ * descendant of the sidecar (`env.sidecar.proc.pid`), identified by the
+ * binary path in its argv. The process tree is walked transitively (the
+ * sidecar itself is a `bun run` process, so depth is not assumed).
  *
  * Non-throwing by design: returns `[]` when no child is up -- during the
  * respawn backoff gap there is legitimately none, so a poll can watch a
@@ -3038,11 +3063,13 @@ export function listWorkflowHostChildren(env: DeployFlowEnv): number[] {
     for (const child of childrenOf.get(current) ?? []) {
       queue.push(child);
       const args = argsOf.get(child) ?? "";
-      // `workflow-probe-child` does not contain the `workflow-child`
-      // substring, but exclude it explicitly so an argv layout change
-      // cannot silently target the probe.
+      // The source binary argv is `bin/workflow-child`; the bundled argv
+      // is `dist-test/workflow-child.js`. `workflow-probe-child` does not
+      // contain the `workflow-child` substring, but exclude it explicitly
+      // so an argv layout change cannot silently target the probe.
       if (
-        args.includes("bin/workflow-child") &&
+        (args.includes("bin/workflow-child") ||
+          args.includes("dist-test/workflow-child.js")) &&
         !args.includes("workflow-probe-child")
       ) {
         found.push(child);

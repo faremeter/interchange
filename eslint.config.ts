@@ -8,7 +8,7 @@ export default defineConfig(
   eslint.configs.recommended,
   tseslint.configs.strict,
   tseslint.configs.stylistic,
-  globalIgnores(["**/dist/**", "tmp/**"]),
+  globalIgnores(["**/dist/**", "tmp/**", "apps/sidecar/dist-test/**"]),
   {
     linterOptions: {
       reportUnusedDisableDirectives: "warn",

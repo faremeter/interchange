@@ -337,7 +337,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             env.hub.router
               .getRoutableAddresses()
               .includes(deploymentMailAddress),
-          { timeoutMs: 8_000 },
+          { timeoutMs: 5_000 },
         );
         becameRoutable = true;
       } catch {

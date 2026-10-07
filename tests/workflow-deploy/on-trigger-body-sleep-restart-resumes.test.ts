@@ -87,12 +87,12 @@ const BODY_STEP_ID = "wait";
 // fires after the restart. Park detection (a durable `TimerSet` with no
 // `StepCompleted`) lands in well under a second on an idle machine and ~1-2s
 // under suite-wide load, and the kill+restart+reconnect chain fits in a few
-// seconds, so 12s keeps a wide margin on both sides. A past `fireAt` on restore
+// seconds, so 8s keeps a wide margin on both sides. A past `fireAt` on restore
 // fires immediately (the scheduler clamps the delay to 0), so even a restart
 // that lands late still completes the body after the crash; the load-bearing
 // assertions (single `TimerSet`/`TimerFired` pair, completion only after the
 // restart) do not depend on the absolute duration.
-const SLEEP_DURATION_MS = 12_000;
+const SLEEP_DURATION_MS = 8_000;
 
 const FIRST_BODY = "First event body alpha-7391.";
 

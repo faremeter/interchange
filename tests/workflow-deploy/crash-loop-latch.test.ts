@@ -309,7 +309,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // makes the absence meaningful is having outlasted the window in which
       // a 4th respawn would have been scheduled. A wait on a predicate would
       // be satisfied immediately and prove nothing.
-      await new Promise((r) => setTimeout(r, 6_000));
+      await new Promise((r) => setTimeout(r, 5_000));
       const survivors = listWorkflowHostChildren(env).filter(
         (pid) => !killed.includes(pid),
       );

@@ -306,7 +306,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
                   { cause: err },
                 );
               }
-              await new Promise((r) => setTimeout(r, 1_000));
+              await new Promise((r) => setTimeout(r, 250));
             }
           }
         },

@@ -128,15 +128,20 @@ export async function runMigrations(
       const raw = await readFile(path.join(MIGRATIONS_DIR, file), "utf-8");
       const rendered = rewriteSchemaQualifiedReferences(raw, schemaIdent);
       // drizzle emits multi-statement files separated by its own
-      // statement-breakpoint marker. Split on it and execute each
-      // statement individually so a syntax error in one statement
-      // surfaces with the right context.
+      // statement-breakpoint marker. Split on it and join the statements
+      // back into one simple-protocol query per file: each statement is
+      // individually valid SQL, and one round trip per file instead of
+      // one per statement roughly halves the wall time of a fresh-schema
+      // migration. Every DB-backed test file migrates its own schema, so
+      // this is the hot path for the whole test suite. Per-file (not
+      // per-statement) execution is kept, so a syntax error still names
+      // the file and the failing SQL text postgres reports.
       const statements = rendered
         .split("--> statement-breakpoint")
         .map((s) => s.trim())
         .filter((s) => s.length > 0);
-      for (const stmt of statements) {
-        await sql.unsafe(stmt);
+      if (statements.length > 0) {
+        await sql.unsafe(statements.join(";\n")).simple();
       }
     }
   } finally {
