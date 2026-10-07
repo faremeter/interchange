@@ -53,7 +53,7 @@ Public surface (the package barrel re-exports these):
 - `createWorkflowRunBlobSubstrate` — the production `BlobSubstrate`
   adapter with 1 MiB inline-vs-blob spill threshold.
 - `createWorkflowStepInvoker` — the production `StepInvoker` adapter.
-- `createWorkflowSpawnChild` — the production `SpawnChildWorkflow`
+- `createInMemorySpawnChild` — the production `SpawnChildWorkflow`
   adapter.
 - `createWorkflowSupervisor` — the per-deployment supervisor
   factory. See "Supervisor" below for the bindings shape.

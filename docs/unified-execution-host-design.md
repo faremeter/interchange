@@ -617,7 +617,7 @@ The `SandboxBoundary` applies at **every spawn rung**, not just sidecar->child.
 The child's own `spawnChild` path is the same seam one level down:
 
 - Today, `createSidecarRunChild` (`packages/workflow-host/src/child/substrate-factory.ts`)
-  builds the child's `spawnChild` slot via `createWorkflowSpawnChild`
+  builds the child's `spawnChild` slot via `createInMemorySpawnChild`
   (`packages/workflow-host/src/adapters/spawn-child.ts`), and that adapter
   resolves the child `definitionRef` and delegates to a `runChild` callback that
   runs the sub-workflow **in-process** — reusing the parent's `deps.substrate`
@@ -1174,7 +1174,7 @@ re-serviced.
 - The `SandboxBoundary` strategy abstraction + THE CONTRACT (tool runtime lives
   inside the boundary), **applied per-rung** (§3d-bis): the rung-0 supervisor's
   `SubprocessSpawner` seam _and_ the child's `createSidecarRunChild` /
-  `createWorkflowSpawnChild` `runChild` path gain the same boundary seam.
+  `createInMemorySpawnChild` `runChild` path gain the same boundary seam.
   Concrete `os-namespace`/`oci-container` spawners are deferred (later phase, §5).
 - The DeployRouter isolation-domain key derivation
   (`packages/workflow-host/src/deploy/workflow-host-wiring.ts`, generalizing `activeSupervisors`
@@ -1317,7 +1317,7 @@ the field is needed.
 ### Phase 4c — In-process recursive honoring (already-exists path, wire the decision)
 
 The in-process recursion already exists (`createSidecarRunChild` self-referential,
-`createWorkflowSpawnChild`, arbitrary depth). This phase makes it **consult the
+`createInMemorySpawnChild`, arbitrary depth). This phase makes it **consult the
 declared isolation** and stay in-process when nothing stricter is declared — the
 base-build behavior of the recursive model, with **no sandboxed sub-child yet**.
 
@@ -1861,7 +1861,7 @@ are explicitly **not** a go-live gate for INTR-209.
   `packages/workflow-host/src/child/substrate-factory.ts` (`createSidecarRunChild`
   self-referential `runChild`, sub-namespace `runs/<runId>/...`, proxy
   `RepoStore`); `packages/workflow-host/src/adapters/spawn-child.ts`
-  (`createWorkflowSpawnChild`, `SpawnChildWorkflow`, `RunChildWorkflow`,
+  (`createInMemorySpawnChild`, `SpawnChildWorkflow`, `RunChildWorkflow`,
   `WorkflowSpawnChildOpts`); child-process principal
   `WorkflowRunWorkflowProcessPrincipal`.
 - Identity: `packages/workflow-deploy/src/orchestrator.ts`
