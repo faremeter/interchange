@@ -1,23 +1,21 @@
-// Pins H-A2: `workflowRunPackBootstrapped` must be pruned when the
-// owning deployment is torn down. Without the prune the set grows
-// unbounded over the link's lifetime, and a future workflow-run repo
-// reset for the same `(kind, id, ref)` triple races the stale
-// bootstrap flag -- the first push after the reset skips the
-// bootstrap-retry arm and fails with `non_fast_forward`.
+// Pins that `workflowRunPackBootstrapped` is pruned when the owning
+// deployment is torn down. Without the prune the set grows unbounded over the
+// link's lifetime, and a future workflow-run repo reset for the same
+// `(kind, id, ref)` triple races the stale bootstrap flag -- the first push
+// after the reset skips the bootstrap-retry arm and fails with
+// `non_fast_forward`.
 //
 // The contract is asserted behaviorally through the wire surface:
-//   1. Deploy agent A. Push a workflow-run pack; the hub rejects the
-//      first attempt with `corrupt` and accepts the retry. The link
-//      marks the `(workflow-run, <address-derived-repo-id>, ref)` key as
-//      bootstrapped.
-//   2. Undeploy agent A. The fix prunes the bootstrap entry whose
-//      sender ownership was recorded under that run address.
+//   1. Deploy agent A. Push a workflow-run pack; the hub rejects the first
+//      attempt with `corrupt` and accepts the retry. The link marks the key
+//      as bootstrapped.
+//   2. Undeploy agent A. The fix prunes the bootstrap entry whose sender
+//      ownership was recorded under that run address.
 //   3. Re-deploy agent A. Push another workflow-run pack to the same
 //      `(repoId, ref)`; the hub rejects the first attempt again.
-//   4. The push only succeeds because the link's bootstrap-retry arm
-//      runs a second time -- the prune step in (2) reset the flag.
-//      Without the fix the link would skip the retry on this push and
-//      surface the rejection to the caller.
+//   4. The push only succeeds because the bootstrap-retry arm runs a second
+//      time -- the prune in (2) reset the flag. Without the fix the link
+//      skips the retry and surfaces the rejection to the caller.
 
 import { describe, test, expect, afterAll } from "bun:test";
 import { Hono } from "hono";
@@ -150,8 +148,7 @@ type TestEnv = {
 function startTestServer(): TestEnv {
   const receiveCount = { value: 0 };
   // The hub rejects the FIRST pack push in every fresh "epoch" with
-  // `corrupt` so the link's bootstrap-retry arm fires per epoch. An
-  // epoch starts on every `rejectFirstOfEvery.value` increment.
+  // `corrupt` so the link's bootstrap-retry arm fires per epoch.
   const rejectFirstOfEvery = { value: 0 };
   let attemptsThisEpoch = 0;
   let currentEpoch = 0;
@@ -307,16 +304,16 @@ describe("hub-link workflow-run pack bootstrap prune", () => {
 
       const repoId = {
         kind: "workflow-run" as const,
-        // `deriveWorkflowRunRepoId(agentAddress)`; kept literal here so this
-        // package's tests do not acquire a runtime dependency on the deployer.
+        // Kept literal so this package's tests do not acquire a runtime
+        // dependency on the deployer.
         id: "agent-prune-test-interchange",
       };
       const ref = "refs/heads/events";
       const commitSha = "a".repeat(40);
       const pack = new Uint8Array([1, 2, 3, 4, 5]);
 
-      // Epoch 1: first push rejected with `corrupt`, link retries
-      // once, retry accepts. The bootstrap flag for the key is set.
+      // Epoch 1: first push rejected with `corrupt`, link retries once,
+      // retry accepts. The bootstrap flag for the key is set.
       env.rejectFirstOfEvery.value = 1;
       await client.pushWorkflowRunPack({
         agentAddress,
@@ -334,9 +331,9 @@ describe("hub-link workflow-run pack bootstrap prune", () => {
         () => !env.router.getRoutableAddresses().includes(agentAddress),
       );
 
-      // Re-deploy with the same address so the anchorRunId is
-      // identical -- mirrors the disaster-recovery scenario where the
-      // hub's workflow-run repo for `(kind, id, ref)` is reset.
+      // Re-deploy with the same address so the anchorRunId is identical --
+      // mirrors the disaster-recovery scenario where the hub's workflow-run
+      // repo for `(kind, id, ref)` is reset.
       await env.deployForTest(agentAddress, TEST_CONFIG);
       await waitUntil(() =>
         env.router.getRoutableAddresses().includes(agentAddress),
@@ -345,8 +342,8 @@ describe("hub-link workflow-run pack bootstrap prune", () => {
       // Epoch 2: the hub rejects the first push of the new epoch with
       // `corrupt` again. Without the prune, the link skips the
       // bootstrap-retry arm (the flag from epoch 1 is still set) and
-      // surfaces the rejection. With the prune, the link runs the
-      // retry once more and the push succeeds.
+      // surfaces the rejection. With the prune, the retry runs once more
+      // and the push succeeds.
       env.rejectFirstOfEvery.value = 2;
       await client.pushWorkflowRunPack({
         agentAddress,

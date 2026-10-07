@@ -1,16 +1,13 @@
-// Pins the FIXED contract for the `mail.inbound` arm in
-// `handleMessage`: a throwing `mailInboundRouter.tryRoute` must not
-// wedge the per-connection `messageQueue` chain. The arm wraps the
-// router call in try/catch (mirroring `signal.deliver` and
-// `drain.deliver`), so subsequent frames -- including the heartbeat
-// `pong` -- continue to dispatch through the same chain.
+// Pins the contract for the `mail.inbound` arm in `handleMessage`: a throwing
+// `mailInboundRouter.tryRoute` must not wedge the per-connection
+// `messageQueue` chain. The arm wraps the router call in try/catch (mirroring
+// `signal.deliver` and `drain.deliver`), so subsequent frames -- including the
+// heartbeat `pong` -- continue to dispatch through the same chain.
 //
-// The shape of the underlying bug: an unguarded `tryRoute` call
-// rejects the chained promise (`messageQueue = messageQueue.then(()
-// => handleMessage(...))`); subsequent `.then(...)` calls against
-// the rejected chain never fire, silently dropping every later
-// frame. This test exercises the patched arm end-to-end through the
-// real hub-link WS surface to make the regression observable.
+// The shape of the underlying bug: an unguarded `tryRoute` call rejects the
+// chained promise; subsequent `.then(...)` calls against the rejected chain
+// never fire, silently dropping every later frame. This test exercises the
+// patched arm end-to-end through the real hub-link WS surface.
 
 import {
   describe,
@@ -122,8 +119,9 @@ function withTestDeployBindings(): {
   };
 }
 
-// A resolved policy that admits every outcome. Used by the queue-liveness test,
-// where the point is that a frame flows, not which outcome the policy relaxes.
+// A resolved policy that admits every outcome. Used by the queue-liveness
+// test, where the point is that a frame flows, not which outcome the policy
+// relaxes.
 const ADMIT_ALL_INBOUND_MAIL_POLICY: ResolvedInboundMailPolicy = {
   clean: "admit",
   error: "admit",
@@ -288,9 +286,9 @@ afterAll(async () => {
 
 /**
  * Wire a workflow deployment for the reconnect path: mint a keypair and
- * register it in the sidecar keyStore so the deploy path picks up the
- * pinned key. The deployment address then routes once the hub
- * re-registers it on (re)connect.
+ * register it in the sidecar keyStore so the deploy path picks up the pinned
+ * key. The deployment address then routes once the hub re-registers it on
+ * (re)connect.
  */
 async function provisionDeploymentKey(
   keyStore: ReturnType<typeof createTestKeyStore>,
@@ -413,10 +411,9 @@ beforeAll(() => {
 
 afterAll(() => {
   // A null capture means this file loaded without `@intx/log` having
-  // installed its default sink, which cannot happen -- importing the
-  // package runs the install. Resetting here instead would leave the
-  // worker with no logging configuration at all, and the install
-  // cannot re-fire to repair it.
+  // installed its default sink, which cannot happen -- importing the package
+  // runs the install. Resetting here would leave the worker with no logging
+  // configuration at all, and the install cannot re-fire to repair it.
   if (!savedLogConfig) {
     throw new Error(
       "no logging configuration was captured before this suite replaced it",
@@ -476,7 +473,7 @@ async function makeSignedMail(
 }
 
 // Drives `mail.inbound` frames across the real hub-link WS surface and proves
-// the INTR-512 verify at the ingress seam now ENFORCES the recipient's resolved
+// the verify at the ingress seam now ENFORCES the recipient's resolved
 // inbound-mail policy: an admitted outcome reaches the mail router, a rejected
 // one is dropped before it ever gets there.
 describe("hub-link mail.inbound signature enforcement", () => {
@@ -494,11 +491,10 @@ describe("hub-link mail.inbound signature enforcement", () => {
       resolveSenderCrypto?: Parameters<
         typeof createHubLink
       >[0]["resolveSenderCrypto"];
-      // The resolved policy registered for the deployment address. Omit for the
-      // neutral "author declared nothing" policy (clean admits, the four
+      // The resolved policy registered for the deployment address. Omit for
+      // the neutral "author declared nothing" policy (clean admits, the four
       // author-controllable outcomes reject); pass `null` to leave the address
-      // UNREGISTERED so the seam resolves it to the fully-closed default and
-      // rejects every outcome.
+      // UNREGISTERED so the seam resolves it to the fully-closed default.
       policy?: ResolvedInboundMailPolicy | null;
     },
   ): Promise<void> {
@@ -712,7 +708,7 @@ describe("hub-link mail.inbound signature enforcement", () => {
         ).toBe(true);
 
         // An unparseable From also emits a debug log in the same category
-        // ahead of the verdict line, so select the verdict record by its
+        // ahead of the verdict line, so select the verdict by its
         // `signature` property rather than taking the first record.
         await waitUntil(() =>
           verdicts().some((r) => r.properties["signature"] !== undefined),
@@ -735,9 +731,9 @@ describe("hub-link mail.inbound signature enforcement", () => {
 
   test("a missing signature under the neutral policy is rejected", async () => {
     // A plain, unsigned message (no multipart/signed body) verifies `missing`
-    // once a cached key resolves for the sender, distinct from the `unknown` of
-    // a cache miss. The neutral policy leaves `missing` at the default reject,
-    // so the mail is dropped before the router is consulted.
+    // once a cached key resolves for the sender, distinct from the `unknown`
+    // of a cache miss. The neutral policy leaves `missing` at the default
+    // reject, so the mail is dropped before the router is consulted.
     const sender = "external@remote.interchange";
     const crypto = createEd25519Crypto(await generateKeyPair());
 
@@ -815,6 +811,7 @@ describe("hub-link mail.inbound signature enforcement", () => {
   });
 
   test("relaxing untrustedFrom does not switch off the signature check", async () => {
+    // The bypass this seam exists to stop, driven end to end. The author
     // The bypass this seam exists to stop, driven end to end. The author
     // relaxed `untrustedFrom` to tolerate an external correspondent's odd
     // headers -- a judgement about HEADERS. The message's signature does not

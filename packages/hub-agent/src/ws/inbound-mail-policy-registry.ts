@@ -3,13 +3,14 @@
 // The sidecar host resolves each hydrated deployment's authored
 // `inboundMailPolicy` into a total `ResolvedInboundMailPolicy` ONCE, at the
 // post-spawn registration window, and stores it here keyed by the deployment's
-// mail address. The hub-link's `mail.inbound` seam reads it back to decide, per
-// message, whether an inbound frame's admission outcome is admitted or rejected.
+// mail address. The hub-link's `mail.inbound` seam reads it back to decide,
+// per message, whether an inbound frame's admission outcome is admitted or
+// rejected.
 //
-// The registry itself holds only what a live deployment registered. The
-// fail-closed default for an address the registry does not hold lives in the
-// lookup this module builds (`createInboundMailPolicyLookup`), so the seam sees
-// a total policy for every address and never re-derives a default of its own.
+// The registry itself holds only what a live deployment registered; the
+// fail-closed default for an unknown address lives in the lookup this module
+// builds (`createInboundMailPolicyLookup`), so the seam sees a total policy
+// for every address and never re-derives a default of its own.
 
 import type { ResolvedInboundMailPolicy } from "./inbound-signature";
 
@@ -64,11 +65,10 @@ export function createInboundMailPolicyRegistry(): InboundMailPolicyRegistry {
 }
 
 /**
- * Build the per-address lookup the hub-link seam consumes. It returns the
- * registered policy for an address, or {@link FULLY_CLOSED_INBOUND_MAIL_POLICY}
- * when the registry holds none. This is the single edge that owns the
- * unknown-address default: the seam calls the lookup and indexes the returned
- * total map directly, with no fallback of its own.
+ * Build the per-address lookup the hub-link seam consumes: the registered
+ * policy for an address, or {@link FULLY_CLOSED_INBOUND_MAIL_POLICY} when the
+ * registry holds none. This is the single edge that owns the unknown-address
+ * default; the seam adds no fallback of its own.
  */
 export function createInboundMailPolicyLookup(
   registry: InboundMailPolicyRegistry,

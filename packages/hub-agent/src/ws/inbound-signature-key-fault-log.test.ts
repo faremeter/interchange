@@ -6,13 +6,12 @@
 // asserted here is the other half: that an operator can tell WHY. A keyring
 // fault is an operator condition -- a truncated write, a hub-side resolution
 // bug, a corrupt cache entry -- and it is invisible in the mail flow itself,
-// which shows only mail being rejected. Without the lines this file pins,
-// nothing points at the keyring.
+// which shows only mail being rejected.
 //
 // The second suite below drives the PRODUCTION construction path: a real cache
-// over a real directory holding a corrupt entry, read through the real resolver.
-// An injected stub proves only that the gate refuses bad material it is handed;
-// it says nothing about whether a corrupt keyring ever produces any.
+// over a real directory holding a corrupt entry, read through the real
+// resolver. An injected stub proves only that the gate refuses bad material it
+// is handed; it says nothing about whether a corrupt keyring ever produces any.
 //
 // The capture is a process-global logging configuration, which is why this
 // suite is its own file rather than a case inside the decision tables.
