@@ -119,7 +119,6 @@ import {
   dropHubLink,
   fireMailTrigger,
   readWorkflowRunEvents,
-  PRODUCTION_RECONNECT_DELAY_MS,
   startDeployFlowEnv,
   waitFor,
   waitForFirstRunId,
@@ -393,12 +392,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
         // Wire the real DB co-write into the fixture hub so a register frame
         // that reaches the hub writes real rows.
         registerSignalCorrelation: createRegisterSignalCorrelation(h.db),
-        // Pin the production reconnect backoff so the drop below is recovered
-        // through the real delayed-reconnect cycle rather than the fixture's
-        // shortened test delay.
-        sidecarEnv: {
-          SIDECAR_RECONNECT_DELAY_MS: PRODUCTION_RECONNECT_DELAY_MS,
-        },
+        // The fixture's short reconnect delay is enough here: the drop below
+        // fires on a parked run (no pack push in flight), so recovery only
+        // re-establishes the link and re-emits the parked correlation; no
+        // in-flight push needs the production 3s delay's teardown time. Tests
+        // whose drop interrupts a mid-flight pack push pin the production
+        // delay (see interrupted-pack-reconnect-recovery).
       });
     });
 

@@ -77,9 +77,11 @@ test-unit: FORCE
 # on polling deadlines carried by the shared fixture helpers, which
 # "Synchronizing on State, Not Time" in CONVENTIONS.md rules against and
 # which are a backlog to make signal-driven; a failure at a higher worker
-# count is one of those tests, not a ceiling. The pinned 3s reconnect is a
-# different case and stays -- it drives a production duration through an env
-# seam the rest of the suite shortens.
+# count is one of those tests, not a ceiling. The pinned 3s reconnect stays
+# only where the reconnect envelope is load-bearing -- the mid-pack drop and
+# raw-drop recovery tests, where a faster reconnect can reopen the link while
+# the interrupted push is still being torn down. The settled-drop reconnect
+# tests use the short test delay.
 #
 # --no-isolate keeps one global and module registry per worker across that
 # worker's files, so the large @intx/* module graph is imported once per

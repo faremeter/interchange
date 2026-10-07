@@ -121,13 +121,22 @@ export const TOKEN = "test-token";
 // recovery must run through the real delayed-reconnect cycle rather than the
 // shortened one pins it back via
 // `sidecarEnv: { SIDECAR_RECONNECT_DELAY_MS: PRODUCTION_RECONNECT_DELAY_MS }`.
+//
+// The pin is only load-bearing where the drop interrupts a mid-flight pack
+// push (or a raw drop whose pushes are still settling): the recovery there
+// (push cancel -> reconnect -> re-drive) assumes the disconnect is fully
+// processed before the reconnect opens, and a faster reconnect can reopen the
+// link while the interrupted push is still being torn down. The
+// interrupted-pack-reconnect-recovery and deploy-window-reconnect-recovery
+// tests keep the pin; the settled-drop reconnect tests use the short delay.
 export const PRODUCTION_RECONNECT_DELAY_MS = "3000";
 
 // The fixture's default reconnect backoff for spawned sidecars: short enough
 // that the reconnect-survival suite does not burn 3s of wall clock per dropped
 // link, long enough that a drop still lands as a genuine disconnect before the
 // reconnect cycle starts. Tests that pin the production delay override it via
-// `sidecarEnv` (see `PRODUCTION_RECONNECT_DELAY_MS`).
+// `sidecarEnv` (see `PRODUCTION_RECONNECT_DELAY_MS`); only the mid-pack and
+// raw-drop scenarios keep the pin.
 const TEST_RECONNECT_DELAY_MS = "250";
 
 // Grace period for each stage of the teardown's sidecar reap (SIGTERM, then

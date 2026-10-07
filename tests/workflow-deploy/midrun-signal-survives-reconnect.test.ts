@@ -55,7 +55,6 @@ import {
   listRunIds,
   readWorkflowRunEvents,
   settleThenDrop,
-  PRODUCTION_RECONNECT_DELAY_MS,
   startDeployFlowEnv,
   waitFor,
   waitForReconnect,
@@ -102,14 +101,13 @@ beforeAll(async () => {
     creatorPrincipalId: CALLER_PRINCIPAL_ID,
   });
 
-  env = await startDeployFlowEnv({
-    // Pin the production reconnect backoff so the drop below is recovered
-    // through the real delayed-reconnect cycle rather than the fixture's
-    // shortened test delay.
-    sidecarEnv: {
-      SIDECAR_RECONNECT_DELAY_MS: PRODUCTION_RECONNECT_DELAY_MS,
-    },
-  });
+  // The fixture's short reconnect delay is enough here: the drop below is
+  // settled (pack stream quiet) and the run is parked at a signal gate, so
+  // recovery only re-establishes the link; no in-flight push needs the
+  // production 3s delay's teardown time. Tests whose drop interrupts a
+  // mid-flight pack push pin the production delay (see
+  // interrupted-pack-reconnect-recovery).
+  env = await startDeployFlowEnv();
 });
 
 afterAll(async () => {
