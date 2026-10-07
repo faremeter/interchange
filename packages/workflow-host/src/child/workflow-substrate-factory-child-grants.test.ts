@@ -1,7 +1,7 @@
 // A spawned child persists the grant array the injected filter returns.
 //
 // `createSidecarRunChild` reads the parent run's
-// `runs/<parentRunId>/grants.json`, calls `collectDeclaredResources` with the
+// `runs/<parentRunId>/grants.json`, calls both collectors with the
 // pre-rewrite body, and writes the filter's array to the child's own
 // `runs/<childRunId>/grants.json`. An existing child file is read back and
 // the collectors are not called again. A child whose parent has no grants
@@ -233,8 +233,13 @@ function makeRunChild(
     collectDeclaredResources: (
       definition: WorkflowDefinition,
     ) => ReadonlySet<string>;
+    collectDeclaredCredentialConsumers: (
+      definition: WorkflowDefinition,
+    ) => ReadonlySet<string>;
     filterGrantsToDeclaredResources: (
       parentGrants: readonly unknown[],
+      declared: ReadonlySet<string>,
+      credentialConsumers: ReadonlySet<string>,
     ) => readonly unknown[];
   },
 ): ReturnType<typeof createSidecarRunChild> {
@@ -255,6 +260,8 @@ function makeRunChild(
       builtinCredentialProviders(),
     ),
     collectDeclaredResources: grantCap.collectDeclaredResources,
+    collectDeclaredCredentialConsumers:
+      grantCap.collectDeclaredCredentialConsumers,
     filterGrantsToDeclaredResources: grantCap.filterGrantsToDeclaredResources,
   });
 }
@@ -262,7 +269,7 @@ function makeRunChild(
 describe("createSidecarRunChild grant capping", () => {
   const complete: SidecarChildStepInvoker = async () => ({ output: null });
 
-  test("calls collectDeclaredResources with the pre-rewrite body and persists the filter's array", async () => {
+  test("calls both collectors with the pre-rewrite body and persists the filter's array", async () => {
     const substrate = await makeSubstrate("child-grants-persist-");
     const parentRunId = "run-parent";
     await seedRunGrants(substrate, parentRunId, [
@@ -271,14 +278,24 @@ describe("createSidecarRunChild grant capping", () => {
     ]);
 
     const definition = childDefinition("child-wf");
-    const seen: WorkflowDefinition[] = [];
+    const seenResources: WorkflowDefinition[] = [];
+    const seenConsumers: WorkflowDefinition[] = [];
     const persisted = [grant("tool:from-the-stub", "invoke")];
+    const sentinel = new Set<string>(["tool:sentinel-consumer"]);
+    let filteredConsumers: ReadonlySet<string> | undefined;
     const runChild = makeRunChild(substrate, complete, {
       collectDeclaredResources: (body) => {
-        seen.push(body);
+        seenResources.push(body);
         return new Set<string>();
       },
-      filterGrantsToDeclaredResources: () => persisted,
+      collectDeclaredCredentialConsumers: (body) => {
+        seenConsumers.push(body);
+        return sentinel;
+      },
+      filterGrantsToDeclaredResources: (_parent, _declared, consumers) => {
+        filteredConsumers = consumers;
+        return persisted;
+      },
     });
 
     const childRunId = "run-child";
@@ -298,7 +315,9 @@ describe("createSidecarRunChild grant capping", () => {
     );
 
     expect(result.terminalStatus).toBe("completed");
-    expect(seen).toEqual([definition]);
+    expect(seenResources).toEqual([definition]);
+    expect(seenConsumers).toEqual([definition]);
+    expect(filteredConsumers).toBe(sentinel);
     const childGrants = await readRunGrants({
       repoStore: substrate,
       anchorRunId: DEPLOYMENT_ID,
@@ -322,12 +341,17 @@ describe("createSidecarRunChild grant capping", () => {
       decisions: [] as { resource: string; effect: string | null }[],
     };
     let collected = 0;
+    let consumersCollected = 0;
     const runChild = makeRunChild(
       substrate,
       recordingInvoker(record, [DECLARED_RESOURCE]),
       {
         collectDeclaredResources: () => {
           collected += 1;
+          return new Set<string>();
+        },
+        collectDeclaredCredentialConsumers: () => {
+          consumersCollected += 1;
           return new Set<string>();
         },
         filterGrantsToDeclaredResources: () => {
@@ -353,6 +377,7 @@ describe("createSidecarRunChild grant capping", () => {
 
     expect(result.terminalStatus).toBe("completed");
     expect(collected).toBe(0);
+    expect(consumersCollected).toBe(0);
     const childGrants = await readRunGrants({
       repoStore: substrate,
       anchorRunId: DEPLOYMENT_ID,
@@ -372,12 +397,17 @@ describe("createSidecarRunChild grant capping", () => {
       decisions: [] as { resource: string; effect: string | null }[],
     };
     let collected = 0;
+    let consumersCollected = 0;
     const runChild = makeRunChild(
       substrate,
       recordingInvoker(record, [DECLARED_RESOURCE]),
       {
         collectDeclaredResources: () => {
           collected += 1;
+          return new Set<string>();
+        },
+        collectDeclaredCredentialConsumers: () => {
+          consumersCollected += 1;
           return new Set<string>();
         },
         filterGrantsToDeclaredResources: () => {
@@ -405,6 +435,7 @@ describe("createSidecarRunChild grant capping", () => {
       ),
     ).rejects.toThrow(/has no grants file/);
     expect(collected).toBe(0);
+    expect(consumersCollected).toBe(0);
     expect(record.decisions).toEqual([]);
   });
 });

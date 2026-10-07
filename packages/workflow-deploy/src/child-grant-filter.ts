@@ -4,17 +4,21 @@
 // A spawned child runs under the authority of the run that spawned it, but it
 // must never hold MORE than the child body's own definition declares. Without
 // this cap a child authorizes against the full parent grant set, so a
-// parent-held `effect:`/`credential:` grant (neither is tool-gated) or a
-// bare-name `tool:` collision the child body never declared would authorize a
-// capability the child was never written to use. The parent stays the ceiling
-// (a child can never exceed it); the child body's declared capability set is
-// the shape it is narrowed to -- the same "a run's authority is bounded by its
-// declared capabilities" model the top level enforces through its own walk.
+// parent-held `effect:` grant or a bare-name `tool:` collision the child body
+// never declared would authorize a capability the child was never written to
+// use. A `credential:` allow is gated by its `{ tool }` condition: it survives
+// when that condition equals the consumer of a factory the child body
+// instantiates, and an unconditioned or unmatched credential allow is dropped.
+// The parent stays the ceiling (a child can never exceed it); the child body's
+// declared capability set is the shape it is narrowed to -- the same "a run's
+// authority is bounded by its declared capabilities" model the top level
+// enforces through its own walk.
 
 import type { DirectorRegistry } from "@intx/agent";
 import { matchPattern } from "@intx/authz";
 import type { WorkflowDefinition } from "@intx/workflow";
 import {
+  collectCredentialConsumers,
   walkCapabilities,
   type PluginToolDefinitions,
 } from "./capability-walk";
@@ -46,23 +50,43 @@ export function collectDeclaredResources(
 }
 
 /**
+ * Consumer identities for the tool factories the child body instantiates.
+ * Same pre-rewrite definition as {@link collectDeclaredResources}: a `{ ref }`
+ * body is skipped, and an inline nested body's factories are included.
+ */
+export function collectDeclaredCredentialConsumers(
+  definition: WorkflowDefinition,
+  directors: DirectorRegistry,
+  pluginDefs: PluginToolDefinitions,
+): ReadonlySet<string> {
+  return collectCredentialConsumers(definition, directors, pluginDefs);
+}
+
+/**
  * Filter a parent's grant rules down to what a spawned child body declares.
  *
  * The result caps the child at the parent: it only ever REMOVES parent rules,
- * never adds or widens one. The filter errs toward keeping, because dropping is
- * the only unsafe direction --
+ * never adds or widens one. Dropping a `deny` or an `ask` weakens safety, so
+ * those are kept. An `allow` is kept only when the child declares the
+ * capability it authorizes.
  *
  *  - Every `deny` and `ask` rule is kept unconditionally. Both only ever
  *    restrict, so dropping one WEAKENS safety. An `ask` floor in particular is
  *    load-bearing: `evaluateGrants` ranks `ask` above `allow` at equal
  *    specificity so a workflow cannot declare its way under an approval gate,
  *    and filtering the `ask` out would punch straight through that gate.
- *  - An `allow` rule is kept only when its resource PATTERN covers at least one
- *    resource the child body declares (via `matchPattern`, so a wildcard grant
- *    like `tool:*` survives when the child declares any matching `tool:`). An
- *    `allow` for a resource the child never declares -- a parent-only
- *    `effect:`/`credential:`/`tool:` -- is dropped: that is the escalation this
- *    cap closes.
+ *  - A `credential:` `allow` (`credential:{id}` and `credential:*`) is kept
+ *    only when `conditions.tool` is a string equal to one of
+ *    `credentialConsumers`. The comparison is exact. An unconditioned
+ *    credential allow, a non-string `{ tool }` value, and a condition that
+ *    names a factory the child does not instantiate are dropped. This branch
+ *    does not fall through to the resource-pattern test.
+ *  - Every other `allow` is kept only when its resource PATTERN covers at
+ *    least one resource the child body declares (via `matchPattern`, so a
+ *    wildcard grant like `tool:*` survives when the child declares any
+ *    matching `tool:`). An `allow` for a resource the child never declares --
+ *    a parent-only `effect:` or bare-name `tool:` -- is dropped: that is the
+ *    escalation this cap closes. A resource of `*` stays on this test.
  *  - Any entry that is not an `allow` rule with a string `resource` is kept. A
  *    non-rule entry is inert at evaluation (`evaluateGrants` reads `.resource`),
  *    so keeping it never widens authority, and keeping-on-doubt can never
@@ -77,16 +101,23 @@ export function collectDeclaredResources(
 export function filterGrantsToDeclaredResources(
   parentGrants: readonly unknown[],
   declared: ReadonlySet<string>,
+  credentialConsumers: ReadonlySet<string>,
 ): readonly unknown[] {
-  return parentGrants.filter((grant) => keepGrantForDeclared(grant, declared));
+  return parentGrants.filter((grant) =>
+    keepGrantForDeclared(grant, declared, credentialConsumers),
+  );
 }
 
 function keepGrantForDeclared(
   grant: unknown,
   declared: ReadonlySet<string>,
+  credentialConsumers: ReadonlySet<string>,
 ): boolean {
   if (!isAllowRuleWithResource(grant)) {
     return true;
+  }
+  if (isCredentialResource(grant.resource)) {
+    return credentialConsumerMatches(grant, credentialConsumers);
   }
   for (const resource of declared) {
     if (matchPattern(grant.resource, resource)) {
@@ -94,6 +125,28 @@ function keepGrantForDeclared(
     }
   }
   return false;
+}
+
+function isCredentialResource(resource: string): boolean {
+  return resource.startsWith("credential:");
+}
+
+function credentialConsumerMatches(
+  grant: object,
+  consumers: ReadonlySet<string>,
+): boolean {
+  if (!("conditions" in grant)) {
+    return false;
+  }
+  const conditions = grant.conditions;
+  if (typeof conditions !== "object" || conditions === null) {
+    return false;
+  }
+  if (!("tool" in conditions)) {
+    return false;
+  }
+  const tool = conditions.tool;
+  return typeof tool === "string" && consumers.has(tool);
 }
 
 function isAllowRuleWithResource(

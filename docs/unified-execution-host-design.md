@@ -1419,24 +1419,36 @@ body itself declares rather than inheriting the whole run's flat grant set.
 (`packages/workflow-host/src/child/substrate-factory.ts`) caps the child
 through `capAndPersistChildGrants`. That helper hands the **pre-rewrite**
 definition — its childWorkflow grandchildren still inline — to the injected
-`collectDeclaredResources`, then filters the parent run's grants with the
-injected `filterGrantsToDeclaredResources`
-(`packages/workflow-deploy/src/child-grant-filter.ts`). The collector walks
-the definition with `walkCapabilities`, so inline grandchildren fold in, with
-plugin tool definitions loaded from the shared closure. The filter keeps
-every `deny` / `ask` rule unconditionally
-(dropping an `ask` floor would punch through an approval gate), and an `allow`
-rule is kept only when its resource pattern covers a declared resource (via
-`matchPattern`, so a wildcard grant survives). The parent stays the ceiling — the
-filter only removes rules, never adds one. The capped set is applied **uniformly
+`collectDeclaredResources` and `collectDeclaredCredentialConsumers`, then
+filters the parent run's grants with the injected
+`filterGrantsToDeclaredResources`
+(`packages/workflow-deploy/src/child-grant-filter.ts`). Both collectors walk
+that same definition, so inline grandchildren fold in, with plugin tool
+definitions loaded from the shared closure. The resource collector is
+`walkCapabilities`. The consumer collector returns `toolConsumer(factory.id)`
+for each factory the body instantiates, including a factory that appears only
+inside an inline nested body and a factory whose `definitions` array is empty.
+Those strings are not grant declarations and do not enter the approval
+snapshot. The filter keeps every `deny` / `ask` rule unconditionally
+(dropping an `ask` floor would punch through an approval gate). An `allow`
+outside the `credential:` family is kept only when its resource pattern covers
+a declared resource (via `matchPattern`, so a wildcard grant survives); a
+resource of `*` stays on that test. A `credential:` allow (`credential:{id}`
+and `credential:*`) is kept only when `conditions.tool` is a string equal to
+one of those consumers. The comparison is exact. An unconditioned credential
+allow, a non-string `{ tool }` value, and a condition that names a factory the
+body does not instantiate are dropped, and that branch does not fall through
+to `matchPattern`. The parent stays the ceiling — the filter only removes
+rules, never adds or rewrites one. The capped set is applied **uniformly
 across the child's steps** (matching the top level's flat-union model, not
 per-step distinctness) and written into **both** grant sinks: the
 `CredentialsSnapshot.steps[].grants` the per-child authorize closure reads for all
 three decision kinds — tool-invoke, action-step effects, and credential use — and
 the child's own `runs/<childRunId>/grants.json`, which is the ceiling a grandchild
-filters against in turn. A grant the child body never declares — a parent-only
-`effect:` / `credential:` or a bare-name `tool:` — therefore cannot authorize a
-child step. (The flat-inheritance model was not a privilege-escalation hole
+filters against in turn. A parent-only `effect:` or a bare-name `tool:` the
+child body never declares therefore cannot authorize a child step. A parent
+`credential:` allow authorizes a child step only when its `{ tool }` condition
+names a factory that body instantiates. (The flat-inheritance model was not a privilege-escalation hole
 against the operator — the union is operator-approved — but a child running the
 whole run's grants over-grants relative to least-privilege, and holding the
 _parent's_ grants rather than the child body's own is a genuine escalation
@@ -1829,8 +1841,9 @@ are explicitly **not** a go-live gate for INTR-209.
   `listActiveDeployments`, sub-namespacing). The sidecar closes that factory
   in `apps/sidecar/src/workflow-child-bindings.ts`.
 - Child grant cap: `packages/workflow-deploy/src/child-grant-filter.ts`
-  (`collectDeclaredResources`, `filterGrantsToDeclaredResources`). The
-  factory calls both as injected bindings.
+  (`collectDeclaredResources`, `collectDeclaredCredentialConsumers`,
+  `filterGrantsToDeclaredResources`). The factory calls all three as
+  injected bindings.
 - Child binary (the child _is_ the sidecar binary): `apps/sidecar/bin/workflow-child`
   (imports `runWorkflowChildFromProcessEnv` from `@intx/workflow-host`, and
   `createSubstrate` + `SIDECAR_SUBSTRATE_CONFIG_KEYS` from

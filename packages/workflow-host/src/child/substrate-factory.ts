@@ -442,9 +442,15 @@ interface SidecarSubstrateFactoryDeps {
     directors: DirectorRegistry,
     pluginDefs: ReadonlyMap<string, readonly ToolDeclaration[]>,
   ) => ReadonlySet<string>;
+  collectDeclaredCredentialConsumers: (
+    definition: WorkflowDefinition,
+    directors: DirectorRegistry,
+    pluginDefs: ReadonlyMap<string, readonly ToolDeclaration[]>,
+  ) => ReadonlySet<string>;
   filterGrantsToDeclaredResources: (
     parentGrants: readonly unknown[],
     declared: ReadonlySet<string>,
+    credentialConsumers: ReadonlySet<string>,
   ) => readonly unknown[];
   /**
    * Override the bare-store constructor. Production callers omit this
@@ -1335,11 +1341,17 @@ interface SidecarRunChildDeps {
    */
   newId?: (prefix: string) => string;
   /**
-   * Collect the resources the child body declares, and narrow the parent
-   * grant array to that set. The process that boots the child supplies both.
-   * This factory persists the filter's array and does not import the walk.
+   * Collect the resources the child body declares, the credential consumers
+   * it instantiates, and narrow the parent grant array to that pair. The
+   * process that boots the child supplies all three. This factory persists
+   * the filter's array and does not import the walk.
    */
   collectDeclaredResources: (
+    definition: WorkflowDefinition,
+    directors: DirectorRegistry,
+    pluginDefs: ReadonlyMap<string, readonly ToolDeclaration[]>,
+  ) => ReadonlySet<string>;
+  collectDeclaredCredentialConsumers: (
     definition: WorkflowDefinition,
     directors: DirectorRegistry,
     pluginDefs: ReadonlyMap<string, readonly ToolDeclaration[]>,
@@ -1347,6 +1359,7 @@ interface SidecarRunChildDeps {
   filterGrantsToDeclaredResources: (
     parentGrants: readonly unknown[],
     declared: ReadonlySet<string>,
+    credentialConsumers: ReadonlySet<string>,
   ) => readonly unknown[];
 }
 
@@ -1638,9 +1651,10 @@ export function createSidecarSpawnSuspendableChild(
  * also key its credentials snapshot on them.
  *
  * `definition` MUST be the PRE-rewrite body, its childWorkflow grandchildren
- * still INLINE: `collectDeclaredResources` skips a `{ ref }` body, so a
- * rewritten definition would drop the grandchild's declared resources and
- * under-authorize it. Every birth path materializes a run's grants file, so a
+ * still INLINE: both collectors skip a `{ ref }` body, so a rewritten
+ * definition would drop the grandchild's declared resources and the factories
+ * only its inline body instantiates, and under-authorize it. Every birth path
+ * materializes a run's grants file, so a
  * missing parent file is a defect, not a run that legitimately holds none --
  * fail closed. The cap only removes rules (the parent stays the ceiling),
  * matching the top level's "authority bounded by declared capabilities" model.
@@ -1694,9 +1708,15 @@ async function capAndPersistChildGrants(args: {
     directors,
     pluginDefs,
   );
+  const credentialConsumers = deps.collectDeclaredCredentialConsumers(
+    definition,
+    directors,
+    pluginDefs,
+  );
   const childGrants = deps.filterGrantsToDeclaredResources(
     parentGrants,
     declaredResources,
+    credentialConsumers,
   );
   await writeChildRunGrants({
     substrate: deps.substrate,
@@ -2608,6 +2628,8 @@ export function createSidecarSubstrateFactory(
       // its declared capabilities. Source-ref only, so always present here.
       closurePackageDir: env.spawn.closurePackageDir,
       collectDeclaredResources: deps.collectDeclaredResources,
+      collectDeclaredCredentialConsumers:
+        deps.collectDeclaredCredentialConsumers,
       filterGrantsToDeclaredResources: deps.filterGrantsToDeclaredResources,
     };
     // Terminal childWorkflow executor. `run-child` builds the in-memory

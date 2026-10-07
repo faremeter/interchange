@@ -5,7 +5,8 @@
 //   - capability walk: structural lift of `getRequiredEnvKeys` that
 //     emits the grant-shape declarations the operator-approval gate
 //     consumes, plus the child-grant cap that narrows a parent's
-//     grants to the resources that walk declares.
+//     grants to the resources and credential consumers the child
+//     body declares.
 //   - approval gate: consumes the walk's output plus an operator-
 //     supplied `ApprovalSet` and yields a per-step pending delta.
 //   - deploy derivation + source pinning: pure address derivation
@@ -23,6 +24,7 @@ export {
   type PluginToolDefinitions,
 } from "./capability-walk";
 export {
+  collectDeclaredCredentialConsumers,
   collectDeclaredResources,
   filterGrantsToDeclaredResources,
 } from "./child-grant-filter";

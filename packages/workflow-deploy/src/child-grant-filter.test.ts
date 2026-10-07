@@ -6,13 +6,19 @@
 
 import { describe, test, expect } from "bun:test";
 
-import { defineAgent } from "@intx/agent";
-import { createDefaultDirectorRegistry } from "@intx/agent";
-import { evaluateGrants } from "@intx/authz";
+import {
+  createDefaultDirectorRegistry,
+  defineAgent,
+  defineTool,
+  type BaseEnv,
+  type ToolDeclaration,
+} from "@intx/agent";
+import { evaluateGrants, toolConsumer } from "@intx/authz";
 import type { GrantRule } from "@intx/authz";
-import { defineWorkflow, step } from "@intx/workflow";
+import { defineWorkflow, onTrigger, step } from "@intx/workflow";
 
 import {
+  collectDeclaredCredentialConsumers,
   collectDeclaredResources,
   filterGrantsToDeclaredResources,
 } from "./child-grant-filter";
@@ -23,6 +29,7 @@ function rule(
   resource: string,
   effect: GrantRule["effect"],
   action = "invoke",
+  conditions: GrantRule["conditions"] = null,
 ): GrantRule {
   return {
     id: `grant-${effect}-${resource}-${action}`,
@@ -30,11 +37,25 @@ function rule(
     action,
     effect,
     origin: "creator",
-    conditions: null,
+    conditions,
     expiresAt: null,
     roleId: null,
     principalId: null,
   };
+}
+
+const NO_CONSUMERS = new Set<string>();
+
+function factory(id: string, names: readonly string[]) {
+  return defineTool({
+    id,
+    definitions: names.map((name) => ({ name })),
+    factory: (_env: BaseEnv) => ({
+      definitions: [],
+      run: () =>
+        Promise.resolve({ callId: "", content: "", isError: false as const }),
+    }),
+  });
 }
 
 function resources(grants: readonly unknown[]): string[] {
@@ -57,6 +78,7 @@ describe("filterGrantsToDeclaredResources", () => {
     const filtered = filterGrantsToDeclaredResources(
       [rule("tool:foo", "allow")],
       declared,
+      NO_CONSUMERS,
     );
     expect(resources(filtered)).toEqual(["tool:foo"]);
   });
@@ -68,6 +90,7 @@ describe("filterGrantsToDeclaredResources", () => {
     const filtered = filterGrantsToDeclaredResources(
       [rule("tool:*", "allow")],
       declared,
+      NO_CONSUMERS,
     );
     expect(resources(filtered)).toEqual(["tool:*"]);
   });
@@ -84,6 +107,7 @@ describe("filterGrantsToDeclaredResources", () => {
         rule("tool:foo", "allow"),
       ],
       declared,
+      NO_CONSUMERS,
     );
     expect(resources(filtered)).toEqual(["tool:foo"]);
   });
@@ -99,6 +123,7 @@ describe("filterGrantsToDeclaredResources", () => {
         rule("tool:bar", "allow"),
       ],
       declared,
+      NO_CONSUMERS,
     );
     expect(resources(filtered)).toEqual(["tool:bar", "effect:whatever"]);
   });
@@ -112,6 +137,7 @@ describe("filterGrantsToDeclaredResources", () => {
     const filtered = filterGrantsToDeclaredResources(
       [rule("tool:foo", "ask"), rule("tool:foo", "allow")],
       declared,
+      NO_CONSUMERS,
     );
     const decision = await evaluateGrants(
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the filter returns unknown[]; the seeded rows are GrantRule by construction here
@@ -134,7 +160,11 @@ describe("filterGrantsToDeclaredResources", () => {
       null,
       42,
     ];
-    const filtered = filterGrantsToDeclaredResources(notRules, declared);
+    const filtered = filterGrantsToDeclaredResources(
+      notRules,
+      declared,
+      NO_CONSUMERS,
+    );
     expect(filtered).toEqual(notRules);
   });
 
@@ -145,6 +175,7 @@ describe("filterGrantsToDeclaredResources", () => {
     const filtered = filterGrantsToDeclaredResources(
       [kept, dropped, rule("tool:foo", "allow")],
       declared,
+      NO_CONSUMERS,
     );
     expect(filtered).toEqual([kept, rule("tool:foo", "allow")]);
   });
@@ -185,5 +216,206 @@ describe("collectDeclaredResources", () => {
     );
     expect(declared.has("inference.source:anthropic:m1")).toBe(true);
     expect(declared.has("inference.source:anthropic:m2")).toBe(true);
+  });
+});
+
+const FACTORY_ID = "@intx/tools-credential-probe/sidecar-bundle";
+const CONSUMER = toolConsumer(FACTORY_ID);
+const OTHER_CONSUMER = toolConsumer("@intx/tools-other/sidecar-bundle");
+
+function useGrant(
+  resource: string,
+  conditions: GrantRule["conditions"],
+): GrantRule {
+  return rule(resource, "allow", "use", conditions);
+}
+
+function oneStep(tools: ReturnType<typeof factory>[]) {
+  return defineWorkflow({
+    id: "child-wf",
+    trigger: { type: "manual" },
+    steps: {
+      work: step({
+        agent: defineAgent({
+          id: "ag",
+          systemPrompt: "s",
+          tools,
+          capabilities: [],
+          inference: { sources: [{ provider: "anthropic", model: "m" }] },
+        }),
+      }),
+    },
+  });
+}
+
+describe("credential allows", () => {
+  const declared = new Set(["tool:probe"]);
+  const consumers = new Set([CONSUMER]);
+
+  test("keeps a credential allow whose tool condition names an instantiated factory", () => {
+    const kept = useGrant("credential:cred-1", { tool: CONSUMER });
+    const filtered = filterGrantsToDeclaredResources(
+      [kept],
+      declared,
+      consumers,
+    );
+    expect(filtered).toEqual([kept]);
+    expect(filtered[0]).toBe(kept);
+  });
+
+  test("keeps a credential:* allow with the same condition", () => {
+    const kept = useGrant("credential:*", {
+      tool: CONSUMER,
+      scope: "read",
+    });
+    const filtered = filterGrantsToDeclaredResources(
+      [kept],
+      declared,
+      consumers,
+    );
+    expect(filtered[0]).toBe(kept);
+  });
+
+  test("drops a credential allow for a factory the body does not instantiate", () => {
+    const filtered = filterGrantsToDeclaredResources(
+      [useGrant("credential:cred-1", { tool: OTHER_CONSUMER })],
+      declared,
+      consumers,
+    );
+    expect(filtered).toEqual([]);
+  });
+
+  test("drops an unconditioned credential allow", () => {
+    const filtered = filterGrantsToDeclaredResources(
+      [useGrant("credential:cred-1", null), useGrant("credential:*", null)],
+      new Set(["credential:cred-1"]),
+      consumers,
+    );
+    expect(filtered).toEqual([]);
+  });
+
+  test("drops a credential allow whose tool condition is not a string", () => {
+    const filtered = filterGrantsToDeclaredResources(
+      [
+        useGrant("credential:cred-1", { tool: 1 }),
+        useGrant("credential:*", { tool: null }),
+      ],
+      declared,
+      consumers,
+    );
+    expect(filtered).toEqual([]);
+  });
+
+  test("drops a credential allow whose tool condition is not an exact consumer", () => {
+    const filtered = filterGrantsToDeclaredResources(
+      [useGrant("credential:cred-1", { tool: `${CONSUMER}*` })],
+      declared,
+      consumers,
+    );
+    expect(filtered).toEqual([]);
+  });
+
+  test("keeps a credential deny and ask when the body does not instantiate that factory", () => {
+    const denied = rule("credential:cred-1", "deny", "use", {
+      tool: OTHER_CONSUMER,
+    });
+    const asked = rule("credential:*", "ask", "use", null);
+    const filtered = filterGrantsToDeclaredResources(
+      [denied, asked],
+      declared,
+      NO_CONSUMERS,
+    );
+    expect(filtered).toEqual([denied, asked]);
+  });
+
+  test("keeps a resource of * on the pattern rule", () => {
+    const kept = rule("*", "allow");
+    const filtered = filterGrantsToDeclaredResources(
+      [kept],
+      declared,
+      NO_CONSUMERS,
+    );
+    expect(filtered).toEqual([kept]);
+  });
+
+  test("does not treat credentials: or credential* as the credential family", () => {
+    const filtered = filterGrantsToDeclaredResources(
+      [
+        useGrant("credentials:cred-1", { tool: CONSUMER }),
+        useGrant("credential*", { tool: CONSUMER }),
+      ],
+      declared,
+      consumers,
+    );
+    expect(filtered).toEqual([]);
+  });
+});
+
+describe("collectDeclaredCredentialConsumers", () => {
+  const directors = createDefaultDirectorRegistry();
+
+  test("includes a factory that appears only inside an inline onTrigger body", () => {
+    const body = oneStep([factory(FACTORY_ID, ["probe"])]);
+    const workflow = defineWorkflow({
+      id: "parent-wf",
+      steps: {
+        section: onTrigger({ on: { type: "mail", to: "s@x.example" }, body }),
+      },
+    });
+    const pluginDefs = new Map<string, readonly ToolDeclaration[]>();
+    const consumers = collectDeclaredCredentialConsumers(
+      workflow,
+      directors,
+      pluginDefs,
+    );
+    const declared = collectDeclaredResources(workflow, directors, pluginDefs);
+    expect(consumers.has(CONSUMER)).toBe(true);
+    expect(declared.has(`tool:${FACTORY_ID}`)).toBe(false);
+    expect(declared.has("tool:probe")).toBe(true);
+  });
+
+  test("includes a factory whose definitions array is empty", () => {
+    const workflow = oneStep([factory(FACTORY_ID, [])]);
+    const pluginDefs = new Map<string, readonly ToolDeclaration[]>();
+    const consumers = collectDeclaredCredentialConsumers(
+      workflow,
+      directors,
+      pluginDefs,
+    );
+    const declared = collectDeclaredResources(workflow, directors, pluginDefs);
+    expect(consumers.has(CONSUMER)).toBe(true);
+    expect(declared.has(`tool:${FACTORY_ID}`)).toBe(false);
+  });
+
+  test("does not record a plugin package name", () => {
+    const pluginName = "@intx/tools-lsp";
+    const workflow = defineWorkflow({
+      id: "child-wf",
+      trigger: { type: "manual" },
+      steps: {
+        work: step({
+          agent: defineAgent({
+            id: "ag",
+            systemPrompt: "s",
+            tools: [factory(FACTORY_ID, ["probe"])],
+            plugins: [pluginName],
+            capabilities: [],
+            inference: { sources: [{ provider: "anthropic", model: "m" }] },
+          }),
+        }),
+      },
+    });
+    const pluginDefs = new Map([[pluginName, [{ name: "lsp" }]]]);
+    const consumers = collectDeclaredCredentialConsumers(
+      workflow,
+      directors,
+      pluginDefs,
+    );
+    const declared = collectDeclaredResources(workflow, directors, pluginDefs);
+    expect(consumers.has(CONSUMER)).toBe(true);
+    expect(consumers.has(toolConsumer(pluginName))).toBe(false);
+    expect(consumers.has(pluginName)).toBe(false);
+    expect(declared.has("tool:lsp")).toBe(true);
+    expect(declared.has(`tool:${FACTORY_ID}`)).toBe(false);
   });
 });
