@@ -1,12 +1,9 @@
 // Public type shapes for the per-deployment supervisor surface.
 //
-// The supervisor takes its bindings as constructor arguments: a
-// `RepoStore` substrate handle, a per-principal signing callback,
-// mail-bus bindings, a subprocess spawner. None of these shapes
-// depend on a specific host implementation -- the sidecar, an
-// alternative sidecar, an integration test harness, and a future CLI
-// can each construct a supervisor by wiring its own concrete
-// instances against the same interface.
+// The supervisor takes its bindings as constructor arguments (RepoStore,
+// per-principal signing callback, mail-bus bindings, subprocess spawner),
+// so any host -- sidecar, test harness, or future CLI -- can construct it
+// against the same interface.
 
 import type {
   DequeueToProcessingResult,
@@ -30,52 +27,18 @@ import type { RunCancelled, RunCompleted, RunFailed } from "@intx/workflow";
 
 import type { FrameReader, NdjsonReader, NdjsonWriter } from "../ipc/index";
 
-/**
- * Terminal workflow-run event the supervisor's drain accumulators
- * consume to settle ahead of the drainTimeout deadline. The shape is
- * the discriminated union of every terminal kind the workflow-run
- * state machine emits; downstream wiring can switch on `kind` without
- * having to import the workflow package directly.
- */
+/** Terminal run event union the drain accumulators settle on; consumers switch on kind without importing the workflow package. */
 export type TerminalRunEvent = RunCompleted | RunFailed | RunCancelled;
 
-/**
- * Per-runId terminal-event source the supervisor consumes to settle
- * armed drainTimeout accumulators and the inbox dispatch loop when the
- * run reaches a terminal phase. Each invocation returns an
- * `AsyncIterable` scoped to one `runId`; the consumer pulls until the
- * first terminal event arrives or the iterator is finalised (via
- * `return()` on the iterator, which the accumulator calls during
- * `stop`).
- *
- * The supervisor owns a per-cohort broadcaster that implements this
- * shape against the `terminal.event` upstream control frames the
- * workflow-process child emits when its runtime body settles a run.
- * The accumulator and the dispatch loop borrow the broadcaster's
- * subscribe surface; consumers therefore do not have to round-trip
- * the workflow-run substrate from the supervisor's address space.
- */
+/** Per-runId terminal-event source the drain accumulators and dispatch loop consume; each call returns an AsyncIterable scoped to one runId. The supervisor's per-cohort broadcaster implements it from the child's terminal.event frames, so consumers never round-trip the substrate. */
 export type TerminalEventSource = (
   runId: string,
 ) => AsyncIterable<TerminalRunEvent>;
 
-/**
- * Workflow-side principal kinds the supervisor signs on behalf of.
- * Mirrors the kinds the workflow-run kind handler binds to specific
- * CancelRequested origins.
- *
- * - `supervisor`: the supervisor's own identity. Used for every
- *   CancelRequested origin in the Q3 map except `hub-admin`, plus
- *   drain audit frames in later commits.
- */
+/** Principal kinds the supervisor signs as; mirrors the kinds the workflow-run kind handler binds to CancelRequested origins. */
 export type WorkflowSupervisorPrincipalKind = "supervisor";
 
-/**
- * Output of a `signAsPrincipal` invocation. Carries the raw 64-byte
- * Ed25519 signature plus the principal kind the supervisor asked the
- * host to sign as so a downstream verifier can map the signature to
- * the right public key without consulting external metadata.
- */
+/** Output of a signAsPrincipal call: the raw Ed25519 signature plus the principal kind, so a verifier maps it to the right key. */
 export type SignedPayload = {
   /** Raw signature bytes from Ed25519 (64 bytes per RFC 8032). */
   readonly sig: Uint8Array;
@@ -83,56 +46,15 @@ export type SignedPayload = {
   readonly principalKind: WorkflowSupervisorPrincipalKind;
 };
 
-/**
- * Host-supplied per-principal signing callback. The supervisor never
- * holds the principal's private key; it asks the host to mint a
- * signature for the supplied canonical payload bytes under the
- * named principal's key.
- *
- * The host wires this against its own key inventory (the sidecar's
- * existing Ed25519 signing keypair, the integration harness's test
- * key). The supervisor surfaces nothing about how the key is held;
- * the callback is the entire surface.
- */
+/** Host-supplied per-principal signing callback: the supervisor never holds the principal's private key, it asks the host to sign. The host wires it against its own key inventory; the callback is the entire surface. */
 export type PrincipalSigner = (
   kind: WorkflowSupervisorPrincipalKind,
   payload: Uint8Array,
 ) => Promise<SignedPayload>;
 
-/**
- * Mail-bus interface the supervisor needs. The shape is the minimal
- * subset of an existing mail-bus API the supervisor's spawn / mail-
- * trigger / teardown lifecycle reaches into; it does not pin the
- * supervisor to `InMemoryTransport` or any other concrete bus.
- *
- * `subscribeMailForAddress` returns a disposer the supervisor calls
- * during teardown. The supplied handler is invoked with the raw RFC
- * 2822 message bytes of each inbound message at the address, and returns
- * a promise that resolves once the message is durably accepted (its inbox
- * write landed, or the message was already durably present) and rejects
- * when it was not (a transient failure, a stale refusal, or a phase where
- * the deployment is tearing down). The host propagates that settlement to
- * the wire so a durable-receipt ack is sent only on resolution -- resolve
- * is the ack signal, reject is the withhold signal.
- *
- * `sendOutbound` is the OUTBOUND half of mailbox ownership (§3a). The
- * supervisor is the sole mail owner: the workflow-process child never
- * holds the agent's signing key and never calls `transport.send`
- * itself. When a step agent produces a reply (or invokes a mail-send
- * tool), the child forwards the structured `OutboundMessage` plus the
- * sender (agent) address up over the control IPC; the supervisor calls
- * `sendOutbound` to perform the actual signed send through the host's
- * real transport. The host implementation signs the message with the
- * sender's `CryptoProvider` exactly as the in-process path does
- * (`@intx/mail-memory`'s `executeSend`), so the outbound mail carries
- * the AGENT's signature with full parity to the pre-supervisor path.
- *
- * The signing identity lives at the host transport (registered per
- * address via `register(address, crypto)`); the supervisor does not
- * hold the agent's key and the child does not either. A send for an
- * address with no registered crypto surfaces loudly (the host
- * implementation throws) rather than emitting unsigned mail.
- */
+/** Minimal mail-bus surface for the supervisor's spawn/mail/teardown lifecycle; not pinned to any concrete bus.
+
+subscribeMailForAddress returns a disposer; the handler resolves on durable acceptance (ack) and rejects otherwise (withhold). sendOutbound is the OUTBOUND half of mailbox ownership (§3a): the child forwards replies and mail-send tool calls, and the supervisor performs the signed send through the host transport so the mail carries the agent's signature. The signing identity lives at the host transport; an address with no registered crypto throws loudly. */
 export interface MailBusBindings {
   registerAddress(address: string): void;
   unregisterAddress(address: string): void;
@@ -146,49 +68,20 @@ export interface MailBusBindings {
   ): Promise<SendReceipt>;
 }
 
-/**
- * Handle the subprocess spawner returns to the supervisor. The
- * fields mirror what `Bun.spawn` returns; tests substitute an
- * in-process implementation that fulfills the same shape.
- *
- * `stdin`/`stdout` carry the control channel (NDJSON over stdio,
- * Ed25519-signed by the supervisor). `eventSocket` carries the
- * event channel (HMAC-authenticated). `kill()` terminates the
- * process; `exited` resolves when the process exits with the
- * terminal exit code.
- */
+/** Handle the spawner returns; mirrors Bun.spawn's shape so tests can substitute an in-process implementation. stdin/stdout carry the signed control channel, eventReader the HMAC-authenticated event channel; exited resolves with the exit code. */
 export interface SubprocessHandle {
   readonly pid: number;
-  /**
-   * Writer for the supervisor-to-child control channel (stdin on the
-   * child). The supervisor's control-channel sender feeds NDJSON
-   * lines through this writer.
-   */
+  /** Writer for the supervisor-to-child control channel (child stdin); the control sender feeds NDJSON lines through it. */
   readonly controlWriter: NdjsonWriter;
-  /**
-   * Reader for the child-to-supervisor control channel (stdout on
-   * the child). Carries the child's `ready` frame and the rare
-   * upstream control messages the child sends back.
-   */
+  /** Reader for the child-to-supervisor control channel (child stdout); carries ready and rare upstream frames. */
   readonly controlReader: NdjsonReader;
-  /**
-   * Supervisor-side handle on the inherited event-channel
-   * socketpair. The supervisor's event-channel receiver consumes
-   * authenticated InferenceEvent frames from here.
-   */
+  /** Supervisor-side handle on the event-channel socketpair; the event receiver consumes authenticated frames from here. */
   readonly eventReader: FrameReader;
   kill(signal?: number | string): void;
   exited: Promise<number>;
 }
 
-/**
- * Subprocess spawner the supervisor invokes to spawn the workflow-
- * process. The host injects `Bun.spawn` in production; tests inject
- * a deterministic mock. The supervisor invokes this with the
- * resolved binary path, the spawn-time env (carrying only the IPC
- * trust anchors plus substrate-config keys -- never the supervisor's
- * private key), and the prepared event-channel socketpair handle.
- */
+/** Spawner the supervisor invokes per spawn; production injects Bun.spawn, tests a deterministic mock. The env carries only IPC trust anchors plus substrate-config keys, never the supervisor's private key. */
 export type SubprocessSpawner = (args: {
   /** Absolute path to the host-owned `bin/workflow-child` script. */
   binaryPath: string;
@@ -196,45 +89,16 @@ export type SubprocessSpawner = (args: {
   env: Record<string, string>;
 }) => SubprocessHandle;
 
-/**
- * Logical pointer to the raw mail bytes the inbox claim-check
- * envelope stamps. The substrate stores this as the `mailAuditRef`
- * on every inbox/processing/consumed envelope; the substrate itself
- * never dereferences it. The boot edge supplies a derivation
- * coherent with wherever the deployment's mail audit actually lives
- * (a sidecar's session-mail audit, an alternative host's audit
- * store, etc.).
- */
+/** Logical pointer to the mail bytes stamped on every claim-check envelope; the substrate never dereferences it, the boot edge supplies a derivation coherent with where mail audit lives. */
 export type MailAuditRef = { store: string; path: string };
 
-/**
- * Host-supplied derivation that maps a parsed `messageId` plus the
- * raw mail bytes into the logical audit reference the inbox claim-
- * check envelope carries. Pure -- the supervisor invokes it on the
- * mail-arrival hot path and expects no I/O. Absent binding falls
- * back to a deterministic in-process derivation that synthesizes
- * `{ store: "in-process", path: <messageId> }` so the supervisor's
- * library tests that do not stand up an audit store still work; the
- * production sidecar boot edge supplies a real derivation.
- */
+/** Pure host-supplied derivation of the claim-check mail audit ref; absent, an in-process { store: "in-process", path: messageId } fallback keeps library tests audit-store-free. */
 export type DeriveMailAuditRef = (
   messageId: string,
   rawMessage: Uint8Array,
 ) => MailAuditRef;
 
-/**
- * Inbox claim-check primitives the supervisor's mail-arrival path
- * and dispatch loop reach into. Production wires this against the
- * concrete `enqueueInbox` / `dequeueToProcessing` / `markConsumed`
- * / `replayProcessingToInbox` functions exported from
- * `@intx/hub-sessions`; tests inject a deterministic in-memory
- * stub so the supervisor's dispatch loop is observable without a
- * real git substrate.
- *
- * The shape mirrors the upstream functions exactly so a binding
- * miss surfaces as a structural type error rather than a runtime
- * surprise.
- */
+/** Inbox claim-check primitives; production wires the @intx/hub-sessions functions, tests a deterministic in-memory stub. The shape mirrors the upstream functions exactly so a binding miss is a type error, not a runtime surprise. */
 export interface InboxPrimitives {
   enqueueInbox(
     store: SubstrateRepoStore,
@@ -263,37 +127,18 @@ export interface InboxPrimitives {
   ): Promise<ReplayProcessingToInboxResult>;
 }
 
-/**
- * A control-plane suspension the supervisor forwards to the host after a
- * workflow-process child reports a park. The child supplies `runId`,
- * `correlationId`, and `kind`; the supervisor stamps `anchorRunId` and
- * `agentAddress` from its own bindings before invoking the host's
- * `onSuspensionRegister`. The host (production: the sidecar) turns this into
- * a `signal.correlation.register` frame the hub co-writes the run's routing +
- * approval rows from.
- */
+/** A park the supervisor forwards to the host, stamped with its own anchorRunId and agentAddress; the host turns it into a signal.correlation.register frame. */
 export interface SuspensionRegistration {
   runId: string;
   correlationId: string;
   kind: SignalKind;
   anchorRunId: string;
   agentAddress: string;
-  /**
-   * Approver-facing snapshot of the parked tool call, forwarded from the
-   * child's `park.notify`. Present only for an ask-rail suspension; the host
-   * turns it into the register frame's snapshot.
-   */
+  /** Approver snapshot of the parked tool call; present only for an ask-rail suspension. */
   approvalSnapshot?: ApprovalSnapshot;
 }
 
-/**
- * Constructor arguments for `createWorkflowSupervisor`. One
- * `RepoStore` handle plus a `signAsPrincipal` callback that mints
- * signatures on demand per principal, rather than pre-minting
- * per-principal `RepoStore` views. Every write-site is explicit
- * about which principal it claims to be, and the supervisor never
- * holds a private key in plaintext.
- */
+/** Constructor arguments for createWorkflowSupervisor: a RepoStore handle plus a signAsPrincipal callback; every write site claims its principal and the supervisor never holds a private key. */
 export interface WorkflowSupervisorBindings {
   /** Substrate handle the supervisor reads grants from and commits events to. */
   repoStore: SubstrateRepoStore;
@@ -301,105 +146,27 @@ export interface WorkflowSupervisorBindings {
   signAsPrincipal: PrincipalSigner;
   /** Mail-bus surface for address registration and inbound subscription. */
   mailBus: MailBusBindings;
-  /**
-   * Optional control-plane suspension sink. Two callers invoke it, both
-   * stamping `anchorRunId` and `deploymentMailAddress` (as `agentAddress`)
-   * onto the child-supplied `runId`/`correlationId`/`kind`: the upstream-control
-   * pump's `park.notify` arm (the happy-path emit at suspend), and
-   * `reEmitParkedCorrelations` (the re-establishment re-emit that recovers a
-   * register the hub missed while it was down). Production wires this to the
-   * sidecar's hub link so a `signal.correlation.register` frame reaches the hub;
-   * a host that does not wire it does not register suspensions (today, the
-   * tests). Best-effort: a throwing sink is logged and
-   * both callers keep going, so one bad register cannot wedge the control pump
-   * or abort a re-emit partway through the parked set.
-   */
+  /** Optional suspension sink, invoked by the park.notify arm and reEmitParkedCorrelations (which recovers registers the hub missed while down). Best-effort: a throwing sink is logged and both callers keep going. */
   onSuspensionRegister?: (registration: SuspensionRegistration) => void;
-  /**
-   * Self-termination sink. The supervisor invokes it when it reaches a terminal
-   * phase on its own -- the crash-loop latch (`crash-looping`), a channel crash
-   * while recycling, or a recycle failure (both `stopped`) -- but NOT when the
-   * host drives it down through the public `shutdown()`, and NOT for a failure
-   * of the initial spawn handshake (that is the deploy's to unwind). Production
-   * wires this to the sidecar so it reclaims the deployment address (drops the
-   * supervisor from its active map and releases the address's routing state)
-   * and the address becomes redeployable without a manual undeploy.
-   *
-   * The handler MUST be idempotent. Firing is not exactly-once: two
-   * self-terminating callers interleaving through teardown (e.g. a channel
-   * crash while recycling plus the recycle-failure catch) can each fire. The
-   * sidecar's reclaim absorbs a repeat because its `activeSupervisors.has`
-   * guard makes the second run a no-op.
-   *
-   * Unlike `onSuspensionRegister`, this sink does NOT share the same
-   * log-and-continue contract on the host side. A missed suspension has an
-   * independent recovery path (`reEmitParkedCorrelations`); a missed reclaim
-   * does not -- the address stays stranded until an operator undeploys. So
-   * the host's handler is engineered to be total, and a failure there is
-   * logged loudly rather than swallowed. The supervisor still invokes this
-   * best-effort (a throwing sink cannot break the terminal transition), but a
-   * host that copies `onSuspensionRegister`'s quiet-swallow semantics onto its
-   * reclaim handler reintroduces the stranding bug.
-   */
+  /** Self-termination sink, fired when the supervisor reaches a terminal phase on its own (crash-loop latch, channel crash while recycling, recycle failure) but not on host shutdown or a failed initial spawn. The sidecar reclaims the deployment address. MUST be idempotent (firing is not exactly-once), and unlike onSuspensionRegister it should be total: a missed reclaim strands the address until an operator undeploys. */
   onSelfTerminate?: (info: {
     phase: "stopped" | "crash-looping";
     reason: string;
   }) => void;
-  /**
-   * Per-run grants source the dispatch loop consults before it forwards a
-   * `trigger.fire`. Unlike `onSuspensionRegister` (best-effort, fire-and-
-   * forget), this is a request/response contract: the supervisor awaits the
-   * returned `CredentialsSnapshot` and pushes it to the child over the
-   * control channel BEFORE firing the run's trigger, so the child's
-   * authorize closure binds to the run's grants rather than a stale
-   * spawn-time snapshot. A throwing sink is NOT swallowed -- the dispatch
-   * loop fails that run (a synthesized `RunFailed`) rather than firing the
-   * trigger against absent grants.
-   *
-   * When this binding is wired, it is the SOLE grants push: `spawn` does not
-   * push a spawn-time snapshot, so the per-run push is the only thing that
-   * satisfies the child's throw-on-null authorize guard. A caller that
-   * injects no per-run sink -- today, the supervisor's own tests -- keeps the
-   * spawn-time push instead. Production (the sidecar) wires it to the
-   * walk-derived per-step credentials assembly.
-   */
+  /** Per-run grants source consulted before each trigger.fire. A request/response contract, not fire-and-forget: the supervisor pushes the returned snapshot before the trigger, and a throwing sink fails the run (synthesized RunFailed) rather than firing against absent grants. When wired it is the SOLE grants push (spawn skips its snapshot). */
   onRunStart?: (args: {
     runId: string;
     anchorRunId: string;
   }) => Promise<import("./credentials").CredentialsSnapshot>;
-  /**
-   * Decrypted credential material for the deployment's tools, delivered to the
-   * child on the pre-trigger barrier alongside the grants. Absent when the
-   * deployment binds no credentials. A rotation flows through
-   * `deliverCredentials`, not this static binding.
-   */
+  /** Decrypted credential material delivered on the pre-trigger barrier; rotations flow through deliverCredentials, not this static binding. */
   credentialDelivery?: import("@intx/types/sidecar").CredentialDelivery;
   /** Subprocess spawner the supervisor invokes per spawn. */
   subprocessSpawner: SubprocessSpawner;
-  /**
-   * Absolute path to the host-owned `bin/workflow-child` script
-   * the spawner invokes. Pre-resolved by the host so the supervisor
-   * does not have to consult `require.resolve` / `import.meta.resolve`
-   * itself (tests inject a sentinel path the spawner mock asserts on).
-   */
+  /** Absolute path to the workflow-child script the spawner invokes; pre-resolved by the host. */
   binaryPath: string;
-  /**
-   * Substrate-config keys the binary needs to construct a RepoStore.
-   * The supervisor carries these straight from the host into the
-   * child's spawn-time env without inspecting them; the binary's
-   * construction logic owns the shape.
-   */
+  /** Substrate-config keys carried into the child's spawn-time env; the supervisor never inspects them. */
   substrateEnv: Record<string, string>;
-  /**
-   * Per-spawn dynamic substrate-env entries the host recomputes for every
-   * spawn AND every recycle respawn. Distinct from `substrateEnv`, which is
-   * frozen for the deployment's lifetime: this callback lets a value the
-   * host revised between spawns (a live inference-source rotation) reach the
-   * respawned child. Invoked by the spawn-env builder on each spawn/respawn;
-   * its keys layer over `substrateEnv` and under the IPC anchors. Like
-   * `substrateEnv`, the supervisor does not inspect the returned keys -- the
-   * host owns their shape. A host with no dynamic entries returns `{}`.
-   */
+  /** Per-spawn env entries recomputed for every spawn and recycle respawn (unlike the frozen substrateEnv), so a host-revised value reaches the respawned child. Keys layer over substrateEnv, under the IPC anchors. */
   dynamicSpawnEnv: () => Record<string, string>;
   /**
    * Workflow-run repo identity for the deployment. The supervisor
@@ -410,302 +177,74 @@ export interface WorkflowSupervisorBindings {
   workflowRunRef: string;
   /** Anchor run id baked into the supervisor's principal claims. */
   anchorRunId: string;
-  /**
-   * Number of steps in the deployed `WorkflowDefinition`
-   * (`stepOrder.length`). The supervisor threads this into the child's
-   * spawn-time env (`STEP_COUNT`) so the child's deploy-tree read
-   * (`resolveStepAddress` in the sidecar step tools) collapses onto the
-   * head for a single-step deployment exactly as the host's producer
-   * push does -- one source of truth for the head/step collapse across
-   * the two processes. Fixed for the deployment's lifetime.
-   */
+  /** Step count (stepOrder.length), threaded as STEP_COUNT so the child's deploy-tree read collapses onto the head for single-step deployments exactly as the host's push does. Fixed for the deployment's lifetime. */
   stepCount: number;
-  /**
-   * Mail address the deployment registers on the bus. The
-   * supervisor registers this on spawn and unregisters on teardown;
-   * inbound mail at this address flows through the supervisor's
-   * trigger.fire path.
-   */
+  /** Mail address registered on spawn, unregistered on teardown; inbound mail flows through the trigger.fire path. */
   deploymentMailAddress: string;
-  /**
-   * The supervisor's substrate principal for read-only operations
-   * the supervisor performs in its own right (e.g. enumerating
-   * step grants). Cancel-signing constructs its own principal at
-   * commit time; this binding is for non-write operations.
-   */
+  /** Supervisor principal for its own read-only operations (e.g. enumerating step grants). */
   readPrincipal: Principal;
   /**
    * Per-step mail-address derivation the supervisor uses while
    * assembling the credentialsSnapshot. See `credentials.ts`.
    */
   deriveStepAddress: import("./credentials").DeriveStepAddress;
-  /**
-   * Optional override for the step's agent-state repo identity. The
-   * default convention is `<anchorRunId>-<stepId>`.
-   */
+  /** Optional override for the step's agent-state repo identity; default is <anchorRunId>-<stepId>. */
   deriveStepRepoId?: import("./credentials").DeriveStepRepoId;
-  /**
-   * Optional override for the per-spawn IPC keypair factory. Each
-   * spawn mints a fresh control-channel Ed25519 keypair; this hook
-   * lets the host supply a deterministic factory (a test harness
-   * that needs to assert on the env's HOST_PUBKEY, or a wiring path
-   * that wants the keypair lifecycle to flow through its own crypto
-   * boundary). Production wires it against the same
-   * `@intx/crypto` generator the supervisor would have used.
-   */
+  /** Optional per-spawn IPC keypair factory override; tests use a deterministic factory to assert on HOST_PUBKEY. */
   ipcKeyPairFactory?: () => Promise<{
     privateKey: Uint8Array;
     publicKey: Uint8Array;
   }>;
-  /**
-   * Operator-overridable per-deployment `drainTimeout` in
-   * milliseconds. The supervisor's `drain()` path threads this value
-   * into every drainTimeout accumulator it arms. Absent value defers
-   * to the accumulator's `DEFAULT_DRAIN_TIMEOUT_MS` constant.
-   */
+  /** Operator-overridable drain timeout (ms), threaded into every drain accumulator; absent defers to DEFAULT_DRAIN_TIMEOUT_MS. */
   drainTimeoutMs?: number;
-  /**
-   * Optional override for the supervisor's drainTimeout accumulator
-   * factory. Production wires this against
-   * `createDrainTimeoutAccumulator` directly; tests inject a mock
-   * factory so the supervisor's drain arming becomes observable
-   * without rigging a fake timer host. The factory shape matches
-   * `createDrainTimeoutAccumulator`'s public signature exactly.
-   */
+  /** Optional drainTimeout accumulator factory override; tests inject a mock so drain arming is observable without a fake timer host. */
   drainTimeoutAccumulatorFactory?: import("./drain-timeout").DrainTimeoutAccumulatorFactory;
-  /**
-   * Clock the supervisor threads into the drainTimeout accumulator.
-   * Production wires `() => Date.now()`; tests inject a deterministic
-   * fake clock. Defaults to `Date.now` when omitted.
-   */
+  /** Clock threaded into the drain accumulator; tests inject a deterministic fake, defaults to Date.now. */
   now?: () => number;
-  /**
-   * General scheduling primitive the supervisor threads into its timed
-   * waits: the drainTimeout accumulator, the spawn ready-handshake
-   * timeout, and that timeout's SIGTERM->SIGKILL kill escalation.
-   * Production wires `(cb, ms) => setTimeout(cb, ms)`; tests inject a
-   * deterministic timer host. Defaults to `setTimeout` when omitted.
-   */
+  /** Scheduling primitive for the drain accumulator, ready handshake, and kill escalation; tests inject a deterministic timer host, defaults to setTimeout. */
   setTimer?: (cb: () => void, ms: number) => unknown;
-  /**
-   * Disposer paired with `setTimer`. Production wires
-   * `(h) => clearTimeout(h as ReturnType<typeof setTimeout>)`;
-   * tests inject the matching disposer for their fake timer host.
-   * Defaults to `clearTimeout` when omitted.
-   */
+  /** Disposer paired with setTimer; defaults to clearTimeout. */
   clearTimer?: (handle: unknown) => void;
-  /**
-   * Optional recycle-policy configuration. Absent or all-`undefined`
-   * fields disable the periodic check; the supervisor's policy timer
-   * is not armed. Operator overrides land here via the host's
-   * per-deployment config.
-   */
+  /** Optional recycle-policy bounds; absent or all-undefined disables the periodic check. */
   recyclePolicy?: import("./recycle").RecyclePolicyBounds;
-  /**
-   * Optional RSS reader the policy consults per tick when
-   * `recyclePolicy.maxRssBytes` is set. Returns the workflow-process
-   * child's current resident-set size in bytes, or `undefined` if the
-   * host does not have a current sample.
-   */
+  /** RSS reader the policy consults per tick when maxRssBytes is set; undefined when no current sample exists. */
   readRssBytes?: () => number | undefined;
-  /**
-   * Optional grants-age reader the policy consults per tick when
-   * `recyclePolicy.maxGrantsAgeMs` is set. Returns the wall-clock age
-   * (ms) of the most recent grants refresh visible to this
-   * supervisor, or `undefined` if no refresh has been observed yet.
-   */
+  /** Grants-age reader the policy consults when maxGrantsAgeMs is set; undefined before any refresh. */
   readGrantsAgeMs?: () => number | undefined;
-  /**
-   * Optional now-reader for the recycle policy. Defaults to
-   * `Date.now()`; tests inject a deterministic clock.
-   */
+  /** Now-reader for the recycle policy; tests inject a deterministic clock. */
   recyclePolicyNow?: () => number;
-  /**
-   * Optional setTimer/clearTimer pair for the recycle policy and the
-   * recycle path's SIGKILL escalation. Defaults to
-   * `setTimeout`/`clearTimeout`; tests inject a controllable timer.
-   */
+  /** Timer pair for the recycle policy and its SIGKILL escalation; tests inject a controllable timer. */
   recyclePolicySetTimer?: (cb: () => void, ms: number) => unknown;
   recyclePolicyClearTimer?: (handle: unknown) => void;
-  /**
-   * Compute the logical audit reference for an inbox entry. The
-   * substrate stamps this onto the envelope; the substrate itself
-   * does not dereference it. The boot edge supplies a derivation
-   * coherent with wherever the deployment's mail audit lives.
-   *
-   * Absent binding falls back to `{ store: "in-process",
-   * path: <messageId> }`, a deterministic derivation that lets the
-   * supervisor's library tests run without a host-side audit store.
-   */
+  /** Compute the claim-check mail audit ref; absent, an in-process fallback keeps library tests audit-store-free. */
   deriveMailAuditRef?: DeriveMailAuditRef;
-  /**
-   * Inbox claim-check primitives the dispatch loop reaches into.
-   * Production wires this against `@intx/hub-sessions`'s concrete
-   * `enqueueInbox` / `dequeueToProcessing` / `markConsumed` /
-   * `replayProcessingToInbox`; tests inject a deterministic
-   * in-memory stub so the dispatch loop is observable without a
-   * git substrate.
-   */
+  /** Inbox claim-check primitives for the dispatch loop; tests inject a deterministic in-memory stub. */
   inboxPrimitives?: InboxPrimitives;
-  /**
-   * Workflow-run substrate principal the supervisor uses to author
-   * inbox/processing/consumed writes. The substrate's workflow-run
-   * kind handler accepts a `{ kind: "supervisor", anchorRunId }`
-   * principal for claim-check writes; the supervisor constructs this
-   * value once at bindings construction and reuses it for every
-   * claim-check operation. Defaults to `{ kind: "supervisor",
-   * anchorRunId }` derived from `bindings.anchorRunId`; tests
-   * override it when they need to assert on a structurally distinct
-   * principal shape.
-   */
+  /** Principal authoring claim-check writes; defaults to { kind: "supervisor", anchorRunId }, overridable for structural assertions. */
   inboxWritePrincipal?: Principal;
-  /**
-   * Retention horizon for the consumed dedup index, in milliseconds.
-   * Threaded into every `markConsumed` so the per-address watermark
-   * advances to `consumedAt - consumedRetentionMs` and the consumed/
-   * index is pruned to a bounded steady state. This is an
-   * OPERATOR-policy value: the longest window in which the same
-   * message could legitimately be re-submitted and still must be
-   * caught as a duplicate. The boot edge resolves the operator's
-   * config and supplies it; absent, `DEFAULT_CONSUMED_RETENTION_MS`
-   * (24h) applies. The invariant the operator owns: the horizon must
-   * be >= the maximum redelivery window of any at-least-once source if
-   * one is ever added, or dedup breaks (a breach surfaces loudly as a
-   * refused stale enqueue, not silent double-processing).
-   */
+  /** Consumed-dedup retention horizon (ms) threaded into every markConsumed, pruning the index to a bounded steady state. Operator-policy value: must be >= the max redelivery window of any at-least-once source, or dedup breaks (a breach surfaces as a refused stale enqueue). */
   consumedRetentionMs?: number;
-  /**
-   * Bound on the child's spawn-time `ready` handshake, in milliseconds.
-   * A spawned child that neither emits `ready` nor exits would block
-   * `spawn` forever; on expiry the supervisor kills the child (SIGTERM,
-   * then SIGKILL) and rejects the spawn. The boot edge resolves the
-   * operator's config and supplies it; absent, `DEFAULT_READY_TIMEOUT_MS`
-   * (30s) applies. Callers surface the rejection through their existing
-   * spawn-failure path, so a wedged child fails the deploy (or, on the
-   * sidecar, is skipped by boot-time restore) instead of hanging it.
-   */
+  /** Bound on the ready handshake: a child that neither readies nor exits would block spawn forever, so on expiry the supervisor kills it (SIGTERM then SIGKILL) and rejects. */
   readyTimeoutMs?: number;
-  /**
-   * Crash-loop guard: the maximum number of UNEXPECTED workflow-process
-   * child exits (crash, OOM, panic, signal) the supervisor tolerates
-   * within `crashLoopWindowMs` before it stops respawning and latches the
-   * deployment to a terminal state. The boot edge resolves the operator's
-   * config and supplies it; absent, `DEFAULT_CRASH_LOOP_MAX_COUNT` (3)
-   * applies. The operator owns this bound.
-   */
+  /** Crash-loop guard: unexpected exits within the window before the deployment latches; operator-owned bound. */
   crashLoopMaxCount?: number;
-  /**
-   * Sliding window (ms) over which `crashLoopMaxCount` unexpected exits
-   * latch the deployment. Absent, `DEFAULT_CRASH_LOOP_WINDOW_MS` (60s)
-   * applies.
-   */
+  /** Sliding window over which crashLoopMaxCount exits latch the deployment. */
   crashLoopWindowMs?: number;
-  /**
-   * Stable-run duration (ms) after a respawn: once a respawned child has
-   * stayed up this long, the crash counter resets, so a burst of crashes
-   * followed by stability does not permanently latch. Absent,
-   * `DEFAULT_CRASH_LOOP_STABLE_RESET_MS` (60s) applies. Driven by the
-   * injectable `setTimer`/`clearTimer` pair so tests are deterministic.
-   */
+  /** Respawned-child uptime that resets the crash counter, so a crash burst followed by stability does not latch. */
   crashLoopStableResetMs?: number;
-  /**
-   * Initial respawn backoff (ms): the wait before the FIRST respawn after
-   * an unexpected exit. Each subsequent respawn doubles the wait, capped at
-   * `respawnBackoffMaxMs`; a stable run resets it to this value. Absent,
-   * `DEFAULT_RESPAWN_BACKOFF_INITIAL_MS` (1s) applies.
-   */
+  /** Initial respawn backoff (ms); each respawn doubles it up to the cap, a stable run resets it. */
   respawnBackoffInitialMs?: number;
-  /**
-   * Maximum respawn backoff (ms) the exponential doubling is capped at, so
-   * a rapidly-flapping child does not saturate the host. Absent,
-   * `DEFAULT_RESPAWN_BACKOFF_MAX_MS` (30s) applies.
-   *
-   * Config invariant: keep this comfortably below `crashLoopWindowMs`.
-   * Crashes must fall within the window to accumulate toward the latch, and
-   * the backoff spaces them apart; a cap at or above the window guarantees a
-   * slow flapper's timestamps age out before the count reaches
-   * `crashLoopMaxCount`, so the guard never latches. This is necessary but
-   * not sufficient: the child's own lifetime also spaces crashes, so a child
-   * whose healthy lifetime approaches `crashLoopStableResetMs` can still
-   * out-space the window (and never earn a counter reset either), respawning
-   * indefinitely. Windowed crash detection cannot catch an arbitrarily slow
-   * flapper; the window/backoff/stable-reset trio bounds the FAST flap this
-   * guard targets.
-   */
+  /** Cap on exponential respawn backoff (ms). Config invariant: keep it below crashLoopWindowMs -- a cap at or above the window lets a slow flapper's crashes age out before the count latches. Windowed detection cannot catch an arbitrarily slow flapper; the trio bounds the fast flap this guard targets. */
   respawnBackoffMaxMs?: number;
-  /**
-   * Watchdog timeout (ms) for `reEmitParkedCorrelations`' wait on the
-   * child's `parked-correlations.response`. Caps the wait so a
-   * wedged-but-alive child (whose cohort never tears down, so the
-   * cohort-abort rejection never fires) cannot hang the re-registration
-   * driver -- and therefore the reconnect/re-establishment caller that
-   * awaits it. On expiry the pending query is dropped and the driver
-   * returns; the next re-establishment re-drives it. Defaults to
-   * `DEFAULT_PARKED_QUERY_WATCHDOG_MS`. Tests inject a small value so the
-   * timeout path is observable.
-   */
+  /** Watchdog on the parked-correlations response wait: a wedged-but-alive child never aborts its cohort, so cap the wait; on expiry the next re-establishment re-drives. */
   parkedQueryWatchdogMs?: number;
-  /**
-   * Optional per-message dispatch-timing observer. When supplied, the
-   * dispatch loop invokes it twice per dispatched inbox entry: once with
-   * marker `"dispatch-start"` the instant the entry is dequeued for
-   * dispatch (claim-check read complete, `trigger.fire` about to be
-   * forwarded) and once with marker `"reply-produced"` the instant the
-   * child's terminal-event frame for that run lands back at the
-   * supervisor (the run's reply is produced and committed). Both marks
-   * carry the same monotonic `atMs` clock so an observer can compute the
-   * per-message infra round-trip the unified path adds over a bare
-   * in-process `agent.send`.
-   *
-   * This is a pure observability hook with no control-flow effect. It is
-   * absent in production and wired only by the Phase 4.7 latency-gate
-   * benchmark, which threads it through the sidecar host so the
-   * supervisor (running in the sidecar subprocess, where both ends of
-   * the IPC round-trip are visible in one process) emits a parseable
-   * timing line. A throwing observer is swallowed and logged so a
-   * benchmark hook bug cannot wedge dispatch.
-   */
+  /** Optional per-message dispatch-timing observer: dispatch-start on dequeue, reply-produced when the run's terminal frame lands, both on a monotonic clock so the per-message infra round-trip is computable. Pure observability, absent in production (the Phase 4.7 latency-gate benchmark wires it); a throwing observer is swallowed and logged. */
   onDispatchTiming?: (mark: DispatchTimingMark) => void;
-  /**
-   * D2 §10c forced-repack A/B toggle (measurement-only). When supplied
-   * with a non-zero `everyMessages`, the dispatch loop forces a
-   * `git gc`/repack of the workflow-run repo every `everyMessages`-th
-   * dispatched message (after `markConsumed`, under the single-writer
-   * discipline). This exists solely to discriminate pack-growth from
-   * tree-fan-out as the dominant per-message substrate cost: if forcing a
-   * repack flattens the per-leg slope the cost is loose-object/pack
-   * growth (cheap pack/gc fix); if it does not, the cost is the
-   * per-commit root-tree rewrite scaling with `runs/` + `consumed/`
-   * fan-out (run-model change). Absent in production -- the dispatch path
-   * forks no `git gc` when this is unset.
-   */
+  /** D2 §10c forced-repack A/B toggle (measurement-only): force a repack every everyMessages-th message to discriminate pack growth from tree fan-out as the dominant per-message substrate cost. Absent in production. */
   repackEveryMessages?: { everyMessages: number };
 }
 
-/**
- * The five per-message substrate legs the D2 attribution splits the
- * unified path's substrate tax across. Each is a single git
- * `writeTreePreservingPrefix` commit (or, for `runevent`, one of several
- * commits per message) against the growing workflow-run repo:
- *
- *   - `enqueue`      — `enqueueInbox` in `onMailMessage`, BEFORE dispatch
- *                      (paid OUTSIDE the dispatch-start..reply-produced
- *                      window; its growth is invisible to the 4.7 bracket).
- *   - `dequeue`      — `dequeueToProcessing`, the claim-check READ at the
- *                      head of `dispatchOne` (inside the window).
- *   - `runevent`     — a run-event bracket commit
- *                      (`runs/<runId>/events/<seq>.json`), arriving as a
- *                      child-proxied `substrate.write.request` (inside the
- *                      window). One message may produce several; each is
- *                      stamped and the D2 post-processing sums them and
- *                      counts them per message.
- *   - `markconsumed` — `markConsumed` at the tail of `dispatchOne`, AFTER
- *                      `reply-produced` (paid OUTSIDE the window).
- *   - `wal`          — the D1 conversation WAL append / checkpoint
- *                      (`agent-state/<key>/...`), arriving as a
- *                      child-proxied `substrate.write.request`. The control
- *                      leg: post-D1 it should be small and flat.
- */
+/** The five per-message substrate legs the D2 attribution splits the substrate tax across: enqueue (before dispatch), dequeue (the claim-check read), runevent (run-event commits, inside the window), markconsumed (after reply-produced), and wal (the D1 conversation WAL). */
 export type DispatchSubstrateLeg =
   | "enqueue"
   | "dequeue"
@@ -713,24 +252,7 @@ export type DispatchSubstrateLeg =
   | "markconsumed"
   | "wal";
 
-/**
- * Structural counters sampled at a `leg` mark's `"end"` phase so the D2
- * attribution can explain WHY a leg grows, not merely that it does
- * (design §10b). All are cheap filesystem reads against the workflow-run
- * repo's on-disk working tree, taken only when the observer is wired.
- *
- *   - `runsFanOut`     — entry count under `runs/` (the stable top-level run
- *                        plus any internal body-child runs).
- *   - `consumedFanOut` — entry count under
- *                        `addresses/<addr>/consumed/` (one dedup entry per
- *                        message; never pruned). The candidate-(iv) "prune
- *                        consumed" win is sized by this.
- *   - `looseObjects`   — count of loose git objects under
- *                        `.git/objects/<xx>/` (the pack-growth proxy; the
- *                        §10c repack A/B targets this).
- *   - `gitBytes`       — total byte size of the repo's `.git` directory
- *                        (loose + pack), a coarse repo-size proxy.
- */
+/** Structural counters sampled at a leg's end so the D2 attribution can explain WHY a leg grows: runs/ and consumed/ fan-out, loose-object count (pack-growth proxy), and .git byte size. Cheap reads, taken only when the observer is wired. */
 export type DispatchStructuralCounters = {
   runsFanOut: number;
   consumedFanOut: number;
@@ -738,28 +260,7 @@ export type DispatchStructuralCounters = {
   gitBytes: number;
 };
 
-/**
- * One observation emitted by `WorkflowSupervisorBindings.onDispatchTiming`.
- *
- * Both variants key on `messageId`, the per-message identifier (the mail's
- * Message-ID). The top-level run id cannot serve as the key: one deployment
- * keeps that stable id across all of its live trigger occurrences, so it does
- * not distinguish one dispatched message from the next.
- *
- * The `"roundtrip"` variant is the 4.7 latency-gate bracket: pair the
- * `"dispatch-start"` and `"reply-produced"` marks for the same `messageId` to
- * recover the per-message round-trip. `atMs` is a high-resolution
- * monotonic timestamp (`performance.now()`).
- *
- * The `"leg"` variant is the D2 per-leg attribution surface: a paired
- * `start`/`end` mark around one of the five substrate commits
- * (`DispatchSubstrateLeg`), so each leg's per-message slope (ms added per
- * sustained message) and floor (intercept) can be fit independently. The
- * `end` mark of a `runevent`/`markconsumed`/`enqueue`/`dequeue` leg also
- * carries the structural counters sampled at commit time. Both variants
- * flow through the same off-by-default observer; production leaves the
- * observer unwired and samples no clock and no counter.
- */
+/** One onDispatchTiming observation, keyed on messageId (the top-level run id is stable per deployment and cannot distinguish messages). "roundtrip" pairs dispatch-start/reply-produced for the 4.7 latency bracket; "leg" pairs start/end around one substrate commit so each leg's slope and floor fit independently, with structural counters on the end mark. Production leaves the observer unwired. */
 export type DispatchTimingMark =
   | {
       kind: "roundtrip";
