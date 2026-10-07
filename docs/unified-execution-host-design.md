@@ -109,7 +109,7 @@ child is itself a spawner and can spawn its own sub-children (grandchildren,
 ...) to arbitrary depth. The recursion **already exists** — the `childWorkflow`
 primitive (`packages/workflow/src/definition/primitives.ts`), the runtime's
 `spawnChild` / `SpawnChildWorkflow` seam, and `createSidecarRunChild`
-(`apps/sidecar/src/workflow-substrate-factory.ts`), which is self-referential
+(`packages/workflow-host/src/child/substrate-factory.ts`), which is self-referential
 and documented as "designed for arbitrary depth." **Today that recursion runs
 in-process**: a `childWorkflow` executes within the parent child's process,
 reusing the parent's substrate and the same `childRunId`-scoped subtree. The
@@ -395,8 +395,7 @@ multi-step durability model:
   (§3h), so **one** run spans every turn: a single `RunStarted` ->
   `StepStarted`, then a park/deliver cycle per turn, and no terminal until the
   run is torn down. A terminal batch deployment is not fired again. The batch bracket is the one the former
-  `driveTrivialRunChain` projector hand-rolled
-  (`apps/sidecar/src/workflow-host-wiring.ts`); the runtime now emits it
+  `driveTrivialRunChain` projector hand-rolled; the runtime now emits it
   natively because a real `runtimeRun` drives the step, and that projector has
   been deleted (§4).
 - **Conversation state across trigger occurrences.** The agent's
@@ -421,47 +420,56 @@ flagged in §6.
 
 ### 3d. Tool materialization and execution in the child (the other hard one)
 
-Today tools are composed only in the sidecar harness builder
-(`apps/sidecar/src/default-harness.ts`): `materializeToolPackages` reads the
-deploy tree, runs the tool-package loader (`@intx/tool-packaging`:
-`createToolLoader`, `applyAtomic`, `createTarballCache`), composes the plugin
-chain (posix reads `env.plugins`; the LSP plugin factory **spawns a
-subprocess**), and hands the resulting `toolFactories` to `defineAgent`. The
-child does none of this — the inert projection's `steps[].agent.toolFactories`
-are stripped to bare `{ id, requires }` metadata on serialization
-(`packages/workflow/src/definition/workflow.ts`, `projectAgent`).
+A workflow step's tools are materialized in the child.
+`apps/sidecar/src/step-tool-materialization.ts` (`materializeStepTools`)
+reads the step's deploy tree (`readDeployTree` from `@intx/hub-agent/paths`)
+and calls `materializeToolPackages`
+(`packages/tool-packaging/src/tool-materialization.ts`), which runs the
+tool-package loader (`@intx/tool-packaging`: `createToolLoader`,
+`applyAtomic`, `createTarballCache`). `attachStepTools` and
+`createToolBearingAgentFactory`
+(`packages/workflow-host/src/child/step-tools.ts`) compose the plugin chain
+(posix reads `env.plugins`; the LSP plugin factory **spawns a subprocess**),
+capture each bundle's disposer, and hand the resulting `toolFactories` to
+`defineAgent`. The inert projection's `steps[].agent.toolFactories` are
+stripped to bare `{ id, requires }` metadata on serialization
+(`packages/workflow/src/definition/workflow.ts`, `projectAgent`), so live
+factories do not ride the wire definition.
 
 **The tool-execution locus — stated explicitly, because it determines the
-isolation model.** The child _is_ the sidecar binary. `apps/sidecar/bin/workflow-child`
-imports `createSubstrate` and `SIDECAR_SUBSTRATE_CONFIG_KEYS` from
-`apps/sidecar/src/workflow-substrate-factory` and runs
-`runWorkflowChildFromProcessEnv(createSubstrate, ...)`. There is **no
-cross-process injection of tool factories** — there could not be, because tool
-factories are closures and closures do not cross a process boundary. When the
-unified host lands, tool materialization and tool _execution_ both happen
-**inside the child process**: the loader runs there, the LSP subprocess is a
-child _of the child_, and a posix/shell tool's filesystem writes land in the
-child's filesystem view. The child is therefore the natural isolation boundary
-for everything an agent's tools can do — which is exactly why the isolation
-unit and the sandbox boundary (§3f and Decision 1 below) are properties of the
-_child_.
+isolation model.** The child _is_ the sidecar binary.
+`apps/sidecar/bin/workflow-child` imports `runWorkflowChildFromProcessEnv`
+from `@intx/workflow-host` and imports `createSubstrate` and
+`SIDECAR_SUBSTRATE_CONFIG_KEYS` from
+`apps/sidecar/src/workflow-child-bindings.ts`. That binding closes
+`createSidecarSubstrateFactory`
+(`packages/workflow-host/src/child/substrate-factory.ts`) over
+`materializeStepTools`. There is **no cross-process injection of tool
+factories** — there could not be, because tool factories are closures and
+closures do not cross a process boundary. Tool materialization and tool
+_execution_ both happen **inside the child process**: the loader runs there,
+the LSP subprocess is a child _of the child_, and a posix/shell tool's
+filesystem writes land in the child's filesystem view. The child is therefore
+the natural isolation boundary for everything an agent's tools can do — which
+is exactly why the isolation unit and the sandbox boundary (§3f and Decision
+1 below) are properties of the _child_.
 
 **Decision: materialize and run tools in the child, rooted per-step.**
 
-- **What moves from `default-harness.ts`:** `materializeToolPackages` and its
-  supporting machinery — the deploy-tree reader (`readDeployTree` from
-  `@intx/hub-agent`), the loader construction (`createToolLoader`,
-  `createTarballCache`, `applyAtomic`), the plugin-chain instantiation
-  (including LSP subprocess lifecycle and posix `env.plugins` threading), and
-  the disposer capture. This becomes child-side code the real step-invoker
-  calls when building a step's agent. "Moves into the child" means "moves into
-  the sidecar code that the `bin/workflow-child` binary already runs," not a
-  new process hop.
+- **What the child runs:** `materializeToolPackages`
+  (`packages/tool-packaging/src/tool-materialization.ts`) and the loader
+  (`createToolLoader`, `createTarballCache`, `applyAtomic`), called by the
+  app materializer (`apps/sidecar/src/step-tool-materialization.ts`), which
+  reads the deploy tree through `readDeployTree` from `@intx/hub-agent/paths`.
+  The plugin-chain instantiation (including LSP subprocess lifecycle, posix
+  `env.plugins` threading, and disposer capture) is
+  `packages/workflow-host/src/child/step-tools.ts`. The real step-invoker
+  calls that code when building a step's agent. "In the child" means "in the
+  process the `bin/workflow-child` binary already runs," not a new process hop.
 - **What's reused unchanged:** the `@intx/tool-packaging` package itself, the
   `@intx/agent` `defineAgent` / `createAgent` surface, the
   `@intx/storage-isogit` stores, the inference runtime. None of these are
-  re-implemented; their call sites move from the in-process harness builder
-  into the substrate factory the child binary runs.
+  re-implemented; the substrate factory the child binary runs calls them.
 - **Rooting.** The tarball cache and tool instance dir root per agent/step
   under the workflow-run repo's working tree (the child has `getRepoDir`). For
   a single long-lived agent there is one materialization, reused across
@@ -469,21 +477,22 @@ _child_.
   invocation as today.
 
 **Layering — why `@intx/workflow-host` stays portable (the clarification
-strengthens the call).** `@intx/workflow-host` is deliberately host-agnostic:
-it takes substrate, spawner, mail bus, and step-invoker as injected bindings,
-and the step-invoker accepts `buildEnv` + `agentFactory`
+strengthens the call).** `@intx/workflow-host` takes substrate, spawner, mail
+bus, step-invoker, and `materializeStepTools` as injected bindings, and the
+step-invoker accepts `buildEnv` + `agentFactory`
 (`packages/workflow-host/src/adapters/step-invoker.ts`,
-`WorkflowStepInvokerOpts`). The host-specific tool runtime —
-`@intx/tool-packaging`, the LSP plugin, posix — lives entirely in
-`apps/sidecar` (the substrate factory and the code reachable from
-`bin/workflow-child`). Because the child _is_ the sidecar binary, the sidecar's
-tool runtime is present in the child's address space without workflow-host ever
-depending on it. The portable package never gains a dependency on the tool
-runtime; an alternative host that ships a different `bin/workflow-child` with a
-different tool runtime reuses all of workflow-host unchanged. The locus
-correction (tools run _in_ the child, which is the sidecar binary) is precisely
-what makes this clean: one process, one tool runtime, and a portable
-orchestration package that knows nothing about it.
+`WorkflowStepInvokerOpts`). The package does not depend on
+`@intx/tool-packaging` or `@intx/hub-agent`. The host-specific deploy-tree
+read is `apps/sidecar/src/step-tool-materialization.ts`. The factory
+(`packages/workflow-host/src/child/substrate-factory.ts`) and the plugin
+attachment (`packages/workflow-host/src/child/step-tools.ts`) are what the
+child binary loads. Because the child _is_ the sidecar binary, the injected
+materializer is present in the child's address space without the package
+importing it. An alternative host that ships a different `bin/workflow-child`
+and a different materializer reuses the orchestration package unchanged. The
+locus (tools run _in_ the child, which is the sidecar binary) is what makes
+this clean: one process, one tool runtime, and a portable orchestration
+package that does not import that runtime.
 
 This is the second genuinely hard part: the LSP-subprocess-inside-the-child
 lifecycle is the riskiest sub-item, and it is what the sandbox boundary
@@ -509,17 +518,23 @@ boundary must be **pluggable**, not pinned to host subprocesses, because the
 unit may need to run as a plain process today and a hardened container or
 namespace tomorrow without re-architecting the supervisor.
 
-**The seam — where it plugs in.** The supervisor already takes its child-launch
-strategy as two injected bindings, in `apps/sidecar/src/workflow-host-wiring.ts`:
+**The seam — where it plugs in.** The supervisor takes its child-launch
+strategy as two injected bindings. The types `SubprocessSpawner` and
+`SubprocessHandle` live on `packages/workflow-host/src/supervisor/types.ts`.
+The in-tree Bun spawner resolves the binary in
+`apps/sidecar/src/workflow-child-spawner.ts`, and the deploy router
+(`packages/workflow-host/src/deploy/workflow-host-wiring.ts`) threads the two
+bindings through to the per-deployment supervisor:
 
-- `binaryPath` — the executable the child runs (defaults to
-  `SIDECAR_WORKFLOW_CHILD_BINARY`, the resolved `bin/workflow-child`).
+- `binaryPath` — the executable the child runs. The sidecar resolves
+  `SIDECAR_WORKFLOW_CHILD_BINARY` (`bin/workflow-child`) and passes it in.
 - `subprocessSpawner: SubprocessSpawner` — the function that launches the child
   and returns a `SubprocessHandle` (`pid`, `controlWriter`, `controlReader`,
-  `eventReader`, `kill`, `exited`). The default is `defaultSubprocessSpawner`,
-  which calls `Bun.spawn([binaryPath], { stdio: [...], env })`. The deploy
-  router threads `multistepSubprocessSpawner` / `multistepBinaryPath` through
-  `createSidecarDeployRouter` to the per-deployment supervisor.
+  `eventReader`, `kill`, `exited`). The in-tree default is
+  `defaultSubprocessSpawner`, which calls
+  `Bun.spawn([binaryPath], { stdio: [...], env })`. The deploy router threads
+  `multistepSubprocessSpawner` / `multistepBinaryPath` through
+  `createSidecarDeployRouter`.
 
 This seam **is** the sandbox-boundary plug point. A sandbox implementation is a
 `SubprocessSpawner` (plus, where needed, a `binaryPath` that points at a
@@ -601,7 +616,7 @@ container infra for INTR-209.
 The `SandboxBoundary` applies at **every spawn rung**, not just sidecar->child.
 The child's own `spawnChild` path is the same seam one level down:
 
-- Today, `createSidecarRunChild` (`apps/sidecar/src/workflow-substrate-factory.ts`)
+- Today, `createSidecarRunChild` (`packages/workflow-host/src/child/substrate-factory.ts`)
   builds the child's `spawnChild` slot via `createWorkflowSpawnChild`
   (`packages/workflow-host/src/adapters/spawn-child.ts`), and that adapter
   resolves the child `definitionRef` and delegates to a `runChild` callback that
@@ -631,7 +646,7 @@ must hold no matter how deep the nesting:
   forwards over the control IPC to the rung-0 supervisor). A grandchild's writes
   land under `runs/<grandchildRunId>/...` of the _same_ rung-0 workflow-run repo,
   sibling to its ancestors' subtrees (sub-namespacing in
-  `apps/sidecar/src/workflow-substrate-factory.ts`). There is one writer and one
+  `packages/workflow-host/src/child/substrate-factory.ts`). There is one writer and one
   repo; depth only adds `runId` subtrees. **This already works.**
 - **Sandboxed sub-child (a hardened rung):** a sub-child in its own
   container/namespace can no longer share the parent's in-memory proxy object.
@@ -692,7 +707,7 @@ them:
   surfaced the framing requirement.)
 - Supervisor reads the event channel and the DeployRouter forwards via
   `publishWorkflowInferenceEvent(frame.agentAddress, event)` in
-  `apps/sidecar/src/workflow-host-wiring.ts`.
+  `packages/workflow-host/src/deploy/workflow-host-wiring.ts`.
 - The hub fans the event to per-agent listeners -> the timeline.
 
 **Decision: thread the agent's `onEvent` through the step-invoker to the event
@@ -709,7 +724,7 @@ channel.** As built:
   the cache holds a mutable per-entry sink that each invocation points at its
   own step before `agent.send` and clears after, so a stray event between
   messages is dropped rather than delivered to a torn-down channel.
-- `apps/sidecar/src/workflow-substrate-factory.ts` supplies the sink instead of
+- `packages/workflow-host/src/child/substrate-factory.ts` supplies the sink instead of
   discarding it, threading it through the per-step env builder and the
   child-run env to the child's event sender. A missing sink on the child path
   is treated as a wiring defect and throws, rather than silently dropping the
@@ -735,9 +750,9 @@ recorded here as a deliberate API change rather than a one-line edit.
 
 Today one child hosts one deployment: `activeSupervisors` keys one supervisor
 (thus one child) per deployment address in
-`apps/sidecar/src/workflow-host-wiring.ts`, and the substrate factory pins one
+`packages/workflow-host/src/deploy/workflow-host-wiring.ts`, and the substrate factory pins one
 `WORKFLOW_RUN_REPO_ID` at spawn
-(`apps/sidecar/src/workflow-substrate-factory.ts`). Neither is a substrate law:
+(`packages/workflow-host/src/child/substrate-factory.ts`). Neither is a substrate law:
 
 - One child **already** hosts many concurrent runs (the dispatch loop and
   `discoverInFlightRuns` drive N runs; sub-namespacing is `runs/<runId>/...`).
@@ -859,7 +874,7 @@ DeployRouter's isolation-domain computation -> the supervisor/child the deploy
 binds to:
 
 - **Domain-key derivation** (in the DeployRouter,
-  `apps/sidecar/src/workflow-host-wiring.ts`, replacing the per-deployment-address
+  `packages/workflow-host/src/deploy/workflow-host-wiring.ts`, replacing the per-deployment-address
   `activeSupervisors` key):
   - `granularity: "per-tenant"` => domain key = the tenant id. All per-tenant
     workflows for one tenant resolve to the **same** key and therefore the same
@@ -897,7 +912,7 @@ nested rung **under a running child**, managed by that child's own sub-child
 registry:
 
 - **Top-level (rung 0):** keyed by the workflow-level isolation domain in the
-  sidecar's `activeSupervisors` (`apps/sidecar/src/workflow-host-wiring.ts`), as
+  sidecar's `activeSupervisors` (`packages/workflow-host/src/deploy/workflow-host-wiring.ts`), as
   above. This is the only map the DeployRouter touches.
 - **Nested (rung ≥ 1):** when a node's effective isolation is stricter than its
   rung, the rung's `createSidecarRunChild` `runChild` (the spawner one level
@@ -962,7 +977,7 @@ computation.
 #### What enforces per-run isolation within a shared child
 
 Sub-namespacing: every run's substrate access is keyed `runs/<runId>/...`
-(`apps/sidecar/src/workflow-substrate-factory.ts` documents this). Each run's
+(`packages/workflow-host/src/child/substrate-factory.ts` documents this). Each run's
 agent gets its own workdir/storage root; the per-step env builder roots storage
 per step/run. Two runs in one child cannot see each other's state because every
 substrate adapter routes through `runId`. The remaining shared surfaces inside a
@@ -995,9 +1010,9 @@ same child/workflow-run model as the multi-step path:
 - **Workflow-run repo id.** The child's workflow-run repo for a single-agent
   deploy is keyed by `deriveWorkflowRunRepoId(address)`
   (`packages/workflow-deploy/src/orchestrator.ts`), which sanitizes the run
-  address into a substrate-safe slug. This is how the single-step branch
-  keys its workflow-run repo today
-  (`apps/sidecar/src/workflow-host-wiring.ts`). The read/write repo-id
+  address into a substrate-safe slug. The deploy router calls that injected
+  function
+  (`packages/workflow-host/src/deploy/workflow-host-wiring.ts`). The read/write repo-id
   invariant (hub reconstructs the same slug for reads) is preserved.
 - **Grants placement.** The supervisor's credentials assembly reads each step's
   grants from `state/grants.json` in the step's `agent-state` repo
@@ -1096,29 +1111,33 @@ re-serviced.
   Reused), but the `HarnessBuilder` type in
   `packages/hub-agent/src/harness-builder.ts` survives, reduced to a
   one-method `canBuildSource` admission check.
-- `apps/sidecar/src/workflow-host-wiring.ts`: the in-process trivial deploy
-  branch (`frame.workflow === undefined`) and the hand-rolled run-event
-  projector — `driveTrivialRunChain`, `TrivialRunCell`, `TRIVIAL_STEP_ID`,
-  `TRIVIAL_DEFINITION_HASH`. The native `runtimeRun` bracket replaces the
-  projector.
+- The in-process trivial deploy branch (`frame.workflow === undefined`) and
+  the hand-rolled run-event projector — `driveTrivialRunChain`,
+  `TrivialRunCell`, `TRIVIAL_STEP_ID`, `TRIVIAL_DEFINITION_HASH`. The deploy
+  router (`packages/workflow-host/src/deploy/workflow-host-wiring.ts`) has
+  none of them. The native `runtimeRun` bracket replaces the projector.
 - The `TrivialLaunch` / `TrivialLaunchBindings` / `trivialLaunch` seam in
   `packages/workflow-host/src/supervisor/types.ts` and
   `supervisor/supervisor.ts`: with every deploy going through `spawn()` + real
   step execution, the in-process-launch callback is dead.
 - The substrate factory's top-level stub invoker `baseInvokeStep` and the
-  throwing-Proxy `StepEnvBase` slots in
-  `apps/sidecar/src/workflow-substrate-factory.ts` — replaced by a real
-  step-invoker over `createSidecarStepBuildEnv`. `childInvokeStep` is likewise
-  a real tool-bearing invoker now (INTR-310): the fail-loud
+  throwing-Proxy `StepEnvBase` slots — replaced by a real step-invoker over
+  `createSidecarStepBuildEnv` in
+  `packages/workflow-host/src/child/substrate-factory.ts`. `childInvokeStep`
+  is likewise a real tool-bearing invoker now (INTR-310): the fail-loud
   `ChildStepNotImplementedError` placeholder is gone.
 
 ### Reused (one implementation, in the child = the sidecar binary)
 
-- Tool composition: `materializeToolPackages` logic from `default-harness.ts`
-  plus `@intx/tool-packaging` (loader, tarball cache, `applyAtomic`) and the
-  plugin/LSP chain. Its call sites move into the substrate factory the child
-  binary runs (§3d); the portable `@intx/workflow-host` does not gain the
-  dependency. Connected via the step-invoker's `buildEnv`/`agentFactory`.
+- Tool composition: `materializeToolPackages`
+  (`packages/tool-packaging/src/tool-materialization.ts`), called by the
+  app's `materializeStepTools`
+  (`apps/sidecar/src/step-tool-materialization.ts`), plus
+  `@intx/tool-packaging` (loader, tarball cache, `applyAtomic`) and the
+  plugin/LSP chain in `packages/workflow-host/src/child/step-tools.ts`.
+  The factory takes the materializer as an injected binding (§3d), so
+  `@intx/workflow-host` does not depend on `@intx/tool-packaging`. Connected
+  via the step-invoker's `buildEnv`/`agentFactory`.
 - Inference source resolution: the per-step source table the substrate factory
   already parses (`createSidecarStepBuildEnv`, `STEP_INFERENCE_SOURCES`).
 - The agent runtime: `@intx/agent` `defineAgent` / `createAgent`, the reactor,
@@ -1129,11 +1148,13 @@ re-serviced.
 - The entire supervisor/child orchestration, IPC, substrate-write bridge,
   scheduler, recycle/drain/terminal machinery — already real, unchanged in
   shape.
-- **The child-launch seam** (`SubprocessSpawner` / `binaryPath` /
-  `SubprocessHandle` in `apps/sidecar/src/workflow-host-wiring.ts`,
-  `defaultSubprocessSpawner`): reused as-is and **generalized into the
-  `SandboxBoundary` plug point** (§3d-bis). No change to the supervisor/child
-  IPC contract; sandbox implementations are new `SubprocessSpawner`s added later.
+- **The child-launch seam** (`SubprocessSpawner` / `SubprocessHandle` on
+  `packages/workflow-host/src/supervisor/types.ts`; `defaultSubprocessSpawner`
+  and `SIDECAR_WORKFLOW_CHILD_BINARY` in
+  `apps/sidecar/src/workflow-child-spawner.ts`): reused as-is and
+  **generalized into the `SandboxBoundary` plug point** (§3d-bis). No change
+  to the supervisor/child IPC contract; sandbox implementations are new
+  `SubprocessSpawner`s added later.
 
 ### New design surface (did not exist before this revision)
 
@@ -1156,7 +1177,7 @@ re-serviced.
   `createWorkflowSpawnChild` `runChild` path gain the same boundary seam.
   Concrete `os-namespace`/`oci-container` spawners are deferred (later phase, §5).
 - The DeployRouter isolation-domain key derivation
-  (`apps/sidecar/src/workflow-host-wiring.ts`, generalizing `activeSupervisors`
+  (`packages/workflow-host/src/deploy/workflow-host-wiring.ts`, generalizing `activeSupervisors`
   from per-deployment-address to per-isolation-domain) **plus the per-child
   sub-child registry** (the recursive analogue, owned by each child), per
   Decision 2 + the recursive refinement.
@@ -1180,8 +1201,10 @@ special case — or deleted where the in-process branch it served is gone:
 - `isTrivialDeploy` / `trivialBindings` / the trivial orchestrator branch:
   **deleted** — single-step deploys route through the multi-step branch, so no
   `isSingleStepDeploy` replacement was needed.
-- `deriveDeploymentId` (`apps/sidecar/src/workflow-host-wiring.ts`): kept; still
-  called at the workflow-host wiring sites.
+- `deriveDeploymentId`: deleted. Call sites use `deriveWorkflowRunRepoId`
+  (`packages/workflow-deploy/src/orchestrator.ts`). The deploy router
+  (`packages/workflow-host/src/deploy/workflow-host-wiring.ts`) calls that
+  injected function.
 - `TrivialLaunch` / `trivialLaunch` / `trivialClaimedSlugSucceeded`: deleted
   with the in-process branch.
 
@@ -1206,7 +1229,9 @@ non-deterministic).
 
 ### Phase 1 — Child runs a real agent for one step
 
-- **Changes.** `apps/sidecar/src/workflow-substrate-factory.ts`: replace the
+- **Changes.** Edit the substrate factory as it stood for this phase
+  (`apps/sidecar/src/workflow-substrate-factory.ts`; the module lives at
+  `packages/workflow-host/src/child/substrate-factory.ts`): replace the
   throwing-Proxy `StepEnvBase` slots in `createSidecarStepBuildEnv` with real
   per-step storage/workdir/audit/directors; replace `baseInvokeStep`'s
   placeholder with a real `createWorkflowStepInvoker({ workflowAuthorize,
@@ -1271,7 +1296,11 @@ the field is needed.
   defaulting/validation and `projectForHash` inclusion for every occurrence
   (`packages/workflow/src/definition/workflow.ts`). (2) Introduce the
   `SandboxBoundary` strategy + THE CONTRACT around the existing
-  `SubprocessSpawner`/`binaryPath` seam (`apps/sidecar/src/workflow-host-wiring.ts`),
+  `SubprocessSpawner`/`binaryPath` seam (`SubprocessSpawner` /
+  `SubprocessHandle` on `packages/workflow-host/src/supervisor/types.ts`,
+  `defaultSubprocessSpawner` and `SIDECAR_WORKFLOW_CHILD_BINARY` in
+  `apps/sidecar/src/workflow-child-spawner.ts`, threaded by
+  `packages/workflow-host/src/deploy/workflow-host-wiring.ts`),
   with only the `host-subprocess` implementation (the existing
   `defaultSubprocessSpawner`) wired. No `os-namespace`/`oci-container` yet.
 - **Verification.** (1) `defineWorkflow` defaults absent workflow-level
@@ -1293,7 +1322,8 @@ declared isolation** and stay in-process when nothing stricter is declared — t
 base-build behavior of the recursive model, with **no sandboxed sub-child yet**.
 
 - **Changes.** Thread each node's effective isolation into the rung's
-  `runChild` decision (`apps/sidecar/src/workflow-substrate-factory.ts`): no
+  `runChild` decision (`createSidecarRunChild` in
+  `packages/workflow-host/src/child/substrate-factory.ts`): no
   stricter declaration => in-process (today's path, unchanged); stricter
   declaration => a structured "sandboxed sub-child required but the hardened
   boundary is not yet implemented" error (loud, not silent). Add the per-child
@@ -1385,11 +1415,16 @@ set: the capability walk folds an inline child's grants into the spawning
 primitive's approval (`collectPrimitiveGrants`), so nothing a child step can do
 exceeds operator consent. At **runtime** the child is capped to what the child
 body itself declares rather than inheriting the whole run's flat grant set.
-`buildChildRunEnv` re-walks the child's own definition in process
-(`walkCapabilities` over the **pre-rewrite** definition, so inline grandchildren
-fold in, with plugin tool definitions loaded from the shared closure) to collect
-the child body's declared resource set, then filters the parent run's grants to
-it (`child-grant-filter.ts`): every `deny` / `ask` rule is kept unconditionally
+`buildChildRunEnv`
+(`packages/workflow-host/src/child/substrate-factory.ts`) caps the child
+through `capAndPersistChildGrants`. That helper hands the **pre-rewrite**
+definition — its childWorkflow grandchildren still inline — to the injected
+`collectDeclaredResources`, then filters the parent run's grants with the
+injected `filterGrantsToDeclaredResources`
+(`packages/workflow-deploy/src/child-grant-filter.ts`). The collector walks
+the definition with `walkCapabilities`, so inline grandchildren fold in, with
+plugin tool definitions loaded from the shared closure. The filter keeps
+every `deny` / `ask` rule unconditionally
 (dropping an `ask` floor would punch through an approval gate), and an `allow`
 rule is kept only when its resource pattern covers a declared resource (via
 `matchPattern`, so a wildcard grant survives). The parent stays the ceiling — the
@@ -1694,9 +1729,10 @@ below mail and strictly below the rung-0 warm agent; it reuses the existing
 The unified host is proven by four classes of check:
 
 1. **Existing INTR-209 fixture, re-run on the unified host.** The green
-   `tests/workflow-deploy/multistep-signal.test.ts` fixture (and the sidecar
-   `workflow-host-wiring*.test.ts` suite) must pass unchanged against the
-   unified host — multi-step deploy/dispatch/signal/drain/resume must continue
+   `tests/workflow-deploy/multistep-signal.test.ts` fixture (and the
+   `packages/workflow-host/src/deploy/workflow-host-wiring*.test.ts` suite)
+   must pass unchanged against the unified host — multi-step
+   deploy/dispatch/signal/drain/resume must continue
    to work, now with **real** step output instead of placeholder. A passing
    fixture with real step execution is the multi-step acceptance gate.
 
@@ -1758,9 +1794,10 @@ are explicitly **not** a go-live gate for INTR-209.
   the agent repo store); `HarnessBuilder`
   (`packages/hub-agent/src/harness-builder.ts`, now a one-method
   `canBuildSource` admission seam).
-- Tool-package materialization: `apps/sidecar/src/tool-materialization.ts`
-  (`materializeToolPackages`).
-- Plugin-chain composition: `apps/sidecar/src/step-agent-tools.ts`
+- Tool-package materialization: `packages/tool-packaging/src/tool-materialization.ts`
+  (`materializeToolPackages`). The sidecar calls it from
+  `apps/sidecar/src/step-tool-materialization.ts` (`materializeStepTools`).
+- Plugin-chain composition: `packages/workflow-host/src/child/step-tools.ts`
   (`createToolBearingAgentFactory`, `attachStepTools`).
 - Source-admission seam: `apps/sidecar/src/default-harness.ts`
   (`canBuildSource`; it admits a step's pinned inference source and does
@@ -1783,25 +1820,32 @@ are explicitly **not** a go-live gate for INTR-209.
   event sender, `trigger.fired` handling).
 - Mail bus: `packages/workflow-host/src/mail-bus/hub-transport-adapter.ts`
   (`routeInbound`, `subscribeMailForAddress`).
-- Substrate factory: `apps/sidecar/src/workflow-substrate-factory.ts`
+- Substrate factory: `packages/workflow-host/src/child/substrate-factory.ts`
   (`createSidecarSubstrateFactory`, `createSidecarStepBuildEnv`, the real
   top-level step-invoker, `childInvokeStep` — the real tool-bearing
   child-runtime invoker (INTR-310), `buildChildRunEnv`,
-  `readChildStepInferenceSources`, `SIDECAR_SUBSTRATE_CONFIG_KEYS`,
-  `STEP_INFERENCE_SOURCES`, `listActiveDeployments`, sub-namespacing).
-- Child grant cap: `apps/sidecar/src/child-grant-filter.ts`
-  (`collectDeclaredResources`, `filterGrantsToDeclaredResources`).
+  `capAndPersistChildGrants`, `readChildStepInferenceSources`,
+  `SIDECAR_SUBSTRATE_CONFIG_KEYS`, `STEP_INFERENCE_SOURCES`,
+  `listActiveDeployments`, sub-namespacing). The sidecar closes that factory
+  in `apps/sidecar/src/workflow-child-bindings.ts`.
+- Child grant cap: `packages/workflow-deploy/src/child-grant-filter.ts`
+  (`collectDeclaredResources`, `filterGrantsToDeclaredResources`). The
+  factory calls both as injected bindings.
 - Child binary (the child _is_ the sidecar binary): `apps/sidecar/bin/workflow-child`
-  (imports `createSubstrate` + `SIDECAR_SUBSTRATE_CONFIG_KEYS`, runs
-  `runWorkflowChildFromProcessEnv`).
-- Deploy router / wiring: `apps/sidecar/src/workflow-host-wiring.ts`
+  (imports `runWorkflowChildFromProcessEnv` from `@intx/workflow-host`, and
+  `createSubstrate` + `SIDECAR_SUBSTRATE_CONFIG_KEYS` from
+  `apps/sidecar/src/workflow-child-bindings.ts`).
+- Deploy router: `packages/workflow-host/src/deploy/workflow-host-wiring.ts`
   (`createSidecarDeployRouter`, `deployMultiStep`, `activeSupervisors`,
-  `deriveDeploymentId`, `publishWorkflowInferenceEvent`).
-- Child-launch / sandbox-boundary seam (Decision 1):
-  `apps/sidecar/src/workflow-host-wiring.ts` (`SubprocessSpawner`,
-  `SubprocessHandle`, `defaultSubprocessSpawner`, `binaryPath`,
-  `SIDECAR_WORKFLOW_CHILD_BINARY`; `multistepSubprocessSpawner` /
-  `multistepBinaryPath` threaded through `createSidecarDeployRouter`).
+  `publishWorkflowInferenceEvent` as an injected dependency). The workflow-run
+  repo id is `deriveWorkflowRunRepoId`
+  (`packages/workflow-deploy/src/orchestrator.ts`).
+- Child-launch / sandbox-boundary seam (Decision 1): `SubprocessSpawner` and
+  `SubprocessHandle` on `packages/workflow-host/src/supervisor/types.ts`;
+  `defaultSubprocessSpawner` and `SIDECAR_WORKFLOW_CHILD_BINARY` in
+  `apps/sidecar/src/workflow-child-spawner.ts`; `multistepSubprocessSpawner` /
+  `multistepBinaryPath` threaded through `createSidecarDeployRouter`
+  (`packages/workflow-host/src/deploy/workflow-host-wiring.ts`).
 - Workflow-definition surface (Decision 2, isolation not yet added):
   `packages/workflow/src/definition/workflow.ts` (`WorkflowDefinition`,
   `WorkflowConfig`, `SingularWorkflowConfig`, `defineWorkflow`, `normalize`,
@@ -1814,7 +1858,7 @@ are explicitly **not** a go-live gate for INTR-209.
   `MapPrimitive`/`MapOpts`). Per-node `isolation` will attach to the
   spawn-trigger primitives and their constructors.
 - Recursive spawn / per-rung host (already exists; the recursion point):
-  `apps/sidecar/src/workflow-substrate-factory.ts` (`createSidecarRunChild`
+  `packages/workflow-host/src/child/substrate-factory.ts` (`createSidecarRunChild`
   self-referential `runChild`, sub-namespace `runs/<runId>/...`, proxy
   `RepoStore`); `packages/workflow-host/src/adapters/spawn-child.ts`
   (`createWorkflowSpawnChild`, `SpawnChildWorkflow`, `RunChildWorkflow`,
