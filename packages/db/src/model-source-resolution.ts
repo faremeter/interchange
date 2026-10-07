@@ -33,24 +33,22 @@ export type SourceSkip =
 
 /**
  * Outcome of resolving an agent's model requirements to an ordered set of
- * inference sources. The order is the routing order: the head is the
- * default, the tail is the failover chain.
+ * inference sources. The order is the routing order: the head is the default,
+ * the tail is the failover chain.
  *
- * `model_unavailable.skips` enumerates the offerings that were eligible for
- * the model but could not produce a launchable source (wallet-backed, or an
- * unresolvable credential). It is empty when no offering was eligible at all
- * — the model is absent from the tenant catalog, or the capability and
- * preference filters excluded every offering — a case the launch path can
- * distinguish from a populated `skips` when explaining the failure.
+ * `model_unavailable.skips` enumerates the offerings that were eligible for the
+ * model but could not produce a launchable source. It is empty when no offering
+ * was eligible at all -- the model is absent from the tenant catalog, or the
+ * capability and preference filters excluded every offering -- a case the launch
+ * path can distinguish from a populated `skips` when explaining the failure.
  */
 export type CatalogSourceResolution =
   | {
       ok: true;
       sources: InferenceSource[];
       // The credential material backing the resolved sources, deduped by
-      // `credentialId`. A source references its credential by id only; the
-      // secret rides here so the caller can seal it into the run's unified
-      // credential-material cell.
+      // `credentialId`. The secret rides here so the caller can seal it into
+      // the run's unified credential-material cell.
       materials: CredentialMaterialEntry[];
     }
   | { ok: false; reason: "no_requirements" }
@@ -129,9 +127,9 @@ async function buildSource(
   const { provider, model, offering } = resolved;
 
   if (provider.credentialId === null) {
-    // No credential reference. A wallet-backed provider is a valid catalog
-    // row but not launchable in this credential-backed-only release;
-    // anything else is a misconfigured row.
+    // No credential reference. A wallet-backed provider is a valid catalog row
+    // but not launchable in this credential-backed-only release; anything else
+    // is a misconfigured row.
     if (provider.walletId !== null) {
       return {
         ok: false,
@@ -145,8 +143,8 @@ async function buildSource(
   }
 
   // Resolve the secret through the tenant-scoped credential resolver so a
-  // provider row referencing a credential outside the tenant's ancestor
-  // chain cannot leak that secret (the chain is the authority).
+  // provider row referencing a credential outside the tenant's ancestor chain
+  // cannot leak that secret (the chain is the authority).
   const credential = await resolveCredentialById(
     db,
     tenantId,
@@ -160,14 +158,11 @@ async function buildSource(
   }
 
   // Authority to use a credential through a catalog provider is ownership
-  // within the tenant hierarchy -- the same rule the tool-binding path resolves
-  // (`source: "tenant"`). `resolveCredentialById` above already proved the
-  // credential is reachable in this tenant's ancestor chain, so a tenant-owned
-  // credential (`principalId IS NULL`) is authorized here by ownership alone,
-  // with no personal grant and no role grant consulted. This runs live on every
-  // launch and rotation, so a catalog edit that adds an eligible credential is
-  // picked up without re-materializing any grant. A principal-owned credential
-  // is not usable through a shared catalog provider; fail closed.
+  // within the tenant hierarchy, the same rule the tool-binding path resolves.
+  // `resolveCredentialById` above already proved the credential is reachable in
+  // this tenant's ancestor chain, so a tenant-owned credential (`principalId IS
+  // NULL`) is authorized by ownership alone. A principal-owned credential is not
+  // usable through a shared catalog provider; fail closed.
   if (credential.principalId !== null) {
     return {
       ok: false,
@@ -175,20 +170,14 @@ async function buildSource(
     };
   }
 
-  // Validate the row once at this DB-to-runtime boundary. This narrows the
+  // Validate the row once at this DB-to-runtime boundary: this narrows the
   // jsonb `quirks` from `unknown` to a `Record | null` and checks
   // `capabilities` against the curated enum. `quirks` is spread in only when
-  // non-null so a source with no accommodations omits the key entirely
-  // (InferenceSource.quirks is present-or-absent, never null). The capability
-  // filter in resolveModelSources still reads the raw row's `capabilities`
-  // for its `.includes` check; that read-only comparison cannot be corrupted
-  // into a wrong routing decision, so it is left as-is.
+  // non-null so a source with no accommodations omits the key entirely.
   // Decrypt the stored secret at the one point it is used. Strict: a
-  // non-ciphertext value (a row not yet re-keyed, or a write that failed to
-  // encrypt) throws rather than delivering a bad key -- fail closed. The secret
-  // rides the credential-material cell (keyed by `credentialId`), NOT the source
-  // config -- the source only references the credential by id, so no secret is
-  // inline in the pinned/persisted source.
+  // non-ciphertext value throws rather than delivering a bad key -- fail
+  // closed. The secret rides the credential-material cell (keyed by
+  // `credentialId`), NOT the source config.
   const secret = await credentialCipher.decrypt(
     credential.secret,
     credentialAad(credential.id, "secret"),
@@ -216,9 +205,9 @@ async function buildSource(
 
 /**
  * Rebuild an exact, ordered source chain from durable catalog offering ids.
- * This is the recovery counterpart to launch-time source selection: it keeps
- * secrets out of persisted launch specs and rechecks tenant visibility and
- * credential ownership on every launch.
+ * The recovery counterpart to launch-time source selection: it keeps secrets
+ * out of persisted launch specs and rechecks tenant visibility and credential
+ * ownership on every launch.
  */
 export async function resolveSourcesByOfferingIds(
   db: DB["db"],
@@ -249,32 +238,25 @@ export async function resolveSourcesByOfferingIds(
 }
 
 /**
- * Resolves an agent's model requirements against the tenant catalog into an
+ * Resolve an agent's model requirements against the tenant catalog into an
  * ordered `InferenceSource[]` for the harness.
  *
  * For each requirement, the tenant-visible offerings for the named model are
  * filtered by the required capabilities, ordered by catalog priority, then
- * reordered by the creator preference and finally the invoker preference
- * (invoker preferences key on the canonical model name). Each surviving
- * offering is resolved to a credential-backed source; offerings that cannot
- * produce one are skipped. A required model that yields no source makes the
- * agent unlaunchable.
+ * reordered by the creator preference and finally the invoker preference.
+ * Each surviving offering is resolved to a credential-backed source; offerings
+ * that cannot produce one are skipped. A required model that yields no source
+ * makes the agent unlaunchable.
  *
  * A credential-backed source is emitted only when the launching tenant owns
  * the referenced credential within its hierarchy (ownership is the authority);
- * otherwise the offering is skipped (`credential_unauthorized`) and its secret
- * is withheld.
+ * otherwise the offering is skipped (`credential_unauthorized`).
  */
 export async function resolveModelSources(
   db: DB["db"],
   tenantId: string,
   requirements: ModelRequirement[],
-  // Decrypts each resolved credential secret at its point of use in
-  // `buildSource`. Required: the edge (the launch route / rotation push /
-  // allocation service) owns the cipher and always supplies a real one; the
-  // noop fallback for a keyless composition is resolved once at that edge
-  // (`resolveCredentialCipher` in the hub app), never defaulted here.
-  credentialCipher: CredentialCipher,
+  credentialCipher: CredentialCipher, // decrypts each secret before the projection drops it
   opts?: {
     invokerPreferences?: Record<string, ProviderPreference>;
   },
@@ -285,8 +267,7 @@ export async function resolveModelSources(
 
   const visible = await listVisibleOfferings(db, tenantId);
   const sources: InferenceSource[] = [];
-  // Dedupe material by credentialId across every requirement's chain: one
-  // credential backing several offerings is delivered once.
+  // Dedupe material by credentialId across every requirement's chain.
   const materials = new Map<string, CredentialMaterialEntry>();
 
   for (const requirement of requirements) {
@@ -347,30 +328,23 @@ export async function resolveModelSources(
 /**
  * Resolve an agent's model requirements to the credential-free
  * `{ provider, model }` inference preferences a folded workflow definition
- * carries on its step agent. Reuses `resolveModelSources` -- the same catalog
- * + creator-grant resolution the instance launch path runs -- and projects its
- * ordered sources to their `{ provider (plugin), model }` identity, dropping
- * the credentials: a definition's inference preference is hash-only, and the
- * credential-bearing sources are supplied per deploy on the workflow path.
+ * carries on its step agent. Reuses `resolveModelSources` and projects its
+ * ordered sources to their identity, dropping the credentials: a definition's
+ * inference preference is hash-only, and the credential-bearing sources are
+ * supplied per deploy on the workflow path.
  *
- * A requirement set that resolves to no source is a hard failure. A folded
+ * A requirement set that resolves to no source is a hard failure: a folded
  * agent whose model is unresolvable is undeployable, so this raises rather
- * than synthesizing an empty preference list that would silently strip the
- * agent's inference. It also raises when the resolved sources are not
- * injective on `(provider, model)` -- the projection would otherwise freeze
- * an ambiguous preference list whose lost `offering.id` distinctions cannot be
- * recovered after the agent's columns are dropped.
+ * than synthesizing an empty preference list. It also raises when the resolved
+ * sources are not injective on `(provider, model)` -- the projection would
+ * otherwise freeze an ambiguous preference list whose lost `offering.id`
+ * distinctions cannot be recovered after the agent's columns are dropped.
  */
 export async function resolveInferencePreferences(
   db: DB["db"],
   tenantId: string,
   requirements: ModelRequirement[],
-  // Required even though the result discards the credential: this reuses the
-  // full `resolveModelSources` path, which decrypts each secret at its point of
-  // use in `buildSource` before the `{provider, model}` projection drops it. So
-  // the caller must still supply the edge's real cipher; a noop here would throw
-  // the moment a tenant's secret is stored encrypted.
-  credentialCipher: CredentialCipher,
+  credentialCipher: CredentialCipher, // decrypts each secret before the projection drops it
 ): Promise<{ provider: string; model: string }[]> {
   const resolution = await resolveModelSources(
     db,
@@ -385,16 +359,12 @@ export async function resolveInferencePreferences(
   }
 
   // The projection to `{ provider (plugin), model }` drops the `offering.id`
-  // that keys each resolved source. Two distinct offerings can share a
-  // provider plugin and canonical model -- the catalog permits two
-  // `model_provider` rows on the same plugin (uniqueness is on the provider
-  // name), each offering the same model -- so the projection is only
-  // well-defined when the resolved sources are injective on `(provider,
-  // model)`. If they collapse, the folded definition's inference preferences
-  // cannot distinguish which offering each entry meant, and once the agent's
-  // columns are dropped that distinction is unrecoverable. Refuse to
-  // synthesize an ambiguous preference list: fail loud so the collapse
-  // surfaces in the fold/materialize manifest rather than freezing silently.
+  // that keys each resolved source. Two distinct offerings can share a provider
+  // plugin and canonical model, so the projection is only well-defined when the
+  // resolved sources are injective on `(provider, model)`. If they collapse, the
+  // folded definition's inference preferences cannot distinguish which offering
+  // each entry meant, and once the agent's columns are dropped that distinction
+  // is unrecoverable. Refuse to synthesize an ambiguous preference list.
   const preferences = resolution.sources.map((source) => ({
     provider: source.provider,
     model: source.model,
@@ -402,8 +372,7 @@ export async function resolveInferencePreferences(
   const seen = new Set<string>();
   for (const preference of preferences) {
     // Join on a NUL: it cannot appear in a provider plugin or canonical model
-    // name, so the composite key is collision-free. Written as an explicit
-    // unicode escape rather than an invisible raw control byte in the source.
+    // name, so the composite key is collision-free.
     const key = `${preference.provider}\u0000${preference.model}`;
     if (seen.has(key)) {
       throw new Error(
@@ -419,12 +388,11 @@ export async function resolveInferencePreferences(
 }
 
 /**
- * Resolves the ordered sources for a running instance from persisted state:
- * the definition's model requirements and the invoker's launch-time
- * preferences stored on the instance row. The credential-rotation and
- * catalog-edit source push resolves through this, so a running instance's
- * source list is a pure function of persisted state — re-resolution
- * reproduces the launch ordering, including the invoker's reorder/restrict.
+ * Resolve the ordered sources for a running instance from persisted state: the
+ * definition's model requirements and the invoker's launch-time preferences
+ * stored on the instance row. The credential-rotation and catalog-edit source
+ * push resolves through this, so a running instance's source list is a pure
+ * function of persisted state.
  */
 export async function resolveInstanceModelSources(
   db: DB["db"],
@@ -432,13 +400,10 @@ export async function resolveInstanceModelSources(
   instance: { definitionId: string; modelPreferences: unknown },
   credentialCipher: CredentialCipher,
 ): Promise<CatalogSourceResolution> {
-  // Resolve from the run's own definition by primary key. This is the SAME row
-  // the launch resolves its requirements from, so a rotation or catalog edit
-  // reproduces the launch's model resolution rather than drifting. Scope to the
-  // resolving tenant, matching the launch route: a definition in another tenant
-  // resolves to nothing rather than contributing another tenant's models. A
-  // definition with no creator principal cannot authorize a credential-backed
-  // source, so it fails closed like a missing definition.
+  // Resolve from the run's own definition by primary key, scoped to the
+  // resolving tenant: a rotation or catalog edit reproduces the launch's model
+  // resolution rather than drifting, and a definition in another tenant
+  // resolves to nothing.
   const definitionRow = await db.query.workflowDefinition.findFirst({
     where: and(
       eq(workflowDefinition.id, instance.definitionId),

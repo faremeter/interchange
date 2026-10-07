@@ -5,8 +5,8 @@ import { workflowRun } from "./workflow-run";
 
 /**
  * Immutable inputs required to recreate an exclusively placed workflow on a
- * replacement sidecar. Secrets are deliberately excluded: source offering
- * ids are resolved against the current catalog and principal authority when a
+ * replacement sidecar. Secrets are deliberately excluded: source offering ids
+ * are resolved against the current catalog and principal authority when a
  * generation is launched.
  */
 export const workflowRunLaunchSpec = pgTable("workflow_run_launch_spec", {

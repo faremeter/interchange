@@ -8,7 +8,7 @@ import { tenant } from "./schema/tenants";
 
 /**
  * Walks the tenant parentId chain from the given tenant up to the root.
- * Returns an ordered array of tenant IDs: [tenantId, parentId, grandparentId, ...rootId].
+ * Returns an ordered array of tenant IDs: [tenantId, parentId, ...rootId].
  *
  * Throws if the hierarchy contains a cycle instead of returning a partial
  * chain that could omit inherited policy or configuration.
@@ -69,15 +69,14 @@ export async function resolveTenantSidecarCapabilityPolicies(
 /**
  * Returns the tenant and every distinct tenant in its subtree (children,
  * their children, and so on), discovered breadth-first. Used to find every
- * tenant whose resolved catalog a change at `tenantId` affects — descendants
+ * tenant whose resolved catalog a change at `tenantId` affects -- descendants
  * inherit the ancestor's catalog, so a catalog edit must reach their running
  * agents too.
  *
- * Each level queries children by `parentId` membership rather than walking
- * one tenant at a time. A `visited` set both deduplicates the result and
- * guarantees termination: a tenant enters the frontier at most once, so even
- * a malformed cyclic hierarchy drains the frontier instead of looping. No
- * depth cap is imposed, so an arbitrarily deep tree is returned in full.
+ * Each level queries children by `parentId` membership rather than walking one
+ * tenant at a time. A `visited` set both deduplicates the result and guarantees
+ * termination: a tenant enters the frontier at most once, so even a malformed
+ * cyclic hierarchy drains the frontier instead of looping.
  */
 export async function getDescendantTenants(
   db: DB["db"],

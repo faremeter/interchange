@@ -24,10 +24,10 @@ export type AnyPgDatabase = PgDatabase<
 > & { $client: unknown };
 
 /**
- * The hub database handle: the database itself, plus `transaction` and
- * `close`. `createDB` returns the postgres-js instantiation, but the handle is
- * typed against `AnyPgDatabase` so the stores accept any pg driver -- a
- * caller-built pglite database included.
+ * The hub database handle: the database itself, plus `transaction` and `close`.
+ * `createDB` returns the postgres-js instantiation, but the handle is typed
+ * against `AnyPgDatabase` so the stores accept any pg driver -- a caller-built
+ * pglite database included.
  */
 export interface DB {
   db: AnyPgDatabase;
@@ -63,9 +63,6 @@ void _createDBReturnsDB;
  * transaction handle passed into a `db.transaction` callback. Store methods
  * that accept an optional `tx` type it against this so a caller can hand in
  * the transaction object and have the write join the surrounding transaction.
- * `DB["db"]` alone rejects a `PgTransaction` (it lacks the `$client` field the
- * top-level database carries), so a bare `DB["db"]` parameter cannot accept a
- * tx.
  */
 export type DBExecutor =
   | DB["db"]

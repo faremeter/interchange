@@ -6,12 +6,10 @@ import postgres from "postgres";
 
 import { DBConfig } from "./config";
 
-// Resolution of the migrations directory: the package layout pins
-// the drizzle-generated SQL at `<pkgRoot>/migrations`. This file
-// lives at `<pkgRoot>/src/migrate.ts`, so the directory is one level
-// up from `__dirname`. Resolving via `import.meta` keeps the runtime
-// honest about where it is reading SQL from instead of relying on a
-// cwd-relative path that breaks under callers that change `cwd`.
+// Resolution of the migrations directory: the drizzle-generated SQL sits at
+// `<pkgRoot>/migrations`, one level up from `__dirname`. Resolving via
+// `import.meta` keeps the runtime honest about where it reads SQL from instead
+// of relying on a cwd-relative path that breaks under callers that change `cwd`.
 const MIGRATIONS_DIR = path.resolve(
   path.dirname(new URL(import.meta.url).pathname),
   "..",
@@ -37,13 +35,12 @@ export function rewriteSchemaQualifiedReferences(
 }
 
 /**
- * Construct the single-connection postgres client used by the
- * migration and teardown entry points. Both paths share the same SSL
- * passthrough and suppress NOTICE-level diagnostics (cascade reports,
- * "schema already exists") that postgres.js logs by default but are
- * informational only in this harness context. The optional `searchPath`
- * pins `search_path` on connection-open so unqualified `CREATE TABLE`
- * statements land in the caller's schema.
+ * Construct the single-connection postgres client used by the migration and
+ * teardown entry points. Both share the same SSL passthrough and suppress
+ * NOTICE-level diagnostics (cascade reports, "schema already exists") that are
+ * informational only here. The optional `searchPath` pins `search_path` on
+ * connection-open so unqualified `CREATE TABLE` statements land in the caller's
+ * schema.
  */
 function createMigrationClient(
   config: DBConfig,
@@ -65,22 +62,17 @@ function createMigrationClient(
 }
 
 /**
- * Apply the drizzle-generated migration SQL into the given postgres
- * schema. The schema is created if absent; nothing else is dropped.
+ * Apply the drizzle-generated migration SQL into the given postgres schema.
+ * The schema is created if absent; nothing else is dropped.
  *
- * The migration source files reference the destination schema
- * literally (e.g. `"public"."user"` in FK constraints). To make the
- * same source apply cleanly into an arbitrary schema, we substitute
- * the literal token `"public"` with the quoted target schema before
- * executing each file. This is a textual substitution rather than a
- * postgres-side `search_path` trick because the FK references are
- * fully qualified; `search_path` would not redirect them.
- *
- * The substitution is bounded: the migration source is
- * machine-generated and never contains the string `"public"` other
- * than in schema-qualified identifiers, so there is no ambiguity to
- * worry about. The substitution is a no-op when the target schema is
- * literally `public`, which is the common case.
+ * The migration source files reference the destination schema literally (e.g.
+ * `"public"."user"` in FK constraints). To make the same source apply into an
+ * arbitrary schema, the literal token `"public"` is substituted with the quoted
+ * target schema before executing each file -- a textual substitution rather
+ * than a postgres-side `search_path` trick, because the FK references are fully
+ * qualified. The substitution is a no-op when the target schema is `public`,
+ * and is unambiguous because the machine-generated source never contains
+ * `"public"` other than in schema-qualified identifiers.
  */
 export async function runMigrations(
   configRaw: unknown,
@@ -99,19 +91,16 @@ export async function runMigrations(
   const schemaIdent = quoteIdentifier(schema);
 
   // Pin search_path on the migration connection so unqualified
-  // `CREATE TABLE "name"` statements land in the target schema.
-  // The FK references in the source SQL are already schema-qualified
-  // (`"public"."user"`); we rewrite those to the target schema
-  // below. Together these two mechanisms route every object the
-  // migration touches into the caller's schema.
+  // `CREATE TABLE "name"` statements land in the target schema. The
+  // FK references in the source SQL are already schema-qualified
+  // (`"public"."user"`); we rewrite those to the target schema below.
   const sql = createMigrationClient(config, schemaIdent);
 
   try {
-    // The CREATE SCHEMA must run on a connection that does not
-    // require the schema to already exist for search_path to be
-    // applied. postgres.js sets the GUC after connection-open, so
-    // CREATE SCHEMA IF NOT EXISTS here is the first statement and
-    // creates the schema before search_path matters.
+    // The CREATE SCHEMA must run on a connection that does not require the
+    // schema to already exist for search_path to be applied: postgres.js sets
+    // the GUC after connection-open, so CREATE SCHEMA IF NOT EXISTS here is the
+    // first statement and creates the schema before search_path matters.
     await sql.unsafe(`CREATE SCHEMA IF NOT EXISTS ${schemaIdent}`);
 
     const files = (await readdir(MIGRATIONS_DIR))

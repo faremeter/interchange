@@ -4,15 +4,12 @@ export type ModelPricingRow = typeof modelPricing.$inferSelect;
 
 /**
  * Selects the active pricing row per currency from an offering's append-only
- * price history. For each currency, the active row is the one with the
- * greatest `effectiveFrom` that is at or before `asOf`; rows dated after
- * `asOf` are not yet in effect. The `(offeringId, currency, effectiveFrom)`
- * uniqueness on the table guarantees no ties, so the selection is
- * unambiguous.
- *
- * Pure: `asOf` is a parameter, never read from the clock, so the same
- * function serves discovery (asOf = now) and historical cost attribution
- * (asOf = the call's billing timestamp).
+ * price history: for each currency, the row with the greatest `effectiveFrom`
+ * at or before `asOf`. The `(offeringId, currency, effectiveFrom)` uniqueness
+ * guarantees no ties, so the selection is unambiguous. Pure: `asOf` is a
+ * parameter, never read from the clock, so the same function serves discovery
+ * (asOf = now) and historical cost attribution (asOf = the call's billing
+ * timestamp).
  */
 export function resolveActivePrice(
   rows: ModelPricingRow[],

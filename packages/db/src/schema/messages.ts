@@ -20,10 +20,9 @@ export const inferenceTurn = pgTable(
       .references(() => agentSession.id, { onDelete: "cascade" }),
     // The endpoint that produced this turn: a workflow_run id (older rows may
     // carry an abandoned agent_instance id from before the fold, since the two
-    // shared one id space). This is a polymorphic reference that carries no
-    // foreign key; the collector-creation layer owns the invariant that the id
-    // names a live endpoint. It stays NOT NULL -- a turn always names its
-    // producer.
+    // shared one id space). A polymorphic reference that carries no foreign
+    // key; the collector-creation layer owns the invariant that the id names a
+    // live endpoint.
     runId: text("instance_id").notNull(),
     tenantId: text("tenant_id")
       .notNull()
@@ -78,8 +77,8 @@ export const sessionMail = pgTable(
     // The endpoint whose mail this is: null for a folded run (which keys its
     // mail on the session instead), or -- on older rows from before the fold --
     // an abandoned agent_instance id. A polymorphic reference that carries no
-    // foreign key (mirroring inference_turn.runId); the mail-write layer
-    // owns the invariant. Nullable -- absent for folded runs.
+    // foreign key (mirroring inference_turn.runId); the mail-write layer owns
+    // the invariant.
     runId: text("instance_id"),
     tenantId: text("tenant_id")
       .notNull()
@@ -93,9 +92,9 @@ export const sessionMail = pgTable(
   },
   (t) => [
     index("session_mail_instance_id_created_at_idx").on(t.runId, t.createdAt),
-    // A folded run's mail carries a null runId, so its history and prior-
-    // mail queries key on the session instead. This index supports that scan
-    // the way the runId index supports a legacy instance's.
+    // A folded run's mail carries a null runId, so its history and prior-mail
+    // queries key on the session instead. This index supports that scan the
+    // way the runId index supports a legacy instance's.
     index("session_mail_session_id_created_at_idx").on(
       t.sessionId,
       t.createdAt,
