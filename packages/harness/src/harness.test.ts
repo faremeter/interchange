@@ -1,6 +1,4 @@
-// Composition-layer tests for `createHarness`.
-//
-// These tests verify the layer's own responsibilities -- INBOX watch
+// Composition-layer tests for `createHarness`: INBOX watch
 // subscription, the connector router's pass-through default, lifecycle
 // teardown, and the pass-through surface exposed to consumers.
 // Behaviours that moved into `@intx/agent` as part of the harness
@@ -76,9 +74,9 @@ interface MockTransportShape {
 }
 
 function makeInboundMessage(uid: number): InboundMessage {
-  // The harness's INBOX pipeline reads `ref.uid`, `ref.mailbox`, and
-  // (via the connector router) headers like `from`, `to`,
-  // `inReplyTo`, `references`. Anything else stays mock-shaped.
+  // The harness pipeline reads `ref.uid`, `ref.mailbox`, and (via the
+  // connector router) headers like `from`, `to`, `inReplyTo`,
+  // `references`; anything else stays mock-shaped.
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub, never inspected beyond the fields the harness pipeline reads
   return {
     ref: { uid, mailbox: "INBOX" },
@@ -108,9 +106,9 @@ function makeMockTransport(): {
   const sent: unknown[] = [];
   const messages = new Map<number, InboundMessage>();
   const unfetchable = new Set<number>();
-  // The uids the mailbox holds, and the flags each carries. A uid leaves
-  // `present` only through an expunge, so a test can tell "the harness left
-  // the message alone" from "the harness consumed it".
+  // The uids the mailbox holds, and the flags each carries. A uid
+  // leaves `present` only through an expunge, so a test can tell "the
+  // harness left the message alone" from "the harness consumed it".
   const present = new Set<number>();
   const flagsByUid = new Map<number, Set<string>>();
   let unsubscribes = 0;
@@ -126,9 +124,9 @@ function makeMockTransport(): {
 
   // The harness reads `transport.watch`, `transport.fetchFull`,
   // `transport.search`, `transport.setFlags`, `transport.expunge`, and
-  // `transport.send`. The mock provides those; the rest of the
-  // `MessageTransport` surface is satisfied via the double-cast pattern,
-  // which the project conventions sanction for library-type test stubs.
+  // `transport.send`; the rest of the `MessageTransport` surface is
+  // satisfied via the double-cast pattern the project conventions
+  // sanction for library-type test stubs.
   const stub = {
     async watch(
       _mailbox: unknown,
@@ -151,9 +149,9 @@ function makeMockTransport(): {
       return message;
     },
     async search(_mailbox: string, query: SearchQuery): Promise<MessageRef[]> {
-      // The harness only ever queries by keyword. Any other query shape is a
+      // The harness only queries by keyword; any other query shape is a
       // change the mock has not been taught, so it says so rather than
-      // answering with an empty result the caller would read as "no match".
+      // answering with an empty result.
       const wanted = query.hasFlags;
       if (wanted === undefined || Object.keys(query).length !== 1) {
         throw new Error(
@@ -203,9 +201,9 @@ function makeMockTransport(): {
         messages.set(uid, message);
         present.add(uid);
       },
-      // An envelope `fetchFull` cannot assemble, a uid a concurrent expunge
-      // removed, or a faulting read: the transport throws rather than
-      // returning a message with its content omitted.
+      // An envelope `fetchFull` cannot assemble, a uid a concurrent
+      // expunge removed, or a faulting read: the transport throws rather
+      // than returning a message with its content omitted.
       enqueueUnfetchable(uid: number) {
         unfetchable.add(uid);
         present.add(uid);
@@ -245,9 +243,9 @@ function mailEnv(opts: {
     audit: noopAuditStore(),
     authorize: permissiveAuthorize(),
     directors: createDefaultDirectorRegistry(),
-    // Identity resolver: the mock adapter never sends the injected secret, so
-    // returning the credentialId as its own secret resolves any source these
-    // tests install (including the outbound env that overrides `sources`).
+    // Identity resolver: the mock adapter never sends the injected
+    // secret, so returning the credentialId as its own secret resolves
+    // any source these tests install.
     readCurrentMaterial: (credentialId) => ({ secret: credentialId }),
     transport: opts.transport,
     address: AGENT_ADDRESS,
@@ -255,9 +253,9 @@ function mailEnv(opts: {
 }
 
 // Empty mail-tool factory: declares the env requirements without
-// providing actual mail tools. These tests do not exercise mail-tool
-// invocation; they only verify the composition layer's transport-side
-// pipeline.
+// providing actual mail tools. These tests only verify the
+// composition layer's transport-side pipeline, not mail-tool
+// invocation.
 const emptyMailFactory = defineMailTools(
   () => ({
     definitions: [],
@@ -345,11 +343,9 @@ describe("createHarness", () => {
       // for the recorded fetch rather than for an interval.
       await waitUntil(() => control.getFetchedUids().includes(42));
 
-      // The harness must have fetched the message via the transport.
-      // Whether it then consumes from INBOX (start/continue routing)
-      // or leaves it intact (passthrough) depends on the inbound
-      // headers; both outcomes mean the pipeline ran, but the fetch
-      // is the precondition.
+      // Fetching is the precondition of the pipeline running, whether
+      // the message is then consumed (start/continue) or left intact
+      // (passthrough).
       expect(control.getFetchedUids()).toContain(42);
     } finally {
       await harness.close();
@@ -460,15 +456,14 @@ describe("createHarness outbound pipeline", () => {
 });
 
 describe("createWrappedStorageOverrides dirty-bit gating", () => {
-  // The boot-only restore fix pins the following invariant: the
-  // wrapped storage's `load()` calls `connectorRouter.restore(...)`
-  // only while no router commit has produced a state change. Once the
-  // router emits a state change the harness flips its in-memory-state-
-  // authoritative bit, and every subsequent `load()` returns the
-  // delegate's payload unchanged without resetting the router's
-  // in-memory snapshot. These tests pin the bit-gating directly so a
-  // regression in the load() guard is caught without depending on the
-  // full reactor cycle the end-to-end test exercises.
+  // Pins the boot-only restore fix: `load()` calls
+  // `connectorRouter.restore(...)` only while no router commit has
+  // produced a state change. Once the router emits a state change the
+  // in-memory state is authoritative and every subsequent `load()`
+  // returns the delegate's payload unchanged. These tests pin the
+  // bit-gating directly so a regression in the load() guard is caught
+  // without depending on the full reactor cycle the end-to-end test
+  // exercises.
 
   const makeStubStorage = (
     connectorState: unknown,
@@ -547,12 +542,11 @@ describe("createWrappedStorageOverrides dirty-bit gating", () => {
   });
 
   test("respects the bit's live value across successive loads", async () => {
-    // The harness reads the bit as a thunk every load, so a flip
-    // between two loads must be observed. The first load restores
-    // (bit=false). After the flip, the second load preserves the
-    // router's then-current snapshot (bit=true). Asserts both halves
-    // of the gating in a single closure so a single-direction read of
-    // the bit (cached at construction time) would fail one of them.
+    // The bit is read as a thunk every load, so a flip between two
+    // loads must be observed: the first load restores (bit=false), the
+    // second preserves the router's then-current snapshot (bit=true).
+    // A single-direction read of the bit (cached at construction)
+    // would fail one of the halves.
     const router = createConnectorRouter();
     let bit = false;
     const { storage, loadCount } = makeStubStorage(stateFromDisk);
@@ -564,8 +558,7 @@ describe("createWrappedStorageOverrides dirty-bit gating", () => {
     expect(loadCount()).toBe(1);
 
     // Simulate a router commit setting in-memory state and flipping
-    // the bit (this is the wiring the harness installs via
-    // onStateChanged).
+    // the bit (the wiring the harness installs via onStateChanged).
     router.restore(stateFromRouter);
     bit = true;
 
@@ -576,9 +569,9 @@ describe("createWrappedStorageOverrides dirty-bit gating", () => {
   });
 
   test("writeMetadata flushes the router's current snapshot through setConnectorState", async () => {
-    // Independent of the gating, the writeMetadata override has to
-    // forward the router's snapshot into the delegate store's
-    // setConnectorState buffer so the next durable write picks it up.
+    // The writeMetadata override must forward the router's snapshot
+    // into the delegate store's setConnectorState buffer so the next
+    // durable write picks it up.
     const router = createConnectorRouter();
     router.restore(stateFromRouter);
     const { storage, setConnectorStateCalls } = makeStubStorage(null);
@@ -623,9 +616,9 @@ describe("defineMailTools", () => {
 // ---------------------------------------------------------------------------
 
 // Director registry whose decide() records every `message.received`
-// event and signals via the supplied counter. Used to assert that
-// the harness's transport + deliver() paths actually surface the
-// message into reactor decisions, not just into the fetch buffer.
+// event and signals via the supplied counter: asserts the harness's
+// transport + deliver() paths surface the message into reactor
+// decisions, not just into the fetch buffer.
 function recordingDirectorRegistry(received: { count: number }) {
   const defined = defineDirector({
     id: "@intx-test/harness/delivery-probe",
@@ -728,14 +721,11 @@ describe("createHarness message delivery", () => {
       };
       control.enqueue(9, stored);
 
-      // The harness's watch callback checks `event.type === "exists"`
-      // and returns synchronously for anything else, so a non-exists
-      // event queues no work at all. Fire one, then fire a real
-      // `exists` for a different uid and wait for the fetch that one
-      // does produce. The mock invokes its callbacks in order, so that
-      // fetch is ordered after the non-exists callback returned: had
-      // the guard let the expunged event through, uid 8 would already
-      // be in the fetch record by then.
+      // The harness's watch callback returns synchronously for any
+      // non-exists event, so the expunged event queues no work. The
+      // mock invokes its callbacks in order, so uid 8 cannot be in the
+      // fetch record when uid 9's fetch lands -- had the guard let the
+      // expunged event through, it would be.
       control.fire({ type: "expunged", uid: 8 });
       control.fire({ type: "exists", uid: 9 });
 
@@ -750,10 +740,11 @@ describe("createHarness message delivery", () => {
   });
 
   test("a message that cannot be fetched is flagged and left in the INBOX", async () => {
-    // A fetch throws on an envelope the sender chose, and also on a uid a
-    // concurrent expunge removed and on a faulting read. Consuming the message
-    // here would hand a peer the power to delete its own mail out of the INBOX
-    // by malforming a header, so the message stays and carries the reason.
+    // A fetch throws on an envelope the sender chose, and also on a uid
+    // a concurrent expunge removed and on a faulting read. Consuming
+    // here would hand a peer the power to delete its own mail out of
+    // the INBOX by malforming a header, so the message stays and
+    // carries the reason.
     const { transport, control } = makeMockTransport();
     const storage = await createIsogitStore(workDir);
     const received = { count: 0 };
@@ -771,16 +762,15 @@ describe("createHarness message delivery", () => {
         control.getFlags(13).includes(MAIL_FETCH_FAILED_FLAG),
       );
 
-      // The flag write is the last act of the failure path, so once it lands
-      // the decision about the message is made: it was not marked `\Deleted`
-      // and it is still in the mailbox.
+      // The flag write is the last act of the failure path, so once it
+      // lands the decision about the message is made: not marked
+      // `\Deleted` and still in the mailbox.
       expect(control.getFlags(13)).not.toContain("\\Deleted");
       expect(control.isPresent(13)).toBe(true);
 
-      // The delivery of a message the harness can handle is the fence for
-      // the negative: `agent.deliver` runs before `consumeFromInbox` on the
-      // delivered path, so a count of one after uid 14 lands proves uid 13
-      // reached the reactor not at all.
+      // `agent.deliver` runs before `consumeFromInbox` on the delivered
+      // path, so a count of one after uid 14 lands proves uid 13 never
+      // reached the reactor.
       const message = createInboundMessage({
         from: "alice@example.com",
         to: AGENT_ADDRESS,
@@ -798,10 +788,11 @@ describe("createHarness message delivery", () => {
   });
 
   test("a flagged message is not fetched again when its arrival replays", async () => {
-    // Preserving the message cannot mean retrying it forever. A transport that
-    // replays `exists` -- on reconnect, or on a fresh watch over a mailbox that
-    // still holds the message -- would otherwise drive the same failing fetch
-    // for as long as the message sits there.
+    // Preserving the message cannot mean retrying it forever: a
+    // transport that replays `exists` (on reconnect, or on a fresh
+    // watch over a mailbox that still holds the message) would
+    // otherwise drive the same failing fetch for as long as the
+    // message sits there.
     const { transport, control } = makeMockTransport();
     const storage = await createIsogitStore(workDir);
     const received = { count: 0 };
@@ -826,10 +817,10 @@ describe("createHarness message delivery", () => {
       });
       control.enqueue(22, { ...message, ref: { uid: 22, mailbox: "INBOX" } });
 
-      // The mock invokes its callbacks in order and each arrival consults the
-      // keyword before anything else, so uid 21's replay has finished its
-      // flag query by the time uid 22's fetch is recorded. Uid 21 appearing
-      // once in the record is therefore the skip.
+      // The mock invokes its callbacks in order and each arrival
+      // consults the keyword before anything else, so uid 21's replay
+      // has finished its flag query by the time uid 22's fetch is
+      // recorded; uid 21 appearing once in the record is the skip.
       control.fireExists(21);
       control.fireExists(22);
 
@@ -992,20 +983,13 @@ describe("createHarness workdir lock", () => {
 });
 
 describe("createHarness reactor-once", () => {
-  // The composition-layer cross-check for the @intx/agent fixture
-  // suite: `createHarness(def, env)` must wrap the reactor exactly
-  // once per instantiation, the same invariant the planner.test.ts
-  // and mail.test.ts fixtures pin on the agent-only path. The
-  // mail-fixture docstring at packages/agent/src/internal-fixtures/
-  // mail.test.ts:11-15 promises this assertion lives here so the
-  // agent package does not have to import @intx/harness (which would
-  // cycle the workspace dependency).
-  //
-  // The reactor count is a precise proxy for "the reactor assembly
-  // is wrapped exactly once": each createAgent (and therefore each
-  // createHarness, which delegates to it) resolves the director
-  // through the registry, calls the resolved factory once, and
-  // feeds the resulting director into createReactorAssembly.
+  // Cross-checks the @intx/agent fixture suite: `createHarness(def,
+  // env)` must wrap the reactor exactly once per instantiation, the
+  // same invariant the planner.test.ts and mail.test.ts fixtures pin
+  // on the agent-only path. The reactor count is a precise proxy:
+  // each createAgent resolves the director through the registry,
+  // calls the resolved factory once, and feeds the resulting
+  // director into createReactorAssembly.
 
   test("invokes the director factory exactly once per instantiation", async () => {
     let factoryCallCount = 0;

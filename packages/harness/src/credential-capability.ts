@@ -1,14 +1,12 @@
-// The consumer-gated `credentials` capability: the sub-registry a tool queries
-// by its declared handle to obtain a mediated credential. It is the runtime
-// gate that enforces the `{ tool }` condition on a materialized
-// `credential:{id}` / `use` grant -- the check the launch-time grant
-// materialization sets up but does not itself evaluate.
-//
-// The gate lives here, at the point of use, and fails closed: a handle resolves
-// only when the calling consumer holds `credential:{id}` / `use` with the
-// grant's `{ tool }` condition matching this consumer. The shaping of the
-// handle is delegated to the provider registry; the material is read fresh per
-// use (rotation indirection) from the source the binding carries.
+// The consumer-gated `credentials` capability: the sub-registry a tool
+// queries by its declared handle to obtain a mediated credential. It is
+// the runtime gate enforcing the `{ tool }` condition on a
+// materialized `credential:{id}` / `use` grant -- the check launch-time
+// grant materialization sets up but does not itself evaluate. The gate
+// fails closed: a handle resolves only when the calling consumer holds
+// `credential:{id}` / `use` with the grant's `{ tool }` condition
+// matching this consumer. Shaping is delegated to the provider
+// registry; the material is read fresh per use.
 
 import {
   authorizeAction,
@@ -43,13 +41,12 @@ export interface ResolvedCredentialBinding {
 }
 
 /**
- * Reconcile a tool package's declared credential handles (its C5 `interchange.
- * credentials`) against the handles a binding actually resolved for it. A
- * declared handle with no binding is a launch-blocking misconfiguration -- the
- * tool needs a credential the definition never bound -- so this fails the launch
- * loudly rather than letting the gap surface as a resolve-time throw at the
- * tool's first use. It is the throw-on-missing of `resolve`, pulled earlier to
- * launch where the whole set is known.
+ * Reconcile a tool package's declared credential handles (its C5
+ * `interchange.credentials`) against the handles a binding actually
+ * resolved for it. A declared handle with no binding is a
+ * launch-blocking misconfiguration -- the tool needs a credential the
+ * definition never bound -- so this fails the launch loudly rather than
+ * surfacing as a resolve-time throw at the tool's first use.
  */
 export function reconcileDeclaredCredentials(
   consumer: string,
@@ -94,22 +91,23 @@ export interface HostCredentialCapability extends CredentialCapability {
 /**
  * Build the consumer-gated `credentials` capability for one tool package.
  *
- * `resolve(handle)` fails closed at every step: an unbound handle throws; a
- * handle the consumer is not authorized to use throws (Gate 2 -- the same
- * `authorizeAction` the model-source path uses, here supplied the credential-use
- * condition registry and this consumer). Only an authorized handle is shaped,
- * once, and memoized so repeated resolves return the same instance and there is
- * a single thing to dispose.
+ * `resolve(handle)` fails closed at every step: an unbound handle
+ * throws; a handle the consumer is not authorized to use throws (Gate 2
+ * -- the same `authorizeAction` the model-source path uses, here
+ * supplied the credential-use condition registry and this consumer).
+ * Only an authorized handle is shaped, once, and memoized so repeated
+ * resolves return the same instance and there is a single thing to
+ * dispose.
  */
 export function createCredentialCapability(
   deps: CredentialCapabilityDeps,
 ): HostCredentialCapability {
-  // Memoize the in-flight PROMISE, not the resolved handle, so two concurrent
-  // resolves of the same handle share one gate+shape and yield one instance
-  // (caching the value would let both miss the memo and shape twice, orphaning
-  // a handle). A deterministic failure -- unbound handle, denied gate, unknown
-  // provider -- caches too; it stays failed for this deploy, which is correct
-  // since grants do not change mid-deploy.
+  // Memoize the in-flight PROMISE, not the resolved handle, so two
+  // concurrent resolves of the same handle share one gate+shape and
+  // yield one instance (caching the value would let both miss the memo
+  // and shape twice, orphaning a handle). A deterministic failure
+  // caches too; it stays failed for this deploy, which is correct since
+  // grants do not change mid-deploy.
   const shaped = new Map<string, Promise<MediatedCredential>>();
 
   function shapeHandle(handle: string): Promise<MediatedCredential> {
@@ -121,8 +119,8 @@ export function createCredentialCapability(
         );
       }
 
-      // Gate 2: fail closed unless the consumer holds credential:{id} / use with
-      // the grant's { tool } condition matching this consumer.
+      // Gate 2: fail closed unless the consumer holds credential:{id} /
+      // use with the grant's { tool } condition matching this consumer.
       const decision = await authorizeAction(
         deps.grants,
         `credential:${binding.credentialId}`,
@@ -153,9 +151,9 @@ export function createCredentialCapability(
     },
 
     async dispose(): Promise<void> {
-      // Dispose EVERY successfully-shaped handle even if one throws -- a single
-      // bad handle must not strand the rest -- then surface any failures loudly
-      // rather than swallowing them.
+      // Dispose EVERY successfully-shaped handle even if one throws -- a
+      // single bad handle must not strand the rest -- then surface any
+      // failures loudly rather than swallowing them.
       const settled = await Promise.allSettled([...shaped.values()]);
       shaped.clear();
       const errors: unknown[] = [];

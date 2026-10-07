@@ -1,16 +1,9 @@
-// @intx/harness composition layer.
-//
-// The harness imports `@intx/agent` and composes a mail-transport
-// surface on top of `createAgent(def, env)`. The reactor is wrapped
-// exactly once -- inside the agent harness in `@intx/agent`. This
-// module owns transport subscription, the connector router and its
-// state persistence, the INBOX watch loop, and the outbound side of
-// `connector.reply` events.
-//
-// What this module does *not* own: reactor wrapping, audit accumulation
-// or flushing, source-registry hot-swap. Those live in `@intx/agent`
-// and are reached via `agent.deliver`, `agent.setSource`, and
-// `agent.stream()` respectively.
+// @intx/harness composition layer: composes a mail-transport surface
+// on top of `createAgent(def, env)` and owns transport subscription,
+// the connector router and its state persistence, the INBOX watch
+// loop, and the outbound side of `connector.reply` events. Reactor
+// wrapping, audit handling, and source-registry hot-swap stay in
+// `@intx/agent`.
 
 import {
   createAgent,
@@ -39,19 +32,10 @@ import { driveConnectorReplies } from "./reply-drain";
 const logger = getLogger(["interchange", "harness"]);
 
 /**
- * Interchange keyword flag the INBOX watch puts on a message whose
- * `transport.fetchFull` threw. The message stays in the INBOX rather than being
- * consumed, because part of what makes a fetch throw is an envelope the sender
- * chose and the rest is local (a uid a concurrent expunge removed, a faulting
- * read), so deleting on it would put a peer in charge of whether its own mail
- * survives.
- *
- * The keyword is what keeps the watch from attempting the same uid again in the
- * run that flagged it, on the premise that a transport delivers a second
- * arrival event for a uid already resident in the mailbox -- which no transport
- * here does. Nothing in this package re-attempts a flagged message either, so
- * the flag preserves the mail and surfaces it to a search for
- * `hasFlags: [MAIL_FETCH_FAILED_FLAG]`, but gives it no path back to delivery.
+ * Keyword the INBOX watch puts on a message whose `transport.fetchFull`
+ * threw. The message is left in the INBOX, not consumed, and the watch
+ * skips it on later arrival events. Searchable via
+ * `hasFlags: [MAIL_FETCH_FAILED_FLAG]`.
  */
 export const MAIL_FETCH_FAILED_FLAG = "$FetchFailed";
 
@@ -60,29 +44,14 @@ export const MAIL_FETCH_FAILED_FLAG = "$FetchFailed";
  * shipped by this package declare the matching `requires` so
  * `validateEnv` can blame either at the env entry point.
  *
- * `onReplySendFailed` is invoked when the reply drain catches a failure
- * from `connectorRouter.composeReply` or `transport.send` for an
- * outbound `connector.reply`. The reply is dropped and the router
- * state is not advanced; the callback is the only programmatic surface
- * a caller has to observe the loss. Production deployments that need
- * retry semantics layer them on top of this callback.
+ * `onReplySendFailed` fires when the reply drain loses an outbound
+ * `connector.reply` (compose or send failure): the reply is dropped,
+ * the router state is not advanced, and the callback is the only
+ * programmatic surface a caller has to observe the loss.
  *
- * The callback may be synchronous or async; the reply drain awaits its
- * resolution so an async callback's rejection is observed (and logged)
- * rather than surfacing as an unhandled promise rejection.
- *
- * `onReplyDrainTerminated` is invoked when the reply drain's `for await`
- * loop exits abnormally -- the only documented case is a
- * `StreamBackpressureError` thrown by the agent's event stream when the
- * drain's per-consumer buffer overruns `streamBufferMax`. After this
- * fires the harness is no longer forwarding `connector.reply` events to
- * the transport: in-process `agent.send()` callers still resolve, but
- * outbound replies are silently dropped until `close()`. Production
- * deployments that need to alert on this failure mode subscribe via
- * this callback; the harness only emits a `logger.warn` otherwise. The
- * callback may be synchronous or async and is awaited the same way
- * `onReplySendFailed` is, so an async rejection is observed (and
- * logged) rather than escaping as an unhandled rejection.
+ * `onReplyDrainTerminated` fires when the reply drain's loop exits
+ * abnormally (a stream backpressure error); after it fires, outbound
+ * `connector.reply` events are no longer forwarded.
  */
 export interface MailEnv extends BaseEnv {
   transport: MessageTransport;
@@ -94,10 +63,8 @@ export interface MailEnv extends BaseEnv {
 
 /**
  * Narrowed public surface returned by `createHarness`. `close` is the
- * only direct surface; everything else is a pass-through to the
- * underlying agent. `stream` is exposed so observability consumers can
- * subscribe to the reactor's event stream without having to grab the
- * agent reference.
+ * only direct surface; everything else passes through to the
+ * underlying agent.
  */
 export interface Harness {
   close(): Promise<void>;
@@ -109,15 +76,11 @@ export interface Harness {
 }
 
 /**
- * Mail-tool factory shape. The `createMailTools` constructor in
- * `@intx/tools-mail` builds a runner from a transport-bearing
- * capability set; the harness wraps that into a single `defineTool`
- * bundle whose `requires` names the env keys the wrapper touches.
- *
- * Callers (e.g. the sidecar) supply the wrapper as a tool factory on
- * their `AgentDefinition`. `createHarness` does not synthesize it
- * internally -- the caller is the layer that knows which mail-tool
- * implementation to use.
+ * Mail-tool factory shape: `createMailTools` in `@intx/tools-mail`
+ * builds a runner from a transport-bearing capability set; the harness
+ * wraps it into a single `defineTool` bundle. Callers supply the
+ * wrapper on their `AgentDefinition`; `createHarness` does not
+ * synthesize it internally.
  */
 export type MailToolWrapper = (
   transport: MessageTransport,
@@ -126,23 +89,15 @@ export type MailToolWrapper = (
 /**
  * Build the `load` / `writeMetadata` overrides the harness layers onto
  * `env.storage`. Extracted from `createHarness` so the dirty-bit gating
- * on `load()` is directly testable -- the production path constructs
- * the overrides inline with the same arguments.
+ * on `load()` is directly testable.
  *
- * The `isInMemoryStateAuthoritative` callback is read on every `load`
- * invocation. The harness sets the bit from the router's
- * `onStateChanged` callback so the gate flips on the same tick a
- * commit produces its first state change; subsequent loads (whether
- * driven by reactor recovery, mid-cycle, or anywhere else) leave the
- * router's in-memory snapshot intact rather than blanking it with the
+ * `load()` restores the router from disk only while
+ * `isInMemoryStateAuthoritative()` is false; once a router commit has
+ * produced a state change, the in-memory snapshot wins over the
  * pre-commit disk value.
  *
  * Exported for the regression test in this package; no external
- * consumer should call it. The helper is tightly coupled to the
- * dirty-bit gating semantics that live in this module, and a separate
- * testing entry-point would buy bundler ceremony for a boundary
- * TypeScript cannot enforce. The docstring "internal" marker is the
- * contract.
+ * consumer should call it.
  */
 export function createWrappedStorageOverrides(
   baseStorage: ContextStore,
@@ -166,51 +121,13 @@ export function createWrappedStorageOverrides(
 
 /**
  * Construct an `AnnotatedToolFactory` for a mail-tool bundle. The
- * factory binds `transport` from env at construction time and produces
- * a bundle whose lifetime is tied to the agent. Disposal of the
- * underlying mail tools is the caller's responsibility (the env is the
- * agent's dependency contract; the caller owns what it puts in env);
- * the agent itself does not call bundle disposers (see the
- * `ToolBundle` contract in `@intx/agent`). Callers that need to
- * dispose mail tools on shutdown retain a reference to the underlying
- * `MailToolWrapper`'s output and invoke its `dispose` directly --
- * routing disposal through the bundle the agent receives would still
- * not fire since the agent never holds it.
- *
- * The `requires: ["transport", "address"]` declaration captures the
- * env-key surface of the entire mail composition path -- the factory
- * body reads `transport`, and `createHarness` (which the caller pairs
- * this factory with) reads `env.address` to label rejected-message
- * log records identifying which agent's router refused the message.
- * No routing decision keys off `env.address` -- the connector router
- * routes on per-message thread state, not on the agent's own
- * address -- so the field is observability-only. It still belongs in
- * `requires` because the harness's log record assumes the field is
- * populated; declaring it here lets the agent's `validateEnv` blame a
- * missing `address` at construction time rather than letting the
- * watch loop discover it under operational load. Callers that hand-
- * build a `defineTool` factory for a different mail-tool runner must
- * remember to surface `address` on their own `requires` if their
- * `createHarness` consumes it -- the agent has no way to deduce
- * composition-layer env requirements from a factory body that does
- * not itself read the field.
- *
- * The `requires` set is fixed at the two keys above by design; this
- * helper is not the extension point for mail-tool runners that need
- * additional env keys. A mail tool that wants to read (say) a tenant
- * identifier from env should drop down to `defineTool` directly,
- * declare its own `requires` with the full surface, and call the
- * underlying mail-tool constructor inside that factory. Folding an
- * additional `requires` parameter into `defineMailTools` would push
- * the "what does the harness need vs. what does the tool runner
- * need" partition onto the caller, which is exactly the partition
- * this helper exists to hide.
- *
- * `definitions` is the static declaration `defineTool` requires: the
- * tool names this factory contributes, enumerable without invoking the
- * wrapper. The caller supplies it because the wrapper binds `transport`
- * from env and cannot run at declaration time; the caller already holds
- * the mail-tool runner whose `definitions` name the same tools.
+ * factory binds `transport` from env at construction time. The
+ * `requires: ["transport", "address"]` set captures the env keys the
+ * harness's mail path reads: `transport` in the factory body,
+ * `address` for the rejected-message log records. `definitions` is the
+ * static declaration `defineTool` requires; the caller supplies it
+ * because the wrapper binds `transport` from env and cannot run at
+ * declaration time.
  */
 export function defineMailTools(
   wrapper: MailToolWrapper,
@@ -233,12 +150,8 @@ export function defineMailTools(
 /**
  * Construct a composition-layer agent: the underlying agent wrapped
  * with connector-state-aware storage, transport subscription, INBOX
- * watch, and connector-reply forwarding.
- *
- * The reactor is wrapped exactly once -- inside `createAgent`.
- * `createHarness` augments env.storage with connector-state load/save
- * and subscribes to the agent's event stream to intercept
- * `connector.reply` events for outbound transport sends.
+ * watch, and connector-reply forwarding. The reactor is wrapped
+ * exactly once, inside `createAgent`.
  */
 export async function createHarness<EnvReq extends MailEnv>(
   def: AgentDefinition<EnvReq>,
@@ -246,16 +159,11 @@ export async function createHarness<EnvReq extends MailEnv>(
 ): Promise<Harness> {
   const transport = env.transport;
 
-  // The wrappedStorage's load() needs to know whether the router's
-  // in-memory state is "fresher" than disk. The dirty bit flips on the
-  // first state change emitted by the router (commit() in the watch
-  // loop, onReplySent() after a connector.reply) and never flips back.
-  // Once dirty, the wrappedStorage refuses to restore from disk -- the
-  // router's in-memory state is authoritative.
-  //
-  // The wrappedStorage subscribes to the router's onStateChanged so the
-  // dirty bit is set the same tick commit() runs, even if a
-  // contextStore.load() races behind it.
+  // The dirty bit flips on the router's first state change (commit()
+  // in the watch loop, onReplySent() after a connector.reply) and never
+  // flips back; once set, the wrappedStorage's load() refuses to
+  // restore from disk. Subscribing to onStateChanged sets the bit the
+  // same tick commit() runs, even if a load() races behind it.
   let inMemoryStateAuthoritative = false;
   const userOnStateChanged = env.onConnectorStateChanged;
   const connectorRouter = createConnectorRouter({
@@ -265,28 +173,12 @@ export async function createHarness<EnvReq extends MailEnv>(
     },
   });
 
-  // Wrap env.storage. The first load() restores connector state from
-  // disk only if no router commit has happened yet -- once a commit
-  // makes the router's state authoritative, subsequent loads return
-  // the store's payload unchanged and leave the in-memory state
-  // intact.
-  //
-  // The router's in-memory state diverges from disk between commit()
-  // (in the watch callback) and the next writeMetadata (at the
-  // reactor's per-cycle checkpoint). A load() landing in that window
-  // must not clobber the in-memory state with the stale disk value --
-  // doing so makes the harness's outbound connector.reply path drop
-  // replies with NoActiveConnectorThreadError when composeReply() runs
-  // after a mid-cycle reload.
-  //
-  // The wrapper is implemented as a Proxy over env.storage so adding a
-  // new method to ContextStore does not require touching the harness:
-  // any method not named in `overrides` forwards to env.storage with
-  // its `this` bound to env.storage. The two overrides intercept
-  // load (cold-boot restore) and writeMetadata (flush router snapshot
-  // before delegate). `setConnectorState` is left to the default
-  // Proxy fall-through path since the harness adds no behaviour beyond
-  // delegation there.
+  // Wrap env.storage with the two overrides. load() restores connector
+  // state from disk only while the router has not committed; otherwise
+  // it returns the store payload unchanged, so a mid-cycle load cannot
+  // clobber the in-memory state with the stale disk value (which would
+  // make composeReply() drop replies with NoActiveConnectorThreadError).
+  // The Proxy forwards every other method to env.storage.
   const overrides = createWrappedStorageOverrides(
     env.storage,
     connectorRouter,
@@ -309,28 +201,15 @@ export async function createHarness<EnvReq extends MailEnv>(
 
   const agent = await createAgent(def, agentEnv);
 
-  // From here through the final `return`, the agent is constructed
-  // and the workdir lock is held. Anything that throws -- the
-  // `driveConnectorReplies` setup, `transport.watch()` rejecting,
-  // a throw from the watch callback's registration -- has
-  // to release the lock by closing the agent before re-raising; the
-  // caller never sees the agent and cannot do it themselves.
-  // `createAgent` covers its own internal failure paths via its
-  // `succeeded`/`finally` shape; this is the matching coverage for
-  // the harness's own construction tail.
+  // From here through the final `return` the workdir lock is held, so
+  // any throw must close the agent before re-raising; the caller never
+  // sees the agent and cannot do it themselves.
   let harnessSucceeded = false;
   try {
-    // Background drain of the agent's event stream. Intercepts
-    // `connector.reply` to send the reply via transport; everything
-    // else flows past unobserved. Other consumers can subscribe to the
-    // exposed `stream()` method to see the same events.
-    //
-    // The shared `driveConnectorReplies` helper owns the loop: reply
-    // serialization (a second reply waits for the first's receipt to
-    // advance the router before composing its own), per-reply failure
-    // surfacing to `onReplySendFailed`, and abnormal-termination
-    // surfacing to `onReplyDrainTerminated`. The warm workflow-host
-    // path drives replies through the same helper.
+    // Background drain of the agent's event stream: intercepts
+    // `connector.reply` to send via transport; everything else flows
+    // past unobserved. The shared `driveConnectorReplies` helper owns
+    // the loop (serialization, failure surfacing).
     const replyDrain = driveConnectorReplies({
       stream: agent.stream(),
       composeReply: () => connectorRouter.composeReply(),
@@ -344,10 +223,9 @@ export async function createHarness<EnvReq extends MailEnv>(
         : {}),
     });
 
-    // A failure here is logged and swallowed: the router state is already
-    // committed and `agent.deliver` has accepted the message, so re-raising
-    // would unwind a half-applied delivery. A redelivery shows the director
-    // a duplicate `message.received`.
+    // A failure here is logged and swallowed: the router state is
+    // already committed and the message delivered, so re-raising would
+    // unwind a half-applied delivery.
     async function consumeFromInbox(ref: MessageRef): Promise<void> {
       try {
         await transport.setFlags(ref, ["\\Deleted"]);
@@ -357,11 +235,9 @@ export async function createHarness<EnvReq extends MailEnv>(
       }
     }
 
-    // Whether an earlier attempt on this uid already failed its fetch and
-    // said so on the message. The transport is asked rather than an
-    // in-process uid set because that is where the record lives: on the
-    // message, which outlives the process that wrote it. That record is
-    // what a search on `MAIL_FETCH_FAILED_FLAG` surfaces to an operator.
+    // Whether an earlier attempt on this uid already failed its fetch.
+    // The transport is asked rather than an in-process uid set because
+    // the record lives on the message, which outlives the process.
     async function fetchAlreadyFailed(ref: MessageRef): Promise<boolean> {
       const flagged = await transport.search("INBOX", {
         hasFlags: [MAIL_FETCH_FAILED_FLAG],
@@ -370,9 +246,7 @@ export async function createHarness<EnvReq extends MailEnv>(
     }
 
     // A flag write that fails leaves the message unflagged, so a later
-    // arrival event for the same uid attempts the fetch again. That is the
-    // safe direction to fail in: the message is still in the INBOX, and the
-    // attempt that comes after a transient fault may well deliver it.
+    // arrival event retries the fetch -- the safe direction to fail in.
     async function markFetchFailed(ref: MessageRef): Promise<void> {
       try {
         await transport.setFlags(ref, [MAIL_FETCH_FAILED_FLAG]);
@@ -381,9 +255,9 @@ export async function createHarness<EnvReq extends MailEnv>(
       }
     }
 
-    // INBOX watch loop. The transport registers the callback before its
-    // promise resolves, so a message that arrives during acceptance is
-    // not missed. A refusal rejects inside this try, and the finally
+    // INBOX watch loop. The transport registers the callback before
+    // its promise resolves, so a message arriving during acceptance is
+    // not missed. A refusal rejects inside this try; the finally
     // closes the agent.
     let stopped = false;
     const unsubscribe = await transport.watch("INBOX", (event) => {
@@ -395,10 +269,8 @@ export async function createHarness<EnvReq extends MailEnv>(
       void (async () => {
         try {
           if (await fetchAlreadyFailed(ref)) {
-            // An earlier attempt on this uid failed and said so on the
-            // message. Part of what makes a fetch fail is permanent, and the
-            // watch cannot tell that part from the rest, so it leaves the
-            // message flagged in the INBOX and delivers nothing.
+            // An earlier attempt failed and flagged the message; leave
+            // it in the INBOX and deliver nothing.
             logger.debug`Skipping message uid=${event.uid}: an earlier fetch failed and flagged it ${MAIL_FETCH_FAILED_FLAG}`;
             return;
           }
@@ -408,16 +280,12 @@ export async function createHarness<EnvReq extends MailEnv>(
           try {
             message = await transport.fetchFull(ref);
           } catch (cause) {
-            // What reaches here is not only a message the transport could not
-            // assemble. The same throw covers a uid a concurrent expunge
-            // already removed, where there is nothing left to consume, and a
-            // faulting read of sound bytes, where a later attempt could still
-            // succeed. Only the assembly case is input a peer chooses, and
-            // consuming on it would let a peer delete its own mail out of the
-            // INBOX by malforming one header -- so the message is flagged and
-            // left where it is. Inventing the flags and signature status the
-            // transport never read would vouch for a message it did not, so
-            // the message is not delivered either.
+            // The same throw covers an expunged uid (nothing left to
+            // consume) and a faulting read (a later attempt may
+            // succeed). Only the assembly case is input a peer chose,
+            // and consuming on it would let a peer delete its own mail
+            // out of the INBOX by malforming a header -- so the
+            // message is flagged and left in place, and not delivered.
             logger.error`Failed to fetch message uid=${event.uid}; flagging it ${MAIL_FETCH_FAILED_FLAG} and leaving it in the INBOX: ${cause}`;
             if (stopped) return;
             await markFetchFailed(ref);
@@ -430,14 +298,10 @@ export async function createHarness<EnvReq extends MailEnv>(
           try {
             decision = connectorRouter.route(message);
           } catch (cause) {
-            // A router-rejected message (malformed headers, parse error
-            // inside the router, etc.) is still surfaced to the agent
-            // as an inbound `message.received`. The agent's director
-            // decides what the message means and how to respond;
-            // dropping it on the floor here would hide messages the
-            // operator may want to see. The router's state is *not*
-            // committed for the rejected message, so subsequent replies
-            // compose against the pre-rejection thread state.
+            // A router-rejected message is still surfaced to the agent
+            // as `message.received`; the router state is *not*
+            // committed, so subsequent replies compose against the
+            // pre-rejection thread state.
             logger.warn`Connector router rejected message uid=${message.ref.uid} for agent ${env.address}: ${cause instanceof Error ? cause.message : String(cause)}`;
             if (stopped) return;
             agent.deliver(message);
@@ -458,15 +322,12 @@ export async function createHarness<EnvReq extends MailEnv>(
           agent.deliver(message);
           await consumeFromInbox(message.ref);
         } catch (cause) {
-          // `agent.deliver` throws `AgentClosedError` synchronously when
-          // called after the agent has closed. The `if (stopped) return`
-          // guards above narrow the race window but cannot close it: a
-          // `close()` call landing between the guard and the synchronous
-          // throw still surfaces the rejection here. The fetched message
-          // is dropped; close() is in progress and the harness is
-          // tearing down, so the loss is expected. Without this catch
-          // the rejection would escape the void-IIFE as an unhandled
-          // promise rejection on the event loop.
+          // `agent.deliver` throws `AgentClosedError` synchronously
+          // after close(); the guards above narrow the race but cannot
+          // close it, so this catch keeps the rejection from escaping
+          // the void-IIFE as an unhandled rejection. The message is
+          // dropped; the harness is tearing down, so the loss is
+          // expected.
           if (cause instanceof Error && cause.name === "AgentClosedError") {
             logger.warn`INBOX watch dropped uid=${event.uid} because the agent closed mid-delivery`;
             return;
@@ -482,9 +343,8 @@ export async function createHarness<EnvReq extends MailEnv>(
       unsubscribe();
       replyDrain.stop();
       await agent.close();
-      // The reply-drain loop exits once the underlying stream closes
-      // (close() above terminates streamConsumers). Awaiting here makes
-      // close idempotent and lets callers rely on a settled state.
+      // The drain loop exits once the underlying stream closes;
+      // awaiting here makes close idempotent.
       await replyDrain.done;
     }
 
@@ -501,12 +361,10 @@ export async function createHarness<EnvReq extends MailEnv>(
     return harness;
   } finally {
     if (!harnessSucceeded) {
-      // Close the agent without waiting on its shutdown timeout so a
-      // throw after `createAgent` does not stall the
-      // caller's failure path. The `.catch` swallows any rejection
-      // from the close: the caller is already receiving the original
-      // throw, and a noisier-than-original close failure here would
-      // mask it.
+      // Close without waiting on the shutdown timeout so a throw after
+      // `createAgent` does not stall the caller's failure path. The
+      // `.catch` swallows any close rejection -- the caller is already
+      // receiving the original throw.
       void agent.close().catch(() => {
         // Swallow per the comment above.
       });
