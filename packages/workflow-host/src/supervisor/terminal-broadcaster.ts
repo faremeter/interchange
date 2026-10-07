@@ -1,22 +1,17 @@
 // Per-cohort terminal-run event broadcaster.
 //
-// The supervisor's workflow-process child commits each run's terminal
-// event (`RunCompleted`, `RunFailed`, `RunCancelled`) through its own
-// substrate handle and mirrors the event over the control IPC as a
-// `terminal.event` upstream frame. The supervisor's `pumpUpstreamControl`
-// calls `notify()` on this broadcaster when such a frame lands; the
+// The child commits each run's terminal event (`RunCompleted`,
+// `RunFailed`, `RunCancelled`) through its own substrate handle and
+// mirrors it over control IPC as a `terminal.event` upstream frame.
+// The supervisor's `pumpUpstreamControl` calls `notify()` here; the
 // dispatch loop and any armed drainTimeout accumulator subscribe via
 // `source(runId)` to await the matching terminal event without
-// re-reading the workflow-run substrate from the supervisor's address
-// space.
+// re-reading the workflow-run substrate.
 //
-// One broadcaster instance per spawn cohort. The supervisor mints a
-// fresh broadcaster inside `spawn()` and inside the recycle path's
-// `installNewChild`; the previous cohort's broadcaster is disposed,
-// which finalises every minted iterator with `done: true` (the
-// disposed-side iterator settles its pending `next()` resolver
-// directly so the consumer wakes up even if its own cohort-abort race
-// has not landed yet).
+// One broadcaster per spawn cohort; the previous cohort's broadcaster
+// is disposed on recycle, which finalises every minted iterator with
+// `done: true` so a consumer wakes even if its cohort-abort race has
+// not landed yet.
 
 import { getLogger } from "@intx/log";
 
@@ -35,27 +30,26 @@ type Listener = {
 
 /**
  * Per-cohort terminal-run broadcaster. Lifetime matches the supervisor
- * spawn cohort's `terminalCohortAbort`; `dispose()` is invoked when the
- * cohort is torn down (shutdown or recycle's `installNewChild`).
+ * spawn cohort's `terminalCohortAbort`; `dispose()` is invoked when
+ * the cohort is torn down (shutdown or recycle's `installNewChild`).
  */
 export interface TerminalBroadcaster {
   /**
-   * Fan a terminal-run event out to every active subscriber listening
-   * for the supplied `runId`. The broadcaster buffers one event per
+   * Fan a terminal-run event out to every subscriber listening for
+   * the supplied `runId`. The broadcaster buffers one event per
    * subscriber if the consumer's first `next()` has not yet been
-   * awaited so a notification that lands between `subscribe` and the
+   * awaited, so a notification landing between `subscribe` and the
    * first `next()` is still delivered. Notifications for runIds with
-   * no listeners are dropped (the dispatch loop and the drain
-   * accumulator both arm before the corresponding trigger.fire /
-   * drain mail is forwarded to the child).
+   * no listeners are dropped (both consumers arm before the
+   * corresponding trigger.fire / drain mail is forwarded to the
+   * child).
    */
   notify(runId: string, event: TerminalRunEvent): void;
   /**
-   * `TerminalEventSource`-shaped accessor for consumers. Each call
-   * yields an `AsyncIterable<TerminalRunEvent>` scoped to one `runId`.
-   * The iterator yields the first terminal event the broadcaster fans
-   * out for that runId (or `done: true` if the broadcaster is disposed
-   * first) and ends.
+   * `TerminalEventSource`-shaped accessor. Each call yields an
+   * `AsyncIterable<TerminalRunEvent>` scoped to one `runId`; the
+   * iterator yields the first terminal event fanned out for that
+   * runId (or `done: true` if the broadcaster is disposed first).
    */
   readonly source: TerminalEventSource;
   /**
@@ -66,7 +60,7 @@ export interface TerminalBroadcaster {
   /**
    * Whether `dispose()` has been called. Post-dispose, `source(...)`
    * still returns an iterable whose first `next()` immediately yields
-   * `{done: true}` -- callers do not need to guard against the cohort
+   * `{done: true}`, so callers need not guard against the cohort
    * being torn down before they subscribe.
    */
   readonly disposed: boolean;
@@ -133,9 +127,8 @@ export function createTerminalBroadcaster(): TerminalBroadcaster {
           }
           resolver({ value: undefined, done: true });
         }
-        // No pending resolver: leave `resolved` false and rely on
-        // the next `next()` call to observe `disposed === true` and
-        // return `{done: true}`.
+        // No pending resolver: leave `resolved` false and let the next
+        // `next()` call observe `disposed === true`.
       }
 
       if (disposed) {
@@ -213,10 +206,8 @@ export function createTerminalBroadcaster(): TerminalBroadcaster {
       for (const listener of snapshot) {
         // Guard each `onDispose` so one throwing listener does not skip
         // the rest: dispose must finalise every minted iterator or the
-        // supervisor's teardown can leak a consumer awaiting a `next()`
-        // that never settles. A throw here is a listener bug, so surface
-        // it at error and continue -- this is what lets the shutdown path
-        // treat `dispose()` as total.
+        // teardown can leak a consumer awaiting a `next()` that never
+        // settles. A throw here is a listener bug; log it and continue.
         try {
           listener.onDispose();
         } catch (cause) {

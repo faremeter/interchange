@@ -1,13 +1,12 @@
 // Supervisor-authored terminal-event commit for the crash-loop guard.
 //
-// When the crash-loop guard latches, the workflow-process child is dead
-// and cannot commit its own terminal event, yet the deployment's run must
-// reach a terminal state so its external `workflow_run.status` flips to
-// `failed` -- the sole durable, queryable signal of a crash-loop. The
-// supervisor's `crash-looping` phase is in-memory and per-process; no
-// external reader observes it. The supervisor, as the sole writer of the
-// workflow-run repo, authors a `RunFailed` for the deployment's stable
-// run so the crash-loop leaves a durable tombstone.
+// When the crash-loop guard latches, the child is dead and cannot
+// commit its own terminal event, yet the deployment's run must reach a
+// terminal state so its external `workflow_run.status` flips to
+// `failed` -- the sole durable, queryable signal of a crash-loop (the
+// supervisor's `crash-looping` phase is in-memory and per-process).
+// The supervisor, as the sole writer of the workflow-run repo, authors
+// a `RunFailed` for the deployment's stable run as a durable tombstone.
 //
 // Unlike `commitCancelRequested`, a terminal workflow event carries no
 // signature: only `CancelRequested` is signed (for its origin<->principal
@@ -36,13 +35,12 @@ const RUNS_PREFIX = "runs";
 const EVENTS_DIR = "events";
 
 /**
- * Terminal run-event kinds, mirroring the runtime's terminal vocabulary
- * (`RunCompleted`/`RunFailed`/`RunCancelled`). Inlined because the workflow
- * package exports only the phase-level `isTerminalRunPhase`, not an
- * event-kind set; the child runtime (`run-child`) and the substrate adapter
- * (`repo-store`) inline the same three kinds. Reducing the log to a phase to
- * reuse `isTerminalRunPhase` would be strictly heavier for a last-event
- * type check.
+ * Terminal run-event kinds, mirroring the runtime's terminal
+ * vocabulary (`RunCompleted`/`RunFailed`/`RunCancelled`). Inlined
+ * because the workflow package exports only the phase-level
+ * `isTerminalRunPhase`, not an event-kind set; the child runtime and
+ * the substrate adapter inline the same three kinds. Reducing the log
+ * to a phase would be strictly heavier for a last-event type check.
  */
 const TERMINAL_EVENT_KINDS = new Set<string>([
   "RunCompleted",
@@ -53,9 +51,9 @@ const TERMINAL_EVENT_KINDS = new Set<string>([
 const SUPERVISOR_PRINCIPAL_KIND = "supervisor" as const;
 
 /**
- * On-disk event envelope, validated at the substrate read boundary. Only
- * `seq` and `type` are load-bearing here (max-seq computation and the
- * terminal-lock check); the rest of the event body is ignored.
+ * On-disk event envelope, validated at the substrate read boundary.
+ * Only `seq` and `type` are load-bearing here (max-seq computation and
+ * the terminal-lock check); the rest of the body is ignored.
  */
 const OnDiskEventEnvelope = type({
   seq: "number >= 0",
@@ -84,20 +82,22 @@ export type CommitRunFailedResult = {
   /** Substrate-assigned commit SHA the write produced. */
   commitSha: string;
   /**
-   * True when a `RunFailed` was appended; false when the run was already
-   * terminal and the write was a no-op (terminal-lock respected).
+   * True when a `RunFailed` was appended; false when the run was
+   * already terminal and the write was a no-op (terminal-lock
+   * respected).
    */
   appended: boolean;
 };
 
 /**
- * Append a supervisor-authored `RunFailed` to a run's event log, unless the
- * run is already terminal. The next seq is computed inside the substrate
- * merge (atomic against any concurrent writer under the per-repo lock): the
- * first event on an empty tree lands at seq 1 (the runtime's convention),
- * otherwise at `maxSeq + 1` so the log stays seq-contiguous. If the run's
- * highest-seq event is already terminal, the write is a no-op so push
- * validation's terminal-lock is never tripped.
+ * Append a supervisor-authored `RunFailed` to a run's event log,
+ * unless the run is already terminal. The next seq is computed inside
+ * the substrate merge (atomic against any concurrent writer under the
+ * per-repo lock): the first event on an empty tree lands at seq 1
+ * (the runtime's convention), otherwise `maxSeq + 1` so the log stays
+ * seq-contiguous. If the run's highest-seq event is already terminal,
+ * the write is a no-op so push validation's terminal-lock is never
+ * tripped.
  */
 export async function commitRunFailed(
   opts: CommitRunFailedOpts,
@@ -136,13 +136,11 @@ export async function commitRunFailed(
         //
         // This detects the per-event (`events/<seq>.json`) form only, not
         // the sealed combined-log (`events.jsonl`) form, which lives outside
-        // `preservePrefix`. That is sufficient here because the anchor run
-        // this commit targets is sealed only when the DEPLOYMENT itself is
-        // terminal, and the crash-loop latch fires only while the deployment
-        // is running -- so the run is never in the sealed form at this call.
-        // If a sealed run ever reached here, the append would produce a tree
-        // carrying both forms, which push validation rejects, and the caller
-        // logs the failure (best-effort tombstone) rather than corrupting.
+        // `preservePrefix`. That is sufficient here: the anchor run is
+        // sealed only when the DEPLOYMENT is terminal, and the crash-loop
+        // latch fires only while the deployment is running. If a sealed run
+        // ever reached here, push validation would reject the mixed-form
+        // tree and the caller logs the failure (best-effort tombstone).
         if (maxPath !== null) {
           const raw = existing.get(maxPath);
           if (raw !== undefined) {

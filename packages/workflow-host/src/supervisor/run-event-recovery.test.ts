@@ -20,9 +20,9 @@ import { compactRunEvents } from "./run-event-compaction";
 import { recoverInterruptedCompactions } from "./run-event-recovery";
 
 // The sweep's harness is a deliberate local mirror of the helpers in
-// run-event-compaction.test.ts. The sweep operates over MULTIPLE runs, so it
-// seeds per-run event trees by id, where that file's `setup`/`ev` assume the
-// single fixed `run-1`.
+// run-event-compaction.test.ts. The sweep operates over MULTIPLE runs,
+// so it seeds per-run event trees by id, where that file's
+// `setup`/`ev` assume the single fixed `run-1`.
 
 const REF = "refs/heads/main";
 const allowAll: AuthorizeFn = () => ({ allowed: true });
@@ -70,8 +70,8 @@ async function setup(anchorRunId: string) {
   };
   const runDir = (runId: string) =>
     path.join(substrate.getRepoDir(repoId), "runs", runId);
-  // Seed a run's per-event `events/<seq>.json` blobs: the on-disk shape a
-  // crash leaves behind when the fold never runs.
+  // Seed a run's per-event `events/<seq>.json` blobs: the on-disk
+  // shape a crash leaves behind when the fold never runs.
   const seedPerEvent = (runId: string, events: [number, string][]) =>
     substrate.writeTreePreservingPrefix(supervisor, repoId, REF, {
       preservePrefix: `runs/${runId}/events/`,
@@ -170,10 +170,10 @@ describe("recoverInterruptedCompactions", () => {
   });
 
   test("is safe when a live fold folds the same run concurrently", async () => {
-    // A sweep can race the live fire-and-forget fold for the same run. This
-    // composes the two; the exactly-once guarantee itself lives in
-    // compactRunEvents' own "two concurrent seals" test. Here we only assert
-    // the sweep participates safely: exactly one path seals, and the combined
+    // A sweep can race the live fire-and-forget fold for the same run.
+    // The exactly-once guarantee itself lives in compactRunEvents' own
+    // "two concurrent seals" test; here we only assert the sweep
+    // participates safely: exactly one path seals, and the combined
     // file survives intact.
     const { repoId, substrate, anchorRunId, runDir, seedPerEvent } =
       await setup("dep-concurrent");
@@ -213,8 +213,9 @@ describe("recoverInterruptedCompactions", () => {
   test("records a failed fold and still seals the remaining runs", async () => {
     const { repoId, substrate, anchorRunId, runDir, seedPerEvent } =
       await setup("dep-failure");
-    // Two terminal-but-per-event runs. The write for `bad` is injected to
-    // throw; `good` must still seal, and `bad` must be reported in `failed`.
+    // Two terminal-but-per-event runs. The write for `bad` is injected
+    // to throw; `good` must still seal, and `bad` must be reported in
+    // `failed`.
     await seedPerEvent("bad", [
       [0, "RunStarted"],
       [1, "RunCompleted"],

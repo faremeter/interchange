@@ -1,32 +1,23 @@
 // Stale-cohort routing pinch-point verification.
 //
-// The supervisor's `pumpUpstreamControl` closes over the cohort
-// broadcaster captured at pump-start time, NOT a broadcaster resolved
-// dynamically per `terminal.event`. During a recycle, the supervisor
-// mints a fresh broadcaster for the new cohort and disposes the old
-// one. A `terminal.event` frame the OLD child emitted before its kill
-// landed sits in the OLD iterator's buffer; when the OLD pump
-// eventually consumes it, the notify routes to the OLD cohort's (now
-// disposed) broadcaster, whose `notify` is a no-op — so the frame does
-// NOT fan out to the NEW cohort's listeners.
+// `pumpUpstreamControl` closes over the cohort broadcaster captured at
+// pump-start time, NOT a broadcaster resolved dynamically per
+// `terminal.event`. During a recycle the supervisor mints a fresh
+// broadcaster for the new cohort and disposes the old one. A
+// `terminal.event` frame the OLD child emitted before its kill landed
+// sits in the OLD iterator's buffer; when the OLD pump eventually
+// consumes it, the notify routes to the OLD cohort's (now disposed)
+// broadcaster, whose `notify` is a no-op -- so the frame does NOT fan
+// out to the NEW cohort's listeners.
 //
-// The realistic scenario:
-//   - A run is in-flight on cohort A under the stable runId (the
-//     deployment mail address, the stable id of its one top-level run).
-//   - Cohort A crashes mid-run before markConsumed → recycle.
-//   - The processing/ entry is replayed back to inbox/.
-//   - Cohort B dispatches the fresh mail under that same stable runId
-//     and subscribes cohort B's broadcaster for it.
-//   - Meanwhile, cohort A's iterator still has a buffered
-//     `terminal.event` for the stable runId from the previous
-//     incarnation.
-//   - The OLD pump dequeues the buffered frame and calls
-//     `notify(runId, staleEvent)` on cohort A's captured broadcaster,
-//     which is disposed, so the notify drops. Cohort B's listener is
-//     NOT settled early.
-//   - Cohort B's markConsumed stays gated on `waitForRunTerminalOrPark`
-//     and does not fire until cohort B emits the run's real terminal
-//     event.
+// Realistic scenario: a run in-flight on cohort A under the stable
+// runId, cohort A crashes mid-run -> recycle, the processing/ entry is
+// replayed, cohort B dispatches the fresh mail under the same stable
+// runId and subscribes cohort B's broadcaster. Meanwhile cohort A's
+// iterator still buffers a `terminal.event` for the stable runId; the
+// OLD pump dequeues it, the notify drops on the disposed broadcaster,
+// and cohort B's markConsumed stays gated on `waitForRunTerminalOrPark`
+// until cohort B emits the run's real terminal event.
 
 import { describe, test, expect } from "bun:test";
 import fs from "node:fs/promises";
@@ -234,8 +225,8 @@ type FakeChild = {
 
 function createSpawnTracker() {
   const children: FakeChild[] = [];
-  // Reports each spawn so a test can wait for the child rather than re-read
-  // the array on a timer.
+  // Reports each spawn so a test can wait for the child rather than
+  // re-read the array on a timer.
   const spawnChanges = createChangeNotifier();
   const spawner: SubprocessSpawner = ({ env }) => {
     const s2c = createMemoryNdjsonStream();
@@ -323,8 +314,9 @@ describe("H-S2 stale-cohort routing pinch-point", () => {
     );
 
     const consumedRecord: string[] = [];
-    // The markConsumed callback is the event; the poll it replaces re-read
-    // this array every ten milliseconds against a one-second deadline.
+    // The markConsumed callback is the event; the poll it replaces
+    // re-read this array every ten milliseconds against a one-second
+    // deadline.
     const consumedChanges = createChangeNotifier();
     const wrappedInbox: InboxPrimitives = {
       ...inbox,
@@ -369,7 +361,8 @@ describe("H-S2 stale-cohort routing pinch-point", () => {
     await tracker.awaitChildren(1);
     const childA = tracker.children[0];
     if (childA === undefined) throw new Error("tracker.children[0] missing");
-    // Disable closeOnKill on cohort A so we can inject stale frames AFTER kill.
+    // Disable closeOnKill on cohort A so we can inject stale frames
+    // AFTER kill.
     childA.closeOnKill = false;
     const senderA = await driveReady(childA, ipcKp);
     await spawnP;
@@ -385,15 +378,14 @@ describe("H-S2 stale-cohort routing pinch-point", () => {
     await recycleP;
 
     // The recycle finished. State is now `running` with cohort B's
-    // broadcaster. Cohort A's pump is STILL ALIVE (we left c2s open)
+    // broadcaster; cohort A's pump is STILL ALIVE (we left c2s open)
     // and waiting on the iterator.
     //
     // Deliver a fresh mail to cohort B and let it land in the inbox.
-    // The runtime body of cohort B has NOT processed it yet; the
-    // dispatch loop will dequeue it, subscribe cohort B's broadcaster
-    // for the stable runId (the deployment mail address), then forward
-    // trigger.fire. At that point, cohort B's broadcaster has a listener
-    // for that runId.
+    // The dispatch loop will dequeue it, subscribe cohort B's
+    // broadcaster for the stable runId (the deployment mail address),
+    // then forward trigger.fire; at that point cohort B's broadcaster
+    // has a listener for that runId.
     const TEST_MESSAGE =
       "Message-ID: <stale-routing-probe@example.com>\r\n\r\nbody";
     const TEST_MESSAGE_ID = "<stale-routing-probe@example.com>";
@@ -409,11 +401,12 @@ describe("H-S2 stale-cohort routing pinch-point", () => {
       true,
     );
 
-    // Now inject a STALE `terminal.event` for the stable runId from the
-    // OLD child (cohort A). The OLD pump (still alive on A's iterator)
-    // picks it up. `pumpUpstreamControl` notifies the broadcaster it
-    // captured at pump-start — cohort A's, which the recycle disposed —
-    // so the notify drops and cohort B's listener is untouched.
+    // Now inject a STALE `terminal.event` for the stable runId from
+    // the OLD child (cohort A). The OLD pump (still alive on A's
+    // iterator) picks it up; `pumpUpstreamControl` notifies the
+    // broadcaster it captured at pump-start -- cohort A's, which the
+    // recycle disposed -- so the notify drops and cohort B's listener
+    // is untouched.
     const readsBeforeStale = childA.c2s.readCount();
     await senderA.send({
       type: "terminal.event",
@@ -425,19 +418,20 @@ describe("H-S2 stale-cohort routing pinch-point", () => {
       },
     });
 
-    // The assertion below is that the stale frame changed nothing, which is
-    // only worth making once the old pump has actually read it. The stream
-    // reports the read, so that is the wait; a pause would have let the
-    // assertion run against a frame still sitting in the buffer, where
-    // "nothing happened" is true for the wrong reason.
+    // The assertion below is that the stale frame changed nothing,
+    // which is only worth making once the old pump has actually read
+    // it. The stream reports the read, so that is the wait; a pause
+    // would have let the assertion run against a frame still sitting
+    // in the buffer, where "nothing happened" is true for the wrong
+    // reason.
     await childA.c2s.awaitReadCount(readsBeforeStale + 1);
 
     // Under unified dispatch markConsumed is gated on
-    // waitForRunTerminalOrPark.  The stale terminal.event from cohort A
-    // is routed to cohort A's own broadcaster (captured at pump-start
-    // time), NOT cohort B's, so it does NOT resolve cohort B's wait.
-    // The message therefore stays in processing/ until cohort B sends a
-    // real terminal event.
+    // waitForRunTerminalOrPark. The stale terminal.event from cohort
+    // A is routed to cohort A's own broadcaster (captured at pump-start
+    // time), NOT cohort B's, so it does NOT resolve cohort B's wait;
+    // the message stays in processing/ until cohort B sends a real
+    // terminal event.
     expect(consumedRecord).not.toContain(TEST_MESSAGE_ID);
 
     // Settle the run legitimately from cohort B under the stable runId.

@@ -1,38 +1,27 @@
-// Supervisor-level coverage for the substrate.write IPC layer.
-//
-// Four review concerns are pinned here:
+// Supervisor-level coverage for the substrate.write IPC layer. Four
+// review concerns are pinned here:
 //
 //   1. The terminal-write watchdog timeout. The supervisor holds the
-//      `substrate.write.response` back to the child until the
-//      dispatch loop's `markConsumed` settles for a matching terminal
-//      event. A bug in `markConsumed`, a torn-down cohort, or a
-//      stalled inbox primitive would deadlock the child's write, the
-//      runtime body, and the dispatch loop itself. The watchdog
-//      surfaces such a stall as a structured `{ ok: false, reason }`
-//      response rather than an unbounded wait.
+//      `substrate.write.response` until the dispatch loop's
+//      `markConsumed` settles for a matching terminal event. A bug in
+//      `markConsumed`, a torn-down cohort, or a stalled inbox
+//      primitive would deadlock the child's write and the dispatch
+//      loop; the watchdog surfaces the stall as a structured
+//      `{ ok: false, reason }` response instead of an unbounded wait.
 //
 //   2. Authz under the new IPC. The supervisor executes substrate
 //      writes on behalf of the child under
-//      `WorkflowRunWorkflowProcessPrincipal`; nothing in the existing
-//      tests pinned the supervisor's behaviour when the child claims
-//      a principal it shouldn't have or a anchorRunId that doesn't
-//      match the supervisor's. The supervisor's handler intentionally
-//      ignores any principal/anchorRunId the child might smuggle in:
-//      the principal is constructed by the supervisor at write time
-//      from `bindings.anchorRunId`. Pin that override so a future
-//      change does not quietly let the child influence the on-disk
-//      audit subject.
+//      `WorkflowRunWorkflowProcessPrincipal`, ignoring any
+//      principal/anchorRunId the child might smuggle in: the
+//      principal is constructed at write time from
+//      `bindings.anchorRunId`. Pin that override.
 //
 //   3. A repoId.kind other than `workflow-run` -- the only kind the
 //      child's proxy is supposed to forward through this IPC -- must
 //      be rejected at the handler boundary. Pin that here.
 //
 //   4. The supervisor's crash handler must interpolate the crash reason
-//      into its log record. A malformed substrate.write.request reaches
-//      the crash handler on the live cohort; a non-JSON line during the
-//      pre-ready handshake reaches it in a non-running phase. Both log
-//      the reason, and both are pinned here because this file already
-//      owns the harness that drives a child through the IPC.
+//      into its log record, in both the running and pre-ready phases.
 
 import {
   describe,
@@ -82,11 +71,12 @@ type WriteCapture = {
   message: string;
 };
 
-// Mirror the workflow-run kind handler's terminal detection for the stub
-// substrate: a run is newly terminal when the merge produced a terminal
-// event blob under its `events/` prefix. The real handler scopes this to
-// events newly added against the prior tree; the stub's merge always runs
-// against an empty prior, so every terminal event it emits is new.
+// Mirror the workflow-run kind handler's terminal detection for the
+// stub substrate: a run is newly terminal when the merge produced a
+// terminal event blob under its `events/` prefix. The real handler
+// scopes this to events newly added against the prior tree; the stub's
+// merge always runs against an empty prior, so every terminal event it
+// emits is new.
 const STUB_TERMINAL_EVENT_STATUS = new Map<
   string,
   "completed" | "failed" | "cancelled"
@@ -391,9 +381,9 @@ async function bootSupervisorToReady(
   const exited = new Promise<number>((resolve) => {
     resolveExit = resolve;
   });
-  // The spawner being called IS the event the boot helper waits for, so it
-  // reports the env through this rather than leaving the helper to re-read a
-  // mutable binding on a timer until it is populated. A respawn calls the
+  // The spawner being called IS the event the boot helper waits for,
+  // so it reports the env through this rather than leaving the helper
+  // to re-read a mutable binding on a timer. A respawn calls the
   // spawner again, so only the first call settles this.
   const spawned = Promise.withResolvers<Record<string, string>>();
   const spawner: SubprocessSpawner = ({ env }) => {
@@ -523,12 +513,12 @@ describe("substrate-write authz: supervisor overrides the child's claim", () => 
     // The substrate.write.request wire frame does not carry a
     // principal field (the supervisor's handler constructs the
     // workflow-process principal from `bindings.anchorRunId` at write
-    // time). Pin that override here by observing the principal the
-    // supervisor presents to the substrate's writeTreePreservingPrefix.
+    // time). Pin that override by observing the principal the
+    // supervisor presents to the substrate's
+    // writeTreePreservingPrefix.
     const writes: WriteCapture[] = [];
-    // The capture callback is the signal that a write reached the substrate;
-    // the test previously inferred it by re-reading `writes.length` on a
-    // timer until a deadline expired.
+    // The capture callback is the signal that a write reached the
+    // substrate, instead of re-reading `writes.length` on a timer.
     const firstWrite = Promise.withResolvers<boolean>();
     const harness = await bootSupervisor({
       prefix: "authz-override-",
@@ -551,12 +541,10 @@ describe("substrate-write authz: supervisor overrides the child's claim", () => 
       },
     });
     // Wait for the supervisor's substrate write attempt to land on
-    // the stub. The substrate's per-repo lock window is held inside
-    // the merge round-trip; with `invokeMerge: true` the stub
-    // synchronously drives the supervisor's merge closure with an
-    // empty existing map, which forwards a `substrate.merge.request`
-    // upstream. We satisfy it immediately with an empty file set so
-    // the substrate's writeTreePreservingPrefix resolves and the
+    // the stub. With `invokeMerge: true` the stub synchronously
+    // drives the supervisor's merge closure with an empty existing
+    // map, which forwards a `substrate.merge.request` upstream;
+    // satisfy it with an empty file set so the write resolves and the
     // captured principal is observable.
     await waitForUpstreamPayload(
       harness.supervisorToChild,
@@ -591,7 +579,7 @@ describe("substrate-write authz: supervisor overrides the child's claim", () => 
     // proxy is supposed to forward through this IPC. A child that
     // smuggled a `kind: "agent-state"` request through would be
     // attempting to write outside the supervisor's audit boundary;
-    // the handler responds with `{ ok: false }` and never reaches the
+    // the handler responds `{ ok: false }` and never reaches the
     // underlying substrate.
     const writes: WriteCapture[] = [];
     const harness = await bootSupervisor({
@@ -638,15 +626,12 @@ describe("substrate-write authz: supervisor overrides the child's claim", () => 
 
 describe("substrate-write cohort abort cleanup", () => {
   test("a substrate.write.request mid-merge is rejected with cohort abort reason when the supervisor shuts down", async () => {
-    // The HIGH cleanup the supervisor commits when a cohort tears down:
-    // every pending merge round-trip registered against the dying cohort
-    // must resolve with a failure so handler closures awaiting them do
-    // not leak past the shutdown. Pin the observable result here by
-    // driving a substrate.write.request to mid-merge, then issuing
-    // shutdown without sending the matching substrate.merge.response.
-    // The supervisor's `substrate.write.response` to the child must
-    // surface the abort reason rather than sit forever on the merge
-    // resolver the dying control channel will never invoke.
+    // The HIGH cleanup the supervisor commits when a cohort tears
+    // down: every pending merge round-trip registered against the
+    // dying cohort must resolve with a failure so handler closures
+    // awaiting them do not leak past the shutdown. Pin the observable
+    // result by driving a write to mid-merge, then issuing shutdown
+    // without sending the matching substrate.merge.response.
     const harness = await bootSupervisor({
       prefix: "supv-cohort-abort-",
       invokeMerge: true,
@@ -664,12 +649,10 @@ describe("substrate-write cohort abort cleanup", () => {
       },
     });
 
-    // Wait for the supervisor's substrate.merge.request to land in the
-    // supervisor-to-child stream, then trigger shutdown without
-    // sending the matching response. The merge resolver is what the
+    // Wait for the supervisor's substrate.merge.request to land in
+    // the supervisor-to-child stream, then trigger shutdown without
+    // sending the matching response; the merge resolver is what the
     // HIGH cleanup must reject through `rejectCohortAwaiters`.
-    // Reaching the next line is the merge request having arrived, so
-    // the flag and its assertion have nothing left to add.
     await waitForUpstreamPayload(
       harness.supervisorToChild,
       "substrate.merge.request",
@@ -679,15 +662,8 @@ describe("substrate-write cohort abort cleanup", () => {
     // Issue shutdown. The HIGH cleanup runs inside `shutdownInternal`
     // after the cohort abort; it iterates `pendingMerges` and resolves
     // each entry with `{ ok: false, reason: "cohort aborted: ..." }`.
-    // The handler's `await result` returns the failure, the
-    // try/catch's `cause` path runs, and the substrate.write.response
-    // lands on the supervisor-to-child stream with the abort reason.
     const shutdownPromise = harness.supervisor.shutdown();
 
-    // Waiting for the response rather than for five seconds to pass. The
-    // explicit null check this replaces was the one deadline in the file that
-    // failed loudly, but "in time" was still the thing it measured; a
-    // response that never comes now ends the run at the lane timeout.
     const abortResponse = await waitForUpstreamPayload(
       harness.supervisorToChild,
       "substrate.write.response",
@@ -823,9 +799,10 @@ describe("substrate-write malformed merge response", () => {
     expect(badResponse.result.ok).toBe(false);
     expect(badResponse.result.reason).toMatch(/decode failed/);
 
-    // Liveness: a SUBSEQUENT upstream frame must still be processed. If
-    // the malformed decode had escaped the `for await`, the pump would
-    // be dead and this second write would never receive a merge.request.
+    // Liveness: a SUBSEQUENT upstream frame must still be processed.
+    // If the malformed decode had escaped the `for await`, the pump
+    // would be dead and this second write would never receive a
+    // merge.request.
     const goodRequestId = "merge-decode-good-1";
     await harness.childSender.send({
       type: "substrate.write.request",
@@ -874,11 +851,11 @@ describe("substrate-write malformed merge response", () => {
   });
 });
 
-// Capture LogTape records file-wide so the crash-handler tests can assert
-// on the interpolated reason, and so a test can await a record the
-// supervisor emits rather than poll for its effect. `configureSync` is
-// process-global, so the prior configuration is saved and restored around
-// this file.
+// Capture LogTape records file-wide so the crash-handler tests can
+// assert on the interpolated reason, and so a test can await a record
+// the supervisor emits rather than poll for its effect. `configureSync`
+// is process-global, so the prior configuration is saved and restored
+// around this file.
 const logs = createLogCapture();
 
 beforeAll(() => {
@@ -955,41 +932,40 @@ describe("onChildCrash logs the interpolated crash reason", () => {
       onSelfTerminate: (info) => selfTerminations.push(info),
     });
 
-    // A non-JSON line before the ready handshake drives onChildCrash while the
-    // phase is still `starting`. That is the INITIAL spawn failing -- which the
-    // deploy unwind owns -- not a self-termination of a registered deployment
-    // the host must reclaim, so the sink must stay silent even though the
-    // teardown lands in `stopped`.
-    // The leading token is what the parse error quotes into the crash reason,
-    // and the reason is what distinguishes one teardown's completion record
-    // from another's. A token the sibling test does not use keeps the needle
-    // below matched by this test's teardown alone.
+    // A non-JSON line before the ready handshake drives onChildCrash
+    // while the phase is still `starting`. That is the INITIAL spawn
+    // failing -- which the deploy unwind owns -- not a self-termination
+    // of a registered deployment the host must reclaim, so the sink
+    // must stay silent even though the teardown lands in `stopped`.
+    // The leading token is what the parse error quotes into the crash
+    // reason; a token the sibling test does not use keeps this test's
+    // needle matched by this teardown alone.
     seam.childToSupervisor.inject("noselfterm-json{{{");
     await expect(seam.spawnPromise).rejects.toThrow();
 
-    // The rejection above does not license asserting silence: `onChildCrash`
-    // launches its teardown fire-and-forget, so the rejection can arrive
-    // while that teardown is still unwinding. Wait for the teardown's own
-    // completion record instead. `shutdownInternal` fires the
-    // `onSelfTerminate` sink and then logs this line in the same synchronous
-    // block, sink first, with no await between them -- so the record is a
-    // happens-after: had the sink been going to fire for this teardown, it
-    // already did.
+    // The rejection above does not license asserting silence:
+    // `onChildCrash` launches its teardown fire-and-forget, so the
+    // rejection can arrive while that teardown is still unwinding. Wait
+    // for the teardown's own completion record instead.
+    // `shutdownInternal` fires the `onSelfTerminate` sink and then logs
+    // this line in the same synchronous block, sink first, with no await
+    // between them -- so the record is a happens-after: had the sink
+    // been going to fire for this teardown, it already did.
     //
     // The needle carries the crash's own reason because the failed spawn
-    // handshake runs a second, independent `shutdownInternal` and logs the
-    // same line under `spawn failed during startup`. That one is awaited
-    // before `spawnPromise` rejects, so a needle matching either would be
-    // satisfied by the wrong teardown and barrier nothing.
+    // handshake runs a second, independent `shutdownInternal` and logs
+    // the same line under `spawn failed during startup`; a needle
+    // matching either would be satisfied by the wrong teardown.
     await logs.waitForRecord(
       'supervisor shutdown complete (control channel received non-JSON line: JSON Parse error: Unexpected identifier "noselfterm"',
     );
 
-    // The sink fires only when `selfTerminated` is set, and `onChildCrash`
-    // derives that from an allowlist admitting `recycling` alone. This crash
-    // lands in `starting` -- the INITIAL spawn failing, which the deploy
-    // unwind owns, not a self-termination of a registered deployment the host
-    // must reclaim. That allowlist is what this test pins.
+    // The sink fires only when `selfTerminated` is set, and
+    // `onChildCrash` derives that from an allowlist admitting
+    // `recycling` alone. This crash lands in `starting` -- the INITIAL
+    // spawn failing, owned by the deploy unwind, not a
+    // self-termination the host must reclaim. That allowlist is what
+    // this test pins.
     expect(selfTerminations).toEqual([]);
   });
 });

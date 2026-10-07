@@ -25,11 +25,10 @@ function emptyEventReader(): AsyncIterableIterator<Uint8Array> {
 }
 
 /**
- * A `SubprocessHandle` whose only live surface is `kill` (recording the
- * signals it receives) and `exited`. When `sigtermExits` is false the child
- * ignores SIGTERM and settles `exited` only on SIGKILL -- the wedged-child
- * shape the escalation branch exists for. The stream fields are inert
- * stubs; `killChildHandle` never touches them.
+ * A `SubprocessHandle` whose only live surface is `kill` (recording
+ * the signals it receives) and `exited`. When `sigtermExits` is false
+ * the child ignores SIGTERM and settles `exited` only on SIGKILL --
+ * the wedged-child shape the escalation branch exists for.
  */
 function makeHandle(opts: { sigtermExits: boolean }): {
   handle: SubprocessHandle;
@@ -81,8 +80,8 @@ describe("killChildHandle", () => {
     let cleared = 0;
     const scheduled: (() => void)[] = [];
 
-    // waitDeadline calls setTimer synchronously, before killChildHandle's
-    // first await, so the callback is captured by the time this call returns
+    // waitDeadline calls setTimer synchronously, before the first
+    // await, so the callback is captured by the time this call returns
     // its pending promise. Firing it makes the deadline win the race.
     const pending = killChildHandle(handle, 5_000, {
       logger,
@@ -105,9 +104,9 @@ describe("killChildHandle", () => {
   test("omitting the timer deps falls back to real timers and still escalates", async () => {
     const { handle, killSignals } = makeHandle({ sigtermExits: false });
 
-    // No setTimer/clearTimer keys -- the omit-key path the recycle call site
-    // takes when its context timers are undefined. A tiny real timeout drives
-    // the escalation without a fake timer.
+    // No setTimer/clearTimer keys -- the omit-key path the recycle
+    // call site takes when its context timers are undefined. A tiny
+    // real timeout drives the escalation without a fake timer.
     await killChildHandle(handle, 5, { logger });
 
     expect(killSignals).toEqual(["SIGTERM", "SIGKILL"]);

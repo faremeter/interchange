@@ -9,11 +9,12 @@
 // terminal state instead of respawning, and a stable run resets the
 // counter.
 //
-// These tests exercise the guard's classification (planned kills from
-// shutdown and recycle must NOT respawn), the happy-path respawn + replay,
-// the latch, and the stable-run reset. The harness mirrors the one in
-// `recycle.test.ts`: a fake spawner whose children expose a controllable
-// `exited` promise, an in-memory inbox, and a control-channel `driveReady`.
+// These tests cover the guard's classification (planned kills from
+// shutdown and recycle must NOT respawn), the happy-path respawn +
+// replay, the latch, and the stable-run reset. The harness mirrors
+// `recycle.test.ts`: a fake spawner whose children expose a
+// controllable `exited` promise, an in-memory inbox, and a
+// control-channel `driveReady`.
 
 import {
   describe,
@@ -63,15 +64,10 @@ type WriteRecorder = {
   until(predicate: () => boolean): Promise<void>;
 };
 
-// Pairs the recorded writes with the notifier that reports them, so a test can
-// wait for the commit it expects instead of re-reading the array on a timer.
-//
-// The notifier is created per recorder rather than once per module: a test
-// creates its own recorder and threads it to the one store it cares about, so
-// no other store in the file can wake its waiter. A module-level notifier is
-// the shape `supervisor-reaper.ts` rejects for the same reason -- the unit pass
-// gives a worker one module registry for every file it runs, so module state
-// here is shared across tests and across files.
+// Pairs the recorded writes with the notifier that reports them, so a
+// test can wait for the commit it expects instead of re-reading the
+// array on a timer. The notifier is created per recorder, not per
+// module, so no other store in the file can wake its waiter.
 function createWriteRecorder(): WriteRecorder {
   const prefixes: string[] = [];
   const changes = createChangeNotifier();
@@ -156,10 +152,11 @@ function createSpawnTracker(): SpawnTracker {
       resolveExit = resolve;
     });
     const killSignals: string[] = [];
-    // Simulate a process death: close both channels and resolve `exited`.
-    // A deliberate kill and a crash take the same terminal steps; the
-    // difference the supervisor cares about is only WHEN they happen
-    // relative to its own lifecycle, which the exit-watcher classifies.
+    // Simulate a process death: close both channels and resolve
+    // `exited`. A deliberate kill and a crash take the same terminal
+    // steps; the difference the supervisor cares about is only WHEN
+    // they happen relative to its own lifecycle, which the
+    // exit-watcher classifies.
     const die = () => {
       eventChildToSupervisor.close();
       childToSupervisor.close();
@@ -235,8 +232,8 @@ function createMemoryInboxPrimitives(): InboxPrimitives & {
   awaitReplayCalls(count: number): Promise<void>;
 } {
   let replayCalls = 0;
-  // Reports each replay so a test can wait for it rather than re-reading the
-  // counter on a timer.
+  // Reports each replay so a test can wait for it rather than
+  // re-reading the counter on a timer.
   const replayChanges = createChangeNotifier();
   type Entry = {
     messageId: string;
@@ -491,12 +488,13 @@ async function spawnSupervisor(opts: {
   return { supervisor };
 }
 
-// A deterministic timer registry used to drive the crash-loop stable-run
-// reset without wall-clock waits. `setTimer`/`clearTimer` back the
-// supervisor's injectable timer seam; `fireByDelay` invokes every armed,
-// uncleared timer scheduled at exactly `ms`. The spawn ready-handshake
-// deadline is armed on the same seam but cleared on `ready`, so firing by
-// the distinctive stable-reset delay never disturbs it.
+// A deterministic timer registry used to drive the crash-loop
+// stable-run reset without wall-clock waits. `setTimer`/`clearTimer`
+// back the supervisor's injectable timer seam; `fireByDelay` invokes
+// every armed, uncleared timer scheduled at exactly `ms`. The spawn
+// ready-handshake deadline is armed on the same seam but cleared on
+// `ready`, so firing by the distinctive stable-reset delay never
+// disturbs it.
 function createFakeTimers() {
   type FakeTimer = {
     id: number;
@@ -507,9 +505,8 @@ function createFakeTimers() {
   const timers: FakeTimer[] = [];
   let nextId = 1;
   // Reports each arm and clear. The supervisor arms its backoff from a
-  // coroutine the test does not await, so "is the timer armed yet" had been
-  // answered by re-reading this array on a real timer -- a wall-clock wait
-  // to observe a fake clock.
+  // coroutine the test does not await, so "is the timer armed yet" is
+  // answered by this notifier instead of a wall-clock wait.
   const changes = createChangeNotifier();
   return {
     setTimer: (cb: () => void, ms: number): unknown => {
@@ -589,11 +586,8 @@ describe("supervisor crash-respawn: unexpected exit", () => {
     if (secondChild === undefined) throw new Error("second child missing");
     await driveReady(secondChild, ipcKeypair);
 
-    // The replay is what "settled" meant: the respawned child's spawn path
-    // replays processing entries back to the inbox, so the call is the event.
-    await inbox.awaitReplayCalls(1);
-
     // The respawn ran the mail-recovery replay before resuming dispatch.
+    await inbox.awaitReplayCalls(1);
     expect(inbox.replayCalls()).toBeGreaterThanOrEqual(1);
     // Exactly one respawn happened.
     expect(tracker.totalSpawns).toBe(2);
@@ -616,10 +610,11 @@ describe("supervisor crash-respawn: unexpected exit", () => {
       phase: "stopped" | "crash-looping";
       reason: string;
     }[] = [];
-    // The fake clock is what makes the negative checkable. A respawn cannot
-    // begin without arming its backoff, and with the real timer that arming
-    // is invisible -- leaving the assertion below to notice a spawn that,
-    // being seconds out, was never going to have happened yet either way.
+    // The fake clock is what makes the negative checkable: a respawn
+    // cannot begin without arming its backoff, and with a real timer
+    // that arming is invisible -- leaving the assertion to notice a
+    // spawn that, being seconds out, was never going to have happened
+    // yet either way.
     const timers = createFakeTimers();
     const backoffMs = 40;
     const { supervisor } = await spawnSupervisor({
@@ -639,18 +634,18 @@ describe("supervisor crash-respawn: unexpected exit", () => {
     // observed in a non-running phase must NOT drive a respawn.
     await supervisor.shutdown();
     // No pause: the awaited shutdown is what licenses the negative. Its
-    // teardown observes the child's exit and reaches a terminal phase before
-    // resolving, so an exit-driven respawn would already have armed its
-    // backoff. The armed timer is the observable half -- the spawn itself
-    // would not follow until the backoff fired, which under this clock only
-    // happens when the test says so.
+    // teardown observes the child's exit and reaches a terminal phase
+    // before resolving, so an exit-driven respawn would already have
+    // armed its backoff. The armed timer is the observable half -- the
+    // spawn itself would not follow until the backoff fired, which
+    // under this clock only happens when the test says so.
     expect(timers.pendingDelays()).not.toContain(backoffMs);
     expect(tracker.totalSpawns).toBe(1);
 
-    // A host-requested `shutdown()` is not a self-termination: the host
-    // already knows the deployment is down, so the sink must stay silent.
-    // Firing here would make the sidecar reclaim an address the host is
-    // deliberately tearing down.
+    // A host-requested `shutdown()` is not a self-termination: the
+    // host already knows the deployment is down, so the sink must stay
+    // silent. Firing here would make the sidecar reclaim an address
+    // the host is deliberately tearing down.
     expect(selfTerminations).toHaveLength(0);
   });
 
@@ -677,9 +672,10 @@ describe("supervisor crash-respawn: unexpected exit", () => {
     });
 
     // Recycle deliberately kills the old child (resolving its `exited`)
-    // and stands up a new one. The old child's exit must be classified as
-    // planned -- generation-stale plus observed during `recycling` -- so it
-    // does not spawn a THIRD child on top of the recycle's respawn.
+    // and stands up a new one. The old child's exit must be classified
+    // as planned -- generation-stale plus observed during `recycling` --
+    // so it does not spawn a THIRD child on top of the recycle's
+    // respawn.
     const recyclePromise = supervisor.recycle({ reason: "planned" });
     await waitForChildren(tracker, 2);
     const secondChild = tracker.children[1];
@@ -687,10 +683,9 @@ describe("supervisor crash-respawn: unexpected exit", () => {
     await driveReady(secondChild, ipcKeypair);
     await recyclePromise;
 
-    // The awaited recycle is the boundary: it installs the replacement child
-    // and returns, so a spurious crash-respawn would already have armed its
-    // backoff. That armed timer is what this looks for; the interval it
-    // replaces only widened a window in which nothing observable happened.
+    // The awaited recycle is the boundary: it installs the replacement
+    // child and returns, so a spurious crash-respawn would already have
+    // armed its backoff. That armed timer is what this looks for.
     expect(timers.pendingDelays()).not.toContain(backoffMs);
     expect(tracker.totalSpawns).toBe(2);
 
@@ -738,18 +733,20 @@ describe("supervisor crash-respawn: crash-loop guard", () => {
     if (second === undefined) throw new Error("second child missing");
     await driveReady(second, ipcKeypair);
 
-    // Crash 2: reaches the threshold -> latch, no further respawn. The latch
-    // reports its self-termination last, after its RunFailed commit landed.
+    // Crash 2: reaches the threshold -> latch, no further respawn. The
+    // latch reports its self-termination last, after its RunFailed
+    // commit landed.
     second.crash();
     await latched.promise;
     expect(tracker.totalSpawns).toBe(2);
 
-    // The latch committed a RunFailed tombstone to the deployment's stable
-    // run so its external status flips to `failed`.
+    // The latch committed a RunFailed tombstone to the deployment's
+    // stable run so its external status flips to `failed`.
     expect(writeRecorder.prefixes()).toContain("runs/run_deployment-x/events/");
 
     // The deployment latched to the terminal `crash-looping` state
-    // specifically (not a clean `stopped`): recycle is rejected naming it.
+    // specifically (not a clean `stopped`): recycle is rejected naming
+    // it.
     let caught: unknown;
     try {
       await supervisor.recycle({ reason: "after-latch" });
@@ -761,9 +758,10 @@ describe("supervisor crash-respawn: crash-loop guard", () => {
       /in phase crash-looping/,
     );
 
-    // The latch is a self-termination, so the host-facing sink fired exactly
-    // once with the terminal `crash-looping` phase. This is the signal the
-    // sidecar subscribes to so it reclaims the deployment address.
+    // The latch is a self-termination, so the host-facing sink fired
+    // exactly once with the terminal `crash-looping` phase -- the
+    // signal the sidecar subscribes to so it reclaims the deployment
+    // address.
     expect(selfTerminations).toHaveLength(1);
     expect(selfTerminations[0]?.phase).toBe("crash-looping");
     expect(selfTerminations[0]?.reason).toMatch(/crash-loop/);
@@ -776,8 +774,9 @@ describe("supervisor crash-respawn: crash-loop guard", () => {
     const tracker = createSpawnTracker();
     const inbox = createMemoryInboxPrimitives();
     const writeRecorder = createWriteRecorder();
-    // The sidecar drops the deployment from its registry in this sink, and a
-    // forced stop that then finds no supervisor reports the refs as final.
+    // The sidecar drops the deployment from its registry in this sink,
+    // and a forced stop that then finds no supervisor reports the refs
+    // as final.
     const tombstoneAtSelfTermination = Promise.withResolvers<boolean>();
     await spawnSupervisor({
       baseDir,
@@ -809,9 +808,9 @@ describe("supervisor crash-respawn: crash-loop guard", () => {
     const inbox = createMemoryInboxPrimitives();
     const timers = createFakeTimers();
     // Latch on the 2nd exit, with distinctive backoff and stable-reset
-    // delays driven deterministically through the injectable timer seam.
-    // The backoff is pinned (initial == max) so each respawn's wait fires
-    // at the same delay.
+    // delays driven deterministically through the injectable timer
+    // seam. The backoff is pinned (initial == max) so each respawn's
+    // wait fires at the same delay.
     const backoffMs = 100_000;
     const stableResetMs = 500_000;
     const { supervisor } = await spawnSupervisor({
@@ -828,8 +827,8 @@ describe("supervisor crash-respawn: crash-loop guard", () => {
       clearTimer: timers.clearTimer,
     });
 
-    // Fire the armed backoff wait (poll until it is armed), then await the
-    // respawned child.
+    // Fire the armed backoff wait (poll until it is armed), then await
+    // the respawned child.
     const fireBackoffAndAwaitChild = async (
       nextCount: number,
     ): Promise<void> => {
@@ -848,13 +847,14 @@ describe("supervisor crash-respawn: crash-loop guard", () => {
     if (second === undefined) throw new Error("second child missing");
     await driveReady(second, ipcKeypair);
 
-    // Fire the stable-run reset timer: child 2 has run "stably", so the
-    // crash counter clears. Exactly one such timer is armed.
+    // Fire the stable-run reset timer: child 2 has run "stably", so
+    // the crash counter clears. Exactly one such timer is armed.
     await timers.awaitArmed(stableResetMs);
     timers.fireByDelay(stableResetMs);
 
     // Crash 2: with the counter reset by the stable run, this is again
-    // under the threshold, so it respawns (child 3) rather than latching.
+    // under the threshold, so it respawns (child 3) rather than
+    // latching.
     second.crash();
     await fireBackoffAndAwaitChild(3);
     const third = tracker.children[2];
@@ -867,11 +867,12 @@ describe("supervisor crash-respawn: crash-loop guard", () => {
 });
 
 /**
- * Crash `child`, fire the armed backoff timer at exactly `backoffMs` (awaiting
- * the fake-timer double's arm report), await the respawned child at
- * `nextCount`, and drive its ready. The EXACT expected delay is the assertion:
- * a backoff armed at any other value never satisfies `awaitArmed`, so the
- * caller hangs into the lane timeout instead of passing.
+ * Crash `child`, fire the armed backoff timer at exactly `backoffMs`
+ * (awaiting the fake-timer double's arm report), await the respawned
+ * child at `nextCount`, and drive its ready. The EXACT expected delay
+ * is the assertion: a backoff armed at any other value never satisfies
+ * `awaitArmed`, so the caller hangs into the lane timeout instead of
+ * passing.
  */
 async function crashFireBackoffAndReady(opts: {
   timers: ReturnType<typeof createFakeTimers>;
@@ -893,17 +894,17 @@ async function crashFireBackoffAndReady(opts: {
   const next = opts.tracker.children[opts.nextCount - 1];
   if (next === undefined) throw new Error("respawned child missing");
   await driveReady(next, opts.ipcKeypair);
-  // Wait until the respawn fully settles: `handleUnexpectedChildExit` arms
-  // the stable-run reset timer as its final step, after the async ready
-  // handshake completes. Returning before that would let a subsequent
-  // crash's entry-clear race the not-yet-armed timer.
+  // Wait until the respawn fully settles: `handleUnexpectedChildExit`
+  // arms the stable-run reset timer as its final step, after the async
+  // ready handshake completes. Returning before that would let a
+  // subsequent crash's entry-clear race the not-yet-armed timer.
   await opts.timers.awaitArmed(opts.stableResetMs);
 }
 
 // Capture LogTape records file-wide, so a test can await a record the
 // supervisor emits for a decision that leaves no other trace.
-// `configureSync` is process-global, so the prior configuration is saved and
-// restored around this file.
+// `configureSync` is process-global, so the prior configuration is
+// saved and restored around this file.
 const logs = createLogCapture();
 
 beforeAll(() => {
@@ -1020,8 +1021,8 @@ describe("supervisor crash-respawn: exponential backoff", () => {
     // Wait until the backoff is armed (the coroutine reached the wait).
     await timers.awaitArmed(backoffMs);
 
-    // An operator recycle runs WHILE the backoff is parked. It installs a
-    // fresh cohort (child 2), advancing the generation.
+    // An operator recycle runs WHILE the backoff is parked. It
+    // installs a fresh cohort (child 2), advancing the generation.
     const recyclePromise = supervisor.recycle({ reason: "race-the-backoff" });
     await waitForChildren(tracker, 2);
     const second = tracker.children[1];
@@ -1030,21 +1031,21 @@ describe("supervisor crash-respawn: exponential backoff", () => {
     await recyclePromise;
 
     // Now fire the parked backoff. The crash coroutine wakes, sees the
-    // generation has advanced past the cohort it was armed for, and bails
-    // -- it must NOT respawn the healthy cohort the recycle just installed.
+    // generation has advanced past the cohort it was armed for, and
+    // bails -- it must NOT respawn the healthy cohort the recycle just
+    // installed.
     timers.fireByDelay(backoffMs);
-    // `fireByDelay` is synchronous: it runs the timer callback and returns,
-    // which only resumes the coroutine. Nothing it goes on to decide has
-    // happened yet, so wait for the decision itself. The bail is announced
-    // in the same synchronous step that takes it -- the guard either logs
-    // this and returns, or falls through into `runRespawn` with no await in
-    // between -- which makes the record the decision rather than a report
-    // that trails it.
+    // `fireByDelay` is synchronous: it runs the timer callback and
+    // returns, which only resumes the coroutine; nothing it decides has
+    // happened yet, so wait for the decision itself. The bail is
+    // announced in the same synchronous step that takes it -- the
+    // guard either logs this and returns, or falls through into
+    // `runRespawn` with no await in between.
     await logs.waitForRecord(
       "respawn backoff elapsed but the crashed cohort is no longer the running one",
     );
-    // The recycle's cohort is the second and final spawn; a respawn of the
-    // dead cohort would be a third child.
+    // The recycle's cohort is the second and final spawn; a respawn of
+    // the dead cohort would be a third child.
     expect(tracker.totalSpawns).toBe(2);
 
     await supervisor.shutdown();
@@ -1099,9 +1100,10 @@ describe("supervisor crash-respawn: exponential backoff", () => {
       stableResetMs,
     });
 
-    // Crash 2 BEFORE child 2's stable timer fires. The handler disarms that
-    // timer at entry, so firing the stable delay now matches nothing -- the
-    // crash that just happened must not be rewarded as a stable run.
+    // Crash 2 BEFORE child 2's stable timer fires. The handler disarms
+    // that timer at entry, so firing the stable delay now matches
+    // nothing -- the crash that just happened must not be rewarded as
+    // a stable run.
     const second = tracker.children[1];
     if (second === undefined) throw new Error("second child missing");
     second.crash();
@@ -1118,10 +1120,9 @@ describe("supervisor crash-respawn: exponential backoff", () => {
     await driveReady(third, ipcKeypair);
 
     third.crash();
-    // Await the latch report, then probe `recycle` ONCE. The retry loop this
-    // replaces was standing in for the missing signal: it re-probed until the
-    // phase had flipped. The sink fires after `shutdownInternal` commits
-    // `phase = "crash-looping"`, so by here the single probe cannot race it.
+    // Await the latch report, then probe `recycle` ONCE. The sink
+    // fires after `shutdownInternal` commits `phase =
+    // "crash-looping"`, so the single probe cannot race it.
     await latched.until(() => selfTerminations.length >= 1);
     expect(selfTerminations[0]?.phase).toBe("crash-looping");
     let caught: unknown;
@@ -1174,7 +1175,8 @@ describe("supervisor crash-respawn: exponential backoff", () => {
     first.crash();
     await awaitPendingBackoffs(1);
 
-    // A recycle installs a fresh, LIVE child (child 2) while A is parked.
+    // A recycle installs a fresh, LIVE child (child 2) while A is
+    // parked.
     const recyclePromise = supervisor.recycle({ reason: "install-live" });
     await waitForChildren(tracker, 2);
     const second = tracker.children[1];
@@ -1182,13 +1184,14 @@ describe("supervisor crash-respawn: exponential backoff", () => {
     await driveReady(second, ipcKeypair);
     await recyclePromise;
 
-    // Crash the recycled child: coroutine B parks on ITS backoff. Now two
-    // backoff waits are armed at once -- the case a single-slot tracker
-    // would drop, leaking the earlier timer past shutdown.
+    // Crash the recycled child: coroutine B parks on ITS backoff. Now
+    // two backoff waits are armed at once -- the case a single-slot
+    // tracker would drop, leaking the earlier timer past shutdown.
     second.crash();
     await awaitPendingBackoffs(2);
 
-    // Shutdown must cancel BOTH parked waits: no backoff timer survives.
+    // Shutdown must cancel BOTH parked waits: no backoff timer
+    // survives.
     await supervisor.shutdown();
     expect(pendingBackoffCount()).toBe(0);
   });

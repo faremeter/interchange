@@ -3,21 +3,18 @@
 // The accumulator ticks against wall-clock time while the supervisor
 // believes the workflow has at least one `"cancel"`-behavior step in
 // flight. On timeout it commits `CancelRequested{origin:
-// "supervisor-drain"}` through the injected substrate. The runtime
+// "supervisor-drain"}` through the injected substrate; the runtime
 // body's existing cancellation cascade handles teardown once the
-// CancelRequested event lands on the workflow-run log.
+// event lands on the workflow-run log.
 //
 // These tests exercise the accumulator semantics directly (pause /
 // resume / stop / accumulatedMs / escalation commit) and the
 // canonical observable sequence on the supervisor's substrate write
-// side. The attachment point is the `RepoStore.
-// writeTreePreservingPrefix` interceptor on a stub substrate -- the
-// fake captures every commit's principal/files/ref so the test
-// asserts directly on the CancelRequested blob the accumulator
-// writes, instead of round-tripping through a `subscribeKind`
-// observer. The same observable is being tested; the attachment
-// point is just one layer closer to the write the accumulator
-// performs.
+// side, attached at the `writeTreePreservingPrefix` interceptor on a
+// stub substrate: the fake captures every commit's
+// principal/files/ref so the test asserts directly on the
+// CancelRequested blob the accumulator writes instead of
+// round-tripping through a `subscribeKind` observer.
 
 import { describe, test, expect } from "bun:test";
 import fs from "node:fs/promises";
@@ -333,12 +330,12 @@ describe("createDrainTimeoutAccumulator", () => {
   test("same-deployment child drain: parent and child share the same drain signal", () => {
     // Same-deployment children run inside the same workflow-process,
     // so they observe the same DrainController instance the parent
-    // does. The parent's main loop iteration over inFlight steps
-    // includes the spawn step; aborting it cascades through the
+    // does; the parent's main-loop iteration over inFlight steps
+    // includes the spawn step, and aborting it cascades through the
     // existing child-cancel emission path. No extra accumulator is
-    // required -- the same one ticks for the whole deployment. The
-    // test is structural: a single accumulator covers every run on
-    // the deployment.
+    // required -- one ticks for the whole deployment. The test is
+    // structural: a single accumulator covers every run on the
+    // deployment.
     const baseDir = "/tmp"; // unused by this structural assertion
     const substrate = createStubRepoStore({ baseDir });
     const signSpy = makeSignSpy();

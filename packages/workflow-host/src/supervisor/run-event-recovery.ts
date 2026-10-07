@@ -1,11 +1,11 @@
 // Bounded recovery for run-event compaction folds a crash interrupted.
 //
-// When a run terminates, the supervisor fires `compactRunEvents` in the
-// background. A crash between the terminal commit and that fold leaves the
-// run terminal but still in per-event form, and the terminal signal never
-// fires again for it. At the next spawn the boot scan proposes those runs;
-// this sweep re-runs the idempotent fold for each so the leaked per-event
-// file count is reclaimed.
+// When a run terminates, the supervisor fires `compactRunEvents` in
+// the background. A crash between the terminal commit and that fold
+// leaves the run terminal but still in per-event form, and the
+// terminal signal never fires again for it. At the next spawn the
+// boot scan proposes those runs; this sweep re-runs the idempotent
+// fold for each so the leaked per-event file count is reclaimed.
 
 import type {
   RepoId,
@@ -31,16 +31,18 @@ export type RecoverInterruptedCompactionsOpts = {
 export type RecoveryFoldFailure = { runId: string; message: string };
 
 /**
- * Re-seal runs a crash left terminal but still in per-event form, by re-running
- * the idempotent `compactRunEvents` for each proposed run. `compactRunEvents`
- * is authoritative: it no-ops a run that is already sealed or whose latest
- * event is not terminal, so a stale or mistaken proposal is a harmless no-op.
+ * Re-seal runs a crash left terminal but still in per-event form, by
+ * re-running the idempotent `compactRunEvents` for each proposed run.
+ * `compactRunEvents` is authoritative: it no-ops a run that is
+ * already sealed or whose latest event is not terminal, so a stale or
+ * mistaken proposal is a harmless no-op.
  *
- * Folds run serially. Every fold contends the same per-repo write lock that
- * live dispatch also takes, so folding one run at a time drains the backlog
- * without a thundering herd on that lock. One run's failure is caught so it
- * cannot abort the rest; the failed run id and its cause are returned -- not
- * logged here -- so the caller owns how to surface the aggregate.
+ * Folds run serially. Every fold contends the same per-repo write
+ * lock live dispatch also takes, so folding one run at a time drains
+ * the backlog without a thundering herd on that lock. One run's
+ * failure is caught so it cannot abort the rest; the failed run id
+ * and its cause are returned -- not logged here -- so the caller owns
+ * how to surface the aggregate.
  */
 export async function recoverInterruptedCompactions(
   opts: RecoverInterruptedCompactionsOpts,

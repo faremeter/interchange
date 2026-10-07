@@ -1,11 +1,11 @@
 // Tests for the supervisor-authored `RunFailed` terminal commit.
 //
-// `commitRunFailed` writes a `RunFailed` into a run's event log under the
-// supervisor principal so the deployment's `workflow_run.status` flips to
-// `failed` when the crash-loop guard latches. It computes the next seq
-// inside the substrate merge, bases the first event at seq 1, and no-ops
-// when the run is already terminal (respecting push-validation's
-// terminal-lock).
+// `commitRunFailed` writes a `RunFailed` into a run's event log under
+// the supervisor principal so the deployment's `workflow_run.status`
+// flips to `failed` when the crash-loop guard latches. It computes the
+// next seq inside the substrate merge, bases the first event at seq 1,
+// and no-ops when the run is already terminal (respecting
+// push-validation's terminal-lock).
 //
 // The substrate is a minimal in-memory `writeTreePreservingPrefix` that
 // actually runs the caller's merge against a file map, so the seq and
@@ -109,7 +109,8 @@ describe("commitRunFailed", () => {
     });
 
     expect(result.appended).toBe(true);
-    // The RunStarted is preserved and the RunFailed lands contiguously at 2.
+    // The RunStarted is preserved and the RunFailed lands contiguously
+    // at 2.
     expect(substrate.listUnder(EVENTS_PREFIX)).toEqual([
       `${EVENTS_PREFIX}1.json`,
       `${EVENTS_PREFIX}2.json`,
@@ -142,7 +143,8 @@ describe("commitRunFailed", () => {
       message: "should not append",
     });
 
-    // The already-terminal run is left untouched: no RunFailed, no third entry.
+    // The already-terminal run is left untouched: no RunFailed, no
+    // third entry.
     expect(result.appended).toBe(false);
     expect(substrate.listUnder(EVENTS_PREFIX)).toEqual([
       `${EVENTS_PREFIX}1.json`,
