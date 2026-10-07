@@ -1,14 +1,14 @@
-// runOnTrigger: a long-lived onTrigger section services each occurrence of
-// its trigger as an EVENT -- spawning the body via the suspendable-child
-// seam, awaiting the body's terminal (proxying any body approval park up on
-// the SAME correlation via this run's own park machinery), then re-arming on
-// a snapshot-less input park to await the next occurrence. The container never
+// runOnTrigger: a long-lived onTrigger section services each occurrence of its
+// trigger as an EVENT -- spawning the body via the suspendable-child seam,
+// awaiting the body's terminal (proxying any body approval park up on the SAME
+// correlation via this run's own park machinery), then re-arming on a
+// snapshot-less input park to await the next occurrence. The container never
 // self-completes; it settles only when a body run ends non-completed
 // (terminal-is-final) or the run is cancelled.
 //
-// This exercises the runtime driver in isolation with a test-wired
-// spawnSuspendableChild -- no sidecar. The DEPLOYED section form (a `{ ref }`
-// body) is built directly, since the deploy step is a separate layer.
+// Tests drive the runtime driver in isolation with a test-wired
+// spawnSuspendableChild; the DEPLOYED section form (a `{ ref }` body) is built
+// directly, since the deploy step is a separate layer.
 
 import { describe, test, expect } from "bun:test";
 
@@ -44,8 +44,8 @@ const at = new Date().toISOString();
 // mid-approval: the container `StepStarted`, the `ChildSpawned` for event 0's
 // body, and the approval `SignalAwaited` the container proxied up on the body's
 // correlation. With `grantDelivered` it also carries the `SignalReceived` that
-// landed before the crash relayed it -- the narrow window where the container
-// reduces to `in-flight` with its `awaitingSignal` stripped.
+// landed before the crash relayed it (container in-flight, awaitingSignal
+// stripped).
 function midApprovalSeed(
   runId: string,
   corr: string,
@@ -102,9 +102,8 @@ function midApprovalSeed(
 // mid-signal-relay: the container `StepStarted`, the `ChildSpawned` for event
 // 0's body, and the `SignalAwaited` the container proxied up on the body's
 // AUTHOR name (parkKind `"signal-relay"`). With `signalDelivered` it also
-// carries the `SignalReceived` that landed before the crash relayed it -- the
-// window where the container reduces to `in-flight` with the payload only in
-// the log (recovered via the FIFO pairing).
+// carries the `SignalReceived` that landed before the crash relayed it
+// (container in-flight, payload only in the log via the FIFO pairing).
 function midSignalRelaySeed(
   runId: string,
   name: string,
@@ -159,10 +158,9 @@ function midSignalRelaySeed(
 
 // The durable parent log a section leaves when a body child is parked
 // mid-`sleep`: the container `StepStarted` and the `ChildSpawned` for event 0's
-// body, and NO container `SignalAwaited`. A bare sleep body parks entirely
-// inside the child (its own `awaiting-timer` step) and surfaces no container
-// park, so the container reduces to `in-flight` -- the shape that distinguishes
-// a mid-sleep body from the approval/signal-relay parks above.
+// body, and NO container `SignalAwaited`. A bare sleep parks entirely inside
+// the child, so the container reduces to `in-flight` -- the shape that
+// distinguishes a mid-sleep body from the approval/signal-relay parks above.
 function midSleepSeed(runId: string): WorkflowEvent[] {
   return [
     {
@@ -843,9 +841,8 @@ describe("runOnTrigger", () => {
     // Event 0's body completed and the section re-armed an input park for event
     // 1; that park's SignalReceived is durable but ChildSpawned section__1 was
     // never written. The container reduces to in-flight with awaitingSignal
-    // stripped, so the delivered trigger lives only in the log -- the input
-    // sibling of the delivered-grant window. Resume must advance to event 1 with
-    // that payload, not re-park and drop it.
+    // stripped, so the delivered trigger lives only in the log. Resume must
+    // advance to event 1 with that payload, not re-park and drop it.
     const seed: WorkflowEvent[] = [
       {
         kind: "RunStarted",
@@ -938,12 +935,12 @@ describe("runOnTrigger", () => {
   test("does not advance on an already-consumed input older than the last spawn (no double-spawn)", async () => {
     const runId = "sec-resume-stale-input";
     const inputChannel1 = signalName("input-corr-a");
-    // Event 1 was fully serviced: its input await (seq 5) delivered (seq 6) and
-    // spawned section__1 (seq 7), which completed (seq 8). The crash landed
-    // before event 2 re-armed. The last input await (seq 5) is OLDER than the
-    // highest ChildSpawned (seq 7), so it belongs to an ALREADY-spawned event;
-    // advancing on it would double-spawn. The seq discriminator refuses, so the
-    // resume re-parks fresh and services event 2 only on a NEW delivery.
+    // Event 1 was fully serviced (its input await at seq 5 delivered at seq 6
+    // and spawned section__1 at seq 7, completed at seq 8); the crash landed
+    // before event 2 re-armed. The last input await is OLDER than the highest
+    // ChildSpawned, so it belongs to an ALREADY-spawned event; advancing on it
+    // would double-spawn. The seq discriminator refuses, so the resume re-parks
+    // fresh and services event 2 only on a NEW delivery.
     const seed: WorkflowEvent[] = [
       {
         kind: "RunStarted",
@@ -1060,9 +1057,8 @@ describe("runOnTrigger", () => {
   // awaiting the same author name is refused, not just a signal-relay sibling)
   // is unit-covered below for a plain author `awaitSignal` gate -- the case a
   // signal-relay-only guard would have admitted and mis-bound. The
-  // two-concurrent-sections topology stays deferred (its deterministic
-  // construction is fragile and correlated author-signals are not yet wired);
-  // the guard stands as defense-in-depth there.
+  // two-concurrent-sections topology stays deferred; the guard stands as
+  // defense-in-depth there.
   test("refuses a plain author awaitSignal sibling awaiting the same name", async () => {
     const runId = "sec-guard-plain-gate";
     const repoStore = createInMemoryRepoStore();
