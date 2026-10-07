@@ -2909,7 +2909,7 @@ export async function waitForReconnect(
 export type SettleThenDropOpts = {
   /**
    * Length of the no-new-pack quiet window that must elapse before the drop
-   * fires. Defaults to `500`. The helper waits until no workflow-run pack
+   * fires. Defaults to `300`. The helper waits until no workflow-run pack
    * has been accepted for this long, treating that as the pack-push pipeline
    * having drained.
    */
@@ -2946,7 +2946,7 @@ export async function settleThenDrop(
   address: string,
   opts: SettleThenDropOpts = {},
 ): Promise<void> {
-  const quietMs = opts.quietMs ?? 500;
+  const quietMs = opts.quietMs ?? 300;
   const { timeoutMs } = opts;
   const registration = registerWait(`settleThenDrop(${address})`);
   try {
@@ -2988,7 +2988,7 @@ export async function settleWorkflowRunPacks(
   env: DeployFlowEnv,
   opts: { quietMs?: number; timeoutMs?: number } = {},
 ): Promise<void> {
-  const quietMs = opts.quietMs ?? 500;
+  const quietMs = opts.quietMs ?? 300;
   const { timeoutMs } = opts;
   const registration = registerWait(
     `settleWorkflowRunPacks(quietMs=${String(quietMs)})`,
