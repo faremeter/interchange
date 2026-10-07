@@ -1,23 +1,15 @@
 // Workflow runtime drain surface.
 //
 // `DrainController` is the runtime body's read-only view of a host-
-// initiated drain. The runtime observes `signal` at exactly four sites
-// inside `run.ts` (the main loop entry, the retry-between-attempts
-// step in `runStep`, `waitForTimer`, and `runAwaitSignal`). At each
-// observation the runtime consults `behaviorFor(stepId)` for the
-// in-flight step. A `"cancel"` behavior aborts the step's local
-// controller and the existing cancellation cascade tears the step
-// down. A `"wait"` behavior leaves the step running; the supervisor's
-// `drainTimeout` accumulator (host side) escalates to a signed
-// `CancelRequested{origin: "supervisor-drain"}` when the deadline
-// runs out against `"cancel"`-behavior work.
+// initiated drain. The runtime observes `signal` at four sites in
+// `run.ts` and consults `behaviorFor(stepId)` for the in-flight step:
+// a `"cancel"` behavior aborts the step's local controller (the
+// existing cancellation cascade tears it down); a `"wait"` behavior
+// leaves it running, and the supervisor's `drainTimeout` escalates to
+// a signed `CancelRequested{origin: "supervisor-drain"}`.
 //
-// `runLocal` wires a no-op DrainController whose `signal` never
-// fires. Production wires the real controller from
-// `@intx/workflow-host/src/drain-controller.ts`, which flips its
-// signal on receipt of the supervisor's `drain` control mail and
-// resolves `behaviorFor` against the live `RunState` plus the loaded
-// `WorkflowDefinition`.
+// `runLocal` wires a no-op controller whose `signal` never fires;
+// production wires `@intx/workflow-host/src/drain-controller.ts`.
 
 import {
   stepTriggerBudget,
@@ -27,23 +19,19 @@ import {
 import { baseStepId } from "./step-scope";
 
 /**
- * Runtime body's view of the host-initiated drain. The runtime body
- * never holds a private mutator on this object; the host implements
- * the mutating side and exposes the read-only surface here.
+ * Runtime body's read-only view of the host-initiated drain; the host
+ * implements the mutating side.
  */
 export interface DrainController {
   /**
-   * Aborts when the supervisor issues `drain` against this workflow-
-   * process. The runtime body consults this at the four observation
-   * points; a fired signal alone is insufficient to abort a step --
-   * the runtime cross-references `behaviorFor(stepId)` first.
+   * Aborts when the supervisor issues `drain`. A fired signal alone is
+   * insufficient to abort a step -- the runtime cross-references
+   * `behaviorFor(stepId)` first.
    */
   readonly signal: AbortSignal;
   /**
-   * Resolve the declared drainBehavior for the in-flight step. The
-   * runtime body invokes this with the primitive's id when the drain
-   * signal has aborted and the runtime is about to settle a step-
-   * level decision (continue waiting vs cascade through cancel).
+   * Resolve the declared drainBehavior for the in-flight step, consulted
+   * when the drain signal has aborted.
    */
   behaviorFor(stepId: string): DrainBehavior;
 }
@@ -51,21 +39,9 @@ export interface DrainController {
 /**
  * Compute the drainBehavior for a primitive in a workflow definition.
  * Shared between the production and runLocal controllers so the
- * default-resolution rule lives in exactly one place.
- *
- * The default-by-kind table mirrors the constructors in
- * `definition/primitives.ts`:
- *   - `sleep`, `childWorkflow` default to `"cancel"`.
- *   - `awaitSignal` defaults to `"wait"` (the human-in-the-loop case).
- *   - `step` defaults to `"cancel"` when its trigger budget is `1`
- *     (batch) and to `"wait"` when the budget is larger (multi-turn
- *     or unbounded).
- *   - `gate`, `escalation`, `map` carry no `drainBehavior` of their
- *     own; the runtime never blocks inside them long enough for
- *     drain to matter, so the function returns `"cancel"` so the
- *     observation-site short-circuit defers to the existing cancel
- *     cascade. `map`'s inner step carries its own behavior; the
- *     runtime queries the inner step id when iterating.
+ * default-resolution rule lives in exactly one place. Defaults mirror
+ * the constructors in `definition/primitives.ts`; `gate`, `escalation`,
+ * and `map` (outer) carry no behavior of their own and return `"cancel"`.
  */
 export function resolveDrainBehavior(
   definition: WorkflowDefinition,
@@ -75,10 +51,9 @@ export function resolveDrainBehavior(
   if (primitive === null) return "cancel";
   switch (primitive.kind) {
     case "step": {
-      // A step with a budget other than 1 (multi-turn or unbounded) is
-      // definitionally long-lived; draining it means "stop feeding new
-      // input", not "abort the paused waiter". The author can still
-      // override with an explicit `drainBehavior`.
+      // A long-lived step (budget != 1) is definitionally interactive;
+      // draining means "stop feeding new input", not "abort the paused
+      // waiter". The author can still override explicitly.
       const budget = stepTriggerBudget(primitive);
       return primitive.drainBehavior ?? (budget !== 1 ? "wait" : "cancel");
     }
@@ -92,8 +67,8 @@ export function resolveDrainBehavior(
       return primitive.drainBehavior ?? "cancel";
     case "onTrigger":
       // A live event-driven section is definitionally interactive;
-      // draining means "stop feeding new events", not "abort the paused
-      // waiter". Mirrors awaitSignal and the long-lived step budget.
+      // draining means "stop feeding new events", not "abort the
+      // paused waiter".
       return primitive.drainBehavior ?? "wait";
     case "awaitSignal":
       return primitive.drainBehavior ?? "wait";
@@ -105,10 +80,8 @@ export function resolveDrainBehavior(
 }
 
 /**
- * Resolve a step id to its primitive. The map-inner step id shape is
- * `<mapId>[<index>]`; the runtime uses the outer map's inner step for
- * behavior resolution because the outer map's iteration carries the
- * inner step's behavior.
+ * Resolve a step id to its primitive; a map-inner step id `<mapId>[<i>]`
+ * resolves to the outer map's inner step, which carries the behavior.
  */
 function lookupPrimitive(
   definition: WorkflowDefinition,
@@ -127,11 +100,8 @@ function lookupPrimitive(
 }
 
 /**
- * No-op DrainController. The `signal` is a fresh AbortSignal that
- * never aborts; `behaviorFor` consults the supplied definition via
- * `resolveDrainBehavior`. runLocal wires this so the runtime body's
- * drain observation points always read `behaviorFor` against the
- * real declared behavior but the signal-aborted branch never fires.
+ * No-op DrainController: `signal` never aborts; `behaviorFor` consults
+ * the supplied definition. runLocal wires this.
  */
 export function createNoopDrainController(
   definition: WorkflowDefinition,
@@ -146,10 +116,9 @@ export function createNoopDrainController(
 }
 
 /**
- * Resolve the four-observation-point gate: given a drain controller
- * and a step id, returns `true` if the runtime body should abort the
- * step's local controller right now. The single source of truth so
- * the four observation sites in `run.ts` use the same predicate.
+ * The single source of truth for the four observation sites in
+ * `run.ts`: true when the drain signal fired and the step's behavior
+ * is `"cancel"`.
  */
 export function shouldAbortForDrain(
   drain: DrainController,

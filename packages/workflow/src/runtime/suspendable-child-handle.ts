@@ -1,18 +1,15 @@
 // Shared park-aware drive for a suspendable child body.
 //
-// Runs a body sub-DAG through `runtimeRun` and returns a `SuspendableChildHandle`
-// the caller drives across the body's approval / author-`awaitSignal` parks
-// (rather than awaiting a terminal). This is the SINGLE handle implementation
-// behind the `SuspendableChildHandle` contract: every suspendable-child seam --
-// an onTrigger section body and a loop iteration -- builds its own host-shaped
-// env (a fresh capped env for a section, the inherited parent env for a loop)
-// and then hands it here, so the two share identical park/resume/signal
-// semantics by construction.
+// Runs a body sub-DAG through `runtimeRun` and returns a
+// `SuspendableChildHandle` the caller drives across the body's approval /
+// author-`awaitSignal` parks. This is the SINGLE handle implementation
+// behind the contract: every suspendable-child seam (an onTrigger section
+// body, a loop iteration) builds its own host-shaped env and hands it here,
+// so both share identical park/resume/signal semantics by construction.
 //
-// The helper OWNS `onPark` / `onSignalPark`: it spreads the caller's env and
-// installs its own sinks to feed the FIFO the caller drains via `next()`. The
-// caller must therefore pass an env that has not wired its own park sinks; a
-// silent override would drop them, so this fails loud instead.
+// The helper OWNS `onPark`/`onSignalPark` -- it installs its own sinks to
+// feed the FIFO the caller drains via `next()`. A caller-set sink would be
+// silently overridden, so this fails loud instead.
 
 import { signalName } from "@intx/types";
 
@@ -33,21 +30,17 @@ export function createSuspendableChildHandle(
     childRunId: string;
     input: unknown;
     /**
-     * The depth the body run executes at (the container's own depth, passed
-     * through unchanged) and the tree-wide ceiling, so a `childWorkflow`
-     * spawned inside the body counts against the same bound as the top-level
-     * run rather than resetting at the body boundary. Mirrors the options
-     * `createSidecarRunChild` threads into a terminal child's `runtimeRun`.
+     * The depth the body runs at (the container's own, unchanged) and the
+     * tree-wide ceiling.
      */
     depth: number;
     maxChildSpawnDepth: number;
     resumeFromEvents?: readonly WorkflowEvent[];
     signal: AbortSignal;
     /**
-     * Channel teardown, run once the body settles. `signalChannel.stop()` is a
-     * concrete-channel method (not on the `SignalChannel` interface), so the
-     * caller that created the child's channel supplies its teardown here rather
-     * than the helper reaching for it on `env.signalChannel`.
+     * Channel teardown, run once the body settles; `stop()` is not on the
+     * `SignalChannel` interface, so the caller that created the channel
+     * supplies it.
      */
     cleanup?: () => void | Promise<void>;
   },
@@ -71,10 +64,8 @@ export function createSuspendableChildHandle(
     );
   }
 
-  // FIFO the caller drains via `next()`: each entry is either an approval park
-  // to proxy up or a fatal illegal-park error. A single waiter slot suffices
-  // because `next()` has exactly one consumer driving it sequentially,
-  // mirroring the signal channel's single-consumer shape.
+  // FIFO the caller drains via `next()`: approval parks, signal parks, or a
+  // fatal illegal-park error.
   type BodyEvent =
     | { kind: "park"; park: SuspendableChildPark }
     | { kind: "signal-park"; name: string }
@@ -115,35 +106,28 @@ export function createSuspendableChildHandle(
       notify();
     },
     // A body `awaitSignal` gate on an author name: surface it so the container
-    // proxies it up as a signal-relay await and relays the resolved signal back
-    // via `deliverSignal`. Without this the body would park on the signal
-    // channel with nothing upstream to route a delivery to it.
+    // proxies it up and relays the resolved signal back via `deliverSignal`.
     onSignalPark: (park) => {
       events.push({ kind: "signal-park", name: park.name });
       notify();
     },
   };
 
-  // A suspendable body runs IN-PROCESS under the workflow-process child's own
-  // principal, which cannot sign the control-plane `CancelRequested` a durable
-  // cancel writes -- that needs supervisor authority no in-process body holds
-  // (an onTrigger section body and a loop iteration are identical here). So the
-  // body never self-cancels. A teardown -- a parent-abort cascade (`signal`) or
-  // an illegal input re-arm (in `next()` below) -- aborts the run's OWN cancel
-  // controller through `runtimeRun`'s `localAbort`, which fails a parked step to
-  // `StepFailed` and settles the body `RunFailed` under its own principal, with
-  // no durable cancel to sign. A single controller unifies both teardown
-  // triggers.
+  // A suspendable body runs in-process under the child's own principal,
+  // which cannot sign a control-plane `CancelRequested` (that needs
+  // supervisor authority). So the body never self-cancels; teardown -- a
+  // parent-abort cascade or an illegal input re-arm -- aborts the run's own
+  // cancel controller via `runtimeRun`'s `localAbort`, failing the parked
+  // step to `StepFailed` with no durable cancel to sign. One controller
+  // unifies both teardown triggers.
   const localTeardown = new AbortController();
   const onParentAbort = (): void => {
     localTeardown.abort();
   };
   const detachParentAbort = bridgeAbort(signal, onParentAbort);
 
-  // On resume, drive the run from its durable log; the body step re-parks
-  // silently (a re-park does not re-fire onPark), and the caller relays the
-  // grant via resume on the correlation it recovered from its own log. On a
-  // fresh spawn, seed the run with the event's trigger payload.
+  // On resume, drive the run from its durable log (the body step re-parks
+  // silently); on a fresh spawn, seed it with the trigger payload.
   const baseOptions =
     resumeFromEvents !== undefined
       ? { runId: childRunId, resumeFromEvents, depth, maxChildSpawnDepth }
@@ -177,11 +161,9 @@ export function createSuspendableChildHandle(
         if (event !== undefined) {
           if (event.kind === "error") {
             // The body re-armed an input park nothing will resolve. Tear the
-            // child down locally so its terminal (and the channel teardown tied
-            // to it) fires, then surface the error: the throw lands the
-            // container run's terminal via `runPrimitiveSafe`. Local teardown,
-            // not `handle.cancel`, because an in-process body cannot sign a
-            // control-plane cancel (see the `localTeardown` note above).
+            // child down locally (an in-process body cannot sign a control-plane
+            // cancel), then surface the error; the throw lands the container
+            // run's terminal via `runPrimitiveSafe`.
             localTeardown.abort();
             throw event.error;
           }

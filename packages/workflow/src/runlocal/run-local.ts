@@ -1,11 +1,10 @@
 // runLocal entry point.
 //
-// Wires the in-memory env implementations to the single runtime body.
-// The body lives in `runtime/run.ts` and is the same function the
-// (future) child-process entry point will invoke. The only differences
-// between local and production are which concrete `WorkflowRuntimeEnv`
-// is supplied -- there is no `isChildProcess` branching anywhere in
-// the body. `runtime/run.test.ts` enforces the discipline at the
+// Wires the in-memory env implementations to the single runtime body, the
+// same function the (future) child-process entry point will invoke. The only
+// differences between local and production are which concrete
+// `WorkflowRuntimeEnv` is supplied -- there is no `isChildProcess` branching
+// anywhere in the body. `runtime/run.test.ts` enforces the discipline at the
 // source level.
 
 import {
@@ -44,18 +43,18 @@ import { createInMemorySignalChannel } from "./signal-channel";
 export interface RunLocalOptions extends RuntimeRunOptions {
   /**
    * Override the agent-runner. The default invokes the per-step
-   * `env.authorize` so the AuthorizeContext propagation invariant holds
-   * in default-stub mode, fails the step on any decision that is not an
-   * explicit allow, and otherwise returns a stub `AgentResult`. Tests
-   * that exercise real agents wire their own runner (which constructs
-   * `createAgent` and calls `agent.send`).
+   * `env.authorize` so AuthorizeContext propagation holds in default-stub
+   * mode, fails the step on any decision that is not an explicit allow, and
+   * otherwise returns a stub `AgentResult`. Tests that exercise real agents
+   * wire their own runner (constructing `createAgent` and calling
+   * `agent.send`).
    */
   invokeStep?: StepInvoker;
   /**
    * Override the action-runner. The default resolves the handler ref via
    * `actionResolver`, builds an `EffectContext` against the in-memory
-   * ledger, and runs the handler. Tests that need a shared durable
-   * ledger across a re-run construct the env directly instead.
+   * ledger, and runs the handler. Tests needing a shared durable ledger
+   * across a re-run construct the env directly instead.
    */
   invokeAction?: ActionInvoker;
   /** Resolve an action `handler` ref to a handler function. */
@@ -65,10 +64,7 @@ export interface RunLocalOptions extends RuntimeRunOptions {
   /**
    * Workflow-level authorize. Required, with no default: the caller owns
    * the decision about what a local run may do, and a permissive default
-   * here made an authorization failure invisible until the workflow was
-   * deployed. The deployed authorize refuses to answer when it cannot
-   * resolve a decision (no credentials snapshot, no entry for the step);
-   * the local surface refuses to invent one.
+   * would make an authorization failure invisible until deployment.
    */
   authorize: WorkflowAuthorizeFn;
   /**
@@ -84,10 +80,9 @@ export interface RunLocalOptions extends RuntimeRunOptions {
    * Whether a park in this run tree can be answered from outside it. Required
    * rather than defaulted, because an absent value would have to mean
    * permissive and a call site that forgot it would silently inherit a park
-   * nothing can answer. Pass true for a run the control plane can address: a
-   * top-level local run, whose caller holds the handle that delivers. The
-   * terminal-child spawner passes false, since nothing can address a child
-   * run.
+   * nothing can answer. True for a run the control plane can address (a
+   * top-level local run, whose caller holds the handle that delivers); the
+   * terminal-child spawner passes false, since nothing can address a child.
    */
   hasUpstreamSignalResolver: boolean;
 }
@@ -116,9 +111,9 @@ export function runLocal(
   // A `childWorkflow` primitive carries its child definition inline. Lift each
   // inline child to a standalone definition keyed by an internal ref and run
   // the rewritten workflow whose children are `{ ref }` -- the shape the
-  // runtime dispatches. The in-memory spawn callback resolves each ref from the
-  // lifted map, so no separate child resolver is needed. A recursive child that
-  // embeds its own child is rewritten again when its run reaches this function.
+  // runtime dispatches. The in-memory spawn callback resolves each ref from
+  // the lifted map. A recursive child that embeds its own child is rewritten
+  // again when its run reaches this function.
   const { workflow: rewritten, bodies } =
     rewriteInlineChildWorkflowBodies(definition);
   const childBodies = new Map(bodies.map((b) => [b.ref, b.definition]));
@@ -126,10 +121,9 @@ export function runLocal(
   // the suspendable-loop executor resolves it, exactly as the deployed host
   // does. A loop body may itself contain a `childWorkflow` grandchild, so
   // rewrite each body's inline children to the `{ ref }` form the runtime
-  // dispatches and fold the extracted grandchildren into `childBodies` -- the
-  // map the iteration's inherited `spawnChild` resolves from -- before that
-  // spawn callback is built below. (Nested loops in child-workflow children are
-  // enumerated when their own recursive `runLocal` call reaches this point.)
+  // dispatches and fold the extracted grandchildren into `childBodies`. (Nested
+  // loops in child-workflow children are enumerated when their own recursive
+  // `runLocal` call reaches this point.)
   const loopBodies = new Map<string, WorkflowDefinition>();
   for (const loopBody of enumerateInlineLoopBodies(rewritten)) {
     const bodyRewrite = rewriteInlineChildWorkflowBodies(loopBody.definition);
@@ -193,17 +187,16 @@ function extractRuntimeOptions(options: RunLocalOptions): RuntimeRunOptions {
 /**
  * The subset of `RunLocalOptions` a spawned `childWorkflow` inherits from
  * its parent run. The deployed host builds the child's env from the
- * parent's -- the same step invoker, the same authorize (capped to the
- * child's declared resources), the same director registry, and the loop
- * and action resolvers re-loaded from the same deployment closure -- so a
- * local child that reverted to the bare defaults would let a strict env
- * pass a test whose child never saw it.
+ * parent's -- the same step invoker, authorize (capped to the child's
+ * declared resources), director registry, and loop/action resolvers -- so a
+ * local child that reverted to bare defaults would let a strict env pass a
+ * test whose child never saw it.
  *
- * Everything omitted here is either per-run identity the spawn callback
- * supplies itself (`runId`, `triggerPayload`, `depth`) or per-run
- * substrate the child builds fresh (its own event log, blob store, signal
- * channel, and effect ledger), matching how the deployed host scopes each
- * child run's substrate under its own `childRunId`.
+ * Everything omitted is either per-run identity the spawn callback supplies
+ * itself (`runId`, `triggerPayload`, `depth`) or per-run substrate the
+ * child builds fresh (its own event log, blob store, signal channel, and
+ * effect ledger), matching how the deployed host scopes each child run's
+ * substrate under its own `childRunId`.
  */
 type InheritedChildOptions = Pick<
   RunLocalOptions,
@@ -243,16 +236,14 @@ function inheritChildOptions(options: RunLocalOptions): InheritedChildOptions {
  * AuthorizeContext propagation is observable, refuses any decision that
  * is not an explicit allow, then returns `{ output: null }`. Returning a
  * stable `null` (rather than echoing the input) keeps the "hello world"
- * path -- a workflow whose step's input resolves to `undefined` because
- * the caller did not supply `triggerPayload` -- from cliffing on the blob
- * substrate's strict non-serializable rejection. Real workflows supply a
- * runner that wraps `createAgent` and `agent.send`.
+ * path -- a step whose input resolves to `undefined` because the caller
+ * did not supply `triggerPayload` -- from cliffing on the blob substrate's
+ * strict non-serializable rejection. Real workflows supply a runner that
+ * wraps `createAgent` and `agent.send`.
  *
- * Failing closed mirrors `createEffectContext`, which enforces the same
- * rule for an action's effects: deny, ask, and a null (no matching grant)
- * all block. A stub that discarded the decision would complete a step the
- * deployed agent harness would have refused, which is the whole class of
- * defect a local run is supposed to catch.
+ * Failing closed mirrors `createEffectContext`: deny, ask, and a null (no
+ * matching grant) all block. A stub that discarded the decision would
+ * complete a step the deployed harness would have refused.
  */
 function createDefaultStepInvoker(authorize: WorkflowAuthorizeFn): StepInvoker {
   return async ({ agent, authzContext }) => {
@@ -285,9 +276,9 @@ export function createDefaultActionInvoker(
   return async ({ handler, input, requires, authzContext, signal }) => {
     // Refuse before anything is constructed, so a cancelled run resolves no
     // handler and touches no ledger. An action is single-attempt with
-    // observable side effects and there is no retry to reconsider the
-    // decision, so starting one for a run already known to be cancelled is
-    // not recoverable downstream. The step invoker refuses the same way.
+    // observable side effects and no retry to reconsider the decision, so
+    // starting one for a run already known to be cancelled is not recoverable
+    // downstream. The step invoker refuses the same way.
     if (signal.aborted) {
       throw abortReason(signal);
     }
@@ -374,34 +365,31 @@ export function createInMemorySpawnChild(
     depth,
     maxChildSpawnDepth,
   }) => {
-    // Four awaits separate the child run id allocation from this call, one of
-    // them a durable flush, so a cancel can land before the spawner runs. The
-    // abort bridge below subscribes to an edge and would miss one already
-    // past, leaving the child uncancelled and this function awaiting a
-    // terminal that never comes. Refusing outright also avoids writing a whole
-    // child log subtree for a run already known to be cancelled, and matches
-    // what the deployed spawn adapter does, so a local rehearsal does not
-    // diverge from production.
+    // Several awaits separate the child run id allocation from this call,
+    // one of them a durable flush, so a cancel can land before the spawner
+    // runs; the abort bridge below would miss one already past, leaving the
+    // child uncancelled and this function awaiting a terminal that never
+    // comes. Refusing outright also avoids writing a whole child log subtree
+    // for a run already known to be cancelled, matching the deployed spawn
+    // adapter.
     if (signal.aborted) {
       throw abortReason(signal);
     }
 
     const resolved = bodies.get(definitionRef);
     if (resolved === undefined) {
-      // The runtime dispatched a childWorkflow ref with no lifted definition.
-      // Every inline child is lifted into `bodies` before the run starts, so a
-      // miss is a rewrite/dispatch bug -- fail loud rather than silently
+      // Every inline child is lifted into `bodies` before the run starts, so
+      // a miss is a rewrite/dispatch bug -- fail loud rather than silently
       // completing against a child that was never executed.
       throw new Error(
         `childWorkflow ${definitionRef} has no lifted definition; the inline child should have been extracted before the run started`,
       );
     }
     // Recursively invoke runLocal for the resolved child against the
-    // parent-allocated childRunId so the parent's audit log and the
-    // child's own log agree on identity. Carry the depth (already checked
-    // one rung up) and the tree-wide ceiling so the child's own spawns keep
-    // counting against the same bound, and the inherited env overrides so
-    // the child runs under the same authorize and invokers as its parent.
+    // parent-allocated childRunId so the parent's audit log and the child's
+    // own log agree on identity. Carry the depth (already checked one rung
+    // up) and the tree-wide ceiling, plus the inherited env overrides, so the
+    // child runs under the same authorize and invokers as its parent.
     const child = runLocal(resolved, {
       ...inherited,
       triggerPayload: input,

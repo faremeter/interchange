@@ -1,16 +1,12 @@
 // EffectContext factory.
 //
 // The capability- and ledger-checked handle an action handler uses to
-// perform external effects. Both the runLocal host and the production
-// host build their action EffectContext through this factory so the
-// exactly-once contract -- authorize, then dedup per effect against the
-// ledger -- lives in one place rather than being re-implemented per
-// host.
+// perform external effects. Both hosts build their EffectContext through
+// this factory so the exactly-once contract -- authorize, then dedup per
+// effect against the ledger -- lives in one place.
 //
-// The effect key includes an intra-handler `effectId`, so a handler that
-// performs several distinct effects (a clone AND a build AND a push)
-// keys each one separately; a node-scoped key would collapse them and
-// the ledger would dedup distinct effects against each other.
+// The effect key includes an intra-handler `effectId`, so distinct effects
+// from one handler are keyed separately rather than collapsed into one.
 
 import { canonicalizeForHash } from "@intx/agent";
 
@@ -48,9 +44,7 @@ export function createEffectContext(
       }
       // Fail closed: only an explicit allow proceeds. deny, ask, and a
       // null (no matching grant) all block, so the operator-approved
-      // effect floor is enforced rather than advisory. The agent harness
-      // makes the same call for tool use; an action has no harness, so
-      // the EffectContext enforces the decision itself.
+      // effect floor is enforced rather than advisory.
       const decision = await authorize(
         `effect:${capability}`,
         "invoke",

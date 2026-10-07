@@ -5,9 +5,9 @@
 // never re-offers a `completed` loop container, so a run that crashed AFTER
 // the loop settled feeds its downstream steps the PERSISTED record verbatim
 // and never recomputes it. That window -- settled, crashed, resumed on a
-// later build of the runtime -- is the one place where the loop's output
-// shape is frozen and unrecomputable, and it is what makes any change to
-// that shape a compatibility question.
+// later build of the runtime -- is where the loop's output shape is frozen
+// and unrecomputable, and it is what makes any change to that shape a
+// compatibility question.
 //
 // The two tests below pin both halves of the answer. A log written before a
 // key was added resumes green as long as no step reads the new key, because

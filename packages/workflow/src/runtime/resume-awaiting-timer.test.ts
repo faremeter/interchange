@@ -11,7 +11,7 @@
 //      moved the step `in-flight` (the crash-after-TimerFired-before-
 //      `StepCompleted` window). `TimerFired` is the only mover off
 //      `awaiting-timer` for a sleep, so runSleep completes it with `null`
-//      without re-parking and with no outcome to reconstruct.
+//      without re-parking.
 //
 // A retrying `step`/`action` also parks in `awaiting-timer` during backoff,
 // but its residual is NOT a sleep and stays `RuntimeResumeUnsupportedError`;

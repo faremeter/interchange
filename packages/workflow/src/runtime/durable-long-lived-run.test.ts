@@ -8,19 +8,15 @@
 // runtime parks the step on a snapshot-less input control-plane channel it
 // mints per turn; the next delivered trigger is that turn's input. The
 // delivering owner discovers the current channel from the run's reduced
-// `awaitingSignal.name` -- this test discovers it the same way, from the
-// durable log.
+// `awaitingSignal.name` -- this test discovers it the same way.
 //
-// The subtle part is memory across a respawn. The run's durable log records
-// the PARKS and the delivered payloads, but the agent's intermediate replies
-// live only in the warm reactor and die with the child. So a run designed to
-// span many turns needs a DURABLE CONVERSATION STORE, written per turn and
-// rehydrated on resume -- otherwise the run resumes, accepts the next trigger,
-// and answers with amnesia. (The store here is an in-test stand-in; the
-// run/step-keyed substrate that owns it in production already exists in the
-// sidecar. This test pins the runtime behavior the store plugs into: the
-// budget-driven re-arm, and crash-safe resume that enforces a finite budget
-// across a respawn via the durable log.)
+// The subtle part is memory across a respawn. The durable log records the
+// PARKS and delivered payloads, but the agent's intermediate replies live only
+// in the warm reactor and die with the child. A run spanning many turns needs
+// a DURABLE CONVERSATION STORE, written per turn and rehydrated on resume.
+// (The store here is an in-test stand-in; this test pins the runtime behavior
+// the production store plugs into: budget-driven re-arm and crash-safe resume
+// that enforces a finite budget across a respawn via the durable log.)
 
 import { describe, test, expect } from "bun:test";
 

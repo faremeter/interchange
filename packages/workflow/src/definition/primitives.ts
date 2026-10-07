@@ -3,33 +3,29 @@
 // Authors compose a workflow's DAG by calling these constructors and
 // keying their results into `defineWorkflow({ steps: { ... } })`. Each
 // constructor returns a primitive descriptor whose `id` field is
-// populated by `defineWorkflow` from the record key; that lets authors
-// reuse the same constructor result under different keys without
-// repeating themselves.
+// populated by `defineWorkflow` from the record key, letting authors
+// reuse the same constructor result under different keys.
 //
 // `drainBehavior` defaults differ per primitive: `sleep` and
 // `childWorkflow` default to `"cancel"` because long compute should not
 // block a redeploy past `drainTimeout`; `awaitSignal` defaults to
-// `"wait"` because human-in-the-loop pauses are the canonical case the
-// spec calls out and operators do not want them silently cancelled at
-// redeploy. A `step` defaults to `"cancel"` when its trigger budget is
-// `1` (batch) and `"wait"` when the budget is larger (multi-turn or
-// unbounded) -- a long-lived step is definitionally interactive.
-// `map`'s outer node carries no `drainBehavior` -- its inner step
-// carries its own.
+// `"wait"` because human-in-the-loop pauses are the canonical case.
+// A `step` defaults to `"cancel"` when its trigger budget is `1` (batch)
+// and `"wait"` when the budget is larger (multi-turn or unbounded) -- a
+// long-lived step is definitionally interactive. `map`'s outer node
+// carries no `drainBehavior`; its inner step carries its own.
 
 import type { AgentDefinition, BaseEnv } from "@intx/agent";
 import type { Type } from "arktype";
 
 // Type-only import: an action handler's `ctx` parameter is the runtime's
-// EffectContext. This is a type-level cycle (runtime/env.ts imports
-// Primitive from here), erased at runtime by `import type`, so there is
-// no runtime import cycle.
+// EffectContext. A type-level cycle (runtime/env.ts imports Primitive
+// from here), erased at runtime by `import type`.
 import type { EffectContext } from "../runtime/env";
 import type { Selector } from "./selectors";
 // Type-only import: a loop or onTrigger body is a full WorkflowDefinition.
-// This is a type-level cycle (workflow.ts imports Primitive from here),
-// erased at runtime by `import type`, so there is no runtime import cycle.
+// A type-level cycle (workflow.ts imports Primitive from here), erased at
+// runtime by `import type`.
 import type { WorkflowDefinition } from "./workflow";
 import type { Trigger } from "./triggers";
 
@@ -61,17 +57,15 @@ export interface PrimitiveBase {
 }
 
 /**
- * `agent` is typed as `AgentDefinition<BaseEnv>` at the primitive
- * level. The author may have constructed it with a narrower
- * `AgentDefinition<MailEnv>`; the workflow runtime erases that
- * type-level requirement because the `StepInvoker` boundary
- * (`runtime/env.ts`) hands the agent off to a runtime-supplied
- * callback that decides how to instantiate it. Production wires that
- * callback through to `createAgent`, where `validateEnv` enforces the
- * actual presence of every required env key via tool-factory and
- * director `requires` metadata; the `step()` constructor takes the
- * narrower type for compile-time author ergonomics and erases at
- * storage. The runtime body never reads `agent.toolFactories` itself.
+ * `agent` is typed as `AgentDefinition<BaseEnv>` at the primitive level; the
+ * author may have constructed it with a narrower `AgentDefinition<MailEnv>`.
+ * The runtime erases that type-level requirement because the `StepInvoker`
+ * boundary (`runtime/env.ts`) hands the agent off to a runtime-supplied
+ * callback; production wires that through `createAgent`, where `validateEnv`
+ * enforces the actual presence of every required env key via tool-factory and
+ * director `requires` metadata. The `step()` constructor takes the narrower
+ * type for author ergonomics and erases at storage. The runtime body never
+ * reads `agent.toolFactories` itself.
  */
 export interface StepPrimitive extends PrimitiveBase {
   kind: "step";
@@ -172,20 +166,20 @@ export interface SleepPrimitive extends PrimitiveBase {
  * selects the child run's launch payload.
  *
  * The child is driven to its terminal, not across parks, and carries no
- * address of its own, so nothing upstream can answer a park inside it. Every
- * untimed park beneath this boundary -- at any depth, including inside a
- * `loop` body in the child -- is refused at the park and fails the child. That
- * is an untimed {@link AwaitSignalPrimitive}, and also the parks the runtime
- * takes on a step's behalf without the author writing one: an agent step
- * suspending on a tool declared `approval: "ask"`, and the input park a step
- * with a trigger budget takes between deliveries. A child containing no
- * `awaitSignal` is not thereby safe. Give such a gate a `timeout`, or hold it
- * in a run the control plane can address.
+ * address of its own, so nothing upstream can answer a park inside it.
+ * Every untimed park beneath this boundary -- at any depth, including
+ * inside a `loop` body in the child -- is refused at the park and fails the
+ * child. That is an untimed {@link AwaitSignalPrimitive}, and also the
+ * parks the runtime takes on a step's behalf without the author writing
+ * one: an agent step suspending on a tool declared `approval: "ask"`, and
+ * the input park a step with a trigger budget takes between deliveries. A
+ * child containing no `awaitSignal` is not thereby safe. Give such a gate
+ * a `timeout`, or hold it in a run the control plane can address.
  *
- * The refusal surfaces to the parent as an ordinary child failure. Routing it
- * with `onFailure` is available only where `onFailure` is honored at all: on a
- * direct entry of a workflow root. A spawn inside a `loop` body may not carry
- * `onFailure`, so there the failure surfaces unrouted.
+ * The refusal surfaces to the parent as an ordinary child failure. Routing
+ * it with `onFailure` is available only where `onFailure` is honored at
+ * all: on a direct entry of a workflow root. A spawn inside a `loop` body
+ * may not carry `onFailure`, so there the failure surfaces unrouted.
  */
 export interface ChildWorkflowPrimitive extends PrimitiveBase {
   kind: "childWorkflow";
@@ -204,8 +198,7 @@ export interface ChildWorkflowPrimitive extends PrimitiveBase {
  * child as a run resolved by ref. The `{ ref }` arm is only the internal
  * extracted-child handle -- never an author-facing separate-deployment id.
  * Exactly one arm is present -- a discriminated union, not two optionals, so
- * neither "both" nor "neither" is representable and consumers switch
- * exhaustively. Mirrors `OnTriggerBody`.
+ * neither "both" nor "neither" is representable. Mirrors `OnTriggerBody`.
  */
 export type ChildWorkflowBody =
   | { inline: WorkflowDefinition }
@@ -263,11 +256,11 @@ export interface ActionPrimitive extends PrimitiveBase {
  * A deployed handler is a BARE MODULE EXPORT of the module named by the
  * package's `interchange.actions` field, resolved by export name. It
  * receives exactly these three parameters and nothing else: no injected
- * services, and no opportunity to close over host configuration, because
- * nothing in the deployment constructs it. `ctx` carries one method,
- * `perform`. Per-deployment configuration must therefore arrive through
- * `input`, which in practice means the author selects it out of the
- * trigger payload via the action's {@link ActionPrimitive.input} selector.
+ * services, no chance to close over host configuration, because nothing in
+ * the deployment constructs it. Per-deployment configuration must
+ * therefore arrive through `input`, which in practice means the author
+ * selects it out of the trigger payload via the action's
+ * {@link ActionPrimitive.input} selector.
  */
 export type ActionHandler = (
   input: unknown,
@@ -285,16 +278,14 @@ export type ActionHandler = (
  *
  * `while` and `carry` are string refs to PURE functions resolved via the
  * runtime's loop-fn registry (mirroring how `handler`/`director` are
- * string refs), so the definition stays hashable. Those functions
- * receive only data and never an effect context -- they run on every
- * resume and must be side-effect free. The loop body may park on an
- * `awaitSignal` and resume, may spawn a `childWorkflow` grandchild, and
- * may contain a nested `loop` (bounded depth), but may not contain a
- * `sleep` or `onTrigger` (all enforced at definition time). The
- * grandchild is a further boundary that definition time does not
- * police: an untimed park anywhere beneath it is refused at runtime, so
- * what the body itself may hold, the grandchild may not. See
- * {@link ChildWorkflowPrimitive}.
+ * string refs), so the definition stays hashable. They receive only data
+ * and never an effect context -- they run on every resume and must be
+ * side-effect free. The loop body may park on an `awaitSignal` and resume,
+ * may spawn a `childWorkflow` grandchild, and may contain a nested `loop`
+ * (bounded depth), but may not contain a `sleep` or `onTrigger` (all
+ * enforced at definition time). The grandchild is a further boundary that
+ * definition time does not police: an untimed park anywhere beneath it is
+ * refused at runtime. See {@link ChildWorkflowPrimitive}.
  *
  * The loop step's own output -- what `steps.<loopId>.output` selects -- is
  * `{ outcome, iterations, carry, final }`:
@@ -317,11 +308,8 @@ export type ActionHandler = (
  * key.
  *
  * `final` embeds the last iteration's whole per-step output tree, so the
- * loop's own output is no longer a small fixed record and can cross the blob
- * substrate's spill threshold -- it rides inline below it and spills above,
- * where a loop container's output previously never would. A body whose steps
- * return large values pays that cost once per loop, on top of the scoped
- * per-iteration events that already carry the same data.
+ * loop's own output can cross the blob substrate's spill threshold -- it
+ * rides inline below it and spills above.
  */
 export interface LoopPrimitive extends PrimitiveBase {
   kind: "loop";
@@ -335,12 +323,12 @@ export interface LoopPrimitive extends PrimitiveBase {
 }
 
 /**
- * Section body-failure policy. Absent (or `"end"`) is terminal-is-final: a body
- * run that ends non-`completed` ends the whole section (today's behavior). With
- * `"tolerate"`, a body that ends `failed` re-arms the section for the next
- * trigger instead of terminating; a cancelled body always terminates. The field
- * is only present when an author opts in, so a default section's wire hash is
- * unchanged.
+ * Section body-failure policy. Absent (or `"end"`) is terminal-is-final: a
+ * body run that ends non-`completed` ends the whole section (today's
+ * behavior). With `"tolerate"`, a body that ends `failed` re-arms the
+ * section for the next trigger instead of terminating; a cancelled body
+ * always terminates. Present only when an author opts in, so a default
+ * section's wire hash is unchanged.
  */
 export type BodyFailurePolicy = "end" | "tolerate";
 
@@ -357,11 +345,10 @@ export type BodyFailurePolicy = "end" | "tolerate";
  * The section never self-completes: the workflow stays running while
  * subscribed and terminates only on a body error or an explicit
  * end-of-workflow, and a terminated run is final -- never relaunched. The
- * first occurrence is the run's own firing trigger (its
- * `RunStarted.trigger.payload`); each later occurrence arrives as an input
- * signal carrying the next payload. `defineWorkflow` collects every `on`
- * into the workflow's `triggers`, so `on` is the first-class binding
- * between a trigger and the section it drives.
+ * first occurrence is the run's own firing trigger; each later occurrence
+ * arrives as an input signal carrying the next payload. `defineWorkflow`
+ * collects every `on` into the workflow's `triggers`, so `on` is the
+ * first-class binding between a trigger and the section it drives.
  *
  * `drainBehavior` defaults to `"wait"`: a live interactive section is not
  * abandoned mid-conversation at redeploy unless the author opts into
@@ -382,7 +369,7 @@ export interface OnTriggerPrimitive extends PrimitiveBase {
  * and rewrites it to `{ ref }`, so the runtime spawns each event's body as
  * a child run resolved by ref. Exactly one arm is present -- a discriminated
  * union, not two optionals, so neither "both" nor "neither" is
- * representable and the runtime switches exhaustively.
+ * representable.
  */
 export type OnTriggerBody = { inline: WorkflowDefinition } | { ref: string };
 
@@ -420,7 +407,8 @@ export interface StepOpts<EnvReq extends BaseEnv> {
 /**
  * The trigger budget a step services before it completes -- the single point
  * of the absent-means-`1` default. `1` is the ordinary batch step;
- * `"unbounded"` is the long-lived interactive agent that never self-completes.
+ * `"unbounded"` is the long-lived interactive agent that never
+ * self-completes.
  *
  * Validates the declared value on every read: `step()` rejects a bad value at
  * authoring time, but this read point re-checks rather than trust that every
@@ -454,10 +442,8 @@ function validateTriggers(triggers: number | "unbounded"): void {
  * `maxAttempts > 1`. A retried attempt re-invokes the step with its
  * original launch input and starts with no resume, so a mid-run failure
  * would re-service the launch trigger and never re-service the
- * already-consumed one -- a wrong conversation reported as success.
- * `step()` enforces this at authoring time; the runtime re-applies it at
- * `runStep` entry as a defensive re-check, rather than trust that every
- * definition reached it through `step()`.
+ * already-consumed one. `step()` enforces this at authoring time; the
+ * runtime re-applies it at `runStep` entry as a defensive re-check.
  */
 export function validateRetryTriggerCombination(step: StepPrimitive): void {
   const retry = step.retry;
@@ -480,14 +466,11 @@ export function step<EnvReq extends BaseEnv>(
   const defaultDrain: DrainBehavior =
     opts.triggers !== undefined && opts.triggers !== 1 ? "wait" : "cancel";
   const drainBehavior: DrainBehavior = opts.drainBehavior ?? defaultDrain;
-  // The narrower `EnvReq` requirements (tool factories that need
-  // `transport`, an author-supplied director with extra env keys) live
-  // on the agent's tool-factory metadata. The workflow runtime hands
-  // the agent off to its `StepInvoker`, which is wired in production
-  // through `createAgent` -- `validateEnv` enforces the requirements
-  // at instantiation. Erasing the type-level requirement here keeps
-  // `Primitive` a flat union the executor can switch on without
-  // juggling per-step EnvReq parameters.
+  // The narrower `EnvReq` requirements live on the agent's tool-factory
+  // metadata and are enforced by `createAgent`'s `validateEnv` at
+  // instantiation. Erasing the type-level requirement here keeps `Primitive`
+  // a flat union the executor can switch on without juggling per-step EnvReq
+  // parameters.
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the agent's env requirements are checked at StepInvoker time by createAgent's validateEnv; the runtime body itself does not read AgentDefinition.toolFactories
   const agent = opts.agent as AgentDefinition<BaseEnv>;
   if (opts.triggers !== undefined) validateTriggers(opts.triggers);
@@ -518,10 +501,10 @@ export interface MapOpts {
 
 export function map(opts: MapOpts): MapPrimitive {
   // The map's retry applies to each fan-out instance of the inner step when
-  // the inner declares none (mirroring the runtime's scoped-step injection),
-  // so the retry/budget cross-field guard must see that COMPOSED shape --
-  // `step()` alone never sees a map-level retry, and without this check the
-  // forbidden combination would surface only at the run's first execution.
+  // the inner declares none, so the retry/budget cross-field guard must see
+  // that COMPOSED shape -- `step()` alone never sees a map-level retry, and
+  // without this check the forbidden combination would surface only at the
+  // run's first execution.
   validateRetryTriggerCombination({
     ...opts.step,
     ...(opts.step.retry === undefined && opts.retry !== undefined

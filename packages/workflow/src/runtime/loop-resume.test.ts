@@ -4,14 +4,13 @@
 // IMPORTANT -- this models a crash the PRODUCTION (isogit) store does not
 // produce. It resumes against a FRESH repoStore seeded only with the trimmed
 // PARENT log, so the child iteration's durable log is GONE while the parent's
-// ChildSpawned survives. On a consistent store both live on one durable ref, so
-// a mid-action-in-loop crash leaves a non-empty, non-terminal child log and the
-// iteration fails loud -- the re-spawned body's `runtimeRun` adopts that log and
-// settles the crashed action `StepFailed` via `isCrashedInvocationStep`, never
-// re-invoking the handler -- see the faithful test in
+// ChildSpawned survives. On a consistent store both live on one durable ref,
+// so a mid-action-in-loop crash leaves a non-empty, non-terminal child log
+// and the iteration fails loud -- see the faithful test in
 // `loop-action-crash-resume.test.ts`. This test therefore exercises the
-// ledger-dedup re-run path that production never takes; it pins the ledger's
-// behavior ONLY for a store that loses child writes while keeping parent writes.
+// ledger-dedup re-run path production never takes; it pins the ledger's
+// behavior ONLY for a store that loses child writes while keeping parent
+// writes.
 
 import { describe, test, expect } from "bun:test";
 

@@ -5,16 +5,16 @@
 // itself is being torn down (a drain or operator cancel): the parent is
 // aborting, so there is nothing to re-arm for. An in-process suspendable body's
 // parent-abort teardown surfaces as a `failed` terminal (it runs under the
-// workflow-process principal and cannot durably self-cancel to `cancelled`), so
-// `runOnTrigger` keys the "always end" decision on the container abort, not on
-// the `cancelled` terminal alone. Without that, a torn-down `tolerate` section
-// re-arms onto an input park whose signal is already aborted and never resolves,
-// wedging the run.
+// workflow-process principal and cannot durably self-cancel to `cancelled`),
+// so `runOnTrigger` keys the "always end" decision on the container abort, not
+// on the `cancelled` terminal alone. Without that, a torn-down `tolerate`
+// section re-arms onto an input park whose signal is already aborted and never
+// resolves, wedging the run.
 //
-// This drives the REAL `runOnTrigger` with a body that settles `failed` once the
-// section abort fires -- the terminal a `createSuspendableChildHandle` local
-// teardown produces -- while the container is awaiting the body terminal (not
-// proxy-parked), the reachable window for the wedge.
+// This drives the REAL `runOnTrigger` with a body that settles `failed` once
+// the section abort fires -- the terminal a `createSuspendableChildHandle`
+// local teardown produces -- while the container is awaiting the body terminal
+// (not proxy-parked), the reachable window for the wedge.
 
 import { describe, test, expect } from "bun:test";
 

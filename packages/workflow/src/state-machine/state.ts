@@ -57,11 +57,9 @@ export interface StepState {
  * kind was recorded. Callers reach the absent path only on a reserved
  * `signalName(correlationId)` channel, where an absent kind can only be the
  * latter -- a legacy park, which was an `"approval"` by construction (the
- * `input`/`signal-relay` kinds postdate it). A `"signal-relay"` park is on an
- * author-named (non-reserved) channel and always carries its explicit kind, so
- * it never falls to the absent-means-approval default. This function is the
- * SINGLE point of that legacy interpretation; every other read of `parkKind`
- * goes through it rather than re-deriving the rule.
+ * `input`/`signal-relay` kinds postdate it). This function is the SINGLE point
+ * of that legacy interpretation; every other read of `parkKind` goes through
+ * it rather than re-deriving the rule.
  */
 export function controlParkKindOf(awaitingSignal: {
   parkKind?: ControlParkKind;

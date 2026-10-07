@@ -4,15 +4,13 @@
 // form) or as a `{ ref }` to a separately-deployed body definition. The
 // runtime only dispatches a `{ ref }` body -- an inline body reaching the
 // runtime is a deploy-step bug (see `runOnTrigger`). This module performs the
-// pure structural rewrite: replace each inline body with a `{ ref }` and return
-// the extracted body definitions.
+// pure structural rewrite: replace each inline body with a `{ ref }` and
+// return the extracted body definitions.
 //
-// It carries NO deploy machinery (no capability walk, no source-pinning, no hub
-// write), so the callers that run it over a RE-EVALUATED closure -- the
-// source-ref run child and the sidecar deploy router, which have neither a
-// director registry nor the operator approval set -- share one exact structural
-// rewrite, kept separate from the capability walk and source-pinning the deploy
-// layers on elsewhere.
+// No deploy machinery here (no capability walk, no source-pinning, no hub
+// write), so callers that run it over a RE-EVALUATED closure -- the source-ref
+// run child and the sidecar deploy router -- share one exact structural
+// rewrite.
 
 import type { Primitive, WorkflowDefinition } from "./definition/index";
 import type { LoopFnRegistry } from "./runtime/env";
@@ -33,31 +31,24 @@ export interface OnTriggerBodyRewrite {
 
 /**
  * Derive an inline body's ref from its owning workflow id and the step id that
- * carries it. This is the SINGLE owner of the `<workflowId>__<stepId>` scheme,
- * shared by every inline-body kind -- onTrigger sections, childWorkflow
- * children, and loop bodies. Refs never collide because each `__`-joined
- * segment is atomic (a step id may not itself contain `__`, enforced in
- * `normalize`) and a given step id is exactly one primitive kind. Atomic
- * segments matter once a ref spans more than two segments: a loop body's
- * `childWorkflow` grandchild is registered under
- * `<workflowId>__<loopStepId>__<childStepId>`, so without the `__`-free rule
- * that ref could alias a top-level step literally named
- * `<loopStepId>__<childStepId>`. The live rewrite/enumeration
- * here and the source-ref hub's inert-body enumerator both mint refs through it,
- * and the source-ref run child re-derives the same ref when it rewrites the
- * re-evaluated closure (`run-child`). A hub that records a body's sources under
- * this ref and a run child that looks them up must agree byte-for-byte, so the
- * scheme lives in one place rather than being re-spelled at each site.
+ * carries it. The SINGLE owner of the `<workflowId>__<stepId>` scheme, shared
+ * by every inline-body kind (onTrigger sections, childWorkflow children, loop
+ * bodies). Refs never collide because each `__`-joined segment is atomic (a
+ * step id may not contain `__`, enforced in `normalize`) and a step id is
+ * exactly one primitive kind. Atomicity matters once a ref spans more than two
+ * segments -- a loop body's `childWorkflow` grandchild is
+ * `<workflowId>__<loopStepId>__<childStepId>` -- so a hub recording sources
+ * under this ref and a run child looking them up agree byte-for-byte.
  */
 export function inlineBodyRef(workflowId: string, stepId: string): string {
   return `${workflowId}__${stepId}`;
 }
 
 /**
- * Replace each inline onTrigger body with a `{ ref }` and return the extracted
- * body definitions (each body's id is its ref). Pure and side-effect-free: no
- * walk, no pin, no write. When the workflow has no inline onTrigger body the
- * original object is returned unchanged with an empty `bodies`.
+ * Replace each inline onTrigger body with a `{ ref }` and return the
+ * extracted body definitions (each body's id is its ref). Pure and
+ * side-effect-free. With no inline body, returns the workflow unchanged and
+ * an empty `bodies`.
  */
 export function rewriteInlineOnTriggerBodies(
   workflow: WorkflowDefinition,
@@ -86,26 +77,21 @@ export interface ExtractedLoopBody {
 
 /**
  * Collect each `loop` primitive's inline body as a `{ ref, definition }` pair,
- * WITHOUT rewriting the workflow. Unlike the onTrigger/childWorkflow rewriters,
- * a loop keeps its body inline on the primitive: `LoopPrimitive.body` is a bare
- * `WorkflowDefinition` that both hash layers project inline (`projectForHash`
- * and the deploy-side `projectLoop`), so replacing it with a `{ ref }` would
- * change every existing loop's hash. This enumerator instead mints a fresh copy
- * (`{ ...body, id: ref }`) for the runtime bodies map and leaves `primitive.body`
- * byte-identical -- the suspendable-child seam resolves a loop body by ref while
- * the definition's hash is unchanged. Pure and side-effect-free.
+ * WITHOUT rewriting the workflow. A loop keeps its body inline -- both hash
+ * layers project it inline, so replacing it with a `{ ref }` would change
+ * every existing loop's hash. This enumerator mints a fresh copy
+ * (`{ ...body, id: ref }`) for the runtime bodies map and leaves
+ * `primitive.body` byte-identical. Pure and side-effect-free.
  *
  * The scan RECURSES into each loop body so a nested loop's body is registered
  * too, under `inlineBodyRef(<parentBodyRef>, <innerLoopId>)` -- the exact ref
- * `runLoop` derives at runtime (`inlineBodyRef(definition.id, primitive.id)`)
- * when the inner loop runs inside the outer body's own run. A loop body inherits
- * the parent env, so an inner loop resolves its ref from this single top-level
- * map; the map must therefore carry every depth. The recursion follows loop
- * bodies only: a `childWorkflow` inside a loop body is a separate child run whose
- * own loops enumerate when its run boots, so this scan stops at that boundary.
- * It also stays a pure loop-body LIFT (grandchildren still inline) -- the host
- * rewrites each returned body's `childWorkflow` children itself and keeps the
- * pre-rewrite form for the grant cap, which a rewrite folded in here would break.
+ * `runLoop` derives at runtime. A loop body inherits the parent env, so an
+ * inner loop resolves its ref from this single top-level map; the map must
+ * therefore carry every depth. The recursion follows loop bodies only: a
+ * `childWorkflow` inside a loop body is a separate child run whose own loops
+ * enumerate when its run boots. It also stays a pure body LIFT (grandchildren
+ * still inline) -- the host rewrites each returned body's `childWorkflow`
+ * children itself.
  */
 export function enumerateInlineLoopBodies(
   workflow: WorkflowDefinition,
@@ -122,12 +108,11 @@ export function enumerateInlineLoopBodies(
 }
 
 /**
- * Force-resolve every loop `while`/`carry` ref reachable from these definitions
- * against the registry, so a missing loop fn surfaces at establish rather than
- * when the loop is first driven mid-run. Recurses into a loop's inline body (a
- * nested loop resolves against the same shared registry). The caller passes the
- * lifted onTrigger/childWorkflow bodies separately, since those are `{ ref }` in
- * the enclosing definition and this walk does not descend into them.
+ * Force-resolve every loop `while`/`carry` ref reachable from these
+ * definitions, so a missing loop fn surfaces at establish rather than mid-run.
+ * Recurses into a loop's inline body. The caller passes lifted
+ * onTrigger/childWorkflow bodies separately -- they are `{ ref }` in the
+ * enclosing definition and this walk does not descend into them.
  */
 export function eagerlyResolveLoopFns(
   definitions: readonly WorkflowDefinition[],
@@ -162,17 +147,15 @@ export interface ChildWorkflowBodyRewrite {
 }
 
 /**
- * Replace each inline `childWorkflow` definition with a `{ ref }` and return the
- * extracted child definitions (each child's id is its ref). The childWorkflow
+ * Replace each inline `childWorkflow` definition with a `{ ref }` and return
+ * the extracted child definitions (each child's id is its ref). The
  * counterpart to {@link rewriteInlineOnTriggerBodies}: pure and
- * side-effect-free (no walk, no pin, no write), and it mints refs through the
- * same {@link inlineBodyRef} `<workflowId>__<stepId>` scheme -- a step
- * carries at most one of an onTrigger section or a childWorkflow, so the two
- * rewriters never collide on a ref. The runtime dispatches a `{ ref }` child by
- * resolving the extracted definition from an in-memory map keyed by the ref, so
- * the host lifts these bodies at child boot and never reads a separate on-disk
- * asset. When the workflow has no inline childWorkflow the original object is
- * returned unchanged with an empty `bodies`.
+ * side-effect-free, minting refs through the same {@link inlineBodyRef}
+ * scheme -- a step carries at most one of an onTrigger section or a
+ * childWorkflow, so the two rewriters never collide. The runtime resolves a
+ * `{ ref }` child from an in-memory map keyed by the ref, so the host lifts
+ * these bodies at child boot. With no inline child, returns the workflow
+ * unchanged and an empty `bodies`.
  */
 export function rewriteInlineChildWorkflowBodies(
   workflow: WorkflowDefinition,

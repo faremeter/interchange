@@ -10,11 +10,10 @@
 // A `kind:"step"` step in `awaiting-signal` is a resumable residual
 // (`isResumableAwaitingSignalStep`), so the re-driven run does NOT throw
 // `RuntimeResumeUnsupportedError`. `runStep` detects the re-entry, recovers
-// the reserved channel from the durable `SignalAwaited` (the runtime-minted
-// name is not in the definition), RE-PARKS on it WITHOUT re-invoking the
-// agent against the original input, and -- once the operator delivers the
-// signal after the restart -- re-invokes the agent with the decision and
-// completes with the reply.
+// the reserved channel from the durable `SignalAwaited`, RE-PARKS on it
+// WITHOUT re-invoking the agent against the original input, and -- once the
+// operator delivers the signal after the restart -- re-invokes the agent
+// with the decision and completes with the reply.
 
 import { describe, test, expect } from "bun:test";
 

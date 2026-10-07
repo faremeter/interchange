@@ -4,16 +4,12 @@
 // entire vocabulary a step may use to name where its input comes from, so the
 // wiring between steps can be read off the definition without executing any
 // author code. Two readers consume it -- the runtime evaluator in
-// `runtime/selectors.ts`, which resolves a selector against the per-run
-// context, and the definition-validation passes in `workflow.ts`, which walk
-// the `input` tree to check that every path it names is statically resolvable.
+// `runtime/selectors.ts`, and the definition-validation passes in
+// `workflow.ts`.
 //
 // The `reads` and `writes` fields a step may also carry use the same shapes,
 // but nothing reads them: they are projected verbatim onto the wire and
-// otherwise inert. In particular the deploy-time capability-surface walker
-// never inspects a selector -- it derives the grant union from agent
-// capabilities and tools, not from selector paths -- so the vocabulary carries
-// no grant guarantee.
+// otherwise inert.
 
 /**
  * Reference a dot-separated path inside the per-run context.
