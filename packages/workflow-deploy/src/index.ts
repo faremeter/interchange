@@ -1,21 +1,7 @@
 // @intx/workflow-deploy -- deploy-time validation and orchestration of
-// workflows.
-//
-// Surfaces today:
-//   - capability walk: structural lift of `getRequiredEnvKeys` that
-//     emits the grant-shape declarations the operator-approval gate
-//     consumes, plus the child-grant cap that narrows a parent's
-//     grants to the resources and credential consumers the child
-//     body declares.
-//   - approval gate: consumes the walk's output plus an operator-
-//     supplied `ApprovalSet` and yields a per-step pending delta.
-//   - deploy derivation + source pinning: pure address derivation
-//     (`deriveRunAddress`, `deriveStepAddress`, `resolveStepAddress`, ...)
-//     and per-step inference-source resolution against the operator-
-//     approved grant set (`pickStepInferenceSource`, `pinInertStepSources`,
-//     `buildInertProjectionStepSources`, `buildInertBodyStepSources`), plus
-//     `collectAgentBearingStepIds` for consumers that must tell a step which
-//     can invoke inference from one merely carrying a placeholder pin.
+// workflows: the capability walk and its grant shapes, the operator-approval
+// gate, the child-grant cap, pure deploy address derivation, and per-step
+// inference-source pinning against the operator-approved grant set.
 
 export {
   walkCapabilities,

@@ -25,9 +25,9 @@ import { rewriteInlineChildWorkflowBodies } from "@intx/workflow";
 import { DuplicateWalkToolError, walkCapabilities } from "./capability-walk";
 
 // A synthetic mail factory that declares one tool, `mail_send`. The walk
-// keys `tool:` grants on each declared definition name (not on the
-// factory id), so the fixture must carry a real definition or the walk
-// emits zero tool grants and every `tool:` assertion passes vacuously.
+// keys `tool:` grants on declared definition names (not the factory id), so
+// the fixture must carry a real definition or every `tool:` assertion passes
+// vacuously.
 function makeMailFactory(): AnnotatedToolFactory<BaseEnv> {
   const factory = (_env: BaseEnv) => ({
     definitions: [],
@@ -41,9 +41,9 @@ function makeMailFactory(): AnnotatedToolFactory<BaseEnv> {
   });
 }
 
-// A synthetic factory whose declared definitions are supplied by the
-// caller, so a test can exercise gated tools, ungated tools, and
-// intra-factory duplicate names.
+// A synthetic factory whose declared definitions are supplied by the caller,
+// so a test can exercise gated tools, ungated tools, and intra-factory
+// duplicate names.
 function makeFactory(
   id: string,
   definitions: readonly ToolDeclaration[],
@@ -164,9 +164,8 @@ describe("walkCapabilities", () => {
     const declarations = walk.perStep.get(stepId);
     if (declarations === undefined) throw new Error("missing declarations");
 
-    // The plugin-contributed tool grant sits alongside the factory tool
-    // grant; its effect is derived through the same `toolApprovalEffect`
-    // mapping (ungated -> allow).
+    // The plugin tool grant sits alongside the factory tool grant; its effect
+    // derives through the same `toolApprovalEffect` mapping (ungated -> allow).
     expect(declarations.grants).toContain("tool:lsp");
     expect(declarations.grants).toContain("tool:mail_send");
     expect(declarations.grantEffects.get("tool:lsp")).toBe("allow");
@@ -252,8 +251,7 @@ describe("walkCapabilities", () => {
 
   test("collects an onTrigger section body's agent grants for approval", () => {
     // A section runs its body per event, so the operator must approve the
-    // body's agent capabilities at the parent deploy. The walk descends into
-    // the authored inline body before the deploy step extracts it to a ref.
+    // body's agent capabilities at the parent deploy.
     const registry = createDefaultDirectorRegistry();
     const bodyAgent = defineAgent({
       id: "ag_section_body",
@@ -286,9 +284,7 @@ describe("walkCapabilities", () => {
 
   test("folds an inline childWorkflow's tool, capability, and effect grants into the spawning step", () => {
     // An owned childWorkflow import is embedded inline, so the operator must
-    // approve the child's agent/action grants at the parent deploy. The walk
-    // descends into the authored inline child before the deploy step lifts it
-    // to a ref, exactly as it does for an inline onTrigger body.
+    // approve the child's agent/action grants at the parent deploy.
     const registry = createDefaultDirectorRegistry();
     const childAgent = defineAgent({
       id: "ag_child_body",
@@ -331,8 +327,8 @@ describe("walkCapabilities", () => {
 
   test("folds a childWorkflow grandchild's grants from inside a nested loop body", () => {
     // The grandchild lives two loop levels down; the walk must recurse through
-    // both loop bodies (`case "loop"`) so the operator approves its grants at
-    // the top-level loop step, just as for a single-level loop body.
+    // both loop bodies so the operator approves its grants at the top-level
+    // loop step.
     const registry = createDefaultDirectorRegistry();
     const childAgent = defineAgent({
       id: "ag_nested_grandchild",
@@ -392,9 +388,8 @@ describe("walkCapabilities", () => {
   test("collects a childWorkflow's grants nested inside an onTrigger body", () => {
     // A section body may spawn a childWorkflow, whose owned inline import runs
     // per event. Its grants must reach the parent deploy's approval set --
-    // otherwise the operator approves a manifest that omits the child's
-    // director and tool grants, and the child runs unapproved (the runtime
-    // does not re-gate `director:` after the probe).
+    // otherwise the child runs unapproved (the runtime does not re-gate
+    // `director:` after the probe).
     const registry = createDefaultDirectorRegistry();
     const childAgent = defineAgent({
       id: "ag_nested_child",
@@ -441,12 +436,9 @@ describe("walkCapabilities", () => {
 
   test("collects an onTrigger section's grants nested inside a childWorkflow body", () => {
     // The mirror of the onTrigger-body -> childWorkflow direction. This nesting
-    // is REJECTED at authoring and at deploy, because the runtime lifts
-    // sections only at the top level -- so the fixture is hand-assembled rather
-    // than authored. The walk must still collect the section's grants: it is
-    // the collector of record for whatever definition it is handed, and a
-    // collector that drops grants on a shape it was not expecting under-reports
-    // the approval surface, which is the failure direction that matters.
+    // is REJECTED at authoring and at deploy, so the fixture is hand-assembled;
+    // the walk must still collect the section's grants, since a collector that
+    // drops grants under-reports the approval surface.
     const registry = createDefaultDirectorRegistry();
     const sectionAgent = defineAgent({
       id: "ag_nested_section",
@@ -497,9 +489,7 @@ describe("walkCapabilities", () => {
   test("a by-ref childWorkflow contributes no child grants to the parent", () => {
     // The by-`ref` form is the internal extracted-body handle the deploy step
     // produces AFTER the walk; its grants were already folded in from the
-    // inline form. A walk that sees a `{ ref }` child (as the source-ref run
-    // child does over its re-evaluated closure) must skip it, exactly as it
-    // skips a `{ ref }` onTrigger body.
+    // inline form, so a walk that sees a `{ ref }` child must skip it.
     const registry = createDefaultDirectorRegistry();
     const childAgent = defineAgent({
       id: "ag_ref_child",
@@ -734,19 +724,18 @@ describe("walkCapabilities", () => {
     expect(declarations.grants).toContain("tool:list_dir");
     expect(declarations.grantEffects.get("tool:run_shell")).toBe("ask");
     expect(declarations.grantEffects.get("tool:list_dir")).toBe("allow");
-    // grantEffects covers TOOL grants only: no director/capability/etc.
-    // key leaks in.
+    // grantEffects covers TOOL grants only: no director/capability/etc. key
+    // leaks in.
     for (const key of declarations.grantEffects.keys()) {
       expect(key.startsWith("tool:")).toBe(true);
     }
   });
 
   test("ask wins when loop body siblings share a tool name", () => {
-    // Two agent steps in one loop body declare the same bare tool name:
-    // the first gates it (`approval: "ask"`), the second (later in order)
-    // leaves it ungated. The loop threads one GrantSet across its body, so
-    // the two write the same `tool:run_shell` key; the ask mark must not be
-    // downgraded to `allow` by the later sibling.
+    // Two agent steps in one loop body declare the same bare tool name: the
+    // first gates it, the second leaves it ungated. The loop threads one
+    // GrantSet across its body, so the ask mark must not be downgraded by the
+    // later sibling.
     const registry = createDefaultDirectorRegistry();
     const gatedAgent = defineAgent({
       id: "ag_gated",

@@ -3,12 +3,11 @@
 // The deployment address model is a pure function of `(runId, stepId,
 // domain)`: a one-step workflow has no distinct step address -- the lone
 // step IS the deployment head (`deriveRunAddress`) -- while a workflow with
-// more than one step derives per-step addresses of the form
-// `<runId>-<stepId>@<domain>`. Because the derivation is pure, the
+// more than one step derives per-step addresses `<runId>-<stepId>@<domain>`.
+// Because the derivation is pure, the
 // supervisor reconstructs the same addresses at spawn time without any
 // per-deploy state, and `resolveStepAddress` is the single owner of the
-// head/step collapse decision for a consumer that must choose an address
-// from the host-sourced step count alone.
+// head/step collapse decision.
 //
 // The source-pinning utilities (`pickStepInferenceSource`,
 // `buildInertProjectionStepSources`, `buildInertBodyStepSources`,
@@ -38,12 +37,8 @@ import {
 } from "./inert-ontrigger-bodies";
 
 /**
- * Minimal structural `DeployContent` shape. Carried as a structural type so
- * this package does not need a runtime dependency on `@intx/hub-sessions` to
- * name the type. Mirrors the public fields of
- * `packages/hub-sessions/src/agent-repo.ts`'s `DeployContent`; the hub's
- * `bridgeOrchestratorDeployContent` narrows this widened shape back to the
- * canonical one at the deploy boundary.
+ * Minimal structural `DeployContent` shape, carried structurally so this
+ * package needs no runtime dependency on `@intx/hub-sessions` to name it.
  */
 export interface DeployContent {
   readonly systemPrompt: string;
@@ -52,10 +47,9 @@ export interface DeployContent {
 }
 
 /**
- * Error thrown when a workflow definition fails deploy-time validation --
- * an inverted or unapproved inference chain, or a step whose source the
- * operator never approved. Carries the offending workflow id so the caller's
- * logs name the deployment that was rejected.
+ * Error thrown when a workflow definition fails deploy-time validation -- an
+ * inverted or unapproved inference chain, or a step whose source the operator
+ * never approved. Carries the offending workflow id for caller logs.
  */
 export class WorkflowDefinitionInvalidError extends Error {
   readonly workflowId: string;
@@ -84,24 +78,11 @@ export function isSourceApproved(
 
 /**
  * Pick the per-step `InferenceSource` from the deploy's
- * `HarnessConfig.sources`, cross-checked against the operator-approved
- * grant set.
- *
- * The caller passes the step's preferred `(provider, model)` -- the step
- * agent's first declared source, or `null` for a step that declares none
- * (a non-agent step such as sleep/gate/awaitSignal, or an agent with no
- * declared source). The identity is all this needs: the source-ref hub deploy
- * reads it off the frozen inert projection's `modelSources` and feeds it here.
- *
- * The capability walk emits `inference.source:<provider>:<model>`
- * grants only for the (provider, model) pairs the agent declared. The
- * pinning pass here can otherwise resolve a source the walk never
- * surfaced -- the `HarnessConfig.defaultSource` fallback path for a step
- * whose preference is unresolvable, or the same fallback for a step that
- * carries no preference at all. In both cases the source-pinning pass must
- * refuse to pin a `(provider, model)` the operator never approved;
- * silently shipping an unapproved source would defeat the capability-
- * walk gate the deploy just passed.
+ * `HarnessConfig.sources`, cross-checked against the operator-approved grant
+ * set. `preferred` is the step agent's first declared source, or `null` for
+ * a step that declares none. The pin must refuse a `(provider, model)` the
+ * operator never approved -- including a `defaultSource` fallback -- or the
+ * deploy would silently ship a source the capability-walk gate never saw.
  *
  * Exported so the source-ref hub deploy can pin its inert onTrigger body
  * steps through the same resolver its top-level steps use.
@@ -145,25 +126,21 @@ export function pickStepInferenceSource(args: {
 
 /**
  * Walk a frozen inert definition's steps and pin each to a single inference
- * source, recursing into `loop` bodies. This owns the flat-map collision rule;
- * the traversal is the canonical step walk (see `forEachInertStep`). The
- * per-step LEAF policy (which source a given step resolves to, and how a step
- * that declares no source is pinned) is supplied by the caller through
- * `resolveLeafSource`, so the walk can be reused by callers that pin steps
- * under different rules.
+ * source, recursing into `loop` bodies. This owns the flat-map collision
+ * rule; the per-step LEAF policy is supplied by the caller through
+ * `resolveLeafSource`, so the walk can be reused under different rules.
  *
  * A loop body runs in-process as a child run sharing the parent's env, so its
- * agent steps resolve their pinned source from this same flat map, keyed by the
- * body step's plain id. Loop-body step ids share a namespace with the enclosing
- * steps; a body step id that collides with another step must resolve to the
- * same source, else the pin fails closed rather than silently mis-pin.
+ * agent steps resolve their pinned source from this same flat map, keyed by
+ * the body step's plain id. Loop-body step ids share a namespace with the
+ * enclosing steps; a colliding id must resolve to the same source, else the
+ * pin fails closed rather than silently mis-pin.
  *
  * `resolveLeafSource` must be a pure leaf resolver: it resolves one step from
  * its `(isAgent, preference)` shape and must not itself walk `stepOrder` or
- * recurse -- this function owns the traversal. It receives `isAgent` so a caller
- * can pin a genuine non-agent step differently from an agent that declares no
- * preference (an empty `modelSources`), which still resolves a source at
- * runtime.
+ * recurse. It receives `isAgent` so a caller can pin a genuine non-agent step
+ * differently from an agent that declares no preference (an empty
+ * `modelSources`), which still resolves a source at runtime.
  */
 export function pinInertStepSources(args: {
   definition: WorkflowProjectionDefinition;
@@ -195,15 +172,11 @@ export function pinInertStepSources(args: {
 
 /**
  * Walk a frozen inert definition's steps in `stepOrder`, recursing into `loop`
- * bodies, and hand each leaf its `(isAgent, preference)` classification. Owns
- * the classification so every consumer reads a step the same way.
- *
- * The traversal itself is `forEachInertLoopBodyStep` -- the canonical
- * `walkStepTree` under the descent that stays inside ONE flat step-id
- * namespace, which is what the pinned `sources` map is keyed by. An onTrigger
+ * bodies, and hand each leaf its `(isAgent, preference)` classification. The
+ * traversal is `forEachInertLoopBodyStep` -- the canonical `walkStepTree` under
+ * the flat step-id namespace the pinned `sources` map is keyed by. An onTrigger
  * section or childWorkflow body is lifted to its own definition with its own
- * sources map, so that walk stops at the boundary. This wrapper adds only the
- * per-step inference classification.
+ * sources map, so that walk stops at the boundary.
  */
 function forEachInertStep(
   args: { definition: WorkflowProjectionDefinition; context: string },
@@ -225,16 +198,11 @@ function forEachInertStep(
 
 /**
  * Collect the ids of the steps in a frozen inert definition that can invoke
- * inference: an `agent` step or a `map` over one. Every other primitive --
- * `action`, `gate`, `awaitSignal`, `sleep`, `escalation`, and the `loop`,
- * `onTrigger` and `childWorkflow` containers -- is pinned a source to satisfy
- * the wire requirement that every step carry one, and never issues a request
- * through it.
- *
- * A container's own id is excluded while its contents are not: a `loop` body's
- * steps are classified on their own visit into the same flat namespace, and an
- * `onTrigger` or `childWorkflow` body is lifted to its own definition and
- * classified there.
+ * inference: an `agent` step or a `map` over one. Every other primitive is
+ * pinned a source only to satisfy the wire requirement that every step carry
+ * one; it never issues a request through it. A `loop` container's own id is
+ * excluded while its body steps are classified on their own visit into the
+ * same flat namespace.
  *
  * Derived from the definition rather than from a pinned sources map, so a
  * consumer deciding what a step is entitled to reads the hash-covered
@@ -254,22 +222,16 @@ export function collectAgentBearingStepIds(args: {
 /**
  * Pin every step of a frozen inert projection to a single inference source,
  * producing the `sources` map the source-ref deploy frame carries. The hub
- * holds no live definition, so an agent-bearing step's declared
- * `(provider, model)` preference is read off the inert projection's
- * `modelSources` and resolved through the `pickStepInferenceSource` resolver
- * and its operator-approval gate. A preference the operator never approved --
- * or that resolves to no approved source at all -- throws, failing the whole
- * deploy closed before any frame is sent.
+ * holds no live definition, so an agent-bearing step's `(provider, model)`
+ * preference is read off the projection's `modelSources` and resolved through
+ * `pickStepInferenceSource` and its operator-approval gate; an unapproved or
+ * unresolvable preference throws, failing the whole deploy closed before any
+ * frame is sent. A step that cannot invoke inference takes the inert
+ * placeholder and is not approval-gated.
  *
- * A step that cannot invoke inference takes the inert placeholder instead and
- * is not approval-gated. Its pin exists because the wire shape requires a
- * source for every step, not because it names a route the step will take, and
- * the hub delivers no credential against it.
- *
- * The walk recurses into `loop` bodies via `pinInertStepSources`. onTrigger
- * bodies are NOT walked here -- they are lifted to `referencedDefinitions` with
- * their own per-body pin in the deploy composition. childWorkflow bodies are
- * resolved at the child host, not pinned here.
+ * Recursees into `loop` bodies via `pinInertStepSources`. onTrigger bodies are
+ * NOT walked here -- they are lifted to `referencedDefinitions` with their own
+ * per-body pin -- and childWorkflow bodies are resolved at the child host.
  */
 export function buildInertProjectionStepSources(args: {
   projection: WorkflowProjectionDefinition;
@@ -298,15 +260,14 @@ export function buildInertProjectionStepSources(args: {
 }
 
 /**
- * Resolve the inert placeholder source that a step which cannot invoke
- * inference is pinned to: the deploy's default source. Such a step never
- * issues a request, so the pin exists only to fill the per-step coverage slot
- * the deploy frame requires, and carries no approval decision.
+ * Resolve the inert placeholder source a step that cannot invoke inference is
+ * pinned to: the deploy's default source. Such a step never issues a request,
+ * so the pin exists only to fill the per-step coverage slot the deploy frame
+ * requires, and carries no approval decision.
  *
- * The lookup runs per leaf rather than once per walk on purpose. A definition
+ * The lookup runs per leaf rather than once per walk on purpose: a definition
  * whose steps all resolve a source of their own must not fail merely because
- * `defaultSource` dangles; only a step that actually needs the placeholder
- * does.
+ * `defaultSource` dangles.
  */
 function inertPlaceholderSource(args: {
   stepId: string;
@@ -327,15 +288,14 @@ function inertPlaceholderSource(args: {
 
 /**
  * Pin every step of a lifted onTrigger body to a single inference source,
- * producing the `sources` map the body's `referencedDefinitions` entry carries.
- *
- * An agent-bearing body step resolves through `pickStepInferenceSource` and its
- * operator-approval gate. A body step that is not agent-bearing cannot invoke
- * inference, so it takes the inert placeholder and no approval applies to it.
+ * producing the `sources` map the body's `referencedDefinitions` entry
+ * carries. Agent-bearing body steps resolve through `pickStepInferenceSource`
+ * and its operator-approval gate; non-agent body steps take the inert
+ * placeholder, unapproval-gated.
  *
  * The branch keys on whether the step is agent-bearing, never on whether it
- * declared a preference: an agent that declares no `modelSources` also arrives
- * without one, and must keep its gate.
+ * declared a preference: an agent with no `modelSources` also arrives without
+ * one, and must keep its gate.
  */
 export function buildInertBodyStepSources(args: {
   definition: WorkflowProjectionDefinition;
@@ -369,16 +329,12 @@ function sameInferenceSource(a: InferenceSource, b: InferenceSource): boolean {
 }
 
 /**
- * Pure function: derive a step's run address from
- * `(runId, stepId, domain)`. Exported so the supervisor can reconstruct
- * the same addresses at spawn time without sharing storage with the
- * deploy flow.
- *
- * The local part IS the run id with the step suffix appended; the runId is
- * already a minted `run_<hex>` carrying the `run_` marker `parseRunAddress`
- * requires at the substrate boundary. The per-step local-part is concat-only
- * because `stepId` is already constrained to `[a-zA-Z0-9_-]+` by the workflow
- * definition validator.
+ * Pure function: derive a step's run address from `(runId, stepId, domain)`.
+ * Exported so the supervisor can reconstruct the same addresses at spawn time
+ * without sharing storage with the deploy flow. The local part is the run id
+ * with the step suffix appended; the concat-only form is safe because `stepId`
+ * is already constrained to `[a-zA-Z0-9_-]+` by the workflow definition
+ * validator.
  */
 export function deriveStepAddress(args: {
   runId: string;
@@ -388,10 +344,7 @@ export function deriveStepAddress(args: {
   return formatRunAddress(`${args.runId}-${args.stepId}`, args.domain);
 }
 
-/**
- * Derive the per-step agent id (the `agent-state` repo's id and the
- * `HarnessConfig.agentId`). Pure function of `(runId, stepId)`.
- */
+/** Derive the per-step agent id (the `agent-state` repo's id and the `HarnessConfig.agentId`). Pure function of `(runId, stepId)`. */
 export function deriveStepAgentId(args: {
   runId: string;
   stepId: string;
@@ -400,12 +353,8 @@ export function deriveStepAgentId(args: {
 }
 
 /**
- * Derive the deployment-level mail address the supervisor registers on
- * the bus. It is the run id `@` the domain; pure function of `(runId, domain)`.
- *
- * The supervisor uses this address as the inbound mail address for the
- * deployment as a whole; per-step bindings carry their own
- * derived-step addresses.
+ * Derive the deployment-level mail address the supervisor registers on the
+ * bus: the run id `@` the domain. Pure function of `(runId, domain)`.
  */
 export function deriveRunAddress(args: {
   runId: string;
@@ -416,20 +365,13 @@ export function deriveRunAddress(args: {
 
 /**
  * Resolve where a step's deploy tree lives, given the deployment's step
- * count. This is the single owner of the head/step collapse DECISION for
- * a consumer that must choose the address without knowing the deploy
- * shape: a one-step workflow has no distinct steps, so its lone step IS
- * the head (`deriveRunAddress`); a multi-step deployment keeps the
- * head distinct from its per-step addresses (`deriveStepAddress`). The
- * sidecar child reads its deploy tree from the address this returns,
- * keyed only off the deployment mailbox and the host-sourced `stepCount`.
- *
- * The producers do not route through here -- each handles one shape
- * unconditionally: the single-step deploy stages the tree at the head,
- * the multi-step deploy at each per-step address. Because `stepCount` is
- * the deployed definition's `stepOrder.length`, sourced from the host,
- * the consumer's collapse always agrees with whichever producer staged
- * the tree; the two processes never derive divergent addresses.
+ * count. The single owner of the head/step collapse DECISION for a consumer
+ * that must choose the address without knowing the deploy shape: a one-step
+ * workflow has no distinct steps, so its lone step IS the head
+ * (`deriveRunAddress`); a multi-step deployment keeps the head distinct from
+ * its per-step addresses (`deriveStepAddress`). Because `stepCount` is the
+ * deployed definition's `stepOrder.length` sourced from the host, the
+ * consumer's collapse always agrees with whichever producer staged the tree.
  */
 export function resolveStepAddress(args: {
   runId: string;
@@ -445,47 +387,37 @@ export function resolveStepAddress(args: {
     : deriveStepAddress(args);
 }
 
-/**
- * Derive the deployment-level agent id used on the `agent.deploy`
- * frame's `agentId` field. Pure function of `(runId)`.
- */
+/** Derive the deployment-level agent id used on the `agent.deploy` frame's `agentId` field. Pure function of `(runId)`. */
 export function deriveRunAgentId(args: { runId: string }): string {
   return args.runId;
 }
 
 /**
- * Project a workflow-deployment run address into the substrate-safe
- * id of its workflow-run repo (`{ kind: "workflow-run", id }`). Pure
- * function of the deployment's run address.
+ * Project a workflow-deployment run address into the substrate-safe id of
+ * its workflow-run repo (`{ kind: "workflow-run", id }`). Pure function of
+ * the deployment's run address.
  *
  * The workflow-run repo's `repoId.id` must match `SAFE_REPO_ID`
- * (`/^[a-zA-Z0-9_-]+$/`, the substrate's repo-path-safety contract in
- * `packages/hub-sessions/src/repo-store/types.ts`), and the supervisor
- * principal's `runId` must equal `workflowRunRepoId.id` for the
- * workflow-run kind handler's authz check to pass. That regex rejects
- * `@` and `.`, both of which appear in every run address, so the
- * address is sanitized by substituting every disallowed character with
- * `-`.
+ * (`/^[a-zA-Z0-9_-]+$/`, the substrate's repo-path-safety contract), and the
+ * supervisor principal's `runId` must equal `workflowRunRepoId.id` for the
+ * workflow-run kind handler's authz check to pass. That regex rejects `@`
+ * and `.`, both of which appear in every run address, so each disallowed
+ * character is substituted with `-`.
  *
  * The mapping is lossy (two distinct addresses can collapse to the same
- * slug) but deterministic. The sidecar's deploy router keys the
- * workflow-run repo by this slug at write time; the hub's read routes
- * reconstruct the deployment address via `deriveRunAddress` and
- * apply this same derivation so read and write address the same repo.
- * A collision implies two deployments are claiming the same workflow-run
- * surface, which the sidecar's deploy router rejects at deploy time.
+ * slug) but deterministic; a collision means two deployments claim the same
+ * workflow-run surface, which the sidecar's deploy router rejects at deploy
+ * time.
  */
 export function deriveWorkflowRunRepoId(agentAddress: string): string {
   return agentAddress.replaceAll(/[^a-zA-Z0-9_-]/g, "-");
 }
 
 /**
- * Assemble a single-step `AgentDefinition` from already-resolved fields. This
- * is the single place the single-step agent shape is constructed, so the
- * offline agent-to-workflow fold synthesis cannot drift on which fields a
- * folded agent carries. Callers pass resolved inputs: the fold passes empty
- * tool factories (its tools ride as `toolPackagePins`), the agent's own pins,
- * and its catalog-resolved inference preferences.
+ * Assemble a single-step `AgentDefinition` from already-resolved fields.
+ * The single place the single-step agent shape is constructed, so the offline
+ * agent-to-workflow fold synthesis cannot drift on which fields a folded agent
+ * carries.
  */
 export function buildSingleStepAgentDefinition(args: {
   id: string;
