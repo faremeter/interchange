@@ -535,27 +535,18 @@ describe("resolveClosure top-level versions", () => {
   });
 
   test("top-level pin's resolved version wins over a transitive that shares its name", async () => {
-    // The BFS walk records each top-level pin's resolved version on
-    // first arrival. The invariant the resolver depends on is that a
-    // top-level pin's resolution lands in `topLevelResolved` BEFORE
-    // any transitive dep walker reaches the same name — otherwise a
-    // transitive that satisfies a wider range would silently overwrite
-    // the top-level pin's chosen version, and the manifest's
-    // `topLevel` list would reference a version the operator did not
-    // pin. The property is enforced by seeding the queue with all pins
-    // before any fan-out and by FIFO queue semantics; a future
-    // refactor that swaps the queue for a priority list or interleaves
-    // seed-vs-transitive would silently invert first-arrival, and
-    // wrong-version manifest entries would pass type checking and the
-    // apply pipeline. Lock the property with a test so the regression
-    // surfaces as a failing assertion, not a 3am page.
+    // First-arrival invariant: a top-level pin's resolution must land
+    // in `topLevelResolved` before any transitive dep walker reaches
+    // the same name, or a transitive that satisfies a wider range
+    // would silently overwrite the operator's pinned version. Enforced
+    // by seeding the queue with all pins before any fan-out and by
+    // FIFO order; lock it here so a queue-order change cannot invert
+    // it unnoticed.
     //
     // Fixture: pin `shared@^1.0.0` (resolves to 1.2.0) and pin
     // `other@^1.0.0` whose transitive dep `shared@^1.5.0` would
-    // resolve to 1.6.0 if it arrived first. The manifest's
-    // `topLevel` must carry shared@1.2.0 (the top-level pin's
-    // resolution), regardless of which BFS walker reaches `shared`
-    // first internally.
+    // resolve to 1.6.0 if it arrived first. `topLevel` must carry
+    // shared@1.2.0 regardless of internal BFS order.
     const fetchPackument: PackumentFetcher = async (name) => {
       if (name === "shared") {
         return {
@@ -1160,22 +1151,10 @@ describe("AssetRegistrySource", () => {
 
   test("mixes with an HTTP source for transitive deps the asset does not publish", async () => {
     // Top-level pins live in the asset; transitive `left-pad` lives in
-    // the HTTP registry. The asset registry is the default so unscoped
-    // top-level pins resolve through it; the transitive dep then
-    // bounces to the HTTP registry because the asset does not publish
-    // it. This is the asset-publishes-its-own-closure shape: the asset
-    // is authoritative for the names it carries and the http registry
-    // covers any name the asset does not.
-    //
-    // The two-step fallback is not implemented at the resolver layer —
-    // the walker queries the source the routing rule names and treats
-    // a miss as a fatal closure-walk failure. To make `left-pad` route
-    // to the http registry, exercise the scopeRouting feature: `@np`
-    // is a scope that routes to npmjs, but unscoped names that the
-    // asset does not publish need an alternative. For this test we
-    // exercise the cleaner shape: the asset-registry version of
-    // `tools-mixed` declares the transitive dep via a scoped name so
-    // scope routing carries it to the http registry.
+    // the HTTP registry. The asset registry is the default, so the
+    // transitive dep must reach the HTTP registry through the
+    // scopeRouting feature: `tools-mixed` declares it via a scoped
+    // name (`@np/left-pad`) so scope routing carries it to npmjs.
     const fixture = await buildAssetFixture([
       {
         name: "tools-mixed",

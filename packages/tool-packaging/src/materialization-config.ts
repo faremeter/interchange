@@ -30,12 +30,10 @@ export function parseToolRegistries(
   if (raw === undefined) {
     return new Map([["npmjs", { url: "https://registry.npmjs.org" }]]);
   }
-  // Distinguish unset from empty. An operator setting the var to an
-  // empty string almost always indicates misconfig (CI secret
-  // expansion failed, a templater dropped the value). Falling through
-  // to the npmjs default at that point silently routes tool packages
-  // through public npm, which is precisely the misroute a custom
-  // registry pin was meant to prevent. Surface the gap loudly; the
+  // Distinguish unset from empty: an empty string almost always
+  // indicates misconfig (failed CI secret expansion, a dropped
+  // template value), and falling through to the npmjs default would
+  // silently route tool packages through public npm. Fail loudly; the
   // recovery is `unset SIDECAR_TOOL_REGISTRIES`, not `=""`.
   if (raw.trim() === "") {
     throw new Error(
@@ -73,20 +71,12 @@ export function parseToolRegistries(
 }
 
 // npm's `os` token namespace, mirrored from Node's `process.platform`
-// enum. Any value outside this set means the host is running a Node
-// build the loader's platform filter would silently mis-route — a
-// pinned package whose `os` list excludes the host would not be
-// excluded if `process.platform` is a token npm has never heard of.
-// Validate at the boundary so an unknown platform fails the boot
-// instead of producing a quiet, host-shaped mis-resolution at apply
-// time.
-//
-// UPGRADE TAX: Node periodically adds platforms (and Bun ships
-// extensions of its own). A Node/Bun major bump that lands a new
-// `process.platform` value will fail boot until this allowlist is
-// refreshed against the upstream enum. Sidecar operators upgrading
-// the runtime should expect this as part of the cutover, not as a
-// surprise regression.
+// enum. An unknown value would silently mis-route the loader's
+// platform filter, so validate at the boundary: an unknown platform
+// fails boot instead of producing a quiet mis-resolution at apply
+// time. Node periodically adds platforms, so a runtime bump that
+// lands a new `process.platform` value fails boot until this
+// allowlist is refreshed.
 const KNOWN_PROCESS_PLATFORMS = new Set<string>([
   "aix",
   "android",
@@ -104,9 +94,6 @@ const KNOWN_PROCESS_PLATFORMS = new Set<string>([
 // npm's `cpu` token namespace, mirrored from Node's `process.arch`
 // enum. Same rationale as KNOWN_PROCESS_PLATFORMS — an unknown arch
 // would mis-route the loader's filter without surfacing the gap.
-// Same upgrade tax applies: Node has added `loong64` and `riscv64`
-// in recent releases, and future arch additions will need to be
-// added here when the sidecar is rebuilt against them.
 const KNOWN_PROCESS_ARCHS = new Set<string>([
   "arm",
   "arm64",

@@ -80,12 +80,10 @@ describe("evict", () => {
 });
 
 describe("LRU eviction when over cap", () => {
-  // The cap-driven sweep fires inside `extractTarball`, not inside
-  // `put`. Sweeping in `put` would charge an entry's bytes-on-disk
-  // total against `maxBytes` using only the tarball size — extraction
-  // hasn't run yet, so the half-sized entry's true footprint is
-  // not knowable. Tests below put + extractTarball each entry so the
-  // sweep runs against the entry's full tarball + extracted total.
+  // The cap-driven sweep fires inside `extractTarball`, not `put`:
+  // `put` alone cannot charge an entry's full footprint (tarball +
+  // extracted tree) against `maxBytes`. Each entry below is put +
+  // extracted so the sweep runs against the full total.
   test("oldest entries are evicted to bring total under maxBytes", async () => {
     const a = await packFixtureTarball(scratch, {
       "package.json": JSON.stringify({ name: "a", version: "1.0.0" }),
@@ -99,11 +97,9 @@ describe("LRU eviction when over cap", () => {
 
     const cache = createTarballCache({
       rootDir: scratch,
-      // Cap sized empirically: probe one entry's actual on-disk
-      // footprint (tarball + extracted tree, including filesystem
-      // overhead) and set the cap to 2.5x — between two-entry total
-      // and three-entry total — so the third put+extract tips the
-      // LRU sweep and evicts the oldest.
+      // Cap sized empirically from one entry's actual on-disk footprint:
+      // 2.5x lands between the two-entry and three-entry totals so the
+      // third put+extract tips the LRU sweep and evicts the oldest.
       maxBytes: Math.floor((await probeEntrySize(scratch)) * 2.5),
     });
 
@@ -123,12 +119,9 @@ describe("LRU eviction when over cap", () => {
   });
 
   test("a tarball larger than maxBytes survives its own extract-eviction sweep", async () => {
-    // A single entry bigger than the cap would, without protection,
-    // be the only candidate the LRU sweep finds: the just-written
-    // tarball + just-extracted tree would be deleted before the
-    // loader could read it back, and the next apply would re-fetch
-    // and re-evict — perpetual churn. The just-written entry is
-    // exempt from the sweep that its own extractTarball triggers.
+    // Without the just-written exemption, an entry bigger than the cap
+    // would be the only LRU candidate and would be deleted before the
+    // loader could read it back — perpetual re-fetch/re-evict churn.
     const big = await packFixtureTarball(scratch, {
       "package.json": JSON.stringify({ name: "big", version: "1.0.0" }),
       "payload.bin": "big-payload-".repeat(64),
@@ -159,11 +152,9 @@ describe("LRU eviction when over cap", () => {
 
     const cache = createTarballCache({
       rootDir: scratch,
-      // Cap sized empirically: probe one entry's actual on-disk
-      // footprint (tarball + extracted tree, including filesystem
-      // overhead) and set the cap to 2.5x — between two-entry total
-      // and three-entry total — so the third put+extract tips the
-      // LRU sweep and evicts the oldest.
+      // Cap sized empirically from one entry's actual on-disk footprint:
+      // 2.5x lands between the two-entry and three-entry totals so the
+      // third put+extract tips the LRU sweep and evicts the oldest.
       maxBytes: Math.floor((await probeEntrySize(scratch)) * 2.5),
     });
 
@@ -186,12 +177,11 @@ describe("LRU eviction when over cap", () => {
   });
 
   test("cap-driven eviction defers the extraction reclaim while a reader holds the handle", async () => {
-    // The cap-driven sweep removes the tarball blob immediately but
-    // must defer the extraction-tree rm until every in-flight reader
+    // The cap-driven sweep drops the tarball blob immediately but must
+    // defer the extraction-tree rm until every in-flight reader
     // releases — the same refcount/deferred-reclaim contract `evict`
-    // honors. Without that gate, a concurrent `copyTree` walk
-    // against the LRU victim would observe ENOENT mid-readdir when
-    // the sweep fires.
+    // honors — or a concurrent `copyTree` walk against the LRU victim
+    // would ENOENT mid-readdir.
     const a = await packFixtureTarball(scratch, {
       "package.json": JSON.stringify({ name: "a", version: "1.0.0" }),
     });
@@ -215,8 +205,7 @@ describe("LRU eviction when over cap", () => {
     await fs.access(dirBeforeEvict);
 
     // Trigger the sweep: putting + extracting `b` pushes us over cap;
-    // `a` is the older entry and gets evicted. The sweep fires inside
-    // `extractTarball`, not `put`.
+    // `a` is the older entry and gets evicted.
     await new Promise((r) => setTimeout(r, 25));
     await cache.put(b.integrity, b.bytes);
     (await cache.extractTarball(b.integrity)).release();
@@ -242,13 +231,10 @@ describe("LRU eviction when over cap", () => {
   });
 
   test("extractTarball advances atime so loader-pattern hits beat the LRU sweep", async () => {
-    // The loader's hot path is `cache.has` + `cache.extractTarball` —
-    // `cache.get` is not in that flow. `cache.get` explicitly calls
-    // `fs.utimes` so LRU ordering reflects access even on
-    // noatime/relatime mounts; `extractTarball` must do the same or
-    // the LRU sweep orders entries by initial-put time, evicting
-    // heavily-used integrities preferentially while idle ones
-    // linger.
+    // The loader's hot path is `cache.has` + `cache.extractTarball`;
+    // `cache.get` is not in that flow. `extractTarball` must touch
+    // atime the same way `get` does, or heavily-used integrities stay
+    // ordered by initial-put time and get evicted preferentially.
     const a = await packFixtureTarball(scratch, {
       "package.json": JSON.stringify({ name: "a", version: "1.0.0" }),
     });
@@ -271,10 +257,10 @@ describe("LRU eviction when over cap", () => {
     (await cache.extractTarball(b.integrity)).release();
     await new Promise((r) => setTimeout(r, 25));
 
-    // Touch `a` ONLY through the loader-shaped path (has + extract).
-    // This is the access pattern `materialize` uses on a cache hit;
-    // it must advance `a`'s atime so the next cap sweep treats `a`
-    // as the most-recently-used.
+    // Touch `a` ONLY through the loader-shaped path (has + extract),
+    // the access pattern `materialize` uses on a cache hit; it must
+    // advance `a`'s atime so the next cap sweep treats `a` as
+    // most-recently-used.
     expect(await cache.has(a.integrity)).toBe(true);
     (await cache.extractTarball(a.integrity)).release();
     await new Promise((r) => setTimeout(r, 25));
@@ -283,24 +269,19 @@ describe("LRU eviction when over cap", () => {
     (await cache.extractTarball(c.integrity)).release();
 
     // `b` is the oldest by access pattern. If `extractTarball` does
-    // not touch atime, the sweep evicts `a` instead because its put
-    // time is still the oldest.
+    // not touch atime, the sweep evicts `a` instead.
     expect(await cache.get(a.integrity)).not.toBeNull();
     expect(await cache.get(b.integrity)).toBeNull();
     expect(await cache.get(c.integrity)).not.toBeNull();
   });
 
   test("extractTarball's unpack path pins the refcount against a concurrent evict", async () => {
-    // The invariant: IF `extractTarball` returns a handle, the
-    // `handle.dir` it advertises must be readable until the handle's
-    // `release` fires, regardless of what concurrent `cache.evict`
-    // calls did in the meantime. Evict beating `extractTarball` to
-    // the tarball-read step is documented behavior (the caller's
-    // contract is `put` first), so an `extractTarball` rejection is
-    // an acceptable race outcome — what is NOT acceptable is a
-    // handle returned against a directory that has been reclaimed
-    // out from under it. Race many extract/evict pairs and verify
-    // every returned handle remains valid.
+    // IF `extractTarball` returns a handle, `handle.dir` must stay
+    // readable until `release` fires, regardless of concurrent
+    // `cache.evict` calls. An `extractTarball` rejection (evict
+    // unlinked the tarball before readFile) is a documented race
+    // outcome the caller handles by re-`put`ing; a handle against a
+    // reclaimed directory is not acceptable.
     const cache = createTarballCache({
       rootDir: scratch,
       maxBytes: 100_000_000,
@@ -326,19 +307,16 @@ describe("LRU eviction when over cap", () => {
         expect(dirStillThere).toBe(true);
         handle.release();
       }
-      // If extractTarball rejected (e.g. evict unlinked the tarball
-      // before readFile could read it), that is a documented outcome
-      // of the race the caller is expected to handle by re-`put`ing.
+      // If extractTarball rejected, that is the documented race
+      // outcome the caller is expected to handle by re-`put`ing.
     }
   });
 });
 
 /**
- * Empirically measure the on-disk footprint of one cached entry
- * (tarball + extracted tree) so the LRU tests can size `maxBytes`
- * against the live filesystem's actual accounting. The probe builds
- * a sibling cache in a throwaway directory, puts a small tarball,
- * extracts it, and returns the cache's reported `size()`.
+ * Measure the on-disk footprint of one cached entry (tarball +
+ * extracted tree) so the LRU tests can size `maxBytes` against the
+ * live filesystem's actual accounting.
  */
 async function probeEntrySize(scratch: string): Promise<number> {
   const probeRoot = await fs.mkdtemp(path.join(scratch, "probe-"));
@@ -463,15 +441,12 @@ describe("extractTarball", () => {
   });
 
   test("evict defers extraction removal while a reader still holds an unreleased handle", async () => {
-    // An in-flight `copyTree` walk against an integrity's
-    // extraction tree must not see the tree disappear mid-readdir when
-    // another agent in the same sidecar process trips an
-    // integrity-mismatch evict for the same integrity. The cache holds
-    // a refcount per (integrity, extraction-dir) pair: `evict` deletes
-    // the tarball blob immediately so a subsequent `extractTarball`
-    // cannot reuse the on-disk extraction, but the physical removal of
-    // the extraction tree is deferred until every outstanding
-    // `release` from `extractTarball` has fired.
+    // An in-flight `copyTree` walk against an integrity's extraction
+    // tree must not see the tree disappear mid-readdir when another
+    // agent in the same sidecar process trips an integrity-mismatch
+    // evict for the same integrity. `evict` deletes the tarball blob
+    // immediately but defers the extraction-tree rm until every
+    // outstanding `release` has fired.
     const cache = createTarballCache({
       rootDir: scratch,
       maxBytes: 10_000_000,
@@ -488,8 +463,7 @@ describe("extractTarball", () => {
     // Evict races against the still-open reader. The tarball blob
     // disappears immediately so a fresh `extractTarball` cannot
     // short-circuit on the existing tree, but the tree itself must
-    // remain on disk so the in-flight reader's walk continues to
-    // succeed.
+    // remain on disk so the in-flight reader's walk continues.
     await cache.evict(integrity);
     expect(await cache.get(integrity)).toBeNull();
     expect(await fs.readdir(reader.dir)).toContain("package.json");
@@ -520,12 +494,10 @@ describe("extractTarball", () => {
 
   test("refcount tracks each handle in isolation across sequential acquire/release cycles", async () => {
     // Each extractTarball acquires the refcount; each handle.release()
-    // decrements it. Cycling through acquire → release → acquire →
-    // release must leave the cache willing to hand out a fresh
-    // handle, because every drop returned the count to zero cleanly
-    // (rather than wedging it negative or accumulating leaked
-    // references that would block a subsequent extractTarball from
-    // re-extracting after an evict).
+    // decrements it. Cycling acquire → release → acquire → release
+    // must leave the cache willing to hand out a fresh handle: every
+    // drop returned the count to zero cleanly rather than leaking
+    // references that would block a re-extract after an evict.
     const cache = createTarballCache({
       rootDir: scratch,
       maxBytes: 10_000_000,
@@ -588,11 +560,11 @@ describe("sweepOrphans", () => {
     initialHandle.release();
 
     // Reach into the cache's on-disk layout to simulate orphans left
-    // by a crash between staging and the final rename. The shard
-    // layout is implementation-detail of the cache module, but the
-    // sweep contract is the only behaviour worth asserting here, and
-    // the only way to construct an orphan without monkey-patching the
-    // module is to write one through the same layout it walks.
+    // by a crash between staging and the final rename. The layout is
+    // an implementation detail, but the sweep contract is the only
+    // behaviour worth asserting here, and the only way to construct
+    // an orphan without monkey-patching the module is to write one
+    // through the same layout it walks.
     const sha512Dir = path.join(scratch, "sha512");
     const shard = (await fs.readdir(sha512Dir))[0];
     if (typeof shard !== "string") throw new Error("unreachable");
@@ -645,19 +617,16 @@ describe("integrity-encoding rejection", () => {
   test("operations refuse a base64url-encoded integrity payload", async () => {
     // The cache's shard layout reserves `-` as an internal escape for
     // standard-base64's `/`. A base64url-encoded payload (using `-`
-    // and `_` in place of `+` and `/`) would either collide with the
-    // escape or write under a shard whose first two characters no
-    // longer carry their standard-base64 meaning. Every operation
-    // that runs the integrity through the path-deriving parser must
-    // refuse the encoding loudly rather than producing colliding
-    // on-disk paths.
+    // and `_` in place of `+` and `/`) would collide with the escape
+    // or write under a shard whose first two characters no longer
+    // carry their standard-base64 meaning. Every operation that runs
+    // the integrity through the path-deriving parser must refuse the
+    // encoding loudly rather than producing colliding on-disk paths.
     //
     // The check fires in `entryDir`, which `get`, `evict`, and
-    // `extractTarball` all run before they touch the filesystem. Use
-    // `get` here because it is the simplest entry point that hits
-    // the parser without first matching the bytes against the
-    // integrity (which the `put` path also does, and which would
-    // fail first on synthesized input).
+    // `extractTarball` all run before touching the filesystem. `get`
+    // is the simplest entry point that hits the parser without first
+    // matching bytes against the integrity (which `put` also does).
     const cache = createTarballCache({ rootDir: scratch, maxBytes: 10_000 });
     // A literal base64url payload: real ssri output is standard
     // base64, so the input has to be synthesized. Embed `_` and `-`

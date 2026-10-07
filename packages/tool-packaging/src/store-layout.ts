@@ -142,8 +142,8 @@ export async function materializeClosure(
       // cache's `evict` defers physical reclaim of the extraction tree
       // until every outstanding `release` from a concurrent
       // `extractTarball` has fired, so a parallel agent's in-flight
-      // layout copy against the same extraction will not
-      // ENOENT mid-readdir.
+      // layout copy against the same extraction will not ENOENT
+      // mid-readdir.
       if (err instanceof TarballIntegrityMismatchError) {
         await args.cache.evict(integrity);
       }
@@ -342,9 +342,7 @@ async function buildStoreLayout(args: BuildStoreLayoutArgs): Promise<void> {
           // layout pass is a loader-layer invariant violation, not an
           // unknown error shape — route it through the same structured
           // envelope every other loader failure uses so atomic-apply
-          // surfaces it as `package.entry.invalid` instead of falling
-          // back to the unknown-shape catch-all (`factory.construct.
-          // failed`).
+          // surfaces it as `package.entry.invalid`.
           throw new ToolLoaderError({
             category: "package.entry.invalid",
             message: `symlink collision at ${symlinkPath}: existing target ${existing} differs from ${relativeTarget}`,
@@ -513,8 +511,8 @@ async function copyTree(
       }
     } else if (entry.isSymbolicLink()) {
       // Preserve symlinks from the tarball verbatim; npm packages
-      // occasionally ship them and replacing one with a regular file would
-      // change the file's identity.
+      // occasionally ship them and replacing one with a regular file
+      // would change the file's identity.
       //
       // ISOMORPHIC-LAYOUT ASSUMPTION: writing the source-side
       // relative target verbatim into the destination only works
@@ -666,8 +664,7 @@ async function readDirectDependencies(
   // dropping it would let the closure resolver later reject the apply
   // with a misleading `package.entry.invalid` for the wrong layer —
   // the malformation is here, not in the closure walk. Surface it as
-  // `package.entry.invalid` directly so the operator-facing message
-  // points at the bad package.
+  // `package.entry.invalid` directly.
   //
   // Iteration order matters: write optionalDependencies FIRST, then
   // dependencies. The `dependencies` write overwrites the same key on

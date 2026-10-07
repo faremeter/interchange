@@ -25,12 +25,12 @@ import { ToolLoaderError, describeError } from "./loader-internal";
 const logger = getLogger(["sidecar", "tool-packaging", "git-materialize"]);
 
 /**
- * Read the entry's pinned subtree from `gitDir`, verify it against the frozen
- * `treeOid`, and write it into a fresh scratch directory under
- * `instanceScratchDir`. Returns the same `{ dir, release }` shape the tarball
- * path returns; `release` is a no-op because there is no content-addressed
- * cache handle to hold — the scratch dir lives under the deploy directory the
- * caller reclaims.
+ * Read the entry's pinned subtree from `gitDir`, verify it against the
+ * frozen `treeOid`, and write it into a fresh scratch directory under
+ * `instanceScratchDir`. Returns the same `{ dir, release }` shape the
+ * tarball path returns; `release` is a no-op — there is no
+ * content-addressed cache handle, the scratch dir lives under the
+ * deploy directory the caller reclaims.
  */
 export async function materializeGitEntry(args: {
   tree: ToolPackageAssetSourceTree;
@@ -41,9 +41,8 @@ export async function materializeGitEntry(args: {
 }): Promise<{ dir: string; release: () => void }> {
   const { tree: source, name, version, gitDir, instanceScratchDir } = args;
 
-  // `readTree` peels the commit to its tree; `filepath` then navigates to the
-  // pinned member. `packageDir === "."` selects the repo root, i.e. the
-  // commit's own tree, so it takes no `filepath`.
+  // `packageDir === "."` selects the repo root (the commit's own
+  // tree), so it takes no `filepath`.
   let subtreeOid: string;
   try {
     const { oid } = await git.readTree({
@@ -61,9 +60,8 @@ export async function materializeGitEntry(args: {
     });
   }
 
-  // The frozen `treeOid` is the content identity. The hub read it from the
-  // same git objects, so a mismatch means the delivered pack diverges from
-  // what was frozen; fail loud rather than materialize unverified bytes.
+  // A mismatch means the delivered pack diverges from what the hub
+  // froze; fail loud rather than materialize unverified bytes.
   if (subtreeOid !== source.treeOid) {
     throw new ToolLoaderError({
       category: "git.materialization.failed",
@@ -81,10 +79,9 @@ export async function materializeGitEntry(args: {
       DEFAULT_PACK_MATERIALIZATION_LIMITS,
     );
   } catch (err) {
-    // Best-effort cleanup of the partial scratch dir; log a secondary rm
-    // failure so it does not silently mask state. The primary error is still
-    // thrown. Mirrors the cleanup logging in `applyAssetPack` and the sidecar's
-    // source-asset delivery.
+    // Best-effort cleanup of the partial scratch dir; log a secondary
+    // rm failure so it does not silently mask state. The primary error
+    // is still thrown.
     await fs.rm(dir, { recursive: true, force: true }).catch((rmErr) => {
       logger.warn`git subtree scratch cleanup failed at ${dir}: ${describeError(rmErr)}`;
     });

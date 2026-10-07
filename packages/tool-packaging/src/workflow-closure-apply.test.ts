@@ -18,10 +18,10 @@ const WORKFLOW_PACKAGE_VERSION = "1.4.2";
 const WORKFLOW_ID = "fixture-closure-workflow";
 
 // The pinned code the frozen closure carries: an ESM entry whose default
-// export is a plain, envelope-valid workflow definition. It imports nothing so
-// the closure needs no dependency entries, keeping the fixture hermetic while
-// still exercising the real fetch -> SRI-verify -> extract -> layout -> import
-// path.
+// export is a plain, envelope-valid workflow definition. It imports
+// nothing so the closure needs no dependency entries, keeping the fixture
+// hermetic while still exercising the real fetch → SRI-verify → extract →
+// layout → import path.
 const WORKFLOW_ENTRY_SOURCE = `export default {
   id: ${JSON.stringify(WORKFLOW_ID)},
   triggers: [],
@@ -168,8 +168,9 @@ describe("applyFrozenWorkflowClosure", () => {
       ],
     };
 
-    // Record every fetch so the test can prove the sidecar fetched EXACTLY the
-    // frozen concrete version -- no packument round-trip, no re-resolution.
+    // Record every fetch so the test can prove the sidecar fetched
+    // EXACTLY the frozen concrete version — no packument round-trip,
+    // no re-resolution.
     const fetched: string[] = [];
     const fetchTarball: TarballFetcher = async (entry) => {
       fetched.push(`${entry.name}@${entry.version}`);
@@ -192,8 +193,9 @@ describe("applyFrozenWorkflowClosure", () => {
     // The pinned code was evaluated to its validated definition.
     expect(applied.definition.id).toBe(WORKFLOW_ID);
 
-    // The frozen closure was applied byte-for-byte: the workflow package's
-    // package.json is present in the materialized store directory.
+    // The frozen closure was applied byte-for-byte: the workflow
+    // package's package.json is present in the materialized store
+    // directory.
     const pkgJson = JSON.parse(
       await fs.readFile(path.join(applied.packageDir, "package.json"), "utf8"),
     );
@@ -300,10 +302,11 @@ describe("applyFrozenWorkflowClosure", () => {
   });
 
   test("materializes an asset-sourced closure from a mounted asset root", async () => {
-    // This is the durable-store read path: the deploy checked the source asset
-    // out at <assetRoot>/<mountPath>/, and both deploy and restore materialize
-    // from there with no HTTP fetch. Stage the tarball as a plain file where the
-    // loader resolves a kind:"asset" entry, then apply.
+    // This is the durable-store read path: the deploy checked the
+    // source asset out at <assetRoot>/<mountPath>/, and both deploy
+    // and restore materialize from there with no HTTP fetch. Stage the
+    // tarball as a plain file where the loader resolves a
+    // kind:"asset" entry, then apply.
     const fixture = await packWorkflowFixture();
     const assetId = "asset_deploy";
     const mountPath = "source-assets/asset_deploy/";

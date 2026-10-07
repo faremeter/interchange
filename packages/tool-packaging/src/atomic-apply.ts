@@ -6,63 +6,35 @@
 //   <instanceDir>/packages/<deploy-id>/store/<name>/<version>/...
 //
 // The loader dynamic-imports each pinned package's `interchange.tools`
-// module from an absolute path inside that deploy-id directory. Because
-// the directory is never renamed, the URL Node keys its ESM module
-// cache under stays valid for the life of the deploy: a tool package
-// that uses `import.meta.url`, `require.resolve()`, or a call-time
-// `await import("./sibling.js")` resolves against a path that still
-// exists. (The earlier protocol staged under `pending/` and renamed
-// `pending/` → `active/` after import; the renamed-away URL ENOENTed
-// any late path resolution. This module exists to remove that swap.)
+// module from an absolute path inside that directory. Because the
+// directory is never renamed, the URL Node keys its ESM module cache
+// under stays valid for the life of the deploy: call-time
+// `import.meta.url`, `require.resolve()`, or `await import("./sibling.js")`
+// still resolves. (The earlier protocol staged under `pending/` and
+// renamed to `active/` after import; the renamed-away URL ENOENTed
+// late resolution. This module exists to remove that swap.)
 //
-// This module does NOT commit. It stages, loads, validates, and
-// returns the loaded packages plus the deploy-id directory. The commit
-// point lives one layer up: the caller writes the instance's
-// `active-deploy-id` file to name `newDeployId`. Until that write
-// lands, the instance is still running `previousDeployId`, whose
-// directory is left untouched here. The "atomic swap" is therefore the
-// single `active-deploy-id` file write the caller performs, not a
-// directory rename.
+// This module does NOT commit. It stages, loads, validates, and returns
+// the loaded packages plus the deploy-id directory; the caller commits
+// by writing `<instanceDir>/active-deploy-id` to name `newDeployId`.
 //
 // Retention. A prelude sweep removes every `packages/<id>/` except
-// `{newDeployId, previousDeployId}`. The keep set is invariant across
-// the caller's commit: before the commit the live deploy is
-// `previousDeployId`; after it the live deploy is `newDeployId` and
-// `previousDeployId` is the retained prior tree. So a single sweep at
-// the start of the apply both bounds disk to ~2 closures and preserves
-// exactly the prior deploy as a liveness window for any session still
-// draining against it.
-//
-// Retention invariant: the previous deploy's directory must survive
-// until the next apply, because a session built against it may still
-// perform a call-time `await import()` into its tree. The next apply's
-// prelude reaps it. This is safe only because per-agent applies are
-// serialized (the hub runs one apply per `agentAddress` at a time) and
-// each successful apply replaces the running harness, so by the time
+// `{newDeployId, previousDeployId}`, bounding disk to ~2 closures and
+// preserving the prior deploy as a liveness window for sessions still
+// draining against it. Safe only because per-agent applies are
+// serialized (one apply per `agentAddress` at a time), so by the time
 // apply N+2 reaps deploy N, generation-N's harness teardown has
 // completed and no live code references deploy N's tree.
 //
-// Caller responsibilities (not handled here):
+// Crash safety. Boot never reads a deploy-id directory; the harness
+// rebuilds by re-running the apply into a fresh id, so a half-written
+// `packages/<newDeployId>/` is self-healing (the next prelude sweep
+// reclaims the orphan). Only `active-deploy-id` needs durability, and
+// the caller owns that — this module fsyncs nothing.
 //
-//   - Writing `active-deploy-id` to commit the staged deploy.
-//   - Constructing the WebSocket frame from the returned error.
-//   - Writing the rejected manifest + error to the sidecar's git audit
-//     trail under `audit/rejected-applies/<attemptId>/`.
-//
-// Crash safety. Boot never reads a deploy-id directory: the harness
-// rebuilds by re-running the apply against the current manifest into a
-// fresh deploy id. A half-written `packages/<newDeployId>/` left by a
-// crash mid-build is therefore self-healing — the next boot
-// re-materializes into a new id and the prelude sweep reclaims the
-// orphan. Only `active-deploy-id` needs durability, and the caller owns
-// that. Consequently this module fsyncs nothing.
-//
-// Cross-apply ESM module-identity: Node keys its ESM cache by resolved
-// URL. Per-deploy-id directories already make every apply's import URL
-// unique, so a reused `(name, version)` whose bytes changed across
-// applies resolves to a distinct path. The loader additionally
-// cache-busts each import URL with an `?integrity=<sri>` query string;
-// that remains correct (and harmless) under per-deploy-id paths.
+// Cross-apply ESM identity: per-deploy-id directories already make each
+// apply's import URL unique; the loader's `?integrity=<sri>` cache-bust
+// stays correct under them.
 
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -123,12 +95,9 @@ export interface ApplyAtomicFailure {
   readonly message: string;
   readonly package?: { readonly name: string; readonly version: string };
   /**
-   * The deploy id the instance is still running. The apply never wrote
-   * `active-deploy-id`, so a failure always leaves the prior deploy
-   * live: this equals the input `previousDeployId`. (The caller owns
-   * the commit and is the only layer that can advance the active id;
-   * the persist-degraded case it handles there carries its own
-   * inverted meaning, but that case does not originate in this module.)
+   * The deploy id the instance is still running. A failed apply never
+   * wrote `active-deploy-id`, so this always equals the input
+   * `previousDeployId`.
    */
   readonly previousDeployId: string;
   readonly attemptId: string;
@@ -139,14 +108,11 @@ export type ApplyAtomicResult = ApplyAtomicSuccess | ApplyAtomicFailure;
 
 /**
  * Stage a tool-package manifest into a per-deploy-id directory under
- * `instanceDir` and return the loaded packages. The orchestration is
- * single-threaded per instance: the prelude sweep assumes exclusive
- * write access to `<instanceDir>/packages/`. The hub-side session
- * manager already serializes applies per agent (one apply per
- * `agentAddress` at a time); host-side callers that bypass that
- * serialization must provide their own per-`instanceDir` lock, because
- * the prelude sweep deletes sibling deploy directories and a racing
- * apply could delete a directory the other just committed.
+ * `instanceDir` and return the loaded packages. Single-threaded per
+ * instance: the prelude sweep assumes exclusive write access to
+ * `<instanceDir>/packages/`. The hub serializes applies per agent; a
+ * host-side caller that bypasses that must provide its own
+ * per-`instanceDir` lock.
  */
 export async function applyAtomic(
   args: ApplyAtomicArgs,
@@ -155,14 +121,11 @@ export async function applyAtomic(
   const deployDir = path.join(packagesDir, args.newDeployId);
 
   // Prelude sweep. Reclaim every prior deploy directory except the one
-  // we are about to build (`newDeployId`) and the one still live
-  // (`previousDeployId`). `previousDeployId` may be the "no prior
-  // deploy" sentinel, which simply matches no directory. The sweep is
-  // best-effort per stray: an EIO/EPERM reclaiming one old deploy is a
-  // disk-reclamation concern, not a correctness one, and must not fail
-  // an otherwise-valid apply — the next apply's prelude retries the
-  // reclaim. The deploy directory we then build, by contrast, must be
-  // a clean tree, so its removal+mkdir below propagate on failure.
+  // we are about to build and the one still live. Best-effort per
+  // stray: an EIO/EPERM reclaiming one old deploy must not fail an
+  // otherwise-valid apply (the next prelude retries). The deploy
+  // directory we build must be a clean tree, so its removal+mkdir
+  // below propagate on failure.
   const keep = new Set([args.newDeployId, args.previousDeployId]);
   let existing: string[];
   try {
@@ -229,21 +192,14 @@ export async function applyAtomic(
     };
   }
 
-  // Check for duplicate factory ids across loaded bundles. The plan's
-  // taxonomy distinguishes `tool.name.duplicate` from other
-  // categories, so this check fires after a successful load but before
-  // the caller commits. The loader has already prefixed each tool
-  // factory id with its bundle id by the time we see it here, so a
-  // collision in `factory.id` means two pinned packages shared a bundle
-  // id (the per-bundle prefix did not produce unique ids across the
-  // load).
-  //
-  // Plugin factories carry their own `id` (not bundle-prefixed) and
-  // are addressed by id at harness construction; a collision between
-  // two plugin ids would resolve to undefined behavior at the harness
-  // layer. Treat that as the same apply-time gate: tool and plugin
-  // id spaces are tracked separately so the operator-facing message
-  // points at the right surface, but neither admits a duplicate.
+  // Check for duplicate factory ids across loaded bundles. The loader
+  // has already prefixed each tool factory id with its bundle id, so a
+  // collision means two pinned packages shared a bundle id. Plugin
+  // factories carry their own (non-prefixed) `id` and are addressed by
+  // id at harness construction; a collision there would be undefined
+  // behavior at the harness layer. Track the two id spaces separately
+  // so the message points at the right surface; neither admits a
+  // duplicate.
   const toolIdsSeen = new Set<string>();
   const pluginIdsSeen = new Set<string>();
   for (const pkg of loaded) {

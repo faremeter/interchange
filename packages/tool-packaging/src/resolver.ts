@@ -68,8 +68,8 @@ import {
  * `createClosureResolver`; in the sidecar-side loader, the key of
  * the `ReadonlyMap<string, RegistryConfig>` on `LoaderConfig`.
  * Keeping the name on the map slot rather than on the value
- * eliminates the (until-now uninforced) "the map key must equal the
- * config's name" invariant.
+ * eliminates the "the map key must equal the config's name"
+ * invariant.
  *
  * The default-registry decision is owned by `defaultRegistry` on
  * `ClosureResolverConfig`, not by a per-registry flag; only one
@@ -109,10 +109,11 @@ export interface PackumentVersion {
   os?: string[];
   cpu?: string[];
   // Static provider-backed credential declarations from the package's
-  // `interchange.credentials`. The AssetRegistrySource populates this from the
-  // arktype-validated package.json. An HTTP registry only carries it when its
-  // packument serves the field (abbreviated packuments strip custom fields);
-  // an under-served declaration is fail-closed downstream, never a bypass.
+  // `interchange.credentials`. The AssetRegistrySource populates this
+  // from the arktype-validated package.json. An HTTP registry only
+  // carries it when its packument serves the field (abbreviated
+  // packuments strip custom fields); an under-served declaration is
+  // fail-closed downstream, never a bypass.
   credentials?: ToolCredentialDeclaration[];
 }
 
@@ -216,10 +217,7 @@ export interface PeerDependencyViolation {
  * The category is intentionally broad: peer-dep violations and
  * duplicate-name pins are structurally distinct defects but both
  * indicate a closure the operator cannot ship without changing the
- * pin set. Adding a per-shape category would expand the wire
- * taxonomy for no operator-facing gain; readers parsing
- * deploy-apply errors should look at the message for the structural
- * distinction.
+ * pin set.
  */
 export class ManifestInvalidError extends Error {
   /**
@@ -350,9 +348,9 @@ export class AssetRegistrySource implements RegistrySource {
    * Resolve a `(name, version)` pair to its asset-relative tarball
    * path. Must be called after `fetchPackument` has populated the
    * internal index for that package — the walker calls them in that
-   * order, so the ordering is implicit at the call site. Non-walker
-   * callers must call `fetchPackument` first or accept the structured
-   * error this method throws when the index lookup misses.
+   * order. Non-walker callers must call `fetchPackument` first or
+   * accept the structured error this method throws when the index
+   * lookup misses.
    */
   materializeRefForEntry(
     name: string,
@@ -363,13 +361,11 @@ export class AssetRegistrySource implements RegistrySource {
     const key = `${name}@${version}`;
     const path = this.#pathByNameVersion.get(key);
     if (path === undefined) {
-      // The index entry is missing for one of two reasons: either the
-      // registry's `fetchPackument` was not called for `name` before
-      // this materializer ran (caller-side ordering bug), or
-      // `fetchPackument` ran but found no tarball publishing the
-      // exact `name@version` pair (the resolver picked a version the
-      // registry's listing did not advertise). Either is a precondition
-      // violation; surface the situation rather than the inferred cause.
+      // Either the registry's `fetchPackument` was not called for
+      // `name` before this materializer ran (caller-side ordering bug),
+      // or it ran but found no tarball publishing the exact
+      // `name@version` pair. Either is a precondition violation;
+      // surface the situation rather than the inferred cause.
       throw new Error(
         `asset registry "${this.name}" (asset ${this.#assetId}) has no recorded path for ${key}; either fetchPackument was not called on this registry for "${name}" or the registry does not publish this version`,
       );
@@ -406,8 +402,9 @@ export class AssetRegistrySource implements RegistrySource {
         version: validated.version,
         dist: { tarball: repoPath, integrity },
         ...readDependencyFields(extracted.raw),
-        // Read from the arktype-validated `parsed` (credentials is in-schema),
-        // not `raw`. Absent stays absent -- never defaulted to an empty array.
+        // Read from the arktype-validated `parsed` (credentials is
+        // in-schema), not `raw`. Absent stays absent -- never defaulted
+        // to an empty array.
         ...(validated.interchange?.credentials !== undefined
           ? { credentials: validated.interchange.credentials }
           : {}),
@@ -492,8 +489,7 @@ function isStringRecord(value: unknown): value is Record<string, string> {
   // closure walk would then iterate `Object.entries(arr)` and treat
   // the numeric indices ("0", "1") as package names to fetch
   // packuments for. The sibling `isPlainObject` already rejects
-  // arrays; mirror that here so the same guarantee holds at every
-  // shape check.
+  // arrays; mirror that here.
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     return false;
   }
@@ -564,10 +560,9 @@ export function createClosureResolver(
       // same name but different ranges would silently collapse to the
       // first arrival's resolved version — the second pin would never
       // be looked up at the topLevel emit site and the manifest would
-      // record only one of the two as a top-level. The contract every
-      // pin set must satisfy is one entry per name; surface a
-      // violation at the resolver boundary rather than letting the
-      // silent collapse happen downstream.
+      // record only one of the two as a top-level. Surface a violation
+      // at the resolver boundary rather than letting the silent
+      // collapse happen downstream.
       const seenPinNames = new Set<string>();
       for (const pin of pins) {
         if (seenPinNames.has(pin.name)) {
@@ -582,12 +577,11 @@ export function createClosureResolver(
       // Per-walk packument cache. The dedup that gates the queue is
       // keyed by `(name, range, subtreeId)` to keep subtree poisoning
       // contained — the same `(name, range)` seen first inside one
-      // optional subtree must still be reprocessed when it later arrives
-      // through an unrelated subtree, otherwise dropping the first
-      // subtree would silently drop the dep for the second one too.
-      // That correctness requirement would multiply packument requests
-      // against the upstream registry; this cache keeps each
-      // `(registry, name)` pair to one network round-trip per walk.
+      // optional subtree must still be reprocessed when it later
+      // arrives through an unrelated subtree, otherwise dropping the
+      // first subtree would silently drop the dep for the second one
+      // too. This cache keeps each `(registry, name)` pair to one
+      // network round-trip per walk.
       const packumentCache = new Map<string, Promise<Packument>>();
       function fetchPackumentCached(
         source: RegistrySource,
@@ -647,14 +641,13 @@ export function createClosureResolver(
       // because BFS guarantees every top-level pin reaches its
       // `topLevelResolved.set` call before any transitive dep that
       // shares its name. Changing the walk order (e.g. switching to
-      // DFS, or interleaving roots with transitives) would silently
-      // invert this rule and let a transitive dep overwrite a
-      // top-level resolution.
+      // DFS) would silently invert this rule.
       const topLevelNames = new Set(pins.map((p) => p.name));
       const topLevelResolved = new Map<string, string>();
       // Credential declarations harvested from each top-level package,
       // captured alongside the resolved version. Only top-level pins
-      // contribute; a transitive dependency's declaration is never recorded.
+      // contribute; a transitive dependency's declaration is never
+      // recorded.
       const topLevelDeclarations = new Map<
         string,
         ToolCredentialDeclaration[]
@@ -771,9 +764,7 @@ export function createClosureResolver(
             // transport-shaped (connection refused, DNS, 5xx, etc.) or
             // structural (404, malformed packument, unsatisfiable
             // range). Operators reading the debug log need the
-            // distinction to triage: transport failures point at the
-            // registry or the network, structural failures point at
-            // the pin set or the registry's published manifest.
+            // distinction to triage.
             poisonSubtree(
               next.subtreeId,
               `${next.name}@${next.range} unresolvable (${classifyResolveError(err)}): ${err instanceof Error ? err.message : String(err)}`,
@@ -815,13 +806,13 @@ export function createClosureResolver(
           );
         }
 
-        // `materializeRefForEntry` throws when the registry's per-version
-        // bookkeeping is inconsistent (e.g. an asset packument lists a
-        // version the path index does not know about). Route the throw
-        // through the same poison-vs-abort split that fetch and pick
-        // failures use above, so a malformed asset-side packument
-        // reached through an optional subtree contains the failure
-        // rather than aborting the whole closure walk.
+        // `materializeRefForEntry` throws when the registry's
+        // per-version bookkeeping is inconsistent (e.g. an asset
+        // packument lists a version the path index does not know
+        // about). Route the throw through the same poison-vs-abort
+        // split that fetch and pick failures use above, so a malformed
+        // asset-side packument reached through an optional subtree
+        // contains the failure rather than aborting the whole walk.
         let ref: MaterializedRef;
         try {
           ref = source.materializeRefForEntry(
@@ -1041,10 +1032,11 @@ function makeDefaultHttpFetcher(): PackumentFetcher {
     }
     if (registry.auth?.basic !== undefined) {
       const { user, pass } = registry.auth.basic;
-      // `npm-registry-fetch` builds the `Authorization: Basic` header by
-      // base64-encoding `<username>:<password>` itself. Pre-encoding
+      // `npm-registry-fetch` builds the `Authorization: Basic` header
+      // by base64-encoding `<username>:<password>` itself. Pre-encoding
       // `pass` would double-encode the password component (the registry
-      // would see `base64(plaintext)` as the password, not `plaintext`).
+      // would see `base64(plaintext)` as the password, not
+      // `plaintext`).
       fetchOpts.forceAuth = { username: user, password: pass };
     }
     const url = `/${encodeNpmName(packageName)}`;

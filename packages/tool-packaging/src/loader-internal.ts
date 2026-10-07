@@ -14,21 +14,18 @@ import type { DeployApplyErrorCategory } from "@intx/types/sidecar";
 export const DEFAULT_MAX_REGISTRY_TARBALL_BYTES = 10 * 1024 * 1024;
 
 /**
- * Default deadline for a single HTTP-registry tarball fetch, covering both the
- * request and the streamed body read. `readResponseWithLimit` consumes the body
- * through a manual reader loop, so the byte cap bounds size but nothing bounds
- * time: a registry that accepts the connection and then stalls mid-stream would
- * block the fetch -- and the deploy's tool materialization awaiting it --
- * indefinitely. The deadline is generous so a legitimately large tarball on a
- * slow link still completes within it. Callers that need a different bound pass
- * `registryFetchTimeoutMs` to `createToolLoader`.
+ * Default deadline for a single HTTP-registry tarball fetch, covering
+ * both the request and the streamed body read. The byte cap bounds
+ * size but not time: a registry that stalls mid-stream would block the
+ * fetch indefinitely. Generous so a large tarball on a slow link still
+ * completes. Override via `registryFetchTimeoutMs` on `createToolLoader`.
  */
 export const DEFAULT_REGISTRY_FETCH_TIMEOUT_MS = 120 * 1000;
 
 /**
- * A tool-loader failure carrying the atomic-apply error category (and, when the
- * failure is attributable to a specific package, its name and version) so the
- * apply layer can map every loader failure onto a `DeployApplyErrorCategory`.
+ * A tool-loader failure carrying a `DeployApplyErrorCategory` (and,
+ * when attributable to a specific package, its name and version) so
+ * the apply layer can map every loader failure.
  */
 export class ToolLoaderError extends Error {
   readonly category: DeployApplyErrorCategory;
@@ -49,9 +46,9 @@ export class ToolLoaderError extends Error {
 }
 
 /**
- * Whether a `platform`/`os`/`cpu`-style allowlist matches `host`. A list with a
- * `!`-negated entry matches everything except the negated hosts; an unnegated
- * list matches only its members.
+ * Whether an npm-style allowlist matches `host`. A `!`-negated entry
+ * matches everything except the negated host; an unnegated list matches
+ * only its members.
  */
 export function platformListMatches(
   entries: readonly string[],

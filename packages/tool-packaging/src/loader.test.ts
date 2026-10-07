@@ -249,10 +249,9 @@ describe("createToolLoader", () => {
   });
 
   test("lays out a workspace: protocol dependency against its closure member", async () => {
-    // A source-workspace member depends on another member via `workspace:*`.
-    // That protocol is not semver, so before it is normalized the range
-    // resolver rejects the layout with "no satisfying version"; the loader must
-    // instead match the one closure entry of that name.
+    // A source-workspace member depends on another member via
+    // `workspace:*`. That protocol is not semver, so the layout must
+    // match the one closure entry of that name instead of rejecting it.
     const cache = createTarballCache({
       rootDir: cacheDir,
       maxBytes: 10_000_000,
@@ -322,10 +321,11 @@ describe("createToolLoader", () => {
   });
 
   test("lays out a catalog: protocol dependency against its closure member", async () => {
-    // A monorepo member's on-disk package.json keeps a bare `catalog:` range;
-    // the hub already expanded it and pinned the external at a concrete version
-    // in the closure. Like `workspace:`, `catalog:` is not semver, so the layout
-    // must match the one closure entry of that name rather than reject it.
+    // A monorepo member's on-disk package.json keeps a bare `catalog:`
+    // range; the hub already expanded it and pinned the external at a
+    // concrete version in the closure. Like `workspace:`, `catalog:`
+    // is not semver, so the layout must match the one closure entry of
+    // that name rather than reject it.
     const cache = createTarballCache({
       rootDir: cacheDir,
       maxBytes: 10_000_000,
@@ -808,10 +808,9 @@ describe("createToolLoader", () => {
   test("cache-busts the import URL with the entry integrity so reapplies with new bytes import distinct modules", async () => {
     // Same (name, version), different bytes — Node's ESM cache keys
     // by resolved URL, so without the integrity query string both
-    // applies would share the first apply's module. Track the URLs
-    // the loader hands to import(): they must (a) carry the
-    // `integrity=<sri>` query string and (b) differ between the two
-    // applies whose integrities differ.
+    // applies would share the first apply's module. The URLs the
+    // loader hands to import() must carry the `integrity=<sri>` query
+    // string and differ between the two applies.
     const cache = createTarballCache({
       rootDir: cacheDir,
       maxBytes: 10_000_000,
@@ -901,8 +900,8 @@ describe("createToolLoader", () => {
       version: "1.0.0",
       entryModuleSource: "",
     });
-    // The factory exports a definition named "search". The loader
-    // should expose it as "@vendor/prefix/main:search" to the model.
+    // The factory exports a definition named "search"; the loader
+    // exposes it as "@vendor/prefix/main:search" to the model.
     const factory = Object.assign(
       () => ({
         definitions: [{ name: "search", description: "test", inputSchema: {} }],
@@ -971,7 +970,7 @@ describe("createToolLoader", () => {
   test("loader rejects bundles that export duplicate-named tool definitions", async () => {
     // Two definitions with the same name in the same bundle would
     // silently collapse to one entry in the wrapper's name map and
-    // leave one tool unreachable. The wrapper surfaces the collision
+    // leave one tool unreachable; the wrapper surfaces the collision
     // as tool.name.duplicate when the factory is invoked.
     const cache = createTarballCache({
       rootDir: cacheDir,
@@ -1046,14 +1045,12 @@ describe("createToolLoader", () => {
   });
 
   test("loader rejects bundles whose `definitions` field is not an array", async () => {
-    // A factory that returns `definitions: null` (or omits the field
-    // entirely) would otherwise yield a bare TypeError when the
-    // wrapper iterates `bundle.definitions`. The apply pipeline would
-    // route that through the unknown-shape catch-all
-    // (`factory.construct.failed`), which is wrong: the shape of the
-    // returned bundle is the violated invariant, so the failure
-    // belongs in `package.entry.invalid`. The wrapper shape-checks
-    // before iterating to keep the operator-facing taxonomy honest.
+    // A factory returning `definitions: null` (or omitting the field)
+    // would otherwise yield a bare TypeError when the wrapper
+    // iterates `bundle.definitions`, surfacing as the unknown-shape
+    // catch-all (`factory.construct.failed`) instead of the violated
+    // invariant. The wrapper shape-checks before iterating so the
+    // failure lands in `package.entry.invalid`.
     const cache = createTarballCache({
       rootDir: cacheDir,
       maxBytes: 10_000_000,
@@ -1464,8 +1461,8 @@ describe("loader error categories", () => {
   test("package.entry.invalid when the package.json bytes are malformed JSON", async () => {
     // Hand-pack a tarball whose package.json contains invalid JSON so
     // the loader's JSON.parse throws. The wrapper translates the
-    // SyntaxError into the package.entry.invalid category rather than
-    // letting it bubble out as the catch-all factory.construct.failed.
+    // SyntaxError into `package.entry.invalid` rather than letting it
+    // bubble out as the catch-all `factory.construct.failed`.
     const stagingDir = path.join(scratchRoot, "bad-json-staging");
     const pkgDir = path.join(stagingDir, "package");
     await fs.mkdir(pkgDir, { recursive: true });
@@ -1695,8 +1692,8 @@ describe("loader error categories", () => {
 
   test("package.entry.invalid when an asset entry's path escapes the asset root", async () => {
     // A `..`-bearing entry.source.package.path would let a malicious
-    // manifest read any file the sidecar process can open. The default fetcher
-    // must reject this at the boundary rather than handing the
+    // manifest read any file the sidecar process can open. The default
+    // fetcher must reject this at the boundary rather than handing the
     // escaped absolute path to fs.readFile.
     const cache = createTarballCache({
       rootDir: cacheDir,
@@ -1889,9 +1886,10 @@ describe("loader error categories", () => {
 
 describe("transitive resolution contract", () => {
   // Locks the closure-satisfies-itself contract: a top-level package
-  // whose body imports a transitive that lives in the manifest closure
-  // resolves through the per-instance node_modules layout the loader
-  // builds, without help from the sidecar host's own node_modules.
+  // whose body imports a transitive that lives in the manifest
+  // closure resolves through the per-instance node_modules layout
+  // the loader builds, without help from the sidecar host's own
+  // node_modules.
   test("a top-level package importing a closure transitive resolves through the loader's node_modules layout", async () => {
     const cache = createTarballCache({
       rootDir: cacheDir,
@@ -1899,12 +1897,10 @@ describe("transitive resolution contract", () => {
     });
 
     // The transitive dep ships a JS module the top-level can import by
-    // its bare specifier. The dep is a fully-formed npm package: it
-    // has a `main` so Node knows where to load from. The loader is
-    // expected to materialize it under
-    // `<scratch>/store/@closure-scope/transitive-dep/1.0.0/` and to
-    // place a symlink at `.../top/1.0.0/node_modules/@closure-scope/transitive-dep`
-    // pointing at it.
+    // its bare specifier. The dep is a fully-formed npm package with a
+    // `main` so Node knows where to load from. The loader must
+    // materialize it under `<scratch>/store/@closure-scope/transitive-dep/1.0.0/`
+    // and symlink it at the top's `node_modules/@closure-scope/transitive-dep`.
     const depEntry = `export const greeting = "hello from transitive";`;
     const depPkg = await packFixture({
       name: "@closure-scope/transitive-dep",
@@ -2205,17 +2201,16 @@ export const factory = Object.assign(
       new AbortController().signal,
     );
     // The top saw lodash major 3 (the version satisfying its own
-    // range); lib-a saw lodash major 4 (the version satisfying its
-    // own range). Both must be true simultaneously, which is only
-    // possible with nested node_modules entries.
+    // range); lib-a saw major 4. Both must hold simultaneously, which
+    // is only possible with nested node_modules entries.
     if (typeof result.content !== "string") {
       throw new Error("expected stringified content");
     }
     const parsed: unknown = JSON.parse(result.content);
     expect(parsed).toEqual({ top: 3, libA: 4 });
 
-    // Verify both lodash versions actually exist in the store at
-    // their nested positions, not hoisted under a single one.
+    // Verify both lodash versions exist in the store at their nested
+    // positions, not hoisted under a single one.
     const topLodash = path.join(
       instanceDir,
       "store",
@@ -2269,15 +2264,13 @@ export const factory = Object.assign(
     const dep1_5 = await packDep("1.5.0");
     const dep2 = await packDep("2.0.0");
 
-    // Three requirers under the top-level package. The top requires
-    // them in declaration order so the loader's BFS visits them in
-    // that order; rA arrives first with range "^1" and records
-    // dep->1.5.0 in the resolution map (max-satisfying inside the
-    // closure for "^1" is 1.5.0). rB ("^1.0") and rC ("^1.5") both
-    // also have 1.5.0 as their max-satisfying answer, but the point
-    // here is to lock the first-arrival behavior: every subsequent
-    // requirer that uses one of those ranges receives the recorded
-    // pick rather than re-deriving against the current closure shape.
+    // Three requirers under the top-level package, declared in order
+    // so the BFS visits rA first: rA's range "^1" records
+    // dep->1.5.0 (max-satisfying inside the closure). rB ("^1.0") and
+    // rC ("^1.5") share that answer, but the point is to lock
+    // first-arrival: every subsequent requirer using one of these
+    // ranges receives the recorded pick rather than re-deriving
+    // against the current closure shape.
     const rA = await packFixture({
       name: "req-a",
       version: "1.0.0",
@@ -2426,15 +2419,11 @@ export const factory = Object.assign(
       gitDirs: new Map(),
     });
 
-    // Every requirer's node_modules/dep should resolve to the same
+    // Every requirer's node_modules/dep must resolve to the same
     // store slot — the first-arrival pick of 1.5.0 for ranges that
-    // all satisfy it. If the loader re-ran maxSatisfying per requirer
-    // without the recording layer, all three would still pick 1.5.0
-    // in this exact scenario, but the test's point is the
-    // recorded-pick path: a future change that drifts requirer C onto
-    // 2.0.0 (say by extending its range) should not leak across to
-    // requirer A or B, and the test would surface that drift the
-    // moment one of the recorded slots resolved differently.
+    // all satisfy it. A future change that drifts requirer C onto
+    // 2.0.0 must not leak across to A or B; the test surfaces that
+    // drift the moment a recorded slot resolves differently.
     const reqAOnDep = await fs.realpath(
       path.join(instanceDir, "store", "req-a", "1.0.0", "node_modules", "dep"),
     );
@@ -2534,8 +2523,8 @@ describe("entry-path containment", () => {
     // the layout-build guard is defense-in-depth: corrupt cache state
     // or a future swap to a different extractor must not surface a
     // symlink into the per-instance layout that points outside the
-    // package's extracted bytes. The test pre-populates a cache
-    // extraction directory directly to drive that guard.
+    // package's extracted bytes. Pre-populate a cache extraction
+    // directory directly to drive that guard.
     const sinkPath = path.join(scratchRoot, "symlink-sink.txt");
     await fs.writeFile(sinkPath, "secret");
 
@@ -2551,8 +2540,8 @@ describe("entry-path containment", () => {
     });
     await cache.put(fixture.integrity, fixture.bytes);
     // Force the extraction to materialize once, then plant an
-    // escape-pointing symlink inside it before the loader's
-    // layout pass picks it up.
+    // escape-pointing symlink inside it before the loader's layout
+    // pass picks it up.
     const extractedHandle = await cache.extractTarball(fixture.integrity);
     const extractedRoot = extractedHandle.dir;
     await fs.symlink(
@@ -2608,12 +2597,10 @@ describe("entry-path containment", () => {
   test("rejects a chained symlink whose realpath escapes the extraction root", async () => {
     // A single-hop check (`path.resolve(dirname(src), target)`) sees
     // only the literal target string. A symlink whose literal target
-    // string stays inside the extraction root, but whose canonical
-    // realpath chains through another symlink to land outside, would
-    // slip past. Plant exactly that shape: `jump` → `inner/escape`
-    // where `escape` is itself a symlink that escapes. The literal
-    // resolution of `jump`'s target stays inside; the realpath does
-    // not.
+    // stays inside the root, but whose realpath chains through
+    // another symlink to land outside, would slip past. Plant exactly
+    // that shape: `jump` → `inner/escape`, where `escape` is itself
+    // a symlink that escapes.
     const sinkPath = path.join(scratchRoot, "chained-sink.txt");
     await fs.writeFile(sinkPath, "secret");
 
@@ -2633,11 +2620,9 @@ describe("entry-path containment", () => {
     extractedHandle.release();
 
     // `aaa-jump` is named to sort before the inner directory so
-    // copyTree's walk hits it before recursing into the inner
-    // tree. Its literal target string `inner/escape` resolves to a
-    // path inside the extraction root, so the literal-target check
-    // accepts it; only the realpath sees through `escape` to the
-    // sink outside.
+    // copyTree's walk hits it first. Its literal target `inner/escape`
+    // resolves inside the root, so the literal-target check accepts
+    // it; only the realpath sees through `escape` to the sink.
     const innerDir = path.join(extractedRoot, "inner");
     await fs.mkdir(innerDir, { recursive: true });
     await fs.symlink(
@@ -2693,10 +2678,10 @@ describe("entry-path containment", () => {
   test("accepts a dangling relative symlink whose literal target stays inside the extraction root", async () => {
     // The realpath-based containment check must not reject a symlink
     // whose target chain ENOENTs before the final inode — a dangling
-    // relative symlink within the extraction root cannot escape (the
-    // target name is fixed; even if the target is later created, it
-    // would land at the same inside-the-root path). Plant a
-    // dangling-but-contained symlink and verify the load succeeds.
+    // relative symlink within the extraction root cannot escape (even
+    // if the target is later created, it lands at the same
+    // inside-the-root path). Plant a dangling-but-contained symlink
+    // and verify the load succeeds.
     const fixture = await packFixture({
       name: "ok-dangling",
       version: "1.0.0",
@@ -2763,9 +2748,9 @@ export const main = Object.assign(
   test("rejects a dangling symlink whose literal target escapes the extraction root", async () => {
     // The dangling-symlink fallback only excuses ENOENT chains whose
     // literal resolved path stays inside the extraction root. A
-    // dangling link pointing outside is still an escape: when (and
-    // if) the target is later created, the link would resolve to a
-    // path outside the package tree.
+    // dangling link pointing outside is still an escape: when the
+    // target is later created, the link resolves outside the package
+    // tree.
     const fixture = await packFixture({
       name: "evil-dangling",
       version: "1.0.0",
@@ -2781,8 +2766,8 @@ export const main = Object.assign(
     const extractedRoot = extractedHandle.dir;
 
     // Symlink target string resolves outside the extraction root;
-    // target does not exist, so realpath ENOENTs and the fallback
-    // checks the literal path — which escapes — and rejects.
+    // the target does not exist, so realpath ENOENTs and the
+    // fallback checks the literal path — which escapes — and rejects.
     await fs.symlink(
       "../missing-outside.txt",
       path.join(extractedRoot, "escape-dangling"),
@@ -2835,9 +2820,9 @@ export const main = Object.assign(
 
   test("rejects an asset source.package.path that traverses out of its declared mount", async () => {
     // Two sibling mounts live under the same assetRoot. The manifest
-    // entry names mountB but its source.package.path walks `..` up to mountA's
-    // tarball. assetRoot-only containment would accept this; per-mount
-    // containment must reject it as a cross-mount traversal.
+    // entry names mountB but its source.package.path walks `..` up to
+    // mountA's tarball. assetRoot-only containment would accept this;
+    // per-mount containment must reject it as a cross-mount traversal.
     const mountARel = "package-registries/a/";
     const mountBRel = "package-registries/b/";
     const mountAAbs = path.join(assetRoot, mountARel);
@@ -2943,9 +2928,9 @@ describe("interchange.tools containment under symlink graph", () => {
       // realpath-walks through `node_modules/evil-dep` into the dep's
       // store entry. Leave entryModuleSource undefined so the tarball
       // ships no `node_modules/` of its own; the loader's layout pass
-      // will then build `node_modules/evil-dep` as a symlink to the
-      // dep's store entry, and the realpath check should fire when
-      // the entry path is resolved.
+      // builds `node_modules/evil-dep` as a symlink to the dep's store
+      // entry, and the realpath check fires when the entry path is
+      // resolved.
       interchangeToolsRelPath: "./node_modules/evil-dep/index.js",
       type: "module",
       dependencies: { "evil-dep": "^1.0.0" },
@@ -3014,9 +2999,9 @@ describe("buildRegistryFetchOpts", () => {
   test("passes the basic-auth password verbatim to forceAuth", () => {
     // `npm-registry-fetch` base64-encodes `<user>:<pass>` itself when
     // it builds the `Authorization: Basic` header, so the password
-    // component handed to `forceAuth` must be plaintext. Pre-encoding
-    // would land `base64(plaintext)` in the on-wire credential, and
-    // the registry would reject the request as authentication failure.
+    // handed to `forceAuth` must be plaintext. Pre-encoding would land
+    // `base64(plaintext)` in the on-wire credential and the registry
+    // would reject the request as authentication failure.
     const opts = buildRegistryFetchOpts({
       url: "https://r.test",
       auth: { basic: { user: "alice", pass: "s3cret" } },
@@ -3081,7 +3066,7 @@ describe("readResponseWithLimit", () => {
   test("aborts a streamed body once the cap is crossed (header missing)", async () => {
     const cap = 1024;
     // Stream chunks past the cap with no Content-Length so the first
-    // guard is bypassed and the streaming tally is the one that fires.
+    // guard is bypassed and the streaming tally fires.
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
         for (let i = 0; i < 4; i += 1) {
@@ -3116,9 +3101,10 @@ describe("readResponseWithLimit", () => {
   });
 
   test("aborts a stalled body when the fetch deadline signal fires", async () => {
-    // A body that never produces a chunk and never closes: reader.read()
-    // stays pending until the deadline cancels it. Without the signal
-    // guard this would block forever under the byte cap.
+    // A body that never produces a chunk and never closes:
+    // reader.read() stays pending until the deadline cancels it.
+    // Without the signal guard this would block forever under the
+    // byte cap.
     const stream = new ReadableStream<Uint8Array>({
       start() {
         // never enqueue, never close
@@ -3142,20 +3128,20 @@ describe("readResponseWithLimit", () => {
     }
   });
 
-  // The cases above feed a web `ReadableStream` (getReader). The default
-  // fetcher pairs readResponseWithLimit with npm-registry-fetch, whose
-  // `Response.body` is a Minipass/Node stream — async-iterable, Buffer
-  // chunks, no getReader. These cases pin that Node-stream body path:
-  // correct reads, the byte cap, and the abort deadline must all hold on
-  // the shape the real fetch returns.
+  // The cases above feed a web `ReadableStream` (getReader). The
+  // default fetcher pairs readResponseWithLimit with npm-registry-fetch,
+  // whose `Response.body` is a Minipass/Node stream — async-iterable,
+  // Buffer chunks, no getReader. These cases pin that Node-stream body
+  // path: correct reads, the byte cap, and the abort deadline must all
+  // hold on the shape the real fetch returns.
   function nodeBodyResponse(
     body: Readable,
     headers: Record<string, string> = {},
   ): Response {
-    // npm-registry-fetch's result is typed `Response` but its `.body` is
-    // a Node stream, not a web ReadableStream. readResponseWithLimit only
-    // reads `.headers.get` and `.body`, so a structural stand-in with a
-    // Node body faithfully models that runtime shape.
+    // npm-registry-fetch's result is typed `Response` but its `.body`
+    // is a Node stream, not a web ReadableStream. readResponseWithLimit
+    // only reads `.headers.get` and `.body`, so a structural stand-in
+    // with a Node body faithfully models that runtime shape.
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- deliberately modeling npm-registry-fetch's Response-typed, Node-bodied result; the function under test only touches headers.get and body.
     return { headers: new Headers(headers), body } as unknown as Response;
   }
@@ -3163,8 +3149,9 @@ describe("readResponseWithLimit", () => {
   test("reads a real npm-registry-fetch (Minipass) response body end to end", async () => {
     // The regression the seam-fed cases could not catch: the default
     // fetcher's real npm-registry-fetch body is a Minipass with no
-    // getReader. Drive an actual fetch against a local tarball server so
-    // the exact production body shape flows through readResponseWithLimit.
+    // getReader. Drive an actual fetch against a local tarball server
+    // so the exact production body shape flows through
+    // readResponseWithLimit.
     const payload = new Uint8Array(2048);
     for (let i = 0; i < payload.length; i += 1) payload[i] = i % 251;
     const server = Bun.serve({
@@ -3195,8 +3182,8 @@ describe("readResponseWithLimit", () => {
 
   test("enforces the byte cap on a Node-stream body with no Content-Length", async () => {
     const cap = 1024;
-    // Four 512-byte chunks, no Content-Length, so the streaming tally is
-    // the guard that must fire on the Node body path.
+    // Four 512-byte chunks, no Content-Length, so the streaming tally
+    // must fire on the Node body path.
     const chunks = Array.from({ length: 4 }, () => Buffer.alloc(512));
     const res = nodeBodyResponse(Readable.from(chunks));
     let caught: unknown;
@@ -3213,9 +3200,9 @@ describe("readResponseWithLimit", () => {
   });
 
   test("honors the fetch deadline on a stalled Node-stream body", async () => {
-    // A Node stream that never pushes and never ends: the for-await parks
-    // until the deadline signal destroys it. Without the destroy-driven
-    // abort this would block forever under the byte cap.
+    // A Node stream that never pushes and never ends: the for-await
+    // parks until the deadline signal destroys it. Without the
+    // destroy-driven abort this would block forever under the byte cap.
     const body = new Readable({
       read() {
         // never push, never end — a stalled body the deadline must break
@@ -3302,8 +3289,8 @@ describe("interchange.directors walker", () => {
   });
 
   test("ignores a director-shaped export in the interchange.tools entry", async () => {
-    // The tools walker's predicate must reject director-shaped values so
-    // a director placed in `interchange.tools` is not silently
+    // The tools walker's predicate must reject director-shaped values
+    // so a director placed in `interchange.tools` is not silently
     // classified as a tool and namespace-prefixed. Mirrors the
     // discriminator the directors walker uses against tool shapes.
     const cache = createTarballCache({
@@ -3357,8 +3344,8 @@ describe("interchange.directors walker", () => {
   });
 
   test("treats a missing interchange.directors field as a no-op", async () => {
-    // Locks the absence-is-fine contract: a tools-only package must
-    // still load. The directors walker contributes an empty list.
+    // A tools-only package must still load; the directors walker
+    // contributes an empty list.
     const cache = createTarballCache({
       rootDir: cacheDir,
       maxBytes: 10_000_000,
@@ -3405,9 +3392,9 @@ describe("interchange.directors walker", () => {
   });
 
   test("package.entry.invalid when the package.json bytes are malformed JSON", async () => {
-    // Cross-cuts the directors walker: the package-json read happens
-    // once for both walkers, so a malformed package.json blocks both.
-    // Pinned here to document the shared failure surface.
+    // The package-json read happens once for both walkers, so a
+    // malformed package.json blocks both. Pinned here to document the
+    // shared failure surface.
     const stagingDir = path.join(scratchRoot, "bad-json-dir-staging");
     const pkgDir = path.join(stagingDir, "package");
     await fs.mkdir(pkgDir, { recursive: true });
@@ -3683,10 +3670,11 @@ describe("materializeClosure", () => {
       maxBytes: 10_000_000,
     });
 
-    // The top-level entry's module has an import-time side effect: if it
-    // were ever imported, it would write a sentinel file. materializeClosure
-    // is the eval-free primitive — it must lay out the store without
-    // running this module, so the sentinel must not exist afterward.
+    // The top-level entry's module has an import-time side effect: if
+    // it were ever imported, it would write a sentinel file.
+    // materializeClosure is the eval-free primitive — it must lay out
+    // the store without running this module, so the sentinel must not
+    // exist afterward.
     const sentinelPath = path.join(scratchRoot, "author-code-ran.marker");
 
     const depPkg = await packFixture({
@@ -3818,12 +3806,12 @@ export const factory = Object.assign(
 // End-to-end coverage for the per-deploy-id apply layout: a tool
 // package whose `interchange.tools` module performs a CALL-TIME
 // `await import("./other.js")` must resolve that sibling against the
-// on-disk path it was loaded from. Because each apply materializes into
-// a stable `packages/<deploy-id>/` directory that is never renamed, the
-// loaded module's URL stays valid across subsequent applies for as long
-// as its deploy directory is retained — and stops resolving once the
-// prelude sweep reaps it. These tests drive the real native importer
-// (no `importModule` seam) so the dynamic import hits disk.
+// on-disk path it was loaded from. Each apply materializes into a
+// stable `packages/<deploy-id>/` directory that is never renamed, so
+// the loaded module's URL stays valid across subsequent applies for as
+// long as its deploy directory is retained — and stops resolving once
+// the prelude sweep reaps it. These tests drive the real native
+// importer (no `importModule` seam) so the dynamic import hits disk.
 describe("applyAtomic per-deploy-id late-import liveness", () => {
   // A factory whose tool `run` lazily imports a sibling module and
   // returns its marker. The import is call-time, not load-time, so it
@@ -3932,15 +3920,15 @@ export const factory = Object.assign(
     const d1Factory = first.loaded[0]?.factories[0];
     if (d1Factory === undefined) throw new Error("expected a loaded factory");
 
-    // A second apply makes d1 the retained previous deploy. The prelude
-    // keeps {d2, d1}, so d1's tree survives.
+    // A second apply makes d1 the retained previous deploy: the
+    // prelude keeps {d2, d1}, so d1's tree survives.
     const second = await applyAtomic(applyArgs(loader, manifest, "d1", "d2"));
     expect(second.status).toBe("ok");
     expect(await deployDirExists("d1")).toBe(true);
 
     // d1's tool runs for the first time AFTER the second apply; its
-    // call-time `import("./other.js")` resolves against the still-present
-    // packages/d1/ tree.
+    // call-time `import("./other.js")` resolves against the
+    // still-present packages/d1/ tree.
     const result = await runProbe(d1Factory);
     expect(result.content).toBe("late-import-ok");
   });
