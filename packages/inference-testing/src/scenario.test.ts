@@ -223,9 +223,8 @@ describe("Scenario.whenRequestMatches", () => {
 
       const f1 = harness.deps.fetch("https://example/a");
       const f2 = harness.deps.fetch("https://example/b");
-      // Catch f1/f2 immediately so neither is observed as an unhandled
-      // rejection if the matcher registration's sync throw happens before
-      // a later await reaches them.
+      // Catch f1/f2 immediately so neither surfaces as an unhandled
+      // rejection if the registration's sync throw beats a later await.
       const f1Settled = f1.catch((err: unknown) => err);
       const f2Settled = f2.catch((err: unknown) => err);
 
@@ -271,11 +270,8 @@ describe("Scenario.whenRequestMatches", () => {
       const f3Settled = f3.catch((err: unknown) => err);
 
       // Registering a single broad matcher with three waiting fetches in
-      // flight surfaces the conflict on the register-scan. `scanWaitingSet`
-      // accumulates all conflicting fetches into the same matcher's list
-      // (`list.length === 0` branch fires only for the first push), so the
-      // AmbiguousRequestError reports every fetch that collided on the
-      // matcher — not just the first two.
+      // flight surfaces the conflict on the register-scan; the error
+      // reports every colliding fetch, not just the first two.
       let caught: unknown;
       try {
         harness.scenario.whenRequestMatches(() => true, s);
@@ -303,24 +299,12 @@ describe("Scenario.whenRequestMatches", () => {
   });
 
   test("two independent ambiguities across disjoint matchers each surface as their own AmbiguousRequestError", async () => {
-    // Pin the routing behavior when the harness has TWO independent
-    // ambiguities in flight (each on a different matcher). Because
-    // `whenRequestMatches` triggers a scan PER registration, each
+    // `whenRequestMatches` triggers a scan PER registration, so each
     // matcher's conflict surfaces on its own registration scan:
-    //
-    //   - Registering M_a scans the waiting set, finds the a1+a2
-    //     conflict on M_a, throws AmbiguousRequestError(a1, a2), and
-    //     rejects a1+a2. b1+b2 (which don't match M_a's predicate) stay
-    //     parked.
-    //   - Registering M_b scans the remaining waiting set, finds the
-    //     b1+b2 conflict on M_b, throws AmbiguousRequestError(b1, b2),
-    //     and rejects b1+b2.
-    //
-    // The two errors are entirely independent: each carries only the
-    // fetches that bound to ITS matcher. A future change that bundles
-    // all in-flight ambiguities into a single AggregateError, or that
-    // attempts to wait for a "complete matcher table" before scanning,
-    // would break this contract and should revisit this test.
+    // registering M_a rejects a1+a2 while b1+b2 (which don't match M_a)
+    // stay parked; registering M_b then rejects b1+b2. The two errors
+    // carry only the fetches that bound to their own matcher; bundling
+    // in-flight ambiguities into one error would break this contract.
     const harness = setupHarness();
     try {
       const sA = harness.scenario.createStream();
@@ -330,11 +314,8 @@ describe("Scenario.whenRequestMatches", () => {
       sB.enqueueAt(5, utf8("b"));
       sB.closeAt(10);
 
-      // Park four fetches BEFORE any matchers exist. With no matchers in
-      // the table, every per-fetch `runScan` finds nothing to bind and
-      // every fetch stays in the waiting set. This sets up a single
-      // future scan whose pass sees all four fetches plus the matchers
-      // we register next.
+      // Park four fetches BEFORE any matchers exist, so a single future
+      // scan pass sees all four plus the matchers registered next.
       const a1 = harness.deps.fetch("https://example/a/1");
       const a2 = harness.deps.fetch("https://example/a/2");
       const b1 = harness.deps.fetch("https://example/b/1");
@@ -344,13 +325,9 @@ describe("Scenario.whenRequestMatches", () => {
       const b1Settled = b1.catch((err: unknown) => err);
       const b2Settled = b2.catch((err: unknown) => err);
 
-      // Registering M_a triggers a scan against [a1, a2, b1, b2] with
-      // only M_a in the table. a1 binds to M_a (boundThisPass={M_a}); a2
-      // tries M_a → in boundThisPass → no chosen, ambiguity branch finds
-      // M_a matches → conflict {M_a: [a1, a2]}. b1/b2 don't match M_a's
-      // predicate so they don't enter the conflict. The scan throws
-      // AmbiguousRequestError for M_a and rejects a1+a2; b1+b2 remain
-      // waiting.
+      // M_a's scan: a1 binds, a2 collides on the same matcher -> the
+      // scan throws for M_a and rejects a1+a2; b1+b2 (which don't match)
+      // remain waiting.
       let firstErr: unknown;
       try {
         harness.scenario.whenRequestMatches(
@@ -373,9 +350,7 @@ describe("Scenario.whenRequestMatches", () => {
       expect(a1Err).toBeInstanceOf(AmbiguousRequestError);
       expect(a2Err).toBeInstanceOf(AmbiguousRequestError);
 
-      // Registering M_b triggers another scan, this time against
-      // [b1, b2]. The same pattern fires: b1 binds, b2 collides → second
-      // AmbiguousRequestError reports b1+b2.
+      // M_b's scan repeats the pattern over [b1, b2].
       let secondErr: unknown;
       try {
         harness.scenario.whenRequestMatches(
@@ -478,21 +453,18 @@ describe("Scenario.whenRequestMatches", () => {
 
   test("predicate cannot return a Promise (type-system enforced; documented)", () => {
     // The signature `RequestPredicate = (req: Request) => boolean` rejects
-    // async predicates at compile time. There is no runtime check because
-    // a sync function returning a thenable would already be a programmer
-    // bug surfaced by the predicate's truthiness coercion. This test pins
-    // the documentation: if the type widens to allow `Promise<boolean>`,
-    // the comment-only contract is broken and the test description must
-    // be revisited.
+    // async predicates at compile time; no runtime check exists because a
+    // sync function returning a thenable is already a programmer bug
+    // surfaced by truthiness coercion. This test pins the documentation:
+    // if the type widens to allow `Promise<boolean>`, the comment-only
+    // contract is broken and the description must be revisited.
     const harness = setupHarness();
     try {
       const s = harness.scenario.createStream();
-      // A predicate whose return value is a Promise object IS truthy; the
-      // matcher would fire "successfully" on every request. This is the
-      // exact bug class the type system prevents — we cannot reproduce it
-      // in TypeScript without an `as any` cast we deliberately avoid.
-      // The presence of this test asserts that the documented invariant
-      // is intentional, not accidental.
+      // A Promise-returning predicate would be truthy and fire "success-
+      // fully" on every request — the exact bug class the type system
+      // prevents. The presence of this test asserts the invariant is
+      // intentional, not accidental.
       expect(typeof s.streamId).toBe("number");
     } finally {
       harness.dispose();

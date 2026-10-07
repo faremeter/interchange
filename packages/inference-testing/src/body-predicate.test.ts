@@ -5,9 +5,8 @@
 //
 // The scan-pass ordering contract these tests pin:
 //   1. Sync `whenRequestMatches` matchers always evaluate first.
-//   2. If a body-aware matcher is registered, the harness buffers the
-//      body of every still-waiting fetch and runs a follow-up scan
-//      against body-aware matchers.
+//   2. With a body-aware matcher registered, the harness buffers the
+//      body of every still-waiting fetch and runs a follow-up scan.
 //   3. `AmbiguousRequestError` for body-aware matchers is detected over
 //      a fully-buffered waiting set, never as bodies arrive one at a
 //      time.
@@ -36,13 +35,9 @@ async function drainResponse(response: Response): Promise<string> {
 
 describe("Scenario.matchedRequests", () => {
   test("returns fresh clones every call so bodies can be read repeatedly", async () => {
-    // matchedRequests() is the post-match seam for asserting against
-    // request bodies. Tests sometimes call it more than once during a
-    // run (e.g., once to check the first agent's request, again after
-    // the second agent's request fires). Each call must return clones
-    // whose bodies are independently consumable — the route-time
-    // stored clone is only used as a source for further `.clone()`
-    // calls, never consumed itself.
+    // Each call must return clones whose bodies are independently
+    // consumable — the route-time stored clone is only used as a source
+    // for further `.clone()` calls, never consumed itself.
     const harness = setupHarness();
     try {
       const s = harness.scenario.createStream();
@@ -72,10 +67,8 @@ describe("Scenario.matchedRequests", () => {
       if (secondEntry === undefined) throw new Error("unreachable");
       expect(await secondEntry.text()).toBe(body);
 
-      // And the two calls' clones must themselves be different
-      // objects — caller code that mutates one (e.g., reads headers
-      // case-insensitively, applies request rewriting in a test
-      // utility) must not see leakage into the next call's clones.
+      // The two calls' clones must be different objects — mutating one
+      // must not leak into the next call's clones.
       expect(firstEntry).not.toBe(secondEntry);
     } finally {
       harness.dispose();
@@ -133,11 +126,8 @@ describe("Scenario.matchedRequests", () => {
 
 describe("Scenario.whenRequestBodyMatches", () => {
   test("routes two concurrent POSTs to different streams by body substring", async () => {
-    // This is the primary use case from INTR-83: N agents POST to the
-    // same URL with the same headers; only the seed message in the body
-    // (here, a task id) distinguishes them. Body-aware matchers route
-    // each fetch to its own response stream without needing the test to
-    // know about arrival order.
+    // N agents POST to the same URL with the same headers; only the
+    // seed message in the body (here, a task id) distinguishes them.
     const harness = setupHarness();
     try {
       const sGreet = harness.scenario.createStream();
@@ -178,8 +168,7 @@ describe("Scenario.whenRequestBodyMatches", () => {
   });
 
   test("body-aware predicate sees the same body via second argument as Request", async () => {
-    // Predicates receive the buffered body text AND the original Request.
-    // Sanity-check that the Request argument carries the same body the
+    // Sanity-check that the `Request` argument carries the same body the
     // text argument was derived from.
     const harness = setupHarness();
     try {
@@ -210,7 +199,7 @@ describe("Scenario.whenRequestBodyMatches", () => {
   });
 
   test("sync matcher takes priority when registered before a body-aware matcher", async () => {
-    // The sync scan pass runs first. If a sync matcher's predicate
+    // The sync scan pass runs first: if a sync matcher's predicate
     // accepts a fetch, the body-aware matcher never sees it — and the
     // body is never read.
     const harness = setupHarness();
@@ -245,7 +234,7 @@ describe("Scenario.whenRequestBodyMatches", () => {
   });
 
   test("body-aware matcher routes a fetch the sync matchers missed", async () => {
-    // Sync scan misses → body-aware scan kicks in → fetch is bound.
+    // Sync scan misses -> body-aware scan kicks in -> fetch is bound.
     const harness = setupHarness();
     try {
       const sBody = harness.scenario.createStream();
@@ -276,7 +265,7 @@ describe("Scenario.whenRequestBodyMatches", () => {
   });
 
   test("body-aware matcher that rejects the body leaves the fetch unmatched", async () => {
-    // A predicate that returns false for everything must leave the fetch
+    // A predicate that returns false for everything leaves the fetch
     // parked; quiescence surfaces UnmatchedFetchError.
     const harness = setupHarness();
     try {
@@ -309,10 +298,9 @@ describe("Scenario.whenRequestBodyMatches", () => {
   });
 
   test("AmbiguousRequestError fires when two body-aware fetches collide on one matcher", async () => {
-    // Two POSTs both contain the marker the matcher looks for. The
-    // body-aware scan binds the first to the matcher and reports the
-    // second as a same-matcher conflict, just like the sync scan does
-    // for URL-based matchers.
+    // Two POSTs both contain the marker the matcher looks for; the
+    // scan reports the second as a same-matcher conflict, like the sync
+    // scan does for URL-based matchers.
     const harness = setupHarness();
     try {
       const s = harness.scenario.createStream();
@@ -356,10 +344,9 @@ describe("Scenario.whenRequestBodyMatches", () => {
   });
 
   test("GET request with no body: body-aware predicate sees an empty string", async () => {
-    // GETs (and other request shapes without a body) buffer to "".
-    // Predicates can still evaluate; they just won't find substring
-    // matches against an empty string. A predicate that accepts ""
-    // routes the GET; one that requires content rejects it.
+    // GETs (and other body-less request shapes) buffer to ""; a
+    // predicate accepting "" routes the GET, one requiring content
+    // rejects it.
     const harness = setupHarness();
     try {
       const sEmpty = harness.scenario.createStream();
@@ -383,21 +370,12 @@ describe("Scenario.whenRequestBodyMatches", () => {
   });
 
   test("abort before run(): aborted fetch is removed from the waiting set before any body-aware scan runs", async () => {
-    // The abort fires synchronously, BEFORE `harness.run()` begins.
-    // `triggerBodyAwareScan` already ran (synchronously, from
-    // `stubFetch`) and queued an async scan whose `bufferUnreadBodies`
-    // call snapshots the entry into `needBuffer` before the first
-    // `await`. By the time `Promise.all` resumes, the pre-route abort
-    // listener in `stubFetch` has already set `settled = true` and
-    // removed the entry from `waiting`. The `if (wf.settled) return;`
-    // short-circuit at the head of the map callback (and the second
-    // guard around the `clone().text()` catch) is what then prevents
-    // a spurious read error from surfacing.
-    //
-    // This test pins that body-aware matchers tolerate a pre-run abort
-    // gracefully (the matcher stays unconsumed and is available for
-    // any future fetch) and that the settled-flag guards inside the
-    // buffer are the ones doing the work.
+    // The abort fires synchronously BEFORE `harness.run()` begins. The
+    // queued body-aware scan's buffer snapshots the entry before its
+    // first `await`; by the time `Promise.all` resumes, the pre-route
+    // abort listener has settled and removed it, and the settled-flag
+    // guards in the buffer path prevent a spurious read error. This
+    // pins that body-aware matchers tolerate a pre-run abort cleanly.
     const harness = setupHarness();
     try {
       const s = harness.scenario.createStream();
@@ -424,9 +402,7 @@ describe("Scenario.whenRequestBodyMatches", () => {
       expect(caught.name).toBe("AbortError");
 
       // Quiescence must NOT throw; the aborted fetch was removed from
-      // the waiting set and the body-aware matcher is still available
-      // for any future fetch (which there isn't, so the matcher just
-      // stays unconsumed).
+      // the waiting set, so the matcher just stays unconsumed.
       await harness.run();
     } finally {
       harness.dispose();
@@ -514,19 +490,12 @@ describe("Scenario.whenRequestBodyMatches", () => {
   });
 
   test("genuine body-read failure surfaces as the scan error, not as UnmatchedFetchError", async () => {
-    // The pre-INTR-83 buffer path used to map any body-read exception
-    // to `bodyText = ""`, hiding real failures behind a downstream
-    // "fetch was not matched" diagnostic. Per the CLAUDE.md defensive-
-    // coding rule, errors must surface — this test pins that contract.
-    //
-    // Synthesizing a real body-read failure on the Bun runtime is
-    // unreliable (Bun's `Request.clone().text()` is permissive about
-    // disturbed bodies and errored streams), so we override `clone`
-    // on the request instance to throw deterministically. The harness
-    // calls `wf.request.clone().text()` inside `bufferUnreadBodies`;
-    // the override turns that into a guaranteed rejection the harness
-    // must re-throw to the caller of `harness.run()` rather than
-    // silently coerce to an empty body.
+    // Body-read failures must surface rather than map to "" and hide
+    // behind a downstream "fetch was not matched" diagnostic.
+    // Synthesizing a real failure is unreliable on Bun (its
+    // `clone().text()` is permissive), so override `clone` on the
+    // request to throw deterministically; the harness must re-throw it
+    // from `harness.run()` rather than coerce to an empty body.
     const harness = setupHarness();
     try {
       const s = harness.scenario.createStream();
@@ -545,10 +514,9 @@ describe("Scenario.whenRequestBodyMatches", () => {
         },
       });
 
-      // Attach the rejection-catcher BEFORE driving run() so the
-      // parked fetch's eventual rejection (delivered by `dispose()` in
-      // the finally clause once `run()` has thrown) does not surface
-      // as an unhandled rejection inside the test runner.
+      // Attach the rejection-catcher BEFORE driving run() so the parked
+      // fetch's eventual rejection (delivered by `dispose()` once run()
+      // has thrown) does not surface as an unhandled rejection.
       const f = harness.deps.fetch(req);
       f.catch(() => undefined);
 
@@ -568,11 +536,7 @@ describe("Scenario.whenRequestBodyMatches", () => {
   });
 
   test("body-aware scan does NOT fire when no body-aware matchers are registered", async () => {
-    // Confirms the cost-isolation property: existing tests that use only
-    // sync matchers continue to pay zero body-read cost. We can't observe
-    // the read directly, but we can confirm that a body-only fetch with
-    // a sync matcher works end-to-end without touching body machinery —
-    // the existing scenario.test.ts suite already pins this — and that a
+    // Cost-isolation: sync-only tests pay zero body-read cost. A
     // BodyText-reading predicate is never invoked against a fetch that
     // bound on the sync pass (covered above).
     const harness = setupHarness();

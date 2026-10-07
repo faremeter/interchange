@@ -6,53 +6,36 @@ export interface Clock {
   schedule(virtualMs: number, fn: () => void): void;
   /**
    * Advance the virtual clock to `virtualMs`, firing every scheduled
-   * callback whose virtual time is at or before that point and draining
-   * the microtask queue after each fire.
+   * callback at or before that point and draining the microtask queue
+   * after each fire.
    *
-   * `opts.microtaskBudget` (default 256) bounds the number of microtask
-   * waves the drain will flush per fired callback. The drain keeps
-   * flushing while the activity counter advances (`schedule()`,
-   * `fireOne()`, `notifyActivity()` all bump it) AND for an internal
-   * stability window of additional waves after the last activity bump.
-   * The stability window lets consumer microtask chains (reader.read ->
-   * parser yield -> awaiting test) settle inside the drain rather than
-   * leaking past it; if those chains inflate past the budget the drain
-   * throws `ClockOverrunError`.
+   * `opts.microtaskBudget` (default 256) bounds the microtask waves the
+   * drain flushes per fired callback. The drain keeps flushing while the
+   * activity counter advances AND for an internal stability window of
+   * extra waves after the last bump, letting consumer microtask chains
+   * (reader.read -> parser yield -> awaiting test) settle inside the
+   * drain; chains inflating past the budget throw `ClockOverrunError`.
    */
   advanceTo(virtualMs: number, opts?: AdvanceOpts): Promise<void>;
   /**
    * Drive the clock until the scheduled-callback heap empties and the
    * microtask queue stays quiescent through the stability window.
    *
-   * `opts.microtaskBudget` (default 256) bounds the number of microtask
-   * waves the drain will flush per fired callback (see `advanceTo` for
-   * the stability-window contract). `opts.wallClockBudgetMs` (default
-   * 250) bounds the real time `run()` is allowed to consume; a handler
-   * blocked on a real-time primitive surfaces as
-   * `ClockWallClockOverrunError` instead of hanging the test.
+   * `opts.microtaskBudget` (default 256) bounds microtask waves per fired
+   * callback; `opts.wallClockBudgetMs` (default 250) bounds the real time
+   * `run()` may consume — a handler blocked on a real-time primitive
+   * surfaces as `ClockWallClockOverrunError` instead of hanging the test.
    */
   run(opts?: RunOpts): Promise<void>;
   onSyncCallbackError(hook: (err: unknown) => void): void;
   /**
-   * Externally signal that consumer-observable work has landed (for
-   * example, bytes pushed into a `ReadableStream` controller from a
-   * fired callback). This bumps the activity counter that
-   * `drainMicrotasks` watches, resetting the stability-window countdown
-   * so the drain keeps flushing while the downstream consumer's
-   * microtask chain (reader.read -> parser yield -> awaiting test) is
-   * still making progress.
-   *
-   * The drain exits once the activity counter has been stable across
-   * the internal stability window of microtask waves. Without the
-   * `notifyActivity` signal a single-shot fired callback would not
-   * appear as activity at all, and a multi-chunk delivery would settle
-   * only the first chunk inside `clock.run()`.
-   *
-   * Callers must invoke this ONLY in response to genuine
-   * consumer-observable work. Calling it gratuitously (every
-   * microtask, every internal bookkeeping step) defeats the budget's
-   * purpose: the drain exists to bound runaway scheduling, and a
-   * spurious activity bump can mask an actual infinite loop.
+   * Externally signal that consumer-observable work has landed (e.g.
+   * bytes pushed into a `ReadableStream` controller from a fired
+   * callback). Bumps the activity counter `drainMicrotasks` watches,
+   * resetting the stability-window countdown so the drain keeps flushing
+   * while the downstream consumer's microtask chain is still making
+   * progress. Call only in response to genuine consumer-observable work;
+   * spurious bumps can mask an actual infinite loop.
    */
   notifyActivity(): void;
 }
@@ -119,8 +102,8 @@ function heapLess(a: HeapEntry, b: HeapEntry): boolean {
   return a.seq < b.seq;
 }
 
-// Index-bounds-checked accessor. Every caller below guards `i` against the
-// heap length, so an undefined return here is a structural bug; surface it
+// Index-bounds-checked accessor. Callers guard `i` against the heap
+// length, so an undefined return here is a structural bug; surface it
 // loudly rather than papering over it.
 function heapAt(heap: HeapEntry[], i: number): HeapEntry {
   const entry = heap[i];
@@ -230,19 +213,13 @@ type WallClockWatchdog = {
 };
 
 // Stability window: number of microtask waves to keep flushing AFTER the
-// activity counter last moved. Consumer chains that thread through
+// activity counter last moved. Consumer chains threading through
 // async-generator composition (e.g. `reader.read` -> `parseSSE` yield ->
 // `runInference` yield -> `reactor` consume) span many microtask rounds
-// per fired callback without bumping `activity` themselves; treating one
-// stable flush as quiescence let those rounds settle outside the clock's
-// accounting. By draining `STABILITY_WINDOW` extra waves after the last
-// activity bump, the consumer's chain lands inside `drainMicrotasks` —
-// and a chain that inflates past the budget trips `ClockOverrunError`
-// instead of silently shipping past it. `microtaskBudget` still bounds
-// the total iteration count, so the runaway-scheduler probe in
-// `clock.test.ts` and the `parsesse-regression` probe continue to gate
-// on it: chained `schedule()` calls keep `stableCount` at zero, so the
-// outer budget exhausts on the same schedule as before.
+// per fired callback without bumping `activity` themselves; draining this
+// many extra waves after the last bump lands the chain inside
+// `drainMicrotasks`, and a chain that inflates past `microtaskBudget`
+// trips `ClockOverrunError` instead of silently shipping past it.
 const STABILITY_WINDOW = 16;
 
 async function drainMicrotasks(
@@ -284,10 +261,10 @@ export function createClock(): Clock {
 type ClockInternalOpts = { initialSeq?: number };
 
 /**
- * @internal TEST-ONLY: constructs a Clock with the monotonic sequence counter
- * pre-seeded. Used by `clock-internal.ts` to exercise the overflow guard
- * without scheduling Number.MAX_SAFE_INTEGER entries. Production code must
- * use `createClock()`.
+ * @internal TEST-ONLY: constructs a Clock with the monotonic sequence
+ * counter pre-seeded, used by `clock-internal.ts` to exercise the
+ * overflow guard without scheduling MAX_SAFE_INTEGER entries. Production
+ * code must use `createClock()`.
  */
 export function createClockInternal(opts: ClockInternalOpts): Clock {
   const state: ClockState = {
@@ -332,10 +309,10 @@ export function createClockInternal(opts: ClockInternalOpts): Clock {
   };
 
   const fireOne = (entry: HeapEntry): void => {
-    // Increments activity so that re-entrant drains (a callback that synchronously
-    // pumps another advanceTo/run through this clock) still see a fire as
-    // observable work; the outer firing loop also runs outside drainMicrotasks,
-    // so this is defensive rather than load-bearing in the simple case.
+    // Bump activity so re-entrant drains (a callback synchronously
+    // pumping another advanceTo/run through this clock) still see a fire
+    // as observable work; defensive in the simple case since the outer
+    // firing loop also runs outside drainMicrotasks.
     state.activity += 1;
     state.now = entry.time;
     state.lastFired = entry.fn;
@@ -376,11 +353,11 @@ export function createClockInternal(opts: ClockInternalOpts): Clock {
         fireOne(entry);
         await drainMicrotasks(state, microtaskBudget, null);
       }
-      // Final drain at the latest fired entry's time (or 0 if none fired). If
-      // this drain schedules new entries at <= virtualMs, re-enter the firing
-      // loop above. Doing the drain BEFORE force-advancing `now` to virtualMs
-      // ensures any schedule(0, ...) from a trailing microtask is still in
-      // the past-time guard's window.
+      // Final drain at the latest fired entry's time (or 0 if none fired).
+      // If this drain schedules new entries at <= virtualMs, re-enter the
+      // firing loop above. Draining BEFORE force-advancing `now` keeps any
+      // schedule(0, ...) from a trailing microtask inside the past-time
+      // guard's window.
       await drainMicrotasks(state, microtaskBudget, null);
       const top = heapPeek(state.heap);
       if (top === undefined || top.time > virtualMs) {
@@ -429,12 +406,11 @@ export function createClockInternal(opts: ClockInternalOpts): Clock {
 
   /**
    * Registers a hook invoked when a scheduled callback throws synchronously
-   * inside `advanceTo` or `run`. The hook receives the original error, runs
-   * before the throw propagates, and is used by the future harness layer to
-   * close open simulated streams so the next test does not inherit dangling
-   * readers. A throwing hook is wrapped in a new Error with the original
-   * attached via `cause`. Calling this replaces any previously registered
-   * hook; one hook per clock.
+   * inside `advanceTo` or `run`. The hook receives the original error and
+   * runs before the throw propagates; the harness uses it to close open
+   * simulated streams so the next test does not inherit dangling readers.
+   * A throwing hook is wrapped in a new Error with the original attached
+   * via `cause`. One hook per clock; calling replaces any previous hook.
    */
   const onSyncCallbackError = (hook: (err: unknown) => void): void => {
     if (typeof hook !== "function") {

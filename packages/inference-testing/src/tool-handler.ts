@@ -2,23 +2,16 @@ import type { Clock } from "./clock";
 
 /**
  * Return shape of a tool handler registered via `scenario.onTool(name, fn)`.
- *
  * Three variants are accepted:
  *
- * 1. Sync `R` — the handler returns a plain (non-promise, non-delayed) value;
- *    the harness dispatches it to the caller-supplied callback in the same
- *    tick.
- * 2. `{ result, virtualDelayMs }` — the handler asks the harness to defer
- *    dispatch by `virtualDelayMs` virtual milliseconds via
- *    `clock.schedule(clock.now() + virtualDelayMs, dispatch)`.
- * 3. `Promise<R | { result, virtualDelayMs }>` — the handler returns a
- *    promise (async work). The harness tracks the promise in its in-flight
- *    set (which blocks quiescence), awaits resolution, and then applies the
- *    sync-or-delayed dispatch rules to the resolved value.
+ * 1. Sync `R` — dispatch in the same tick.
+ * 2. `{ result, virtualDelayMs }` — dispatch at `clock.now() + virtualDelayMs`.
+ * 3. `Promise<R | { result, virtualDelayMs }>` — the harness tracks the
+ *    promise in its in-flight set (blocking quiescence), awaits resolution,
+ *    then applies the sync-or-delayed rules.
  *
- * `undefined` is NOT a valid resolved value; treating it as one would let a
- * forgotten `return` silently dispatch nothing to the reactor. The
- * orchestration throws if any branch resolves to `undefined`.
+ * `undefined` is NOT a valid resolved value; it would silently dispatch
+ * nothing to the reactor. The orchestration throws on `undefined`.
  */
 export type ToolHandlerReturn<R> =
   | R
@@ -26,28 +19,21 @@ export type ToolHandlerReturn<R> =
   | Promise<R | { result: R; virtualDelayMs: number }>;
 
 /**
- * A scenario-registered handler for a single tool name. Invoked by the
- * harness when the test dispatches a tool call (today via the explicit
- * `scenario.invokeTool` helper; future slices may autodetect tool-call
- * frames in served wire bytes). The handler classifies its result via
- * `ToolHandlerReturn`; see that type for the three accepted shapes.
+ * A scenario-registered handler for a single tool name. Invoked when the
+ * test dispatches a tool call (via `scenario.invokeTool`, or auto-dispatch
+ * through `harness.runInference`). Classifies its result via
+ * `ToolHandlerReturn`.
  */
 export type ToolHandler = (args: unknown) => ToolHandlerReturn<unknown>;
 
 /**
- * Returns true iff `value` would be unwrapped by `ToolHandlerRegistry`
- * as a delayed envelope. The envelope is accepted only when both
- * `result` and `virtualDelayMs` are present and `virtualDelayMs` is a
- * finite non-negative number; any other object shape falls through
- * to the "treat as sync result" branch, including objects that
- * happen to have a `result` key for other reasons.
+ * True iff `value` would be unwrapped by `ToolHandlerRegistry` as a delayed
+ * envelope: both `result` and a finite non-negative `virtualDelayMs` must
+ * be present; any other shape falls through to the sync-result branch.
  *
- * Exported so session capture and replay can reject results that
- * collide with this shape: recording would mis-classify them as
- * test-harness constructs, and replay would unwrap them and serve
- * the inner `result` to the reactor. Both this package's recording
- * and replay paths reject envelope-shaped results before they reach
- * the registry; the symmetry is load-bearing.
+ * Exported so session capture and replay can reject results that collide
+ * with this shape: recording would mis-classify them as harness constructs,
+ * and replay would unwrap them and serve the inner `result` to the reactor.
  */
 export function isDelayedEnvelope(
   value: unknown,
@@ -69,10 +55,9 @@ function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
 }
 
 /**
- * Callback the harness invokes with the tool handler's resolved result.
- * Called exactly once per `invokeTool` — in the same tick for a sync
- * return, at the scheduled virtual deadline for a delayed envelope, or
- * after promise resolution for an async handler.
+ * Callback the harness invokes with the tool handler's resolved result —
+ * once per `invokeTool`, in the same tick (sync), at the scheduled virtual
+ * deadline (delayed envelope), or after promise resolution (async).
  */
 export type DispatchToolResult = (result: unknown) => void;
 
@@ -80,18 +65,14 @@ export type ToolHandlerRegistry = {
   register(name: string, handler: ToolHandler): void;
   has(name: string): boolean;
   /**
-   * Invoke the handler registered for `name`. The orchestrator synchronously
-   * calls the handler, classifies the return shape, and:
+   * Invoke the handler registered for `name`. Classifies the return shape:
+   * sync results dispatch in the same tick; delayed envelopes dispatch via
+   * `clock.schedule(now + d, ...)`; promises register with `trackInFlight`,
+   * await resolution, then apply sync-or-delayed rules.
    *
-   * - sync result: calls `dispatch(result)` in the same tick;
-   * - delayed envelope: schedules dispatch via `clock.schedule(now + d, ...)`;
-   * - promise: registers it with `trackInFlight`, awaits resolution, and
-   *   then applies sync-or-delayed rules to the resolved value.
-   *
-   * Throws synchronously if no handler is registered for `name` or if the
+   * Throws synchronously if no handler is registered for `name` or the
    * handler returned `undefined` synchronously. Async resolution to
-   * `undefined` rejects the in-flight promise so `harness.run()` surfaces
-   * the error.
+   * `undefined` rejects the in-flight promise so `harness.run()` surfaces it.
    */
   invoke(name: string, args: unknown, dispatch: DispatchToolResult): void;
 };
@@ -100,8 +81,7 @@ export type CreateToolHandlerRegistryOpts = {
   clock: Clock;
   /**
    * Called when a handler returns a promise. The registry passes the
-   * promise here so the harness can block quiescence on it; the harness is
-   * responsible for tracking add/remove lifecycle and re-throw semantics.
+   * promise here so the harness can block quiescence on it.
    */
   trackInFlight: (promise: Promise<void>) => void;
 };

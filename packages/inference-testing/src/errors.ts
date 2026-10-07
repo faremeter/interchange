@@ -1,9 +1,7 @@
 /**
  * Thrown by `harness.assertDeps()` when a `Dependencies` object carries a
- * `HarnessId` symbol that does not match the harness checking it. Used to
- * catch cross-harness contamination — e.g., wiring harness A's deps through
- * harness B's reactor — at the earliest test seam rather than letting the
- * mismatch surface later as a confusing routing failure.
+ * `HarnessId` symbol that does not match the harness checking it. Catches
+ * cross-harness contamination at the earliest test seam.
  */
 export class WrongHarnessError extends Error {
   readonly expected: symbol;
@@ -21,10 +19,9 @@ export class WrongHarnessError extends Error {
 }
 
 /**
- * Describes a fetch that was still waiting on a matcher when the harness
- * reached quiescence. The fields are read off the constructed `Request`
- * inside the harness so the consumer of `UnmatchedFetchError` does not need
- * to know how the predicate would have seen the request.
+ * Describes a fetch still waiting on a matcher when the harness reached
+ * quiescence. Fields are read off the constructed `Request` inside the
+ * harness.
  */
 export type UnmatchedFetchInfo = {
   readonly url: string;
@@ -35,12 +32,11 @@ export type UnmatchedFetchInfo = {
 /**
  * Thrown by `harness.run()` / `harness.advanceTo()` when the virtual clock
  * reaches quiescence with one or more fetches still parked in the waiting
- * set. The error carries enough detail about each waiting fetch for a test
- * author to diagnose which matcher registration was missing.
+ * set. Carries enough detail about each waiting fetch to diagnose a
+ * missing matcher registration.
  *
- * Fetches that were aborted via their `AbortSignal` are NOT included; abort
- * settles the waiting fetch with an `AbortError` and removes it from the
- * waiting set before quiescence is checked.
+ * Aborted fetches are NOT included: abort settles them with an
+ * `AbortError` and removes them from the waiting set before quiescence.
  */
 export class UnmatchedFetchError extends Error {
   readonly waiting: readonly UnmatchedFetchInfo[];
@@ -72,8 +68,8 @@ export type AmbiguousFetchInfo = {
 /**
  * Thrown when two or more concurrently-waiting fetches all bind to the same
  * unconsumed matcher on a single scan pass. Each matcher is single-use, so
- * the scan cannot decide which fetch deserves the response — the test must
- * register additional matchers or differentiate the predicates.
+ * the scan cannot decide which fetch deserves the response — register more
+ * matchers or differentiate the predicates.
  */
 export class AmbiguousRequestError extends Error {
   readonly fetches: readonly AmbiguousFetchInfo[];

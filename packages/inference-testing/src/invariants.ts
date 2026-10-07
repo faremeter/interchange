@@ -3,31 +3,23 @@
 // that must hold for any well-formed call, regardless of provider; the
 // session parser regression applies the full list uniformly.
 //
-// Invariants are ordered foundational-first: schema validity comes before
-// everything else, since the higher-level checks build on the assumption
-// that events parse cleanly. A failing schema check usually makes the
-// downstream invariants noise built on garbage.
+// Ordered foundational-first: schema validity comes first, since the
+// higher-level checks build on the assumption that events parse cleanly.
 
 import { type } from "arktype";
 
 import { parseInferenceEvent, type InferenceEvent } from "@intx/types/runtime";
 
 /**
- * Per-replay context an invariant may consult. Empty today; expand with
- * additional fields (original request payload, declared tool list, etc.)
- * when an invariant needs information beyond the event stream itself.
- *
- * Adding optional fields is backward compatible; check signatures take it
- * as `context?: ReplayContext` so today's callers don't pass it.
+ * Per-replay context an invariant may consult. Empty today; expand when an
+ * invariant needs information beyond the event stream itself.
  */
 export type ReplayContext = Record<string, never>;
 
 /**
- * A single failure surfaced by an invariant. The `message` is a one-line
- * human-readable summary; `events` lists the indices into the original
- * array that the violation refers to, so a caller can quote them through
- * `formatEventBrief` for richer context without forcing every invariant
- * to format its own.
+ * A single failure surfaced by an invariant. `message` is a one-line
+ * summary; `events` lists the indices into the original array the
+ * violation refers to.
  */
 export type InvariantViolation = {
   invariant: string;
@@ -36,11 +28,10 @@ export type InvariantViolation = {
 };
 
 /**
- * A property check over a computed `InferenceEvent[]`. Returns an array
- * of violations (empty when the property holds). Implementations should
- * surface every violation they find, not stop at the first, so a single
- * parser-regression pass reveals everything wrong with a fixture rather than
- * forcing fix-and-rerun cycles.
+ * A property check over a computed `InferenceEvent[]`. Returns an array of
+ * violations (empty when the property holds). Implementations should
+ * surface every violation, not stop at the first, so one pass reveals
+ * everything wrong with a fixture.
  */
 export type Invariant = {
   name: string;
@@ -65,11 +56,10 @@ function abbreviateString(
 }
 
 /**
- * Format an event for inclusion in a violation message. Elides large
- * string fields (text/thinking tokens, redacted-thinking data blobs,
- * code fragments, image base64) with a `<N chars>` placeholder so an
- * invariant that fires on a megabyte-scale `inference.image_output`
- * doesn't dump the payload into test logs.
+ * Format an event for inclusion in a violation message, eliding large
+ * string fields (text/thinking tokens, redacted data blobs, code
+ * fragments, image base64) with a `<N chars>` placeholder so a failure on
+ * a megabyte-scale payload does not dump it into test logs.
  *
  * Output shape: `inference.text.delta[seq=12] { token: "Hello" }`.
  */
@@ -92,12 +82,9 @@ export function formatEventBrief(event: InferenceEvent): string {
       return `${head} { result: { requestId: ${JSON.stringify(event.data.result.requestId)}, status: ${JSON.stringify(event.data.result.status)} } }`;
     case "inference.image_output": {
       const src = event.data.image.source;
-      // file-reference URIs can be signed URLs or other large opaque
-      // handles; abbreviate them with the same threshold the rest of
-      // the helper uses for string fields rather than dump them verbatim.
-      // The `url` source variant lands in the same shape category as
-      // `file-reference` for log-summary purposes -- both are
-      // dereferencable references rather than inline bytes.
+      // Signed URLs and other large opaque handles get abbreviated like
+      // any string field; both dereferencable reference kinds (`url`,
+      // `file-reference`) summarize as references rather than bytes.
       let summary: string;
       switch (src.kind) {
         case "base64":
@@ -135,11 +122,12 @@ export function formatEventBrief(event: InferenceEvent): string {
 //
 // A content block is opened at a wire index by exactly one event kind: a
 // text/thinking/refusal/redacted delta, a tool_call.start, an image_output,
-// or a code_execution start/result. Each carries the block's index (or none,
-// in single-block streams that omit indices). Events that do NOT open a
-// block return `{ opener: false }`: block.signature (a zero-width attribution
-// marker validated by signature_precedence), tool_call.delta/end (they extend
-// an already-open call), and the terminal/usage/citation events.
+// or a code_execution start/result. Each carries the block's index (or
+// none, in single-block streams that omit indices). Events that do NOT
+// open a block return `{ opener: false }`: block.signature (a zero-width
+// attribution marker validated by signature_precedence),
+// tool_call.delta/end (they extend an already-open call), and the
+// terminal/usage/citation events.
 // ---------------------------------------------------------------------------
 
 type BlockOpener =
@@ -187,11 +175,11 @@ const schemaValidity: Invariant = {
 const toolCallPairing: Invariant = {
   name: "tool_call_pairing",
   check(events) {
-    // Track every start and end per callId rather than a single Map
-    // entry. A Map<callId, idx> silently overwrites duplicates, so two
-    // starts with the same callId followed by one end would look like a
-    // clean pair — but the wire shape (one start + one end per call)
-    // makes a duplicate start a real protocol-level bug worth flagging.
+    // Track every start and end per callId rather than a single Map entry:
+    // Map<callId, idx> silently overwrites duplicates, so two starts with
+    // the same callId followed by one end would look like a clean pair —
+    // but the wire emits one start + one end per call, so a duplicate
+    // start is a real protocol-level bug worth flagging.
     const startsByCallId = new Map<string, number[]>();
     const endsByCallId = new Map<string, number[]>();
     events.forEach((event, idx) => {
@@ -290,11 +278,9 @@ const terminalExclusivity: Invariant = {
 };
 
 const usageCoherence: Invariant = {
-  // Assumes cumulative usage semantics — both head (early) and tail
-  // (terminal) usage events report running totals, not deltas. Providers
-  // that emit deltas would fail this check; if such a provider lands,
-  // surface the discrepancy and update the invariant rather than silently
-  // accommodate.
+  // Assumes cumulative usage semantics — head and tail usage events report
+  // running totals, not deltas. Providers emitting deltas would fail this
+  // check; surface that rather than accommodating it silently.
   name: "usage_coherence_monotonic_non_decreasing",
   check(events) {
     const violations: InvariantViolation[] = [];
@@ -369,8 +355,8 @@ const usageCoherence: Invariant = {
 const recognizedContentBlocks: Invariant = {
   name: "recognized_content_blocks",
   check(events) {
-    // Known ContentBlock type discriminants. Keep this list in sync with
-    // ContentBlock's union in `packages/types/src/runtime.ts`.
+    // Known ContentBlock type discriminants; keep in sync with the union in
+    // `packages/types/src/runtime.ts`.
     const known = new Set([
       "text",
       "thinking",
@@ -410,11 +396,9 @@ const toolArgsJson: Invariant = {
     const violations: InvariantViolation[] = [];
     events.forEach((event, idx) => {
       if (event.type !== "inference.tool_call.end") return;
-      // The end event carries `arguments` as already-parsed Record. The
-      // wire path that produces it goes through JSON.parse on the
-      // accumulated argument fragments; if that fails the adapter
-      // typically falls back to `{ _raw: <buffer> }` and surfaces the
-      // failure here. Treat presence of `_raw` as the failure marker.
+      // The wire path parses accumulated argument fragments via JSON.parse;
+      // on failure the adapter typically falls back to `{ _raw: <buffer> }`.
+      // Treat presence of `_raw` as the failure marker.
       if ("_raw" in event.data.arguments) {
         violations.push({
           invariant: "tool_args_parse_as_json",
@@ -428,20 +412,14 @@ const toolArgsJson: Invariant = {
 };
 
 const redactedThinkingDataNonEmpty: Invariant = {
-  // A redacted_thinking block whose `data` is empty is meaningless on
-  // every wire — providers that emit redacted_thinking carry an opaque
-  // payload because that payload is what the next turn must echo back
-  // verbatim. An empty data field would round-trip as if there were no
-  // redacted thinking at all, which silently corrupts the conversation.
+  // A redacted_thinking block with empty `data` is meaningless on every
+  // wire: the payload is what the next turn must echo back verbatim, and
+  // an empty one would round-trip as if there were no redacted thinking.
   //
-  // The signature-presence check on regular thinking blocks is
-  // intentionally NOT part of this invariant: it is Anthropic-specific
-  // (only Anthropic's extended-thinking surface emits signatures), and
-  // applying it to providers like OpenCode-Zen — whose reasoning
-  // content arrives via `reasoning_content` without any signature
-  // concept — would flag every cross-provider thinking turn. When
-  // ReplayContext carries the source provider, a per-provider
-  // signature-required check can land alongside.
+  // Signature-presence on regular thinking blocks is intentionally NOT
+  // part of this invariant: it is Anthropic-specific, and applying it to
+  // providers without a signature concept would flag every
+  // cross-provider thinking turn.
   name: "redacted_thinking_data_non_empty",
   check(events) {
     const violations: InvariantViolation[] = [];
@@ -457,9 +435,8 @@ const redactedThinkingDataNonEmpty: Invariant = {
           }
         });
       } else if (event.type === "inference.thinking.redacted") {
-        // Streaming variant: an empty data blob here corrupts downstream
-        // consumers that subscribe to the streaming event before the
-        // finalized turn arrives.
+        // Streaming variant: an empty blob here corrupts subscribers that
+        // consume the streaming event before the finalized turn arrives.
         if (event.data.redactedThinking.data.length === 0) {
           violations.push({
             invariant: "redacted_thinking_data_non_empty",
@@ -475,15 +452,13 @@ const redactedThinkingDataNonEmpty: Invariant = {
 
 const indexDensity: Invariant = {
   // Block openers must be consistently indexed across the whole turn: if
-  // any block opener carries an `index`, they all must. Single-block
-  // streams that omit indices entirely are legal; a stream that indexes
-  // some block openers but not others is a mixed-mode wire violation.
+  // any opener carries an `index`, they all must. Single-block streams
+  // that omit indices entirely are legal; a mixed stream is a wire
+  // violation.
   //
-  // Whether the indexed set is gap-free (dense from 0) is deliberately NOT
-  // checked here: block indices are provider-assigned, and an adapter that
-  // echoes wire content-block indices can legitimately skip indices for
-  // block kinds it does not decode, so density-from-0 is not a universal
-  // property.
+  // Gap-freeness is deliberately NOT checked: block indices are
+  // provider-assigned, and an adapter echoing wire indices can skip
+  // indices for block kinds it does not decode.
   name: "index_density",
   check(events) {
     const withIndex = new Set<number>();
@@ -510,10 +485,10 @@ const indexDensity: Invariant = {
   },
 };
 
-// A signature authenticates the block at its index. The block must
-// have been opened earlier in the stream by one of the signable-block
-// openers: a thinking/text delta, or one of the atomic starts
-// (tool_call, image, code_execution).
+// A signature authenticates the block at its index. The block must have
+// been opened earlier in the stream by one of the signable-block openers:
+// a thinking/text delta, or one of the atomic starts (tool_call, image,
+// code_execution).
 function opensSignableBlockAt(
   event: InferenceEvent,
   index: number | undefined,
@@ -534,9 +509,9 @@ const signaturePrecedence: Invariant = {
   name: "signature_precedence",
   check(events) {
     const violations: InvariantViolation[] = [];
-    // For each block signature, scan backwards for the event that
-    // opened a signable block at the same index (single-block scenarios
-    // pair an undefined index against an undefined-index opener).
+    // For each block signature, scan backwards for the event that opened a
+    // signable block at the same index (single-block scenarios pair an
+    // undefined index against an undefined-index opener).
     events.forEach((event, sigIdx) => {
       if (event.type !== "inference.block.signature") return;
       const sigIndex = event.data.index;
@@ -563,7 +538,7 @@ const signaturePrecedence: Invariant = {
 
 /**
  * The canonical list applied by the session parser regression. Ordered
- * foundational-first: schema_validity catches structural problems before
+ * foundational-first: schema validity catches structural problems before
  * the higher-level checks build on potentially-garbage events.
  */
 export const INVARIANTS: readonly Invariant[] = [
