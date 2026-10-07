@@ -1,18 +1,12 @@
-// Process-wide registry of held workdir locks.
+// Process-wide registry of held workdir locks, enforcing the runtime
+// singleton-per-workdir invariant: at most one in-process agent may own
+// a given workdir at a time. Two agents against the same workdir
+// corrupt both the git state of any isogit-backed `ContextStore` rooted
+// there and the audit collector's bookkeeping.
 //
-// The agent enforces a runtime singleton-per-workdir invariant: at most one
-// in-process agent may own a given workdir at a time. Holding two agents
-// against the same workdir simultaneously corrupts both the git state of
-// any isogit-backed `ContextStore` rooted there and the audit collector's
-// bookkeeping.
-//
-// This is a best-effort in-process check. It does not coordinate across OS
-// processes, and it compares lexically-resolved absolute paths — two paths
-// that point to the same directory through symlinks or `..`/`/./` segments
-// are normalized by `path.resolve`, but a hard link or a separately mounted
-// bind to the same inode will not be detected. Callers are responsible for
-// ensuring `env.workdir` matches the directory backing their `env.storage`
-// (see `BaseEnv.workdir` for the documented invariant).
+// Best-effort in-process check: it does not coordinate across OS
+// processes, and it compares `path.resolve`d absolute paths, so a hard
+// link or a separate bind to the same inode is not detected.
 
 import { resolve } from "node:path";
 

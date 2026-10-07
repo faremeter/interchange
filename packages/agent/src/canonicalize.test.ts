@@ -167,12 +167,10 @@ describe("canonicalizeForHash", () => {
     });
 
     test("rejects two distinct keys that NFC-normalize to the same value", () => {
-      // "café" (precomposed) and "café" (e + combining
-      // acute) are different strings in memory; both NFC-normalize to
-      // "café". Silently collapsing the two would drop one of
-      // the values and the deploy hash would no longer be a faithful
-      // function of the input -- explicit failure is the defensive
-      // disposition.
+      // "café" (precomposed) and "café" (e + combining acute) are
+      // different strings in memory; both NFC-normalize to "café".
+      // Silently collapsing them would drop a value and make the hash
+      // unfaithful -- explicit failure is the defensive disposition.
       const precomposed = "café";
       const decomposed = "café";
       expect(precomposed).not.toBe(decomposed);
@@ -184,12 +182,11 @@ describe("canonicalizeForHash", () => {
     });
 
     test("sorts NFC-normalized keys so pre- and post-normalized inputs match", () => {
-      // The decomposed form "ô" sorts BEFORE "p" because it
-      // begins with U+006F. Its NFC-normalized form "ô" sorts
-      // AFTER "p" because U+00F4 > U+0070. canonicalizeForHash must
-      // sort *after* normalization so a producer that pre-normalizes
-      // and a producer that doesn't hash the same logical value to the
-      // same bytes.
+      // The decomposed "ô" sorts before "p" (starts with U+006F),
+      // while its NFC form "ô" sorts after (U+00F4 > U+0070).
+      // canonicalizeForHash must sort after normalization so a
+      // pre-normalizing and a non-normalizing producer hash the same
+      // logical value to the same bytes.
       const decomposed = "ô"; // o + combining circumflex
       const precomposed = "ô"; // ô precomposed
       expect(decomposed.normalize("NFC")).toBe(precomposed);

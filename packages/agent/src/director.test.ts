@@ -129,9 +129,8 @@ describe("defineDirector", () => {
   test("rejects a non-callable configSchema at build time", () => {
     const defined = defineDirector({
       id: "pkg/bogus",
-      // configSchema is typed as unknown; passing a plain object here
-      // is structurally allowed at the type level. The runtime guard in
-      // build() rejects it.
+      // configSchema is typed as unknown, so a plain object passes
+      // the type level; the runtime guard in build() rejects it.
       configSchema: { not: "a validator" },
       factory: () => stubDirector(),
     });
@@ -142,11 +141,10 @@ describe("defineDirector", () => {
   });
 
   test("does not mutate the factory function when reused across calls", () => {
-    // A caller that shares a single factory function across two
-    // `defineDirector` registrations needs each annotated factory to
-    // be a distinct identity with its own metadata. Mutating
-    // `opts.factory` would let the second call silently overwrite the
-    // first's annotations and return the same identity twice.
+    // A factory function shared across two `defineDirector`
+    // registrations must yield distinct annotated identities;
+    // mutating `opts.factory` would silently overwrite the first's
+    // annotations.
     const sharedFactory = () => stubDirector();
     const a = defineDirector({
       id: "pkg/director-a",

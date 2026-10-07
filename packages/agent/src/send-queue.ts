@@ -1,23 +1,14 @@
 // FIFO queue for serializing send() calls against a single reactor.
 //
-// The agent processes one reactor cycle at a time, so concurrent send()
-// callers are queued. Each queued item carries the caller's resolve/reject
-// hooks and an optional AbortSignal:
-//
-//   - If the signal is already aborted when enqueue() is called the queue
-//     rejects synchronously without enqueueing.
-//   - If the signal fires while the item is still queued the item is
-//     removed and rejected.
-//   - If the signal fires while the item is active the caller-facing
-//     promise rejects immediately, but the reactor cycle continues in the
-//     background. The queue does not start the next item until the consumer
-//     reports the cycle done via resolveActive/rejectActive. This keeps the
-//     queue ordered against actual reactor cycles — two send() promises
-//     cannot interleave at the reactor level.
-//
-// Queue depth (active + pending) is bounded by `maxDepth`; exceeding it
-// throws `SendQueueFullError` synchronously from enqueue() so a buggy
-// caller flooding sends fails loud instead of silently buffering.
+// The agent processes one reactor cycle at a time, so concurrent
+// send() callers are queued. Per-item AbortSignal: an already-aborted
+// signal rejects synchronously without enqueueing; a signal firing
+// while queued removes and rejects the item; a signal firing while
+// active rejects the caller but the reactor cycle continues, and the
+// queue does not start the next item until the consumer reports the
+// cycle done via resolveActive/rejectActive. Depth (active + pending)
+// is bounded by `maxDepth`; exceeding it throws `SendQueueFullError`
+// synchronously.
 
 export class SendQueueFullError extends Error {
   readonly maxDepth: number;
@@ -36,11 +27,10 @@ type Job<T, R> = {
   resolve: (value: R) => void;
   reject: (reason: unknown) => void;
   /**
-   * True once the caller-facing promise has been settled (resolve or
-   * reject). Subsequent settles are no-ops. The active slot may remain
-   * occupied after a settle when the caller aborted mid-cycle — the queue
-   * waits for the consumer's resolveActive/rejectActive before pumping the
-   * next item.
+   * True once the caller-facing promise has been settled; subsequent
+   * settles are no-ops. The active slot may stay occupied after a settle
+   * when the caller aborted mid-cycle -- the queue waits for
+   * resolveActive/rejectActive before pumping the next item.
    */
   settled: boolean;
 };
@@ -49,8 +39,8 @@ export type SendQueueOptions<T> = {
   maxDepth: number;
   /**
    * Called when a job moves from pending to active. The consumer drives
-   * the underlying work and must eventually call `resolveActive` or
-   * `rejectActive` exactly once.
+   * the work and must eventually call `resolveActive` or `rejectActive`
+   * exactly once.
    */
   start: (item: T) => void;
 };
@@ -140,9 +130,9 @@ export function createSendQueue<T, R>(
       const handler = (): void => {
         const reason = abortReason(signal);
         if (active === job) {
-          // In flight: settle the caller now; the consumer will eventually
-          // call resolveActive/rejectActive which becomes a no-op and
-          // advances the queue.
+          // In flight: settle the caller now; the consumer's later
+          // resolveActive/rejectActive becomes a no-op and advances
+          // the queue.
           settle(job, "reject", reason);
         } else {
           const idx = pending.indexOf(job);

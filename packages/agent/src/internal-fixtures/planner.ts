@@ -1,8 +1,7 @@
-// Planner-shape agent fixture for the reactor-once tests.
-//
-// A pure in-process agent: no transport, no connector, no mail. Used by
-// `planner.test.ts` to assert that `createAgent(def, env)` wraps the
-// reactor exactly once per instantiation against a bare `BaseEnv`.
+// Planner-shape agent fixture for the reactor-once tests: a pure
+// in-process agent with no transport, connector, or mail, used to
+// assert that `createAgent(def, env)` wraps the reactor exactly once
+// per instantiation against a bare `BaseEnv`.
 
 import type { ContextStore, InferenceSource } from "@intx/types/runtime";
 

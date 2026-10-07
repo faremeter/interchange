@@ -1,17 +1,11 @@
-// End-to-end audit-trail integration tests for the in-process agent.
-//
-// These pin the audit channel the agent wires through
-// `createAgent(def, env)`: allowed tool calls land in commitAudit
-// with `authz.effect === "allow"` and the tool's result attached;
-// denied calls land with `authz.blocked === true` and an error
-// result; authorize throwing produces a blocked record with
-// `authz.effect === null`; the flush hooks at afterCheckpoint and
-// onShutdown together flush exactly once when records exist and
-// skip when they do not.
-//
-// The director is a hand-written test double that drives the
-// reactor through a single tool execution and then shuts down,
-// exercising the audit pipeline without needing a real LLM.
+// End-to-end audit-trail integration tests for the in-process agent:
+// allowed tool calls land in commitAudit with `effect === "allow"`;
+// denied calls with `blocked === true` and an error result; an
+// authorize throw produces a blocked record with `effect === null`;
+// the afterCheckpoint and onShutdown hooks flush exactly once and
+// skip when nothing is pending. The director is a hand-written test
+// double that drives a single tool execution, so no real LLM is
+// needed.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -44,8 +38,7 @@ import { waitForReactorDone } from "./testing";
 
 // The audit pipeline needs an inference source to construct the
 // reactor, but the test director never calls infer(); the URL is
-// unreachable so any accidental infer() would fail fast rather than
-// hang.
+// unreachable so an accidental infer() fails fast.
 const SOURCE: InferenceSource = {
   id: "anthropic:audit-test",
   provider: "anthropic",
@@ -97,10 +90,10 @@ function denyAll(): Promise<AuthzCallResult> {
   });
 }
 
-// A tool factory that exposes a single tool whose `run` returns a
-// fixed string result. The audit record carries the tool name,
-// arguments observed by the authz extension, and the tool's
-// returned `content`/`isError`, so a deterministic stub is enough.
+// A tool factory exposing a single tool whose `run` returns a fixed
+// string; the audit record carries the tool name, args observed by
+// the authz extension, and the returned content, so a deterministic
+// stub is enough.
 function makeFixedResultTool(opts: {
   name: string;
   result: string;
@@ -128,11 +121,9 @@ function makeFixedResultTool(opts: {
 }
 
 // Director that executes a single named tool on the inbound message
-// and shuts the reactor down once the tool result arrives. The
-// `checkpointBeforeDone` flag controls whether the director
-// checkpoints before its terminal done() -- the audit pipeline
-// flushes at afterCheckpoint when it does, and via onShutdown when
-// it does not.
+// and shuts down once the result arrives. `checkpointBeforeDone`
+// controls whether the audit flush happens via afterCheckpoint or
+// via onShutdown.
 function makeToolExecDirector(opts: {
   toolName: string;
   args: Record<string, unknown>;

@@ -1,13 +1,9 @@
-// Reactor-once assertion for the planner fixture.
-//
-// The agent's `createAgent` resolves the env's director registry,
-// invokes the resolved factory exactly once, and passes the resulting
-// `ReactorDirector` into `createReactorAssembly`. Counting director-
-// factory invocations is therefore a precise proxy for counting
-// reactor wraps: one invocation per `createAgent` call, every time.
-//
-// The counter lives inside this file (not shared with `mail.test.ts`)
-// so module-load ordering between test files cannot smear the count.
+// Reactor-once assertion for the planner fixture: `createAgent`
+// resolves the env's director registry and invokes the resolved
+// factory exactly once per call, so counting factory invocations is a
+// precise proxy for counting reactor wraps. The counter lives in this
+// file (not shared with `mail.test.ts`) so module-load ordering cannot
+// smear the count.
 
 import { describe, test, expect } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";

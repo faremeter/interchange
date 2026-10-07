@@ -1,9 +1,9 @@
 // Helpers for the inference credential-material resolver seam
-// (`CredentialMaterialResolver` in `@intx/types`). An inference call resolves
-// its source's secret by `credentialId` through this seam instead of reading an
-// inline `apiKey`, so the source config carries no secret. The sidecar backs it
-// with the run's live credential cell; the helpers here cover the two simpler
-// cases.
+// (`CredentialMaterialResolver` in `@intx/types`). An inference call
+// resolves its source's secret by `credentialId` through this seam
+// instead of reading an inline `apiKey`, so the source config carries
+// no secret. The sidecar backs it with the run's live credential cell;
+// these helpers cover the two simpler cases.
 
 import type {
   CredentialMaterial,
@@ -11,11 +11,10 @@ import type {
 } from "@intx/types";
 
 /**
- * A resolver that fails closed on every call. `createAgent` installs this when
- * the env supplies no `readCurrentMaterial`, so an agent whose inference never
- * resolves a credential (a mock adapter emitting no credential sentinel) needs
- * no resolver, while one that DOES reach a credential surfaces a clear error
- * rather than a confusing `undefined`.
+ * A resolver that fails closed on every call. `createAgent` installs
+ * this when the env supplies no `readCurrentMaterial`, so an agent
+ * whose inference never resolves a credential needs no resolver, while
+ * one that DOES reach a credential surfaces a clear error.
  */
 export function createUnconfiguredCredentialResolver(): CredentialMaterialResolver {
   return (credentialId: string): CredentialMaterial => {
@@ -26,10 +25,9 @@ export function createUnconfiguredCredentialResolver(): CredentialMaterialResolv
 }
 
 /**
- * A resolver over a fixed `credentialId -> secret` map. For callers that hold
- * their secrets in memory rather than a live cell -- examples, tests, and any
- * single-process agent. Fails closed when a source references a credential the
- * map does not carry, mirroring the cell reader's revoked/absent behavior.
+ * A resolver over a fixed `credentialId -> secret` map, for callers
+ * that hold secrets in memory rather than a live cell (examples,
+ * tests, single-process agents). Fails closed on unknown ids.
  */
 export function createStaticCredentialResolver(
   materials: Record<string, string>,

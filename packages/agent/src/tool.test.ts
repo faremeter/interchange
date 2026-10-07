@@ -288,12 +288,10 @@ describe("defineTool", () => {
       },
     });
 
-    // Tool factories declare which env keys they touch via `requires`;
-    // their factory body should only read those keys. The probe tool
-    // here declares nothing, so the env it receives is only checked for
-    // reference equality. Constructing a fully-structured `BaseEnv`
-    // would force importing several unrelated types; the partial object
-    // exercise is intentional.
+    // Tool factories declare their env keys via `requires`; the probe
+    // tool here declares nothing, so the env is only checked for
+    // reference equality. A partial object keeps the test free of
+    // unrelated type imports.
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub, never indexed beyond identity comparison
     const fakeEnv = { workdir: "/tmp/x" } as unknown as BaseEnv;
     const bundle = factory(fakeEnv);
@@ -316,11 +314,9 @@ describe("defineTool", () => {
   });
 
   test("does not mutate the factory function when reused across calls", () => {
-    // A caller that shares a single factory function across two
-    // `defineTool` registrations needs each annotated factory to be a
-    // distinct identity with its own metadata. Mutating `opts.factory`
-    // would let the second call silently overwrite the first's
-    // annotations and return the same identity twice.
+    // A factory function shared across two `defineTool` registrations
+    // must yield distinct annotated identities; mutating `opts.factory`
+    // would silently overwrite the first's annotations.
     const sharedFactory: ToolFactory = () => emptyBundle();
     const a = defineTool({
       id: "pkg/tool-a",
@@ -339,9 +335,8 @@ describe("defineTool", () => {
     expect(a.requires).toEqual([]);
     expect(b.requires).toEqual(["transport"]);
     expect(a).not.toBe(b);
-    // The shared underlying factory is itself not annotated; only the
-    // wrappers carry metadata. Reflect off the function value directly
-    // so we can probe for accidental annotations without a cast.
+    // The shared underlying factory is itself unannotated; probe the
+    // function value directly so no cast is needed.
     expect(Reflect.get(sharedFactory, "id")).toBeUndefined();
     expect(Reflect.get(sharedFactory, "requires")).toBeUndefined();
   });

@@ -1,11 +1,9 @@
 // Per-runtime director registry implementation.
 //
 // `createDirectorRegistry({ factories, defaultId })` builds a registry
-// from a flat list of `AnnotatedDirectorFactory` values and a designated
-// default id. Id collisions and a missing default fail at construction
-// rather than first lookup. `createDefaultDirectorRegistry()` is the
-// canonical built-ins-only registry the agent harness ships for callers
-// that do not author their own directors.
+// from a flat factory list and a designated default id; id collisions
+// and a missing default fail at construction. `createDefaultDirectorRegistry()`
+// is the built-ins-only registry the agent harness ships.
 
 import type {
   AnnotatedDirectorFactory,
@@ -16,21 +14,17 @@ import type { BaseEnv } from "./env";
 import { defaultDirectorFactory } from "./default-director";
 
 /**
- * Erased annotated-factory shape the registry stores. `Config` is
- * widened to `unknown` so factories with different configuration types
- * can coexist in the same registry without contravariant assignment
- * failures.
+ * Erased annotated-factory shape the registry stores: `Config` widened
+ * to `unknown` so factories with different config types coexist
+ * without contravariant assignment failures.
  */
 type RegisteredFactory = AnnotatedDirectorFactory<unknown, BaseEnv>;
 
 /**
- * Thrown by `DirectorRegistry.resolve` when the supplied ref names an
- * id the registry does not contain. The error is named separately from
- * `Error` so callers (specifically `validateEnv`) can distinguish an
- * unknown-id failure from other runtime faults a custom `directors`
- * implementation might raise. Custom `DirectorRegistry` implementations
- * are expected to throw `UnknownDirectorIdError` on the unknown-id
- * path; anything else propagates as a real failure.
+ * Thrown by `DirectorRegistry.resolve` for an id the registry does not
+ * contain. Named separately so `validateEnv` can distinguish an
+ * unknown-id failure from other runtime faults; custom registry
+ * implementations are expected to throw it on the unknown-id path.
  */
 export class UnknownDirectorIdError extends Error {
   readonly directorId: string;
@@ -43,9 +37,8 @@ export class UnknownDirectorIdError extends Error {
 }
 
 /**
- * Build a director registry from a flat list of factories. Throws
- * `Error` at construction on duplicate ids or when `defaultId` is not
- * present in `factories`.
+ * Build a director registry from a flat list of factories. Throws at
+ * construction on duplicate ids or when `defaultId` is absent.
  */
 export function createDirectorRegistry(opts: {
   readonly factories: readonly RegisteredFactory[];
@@ -78,18 +71,16 @@ export function createDirectorRegistry(opts: {
       return defaultFactory;
     },
     buildDefaultRef(): DirectorRef {
-      // Construct fresh each call. There is no module-load constant for
-      // the default ref; the spec is explicit about avoiding implicit
-      // module-load side effects in the director surface.
+      // Fresh object per call; no module-load constant (the spec
+      // avoids implicit module-load side effects in the director surface).
       return { id: defaultFactory.id, config: {} };
     },
   };
 }
 
 /**
- * The canonical built-ins-only registry. Convenience for callers that
- * do not ship their own director factories. Callers with custom
- * factories pass them into `createDirectorRegistry` directly.
+ * The canonical built-ins-only registry, for callers that do not ship
+ * their own director factories.
  */
 export function createDefaultDirectorRegistry(): DirectorRegistry {
   return createDirectorRegistry({
@@ -99,12 +90,11 @@ export function createDefaultDirectorRegistry(): DirectorRegistry {
 }
 
 /**
- * Build the director registry for a workflow closure: the built-in default
- * plus the closure's own `defineDirector` factories. A closure that ships no
- * directors passes `loaded: []` and composes to `[defaultDirectorFactory]` --
- * identical to `createDefaultDirectorRegistry`. A closure director whose id
- * shadows the built-in (or another loaded director) throws at construction,
- * the same fail-loud `createDirectorRegistry` applies to any duplicate.
+ * Build the director registry for a workflow closure: the built-in
+ * default plus the closure's own `defineDirector` factories. A closure
+ * that ships no directors composes to just the default; an id that
+ * shadows the built-in or another loaded director throws at
+ * construction.
  */
 export function createWorkflowDirectorRegistry(
   loaded: readonly AnnotatedDirectorFactory<unknown, BaseEnv>[],

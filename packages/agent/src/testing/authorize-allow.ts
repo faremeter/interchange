@@ -1,17 +1,13 @@
-// Permissive AuthorizeFn for tests and examples.
-//
-// Returns { effect: "allow" } for every call. Useful when the agent is
-// exercised without grants -- the test cares about the agent surface
-// rather than the authz decision. Production callers must supply a real
-// authorize function tied to actual policy.
+// Permissive AuthorizeFn for tests and examples: allows every call.
+// Production callers must supply a real authorize function tied to
+// actual policy.
 
 import type { AuthorizeFn } from "../env";
 
 /**
- * Construct a permissive AuthorizeFn that allows every call. The
- * returned function ignores its arguments (including the third
- * per-call context parameter) and returns the same shape the
- * production authz extension expects.
+ * Construct a permissive AuthorizeFn that allows every call, ignoring
+ * its arguments and returning the shape the production authz
+ * extension expects.
  */
 export function permissiveAuthorize(): AuthorizeFn {
   return async (_resource, _action, _context) => ({

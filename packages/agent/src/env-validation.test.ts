@@ -51,8 +51,7 @@ describe("validateEnv", () => {
   });
 
   test("does not require env.compactors", () => {
-    // The field is optional; an env that simply omits it is valid and a
-    // director that never emits `caps.compact(...)` runs unaffected.
+    // The field is optional; an env that simply omits it is valid.
     const env = baseEnv();
     expect(env.compactors).toBeUndefined();
     expect(() => validateEnv(emptyDef(), env)).not.toThrow();
