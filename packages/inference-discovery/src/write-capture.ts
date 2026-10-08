@@ -2,11 +2,9 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 /**
- * Captured response body. The on-disk file (response.json or
- * response.sse) is written from `bytes` verbatim so the recording
- * is byte-identical to what the server sent — pretty-printing
- * a parsed JSON body would lose original key order, trailing
- * whitespace, and any content-length / signature semantics.
+ * Captured response body. The on-disk file is written from `bytes` verbatim
+ * so the recording is byte-identical to what the server sent; re-serialising
+ * a parsed body would lose key order, whitespace, and signature semantics.
  */
 export type ResponseBody =
   | { kind: "json"; bytes: Uint8Array }

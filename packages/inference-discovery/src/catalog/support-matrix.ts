@@ -3,29 +3,16 @@ import { Capability } from "./capability";
 
 // Outcome vocabulary:
 //
-// - captured: HTTP succeeded and the response contains the wire shape
-//   the capability's name implies. Fixture on disk; smoke test validates.
-//
-// - misled: HTTP succeeded and the model responded normally, but the
-//   provider's documented contract for the input did not materialize.
-//   The model did not refuse — there is no statement of inability in
-//   the response — the documented behavior just did not fire. Used when
-//   the wire shape is conditional on external state we do not control
-//   (e.g. Anthropic's safety classifier not engaging on the documented
-//   redacted-thinking canary). The fixture on disk documents what was
-//   actually returned; smoke test validates file presence. A future
-//   re-capture may flip the row to captured.
-//
-// - refused: the provider's response contains an explicit refusal of
-//   the requested task. The model told us it would not do the thing —
-//   sometimes via HTTP non-2xx, sometimes via a successful HTTP body
-//   carrying a textual refusal. No fixture by convention; the refusal
-//   detail goes in notes.
-//
-// - http-error: the provider returned a non-2xx HTTP status. No fixture.
-//
-// - unsupported: the provider does not support this capability. No
-//   fixture, no attempt made.
+// - captured: HTTP succeeded and the response has the wire shape the
+//   capability implies. Fixture on disk; smoke test validates.
+// - misled: HTTP succeeded but the provider's documented contract did
+//   not materialize (no refusal; the behavior just did not fire).
+//   Fixture documents what was returned; a re-capture may flip the row.
+// - refused: explicit refusal of the task, via HTTP non-2xx or a textual
+//   refusal in a 200 body. No fixture; the detail goes in notes.
+// - http-error: non-2xx HTTP status. No fixture.
+// - unsupported: provider does not support the capability. No fixture,
+//   no attempt.
 export const SupportEntry = type({
   provider: "string",
   model: "string",
@@ -72,12 +59,9 @@ const OPENAI_FIRST_PARTY_MODELS = [
   "gpt-5.6-luna",
 ] as const;
 
-// The structured-output capability pair, shared by the rows whose entire
-// capability list is exactly this pair — several opencode models with outcome
-// captured, and Anthropic with outcome unsupported — so they need not re-spell
-// it. These two capabilities also appear as members of the larger
-// GEMINI_TEXT_CAPABILITIES and OPENAI_CAPTURED_CAPABILITIES lists, where they
-// stay inline as part of those providers' full captured sets.
+// Shared pair for rows whose whole capability list is exactly these two
+// (several opencode models captured; Anthropic unsupported). Also members of
+// the larger GEMINI_TEXT_CAPABILITIES and OPENAI_CAPTURED_CAPABILITIES lists.
 export const STRUCTURED_OUTPUT_CAPABILITIES = [
   "structured-output",
   "structured-output-streaming",
@@ -137,11 +121,9 @@ const OPENCODE_NON_VISION_CAPABILITIES = [
   "reasoning-content-streaming",
 ] as const satisfies readonly SupportEntry["capability"][];
 
-// Text + tool-calling with neither reasoning_content nor vision. Several
-// net-new relay models emit no reasoning_content field (they reason in-band
-// with <think> tags in content, or not at all) and soft-decline or return
-// empty on image input, so they carry only this base set plus whatever else
-// they demonstrated.
+// Text + tool-calling with neither reasoning_content nor vision; several
+// net-new relay models emit no reasoning_content and soft-decline or return
+// empty on image input.
 const OPENCODE_BASE_CAPABILITIES = [
   "plain-text",
   "plain-text-streaming",
@@ -149,11 +131,10 @@ const OPENCODE_BASE_CAPABILITIES = [
   "function-calling-multi-turn",
 ] as const satisfies readonly SupportEntry["capability"][];
 
-// The first-party api.openai.com deployment covers what the OpenAI-protocol
-// body builder builds. The streaming multi-turn, vision-streaming, and
-// document-input-streaming variants are not built by that builder, so they
-// carry no rows at all: their absence is a rig limitation, not a provider
-// outcome, and marking them unsupported would wrongly attribute it to the model.
+// First-party api.openai.com deployment. The streaming multi-turn,
+// vision-streaming, and document-input-streaming variants are not built by
+// the OpenAI-protocol body builder, so they carry no rows: their absence is a
+// rig limitation, not a provider outcome.
 const OPENAI_CAPTURED_CAPABILITIES = [
   "plain-text",
   "plain-text-streaming",
@@ -170,10 +151,8 @@ const OPENAI_UNSUPPORTED_REASONING = [
   "reasoning-content-streaming",
 ] as const satisfies readonly SupportEntry["capability"][];
 
-// Net-new first-party OpenAI models probed on the Chat Completions wire. The
-// gpt-5.x line, the o-series reasoning models, and the gpt-4.1/gpt-4o families
-// all carry the full captured surface (OPENAI_CAPTURED_CAPABILITIES). The two
-// oldest models carry less and get their own rows below.
+// Net-new first-party OpenAI models, all carrying the full captured surface;
+// the two oldest models get their own rows below.
 const OPENAI_NETNEW_FULL_MODELS = [
   "gpt-5",
   "gpt-5-mini",
@@ -236,11 +215,9 @@ const OPENAI_GPT4_MULTIMODAL_NOTE =
   "image or document content parts. Multimodal input on this Chat Completions " +
   "wire arrived with gpt-4o and gpt-4-turbo, not gpt-4.";
 
-// Builds one SupportEntry per capability for a single (provider, model,
-// outcome). notes is included only when supplied, so captured rows stay
-// notes-free while misled/unsupported rows carry their explanation. rows does
-// not itself check the notes/outcome pairing; assertNotesDiscipline enforces it
-// over the assembled matrix at module load.
+// Builds one SupportEntry per capability. notes is included only when
+// supplied; assertNotesDiscipline enforces the notes/outcome pairing over the
+// assembled matrix at module load.
 function rows(
   provider: string,
   model: string,
@@ -285,15 +262,13 @@ const ANTHROPIC_REDACTED_THINKING_CAPABILITIES = [
 ] as const satisfies readonly SupportEntry["capability"][];
 
 // Models that returned real redacted_thinking blocks. Adaptive-thinking
-// models (claude-sonnet-5, and any new model that follows the same wire)
-// remain misled when the canary still yields regular thinking only.
+// models remain misled while the canary still yields regular thinking only.
 const ANTHROPIC_REDACTED_CAPTURED_MODELS = [
   "claude-haiku-4-5-20251001",
 ] as const;
 
 // Adaptive models re-probed for redacted_thinking that still returned
-// regular thinking blocks rather than redacted_thinking (HTTP 200 with
-// a normal text reply and no refusal).
+// regular thinking blocks (HTTP 200, no refusal).
 const ANTHROPIC_REDACTED_MISLED_MODELS = [
   "claude-sonnet-5",
   "claude-opus-5",
@@ -311,12 +286,9 @@ const ANTHROPIC_UNSUPPORTED_OUTPUT_MODALITIES = [
   "image-output-streaming",
 ] as const satisfies readonly SupportEntry["capability"][];
 
-// Net-new opencode-zen models probed live, grouped by the capability profile
-// each actually demonstrated on the wire. grok-4.5 (the relay reports its
-// upstream endpoint unavailable, returning empty or error bodies) and the
-// deprecated mimo-v2-omni / mimo-v2-pro (relay returns a 404 deprecation
-// notice) were probed but excluded. Vision and reasoning_content vary per
-// model, so the groups differ.
+// Net-new opencode-zen models grouped by the capability profile each
+// demonstrated on the wire. grok-4.5 (relay upstream unavailable) and the
+// deprecated mimo-v2-omni / mimo-v2-pro (relay 404) were probed but excluded.
 const OPENCODE_FULL_STRUCTURED_MODELS = [
   "kimi-k2.5",
   "qwen3.5-plus",
@@ -344,10 +316,9 @@ const XAI_MODELS = [
   "grok-build-0.1",
 ] as const;
 
-// The five xAI models that stream real reasoning_content on the
-// reasoning-content canary. grok-4.20-0309-non-reasoning, xAI's explicit
-// non-reasoning variant, is the sole omission — it returns a normal text reply
-// with no reasoning_content, so its reasoning rows are unsupported below.
+// The xAI models that stream real reasoning_content on the canary.
+// grok-4.20-0309-non-reasoning, the explicit non-reasoning variant, is the
+// sole omission — its reasoning rows are unsupported below.
 const XAI_REASONING_MODELS = [
   "grok-4.20-0309-reasoning",
   "grok-4.3",
@@ -740,11 +711,10 @@ const MATRIX: SupportEntry[] = [
 
 export const SUPPORT_MATRIX: readonly SupportEntry[] = MATRIX;
 
-// Each provider's captured corpus lives inside the discovery package that
-// probes it. This map is the single owner of "which package holds which
-// provider's sessions"; getSessionDir composes the per-provider root with the
-// same {provider}/{model}/{capability} layout every package's sessions/ dir
-// uses.
+// Each provider's captured corpus lives in the discovery package that probes
+// it. Single owner of "which package holds which provider's sessions";
+// getSessionDir composes it with the {provider}/{model}/{capability} layout
+// every package's sessions/ dir uses.
 const SESSION_ROOTS: Record<string, string> = {
   anthropic: "packages/inference-discovery-anthropic/sessions",
   "google-genai": "packages/inference-discovery-google-genai/sessions",
@@ -758,29 +728,25 @@ const FIXTURE_BEARING_OUTCOMES = new Set<SupportEntry["outcome"]>([
   "misled",
 ]);
 
-// captured is the sole self-explanatory outcome: its fixture is the evidence, so
-// the row carries no notes. Every other outcome is a deviation that must justify
-// itself, so it requires a non-empty notes explanation. This is a DIFFERENT axis
-// from FIXTURE_BEARING_OUTCOMES — misled is fixture-bearing yet still requires
-// notes — so the two sets are intentionally distinct; do not unify them.
+// captured's fixture is the evidence, so it carries no notes; every other
+// outcome must justify itself with a non-empty notes explanation. This is a
+// different axis from FIXTURE_BEARING_OUTCOMES (misled is fixture-bearing yet
+// still requires notes); do not unify the sets.
 const NOTES_FREE_OUTCOMES = new Set<SupportEntry["outcome"]>(["captured"]);
 
-// captured and misled rows both point to a captured session on disk that the
-// smoke tests replay, so both are empirical proof the capability works; refused,
-// http-error, and unsupported rows carry no fixture. This is the single owner of
-// "which outcomes are fixture-bearing" — getSessionDir and the catalog capability
-// expansion both read it rather than re-deciding the outcome set.
+// captured and misled rows point to a session the smoke tests replay; the
+// other outcomes carry no fixture. Single owner of "which outcomes are
+// fixture-bearing" — getSessionDir and the catalog expansion read it rather
+// than re-deciding the outcome set.
 export function isFixtureBearing(entry: SupportEntry): boolean {
   return FIXTURE_BEARING_OUTCOMES.has(entry.outcome);
 }
 
-// The session corpus lives inside each provider's discovery package under a
-// `sessions/` tree with the {provider}/{model}/{capability} layout.
-// `session.json` inside each leaf is authoritative for the capability, model,
-// and origin the directory holds; the brand provider is NOT in the manifest
-// (its `source.provider` is the adapter-registry name, and both `openai` and
-// `opencode-zen` map to `openai-compatible`), so the brand is composed here
-// from the matrix entry.
+// The session corpus lives in each provider's discovery package under a
+// `sessions/` tree with the {provider}/{model}/{capability} layout. The brand
+// is not in the manifest (`source.provider` is the adapter-registry name, and
+// `openai` and `opencode-zen` both map to `openai-compatible`), so it is
+// composed here from the matrix entry.
 export function getSessionDir(entry: SupportEntry): string | null {
   if (!isFixtureBearing(entry)) return null;
   const root = SESSION_ROOTS[entry.provider];
@@ -793,10 +759,9 @@ export function getSessionDir(entry: SupportEntry): string | null {
   return `${root}/${entry.provider}/${entry.model}/${entry.capability}`;
 }
 
-// Enforces the notes/outcome pairing on a single entry: a notes-free outcome
-// must carry no notes; every other outcome must carry a non-empty notes
-// explanation. Applied to every entry at module load below, so it covers the
-// inline refused/http-error rows that never flow through rows() as well.
+// Enforces the notes/outcome pairing per entry. Applied to every entry at
+// module load, so it also covers the inline rows that never flow through
+// rows().
 export function assertNotesDiscipline(entry: SupportEntry): void {
   const site = `${entry.provider}/${entry.model}/${entry.capability}`;
   if (NOTES_FREE_OUTCOMES.has(entry.outcome)) {

@@ -42,11 +42,9 @@ export interface RunCaptureOpts {
 }
 
 export interface RunCaptureResult {
-  // HTTP status of the last exchange the capture performed. For an all-2xx
-  // capture this is the final turn's status; when a turn returns non-2xx the
-  // capture stops there and this reports that status, so a caller can classify
-  // an http-error outcome without reopening the fixture (the capture format
-  // does not persist the status line).
+  // HTTP status of the last exchange. A non-2xx stops the capture there, so a
+  // caller can classify an http-error outcome without reopening the fixture
+  // (the capture format does not persist the status line).
   finalStatus: number;
 }
 
@@ -152,22 +150,18 @@ async function captureStep(args: {
   let captured: ResponseBody;
   let parsedForGenerator: unknown | null = null;
   let bytesForGenerator: Uint8Array | null = null;
-  // Read the body as raw bytes regardless of kind so the capture writes them
-  // verbatim. For a successful JSON response we also parse the body: a
-  // multi-turn iterator consumes the parsed turn's response (via
-  // CapturedResponse.parsed) to build the next turn's request. The bytes
-  // written to disk are the original network bytes, not a re-serialised parsed
-  // value.
+  // Read the body as raw bytes so the capture writes them verbatim; parse a
+  // successful JSON response so a multi-turn iterator can consume the turn via
+  // CapturedResponse.parsed. On-disk bytes are the original network bytes, not
+  // a re-serialised value.
   const buf = await response.arrayBuffer();
   const bytes = new Uint8Array(buf);
   const ok = response.status >= 200 && response.status < 300;
   if (!ok) {
-    // A non-2xx response is an error payload, not a decodable turn. Persist its
-    // bytes for inspection but neither parse them nor hand them to the
-    // generator: a 4xx/5xx body may not be JSON, and runCapture stops the
-    // capture on a non-2xx status, so nothing downstream consumes it. Parsing
-    // here would turn a non-JSON error body into a bare SyntaxError before the
-    // bytes were ever written.
+    // A non-2xx body is an error payload, not a decodable turn: persist its
+    // bytes but neither parse them nor hand them to the generator. It may not
+    // be JSON, and parsing here would raise a bare SyntaxError before the
+    // bytes were written.
     captured =
       kind === "sse" ? { kind: "sse", bytes } : { kind: "json", bytes };
   } else if (kind === "sse") {
@@ -220,11 +214,9 @@ export async function runCapture(
 
   const iterator = plugin.iterateCaptureSteps({ model, capability, intent });
 
-  // Exchanges are numbered by execution order. A capability is single-turn,
-  // multi-turn, or files-api, and its iterator yields steps in transcript
-  // order, so this counter assigns each exchange its index directly from that
-  // order. The final JSON request holds the whole transcript, so its body is
-  // where tool dispatches are reconstructed from.
+  // Exchanges are numbered by execution order, straight from the iterator's
+  // yield order. The final JSON request holds the whole transcript, so its
+  // body is where tool dispatches are reconstructed from.
   let exchangeIndex = 0;
   let firstStepURL: string | undefined;
   let finalRequestBody: unknown;
@@ -243,11 +235,9 @@ export async function runCapture(
     exchangeIndex += 1;
     finalStatus = captured.status;
     if (captured.status < 200 || captured.status >= 300) {
-      // Non-2xx: stop before feeding the error response to the generator's next
-      // turn and before the success-path post-processing (dispatch
-      // reconstruction, manifest write), neither of which is meaningful for a
-      // failed capture. The bytes are on disk; the caller classifies from
-      // finalStatus.
+      // Non-2xx: stop before feeding the error response to the generator's
+      // next turn and before success-path post-processing. The bytes are on
+      // disk; the caller classifies from finalStatus.
       return { finalStatus };
     }
     iterResult = iterator.next(captured);
@@ -259,10 +249,9 @@ export async function runCapture(
     );
   }
 
-  // The recorded base URL must be the endpoint the rig actually dialed. The
-  // per-brand map supplies the canonical form (with any path prefix); assert
-  // its origin matches the dialed URL so a stale map or a moved endpoint fails
-  // loudly rather than recording a base URL that was never hit.
+  // The recorded base URL must be the endpoint the rig actually dialed; assert
+  // the origins match so a stale map or a moved endpoint fails loudly instead
+  // of recording a base URL that was never hit.
   const dialedOrigin = new URL(firstStepURL).origin;
   const recordedOrigin = new URL(baseURL).origin;
   if (dialedOrigin !== recordedOrigin) {
@@ -286,9 +275,8 @@ export async function runCapture(
   const manifest: CaptureManifest = {
     schemaVersion: "2",
     source: { provider: adapterProvider, model, baseURL },
-    // Hardcoded, not derived from opts.fetch: the rig's only production seam is
-    // the real network, so every capture it commits is live. opts.fetch is a
-    // test-only byte-injection seam and carries no synthetic-provenance meaning.
+    // Hardcoded: the rig's only production seam is the real network, so every
+    // capture it commits is live. opts.fetch is a test-only seam.
     origin: "live",
     capturedAt: now().toISOString(),
     capability,

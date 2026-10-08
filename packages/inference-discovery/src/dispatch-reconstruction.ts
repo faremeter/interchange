@@ -1,13 +1,10 @@
-// Reconstruct tool dispatches from a captured request transcript. The probe
-// rig does not record tool dispatches directly; the tool calls and their
-// fed-back results are embedded in the final request body of a
-// multi-turn conversation. Walking that body recovers each (call, result) pair
-// once, in call order, which is the session format's `dispatches/` record.
-//
-// The result is stored in the form that reproduces the wire when the replay
-// harness feeds it back through the provider adapter: the verbatim content
-// string for Anthropic and OpenAI (whose adapters pass strings through), and
-// the response object for Google (which the canonical matcher re-sorts).
+// Reconstruct tool dispatches from a captured request transcript. The rig does
+// not record dispatches directly; the calls and their fed-back results are
+// embedded in the final request body of a multi-turn conversation. Walking
+// that body recovers each (call, result) pair once, in call order, as the
+// session format's `dispatches/` record. Results are stored in the form that
+// reproduces the wire when replayed: the verbatim content string for
+// Anthropic/OpenAI, the response object for Google.
 
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
@@ -145,8 +142,8 @@ function extractOpenAIDispatches(
           `dispatch reconstruction: OpenAI duplicate tool result for ${JSON.stringify(id)}`,
         );
       }
-      // The tool message content is the verbatim string the client fed back;
-      // storing it unparsed reproduces it exactly when the adapter re-emits it.
+      // Verbatim string the client fed back; stored unparsed so the adapter
+      // re-emits it exactly.
       results.set(id, message.content);
     }
   }
@@ -208,10 +205,8 @@ function extractGoogleDispatches(
   return dispatches;
 }
 
-// `adapterProvider` is the adapter-registry key the replay harness drives
-// runInference against, so the extractor keys off the same name. The catalog
-// providers `openai` and `opencode-zen` both speak the OpenAI protocol and
-// resolve to the one `openai-compatible` adapter.
+// Keys off the adapter-registry name the replay harness drives runInference
+// against; `openai` and `opencode-zen` both resolve to `openai-compatible`.
 export function extractDispatches(
   adapterProvider: string,
   body: Record<string, unknown>,
@@ -240,9 +235,9 @@ export async function writeDispatches(
   for (let i = 0; i < dispatches.length; i++) {
     const dispatch = dispatches[i];
     if (dispatch === undefined) continue;
-    // The tool name comes from the captured transcript and becomes part of a
-    // filename the session loader parses back out; reject anything that is not
-    // a bare identifier so a stray path separator cannot escape the directory.
+    // The tool name becomes part of a filename the session loader parses back;
+    // reject anything that is not a bare identifier so a path separator cannot
+    // escape the directory.
     if (!/^[A-Za-z0-9_-]+$/.test(dispatch.toolName)) {
       throw new Error(
         `dispatch reconstruction: tool name ${JSON.stringify(dispatch.toolName)} is not a bare identifier and cannot form a dispatch filename`,
