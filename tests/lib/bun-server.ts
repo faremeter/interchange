@@ -1,12 +1,9 @@
 /**
  * Stop a `Bun.serve` server, bounding the wait so teardown cannot hang.
- *
- * A server-initiated WebSocket close through Hono does not always fire the
- * server-side `onClose`, so Bun can keep counting the dropped connection as
- * live. Both forms of `server.stop()` then wait forever for that phantom
- * connection to drain. Test processes already own and close their tracked
- * handles, so this bound prevents the runtime bookkeeping bug from wedging
- * teardown while still giving normal shutdowns time to complete.
+ * A server-initiated WebSocket close through Hono does not always fire
+ * the server-side `onClose`, so Bun can count the dropped connection as
+ * live and `server.stop()` waits forever for it to drain; this bound
+ * still gives normal shutdowns time to complete.
  */
 export async function stopServerBounded(
   server: ReturnType<typeof Bun.serve>,

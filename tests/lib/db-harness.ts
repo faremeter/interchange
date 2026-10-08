@@ -1,10 +1,6 @@
-// DB-side test harness primitives shared across the `tests/` tree.
-//
-// This module resolves the postgres connection a test should use by
-// reading the repo's `.env` + `.env.migrate` directly (the migration
-// role, which owns DDL and can create/drop schemas), and provides the
-// per-test schema-name generator. Higher-level harness lifecycle
-// helpers build on these.
+// DB-side test harness primitives shared across the `tests/` tree:
+// resolves the postgres connection from `.env` + `.env.migrate` (the
+// migration role, which owns DDL) and generates per-test schema names.
 
 import { existsSync } from "node:fs";
 import path from "node:path";
@@ -16,29 +12,16 @@ import { REPO_ROOT, optionalKey, parseEnvFileSync, requireKey } from "./env";
 import { quoteIdent } from "./grants";
 
 /**
- * Returns true when the repo has the `.env` files this harness reads:
- * `.env` (connection host/port/database) and `.env.migrate` (the
- * migration role). A suite uses this so a fresh checkout without a
- * configured database can still run `make all`: the DB-dependent tests
- * skip instead of failing.
+ * True when the repo has `.env` and `.env.migrate`, so DB-dependent
+ * suites can skip on a fresh checkout instead of failing `make all`.
+ * A file that exists but lacks a required key still errors loudly in
+ * `loadHarnessDbConfig`; this gate is only for the "no env at all" case.
  *
- * Apply it in one of two shapes. A skip must gate every place that
- * reaches the database, and the two shapes cover the two places a hook
- * can live:
- *
- *   1. Wrap the suite in `describe.skipIf(!harnessDbEnvAvailable())(...)`
- *      and keep the DB-touching `beforeAll`/`beforeEach` inside that
- *      `describe`. `skipIf` skips the hooks together with the bodies.
- *
- *   2. For a setup hook at file scope (column 0, outside any
- *      `describe`), open the hook with
- *      `if (!harnessDbEnvAvailable()) return;`. A file-scope `beforeAll`
- *      runs even when `describe.skipIf` skips the bodies, so the
- *      `describe` guard alone does not cover it; the early return does.
- *
- * Absence-only: a file that exists but lacks a required key still
- * surfaces a loud error from `loadHarnessDbConfig`. The gate is
- * specifically for the "no database env at all" case.
+ * A skip must cover every DB-touching hook: wrap the suite in
+ * `describe.skipIf(!harnessDbEnvAvailable())(...)` and keep the hooks
+ * inside the `describe`, or open a file-scope hook with
+ * `if (!harnessDbEnvAvailable()) return;` (file-scope hooks run even
+ * when `skipIf` skips the bodies).
  */
 export function harnessDbEnvAvailable(): boolean {
   return (
@@ -48,15 +31,9 @@ export function harnessDbEnvAvailable(): boolean {
 }
 
 /**
- * Returns true when the repo additionally has `.env.hub`, the file carrying
- * the hub role. Anything that reads that role gates on this rather than on
- * `harnessDbEnvAvailable`, which knows only about the connection settings and
- * the migration role.
- *
- * The distinction matters in a fresh worktree, where the env files are absent
- * because they are gitignored: gating on the narrower predicate lets a suite
- * run and then fail on a missing key, which is the loud-error case this gate
- * exists to avoid.
+ * True when the repo also has `.env.hub` (the hub role). Callers that
+ * read that role gate on this, so a fresh worktree skips instead of
+ * failing on a missing key mid-suite.
  */
 export function harnessHubEnvAvailable(): boolean {
   return (
@@ -65,8 +42,7 @@ export function harnessHubEnvAvailable(): boolean {
 }
 
 /**
- * Read the repo's `.env` + `.env.migrate` and surface the migration
- * user's credentials. The migration user is what the harnesses use to
+ * Migration-role credentials from `.env` + `.env.migrate`, used to
  * create schemas and apply DDL; a spawned hub still runs as the hub
  * user (loaded separately).
  */
@@ -94,20 +70,13 @@ export function randomSchemaName(): string {
 
 /**
  * A migrated, isolated postgres schema with a drizzle client bound to
- * it, for tests that exercise real query behaviour instead of mocking
- * the drizzle client.
- *
- * Lifecycle: `createTestDb` migrates a fresh schema once; `reset`
- * truncates every table between cases so each test starts empty;
- * `close` drops the schema and ends the connection. The client
- * connects as the migration role (which owns the schema), so no
- * grants are needed and no hub subprocess is involved.
+ * it, for tests that exercise real query behaviour. `reset` truncates
+ * every table between cases; `close` drops the schema. The client
+ * connects as the migration role, which owns the schema.
  */
 export type TestDb = {
-  // The harness always builds a postgres-js database, so pin `db` to the
-  // concrete type `createDB` returns rather than the driver-agnostic `DB["db"]`.
-  // That keeps raw `db.execute` results typed for the postgres-only tests that
-  // read rows off `pg_*` queries.
+  // Pin `db` to the concrete postgres-js type `createDB` returns so raw
+  // `db.execute` results stay typed for tests that read `pg_*` rows.
   db: ReturnType<typeof createDB>["db"];
   schema: string;
   reset: () => Promise<void>;

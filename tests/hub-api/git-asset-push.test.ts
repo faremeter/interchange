@@ -1,13 +1,8 @@
-// End-to-end push scenarios against the real `/usr/bin/git`.
-//
-// Three scenarios:
-//   1. A push that satisfies the token's refPattern and action set
-//      succeeds; the remote ref advances and `ls-remote` reflects
-//      the new tip.
-//   2. A push that targets a ref outside the token's refPattern is
-//      rejected with `(forbidden)` on stderr.
-//   3. A push using a read-only token (no `receivePack` action) is
-//      rejected with `(forbidden)` on stderr.
+// End-to-end push scenarios against the real `/usr/bin/git`: a push
+// within the token's refPattern/actions succeeds and the remote ref
+// advances; a push to a ref outside the refPattern is rejected
+// `(forbidden)`; a push with a read-only token is rejected
+// `(forbidden)`.
 
 import { describe, test, expect, afterEach } from "bun:test";
 import fs from "node:fs/promises";
@@ -109,10 +104,9 @@ describe.skipIf(!harnessHubEnvAvailable())("authorized push", () => {
     const tenant = await createTenant(hub.url, user);
     const asset = await createAsset(hub.url, user, tenant);
 
-    // Two tokens: a read-scoped one for the clone (so listRefs is
-    // gated by ** and succeeds), and a write-scoped one for the push.
-    // The push token must include `receivePack` plus a refPattern that
-    // matches refs/heads/main.
+    // Two tokens: a read-scoped one for the clone, and a write-scoped one
+    // for the push (`receivePack` plus a refPattern matching
+    // refs/heads/main).
     const readToken = await mintTenantGitToken(hub.url, user, tenant, {
       refPattern: "**",
       actions: ["can_read"],
@@ -311,7 +305,7 @@ describe.skipIf(!harnessHubEnvAvailable())("read-only token push", () => {
     await runGit(["add", "ro-skill/SKILL.md"], { cwd: cloneTarget });
     await runGit(["commit", "-m", "Update"], { cwd: cloneTarget });
 
-    // Use the read-only token to push. The middleware short-circuits on
+    // Use the read-only token to push; the middleware short-circuits on
     // the action gate before any wire-format exchange.
     const pushRemote = withBasicAuth(remote, "x", readToken.secret);
     const push = await runGit(
@@ -326,9 +320,9 @@ describe.skipIf(!harnessHubEnvAvailable())("read-only token push", () => {
     );
     expect(push.status).not.toBe(0);
     const combined = `${push.stdout}\n${push.stderr}`.toLowerCase();
-    // The smart-HTTP layer rejects the receive-pack info/refs request
-    // with HTTP 403 before any wire-format exchange takes place. Stock
-    // git surfaces that as `rpc failed; http 403` in stderr.
+    // The smart-HTTP layer rejects receive-pack info/refs with HTTP 403
+    // before any wire-format exchange; stock git surfaces that as
+    // `rpc failed; http 403`.
     expect(combined).toMatch(/http 403|forbidden/);
   }, 90_000);
 

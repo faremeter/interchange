@@ -41,7 +41,7 @@ import { seedAsset, seedPrincipal, seedTenants } from "@intx/test-harness/seed";
 // These route tests exercise the inherited-asset GET endpoints and the
 // package-registry tarball endpoints against a real database. The asset
 // resolver and the tenant/principal middleware issue real drizzle queries,
-// which previously had to be served by a mock that walked drizzle's internal
+// which a mock previously had to serve by walking drizzle's internal
 // `queryChunks`; here they run against a migrated postgres schema.
 
 const ROOT_TENANT_ID = "tnt_root";
@@ -182,10 +182,9 @@ function createMockEventCollectors(): EventCollectorRegistry {
 // Multi-tenant harness against a real database
 // ---------------------------------------------------------------------------
 
-// One migrated schema is shared across every suite below. These hooks
-// run at file scope so they cover all the suites, so they self-gate on
-// the same env check the suites use: without database env the suites
-// skip and the hooks must no-op rather than throw in beforeAll.
+// One migrated schema is shared across every suite below. These file-scope
+// hooks cover all the suites, so they self-gate on the same env check: the
+// suites skip and the hooks must no-op rather than throw.
 let h: TestDb;
 
 beforeAll(async () => {

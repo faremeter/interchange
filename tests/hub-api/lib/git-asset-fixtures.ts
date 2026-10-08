@@ -1,16 +1,8 @@
-// Shared fixtures for the asset smart-HTTP integration tests.
-//
-// These helpers compose on top of `git-harness`: they sign up a user
-// via the betterAuth REST endpoint, create a tenant (which makes the
-// signing user the tenant owner), create an asset via the REST
-// endpoint, and mint a git token with the requested ref pattern and
-// actions. The tests then drive `git clone` / `git fetch` /
-// `git push` against the resulting smart-HTTP URL using the token in
-// an askpass shim.
-//
-// All helpers fail loudly. If a setup step returns an unexpected
-// status the helper throws with the server's response body so the
-// test failure is actionable.
+// Shared fixtures for the asset smart-HTTP integration tests: sign up
+// a user, create a tenant, create an asset, and mint a git token over
+// the REST API; the tests then drive git clone/fetch/push against the
+// smart-HTTP URL with the token in an askpass shim. All helpers throw
+// with the server's response body on an unexpected status.
 
 import { type } from "arktype";
 import postgres from "postgres";
@@ -194,12 +186,10 @@ export async function createTenant(
   return { tenantId, slug };
 }
 
-// Insert a `workflow_definition` directly, bypassing any HTTP surface. The
-// agent-state git route resolves the repo through the run that keys on this
-// definition, so a real definition must exist for the smart-HTTP request to
-// pass tenant binding rather than 404. Returns the definition id any
-// session/run row keys on. Runs against the hub's per-test schema via
-// search_path.
+// Insert a `workflow_definition` directly, bypassing the HTTP surface: the
+// agent-state git route resolves the repo through the run keyed on this
+// definition, so the row must exist for tenant binding to pass. Runs against
+// the hub's per-test schema via search_path.
 export async function seedInstanceDefinition(
   schema: string,
   user: SignedUpUser,

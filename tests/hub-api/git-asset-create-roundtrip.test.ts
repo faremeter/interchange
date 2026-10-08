@@ -1,7 +1,6 @@
-// REST-create-then-clone roundtrip: a fresh asset is created over
-// the REST endpoint and immediately cloned over smart-HTTP. The
-// clone must return a signed genesis on refs/heads/main and pass
-// `git fsck`.
+// REST-create-then-clone roundtrip: a fresh asset is created over REST and
+// immediately cloned over smart-HTTP. The clone must return a signed
+// genesis on refs/heads/main and pass `git fsck`.
 
 import { describe, test, expect, afterEach } from "bun:test";
 import fs from "node:fs/promises";
@@ -84,9 +83,9 @@ describe.skipIf(!harnessHubEnvAvailable())(
         throw new Error(`fsck: ${fsck.stderr}\nstdout: ${fsck.stdout}`);
       }
 
-      // HEAD is advertised as a symref pointing at refs/heads/main, so
-      // the clone has a born HEAD. Assert it matches the remote tracking
-      // ref before reading the genesis commit via HEAD.
+      // HEAD is advertised as a symref to refs/heads/main, so the clone
+      // has a born HEAD; assert it matches the remote tracking ref before
+      // reading the genesis commit via HEAD.
       const headRev = await runGit(["rev-parse", "HEAD"], { cwd: target });
       if (headRev.status !== 0) {
         throw new Error(`rev-parse HEAD: ${headRev.stderr}`);

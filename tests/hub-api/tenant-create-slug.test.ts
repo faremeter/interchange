@@ -1,10 +1,9 @@
 // The tenant-create route normalizes case so a mail sender (whose From is
-// lowercased when parsed) maps to exactly one tenant: it derives the domain from
-// a lowercased slug and rejects a case-variant slug as a clean 409 rather than
-// letting the `lower(domain)` unique index surface a 500. The slug also becomes
-// a DNS label in the derived domain, so the route rejects a slug that is not a
-// legal label. Driven against a real spawned hub through the production HTTP
-// route.
+// lowercased when parsed) maps to one tenant: the domain derives from a
+// lowercased slug and a case-variant slug is a clean 409 rather than a 500
+// from the `lower(domain)` unique index. The slug also becomes a DNS label
+// in the derived domain, so a non-label slug is rejected. Driven against a
+// real spawned hub.
 
 import { afterEach, describe, expect, test } from "bun:test";
 
@@ -69,11 +68,9 @@ describe.skipIf(!harnessHubEnvAvailable())(
   },
 );
 
-// Every entry violates RFC 1035 section 2.3.1 as relaxed by RFC 1123 section
-// 2.1, so none of them is a legal DNS label. The derived domain is both the
-// sender stamp and the recipient run address, and the recipient address is the
-// key into the inbound mail policy lookup and the mail router, so a slug that
-// is not a label corrupts the admission policy key and the routing key.
+// None of these is a legal DNS label (RFC 1035 §2.3.1 as relaxed by RFC
+// 1123 §2.1). The derived domain is the sender stamp and the recipient run
+// address, so a non-label slug corrupts the mail admission and routing keys.
 const ILLEGAL_SLUGS: { label: string; slug: string }[] = [
   { label: "empty", slug: "" },
   { label: "leading hyphen", slug: "-acme" },
@@ -92,9 +89,8 @@ const ILLEGAL_SLUGS: { label: string; slug: string }[] = [
   { label: "over 63 characters", slug: "a".repeat(64) },
 ];
 
-// Each entry is a legal DNS label. RFC 1035 defines the letter set as all 52
-// characters in both cases and attaches no significance to case, so a
-// mixed-case slug is conformant and must stay accepted.
+// Each entry is a legal DNS label; RFC 1035 attaches no significance to
+// case, so a mixed-case slug is conformant and must stay accepted.
 const LEGAL_SLUGS: { label: string; slug: string }[] = [
   { label: "lowercase letters", slug: "acme" },
   { label: "mixed case", slug: "AcmeMixed" },
@@ -103,8 +99,8 @@ const LEGAL_SLUGS: { label: string; slug: string }[] = [
   { label: "exactly 63 characters", slug: "b".repeat(63) },
 ];
 
-// Collects every case before asserting, so one failing run names every slug the
-// route got wrong rather than only the first.
+// Collect every case before asserting, so one failing run names every wrong
+// slug rather than only the first.
 async function createEach(
   hub: HubHandle,
   cookies: string[],

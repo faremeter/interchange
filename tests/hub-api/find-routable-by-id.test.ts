@@ -111,8 +111,8 @@ describe.skipIf(!harnessDbEnvAvailable())("findRoutableById (real DB)", () => {
 
   test("returns undefined for a child run (anchored on another run)", async () => {
     await seedBase();
-    // A child park row anchors on its parent (anchorRunId !== id). Even if it
-    // owned an address it is not a top-level run, so the read surface never
+    // A child park row anchors on its parent (anchorRunId !== id); even
+    // with an address it is not a top-level run, so the read surface never
     // serves it.
     await h.db.insert(workflowDefinition).values({
       id: "wfd_child",

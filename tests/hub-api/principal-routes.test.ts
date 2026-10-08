@@ -29,10 +29,9 @@ import {
 } from "@intx/test-harness/seed";
 
 // Exercises the principals resolver against a real migrated schema so the
-// `workflow`-kind display-name second pass -- which reads the deployment's
-// `address` by joining a workflow principal's refId (its run id) through
-// `workflow_run` to its anchor run -- runs end to end rather than
-// against a mock.
+// `workflow`-kind display-name pass -- joining a workflow principal's refId
+// (its run id) through `workflow_run` to its anchor run's address -- runs
+// end to end rather than against a mock.
 
 const TENANT_ID = "tnt_principals";
 const ACTOR_PRINCIPAL_ID = "prn_actor";
@@ -158,19 +157,17 @@ async function setup() {
     kind: "workflow",
     name: "wf",
   });
-  // The workflow principal's refId is its run id; name resolution self-joins
-  // the run to its anchor run (on the deployment id) to derive the display
-  // name from the anchor run's address.
+  // The workflow principal's refId is its run id; name resolution joins the
+  // run to its anchor run (on the deployment id) for the display name.
   await seedPrincipal(h.db, {
     id: WORKFLOW_PRINCIPAL_ID,
     tenantId: TENANT_ID,
     kind: "workflow",
     refId: RUN_ID,
   });
-  // The deployment's anchor run carries the routing address the display name
-  // resolves to; its id is the deployment id and the child run below self-joins
-  // to it on that id. It is inserted first so the child run's deployment_id FK
-  // resolves.
+  // The deployment's anchor run carries the routing address the display
+  // name resolves to; it is inserted first so the child run's
+  // deployment_id FK resolves.
   await seedWorkflowRun(h.db, {
     id: DEPLOYMENT_ID,
     tenantId: TENANT_ID,

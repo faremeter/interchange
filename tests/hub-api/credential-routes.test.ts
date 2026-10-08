@@ -37,7 +37,7 @@ import {
 } from "@intx/test-harness/seed";
 
 // These route tests exercise credential creation against a real migrated
-// schema so the auto-grant insert runs inside the same transaction as the
+// schema so the auto-grant insert runs in the same transaction as the
 // credential insert and is asserted directly against the grant table.
 
 const TENANT_ID = "tnt_cred";
@@ -96,7 +96,7 @@ function createMockSidecarRouter(): SidecarRouter {
   };
 }
 
-// A sidecar router that records `sendCredentialsUpdate` calls so a test can
+// Sidecar router that records `sendCredentialsUpdate` calls so a test can
 // observe the fire-and-forget revoke broadcast a route triggers.
 function capturingCredentialsRouter(): {
   router: SidecarRouter;
@@ -323,8 +323,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // The response never carries the secret back out.
       expect(body["secret"]).toBeUndefined();
 
-      // The raw columns hold enc:aead ciphertext, not the plaintext -- the proof
-      // that the write path never stores a secret in the clear.
+      // The raw columns hold enc:aead ciphertext, not the plaintext -- proof
+      // the write path never stores a secret in the clear.
       const [row] = await h.db
         .select()
         .from(credential)
@@ -384,8 +384,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
       expect(patchRes.status).toBe(200);
 
-      // The rotated secret is stored as ciphertext of the NEW value, not the
-      // plaintext -- the update path encrypts just like the insert path.
+      // The rotated secret is stored as ciphertext of the new value; the
+      // update path encrypts like the insert path.
       const [row] = await h.db
         .select()
         .from(credential)
@@ -540,11 +540,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
     test("returns 404 without disclosing a referenced credential in another tenant", async () => {
       const app = await setup();
 
-      // A credential in a different tenant, referenced by a model provider
-      // there. The acting principal holds a wildcard `credential:*` grant, so
-      // requireGrant admits the request; tenant isolation is owned by the
-      // delete's WHERE clause. A pre-check that queried the referencing row
-      // globally would leak the credential's existence as a 409.
+      // A credential in another tenant, referenced by a model provider
+      // there. The acting principal holds a wildcard `credential:*` grant,
+      // so requireGrant admits the request; tenant isolation is owned by
+      // the delete's WHERE clause. A global pre-check would leak the
+      // credential's existence as a 409.
       const OTHER_TENANT_ID = "tnt_other";
       await seedTenants(h.db, [{ id: OTHER_TENANT_ID }]);
       await seedProvider(h.db, {
@@ -575,8 +575,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
       expect(deleteRes.status).toBe(404);
 
-      // The foreign credential is untouched -- the delete matched no row in the
-      // caller's tenant and never reached the foreign referencing row.
+      // The foreign credential is untouched: the delete matched no row in
+      // the caller's tenant.
       const creds = await h.db
         .select({ id: credential.id })
         .from(credential)
@@ -608,12 +608,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         throw new Error("expected credential id");
       }
 
-      // Alongside the auto-minted `credential:{id}` / `use` grant, seed a
-      // same-resource `manage` grant (must also be removed), a coarse
-      // `credential:*` wildcard grant (must survive), and a prefix-sibling
-      // `credential:{id}-other` grant (must survive). Together these guard the
-      // two design decisions: exact-match never touches the wildcard, and the
-      // delete is action-agnostic.
+      // Seed, alongside the auto-minted use grant, a same-resource `manage`
+      // grant (must be removed too), a `credential:*` wildcard (must
+      // survive), and a prefix-sibling grant (must survive): exact-match
+      // never touches the wildcard, and the delete is action-agnostic.
       await h.db.insert(grantTable).values([
         {
           id: "grn_extra_manage",
@@ -678,14 +676,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
   "credential delete foreign-key error shape",
   () => {
     test("a restrict violation on credential delete is recognized as a referenced-row violation", async () => {
-      // The DELETE handler's catch maps a model_provider.credential_id restrict
-      // violation to a 409; its isReferencedRowViolation check reads the
-      // SQLSTATE via pgErrorCode. Pin the empirical fact this rests on: a real
-      // restrict-foreign-key delete through drizzle surfaces a referenced-row
-      // violation on the error cause chain -- 23001 (restrict_violation) or
-      // 23503 (foreign_key_violation), depending on the Postgres version. The
-      // route 409 test drives the catch end to end; a driver-wrapping change is
-      // caught here.
+      // The DELETE handler maps a model_provider.credential_id restrict
+      // violation to a 409 by reading the SQLSTATE via pgErrorCode. Pin the
+      // empirical fact: a real restrict-FK delete through drizzle surfaces
+      // 23001 (restrict_violation) or 23503 (foreign_key_violation) on the
+      // error cause chain, depending on the Postgres version.
       await seedTenants(h.db, [{ id: TENANT_ID }]);
       await seedPrincipal(h.db, {
         id: OWNER_PRINCIPAL_ID,
@@ -763,10 +758,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       return body["id"];
     }
 
-    // One running instance run (anchorRunId null), one running deployment-anchor
-    // run (anchorRunId non-null -- the case the source-update push excludes),
-    // and one completed run. A revoke must reach the two running addresses and
-    // skip the completed run.
+    // One running instance run (anchorRunId null), one running
+    // deployment-anchor run (anchorRunId non-null, the case the
+    // source-update push excludes), and one completed run. A revoke must
+    // reach the two running addresses and skip the completed run.
     async function seedRuns(): Promise<void> {
       await seedWorkflowRun(h.db, {
         id: "run_instance",
@@ -801,11 +796,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
       expect(res.status).toBe(204);
 
-      // pushCredentialRevoke enumerates its address set in one query, then
-      // calls sendCredentialsUpdate for every address in one synchronous map,
-      // so the call list is complete the moment it reaches two. A broadcast to
-      // the completed run would already be recorded here, which is why the
-      // exact-length assertion below needs no settling delay ahead of it.
+      // pushCredentialRevoke enumerates its address set in one query and
+      // calls sendCredentialsUpdate synchronously per address, so the call
+      // list is complete the moment it reaches two; the exact-length
+      // assertion needs no settling delay.
       await waitUntil(() => cap.calls.length >= 2);
 
       expect(cap.calls).toHaveLength(2);
@@ -835,8 +829,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
       expect(res.status).toBe(200);
 
-      // One enumerate-then-fan-out, as in the DELETE case above: reaching two
-      // calls means the revoke pushed to exactly the addresses it resolved.
+      // One enumerate-then-fan-out, as in the DELETE case: reaching two
+      // calls means the revoke pushed to exactly the resolved addresses.
       await waitUntil(() => cap.calls.length >= 2);
 
       expect(cap.calls).toHaveLength(2);
@@ -862,13 +856,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
       expect(res.status).toBe(200);
 
-      // No secret rotation and no revocation, so the route starts no push at
-      // all: there is no promise to await and no state that a predicate could
-      // poll, because the awaited outcome is the absence of a call. Elapsed
-      // time is the only evidence available for this negative, so the sleep
-      // stays. It is safe in the one direction that matters -- a loaded machine
-      // makes the window longer in real terms, so the sleep can only
-      // under-detect a stray push, never fail a correct run.
+      // No rotation and no revocation, so the route starts no push: the
+      // awaited outcome is the absence of a call, and elapsed time is the
+      // only evidence for that negative, so the sleep stays. A loaded
+      // machine only makes the window longer, so it can under-detect a
+      // stray push but never fail a correct run.
       await new Promise((r) => setTimeout(r, 30));
       expect(cap.calls).toHaveLength(0);
     });

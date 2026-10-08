@@ -229,11 +229,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
     test("returns 404 without disclosing a referenced wallet in another tenant", async () => {
       const app = await setup();
 
-      // A wallet in a different tenant, referenced by a model provider there.
-      // The acting principal holds a wildcard `wallet:*` grant, so requireGrant
-      // admits the request; tenant isolation is owned by the delete's WHERE
-      // clause. A pre-check that queried the referencing row globally would leak
-      // the wallet's existence as a 409.
+      // A wallet in another tenant, referenced by a model provider there.
+      // The acting principal holds a wildcard `wallet:*` grant, so
+      // requireGrant admits the request; tenant isolation is owned by the
+      // delete's WHERE clause. A global pre-check would leak the wallet's
+      // existence as a 409.
       const OTHER_TENANT_ID = "tnt_other";
       await seedTenants(h.db, [{ id: OTHER_TENANT_ID }]);
       await seedWallet(h.db, { id: "wlt_foreign", tenantId: OTHER_TENANT_ID });

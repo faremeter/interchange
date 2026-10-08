@@ -89,10 +89,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     test("resolves a deployment anchor run to the unified run", async () => {
       await seedBase();
-      // The collapse folds the deployment onto one self-anchored run that owns
-      // its routing address, so resolving that address returns the run: there
-      // is no longer a separate workflow-derived key path that hides it. This
-      // anchor carries no own principal, so the resolved endpoint has no
+      // The collapse folds the deployment onto one self-anchored run that
+      // owns its routing address, so resolving that address returns the
+      // run. This anchor carries no own principal, so the endpoint has no
       // session.
       await seedWorkflowRun(h.db, {
         id: "run_anchor",

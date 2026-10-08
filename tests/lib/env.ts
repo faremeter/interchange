@@ -1,13 +1,6 @@
-// Shared `.env`-reading primitives for the test harnesses under
-// `tests/`.
-//
-// Both the hub-subprocess harness (`tests/hub-api/lib/git-harness.ts`)
-// and the DB-only resolution harness (`tests/lib/db-harness.ts`) read
-// the repo's `.env*` files to discover database credentials. Keeping
-// the repo-root resolution and the parse/require helpers here gives a
-// single source of truth: the harnesses never fall back to invented
-// values deep in the call graph, and a missing required var raises
-// loudly at the point of use.
+// Shared `.env`-reading primitives for the `tests/` harnesses: repo-root
+// resolution plus parse/require helpers, so a missing required var
+// raises loudly at the point of use and no harness invents values.
 
 import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -64,12 +57,9 @@ export function requireKey(
   return v;
 }
 
-// DB_PASSWORD is auth material whose required-ness depends on the
-// server's pg_hba.conf. Under `trust` or `peer` the server never asks
-// for a password and an empty value is correct; under `md5`/`scram`
-// the empty value will surface as a real libpq authentication error
-// at connect time, which is more informative than a synthetic env-var
-// check here.
+// DB_PASSWORD is optional: under `trust`/`peer` pg_hba.conf never asks
+// for a password, and under `md5`/`scram` an empty value surfaces as a
+// real libpq auth error at connect time, which beats a synthetic check.
 export function optionalKey(
   source: Record<string, string>,
   key: string,
