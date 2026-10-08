@@ -74,17 +74,19 @@ CLOSED. It composes to a registry that throws on any lookup. This is the
 opposite of `interchange.directors`, which resolves by id prefix: a director
 id is `<package-name>/<local-name>`, so a step naming
 `alice-coding-director/coding` loads the `interchange.directors` module of
-the package the workflow declares as a direct dependency (workspace
-member or pinned registry dep -- both lay out under `node_modules/`
-identically), falling back to the built-in registry when no step names
-a custom director. A director id whose package is not a direct dependency, or that carries no
-package prefix, is unresolvable and fails the probe. The id prefix is an npm package name, not a
-path: `.` / `..` segments and extra slashes beyond a scope cannot look up a package outside the
-workflow's own `node_modules`. A package's exported
-director ids must sit under its own name, so the approved `director:<id>`
-grant names the package whose code runs. A workflow that declares a loop
-but ships no loops module therefore deploys, and then fails when its refs
-are resolved.
+the package laid out under `node_modules/<package-name>`. A direct dep
+(workspace member or pinned registry dep -- both lay out under
+`node_modules/` identically) lands there, and a published tarball that
+bundles its own `node_modules` also places packages there, falling back to
+the built-in registry when no step names a custom director. A director id
+whose slot cannot be resolved, or that carries no package prefix, is
+unresolvable and fails the probe closed. The id prefix is an npm package
+name, not a path: `.` / `..` segments and extra slashes beyond a scope
+cannot look up a package outside the workflow's own `node_modules`. A
+package's exported director ids must sit under its own name, so the approved
+`director:<id>` grant names the package whose code runs. A workflow that
+declares a loop but ships no loops module therefore deploys, and then fails
+when its refs are resolved.
 
 Where it lives today: the same two loaders, plus
 `loadWorkflowDirectorRegistryFromClosure`,
