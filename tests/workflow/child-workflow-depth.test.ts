@@ -1,11 +1,9 @@
-// Runtime depth guard for childWorkflow spawn recursion, exercised through
-// the real runLocal recursive spawner. A nested chain deeper than the ceiling
-// fails the run; the same chain completes under the default ceiling, proving
-// the ceiling -- not some other failure -- is what stops it. runLocal creates
-// a fresh in-memory store per rung, so the deepest rung's depth-naming message
-// is asserted separately in the fast child-depth unit test; the real-path
-// (shared-repo, real sidecar spawn seam) message assertion lives in
-// `packages/workflow-host/src/child/workflow-substrate-factory-child-depth.test.ts`.
+// Runtime depth guard for childWorkflow spawn recursion via the real runLocal
+// recursive spawner. A chain deeper than the ceiling fails the run; the same
+// chain completes under the default ceiling, proving the ceiling -- not another
+// failure -- is what stops it. The depth-naming message is asserted in the fast
+// child-depth unit test and the shared-repo spawn-seam test
+// (`workflow-substrate-factory-child-depth.test.ts`).
 
 import { describe, test, expect } from "bun:test";
 
@@ -36,8 +34,8 @@ function makeAgent(id: string) {
   });
 }
 
-// parent -> outer -> mid -> leaf, each spawning the next inline child. The
-// leaf runs one real (stub) step. Depth: parent 0, outer 1, mid 2, leaf 3.
+// parent -> outer -> mid -> leaf, each spawning the next inline child; the leaf
+// runs one step. Depth: parent 0, outer 1, mid 2, leaf 3.
 function nestedChain(): WorkflowDefinition {
   const leaf = defineWorkflow({
     id: "leaf-w",
@@ -81,10 +79,10 @@ describe("childWorkflow runtime depth guard (runLocal)", () => {
   });
 
   test("a huge injected ceiling does not spuriously fail a shallow run", async () => {
-    // A large override is clamped to the constant, so a depth-4 tree still
-    // runs well under the bound and completes. (The clamp arithmetic itself
-    // -- that an override can only tighten, never loosen -- is proven in the
-    // child-depth unit test; a chain past 32 is impractical to author here.)
+    // A large override is clamped to the constant, so the depth-4 tree still
+    // runs well under the bound and completes. (The clamp arithmetic -- an
+    // override can only tighten, never loosen -- is proven in the child-depth
+    // unit test; a chain past 32 is impractical to author here.)
     const result = await runLocal(nestedChain(), {
       authorize: allowAll,
       maxChildSpawnDepth: 1_000_000,

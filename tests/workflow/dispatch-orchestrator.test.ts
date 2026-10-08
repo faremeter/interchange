@@ -1,18 +1,10 @@
 // The interchange-demo dispatch orchestrator on the extended engine, driven by a
-// stubbed invoker: the OUTER per-level iteration.
-//
-// `dispatch-demo.test.ts` authors a single level (captureBaseline -> plan ->
-// runLevel map -> commit -> critique -> amend loop -> consolidate/escalate).
-// The real demo runs `plan` once and then walks the plan's LEVELS, running that
-// per-level pipeline once per level, and short-circuits the whole run when a
-// level cannot be made to pass. This test authors that outer iteration as an
-// engine loop whose body is the per-level pipeline -- a loop nested inside a
-// loop (the body carries the amendment loop). It establishes the nested-loop
-// composition, the level-cursor carry, and the failure short-circuit.
-//
-// Structural fidelity only: the planner/critic/fixer agents are stubbed behind
-// the invokeStep seam and the git effects are deterministic, keeping this the
-// fast, LLM-free check of the engine's routing and effect behaviour.
+// stubbed invoker: the OUTER per-level iteration. `dispatch-demo.test.ts` authors
+// a single level; this test authors the loop that walks the plan's LEVELS, each
+// running that per-level pipeline (a loop nested inside a loop), and
+// short-circuits the whole run when a level cannot pass. Agents are stubbed
+// behind the invokeStep seam and the git effects are deterministic, keeping this
+// the fast, LLM-free check of the engine's routing and effect behaviour.
 
 import { describe, test, expect } from "bun:test";
 
@@ -168,10 +160,8 @@ function decisionOf(value: unknown): string {
   throw new Error("expected an operator decision");
 }
 
-// The Phase-5 loop keys its `while` off the build gate's `clean` field only.
-// The build is the body's unconditional first step, so it always exists; the
-// fix path (attribution..rebuild) is pruned on a clean build and must never be
-// read here.
+// The Phase-5 loop's `while` reads only build.clean; the fix path
+// (attribution..rebuild) is pruned on a clean build and never read here.
 function buildClean(childOutput: unknown): boolean {
   if (
     typeof childOutput === "object" &&
@@ -202,8 +192,7 @@ function verifyFixed(childOutput: unknown): boolean {
   throw new Error("fix body output missing verify.fixed");
 }
 
-// The amendment loop body: a fixer reworks, then the critic re-judges. Identical
-// in shape to the sibling dispatch-demo's amend body.
+// The amendment loop body: a fixer reworks, then the critic re-judges.
 const amendBody = defineWorkflow({
   id: "amend-body",
   trigger: { type: "manual" },
@@ -216,11 +205,11 @@ const amendBody = defineWorkflow({
   },
 });
 
-// The per-level pipeline, authored as the OUTER loop's body. `pickLevel` slices
-// the plan's tasks down to the cursor's level (a host-JS transform, because a
-// selector cannot index an array by a runtime cursor). A level that never
-// passes exhausts the amendment loop and routes to `levelFailed`, which throws
-// to fail the body run -- the outer loop then short-circuits the whole run.
+// The per-level pipeline, the OUTER loop's body. `pickLevel` slices the plan's
+// tasks down to the cursor's level (a host-JS transform: a selector cannot
+// index an array by a runtime cursor). An unpasseable level exhausts the
+// amendment loop, routes to `levelFailed`, which throws to fail the body run
+// and short-circuit the whole run.
 const perLevelBody = defineWorkflow({
   id: "per-level-body",
   trigger: { type: "manual" },
@@ -261,8 +250,7 @@ const perLevelBody = defineWorkflow({
   },
 });
 
-// One fix attempt (the innermost, retry level). The fixer reworks and the
-// deterministic `verify` reports whether the rework holds.
+// One fix attempt (the innermost retry level); `verify` reports whether it holds.
 const fixBody = defineWorkflow({
   id: "fix-body",
   trigger: { type: "manual" },
@@ -279,15 +267,14 @@ const fixBody = defineWorkflow({
   },
 });
 
-// One attributed task's fix (the per-task level). Once the task crosses the
-// escalation threshold, `escGate` diverts through `operatorWait` -- an
-// `awaitSignal` that parks the task mid-fix and relays up through the task loop
-// and the Phase-5 loop to the run's signal channel. `abortCheck` throws on
-// "abort" (failing the run) and passes on "continue". `escJoin` is the diamond
-// join (an action, so the join is the codebase's tested action-join shape); the
-// nested `retryLoop` then retries the fix until `verify` passes, failing the run
-// via `retryFailed` if it cannot. Escalation gates whether to proceed to the
-// retries, it does not replace them.
+// One attributed task's fix (the per-task level). Past the escalation
+// threshold, `escGate` diverts through `operatorWait`, an `awaitSignal` that
+// parks the task mid-fix and relays up to the run's signal channel. `abortCheck`
+// throws on "abort" (failing the run) and passes on "continue". `escJoin` is
+// the diamond join (an action, the codebase's tested action-join shape); the
+// nested `retryLoop` retries the fix until `verify` passes, failing the run via
+// `retryFailed` if it cannot. Escalation gates whether to proceed to the
+// retries; it does not replace them.
 const taskBody = defineWorkflow({
   id: "task-body",
   trigger: { type: "manual" },
@@ -318,13 +305,13 @@ const taskBody = defineWorkflow({
   },
 });
 
-// One Phase-5 verification round. `build` is a deterministic effect whose
-// `clean` field drives both the in-round `cleanGate` (which prunes the fix path
-// on a clean build) and the loop's `buildDirty` while. A dirty build attributes
-// the failures, then `taskLoop` walks the attributed tasks -- each task retried
-// by its own nested `retryLoop` (so the fix nesting is phase5 -> taskLoop ->
-// retryLoop) -- and rebuilds; the NEXT round's build is the re-gate that closes
-// Phase 5 out. An exhausted task loop routes to `tasksExhausted`, which throws.
+// One Phase-5 verification round. The deterministic `build` effect's `clean`
+// field drives both the in-round `cleanGate` (pruning the fix path on a clean
+// build) and the loop's `buildDirty` while. A dirty build attributes the
+// failures, then `taskLoop` walks the attributed tasks -- each retried by its
+// own nested `retryLoop` (fix nesting: phase5 -> taskLoop -> retryLoop) -- and
+// rebuilds; the next round's build re-gates Phase 5 out. An exhausted task loop
+// routes to `tasksExhausted`, which throws.
 const phase5Body = defineWorkflow({
   id: "phase5-body",
   trigger: { type: "manual" },
@@ -420,9 +407,8 @@ const fullDemo = defineWorkflow({
 });
 
 // The loop-fn registry closes over `escalateAtTask` so the Phase-5 task loop's
-// carry can flag the task that must escalate to the operator. The functions stay
-// pure -- they read only their inputs and a fixed threshold -- so the engine can
-// re-run them deterministically on resume.
+// carry can flag the task to escalate to the operator. The functions stay pure,
+// so the engine can re-run them deterministically on resume.
 function makeLoopFns(escalateAtTask: number): (ref: string) => LoopFn {
   return (ref: string): LoopFn => {
     if (ref === "shouldAmend")
@@ -431,8 +417,8 @@ function makeLoopFns(escalateAtTask: number): (ref: string) => LoopFn {
       return (_childOutput, currentInput) => ({
         round: roundOf(currentInput) + 1,
       });
-    // The outer per-level loop walks the level cursor: continue while the next
-    // cursor is still a valid level, threading the plan tasks forward unchanged.
+    // The outer per-level loop walks the level cursor, threading the plan tasks
+    // forward unchanged.
     if (ref === "moreLevels")
       return (_childOutput, currentInput) =>
         cursorOf(currentInput) + 1 < levelCountOf(currentInput);
@@ -449,8 +435,8 @@ function makeLoopFns(escalateAtTask: number): (ref: string) => LoopFn {
       return (_childOutput, currentInput) => ({
         round: roundOf(currentInput) + 1,
       });
-    // The task loop walks the attributed-task cursor, flagging the next task for
-    // operator escalation once it reaches the threshold.
+    // The task loop walks the attributed-task cursor, flagging the next task
+    // for operator escalation once it reaches the threshold.
     if (ref === "moreTasks")
       return (_childOutput, currentInput) =>
         cursorOf(currentInput) + 1 < taskCountOf(currentInput);
@@ -479,10 +465,8 @@ interface DemoPlan {
   readonly tasks: readonly PlanTask[];
 }
 
-// `convergeAtRound` decides the critic verdict: once the amendment round reaches
-// the threshold the critic passes; otherwise it asks for another amendment. Each
-// invocation bumps the agent's run count so a crash-resume test can see a step
-// re-drive.
+// `convergeAtRound` decides the critic verdict; each invocation bumps the
+// agent's run count so a crash-resume test can see a step re-drive.
 function makeInvokeStep(
   convergeAtRound: number,
   plan: DemoPlan,
@@ -530,8 +514,8 @@ interface DemoTrace {
   readonly levelsPicked: number[];
   readonly committedLevels: number[];
   readonly operatorDecisions: string[];
-  // Per-agent invocation counts, so a crash-resume test can observe an agent
-  // step re-driving (running again) on resume rather than replaying complete.
+  // Per-agent invocation counts, so a crash-resume test can observe a re-drive
+  // on resume.
   readonly agentRuns: Map<string, number>;
 }
 
@@ -594,8 +578,8 @@ function buildEnv(opts: {
     requires,
     authzContext,
   }) => {
-    // Pure host transforms: the parse bridge and the per-level slice. Neither
-    // touches an external effect, so neither runs through the EffectContext.
+    // Pure host transforms: neither touches an external effect, so neither runs
+    // through the EffectContext.
     if (handler === "parsePlan") {
       const tasks = tasksOf(input);
       return {
@@ -620,25 +604,22 @@ function buildEnv(opts: {
         },
       };
     }
-    // A deterministic stand-in for attribution naming the failing tasks: it
-    // yields the task count the Phase-5 task loop walks. The attributor agent
-    // does the modelled work; this action owns the loop-driving count so no
-    // agent output feeds a loop.
+    // Deterministic stand-in for attribution: yields the task count the Phase-5
+    // task loop walks, so no agent output feeds a loop.
     if (handler === "pickFixTasks") {
       return { output: { taskCount: fixTaskCount } };
     }
-    // The clean-branch no-op the Phase-5 `cleanGate` routes to when the build
-    // is already clean, and the escalation diamond join.
+    // The Phase-5 clean-branch no-op and the escalation diamond join.
     if (handler === "noop") {
       return { output: { skipped: true } };
     }
-    // A deterministic per-task verifier: the rework holds once the attempt
+    // Deterministic per-task verifier: the rework holds once the attempt
     // reaches `fixAtAttempt`.
     if (handler === "verify") {
       return { output: { fixed: attemptOf(input) >= fixAtAttempt } };
     }
-    // Resolve an operator escalation: record the decision, and throw on "abort"
-    // so the run fails (a "continue" falls through to the fix attempt).
+    // Resolve an operator escalation: record the decision; throw on "abort" to
+    // fail the run.
     if (handler === "abortCheck") {
       const decision = decisionOf(input);
       trace.operatorDecisions.push(decision);
@@ -650,12 +631,12 @@ function buildEnv(opts: {
       return { output: { decision } };
     }
     // A level whose amendment loop exhausts routes here; throwing fails the
-    // body run so the outer loop short-circuits the whole run.
+    // body run so the outer loop short-circuits.
     if (handler === "levelFailed") {
       throw new Error("level failed: amendment loop exhausted without passing");
     }
-    // The Phase-5 exhaustion sinks fail the run: an escalation would merely
-    // complete, so a throw is what enforces `failed` (matching the standalone).
+    // The Phase-5 exhaustion sinks throw: an escalation would merely complete,
+    // so a throw is what enforces `failed`.
     if (handler === "retryFailed") {
       throw new Error("retry loop exhausted without fixing the task");
     }
@@ -755,12 +736,11 @@ function noEffects(): EffectRuns {
   return { baseline: 0, commit: 0, build: 0, rebuild: 0 };
 }
 
-// A per-task escalation threshold no run below reaches, so the operator
-// escalation never fires and no `awaitSignal` parks in the scenarios that do not
-// exercise it.
+// A threshold no run below reaches, so the operator escalation never fires in
+// scenarios that do not exercise it.
 const NEVER_ESCALATE = Number.POSITIVE_INFINITY;
 
-// The number of attributed tasks the Phase-5 task loop walks per dirty round.
+// Attributed tasks the Phase-5 task loop walks per dirty round.
 const FIX_TASK_COUNT = 2;
 
 const TWO_LEVEL_PLAN: DemoPlan = {
@@ -780,8 +760,8 @@ describe("dispatch orchestrator: outer per-level iteration", () => {
       blobs: createInMemoryBlobSubstrate(),
       effects: inMemoryLedger(),
       convergeAtRound: 2,
-      // Phase 5's first build is clean, so verification converges immediately
-      // and the run reaches consolidate.
+      // Phase 5's first build is clean, so verification converges and the run
+      // reaches consolidate.
       cleanAtRound: 1,
       fixAtAttempt: 0,
       fixTaskCount: FIX_TASK_COUNT,
@@ -797,12 +777,12 @@ describe("dispatch orchestrator: outer per-level iteration", () => {
     expect(outcomeOf(result.outputs.perLevelLoop)).toBe("converged");
     expect(iterationsOf(result.outputs.perLevelLoop)).toBe(2);
     expect(trace.levelsPicked).toEqual([0, 1]);
-    // The baseline ran once; commit ran once per level, on the level's own
-    // tasks, in order.
+    // The baseline ran once; commit ran once per level, on that level's tasks,
+    // in order.
     expect(effectRuns.baseline).toBe(1);
     expect(effectRuns.commit).toBe(2);
     expect(trace.committedLevels).toEqual([0, 1]);
-    // The run converged, so consolidate ran and escalation was pruned.
+    // Converged: consolidate ran and escalation was pruned.
     expect(result.outputs.consolidate).toEqual({ consolidated: true });
     expect("escalate" in result.outputs).toBe(false);
   });
@@ -827,9 +807,8 @@ describe("dispatch orchestrator: outer per-level iteration", () => {
     });
     const result = await runtimeRun(fullDemo, env).complete;
 
-    // The run failed on level 0, and level 1 never started -- the per-level
-    // short-circuit. (Phase 5 is the loop's normal successor; a throwing
-    // iteration does not prune it, so a stray verification build may begin
+    // The run failed on level 0; level 1 never started. (A throwing iteration
+    // does not prune its successor, so a stray verification build may begin
     // before the failed run settles. The terminal status is what matters here.)
     expect(result.terminalStatus).toBe("failed");
     expect(trace.levelsPicked).toEqual([0]);
@@ -839,8 +818,8 @@ describe("dispatch orchestrator: outer per-level iteration", () => {
 
 const ONE_LEVEL_PLAN: DemoPlan = { tasks: [{ id: "t1", level: 0 }] };
 
-// Env for the signal-free Phase-5 scenarios: the task loop never escalates, so
-// no `awaitSignal` parks. The operator-escalation scenarios set the threshold.
+// Env for the signal-free Phase-5 scenarios: the task loop never escalates.
+// The operator-escalation scenarios set the threshold.
 function phase5Env(opts: {
   cleanAtRound: number;
   fixAtAttempt: number;
@@ -877,8 +856,8 @@ describe("dispatch orchestrator: phase-5 verification loop", () => {
     const result = await runtimeRun(fullDemo, env).complete;
 
     expect(result.terminalStatus).toBe("completed");
-    // Phase 5 ran one round; the clean build pruned the fix path, so no rebuild
-    // and no fixer.
+    // Phase 5 ran one round; the clean build pruned the fix path, so no
+    // rebuild or fixer.
     expect(outcomeOf(result.outputs.phase5)).toBe("converged");
     expect(iterationsOf(result.outputs.phase5)).toBe(1);
     expect(effectRuns.build).toBe(1);
@@ -890,8 +869,8 @@ describe("dispatch orchestrator: phase-5 verification loop", () => {
   test("walks the attributed tasks, retrying each, and re-gates next round", async () => {
     const effectRuns = noEffects();
     const trace = emptyTrace();
-    // Round 1's build is dirty; each of the two attributed tasks needs a second
-    // fix attempt; round 2's build is clean.
+    // Round 1's build is dirty, each attributed task needs a second fix
+    // attempt, and round 2's build is clean.
     const env = phase5Env({
       cleanAtRound: 2,
       fixAtAttempt: 1,
@@ -901,14 +880,14 @@ describe("dispatch orchestrator: phase-5 verification loop", () => {
     const result = await runtimeRun(fullDemo, env).complete;
 
     expect(result.terminalStatus).toBe("completed");
-    // Two rounds: round 1 builds dirty, walks the task loop, and rebuilds; round
-    // 2 builds clean and converges. Build ran per round; rebuild ran once.
+    // Round 1 built dirty, walked the task loop, and rebuilt; round 2 built
+    // clean and converged.
     expect(outcomeOf(result.outputs.phase5)).toBe("converged");
     expect(iterationsOf(result.outputs.phase5)).toBe(2);
     expect(effectRuns.build).toBe(2);
     expect(effectRuns.rebuild).toBe(1);
-    // The depth-3 nesting genuinely iterated: the task loop walked both tasks and
-    // each task's retry loop ran two attempts, so the fixer ran 2 * 2 = 4 times.
+    // The depth-3 nesting genuinely iterated: 2 tasks x 2 retry attempts = 4
+    // fixer runs.
     expect(agentRunsOf(trace, "phase5-fixer")).toBe(FIX_TASK_COUNT * 2);
     expect(result.outputs.consolidate).toEqual({ consolidated: true });
   });
@@ -916,8 +895,8 @@ describe("dispatch orchestrator: phase-5 verification loop", () => {
   test("fails the run when the build never goes clean (verification cap)", async () => {
     const effectRuns = noEffects();
     const trace = emptyTrace();
-    // The build never goes clean, but every round's tasks fix, so Phase 5
-    // rebuilds each round until the outer cap fires.
+    // The build never goes clean but tasks always fix, so Phase 5 rebuilds each
+    // round until the outer cap fires.
     const env = phase5Env({
       cleanAtRound: 99,
       fixAtAttempt: 0,
@@ -935,8 +914,8 @@ describe("dispatch orchestrator: phase-5 verification loop", () => {
   test("fails the run when a task cannot be fixed (retry-loop cap)", async () => {
     const effectRuns = noEffects();
     const trace = emptyTrace();
-    // Round 1's build is dirty and the fixer never recovers, so the first task's
-    // retry loop exhausts and retryFailed throws, failing the run.
+    // Round 1's build is dirty and the fixer never recovers, so the first
+    // task's retry loop exhausts.
     const env = phase5Env({
       cleanAtRound: 99,
       fixAtAttempt: 99,
@@ -946,10 +925,10 @@ describe("dispatch orchestrator: phase-5 verification loop", () => {
     const result = await runtimeRun(fullDemo, env).complete;
 
     // The run failed in round 1's task loop, which built exactly once. (The
-    // inner retry exhaustion fails the task body, so the task loop THROWS rather
+    // inner retry exhaustion fails the task body, so the task loop throws rather
     // than routing; a throwing loop does not prune its `rebuild` successor, so a
-    // stray rebuild may begin before the failed run settles. The terminal status
-    // and the single build are what matter here.)
+    // stray rebuild may begin before the run settles. The terminal status and
+    // the single build are what matter here.)
     expect(result.terminalStatus).toBe("failed");
     expect(effectRuns.build).toBe(1);
   });
@@ -983,8 +962,8 @@ describe("dispatch orchestrator: phase-5 operator escalation", () => {
   test("resumes the task when the operator answers continue", async () => {
     const effectRuns = noEffects();
     const trace = emptyTrace();
-    // Round 1 builds dirty and the task loop walks both tasks; the second task
-    // escalates to the operator before its retry loop.
+    // Round 1 builds dirty; the second task escalates to the operator before
+    // its retry loop.
     const env = escalationEnv({
       cleanAtRound: 2,
       fixAtAttempt: 0,
@@ -999,8 +978,8 @@ describe("dispatch orchestrator: phase-5 operator escalation", () => {
     const result = await run.complete;
 
     expect(result.terminalStatus).toBe("completed");
-    // The escalation fired once and the operator's "continue" let the task's
-    // retry loop run; Phase 5 then converged on the next round's clean build.
+    // The escalation fired once; "continue" let the task's retry loop run and
+    // Phase 5 then converged on the next round's clean build.
     expect(trace.operatorDecisions).toEqual(["continue"]);
     expect(outcomeOf(result.outputs.phase5)).toBe("converged");
     expect(iterationsOf(result.outputs.phase5)).toBe(2);
@@ -1028,11 +1007,9 @@ describe("dispatch orchestrator: phase-5 operator escalation", () => {
   });
 });
 
-// A dirty-then-clean Phase-5 env sharing a caller-provided repo store, blob
-// substrate, effect ledger, and trace, so a crash-and-resume pair can be driven
-// against one durable substrate while observing agent re-drives. Round 1 builds
-// dirty, walks the task loop (no escalation), and rebuilds; round 2 builds clean
-// and converges.
+// A dirty-then-clean Phase-5 env sharing a caller-provided durable substrate
+// (repo store, blobs, effect ledger, trace) so a crash-and-resume pair can be
+// driven against one substrate while observing agent re-drives.
 function verificationEnv(opts: {
   repoStore: ReturnType<typeof createInMemoryRepoStore>;
   blobs: ReturnType<typeof createInMemoryBlobSubstrate>;
@@ -1055,9 +1032,9 @@ function verificationEnv(opts: {
   });
 }
 
-// Truncate a run's durable log right after the given loop iteration's body was
-// spawned, so a resume re-drives that iteration's body from scratch (from an
-// empty child log).
+// Truncate the log right after the given loop iteration's body was spawned, so
+// a resume re-drives that iteration's body from scratch (from an empty child
+// log).
 function trimAtLoopSpawn(
   events: readonly WorkflowEvent[],
   runId: string,
@@ -1076,9 +1053,9 @@ function trimAtLoopSpawn(
   );
 }
 
-// Truncate a run's durable log right before the given top-level step started, so
-// a resume re-drives that step (and everything after it) fresh while every
-// earlier step replays complete.
+// Truncate the log right before the given top-level step started, so a resume
+// re-drives that step (and everything after it) fresh while every earlier step
+// replays complete.
 function trimBeforeStep(
   events: readonly WorkflowEvent[],
   stepId: string,
@@ -1115,8 +1092,8 @@ describe("dispatch orchestrator: crash-safe exactly-once effects", () => {
     const rebuildAfterRun1 = effectRuns.rebuild;
     const phase5FixerAfterRun1 = agentRunsOf(trace, "phase5-fixer");
 
-    // Crash right after the first Phase-5 iteration's body was spawned, then
-    // resume against a fresh repo store but the SAME blobs and effect ledger.
+    // Crash right after the first Phase-5 iteration's body was spawned; resume
+    // against a fresh repo store but the same blobs and effect ledger.
     const trimmed = trimAtLoopSpawn(result1.events, result1.runId, "phase5", 0);
     const result2 = await runtimeRun(
       fullDemo,
@@ -1132,9 +1109,9 @@ describe("dispatch orchestrator: crash-safe exactly-once effects", () => {
 
     expect(result2.terminalStatus).toBe("completed");
     // The resumed run re-drives the Phase-5 iteration bodies -- including the
-    // nested task and retry loops -- from an empty child log, so the fixer agent
-    // runs again; but the build and rebuild effects dedup against the shared
-    // ledger, so neither effect handler runs a second time.
+    // nested task and retry loops -- from an empty child log, so the fixer runs
+    // again; the build and rebuild effects dedup against the shared ledger, so
+    // no effect handler runs a second time.
     expect(agentRunsOf(trace, "phase5-fixer")).toBeGreaterThan(
       phase5FixerAfterRun1,
     );
@@ -1145,7 +1122,7 @@ describe("dispatch orchestrator: crash-safe exactly-once effects", () => {
   test("re-runs the Phase-5 effects across the same crash without ledger dedup", async () => {
     const blobs = createInMemoryBlobSubstrate();
     // A ledger that never dedups, proving the exactly-once test above is not
-    // vacuous: without the ledger, the re-driven iterations re-execute.
+    // vacuous.
     const defeatedLedger: EffectLedger = {
       async lookup() {
         return undefined;
@@ -1184,18 +1161,17 @@ describe("dispatch orchestrator: crash-safe exactly-once effects", () => {
     ).complete;
 
     expect(result2.terminalStatus).toBe("completed");
-    // Both Phase-5 iterations re-drove: rounds 1 and 2 each re-ran their build
-    // effect (+2), and round 1 re-ran its rebuild effect (+1), because nothing
-    // dedups them.
+    // Both Phase-5 iterations re-drove: +2 builds and +1 rebuild, because
+    // nothing dedups them.
     expect(effectRuns.build).toBe(4);
     expect(effectRuns.rebuild).toBe(2);
   });
 });
 
-// A cleanly-completing dispatch-orchestrator env sharing a caller-provided durable
-// substrate, so a crash-and-resume pair can be driven across it. The single
-// level's amendment loop converges at round 1 and Phase 5's first build is
-// clean, so the run reaches consolidate without any fixing.
+// A cleanly-completing dispatch-orchestrator env sharing a caller-provided
+// durable substrate, so a crash-and-resume pair can be driven across it. The
+// amendment loop converges at round 1 and Phase 5's first build is clean, so
+// the run reaches consolidate without any fixing.
 function completingEnv(opts: {
   repoStore: ReturnType<typeof createInMemoryRepoStore>;
   blobs: ReturnType<typeof createInMemoryBlobSubstrate>;
@@ -1219,34 +1195,26 @@ function completingEnv(opts: {
 }
 
 // The interchange-demo-dispatch orchestrator carries seven bespoke on-disk
-// resume detectors (its resume/case-*.ts) that reconstruct interrupted state
-// from git and the filesystem, because the hand-rolled orchestrator keeps no
-// durable journal. This engine-authored demo keeps one, so those detectors are
-// unnecessary: a crash at each of their scenarios is recovered by generic
-// journal resume. The mapping from each host case to the engine mechanism that
-// subsumes it, and the test here (or above) that demonstrates that mechanism:
+// resume detectors (resume/case-*.ts) that reconstruct interrupted state from
+// git and the filesystem, because it keeps no durable journal. This engine
+// demo keeps one, so a crash at each scenario is recovered by generic journal
+// resume. Mapping host case -> engine mechanism, and the test demonstrating it:
 //
-//   case-1  mid-task implementer (reset, re-spawn)   -> re-drive an incomplete
-//           agent step on resume            [test: re-drives an incomplete ...]
-//   case-2  submitOutput / state-write race          -> the atomic journal
-//           commit removes the race: a journaled completion is kept, an
-//           un-journaled one re-drives    [tests: both below]
-//   case-3  fix-agent crashed dirty (reset, re-run)  -> re-drive an incomplete
-//           agent step on resume; same mechanism as case-1  [test: re-drives ...]
-//   case-4  mid-rebuild, do not redo committed work  -> effect exactly-once
-//           across a loop-body re-drive   [test: the crash-safe block above]
-//   case-5  commit / boundary-write                  -> the journal IS the
-//           boundary record; a re-driven commit effect dedups against the
-//           ledger  [test: re-enters plan, asserting commit stays exactly-once]
-//   case-6  pre-plan                                 -> re-enter from a pre-work
-//           crash                          [test: re-enters plan ...]
-//   case-7  mid-Phase-5 fix loop (orphan build log)  -> effect exactly-once
-//           across a loop-body re-drive; the orphan-log cleanup is moot
-//                                          [test: the crash-safe block above]
+//   case-1/3  incomplete agent step (reset, re-run)  -> re-drive it on resume
+//             [test: re-drives an incomplete ...]
+//   case-2    submitOutput/state-write race          -> the atomic journal
+//             commit: a journaled completion is kept, an un-journaled one
+//             re-drives  [tests: both below]
+//   case-4/7  mid-rebuild / orphan build log         -> effect exactly-once
+//             across a loop-body re-drive  [test: the crash-safe block above]
+//   case-5    commit / boundary-write                -> a re-driven commit
+//             effect dedups against the ledger  [test: re-enters plan ...]
+//   case-6    pre-plan                               -> re-enter from a
+//             pre-work crash  [test: re-enters plan ...]
 //
-// Cases 3/4/5 are git-working-tree and commit-reachability reconstructions in
-// the host; under a journal they are moot, because the journal -- not the
-// working tree -- is the source of truth.
+// Cases 3/4/5 reconstruct from the git working tree and commit reachability;
+// under a journal they are moot -- the journal, not the working tree, is the
+// source of truth.
 describe("dispatch orchestrator: the seven resume cases via engine resume", () => {
   test("re-enters plan from a pre-work crash while keeping completed effects (cases 2, 5, 6)", async () => {
     const blobs = createInMemoryBlobSubstrate();
@@ -1267,11 +1235,10 @@ describe("dispatch orchestrator: the seven resume cases via engine resume", () =
     const plannerRuns1 = agentRunsOf(trace, "planner");
     expect(plannerRuns1).toBe(1);
 
-    // Crash before `plan` ever started (case-6's "planning, no tasks" state).
-    // On resume `plan` re-drives. `captureBaseline` is kept by step-replay (its
-    // StepCompleted is journaled in the seed); the downstream `commit`/`build`
-    // effects are re-driven but dedup against the shared ledger. Either way no
-    // handler runs a second time.
+    // Crash before `plan` started (case-6). On resume `plan` re-drives;
+    // `captureBaseline` replays from its journaled StepCompleted, and the
+    // downstream commit/build effects dedup against the shared ledger, so no
+    // handler runs twice.
     const trimmed = trimBeforeStep(result1.events, "plan");
     const result2 = await runtimeRun(
       fullDemo,
@@ -1286,11 +1253,11 @@ describe("dispatch orchestrator: the seven resume cases via engine resume", () =
     ).complete;
 
     expect(result2.terminalStatus).toBe("completed");
-    // `plan` re-drove (the planner ran a second time) -- the engine re-enters
-    // the pre-work state without a bespoke detector.
+    // `plan` re-drove: the engine re-enters the pre-work state without a
+    // bespoke detector.
     expect(agentRunsOf(trace, "planner")).toBe(plannerRuns1 + 1);
-    // Every effect that had completed before the crash stays exactly-once: the
-    // journaled completions are kept, not re-executed (cases 2, 5).
+    // Every pre-crash completed effect stays exactly-once: the journaled
+    // completions are kept, not re-executed (cases 2, 5).
     expect(effectRuns.baseline).toBe(1);
     expect(effectRuns.commit).toBe(1);
     expect(effectRuns.build).toBe(1);
@@ -1316,10 +1283,9 @@ describe("dispatch orchestrator: the seven resume cases via engine resume", () =
     const implementerRuns1 = agentRunsOf(trace, "implementer");
     expect(implementerRuns1).toBe(1);
 
-    // Crash with the per-level body in flight (case-1/3: an implementer/fixer
-    // that never durably completed). The per-level body re-drives from an empty
-    // child log, re-running its agent steps -- the engine's equivalent of the
-    // host resetting the task to `pending` and re-spawning.
+    // Crash with the per-level body in flight (case-1/3). The body re-drives
+    // from an empty child log, re-running its agent steps -- the engine's
+    // equivalent of the host resetting the task to `pending` and re-spawning.
     const trimmed = trimAtLoopSpawn(
       result1.events,
       result1.runId,
@@ -1339,8 +1305,8 @@ describe("dispatch orchestrator: the seven resume cases via engine resume", () =
     ).complete;
 
     expect(result2.terminalStatus).toBe("completed");
-    // `plan` completed before the crash, so it replays and the planner does NOT
-    // run again; the in-flight per-level body's implementer DOES re-run.
+    // `plan` replays (planner does not re-run); the in-flight body's
+    // implementer does re-run.
     expect(agentRunsOf(trace, "planner")).toBe(plannerRuns1);
     expect(agentRunsOf(trace, "implementer")).toBeGreaterThan(implementerRuns1);
     // The level's commit effect dedups against the shared ledger, so the

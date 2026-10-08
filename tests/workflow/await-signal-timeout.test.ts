@@ -1,11 +1,8 @@
-// awaitSignal timeout enforcement.
-//
-// The `awaitSignal` primitive's `timeout` is committed to the log as
-// `SignalAwaited.timeoutAt`. Without runtime enforcement the log
-// records a deadline the runtime never honors -- a workflow whose
-// signal never arrives hangs forever. The runtime arms the
-// scheduler against the deadline; expiry aborts the channel wait and
-// the safe-runner commits a StepFailed.
+// awaitSignal timeout enforcement. The `timeout` is committed to the log as
+// `SignalAwaited.timeoutAt`; without runtime enforcement the log records a
+// deadline the runtime never honors and a workflow whose signal never arrives
+// hangs forever. The runtime arms the scheduler against the deadline; expiry
+// aborts the channel wait and commits a StepFailed.
 
 import { describe, test, expect } from "bun:test";
 
@@ -53,10 +50,9 @@ describe("awaitSignal timeout", () => {
       (e) => e.kind === "StepFailed" && e.stepId === "wait",
     );
     expect(stepFailed).toBeDefined();
-    // The timeout must commit paired TimerSet + TimerFired so the
-    // log carries the deadline as a first-class event. A production
-    // scheduler reading the log at startup for unfired timers
-    // depends on TimerSet being present.
+    // The timeout must commit paired TimerSet + TimerFired: a production
+    // scheduler reading the log at startup for unfired timers depends on
+    // TimerSet being present.
     const timerSet = result.events.find(
       (e) => e.kind === "TimerSet" && e.stepId === "wait",
     );

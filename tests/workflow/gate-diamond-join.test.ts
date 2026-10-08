@@ -1,11 +1,8 @@
-// Gate-skip sentinel for diamond joins.
-//
-// When a gate's skip closure suppresses a branch, the skipped step's
-// output is committed through the substrate as a structured sentinel
-// (`{ skipped: true, gateId, branch }`). A diamond-join step that
-// reads both branches' outputs sees a well-defined value for the
-// not-selected side rather than crashing on an undefined selector
-// path.
+// Gate-skip sentinel for diamond joins. When a gate's skip closure suppresses a
+// branch, the skipped step's output is committed as a structured sentinel
+// (`{ skipped: true, gateId, branch }`), so a join reading both branches sees a
+// well-defined value for the not-selected side rather than an undefined
+// selector path.
 
 import { describe, test, expect } from "bun:test";
 
@@ -90,8 +87,8 @@ describe("gate-skip sentinel", () => {
     expect(seenAgents).not.toContain("b");
     expect(seenAgents).toContain("join");
 
-    // The skipped step's StepCompleted output ref resolves to the
-    // structured sentinel. Verify by re-reading the log.
+    // The skipped step's StepCompleted output ref resolves to the structured
+    // sentinel.
     const skippedCompleted = result.events.find(
       (e) => e.kind === "StepCompleted" && e.stepId === "b",
     );
