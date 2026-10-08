@@ -3362,6 +3362,57 @@ describe("interchange.directors walker", () => {
     }
   });
 
+  test("rejects a tarball whose manifest name differs from its pin", async () => {
+    const cache = createTarballCache({
+      rootDir: cacheDir,
+      maxBytes: 10_000_000,
+    });
+    const fixture = await packFixture({
+      name: "tools-and-directors",
+      version: "1.0.0",
+      entryModuleSource: "// stub; importer is faked",
+    });
+    const loader = createToolLoader({
+      cache,
+      registries: new Map([["npmjs", { url: "https://r.test" }]]),
+      host: { os: "linux", cpu: "x64" },
+      fetchTarball: async () => fixture.bytes,
+      importModule: async () => ({ main: makeFakeFactory("@vendor/main") }),
+    });
+
+    let caught: unknown;
+    try {
+      await loader.loadManifest({
+        manifest: {
+          schemaVersion: "1",
+          topLevel: [{ name: "renamed-pin", version: "1.0.0" }],
+          entries: [
+            {
+              name: "renamed-pin",
+              version: "1.0.0",
+              source: {
+                kind: "registry",
+                registry: "npmjs",
+                integrity: fixture.integrity,
+              },
+            },
+          ],
+        },
+        instanceScratchDir: instanceDir,
+        assetRoot,
+        assetMounts: new Map(),
+        gitDirs: new Map(),
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ToolLoaderError);
+    if (caught instanceof ToolLoaderError) {
+      expect(caught.category).toBe("package.entry.invalid");
+      expect(caught.message).toMatch(/does not match the pinned package name/);
+    }
+  });
+
   test("ignores a director-shaped export in the interchange.tools entry", async () => {
     // The tools walker's predicate must reject director-shaped values so
     // a director placed in `interchange.tools` is not silently
