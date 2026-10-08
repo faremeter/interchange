@@ -528,9 +528,8 @@ export async function runWorkflowChild(
 
   // Re-verify barrier at the load boundary: evaluate the pinned closure to a
   // live definition, project back to inert, and hash against
-  // `opts.env.definitionHash`; a divergent closure fails closed. Runs once
-  // before both the resume and trigger loops, so one verified definition
-  // serves every trigger and resume.
+  // `opts.env.definitionHash`; a divergent closure fails closed. Runs once,
+  // so one verified definition serves every trigger and resume.
   //
   // Post-verify structural rewrite: lift each inline onTrigger body to a
   // `{ ref }` and keep the extracted bodies in an in-memory map, so the
@@ -1043,8 +1042,8 @@ async function handleControlPayload(
     case "credentials-updated": {
       // Merge into the live cell (see `mergeCredentialDelivery`) rather than
       // replace it: the cell has several independently-scoped producers, so a
-      // swap would evict another producer's credentials. One atomic assignment
-      // keeps readers from observing a torn cell.
+      // swap would evict another producer's credentials; one atomic
+      // assignment keeps readers from observing a torn cell.
       ctx.credentialMaterialRef.current = mergeCredentialDelivery(
         ctx.credentialMaterialRef.current,
         payload.data.delivery,
@@ -1488,7 +1487,7 @@ function buildRuntimeEnv(args: {
   // inherited env (invokeStep, invokeAction, authorize, effect ledger, shared
   // repoStore/blobs), giving the body only its own substrate-backed signal
   // channel -- distinct from an onTrigger body's fresh capped env. Assigned
-  // AFTER env construction because it closes over `env`.
+  // after env construction because it closes over `env`.
   const loopIterationHost = createInMemorySpawnSuspendableChild({
     bodies: args.bodiesMap,
     runSuspendableChild: async (loopInput, _onEvent) => {

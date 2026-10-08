@@ -145,9 +145,9 @@ function createStubRepoStore(baseDir: string): RepoStore {
     },
     async openCommittedReads(_principal, repoId, _ref) {
       // The fake substrate persists commits to the working tree, so back
-      // committed reads with those same files (oid = repo-relative path).
-      // This test drives a single writer with no concurrent flush, so
-      // there is no torn-read window to model.
+      // committed reads with those same files (oid = repo-relative path);
+      // this test drives a single writer with no concurrent flush, so there
+      // is no torn-read window to model.
       const repoDir = path.join(baseDir, repoId.kind, repoId.id);
       return {
         async listDir(relPath: string) {
@@ -821,10 +821,10 @@ describe("runWorkflowChild", () => {
     );
 
     // Record every runId the run-loop asks to reclaim, in order. A run's
-    // entry must appear only after that run reaches its terminal status,
-    // and exactly once -- proving run (not step) granularity and that no
+    // entry must appear only after that run reaches its terminal status, and
+    // exactly once -- proving run (not step) granularity and that no
     // in-flight run's subtree is touched. The callback reports each
-    // reclamation so the test waits on the reclamation itself.
+    // reclamation so the test waits on it.
     const cleaned: string[] = [];
     const reclaimed = createChangeNotifier();
     const bindings: RunWorkflowChildBindings = {
