@@ -172,22 +172,16 @@ export interface KindHandler {
   /**
    * Inspect a prospective commit's tree before the ref advances; return
    * `{ ok: false, reason }` to reject (thrown as `path_violation: <reason>`).
-   * Runs on every receivePack and writeTree independently of authorize:
-   * authorize gates access, validatePush enforces content rules.
+   * Runs on every receivePack and writeTree independently of authorize.
    *
    * `topLevelTreePaths` lists the root's names; `readBlob`/`listDir` walk
-   * the prospective tree by repo-root-relative POSIX path (empty string =
-   * root). `priorReadBlob`/`priorListDir` mirror them against the parent
-   * commit's tree (null/empty when the ref has no prior commit) so a
-   * handler can enforce append-only invariants against the prior bytes.
-   * `principal` is the push's principal, as fed to the authorize hook.
-   * `changedPathPrefixes` bounds the paths the commit can have changed
-   * (repo-root-relative prefixes ending in `/`); `undefined` means the
-   * change set is unbounded and the whole tree must be validated.
-   * `priorListDirOids`/`listDirOids` return child entries with their git
-   * object ids so a handler can prove byte-unchanged retention by OID
-   * equality without re-reading blobs (absent when there is no prior
-   * commit / the path does not surface it).
+   * the prospective tree by repo-root-relative path ("" = root).
+   * `priorReadBlob`/`priorListDir` mirror them against the parent commit's
+   * tree (null/empty with no prior commit) for append-only invariants.
+   * `changedPathPrefixes` bounds the changed paths (prefixes ending in
+   * `/`); `undefined` = whole tree. `*ListDirOids` variants also return
+   * each child's git object id so a handler can prove byte-unchanged
+   * retention by OID without re-reading blobs.
    */
   validatePush: (args: {
     repoId: RepoId;
@@ -258,12 +252,10 @@ export interface RepoStore {
   ): Promise<WriteResult>;
   /**
    * Read-then-write for mutating one subtree against its current
-   * contents. Enumerates blobs under `args.preservePrefix` under the
-   * per-repo lock, calls `args.merge`, and commits the returned set;
-   * concurrent callers serialize so the merge pre-image is always the
-   * previous tip — no read-outside-the-lock window. `clearPrefix` and
-   * the commit are handled internally; paths outside the prefix are
-   * untouched.
+   * contents: enumerate blobs under `args.preservePrefix` under the
+   * per-repo lock, call `args.merge`, and commit the returned set. The
+   * lock serializes concurrent callers, so the merge pre-image is always
+   * the previous tip; paths outside the prefix are untouched.
    */
   writeTreePreservingPrefix(
     principal: Principal,
@@ -377,20 +369,16 @@ export interface RepoStore {
     commitSha: string,
   ): Promise<CommittedReads | null>;
   /**
-   * Tail a ref's commit log: one `{ seq, event }` entry per commit.
-   * `seq` is zero-indexed at the root commit and stable across
-   * restarts; the emitted `event` is the substrate-level commit
-   * descriptor. On `opts.signal` abort the iterator ends cleanly and
-   * the watcher slot is released on the same tick.
+   * Tail a ref's commit log: one `{ seq, event }` entry per commit, seq
+   * zero-indexed at the root and stable across restarts. On abort the
+   * iterator ends cleanly and the watcher slot is released.
    *
-   * Replay vs live: `from: { seq }` enumerates every prior commit with
-   * seq >= the given number then goes live; `from: "head"` records the
-   * tip at subscribe time and emits only commits that land strictly
-   * after.
+   * Replay vs live: `from: { seq }` enumerates prior commits with seq >=
+   * that number then goes live; `from: "head"` emits only commits that
+   * land strictly after subscribe.
    *
-   * Backpressure: events buffer in userspace up to `bufferLimit`
-   * (default 1024); on overrun the iterator throws. Consumers that
-   * cannot keep up are expected to abort.
+   * Backpressure: events buffer up to `bufferLimit` (default 1024); on
+   * overrun the iterator throws.
    */
   subscribe(
     principal: Principal,

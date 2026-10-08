@@ -56,16 +56,13 @@ const logger = getLogger(["hub", "repo-store"]);
 type SigningKey = { privateKey: Uint8Array; publicKey: Uint8Array };
 
 /**
- * In-process push-serialization lock, keyed by `${kind}/${id}`. Each
- * entry holds the tail of the chain of in-flight critical sections for
- * that repo; the next acquirer awaits the current tail and replaces it.
- * The tail-check on release prevents the map leaking entries once the
- * chain drains.
+ * In-process push-serialization lock keyed by `${kind}/${id}`. Each entry
+ * is the tail of the chain of in-flight critical sections for that repo;
+ * the next acquirer awaits the current tail and replaces it, and release
+ * deletes the entry only if it is still the tail.
  *
- * Single-process assumption: this only serializes operations inside one
- * hub instance. Cross-process writers (a second replica, an external
- * git client) would need a filesystem-backed lock; the migration path
- * is swapping `withRepoLock`'s body for an FS-lock acquire/release.
+ * Single-process only: cross-process writers would need a filesystem
+ * lock (the migration path is swapping `withRepoLock`'s body).
  */
 const locks = new Map<string, Promise<void>>();
 
@@ -120,15 +117,12 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
   const { dataDir, signingKey, handlers, authorize, signingCallback, gc } =
     config;
 
-  // Per-repo-directory isomorphic-git memoization cache, threaded through
-  // every index-touching and object-reading call so parsed indexes and
-  // packfile indexes are reused across the repo's serialized writes. Pure
-  // accelerator, never a second source of truth: the on-disk repo stays
-  // authoritative (the index is persisted per mutation, objects are
-  // content-addressed, refs are never cached). Bounds: a dir's cache is
-  // rebuilt after GIT_CACHE_MAX_OPS ops and at most GIT_CACHE_MAX_REPOS
-  // dirs are held (LRU evicted). `invalidateGitCache` drops a dir's cache
-  // after an out-of-band mutation that bypassed it (a received pack).
+  // Per-repo-directory isomorphic-git memoization cache so parsed indexes
+  // and packfile indexes are reused across the repo's serialized writes.
+  // Pure accelerator: the on-disk repo stays authoritative. A dir's cache
+  // is rebuilt after GIT_CACHE_MAX_OPS ops, at most GIT_CACHE_MAX_REPOS
+  // dirs are held (LRU), and `invalidateGitCache` drops it after an
+  // out-of-band mutation (a received pack).
   const GIT_CACHE_MAX_OPS = 8192;
   const GIT_CACHE_MAX_REPOS = 256;
   type RepoGitCache = { cache: object; ops: number };
@@ -184,11 +178,8 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
   const existingCommitsCache = new Map<string, Set<string>>();
 
   // Per-(repoId, ref) cursor of the commit the receiver acked for an
-  // incremental workflow-run pack. Advanced in `commitPackedTip` on the
-  // receiver's ack — NOT when `createPack` builds the pack — so a
-  // transfer cancelled before its ack re-ships the un-acked commits
-  // instead of stranding the receiver with a dangling parent. Keyed per
-  // ref so writes to different refs on the same repo do not interfere.
+  // incremental workflow-run pack, advanced on the ack (not at pack
+  // build) so a cancelled transfer re-ships the un-acked commits.
   const lastPackedTip = new Map<string, string>();
   function lastPackedTipKey(repoId: RepoId, ref: string): string {
     return `${repoId.kind}/${repoId.id}/${ref}`;
@@ -260,10 +251,9 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     sub.buffer.push(entry);
   }
 
-  // Inside the per-repo lock after a successful ref update: compute the
-  // new tip's seq (bumped from cache or walked from the log), then fan
-  // the event out to the ref's subscribers. Subscriber delivery errors
-  // stay on the subscriber, never the ref-update path.
+  // After a successful ref update, under the lock: compute the new tip's
+  // seq (from cache or walked from the log) and fan the event out to the
+  // ref's subscribers; delivery errors stay on the subscriber.
   async function emitRefUpdate(
     repoId: RepoId,
     ref: string,
@@ -559,10 +549,9 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     return resolveTreeOid(dir, commit.tree, relPath, expectedType);
   }
 
-  // Build the prior-side closures fed into a kind handler's validatePush.
-  // `commitSha` null surfaces the no-prior-commit state (readBlob null,
-  // listDir empty); real read failures bubble rather than let an
-  // append-only check silently degrade into an accept.
+  // Prior-side closures for validatePush. `commitSha` null is the
+  // no-prior-commit state (readBlob null, listDir empty); real read
+  // failures bubble rather than silently degrading into an accept.
   function buildPriorTreeClosures(
     dir: string,
     commitSha: string | null,
@@ -892,21 +881,17 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     return chain.reverse();
   }
 
-  // Assemble a new root tree by splicing `puts` (repo-root-relative
-  // path -> blob oid) and `deletes` onto the parent's root tree, reusing
-  // every unchanged entry by oid; the result is committed directly, so
-  // the on-disk index is never touched.
+  // Assemble a new root tree by splicing `puts` (path -> blob oid) and
+  // `deletes` onto the parent's root tree, reusing unchanged entries by
+  // oid; the result is committed directly, never staged to the index.
   //
-  // A no-slash delete names an exact path and clears the blob there;
-  // deleting a directory with one is `delete_type_mismatch`. A
-  // trailing-slash delete names a subtree prefix and clears it;
-  // trailing-slash over a base blob is `delete_type_mismatch`, unless a
-  // put drives the same descent (a legitimate file-to-directory
-  // replacement — the put wins). A put overrides a delete of the same
-  // path; deleting an absent path is an idempotent no-op. Recursion is
-  // scoped to the touched subtrees, so cost tracks the change size, not
-  // the repo. Returns the new tree oid, or null when the subtree ends
-  // up empty.
+  // A no-slash delete names an exact blob (`delete_type_mismatch` over a
+  // directory); a trailing-slash delete names a subtree prefix, and over
+  // a base blob is `delete_type_mismatch` unless a put drives the same
+  // descent (a file-to-directory replacement — the put wins). A put
+  // overrides a delete of the same path; deleting an absent path is a
+  // no-op. Recursion is scoped to touched subtrees, so cost tracks the
+  // change size. Returns the new tree oid, or null when empty.
   async function assembleTree(
     dir: string,
     baseTreeOid: string | null,
@@ -960,11 +945,9 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       else subtreeNames.add(rest.slice(0, slash));
     }
 
-    // A name written both as a direct blob and as a directory (a put/base
-    // `foo` plus a put or delete under `foo/`) is contradictory; the blob
-    // branch would silently win, so reject loudly. Covers every caller —
-    // writeTree's files, preserving-prefix's merge output, and the delta's
-    // puts/deletes — since all funnel through this classification.
+    // A name written both as a blob and as a directory (a `foo` put plus
+    // a put or delete under `foo/`) is contradictory; reject loudly
+    // rather than let the blob branch silently win.
     for (const name of blobPutsHere) {
       if (subtreeNames.has(name)) {
         throw new Error(
@@ -985,9 +968,8 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       const full = prefix + name;
       const putOid = puts.get(full);
       if (putOid !== undefined) {
-        // Puts override whatever the base held and any delete of the same
-        // path, always as mode 100644 blobs. A future caller needing to
-        // preserve another mode would have to carry it through `puts`.
+        // Puts override the base entry and any delete of the same path,
+        // always as 100644 blobs.
         entries.push({
           mode: "100644",
           path: name,
@@ -1009,14 +991,12 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       }
       if (subtreeNames.has(name)) {
         const base = baseEntries.get(name);
-        // A trailing-slash delete descending into a base blob
-        // contradicts the base type — reject it, unless a put drives the
-        // descent (`!subtreePutNames` carve-out): a `put` under `name/`
-        // is a file-to-directory replacement, not a delete mismatch.
-        // That replacement still dead-ends at working-tree
-        // materialization (mkdir over the base file EEXISTs), a separate
-        // unreachable limitation that must not be masked by mislabeling
-        // the put as a delete mismatch.
+        // A trailing-slash delete over a base blob is a type mismatch,
+        // unless a put drives the descent (`!subtreePutNames`): a put
+        // under `name/` is a file-to-directory replacement. That
+        // replacement still dead-ends at working-tree materialization
+        // (mkdir over the base file EEXISTs), an unreachable limitation
+        // that must not be masked as a delete mismatch.
         if (
           base !== undefined &&
           base.type === "blob" &&
@@ -1146,12 +1126,10 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       changedPathPrefixes: ReadonlySet<string> | undefined;
       message: string;
     },
-    // When present, the parent tip already resolved under this lock: the
-    // delta path pins it once and hands the SAME oid to both computeDelta
-    // (its dedup reads) and this assembly, so the dedup snapshot, the
-    // committed tree, and validation are provably one pre-image. `{ sha }`
-    // wraps the value so a genuinely-null pin is distinct from "not
-    // provided".
+    // When present, the parent tip already resolved under this lock; the
+    // delta path hands the same oid to computeDelta and this assembly so
+    // the dedup snapshot, committed tree, and validation share one
+    // pre-image. `{ sha }` keeps a null pin distinct from "not provided".
     pinnedParent?: { sha: string | null },
   ): Promise<WriteResult> {
     const dir = repoDir(repoId);
@@ -1160,10 +1138,9 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     const handler = handlerFor(repoId);
 
     // Assemble the commit's tree directly and commit that tree oid, never
-    // staging into the on-disk index (a single repo-global structure
-    // shared across refs whose rebuild cost scaled with history). Splicing
-    // from the parent's root tree keeps the per-commit cost tracking the
-    // change rather than the accumulated history.
+    // staging into the on-disk index (a repo-global structure shared
+    // across refs); splicing from the parent's root tree keeps the cost
+    // tracking the change rather than the accumulated history.
 
     // Pin the parent under the lock so the splice runs against the ref's
     // tip, race-free; a ref that does not yet exist starts from empty and
@@ -1212,11 +1189,9 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       buildPriorTreeClosures(dir, parentCommitSha);
     const prospective = buildTreeReadClosures(dir, newRootTreeOid);
     const changedPathPrefixes = w.changedPathPrefixes;
-    // No disallowed-mode (symlink/submodule) gate here on purpose: the
-    // substrate mode gate lives on the pack-receive path. This write path
-    // cannot produce those modes — assembleTree writes puts as 100644 and
-    // passes base entries through unchanged, and no ingress admits them —
-    // so a walk here would gate a tree that cannot carry them.
+    // No symlink/submodule gate here: that gate lives on the pack-receive
+    // path, and this write path cannot produce those modes (assembleTree
+    // writes puts as 100644 and passes base entries through unchanged).
     const validation = await handler.validatePush({
       repoId,
       ref,
@@ -1237,13 +1212,12 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       throw new Error(`path_violation: ${validation.reason}`);
     }
 
-    // Materialize the working tree for the touched paths only (O(change)):
-    // remove each deleted path, then write each put file. Some consumers
-    // (the workflow-run claim-check scan) read these files straight from
-    // disk, so the working tree must mirror the committed change. Runs
-    // after validation passes, so a rejected push leaves the working tree
-    // untouched. `rm` with `force` no-ops a missing path; `recursive`
-    // covers both a file delete and a subtree-prefix delete.
+    // Materialize the touched paths only (O(change)): remove each deleted
+    // path, then write each put file. Some consumers (the workflow-run
+    // claim-check scan) read these files straight from disk, so the
+    // working tree must mirror the committed change. Runs after
+    // validation passes, so a rejected push leaves the working tree
+    // untouched.
     for (const del of w.deletes) {
       await fs.promises.rm(path.join(dir, del), {
         recursive: true,
@@ -1422,14 +1396,12 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
   }
 
   // Commit a targeted delta: `computeDelta` runs under the per-repo lock
-  // against the pinned parent tip and returns the exact files to put and
-  // paths to delete; everything else is carried forward by oid. Unlike
-  // writeTreePreservingPrefix (which clears and rebuilds a whole prefix),
-  // a delta touches only the entries it names, so mutating one file in a
-  // large directory does not re-hash the untouched siblings.
-  // `changedPathPrefixes` is the caller-supplied scoping hint for the
-  // touched region, since a delta has no single clear-prefix to derive it
-  // from.
+  // against the pinned parent tip and returns the exact puts/deletes;
+  // everything else is carried forward by oid. Unlike
+  // writeTreePreservingPrefix, a delta touches only the entries it names,
+  // so mutating one file in a large directory does not re-hash the
+  // untouched siblings. `changedPathPrefixes` is the caller-supplied
+  // scoping hint, since a delta has no clear-prefix to derive it from.
   async function writeTreeDelta(
     principal: Principal,
     repoId: RepoId,
@@ -1441,9 +1413,8 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       const dir = repoDir(repoId);
       await storageInitRepo(dir, storageOptsFor(repoId, undefined));
       // Pin the parent tip once under the lock and hand the same oid to
-      // computeDelta's dedup reads and the assembly below — one pre-image,
-      // no lost-update window, no second resolve that could observe a
-      // different tip.
+      // computeDelta and the assembly below — one pre-image, no second
+      // resolve that could observe a different tip.
       const parentCommitSha = await resolveRefSha(dir, ref);
       const { priorListDirOids, readBlobByOid } = buildPriorTreeClosures(
         dir,
@@ -1510,12 +1481,9 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
         transferId,
         expectedOldSha,
         // A pack may carry more than one new commit (e.g. supervisor
-        // bootstrap batching enqueue + dequeue before the hub has the
-        // workflow-run repo bootstrapped). The prior-tree closures must
-        // point at each commit's own parent, so walk the parent chain
-        // from tip back to the pre-pack history and validate each new
-        // commit oldest-first; a single-commit pack collapses to the
-        // tip-only path.
+        // bootstrap batching). The prior-tree closures must point at each
+        // commit's own parent, so validate each new commit oldest-first;
+        // a single-commit pack collapses to the tip-only path.
         async () => {
           const newCommits = await collectNewCommits(
             dir,
@@ -1539,12 +1507,11 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
               parents.length === 0 ? null : (parents[0] ?? null);
             // A commit declaring a parent the receiver lacks cannot be
             // validated against its true prior tree; silently degrading
-            // to "empty prior" would let an overwrite of an immutable
-            // prior-tree entry slip through. The workflow-run producer
-            // ships the full parent chain, so this is rejected outright
-            // for that kind; other kinds ship deploy-shape packs (tip +
-            // tree) whose handlers do not read prior bytes, so a
-            // dangling parent collapses to the no-prior path for them.
+            // to "empty prior" would let an overwrite slip through. The
+            // workflow-run producer ships the full parent chain, so this
+            // is rejected for that kind; other kinds ship deploy-shape
+            // packs whose handlers do not read prior bytes, so a
+            // dangling parent collapses to the no-prior path.
             let parentSha: string | null = null;
             if (declaredParent !== null) {
               try {
@@ -1573,10 +1540,9 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
               newCommit,
               parentSha,
             );
-            // Admission gate for EVERY kind, before the per-kind
-            // validatePush: refuse a tree carrying a symlink (which can
-            // escape its directory at checkout) or a submodule (a
-            // dangling gitlink) so the ref never advances. Per-commit,
+            // Admission gate for every kind, before validatePush: refuse
+            // a tree carrying a symlink (checkout escape) or a submodule
+            // (dangling gitlink) so the ref never advances. Per-commit,
             // so an intermediate commit adding a symlink a later commit
             // deletes is still caught.
             const disallowed = await findDisallowedTreeMode(
@@ -1637,12 +1603,10 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     ref: string,
   ): Promise<{ pack: Uint8Array; commitSha: string; ref: string }> {
     gateAccess(principal, repoId, ref, "createPack");
-    // `createDeployPack` packs only the tip commit + its tree, which
-    // covers the deploy-pack shape every other kind ships (the receiver
-    // starts from genesis and applies the tree wholesale). The
-    // workflow-run kind ships incrementally and the receiver needs to
-    // validate per-commit transitions against the sender's prior tree, so
-    // its pack must carry the full parent chain from the ref's tip.
+    // `createDeployPack` packs only the tip commit + tree, the shape
+    // every other kind ships (the receiver applies the tree wholesale).
+    // The workflow-run kind ships incrementally, so its pack must carry
+    // the full parent chain from the ref's tip for per-commit validation.
     if (repoId.kind === "workflow-run") {
       const dir = repoDir(repoId);
       const commitSha = await git.resolveRef({ fs, dir, ref });
@@ -1661,24 +1625,19 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
           `packObjects returned no packfile for ref "${ref}" (${commitSha})`,
         );
       }
-      // The cursor is NOT advanced here. Building a pack only produces
-      // bytes; the shipped tip advances in `commitPackedTip` once the
-      // receiver acks the transfer, so a cancelled-before-ack transfer
-      // leaves the cursor where it was and the next `createPack` re-ships
-      // the un-acked commits — the receiver still gets a self-consistent
-      // chain instead of a pack whose base commit it never received.
+      // The cursor is NOT advanced here: building a pack only produces
+      // bytes, and the tip advances in `commitPackedTip` on the
+      // receiver's ack, so a cancelled transfer re-ships the un-acked
+      // commits instead of a pack whose base the receiver never got.
       return { pack: result.packfile, commitSha, ref };
     }
     const { pack, commitSha } = await createDeployPack(repoDir(repoId), ref);
     return { pack, commitSha, ref };
   }
 
-  // Advance the incremental-pack cursor for `(repoId, ref)` to
-  // `commitSha`, called once the receiver acks the transfer that shipped
-  // it. Gating the advance on the ack — not on building the pack — lets
-  // a cancelled-before-ack transfer be re-shipped cleanly: the cursor
-  // stays put, so the next `createPack` re-includes the un-acked commits.
-  // No-op for every kind that does not ship incremental packs.
+  // Advance the incremental-pack cursor to `commitSha` once the receiver
+  // acks the transfer; gating on the ack (not the build) lets a cancelled
+  // transfer be re-shipped cleanly. No-op for non-incremental kinds.
   function commitPackedTip(repoId: RepoId, ref: string, commitSha: string) {
     if (repoId.kind !== "workflow-run") return;
     lastPackedTip.set(lastPackedTipKey(repoId, ref), commitSha);
