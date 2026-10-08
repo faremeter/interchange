@@ -7,41 +7,29 @@
 //
 //   BASELINE (in-process): a warm `@intx/agent` agent driven directly via
 //     `agent.send(text)` -- the in-process mail->reactor->reply turn. No IPC,
-//     no claim-check substrate, no dispatch loop. Same HTTP mock inference
-//     server the unified path uses, in echo mode.
-//
+//     no claim-check substrate, no dispatch loop.
 //   UNIFIED (child): the real 4.6 spawn-real path -- hub routeMail -> sidecar
 //     hub-link -> supervisor inbox claim-check write+read -> dispatch loop ->
 //     trigger.fire IPC -> child reads bytes -> WARM agent.send -> reply ->
 //     terminal.event IPC back to the supervisor. Timed inside the supervisor
-//     (one process, both IPC ends visible) via the `onDispatchTiming` hook,
-//     gated by `SIDECAR_LATENCY_BENCH_FILE`, which appends
-//     `<messageId> dispatch-start|reply-produced <perf.now ms>` lines.
+//     via the `onDispatchTiming` hook, gated by `SIDECAR_LATENCY_BENCH_FILE`.
 //
-// Boundary equivalence (documented; kept equivalent across paths):
-//   - BASELINE measured interval: wall-clock around one `agent.send`, from
-//     just before the call to its resolution (reply produced).
-//   - UNIFIED measured interval: `dispatch-start` (inbox entry dequeued,
-//     claim-check read complete, `trigger.fire` about to forward) to
-//     `reply-produced` (the child's terminal-event frame lands back at the
-//     supervisor). This brackets the SAME warm `agent.send` the baseline
-//     times, PLUS the infra the unified path adds (claim-check read, IPC
-//     down, child bytes-read, warm-cache acquire + step env, terminal IPC
-//     up + commit). DELTA = UNIFIED - BASELINE isolates the unified infra tax.
+// Boundary equivalence: BASELINE times wall-clock around one `agent.send`;
+// UNIFIED times `dispatch-start` (inbox entry dequeued) to `reply-produced`
+// (the child's terminal-event frame lands back at the supervisor). That
+// brackets the SAME warm `agent.send` the baseline times PLUS the infra the
+// unified path adds -- DELTA = UNIFIED - BASELINE isolates the unified infra
+// tax.
 //
 // Both paths measure the SUSTAINED interactive case: back-to-back messages on
-// ONE warm agent, message N+1 fired only after reply N (no pipelining), and
-// the first (cold) message discarded so agent build / tool materialization /
-// LSP spawn cost is excluded.
+// ONE warm agent, message N+1 fired only after reply N, and the first (cold)
+// message discarded so agent build / tool materialization / LSP spawn cost is
+// excluded.
 //
-// Run:
-//   bun run tests/workflow-deploy/latency-gate.bench.ts \
-//     [--messages N] [--out <dir>]
-//
-// Writes <out>/raw-baseline.csv, <out>/raw-unified.csv, and
-// <out>/results.json, and prints the percentile table to stdout. Not matched
-// by `bun test` (a `.bench.ts`, not a `.test.ts`); type-checked by `make
-// build` via this directory's tsconfig.
+// Run: bun run tests/workflow-deploy/latency-gate.bench.ts [--messages N]
+// [--out <dir>]. Writes <out>/raw-baseline.csv, <out>/raw-unified.csv, and
+// <out>/results.json. Not matched by `bun test` (a `.bench.ts`); type-checked
+// by `make build` via this directory's tsconfig.
 
 import fs from "node:fs";
 import os from "node:os";

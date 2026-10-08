@@ -4,26 +4,24 @@
 // A loop iteration writes its own capped `runs/<iterationRunId>/grants.json`
 // once, at birth, before the body runs. That write commits to the shared
 // workflow-run ref through a writer separate from the runtime's event log, so a
-// repeat on the resume re-drive would race the replay re-appends (a single-
-// writer seq violation) or clobber the iteration's committed `events/` and re-run
-// the body. Write-once prevents the repeat: on resume the existing grants file
-// is read back, the durable child log replays intact, and the body does not
-// re-execute. The existing bare-awaitSignal restart test
+// repeat on the resume re-drive would race the replay re-appends (a
+// single-writer seq violation) or clobber the iteration's committed `events/`
+// and re-run the body. Write-once prevents the repeat: on resume the existing
+// grants file is read back, the durable child log replays intact, and the body
+// does not re-execute. The existing bare-awaitSignal restart test
 // (loop-await-signal-restart-resumes) cannot observe a regression here -- its
 // body does no work before parking, so a from-scratch re-spawn is
 // indistinguishable from a replay.
 //
 // This fixture's body runs an observable agent step (`work`) and THEN parks on
 // `awaitSignal`. After crash + restart + resume the test asserts `work` ran
-// EXACTLY ONCE -- at the log layer (one `StepCompleted{work}` on the iteration
-// run `rework__0`) and the effect layer (one inference invocation of the work
-// agent). Reintroducing a resume-time grants re-write would either fail the run
-// (seq conflict) or re-run `work`, driving a count to two.
+// EXACTLY ONCE -- at the log layer (one `StepCompleted{work}`) and the effect
+// layer (one inference invocation). Reintroducing a resume-time grants
+// re-write would either fail the run (seq conflict) or re-run `work`, driving
+// a count to two.
 //
-// Harness justification: SPAWN-REAL. Real hub, real sidecar subprocess, real
-// workflow-process child, mock inference. The crash is a genuine kill of the
-// sidecar subprocess; the restart is a fresh sidecar against the dead process's
-// SIDECAR_DATA_DIR, so survival rides the production boot-time restore path.
+// Harness: SPAWN-REAL. The crash is a genuine kill of the sidecar subprocess;
+// the restart is a fresh sidecar against the dead process's SIDECAR_DATA_DIR.
 
 import fs from "node:fs";
 

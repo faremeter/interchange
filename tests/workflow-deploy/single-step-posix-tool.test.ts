@@ -2,24 +2,20 @@
 // spawned workflow-process child.
 //
 // Deploys a one-step workflow BY SOURCE-REF whose agent carries the inline
-// `mail_send` tool from the `mail-tool.ts` fixture (a real `defineTool`
-// module bundled into the workflow's source closure). The sidecar checks the
-// pinned subtree out of the source pack, evaluates the bundle in-child, and
-// feeds the step agent's live `AnnotatedToolFactory`s straight in. The tool's
-// runtime name is the bare `definition.name`; the probe's capability walk
-// already emitted a `tool:<name>` grant for it into the frozen snapshot, so
-// the run authorizes the call through the per-run grants the trigger delivers.
+// `mail_send` tool (a real `defineTool` module bundled into the workflow's
+// source closure). The sidecar checks the pinned subtree out of the source
+// pack, evaluates the bundle in-child, and feeds the step agent's live
+// `AnnotatedToolFactory`s straight in. The tool's runtime name is the bare
+// `definition.name`; the probe's capability walk already emitted a
+// `tool:<name>` grant for it into the frozen snapshot, so the run authorizes
+// the call through the per-run grants the trigger delivers.
 //
-// The mock inference server is configured to emit a `tool_use` turn calling
-// the inline tool on the first request, then a text reply once the tool_result
-// lands. The tool's `run` writes a sentinel file into the agent's `env.workdir`
-// -- which, for a step agent, is the per-step workspace under the sidecar data
-// dir. The test asserts that sentinel file exists, proving the tool actually
-// EXECUTED in the child's filesystem view. It also asserts the mock saw the
-// follow-up request (the tool_result round-trip) and the run reached a terminal
-// phase.
-//
-// This is the test that proves real tools run in-child for Phase 2.
+// The mock inference server emits a `tool_use` turn calling the inline tool on
+// the first request, then a text reply once the tool_result lands. The tool's
+// `run` writes a sentinel file into the agent's `env.workdir` -- for a step
+// agent, the per-step workspace under the sidecar data dir. The test asserts
+// that sentinel exists, proving the tool actually EXECUTED in the child's
+// filesystem view, plus the follow-up request round-trip and a terminal phase.
 
 import fs from "node:fs";
 import path from "node:path";

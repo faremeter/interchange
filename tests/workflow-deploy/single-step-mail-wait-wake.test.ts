@@ -10,19 +10,16 @@
 // initial mailbox search finds nothing and the wait registers a watch and
 // blocks. The trigger mail (mail 1, from a DIFFERENT sender) opened the run
 // but does not satisfy the query. The test confirms the run is parked in
-// `mail_wait` (started, no terminal event, the `mail_wait` inference issued),
-// then fires mail 2 from `WAKE_FROM`. The supervisor eager-commits mail 2 into
-// the per-run mailbox and fires `mailbox.notify`; the child's watch registry
+// `mail_wait`, then fires mail 2 from `WAKE_FROM`. The supervisor
+// eager-commits mail 2 and fires `mailbox.notify`; the child's watch registry
 // resolves the blocked `mail_wait` with mail 2's content, the turn completes,
 // and the agent's reply echoes the waited message behind `WAITED:`.
 //
 // Load-bearing assertion: the run TRIGGERED BY MAIL 1 completes with a reply
-// carrying MAIL 2's body. That reply could only be produced if `mail_wait`,
-// blocked inside the mail-1 turn, received mail 2 through the eager-commit +
-// notify path -- the mail-1 turn never dispatched a turn for mail 2. A reply
-// carrying a `timeout` error (mail_wait expiring without a match) would fail
-// this test, which is exactly the failure mode if eager-commit + notify did
-// not wake the wait.
+// carrying MAIL 2's body -- only possible if `mail_wait`, blocked inside the
+// mail-1 turn, received mail 2 through the eager-commit + notify path. A
+// reply carrying a `timeout` error would fail this test, which is exactly the
+// failure mode if eager-commit + notify did not wake the wait.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 

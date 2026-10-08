@@ -1,27 +1,24 @@
 // A code-sourced workflow runs its OWN inline tool in-child: the proof that a
 // source-ref-deployed workflow runs the tools declared in its own source,
 // rather than tool-less. It deploys a one-step workflow BY SOURCE-REF whose
-// agent carries the inline `mail_send` tool from the `mail-tool.ts` fixture (a
-// real `defineTool` module bundled into the workflow's source closure), fires
-// the deployment's mail trigger, and drives the mock inference server to call
-// the inline tool.
+// agent carries the inline `mail_send` tool (a real `defineTool` module
+// bundled into the workflow's source closure), fires the deployment's mail
+// trigger, and drives the mock inference server to call the inline tool.
 //
 // The evaluated closure carries the step agent's live `AnnotatedToolFactory`s
 // on `req.agent.toolFactories`; the source-ref arm of the sidecar step
-// build-env feeds them straight into the step agent (no pinned manifest is
-// staged on this lineage). The tool's runtime name is the bare
-// `definition.name`, which the probe's capability walk already emitted a
-// `tool:<name>` grant for into the frozen credentials snapshot, so the run
-// authorizes the call through the snapshot directly -- no tool-mark floor.
+// build-env feeds them straight into the step agent (no pinned manifest on
+// this lineage). The tool's runtime name is the bare `definition.name`, which
+// the probe's capability walk already emitted a `tool:<name>` grant for into
+// the frozen snapshot, so the run authorizes the call through the snapshot
+// directly -- no tool-mark floor.
 //
 // Three assertions carry the proof that the tool RAN in-child, not tool-less:
-//   1. the first inference request's tool list contains the inline tool's name
-//      (the model saw the tool -- a tool-less run would send `tools: []`);
+//   1. the first inference request's tool list contains the inline tool's name;
 //   2. a second inference request landed (the tool_use -> tool_result
 //      round-trip happened, so the tool executed and the agent looped back);
 //   3. the tool's `run` wrote its sentinel file into the step agent's per-step
-//      workspace under the sidecar data dir (the factory's `run` executed in
-//      the child's filesystem view, and the call was authorized to run).
+//      workspace under the sidecar data dir.
 
 import fs from "node:fs";
 import path from "node:path";

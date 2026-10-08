@@ -1,22 +1,18 @@
 // Per-run grants barrier proof.
 //
-// The supervisor pushes the deployment's credentialsSnapshot to the child
-// on a per-run basis -- right before each run's `trigger.fire`, gated by
-// the dispatch loop's `onRunStart` barrier -- rather than once per spawn.
-// The push is the child's authorize prerequisite: the child's authorize
-// closure throws on a null snapshot, so a run whose grants never landed
-// cannot authorize any resource. A granted tool that runs to completion
-// therefore proves the per-run push landed on the child ahead of the
-// trigger.
+// The supervisor pushes the deployment's credentialsSnapshot to the child on a
+// per-run basis -- right before each run's `trigger.fire`, gated by the
+// dispatch loop's `onRunStart` barrier -- rather than once per spawn. The push
+// is the child's authorize prerequisite: the authorize closure throws on a
+// null snapshot, so a run whose grants never landed cannot authorize any
+// resource. A granted tool that runs to completion therefore proves the
+// per-run push landed on the child ahead of the trigger.
 //
-// This test deploys a one-step workflow BY SOURCE-REF whose step agent
-// carries the inline `mail_send` tool from the `mail-tool.ts` fixture, fires
-// an inbound mail to trigger a run, and asserts the run reaches
-// `RunCompleted` with the tool having executed in the child. The run's tool
-// grant rides the `run.grants` frame the trigger delivers per run; the
-// supervisor's `onRunStart` sink pushes it to the child ahead of the trigger.
-// Without the per-run grants landing, the child's authorize would deny the
-// tool and the run would fail before the tool ran.
+// This test deploys a one-step workflow BY SOURCE-REF whose step agent carries
+// the inline `mail_send` tool, fires an inbound mail to trigger a run, and
+// asserts the run reaches `RunCompleted` with the tool having executed in the
+// child. Without the per-run grants landing, the child's authorize would deny
+// the tool and the run would fail before the tool ran.
 
 import fs from "node:fs";
 import path from "node:path";

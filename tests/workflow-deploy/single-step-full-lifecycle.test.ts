@@ -1,61 +1,44 @@
-// Phase 4.6 END-TO-END MILESTONE -- the full single-agent lifecycle on
-// the unified child path, composing everything 4.1-4.5 built in ONE
-// spawned-child flow.
+// Phase 4.6 end-to-end milestone: the full single-agent lifecycle on the
+// unified child path, composing everything 4.1-4.5 built in ONE spawned-child
+// flow. No new production code beyond wiring the prior sub-steps together
+// behind the source-ref deploy path; the in-process runtime stays untouched.
 //
-// This is the integration proof that the unified single-agent path runs
-// end-to-end: no new production code beyond wiring the prior sub-steps
-// together behind the source-ref deploy path, and the in-process runtime
-// stays present and untouched.
+// Lifecycle stages, each asserting a prior sub-step composes with the rest:
 //
-// The lifecycle stages, each asserting a prior sub-step composes with the
-// rest:
-//
-//   1. DEPLOY (4.1): a single agent (a `run_<hex>` run identity) with
-//      grants + a mail-send tool, through the spawned workflow-process
-//      child (the source-ref deploy path). Identity preserved (deploy-ack
-//      for the run's `run_<hex>` address); grants enforced (the granted tool
-//      runs in-child).
+//   1. DEPLOY (4.1): a single agent with grants + a mail-send tool, through the
+//      spawned workflow-process child (source-ref deploy path). Identity
+//      preserved (deploy-ack for the run's `run_<hex>` address); grants
+//      enforced (the granted tool runs in-child).
 //   2. MAIL IN (4.2): an inbound mail with a KNOWN body reaches the warm
-//      agent's `agent.send` as the step input -- proven by the
-//      tool-driven reply round-trip completing for that message's run.
-//   3. TOOL-DRIVEN SIGNED REPLY OUT (4.3): the agent's model turn calls
-//      the `mail_send` tool; the tool's `env.transport.send` routes
-//      through the supervisor-backed transport -> outbound bridge ->
-//      `outbound.message` IPC -> supervisor `sendOutbound` -> host
-//      transport SIGNED send -> `SendReceipt`. The tool writes its
-//      workspace sentinel ONLY on a successful receipt, so the sentinel is
-//      a load-bearing proof the outbound signed-send composed end-to-end
-//      across the real OS process boundary. (The fixture's inline `mail_send`
-//      tool in its transport variant replaces the filesystem-only variant for
-//      this test.)
+//      agent's `agent.send` as the step input -- proven by the tool-driven
+//      reply round-trip completing for that message's run.
+//   3. TOOL-DRIVEN SIGNED REPLY OUT (4.3): the model turn calls `mail_send`;
+//      the tool's `env.transport.send` routes through the supervisor-backed
+//      transport -> outbound bridge -> IPC -> supervisor `sendOutbound` ->
+//      host transport SIGNED send -> `SendReceipt`. The tool writes its
+//      workspace sentinel ONLY on a successful receipt, so the sentinel proves
+//      the outbound signed-send composed across the real OS process boundary.
 //   4. DURABLE CONVERSATION SNAPSHOT (4.4): the completed turn is mirrored
 //      from the warm agent's conversation store into the workflow-run
 //      substrate at the run boundary.
-//   5. KILL + RESPAWN (4.5): the conversation RESUMES from the substrate.
-//      A FRESH process (a `createDurableConversationRegistry` built
-//      in-process against the subprocess's on-disk substrate, with a fresh
-//      local store dir -- the strengthened 4.5 pattern) restores the warm
-//      agent's prior conversation from the workflow-run substrate the
-//      spawned child committed. The fresh local store starts empty, so the
-//      restored turns can come ONLY from the substrate -- closing the hole
-//      where a surviving local store would mask a broken restore. This is
-//      a CROSS-PROCESS durability proof: the durable substrate the real
-//      subprocess wrote is read back by a genuinely separate process.
+//   5. KILL + RESPAWN (4.5): the conversation RESUMES from the substrate. A
+//      FRESH process (a `createDurableConversationRegistry` built in-process
+//      against the subprocess's on-disk substrate, with a fresh local store
+//      dir) restores the warm agent's prior conversation; the fresh store
+//      starts empty, so the restored turns can come ONLY from the substrate --
+//      closing the hole where a surviving local store would mask a broken
+//      restore. This is a CROSS-PROCESS durability proof.
 //   6. EVENTS (4.1 sessionId wiring): inference events reached the hub's
-//      `agent.event` sink keyed to the deploy's sessionId, across the
-//      lifecycle.
+//      `agent.event` sink keyed to the deploy's sessionId across the lifecycle.
 //
-// Harness justification. Stages 1-4 and 6 are SPAWN-REAL: a real hub, a
-// real sidecar subprocess, a real workflow-process child, and a test
-// inference provider. Stage 5's respawn restore is exercised in-process
-// against the SAME on-disk substrate the subprocess wrote, mirroring the
-// 4.5 conversation-durability test's deliberate choice: a respawn IS a
-// fresh process building a fresh `createDurableConversationRegistry`
-// against the durable substrate, and reading the snapshot the prior
-// process committed proves continuity without the OS kill-timing
-// nondeterminism a hard subprocess kill would inject into the durability
-// assertion. The restore path is the REAL production wiring
-// (`createDurableConversationRegistry.acquire` -> `restoreFromSubstrate`).
+// Harness: stages 1-4 and 6 are SPAWN-REAL (real hub, sidecar subprocess,
+// workflow-process child, test inference provider). Stage 5's respawn restore
+// is exercised in-process against the SAME on-disk substrate the subprocess
+// wrote, mirroring the 4.5 conversation-durability test: a respawn IS a fresh
+// process building a fresh registry against the durable substrate, and reading
+// the snapshot the prior process committed proves continuity without the
+// kill-timing nondeterminism of a hard subprocess kill. The restore path is
+// the real production wiring.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -157,10 +140,8 @@ beforeAll(async () => {
   // The inline `mail_send` tool in its transport variant calls
   // `env.transport.send` (the supervisor-backed transport) and sentinels only
   // on a successful receipt -- the OUTBOUND signed-send proof.
-  // `inferenceToolCall` drives the model to call `mail_send` on the first
-  // request that exposes it; the tool replies to the agent's own deployment
-  // address (a local, registered recipient on the sidecar's transport) so the
-  // supervisor's signed send delivers without a remote leg.
+  // `inferenceToolCall` drives the model to call `mail_send`; the tool replies
+  // to the agent's own deployment address, a local recipient.
   deploymentMailAddress = deriveRunAddress({
     runId: DEPLOYMENT_ID,
     domain: DEPLOYMENT_DOMAIN,

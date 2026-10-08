@@ -9,28 +9,21 @@
 // written to FAIL if the grants path is broken.
 //
 // The deploy is a one-step workflow deployed BY SOURCE-REF whose agent
-// carries the inline `mail_send` tool from the `mail-tool.ts` fixture. On the
-// source path, tool authorization rides the frozen grant snapshot: the probe's
-// capability walk emits a `tool:<name>` grant that the operator approves and
-// the approve step freezes onto the definition version row; the run's per-run
-// grants (delivered on the trigger frame) authorize the tool call at run time.
+// carries the inline `mail_send` tool. On the source path, tool authorization
+// rides the frozen grant snapshot: the probe's capability walk emits a
+// `tool:<name>` grant the operator approves and the approve step freezes onto
+// the definition version row; the run's per-run grants (delivered on the
+// trigger frame) authorize the tool call at run time.
 //
-// Assertions:
-//   (a) identity: the deploy-ack persisted the public key for the run mail
-//       address, and `isRunAddress` recognizes it -- every routable address
-//       now names one self-anchored run.
-//   (b) grants resolve: the frozen grant snapshot (`loadFrozenGrantSnapshot`,
-//       the source-path grant store) carries the granted tool's `tool:<name>`
-//       grant. An empty snapshot here is the silent zero-grants failure this
-//       sub-step exists to prevent.
-//   (c) authorize round-trip: `evaluateGrants` (the exact evaluator the
-//       child's authorize adapter uses) ALLOWS the granted resource and FAILS
-//       CLOSED on an ungranted one, evaluated over the per-run grant the
-//       trigger delivers. The behavioral half drives a mail message whose
-//       model turn calls the granted tool: the tool's authorize succeeds in
-//       the child, the tool runs, and the run reaches `RunCompleted`.
-//   (d) events: an `inference.start` reaches the hub's `agent.event` sink
-//       carrying the deploy's sessionId.
+// Assertions: (a) identity -- the deploy-ack persisted the public key for the
+// run mail address and `isRunAddress` recognizes it; (b) grants resolve -- the
+// frozen grant snapshot carries the granted tool's `tool:<name>` grant (an
+// empty snapshot here is the silent zero-grants failure this sub-step
+// prevents); (c) authorize round-trip -- `evaluateGrants` ALLOWS the granted
+// resource and FAILS CLOSED on an ungranted one, and the behavioral half
+// drives a mail whose model turn calls the granted tool to `RunCompleted`;
+// (d) events -- an `inference.start` reaches the hub's `agent.event` sink
+// carrying the deploy's sessionId.
 
 import fs from "node:fs";
 import path from "node:path";

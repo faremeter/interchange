@@ -1,33 +1,30 @@
 // FIFO mail-trigger serialization round-trip integration test.
 //
-// Deploys a multi-step workflow against the workflow-deploy
-// orchestrator's multi-step branch, fires three distinct mails at the
-// deployment's trigger address in quick succession, and verifies that the
-// first fires the deployment's one stable run while the queued post-terminal
-// mails are rejected in FIFO order.
+// Deploys a multi-step workflow against the workflow-deploy orchestrator's
+// multi-step branch, fires three distinct mails at the deployment's trigger
+// address in quick succession, and verifies that the first fires the
+// deployment's one stable run while the queued post-terminal mails are
+// rejected in FIFO order.
 //
 // The supervisor's mail flow path enqueues every inbound mail into the
-// workflow-run repo's `addresses/<segment>/inbox/` FIFO via
-// `enqueueInbox`, and a per-deployment serial dispatch loop drains the
-// inbox in arrival order (filename-prefix sort on `receivedAt`),
-// forwarding the first entry to the workflow-process child as a
-// `trigger.fire`. The loop waits for the run's terminal event before
-// dequeueing the next entry; once terminal, it permanently rejects later
-// entries and records that result while moving each processing entry into
-// `consumed/<messageId>.json`. With three mails fired before the first run has
-// reached terminal, the last two are forced to queue, which pins both FIFO
-// ordering and the no-refire invariant.
+// workflow-run repo's `addresses/<segment>/inbox/` FIFO via `enqueueInbox`,
+// and a per-deployment serial dispatch loop drains the inbox in arrival order
+// (filename-prefix sort on `receivedAt`), forwarding the first entry to the
+// workflow-process child as a `trigger.fire`. The loop waits for the run's
+// terminal event before dequeueing the next entry; once terminal, it
+// permanently rejects later entries and records that result while moving each
+// processing entry into `consumed/<messageId>.json`. With three mails fired
+// before the first run reached terminal, the last two are forced to queue,
+// pinning both FIFO ordering and the no-refire invariant.
 //
-// The deployment is intentionally multi-step (a two-step workflow
-// rather than a trivial single-step one): the FIFO invariant lives
-// only on the supervisor-driven multi-step path. The trivial-deploy
-// branch routes mail directly through the session manager and does
-// not exercise the claim-check substrate, so a "trivial workflow that
-// handles mail" would not test the FIFO surface this commit pins.
+// The deployment is intentionally multi-step: the FIFO invariant lives only on
+// the supervisor-driven multi-step path. The trivial-deploy branch routes mail
+// directly through the session manager and never exercises the claim-check
+// substrate.
 //
 // Crash-replay across a real child SIGKILL -- the respawn-time
-// `replayProcessingToInbox` that keeps FIFO across an unexpected child
-// exit -- is covered end to end in `crash-respawn-fifo.test.ts`.
+// `replayProcessingToInbox` -- is covered end to end in
+// `crash-respawn-fifo.test.ts`.
 //
 // The deployment is deployed BY SOURCE-REF (bundle a source entry module into a
 // hub asset, probe it, approve+freeze it against a real DB, deploy the

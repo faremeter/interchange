@@ -14,15 +14,11 @@
 // run: the workflow run id is derived from the deployment mail address and is
 // stable across messages, so mail 2 resolves to the run mail 1 already drove
 // to `RunCompleted`; a completed deployment rejects further mail by design.
-// Mail 2 consuming with a `workflow_run_terminal` rejection is the assertion,
-// and it only happens because the sidecar re-established the link and re-
-// entered routing.
+// Mail 2 consuming with a `workflow_run_terminal` rejection is the assertion.
 //
-// Harness justification: SPAWN-REAL. A real hub server, a real sidecar
-// subprocess, a real workflow-process child, and a test inference provider.
-// The drop is a genuine server-side WebSocket close; the reconnect is the
-// sidecar's real `hub-link` path passing durable identity revalidation and
-// the current allocation-generation fence.
+// Harness: SPAWN-REAL. The drop is a genuine server-side WebSocket close; the
+// reconnect is the sidecar's real `hub-link` path passing durable identity
+// revalidation and the current allocation-generation fence.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 

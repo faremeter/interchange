@@ -1,33 +1,26 @@
-// Per-level dispatch pipeline on the extended workflow engine, driven by
-// REAL @intx/agent agents through the production step-invoker seam. The
-// engine-level sibling `tests/workflow/dispatch-demo.test.ts` proves the
-// routing/resume shape with a stubbed `invokeStep`; this test proves the
-// same pipeline end-to-end. Every step's agent is a genuine `defineAgent`
-// reactor with an arktype-validated terminal tool, driven by deterministic
-// mock inference and wired in through the production
-// `createWorkflowStepInvoker` adapter into an in-process `runtimeRun`.
+// Per-level dispatch pipeline on the extended workflow engine, driven by REAL
+// @intx/agent agents through the production step-invoker seam. The engine-level
+// sibling `tests/workflow/dispatch-demo.test.ts` proves the routing/resume
+// shape with a stubbed `invokeStep`; this test proves the same pipeline
+// end-to-end.
 //
 // Pipeline: plan -> parsePlan (action) -> implementers (map) -> commit
-// (action) -> critique (map) -> gate (step) -> amend (loop) ->
-// consolidate / escalate. The loop body is its own `defineWorkflow`
-// (fix -> rebuild -> recritique -> regate); its LoopFns read the verdict
-// off the body's `regate` child-output key. Pass-vs-escalate routing is the
-// loop's own `routeLoopOutcome`, so a plain gate-critic STEP feeds the
-// loop.
+// (action) -> critique (map) -> gate (step) -> amend (loop) -> consolidate /
+// escalate. Pass-vs-escalate routing is the loop's own `routeLoopOutcome`, so
+// a plain gate-critic step feeds the loop.
 //
 // Why `parsePlan` exists: the step-invoker surfaces every real agent step's
-// output as a `{ reply, turn }` envelope, and structural selectors only do
-// path navigation over that envelope. The terminal-tool call arguments do
-// NOT survive on `turn` (the final turn is a single text block), so the
-// reply string is the only structured surface; a host `action` lifts the
-// planner's `{ tasks }` out of it. The stubbed sibling reads
+// output as a `{ reply, turn }` envelope, and the terminal-tool call arguments
+// do NOT survive on `turn` (the final turn is a single text block). The reply
+// string is the only structured surface, so a host `action` lifts the
+// planner's `{ tasks }` out of it; the stubbed sibling reads
 // `steps.plan.output.tasks` directly only because its stub returns a bare
 // `{ tasks }`.
 //
 // Four scenarios: convergence, exhaustion, crash-resume exactly-once
-// (re-drives the final amendment iteration through the real seam; the
-// shared effect ledger holds every effect to one execution), and a
-// defeated-ledger probe proving the exactly-once claim is non-vacuous.
+// (re-drives the final amendment iteration through the real seam; the shared
+// effect ledger holds every effect to one execution), and a defeated-ledger
+// probe proving the exactly-once claim is non-vacuous.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -81,19 +74,13 @@ import {
   type WorkflowRuntimeEnv,
 } from "@intx/workflow";
 
-// The amendment loop cap. `loop()` throws on a non-positive/non-integer
-// maxIterations, so the loop MUST carry a positive-integer bound. This is
-// a deliberate divergence from the real interchange-demo, whose amendment
-// loop is unbounded (bounded only by operator escalation): modelling it as
-// a native `loop` effect requires this cap, and hitting it is exactly what
-// routes to the escalation branch.
+// The amendment loop cap. `loop()` requires a positive-integer bound, so the
+// unbounded real-world amendment loop is modelled with this cap; hitting it
+// is exactly what routes to the escalation branch.
 const AMENDMENT_CAP = 3;
 
-// The planner emits two tasks, so every map fan-out runs two DISTINCT
-// inner agents. Per-task matchers below enforce that each task's agent
-// receives its own task item and returns its own taskId; otherwise t2's
-// implementer would be served t1's hardcoded output and the fan-out would
-// prove nothing.
+// The planner emits two tasks, so every map fan-out runs two DISTINCT inner
+// agents; the per-task matchers below enforce each agent gets its own item.
 const TASK_IDS = ["t1", "t2"] as const;
 const TASKS = TASK_IDS.map((id) => ({ id }));
 
@@ -215,20 +202,18 @@ const amendBody = defineWorkflow({
       handler: "rebuild",
       effect: { requires: ["git:commit"] },
       // Key the git effect on the deterministic iteration payload
-      // ({ round, tasks }), NOT on the fix map's agent output. The ledger
-      // dedups by hash(runId, stepId, effectId, input), so a re-driven
-      // iteration must reconstruct the IDENTICAL input for dedup to fire,
-      // and a real agent's turn is not stable across a re-drive. Keying an
-      // effect on upstream agent output would silently defeat exactly-once.
+      // ({ round, tasks }), NOT on the fix map's agent output: the ledger
+      // dedups by hash(runId, stepId, effectId, input), and a real agent's
+      // turn is not stable across a re-drive. Keying on agent output would
+      // silently defeat exactly-once.
       input: { from: "trigger.payload" },
       after: ["fix"],
     }),
     recritique: map({
       over: { from: "trigger.payload.tasks" },
       // Thread the per-item task into the inner critic explicitly: this map
-      // is not the body's first step, so without a named selector its inner
-      // step would receive `null`. `runMap` rebinds `trigger.payload` to the
-      // current task.
+      // is not the body's first step, so without a named selector the inner
+      // step would receive `null`.
       step: step({
         agent: criticAgent,
         input: { from: "trigger.payload" },
@@ -249,9 +234,8 @@ const pipeline = defineWorkflow({
   steps: {
     plan: step({ agent: plannerAgent }),
     // Bridge the real planner's `{ reply, turn }` envelope into a
-    // selector-reachable `{ tasks }`. The handler lifts the planner's tasks
-    // out of the reply and fails loudly if they are absent or malformed;
-    // downstream maps and the loop input fan over
+    // selector-reachable `{ tasks }`, failing loudly if they are absent or
+    // malformed; downstream maps and the loop input fan over
     // `steps.parsePlan.output.tasks`.
     parsePlan: action({
       handler: "parsePlan",
@@ -260,11 +244,9 @@ const pipeline = defineWorkflow({
     }),
     implementers: map({
       over: { from: "steps.parsePlan.output.tasks" },
-      // Thread the current fan-out item into the inner agent explicitly.
-      // The default-input convention only injects `trigger.payload` for a
-      // map whose inner step is the workflow's FIRST record entry; this map
-      // is not first, so without an explicit selector the inner step would
-      // receive `null`. `runMap` rebinds `trigger.payload` to the item.
+      // Thread the current fan-out item into the inner agent explicitly:
+      // the default-input convention only injects `trigger.payload` for the
+      // workflow's FIRST record entry, and this map is not first.
       step: step({
         agent: implementerAgent,
         input: { from: "trigger.payload" },
@@ -300,11 +282,9 @@ const pipeline = defineWorkflow({
       after: ["critique"],
     }),
     // The gate step above is the v0 gate-critic; the loop's own routing
-    // (routeLoopOutcome) selects consolidate-vs-escalate off the body's
-    // regate verdict. The loop is seeded with a round-1 { round, tasks }
-    // object -- the round literal merged with the REAL planner tasks
-    // projected out of parsePlan -- which its inner maps fan over and its
-    // `nextRound` carry threads forward each round.
+    // selects consolidate-vs-escalate off the body's regate verdict. The loop
+    // is seeded with round-1 { round, tasks } -- the literal merged with the
+    // REAL planner tasks projected out of parsePlan.
     amend: loop({
       body: amendBody,
       while: "shouldAmend",
@@ -326,11 +306,10 @@ const pipeline = defineWorkflow({
 
 // -------------------------------------------------------------------------
 // The single, faithful host-side extraction of an agent step's structured
-// output. The step-invoker's `{ reply, turn }` envelope hides the
-// structured output in the reply string (the terminal-tool call arguments
-// do not survive on `turn`, which is a single text block). The parse-action,
-// the loop's `verdictOf`, and the consolidate assertion all go through this
-// helper, and it FAILS LOUDLY on any malformed shape rather than defaulting.
+// output: the step-invoker's `{ reply, turn }` envelope hides it in the reply
+// string. The parse-action, the loop's `verdictOf`, and the consolidate
+// assertion all go through this helper, and it FAILS LOUDLY on any malformed
+// shape rather than defaulting.
 // -------------------------------------------------------------------------
 function extractAgentPayload(stepOutput: unknown): Record<string, unknown> {
   if (
@@ -428,9 +407,8 @@ function tasksOf(value: unknown): { id: string }[] {
 
 // The loop body's child output is keyed by the body's step ids, so the
 // verdict lives at `childOutput.regate` -- the gate-critic step's
-// `{ reply, turn }` envelope. It THROWS on a missing/malformed verdict
-// rather than defaulting, so an extraction failure surfaces as a loud loop
-// error instead of silently reading as "amend" and masking a real bug.
+// `{ reply, turn }` envelope. It THROWS on a missing/malformed verdict so a
+// failure surfaces as a loud loop error instead of reading as "amend".
 function verdictOf(childOutput: unknown): string {
   if (
     typeof childOutput !== "object" ||
@@ -474,11 +452,9 @@ function loopOutcome(result: RunResult): {
 
 // Project the `taskId` field out of every entry of a map step's array
 // output, each parsed through `extractAgentPayload`. This is the per-task
-// fidelity claim's read side: a map that fanned two DISTINCT tasks over two
-// DISTINCT inner agents yields two payloads carrying t1 and t2. It FAILS
-// LOUDLY if the map output is not an array or an entry has no string
-// `taskId`, so a fan-out that collapsed both tasks to a single hardcoded
-// output surfaces as a clear failure.
+// fidelity claim's read side: a map that fanned two DISTINCT tasks yields
+// two payloads carrying t1 and t2. FAILS LOUDLY if the output is not an
+// array or an entry lacks a string `taskId`.
 function mapTaskIds(mapOutput: unknown): string[] {
   if (!Array.isArray(mapOutput)) {
     throw new Error(
@@ -522,12 +498,11 @@ function inMemoryLedger(): EffectLedger {
   };
 }
 
-// A ledger whose `lookup` never hits (always a miss) but whose `record`
-// still stores. It defeats the exactly-once dedup: on resume, the
-// re-driven iteration's `perform` sees no prior record and re-runs the
-// effect. Used only by the defeated-ledger probe, which asserts the
-// re-driven effect count goes strictly UP -- proving the primary
-// exactly-once assertion is non-vacuous.
+// A ledger whose `lookup` never hits but whose `record` still stores: on
+// resume, the re-driven iteration's `perform` sees no prior record and
+// re-runs the effect. Used only by the defeated-ledger probe, which asserts
+// the effect count goes strictly UP -- proving the exactly-once assertion
+// is non-vacuous.
 function defeatedLedger(): EffectLedger {
   const store = new Map<string, { output: unknown }>();
   return {
@@ -563,29 +538,23 @@ const workflowAuthorize: WorkflowAuthorizeFn = (resource, action_) => {
 // Deterministic mock inference.
 //
 // Each agent invocation is a two-turn dance: the model calls the role's
-// terminal tool with structured arguments (turn 1), the tool validates +
-// echoes them, and the model surfaces the same JSON as its final text reply
-// (turn 2). Matchers route each fetch by the role's system prompt and by
-// whether the request carries a prior tool_result (turn 2) or not (turn 1).
-// The gate-critic's verdict is a deterministic function of the round
-// encoded in the request body.
+// terminal tool (turn 1), the tool validates + echoes, and the model
+// surfaces the same JSON as its final text reply (turn 2). Matchers route
+// by the role's system prompt and by whether the request carries a prior
+// tool_result; the gate-critic's verdict is a deterministic function of the
+// round in the request body.
 //
-// The fan-out is two tasks (t1, t2), so the implementer and critic roles
-// each run once PER TASK inside their maps. A role-keyed matcher alone
-// would serve BOTH tasks the same hardcoded output, which would look like
-// parallel fan-out and prove nothing. So the implementer and critic
-// matchers ALSO key on the task id in the request body and return that
-// task's OWN taskId. The planner, consolidator, and gate-critic stay
-// role-keyed: the planner emits both tasks, the consolidator runs once for
-// the level, and the gate-critic judges the WHOLE level per round.
+// The implementer and critic run once PER TASK inside their maps, so their
+// matchers ALSO key on the task id and return that task's OWN taskId --
+// a role-keyed matcher alone would serve both tasks the same hardcoded
+// output and prove nothing. The planner, consolidator, and gate-critic stay
+// role-keyed.
 // -------------------------------------------------------------------------
 
-// A generous per-role matcher pool. Each role is invoked a small fixed
-// number of times across the pipeline; over-provisioning is safe -- unused
-// matchers never fire, and a shortfall surfaces loudly as an
-// UnmatchedFetchError from `harness.run()`. Sized for the crash-resume
-// drives too: a resumed run re-drives the in-flight iteration's turns,
-// drawing extra pulls from the fixed-role pool.
+// A generous per-role matcher pool. Unused matchers never fire and a
+// shortfall surfaces loudly as an UnmatchedFetchError. Sized for the
+// crash-resume drives too: a resumed run re-drives the in-flight
+// iteration's turns, drawing extra pulls from the fixed-role pool.
 const POOL = 16;
 
 // The harness's default wall-clock budget bounds a single `harness.run()`
@@ -648,10 +617,10 @@ function bodyHasTaskId(body: string, taskId: string): boolean {
 }
 
 // Register the two-turn matcher pair for a role that runs once PER TASK
-// inside a map (implementer, critic). Like `scriptFixedRole`, but both turn
-// matchers additionally key on the task id in the request body, and the
-// caller passes THAT task's own structured `args`. Two tasks served the
-// same hardcoded output would make the fan-out vacuous.
+// inside a map (implementer, critic). Both turn matchers key on the task id
+// in the request body, and the caller passes THAT task's own structured
+// `args`; two tasks served the same hardcoded output would make the
+// fan-out vacuous.
 function scriptFixedRolePerTask(
   harness: Harness,
   role: string,
@@ -794,13 +763,11 @@ describe("per-level pipeline with real agents", () => {
   });
 
   // Build the runtime env over caller-supplied substrates: real agents
-  // through the production step-invoker adapter (each step gets its own
-  // isogit-backed context store and workdir under a fresh per-invocation dir
-  // rooted at `baseDir`), a git-commit-shaped `invokeAction` over the
-  // supplied effect ledger, and the loop wiring. Taking the repoStore, blob
-  // substrate, and effect ledger as parameters lets a crash-resume test
-  // share the ledger and blobs across a simulated crash while giving the
-  // resumed run a fresh repoStore and a distinct `baseDir`.
+  // through the production step-invoker adapter, a git-commit-shaped
+  // `invokeAction` over the supplied effect ledger, and the loop wiring.
+  // Taking the repoStore, blob substrate, and effect ledger as parameters
+  // lets a crash-resume test share the ledger and blobs across a simulated
+  // crash while giving the resumed run a fresh repoStore and `baseDir`.
   function buildEnv(opts: {
     repoStore: ReturnType<typeof createInMemoryRepoStore>;
     blobs: ReturnType<typeof createInMemoryBlobSubstrate>;
@@ -950,10 +917,8 @@ describe("per-level pipeline with real agents", () => {
     expect("escalate" in result.outputs).toBe(false);
 
     // Per-task fidelity: the implementers and critique maps each fanned two
-    // DISTINCT tasks over two DISTINCT inner agents, and each inner agent
-    // received its own task item and returned its own taskId. Without
-    // per-task keying, a 2-task map serving both tasks the same hardcoded
-    // output would look parallel and prove nothing.
+    // DISTINCT tasks over two DISTINCT inner agents, and each returned its
+    // own taskId. Without per-task keying the fan-out would prove nothing.
     expect(mapTaskIds(result.outputs.implementers)).toEqual(["t1", "t2"]);
     expect(mapTaskIds(result.outputs.critique)).toEqual(["t1", "t2"]);
 

@@ -1,42 +1,32 @@
 // Crash-loop guard acceptance-gate integration test.
 //
-// Proves the INTR-193 acceptance requirement: repeated unexpected child
-// exits within the crash-loop window latch the deployment to the terminal
-// `crash-looping` state instead of respawning forever, and the latch
-// commits a `RunFailed` for the deployment's run.
+// Proves the INTR-193 acceptance requirement: repeated unexpected child exits
+// within the crash-loop window latch the deployment to the terminal
+// `crash-looping` state instead of respawning forever, and the latch commits a
+// `RunFailed` for the deployment's run.
 //
-// No mail is fired: the crash-loop guard counts child-process exits, not
-// runs, so the deployment's anchor run (born `deployed`) is what the latch
-// marks `RunFailed`.
+// No mail is fired: the crash-loop guard counts child-process exits, not runs,
+// so the deployment's anchor run (born `deployed`) is what the latch marks
+// `RunFailed`.
 //
 // Landing each kill on a RUNNING child (not one mid-`recycling`-handshake,
-// which would fail the respawn to `stopped` instead of counting a crash)
-// is sequenced off the supervisor's own stderr markers: a distinct
-// per-crash `respawning after <Nms> backoff` line proves each crash was
-// counted, and a killed child's replacement is confirmed alive by a fresh,
-// stable pid before the next kill. A mistimed kill produces no such marker,
-// so the wait never returns and the test's own budget fails it loud rather
-// than silently mis-verifying.
+// which would fail the respawn to `stopped` instead of counting a crash) is
+// sequenced off the supervisor's own stderr markers: a distinct per-crash
+// `respawning after <Nms> backoff` line proves each crash was counted, and a
+// killed child's replacement is confirmed alive by a fresh, stable pid before
+// the next kill.
 //
-// SCOPE: the crash driver is a real SIGKILL, not a self-crashing workflow
-// body -- the declarative workflow DSL cannot express a body that crashes
-// its own process, and a signal is one of the exit kinds the guard targets.
-// Two acceptance sub-clauses are covered elsewhere, by design:
-//   - The stable-run reset of the crash counter is a supervisor-internal
-//     timer, unit-tested deterministically with an injected clock in
-//     `packages/workflow-host/src/supervisor/crash-respawn.test.ts`; a 60s
-//     wall-clock wait here would be inappropriate.
-//   - "Redeploy resets the counter" is a fresh-supervisor tautology (a
-//     redeploy mints a new supervisor whose counter is empty), not a guard
-//     behavior worth integration complexity.
-// The DB status flip (`workflow_run.status -> failed`) is NOT asserted
-// here: this harness's hub is a stub that does not run the production
-// `markTerminal` pack-receive path, so the observable latch surface is the
-// committed `RunFailed` event, read through the real push pipeline.
+// SCOPE: the crash driver is a real SIGKILL (the workflow DSL cannot express
+// a body that crashes its own process). The stable-run reset of the crash
+// counter is unit-tested in `crash-respawn.test.ts` with an injected clock,
+// and "redeploy resets the counter" is a fresh-supervisor tautology; neither
+// is integration-tested here. The DB status flip is not asserted either (this
+// harness's hub is a stub that does not run the production `markTerminal`
+// pack-receive path); the observable latch surface is the committed
+// `RunFailed` event.
 //
-// Harness justification: SPAWN-REAL. Real hub, real sidecar subprocess,
-// real workflow-process child, mock inference. The crashes are genuine
-// SIGKILLs; the latch rides the production crash-loop guard.
+// Harness: SPAWN-REAL. The crashes are genuine SIGKILLs; the latch rides the
+// production crash-loop guard.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 

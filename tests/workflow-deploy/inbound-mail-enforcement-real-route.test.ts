@@ -5,39 +5,29 @@
 // reduces the verdict to an admission outcome, and consults the recipient
 // deployment's RESOLVED inbound-mail policy: it delivers an admitted outcome
 // and DROPS everything else. The per-workflow authored `inboundMailPolicy` is
-// the only switch on that decision -- there is no admit-all flag, and a
-// deployment that authored no policy rejects every non-`clean` outcome.
+// the only switch -- there is no admit-all flag, and a deployment that authored
+// no policy rejects every non-`clean` outcome.
 //
-// Two real sidecar deployments on one hub:
+// Two real sidecar deployments on one hub: D1 authored NO policy (the secure
+// default: reject-unless-verified); D2 authored `{ missing: "admit" }`.
 //
-//   D1  authored NO policy (the secure default: reject-unless-verified).
-//   D2  authored `{ missing: "admit" }`.
-//
-// Three scenarios sequentially (one shared subprocess env means one test):
-//
-//   (a) VALID  -> ADMITTED on D1. The production `POST /workflows/:id/mail`
+// Three scenarios in one test (one shared subprocess env):
+//   (a) VALID -> ADMITTED on D1. The production `POST /workflows/:id/mail`
 //       route signs the trigger with the caller's durable principal key and
-//       co-delivers that key on the run's grants barrier, so the recipient
-//       verifies against a resolved key and the visible From binds to the
-//       caller: verdict `clean`, which every policy admits. Run reaches
-//       `RunCompleted` and the messageId is consumed.
-//   (b) UNSIGNED -> DROPPED on D1. A plain text/plain message (no
-//       `multipart/signed` body) verifies `missing` ONCE a key is cached for
-//       the sender -- the scenario co-delivers a key on the grants barrier the
-//       way production dispatch does, making the outcome `missing` rather than
-//       the cache-miss `unknown`. D1's default policy rejects `missing`, so
-//       the seam drops it: reject logged, no `RunStarted` carries the message,
-//       never consumed.
-//   (c) SAME UNSIGNED shape -> ADMITTED on D2. Same-shape unsigned mail (its
-//       own messageId) routed at D2, whose `{ missing: "admit" }` relaxes
-//       exactly that outcome: run starts carrying the messageId, is consumed,
-//       reaches `RunCompleted`. The identical message D1 dropped, D2 admits --
-//       the per-workflow policy is the switch.
+//       co-delivers that key, so the verdict is `clean` (admitted by every
+//       policy). Run reaches `RunCompleted`; the messageId is consumed.
+//   (b) UNSIGNED -> DROPPED on D1. A plain text/plain message verifies
+//       `missing` once a key is cached for the sender (co-delivered on the
+//       grants barrier, making it `missing` rather than the cache-miss
+//       `unknown`). D1's default policy rejects `missing`: reject logged, no
+//       RunStarted, never consumed.
+//   (c) SAME UNSIGNED shape -> ADMITTED on D2. Same-shape unsigned mail routed
+//       at D2, whose `{ missing: "admit" }` relaxes exactly that outcome: run
+//       starts, is consumed, reaches `RunCompleted`. The identical message D1
+//       dropped, D2 admits -- the per-workflow policy is the switch.
 //
 // Scenarios (b)/(c) inject at the hub router's `sendRunGrants` + `routeMail`
-// seam (the same surface `mail-edge-cases` uses) to hand the seam arbitrary raw
-// bytes with a chosen `authenticatedSender`; `buildMinimalMail` and
-// `waitForConsumedFilename` mirror that file's local helpers verbatim.
+// seam to hand the seam arbitrary raw bytes with a chosen `authenticatedSender`.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { type } from "arktype";

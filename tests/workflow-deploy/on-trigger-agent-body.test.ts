@@ -9,20 +9,16 @@
 // through the body invoker against the mock inference fixture and commits the
 // model's deterministic reply as its output.
 //
-// The mock inference server returns `I see these tools: <names>` from the tool
-// names it was handed; a tool-less agent yields the stable prefix `I see these
-// tools:`. That deterministic reply is the seam the real agent is driven
-// against (real inference in CI is impractical). The reachability assertion is
-// three-fold: the body child completes, its agent step's committed output is
-// the real reply (NOT the agent id -- the old stub value -- and NOT a
+// The mock inference server returns `I see these tools: <names>`; a tool-less
+// agent yields the stable prefix `I see these tools:`. The reachability
+// assertion is three-fold: the body child completes, its agent step's committed
+// output is the real reply (NOT the agent id -- the old stub value -- and NOT a
 // fabricated stub failure), and the mock provider actually received an
-// inference request, so the reply is real model output.
+// inference request.
 //
-// Harness justification: SPAWN-REAL. Real hub, real sidecar subprocess, real
-// workflow-process child driving `runOnTrigger` with the production
-// suspendable-child seam, and a real agent inside the body via the body-only
-// invoker. Body agents are tool-less by the deploy guard, so no tool trees are
-// staged; this exercises exactly the reachable body-agent path.
+// Harness: SPAWN-REAL (real hub, sidecar subprocess, workflow-process child,
+// body-only invoker). Body agents are tool-less by the deploy guard, so no tool
+// trees are staged.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 

@@ -1,46 +1,37 @@
 // onTrigger between-events crash-recovery integration test (4c).
 //
-// The reachability gate for a long-lived onTrigger section that crashes
-// while parked BETWEEN events -- idle on its input re-arm after one event's
-// body completed and before the next event arrives. It proves the section
-// survives a sidecar PROCESS death and services the next event, exercising
-// the INPUT re-arm recovery path end-to-end on the real deploy stack.
+// The reachability gate for a long-lived onTrigger section that crashes while
+// parked BETWEEN events -- idle on its input re-arm after one event's body
+// completed and before the next event arrives. It proves the section survives
+// a sidecar PROCESS death and services the next event, exercising the INPUT
+// re-arm recovery path end-to-end on the real deploy stack.
 //
 // Shape: deploy BY SOURCE-REF a single-step workflow whose one step is an
 // `onTrigger` section subscribed to the deployment mail address, with a
 // non-agent (sleep) body. The source-ref deploy stages the inline body to its
-// own workflow asset (`wf__section`) and the runtime spawns each event's body
-// as a child run by that ref.
+// own workflow asset and the runtime spawns each event's body as a child run.
 //
 //   1. Fire mail #1 -> the container run starts, spawns the body `section__0`
 //      with the mail body as its input, the body sleeps and completes, and the
 //      container re-arms on a snapshot-less `input` park -- parked between
 //      events (no RunCompleted; a long-lived section never self-completes).
-//   2. Quiesce, then KILL the sidecar subprocess (process death) while the
-//      container is parked between events.
+//   2. Quiesce, then KILL the sidecar subprocess while the container is parked.
 //   3. Start a fresh sidecar against the crashed process's SIDECAR_DATA_DIR.
 //      Boot-time restore re-spawns the deployment; self-discovery re-includes
-//      the CONTAINER run (it is the parent -- its log carries `ChildSpawned`
-//      for `section__0`, so it is never itself a child) while EXCLUDING the
-//      body child `section__0`. The restored container re-adopts its durable
-//      input park (`planOnTriggerResume` -> reawait-input) and re-parks.
-//   4. Fire mail #2 -> the supervisor's unified dispatch, finding the run
-//      live but its input channel not yet re-armed, waits for the re-armed
-//      input park and then delivers the mail as a `signal.deliver` (event 1,
-//      NOT a spurious fresh trigger). The container spawns `section__1` with
-//      mail #2's body, which completes.
+//      the CONTAINER run (it is the parent, never itself a child) while
+//      EXCLUDING the body child. The restored container re-adopts its durable
+//      input park and re-parks.
+//   4. Fire mail #2 -> the unified dispatch waits for the re-armed input park
+//      and delivers the mail as a `signal.deliver` (event 1, NOT a spurious
+//      fresh trigger). The container spawns `section__1`, which completes.
 //
 // Load-bearing assertions: exactly one `RunStarted`; `ChildSpawned` +
-// `ChildCompleted` for BOTH `section__0` and `section__1`; and the container
-// never reaches a terminal event.
+// `ChildCompleted` for BOTH bodies; the container never reaches a terminal
+// event.
 //
-// Harness justification: SPAWN-REAL. Real hub, real sidecar subprocess, real
-// workflow-process child driving `runOnTrigger` with the production
-// suspendable-child seam, mock (echo) inference. The crash is a genuine kill
-// of the sidecar subprocess; the restart is a fresh sidecar against the dead
-// process's data dir, so recovery rides the production boot-time restore +
-// self-discovery + reawait-input path. This is the first deploy-level test of
-// a deployed onTrigger section.
+// Harness: SPAWN-REAL (real hub, sidecar subprocess, workflow-process child,
+// mock inference). The crash is a genuine kill of the sidecar subprocess; the
+// restart is a fresh sidecar against the dead process's data dir.
 
 import fs from "node:fs";
 

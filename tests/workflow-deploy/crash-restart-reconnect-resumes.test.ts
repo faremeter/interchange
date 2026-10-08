@@ -5,28 +5,23 @@
 // RunCompleted with effects applied exactly once.
 //
 // Shape: deploy a `step1 -> awaitSignal{name:"go"} -> step2` workflow
-// through the workflow-deploy orchestrator's multi-step branch (the same
-// wiring `multistep-signal.test.ts` uses), fire the mail trigger, and drive
-// the run to the mid-run `SignalAwaited` pause. Quiesce the workflow-run pack
-// pipeline, then KILL the sidecar subprocess (process death, not a hub-link
-// drop). Start a fresh sidecar against the crashed process's SIDECAR_DATA_DIR:
-// its `restoreWorkflowRuns()` re-spawns the deployment, whose workflow-process
-// child re-seeds the parked run via `resumeFromEvents`, and the runtime
-// re-arms the awaiting-signal gate against the host-rehydrated signal channel.
-// After reconnect, inject the signal; the run resumes through `step2` to
-// `RunCompleted`.
+// through the workflow-deploy orchestrator's multi-step branch, fire the mail
+// trigger, and drive the run to the mid-run `SignalAwaited` pause. Quiesce the
+// pack pipeline, then KILL the sidecar subprocess (process death, not a
+// hub-link drop). Start a fresh sidecar against the crashed process's
+// SIDECAR_DATA_DIR: its `restoreWorkflowRuns()` re-spawns the deployment,
+// whose child re-seeds the parked run via `resumeFromEvents` and re-arms the
+// awaiting-signal gate. After reconnect, inject the signal; the run resumes
+// through `step2` to `RunCompleted`.
 //
 // Effects are asserted exactly-once at the effect layer -- RunStarted,
-// StepCompleted{step1}, StepCompleted{step2}, and RunCompleted each == 1,
-// one runId -- NOT on the raw `SignalReceived` count: the reconnect/resume
-// path may replay the delivery, and the state machine dedupes redeliveries
-// by `signalId`, so a delivery-count assertion would be flaky by design.
+// StepCompleted{step1}, StepCompleted{step2}, and RunCompleted each == 1, one
+// runId -- NOT on the raw `SignalReceived` count: the reconnect/resume path
+// may replay the delivery, and the state machine dedupes redeliveries by
+// `signalId`, so a delivery-count assertion would be flaky by design.
 //
-// Harness justification: SPAWN-REAL. Real hub, real sidecar subprocess,
-// real workflow-process child, mock inference. The crash is a genuine kill
-// of the sidecar subprocess; the restart is a fresh sidecar against the
-// dead process's SIDECAR_DATA_DIR, so survival rides the production
-// boot-time restore path and allocation-authenticated reconnect.
+// Harness: SPAWN-REAL. The crash is a genuine kill of the sidecar subprocess;
+// the restart is a fresh sidecar against the dead process's SIDECAR_DATA_DIR.
 
 import fs from "node:fs";
 

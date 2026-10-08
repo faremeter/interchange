@@ -4,23 +4,19 @@
 // The sibling `loop-tool-invoke-roundtrip.test.ts` proves a plain agent step in
 // a loop body can call a tool, and `map-fan-out-real-agent.test.ts` proves a
 // TOP-LEVEL map iteration resolves its base step's staged tool tree. This
-// composes the two, which nothing else does: `runMap` scopes its inner step's
-// id to `<mapStepId>[<index>]` and every deploy-asset lookup strips that suffix
-// with `baseStepId`, while the map itself lives in a loop body whose ids reach
-// the deployment's flat namespace only through the executable-step walk's
-// descent into loop bodies. A per-item tool call has to survive both
-// transformations at once to find its credentials, source, and deploy tree.
+// composes the two: `runMap` scopes its inner step's id to `<mapStepId>[<index>]`
+// and every deploy-asset lookup strips that suffix with `baseStepId`, while the
+// map itself lives in a loop body whose ids reach the deployment's flat
+// namespace only through the executable-step walk's descent into loop bodies. A
+// per-item tool call has to survive both transformations at once.
 //
-// The assertion reads the tool_result's TEXT, not merely its presence: a tool
-// call the authorize seam blocks still appends an error tool_result and the
-// agent then replies normally, so a presence-only check passes while nothing
-// ever ran. Only the tool's own return value (`wrote <filename>`) proves the
-// map iteration executed it. The env runs exactly one workflow, and only the
-// map's per-item agent carries a tool, so a tool_result in ANY captured request
-// can only have originated in a map iteration inside the loop body.
+// The assertion reads the tool_result's TEXT, not merely its presence: a
+// blocked call still appends an error tool_result and the agent replies
+// normally, so a presence-only check passes while nothing ever ran. Only the
+// tool's own return value proves the map iteration executed it. The env runs
+// exactly one workflow, and only the map's per-item agent carries a tool.
 //
-// Harness justification: SPAWN-REAL. A real hub server, a real sidecar
-// subprocess, and a real workflow-process child evaluating the deployed source.
+// Harness: SPAWN-REAL.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 

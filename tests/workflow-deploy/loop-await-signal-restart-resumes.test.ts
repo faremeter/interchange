@@ -8,15 +8,12 @@
 // (planLoopResume), and the injected signal resolves the parked iteration
 // through to RunCompleted with effects applied once.
 //
-// This lifts the runtime-proven loop-suspend-resume behavior
-// (packages/workflow/src/runtime/loop-suspend-resume.test.ts, an in-memory
+// This lifts the runtime-proven loop-suspend-resume behavior (an in-memory
 // crash model) onto the real sidecar-kill/restore/reconnect path already proven
 // for a top-level awaitSignal (crash-restart-reconnect-resumes.test.ts).
 //
-// Harness justification: SPAWN-REAL. Real hub, real sidecar subprocess, real
-// workflow-process child, mock inference. The crash is a genuine kill of the
-// sidecar subprocess; the restart is a fresh sidecar against the dead process's
-// SIDECAR_DATA_DIR, so survival rides the production boot-time restore path.
+// Harness: SPAWN-REAL. The crash is a genuine kill of the sidecar subprocess;
+// the restart is a fresh sidecar against the dead process's SIDECAR_DATA_DIR.
 
 import fs from "node:fs";
 

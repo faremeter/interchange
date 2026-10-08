@@ -5,9 +5,7 @@
 // so it survives a child respawn.
 //
 // The tests drive a REAL `createRepoStore` workflow-run substrate and a REAL
-// isogit local store (the production path), so the connector-state flush, the
-// change-driven + run-boundary mirrors, and the working-tree reconstruction
-// are exercised end to end -- not mocked, mirroring
+// isogit local store (the production path), mirroring
 // conversation-state-wal.test.ts. The substrate dependency is why these live
 // under tests/ rather than co-located in apps/sidecar/src, which would force
 // a workflow-run-substrate dependency cycle.

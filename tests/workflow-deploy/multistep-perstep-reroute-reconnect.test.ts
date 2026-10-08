@@ -7,29 +7,23 @@
 // Shape: deploy a `step1 -> awaitSignal{name:"go"} -> step2` workflow whose
 // deployment address and every per-step derived address are run addresses
 // (`isRunAddress` true), so they all share the workflow routing family that
-// survives reconnect. Drive one mail trigger through the full inter-step chain
-// (RunStarted -> step1 -> SignalAwaited -> inject signal -> step2 ->
-// RunCompleted), `settleThenDrop` the hub link, wait for the deployment
-// address to re-route through allocation-authenticated reconnect, assert every
-// per-step address is once again a workflow-derived address routing under the
-// re-established deployment, then fire a SECOND mail trigger and run the whole
-// inter-step chain again. The second run only exists because the sidecar
-// re-established the link, the hub restored the workflow-derived deployment
-// address, and inter-step mail/signal routing came back with it.
+// survives reconnect. Drive one mail trigger through the full inter-step chain,
+// `settleThenDrop` the hub link, wait for the deployment address to re-route
+// through allocation-authenticated reconnect, then fire a SECOND mail trigger
+// and run the whole inter-step chain again. The second run only exists because
+// the sidecar re-established the link and inter-step mail/signal routing came
+// back with it.
 //
 // The authenticated sidecar identity is allocation-bound to one workflow run
-// address. Reconnect revalidates that durable identity and the current
-// allocation generation before restoring the address in `workflowAddresses`.
-// The per-step staging addresses are transient bindings (bound only while a
-// step's packs land, never persisted into the reconnect set), so the hub route
-// that survives the reconnect is the deployment address the steps collapse
-// under; inter-step routing itself lives inside the workflow-process child,
-// which the surviving deployment address feeds.
+// address; reconnect revalidates it and the current allocation generation
+// before restoring the address. The per-step staging addresses are transient
+// bindings (never persisted into the reconnect set), so the address that
+// survives the reconnect is the deployment address the steps collapse under;
+// inter-step routing itself lives inside the workflow-process child.
 //
-// Harness justification: SPAWN-REAL. A real hub server, a real sidecar
-// subprocess, a real workflow-process child, and a test inference provider.
-// The drop is a genuine server-side WebSocket close; reconnect uses the
-// sidecar's real `hub-link` path and allocation identity checks.
+// Harness: SPAWN-REAL. The drop is a genuine server-side WebSocket close;
+// reconnect uses the sidecar's real `hub-link` path and allocation identity
+// checks.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 

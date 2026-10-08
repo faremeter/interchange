@@ -10,30 +10,24 @@
 //     ["fs:write"]}`. The deploy-time capability walk lifts that into a
 //     `effect:fs:write` runtime grant, frozen onto the definition version at
 //     approval; the trigger route materializes it onto a fresh run principal
-//     and commits the principal + run + grant rows in one transaction
-//     (`commitRunGrants`). The route declares NO `grants` inline -- the
-//     `effect:fs:write` row exists only because the WALK derived it.
-//   - The workflow is deployed BY SOURCE-REF (bundle a source entry module
-//     into a hub asset, probe it, approve+freeze it against a real DB, deploy
-//     the source-ref frame), so the trigger route reads a genuinely approved
-//     deployment rather than a hand-seeded one.
+//     and commits the principal + run + grant rows in one transaction. The
+//     route declares NO `grants` inline -- the row exists only because the
+//     WALK derived it.
+//   - The workflow is deployed BY SOURCE-REF, so the trigger route reads a
+//     genuinely approved deployment rather than a hand-seeded one.
 //   - `createApp` is wired with the real `h.db`, a real `assetService` +
-//     `repoStore` (so the `/workflows` routes mount), a real DB-backed grant
-//     store, and the fixture's real `env.hub.router`. The route's
-//     `sendRunGrants` and `routeMail` therefore reach the SAME deployed sidecar
-//     the fixture stood up, so a 202 means the run was genuinely accepted for
-//     dispatch.
-//   - The committed rows insert under real foreign keys: `workflow_run`'s
-//     `anchorRunId` references its anchor run's `workflow_run.id`, and the run
-//     principal is a real `principal` row. A broken derivation or a wrong
-//     deployment id fails at the DB, not at a mock.
+//     `repoStore`, a real DB-backed grant store, and the fixture's real
+//     `env.hub.router` -- so `sendRunGrants` and `routeMail` reach the SAME
+//     deployed sidecar, and a 202 means the run was genuinely accepted.
+//   - The committed rows insert under real foreign keys (`workflow_run`'s
+//     `anchorRunId` reference, a real `principal` row): a broken derivation
+//     fails at the DB, not at a mock.
 //
 // SCOPE. This proves the route's grant DERIVATION + DB COMMIT under real
-// constraints. It does NOT exercise the runtime CONSUME side: the sidecar
-// workflow host does not execute action primitives, so the dispatched run
-// fails its action step and never runs the effect. That downstream failure is
-// expected and irrelevant here -- the derivation and commit both complete
-// before the run dispatches, and those are what this test asserts.
+// constraints, not the runtime CONSUME side: the sidecar workflow host does
+// not execute action primitives, so the dispatched run fails its action step
+// and never runs the effect. That downstream failure is expected and
+// irrelevant here.
 
 import fs from "node:fs";
 import os from "node:os";

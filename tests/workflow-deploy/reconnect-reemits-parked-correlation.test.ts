@@ -2,66 +2,41 @@
 // run becomes approvable again, and an approver can then resolve the recovered
 // correlation to drive the parked run to completion.
 //
-// The scenario the ticket names is "suspend with the hub down -> hub comes up
-// -> the correlation is registered and the run is approvable". The load-bearing
-// state is the ABSENCE of the parked run's `signal_correlation` + `approval`
-// rows at the hub (the `signal.correlation.register` frame the suspend emitted
-// never co-wrote them) followed by their APPEARANCE after the hub link
-// reconnects. The recovery is the sidecar's Trigger B: on the reconnect
-// route announcement the hub-link fires `onWorkflowAddressesRoutable`, which
-// calls `reEmitParkedCorrelations(address)`, which asks the deployment's live
-// supervisor to re-query its child's durably-parked approval correlations and
-// re-emit each through the suspension sink -> a fresh
-// `signal.correlation.register` frame reaches the hub -> the co-write lands the
-// rows -> the run is approvable. The test then approves the recovered
-// correlation through the real resolve route and asserts the parked run resumes
-// to RunCompleted, so the re-emitted registration is proven to be a live route
-// the resolver can drive, not merely a row that reappeared.
+// Scenario: "suspend with the hub down -> hub comes up -> the correlation is
+// registered and the run is approvable". The load-bearing state is the ABSENCE
+// of the parked run's `signal_correlation` + `approval` rows at the hub (the
+// suspend's register frame never co-wrote them) followed by their APPEARANCE
+// after the hub link reconnects. Recovery is the sidecar's Trigger B: on the
+// reconnect route announcement the hub-link fires `onWorkflowAddressesRoutable`
+// -> `reEmitParkedCorrelations(address)` -> the supervisor re-queries the
+// child's durably-parked correlations and re-emits each register -> the co-write
+// lands the rows -> the run is approvable. The test then approves through the
+// real resolve route and asserts the run resumes to RunCompleted.
 //
-// Making "the register did not co-write" deterministic
-// ----------------------------------------------------
-// Emitting the register while the hub link is genuinely down would require
-// holding the child in inference across a link drop -- a race with no harness
-// hook to gate it, and this file must not modify the shared harness. Two
-// hub-side facts let the scenario be forced deterministically instead:
+// Making "the register did not co-write" deterministic: emitting the register
+// while the link is genuinely down would be a race with no harness hook to gate
+// it. Two hub-side facts force the scenario instead:
 //
-//   1. On a mere WebSocket drop the sidecar subprocess and the deployment's
-//      supervisor stay alive; only the hub link reconnects. The parked run is
-//      never resumed, so the child keeps the approval park in durable state and
-//      still reports it to a `parked-correlations.request`. So dropping the link
-//      does NOT respawn the child: Trigger A (child re-establishment) never
-//      fires on this path, and the ONLY re-emit driver on reconnect is Trigger
-//      B (`onWorkflowAddressesRoutable`).
+//   1. A mere WebSocket drop leaves the sidecar and supervisor alive; only the
+//      link reconnects. The parked run is never resumed, so Trigger A (child
+//      re-establishment) never fires -- Trigger B is the ONLY re-emit driver.
+//   2. The rows are hub-side DB state. Deleting them while the link is down
+//      reproduces exactly a hub that missed the suspend-time register.
 //
-//   2. The parked run's `signal_correlation` + `approval` rows are hub-side DB
-//      state. Deleting them while the link is down reproduces exactly the state
-//      a hub that missed the suspend-time register would be in: a child parked
-//      on a correlation with no rows at the hub.
+// So the test parks the run with the link up (register co-writes the rows),
+// captures the correlationId, drops the link, DELETES both rows, reconnects,
+// and asserts they reappear -- which can only come from the Trigger B re-emit,
+// since no other actor writes these rows and the child is never respawned.
 //
-// So the test fires the trigger with the link up (the run parks and its initial
-// register co-writes the rows -- proving the run genuinely parked and the
-// co-write is wired), captures the correlationId, drops the link, DELETES both
-// rows while disconnected, asserts they are absent, then reconnects and asserts
-// they reappear. The reappearance can ONLY come from the reconnect re-emitting
-// the still-parked correlation's register: no other actor writes these rows,
-// the run is never resumed, and the child is never respawned. A regression that
-// removed the Trigger B re-emit would leave the rows deleted and the poll would
-// block until this test's own budget ends it.
+// Harness: SPAWN-REAL -- a real hub server, sidecar subprocess, workflow-process
+// child, and test inference provider. The suspend/park half runs against the
+// real sidecar through the shared `deploy-flow-env` fixture; the co-write +
+// row assertions run against a real migrated Postgres schema, bridged by wiring
+// the fixture hub's `registerSignalCorrelation` to the real DB co-write.
 //
-// Harness justification: SPAWN-REAL. A real hub server, a real sidecar
-// subprocess, a real workflow-process child, and a test inference provider. The
-// suspend/park half runs against the real sidecar through the shared
-// `deploy-flow-env` fixture; the co-write + row assertions run against a real
-// migrated Postgres schema (`@intx/test-harness`), bridged by wiring the fixture
-// hub's `registerSignalCorrelation` lookup to the real DB co-write. The drop is
-// a genuine server-side WebSocket close; the recovery is the sidecar's real
-// allocation-authenticated `hub-link` reconnect and the supervisor re-emitting
-// the parked correlation.
-//
-// Single-test file. The `deploy-flow-env` (real sidecar subprocess + its
-// on-disk warm step-state) is `beforeAll`-scoped, while the DB resets per test.
-// A second test would inherit the first run's warm workspace and live parked
-// run; a run-once guard below fails loud if a second test is ever added here.
+// Single-test file: the env is beforeAll-scoped while the DB resets per test; a
+// second test would inherit the first run's warm workspace and live parked run.
+// A run-once guard below fails loud if a second test is ever added here.
 
 import {
   afterAll,
@@ -253,14 +228,13 @@ const approverGrant: GrantRule = {
 
 /**
  * The real hub co-write, mirroring `createHubSessionLookups`'s
- * `registerSignalCorrelation`: resolve tenancy from the deployment's anchor run
- * -- the `workflow_run` whose id is the deployment id -- the address names,
- * cross-check the frame's `anchorRunId` against it, and co-write the
- * `signal_correlation` + `approval` rows in one transaction through the real
- * stores. Wired into the fixture hub's sidecar router so both the suspend-time
- * register and the reconnect re-emit land durable rows on the same schema this
- * test reads. Idempotent via `registerIfAbsent` / `createIfAbsent`, so a re-emit
- * after a delete re-inserts.
+ * `registerSignalCorrelation`: resolve tenancy from the deployment's anchor
+ * run the address names, cross-check the frame's `anchorRunId` against it,
+ * and co-write the `signal_correlation` + `approval` rows in one transaction.
+ * Wired into the fixture hub's sidecar router so both the suspend-time
+ * register and the reconnect re-emit land rows on the schema this test reads.
+ * Idempotent via `registerIfAbsent` / `createIfAbsent`, so a re-emit after a
+ * delete re-inserts.
  */
 function createRegisterSignalCorrelation(db: TestDb["db"]) {
   const signalCorrelationStore = createSignalCorrelationStore(db);
@@ -370,11 +344,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
   "a hub reconnect re-emits a parked run's correlation and resolves it to completion",
   () => {
     // Run-once guard. The env (sidecar subprocess + on-disk warm step-state +
-    // the live parked run) is shared across the describe block, so a second
-    // test would inherit this run's parked correlation and the "absent then
-    // present" assertions would stop meaning what they claim. Fail loud if a
-    // second test is ever added; a genuinely independent scenario belongs in
-    // its own file with its own env.
+    // the live parked run) is shared across the describe block; a second test
+    // would inherit this run's parked correlation and the "absent then present"
+    // assertions would stop meaning what they claim. Fail loud if one is added.
     let hasRun = false;
 
     beforeAll(async () => {

@@ -1,26 +1,24 @@
 // Phase 3 proof: the per-step agent's event stream is threaded up
 // through the step-invoker's `onEvent` sink.
 //
-// The step-invoker adapter (`createWorkflowStepInvoker`,
-// `packages/workflow-host/src/adapters/step-invoker.ts`) is the portable
-// seam the sidecar's substrate factory drives per step. The factory's
-// `invokeStep` wrapper passes the child's per-run event-channel sink as
-// the adapter's `onEvent`; the chain from there is `onEvent -> child
-// event-channel sender -> supervisor -> publishWorkflowInferenceEvent ->
-// hub timeline`. This test pins the FIRST link of that chain -- the only
-// link Phase 3 adds -- by driving a real per-step agent against the
-// deterministic inference test harness with a recording `onEvent` and
-// asserting the agent's `InferenceEvent`s arrive at the sink.
+// The step-invoker adapter (`createWorkflowStepInvoker`) is the portable seam
+// the sidecar's substrate factory drives per step. The factory's `invokeStep`
+// wrapper passes the child's per-run event-channel sink as the adapter's
+// `onEvent`; the chain from there is `onEvent -> child event-channel sender ->
+// supervisor -> publishWorkflowInferenceEvent -> hub timeline`. This test pins
+// the FIRST link of that chain -- the only link Phase 3 adds -- by driving a
+// real per-step agent against the deterministic inference test harness with a
+// recording `onEvent` and asserting the agent's `InferenceEvent`s arrive at
+// the sink.
 //
-// The agent is driven through a two-turn tool loop: the mock provider
-// emits a `tool_use` turn calling a real tool, the tool executes in the
-// step's workdir, and a second turn produces the text reply. That exercise
-// fires `inference.start` (per turn), the tool-call inference events, the
-// `tool.start` / `tool.done` execution events, and `inference.done` (the
-// assistant turn) -- every InferenceEvent member except the intentionally
-// excluded `message.received`. Against the pre-Phase-3 behaviour the
-// wrapper `void onEvent`d and the adapter never subscribed the agent's
-// stream, so the recorder would stay empty -- this test fails there.
+// The agent is driven through a two-turn tool loop: the mock provider emits a
+// `tool_use` turn calling a real tool, the tool executes in the step's workdir,
+// and a second turn produces the text reply. That fires `inference.start` (per
+// turn), the tool-call inference events, the `tool.start` / `tool.done`
+// execution events, and `inference.done` -- every InferenceEvent member except
+// the intentionally excluded `message.received`. Against pre-Phase-3 behaviour
+// the wrapper `void onEvent`d, so the recorder would stay empty -- this test
+// fails there.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, existsSync } from "node:fs";

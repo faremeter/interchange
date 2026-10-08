@@ -5,39 +5,29 @@
 // agent replies to each inbound and RETURNS. The runtime re-arms the step on a
 // snapshot-less `input` park after every turn, so the SECOND inbound mail is
 // dispatched as turn 2 via `signal.deliver` on the SAME stable run (its runId
-// is the deployment address's local part; see `deriveWorkflowRunId` -- "a
-// property of the deployment, not of the trigger occurrence"), rather than
-// opening a new run or being rejected as terminal.
+// is the deployment address's local part), rather than opening a new run or
+// being rejected as terminal.
 //
-// Run model. A batch step (`triggers` absent / `1`) completes on its first
+// Run model: a batch step (`triggers` absent / `1`) completes on its first
 // output, so a second inbound would hit a terminal run and be refused. With
 // `triggers: "unbounded"` the step never self-completes: it re-arms on an
-// input park, and the supervisor's dispatch loop routes the next inbound onto
-// that park as `signal.deliver` (turn 2) instead of `trigger.fire` (a fresh
-// run). Turn 2's mail flows through the step-invoker's
-// `buildInboundMessageFromMail` -> `seedInbound` connector hook exactly like
-// turn 1, so the connector thread continues across the two dispatched turns and
-// turn 2's reply threads onto turn-2's mail. The scripted mock returns a plain
-// text reply per turn (no tool call, so the step produces an OUTPUT and
-// re-arms; NO `mail_wait`, so the run does not stay inside one turn), and each
-// reply's wire headers are composed from the durable connector thread the
-// `seedInbound` hook advanced.
+// input park and the dispatch loop routes the next inbound onto that park as
+// `signal.deliver` (turn 2) instead of `trigger.fire` (a fresh run). Turn 2's
+// mail flows through the step-invoker's `seedInbound` connector hook exactly
+// like turn 1, so the connector thread continues across the two turns. The
+// scripted mock returns a plain text reply per turn (no tool call, no
+// `mail_wait`), and each reply's wire headers are composed from the durable
+// connector thread the hook advanced.
 //
-// Assertions, read off the delivered `mail.outbound` bytes (via `persistMail`'s
-// retained `raw`, parsed with `parseHeaderSection`) and the run event log:
-//   (a) exactly ONE `RunStarted` for the deployment runId across both turns,
-//       consuming mail 1; mail 2 opened no run of its own and the run reached
-//       no terminal event between the turns (the unbounded re-arm kept it live).
-//   (b) R1's wire In-Reply-To == m1 (To == userA); R2's wire In-Reply-To == m2
-//       (To == userB) -- each turn's reply threaded onto that turn's mail. R2
-//       also carries the FULL References ancestry [m1, r1, m2] (mail 2's own
-//       References plus mail 2's Message-Id), not a truncated [m2]; R1's is the
-//       single-element [m1] the opener seeds.
-//   (c) mail 2 was consumed as turn 2 on the same run: a `SignalReceived` whose
-//       signalId is mail 2's Message-Id, plus two input re-arms serviced.
+// Assertions (off the delivered `mail.outbound` bytes and the run event log):
+//   (a) exactly ONE `RunStarted` across both turns, no terminal event between
+//       them (the unbounded re-arm kept the run live);
+//   (b) each turn's reply threads onto that turn's mail (In-Reply-To), R2
+//       carrying the FULL References ancestry [m1, r1, m2];
+//   (c) mail 2 was consumed as turn 2 on the same run (a `SignalReceived` with
+//       mail 2's Message-Id, two input re-arms serviced);
 //   (d) connector cc-accumulation: R2 cc-includes userA, the prior turn's
-//       participant carried forward -- the connector thread continued across the
-//       two dispatched turns rather than restarting on mail 2.
+//       participant -- the thread continued rather than restarting on mail 2.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 

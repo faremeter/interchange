@@ -1,64 +1,39 @@
-// CAPSTONE end-to-end approval-tracer integration test.
-//
-// Proves the approval tracer's headline through the real hub + sidecar stack,
-// with no stubbed suspend and no stubbed resume: on approval the ORIGINAL
+// CAPSTONE end-to-end approval-tracer integration test, through the real hub +
+// sidecar stack with no stubbed suspend or resume: on approval the ORIGINAL
 // tool runs and the agent continues with its real result.
 //
-//   deploy a single-step workflow whose agent calls a recording tool
-//     -> the tool call hits an `ask` grant
-//     -> the reactor SUSPENDS, capturing the parked ToolCall on the pending
-//        operation, and runStep parks the step on the reserved
-//        `__signal__:<corr>` channel
-//     -> the sidecar emits `signal.correlation.register`; the hub co-writes
-//        the `signal_correlation` + `approval` rows
-//     -> approve via the real hub HTTP route (scope "once")
-//     -> the resolver claims + resolves and `sendSignalDeliver` resumes the
-//        parked run; the reactor grants a one-shot bypass keyed on the parked
-//        ToolCall.id and RE-DISPATCHES the call on the execute-tools rail, so
-//        the approved tool RUNS, its real result lands in history, and the
-//        agent re-infers once off that result to a reply
-//        -> the workflow reaches terminal `completed`.
+// Flow: the tool call hits an `ask` grant, the reactor suspends and the
+// sidecar co-writes `signal_correlation` + `approval` rows; the real hub HTTP
+// approve route resolves the correlation, `sendSignalDeliver` resumes the
+// parked run, the reactor grants a one-shot bypass keyed on the parked
+// ToolCall.id, re-dispatches the call, and the run completes carrying the
+// tool's REAL result.
 //
-// Load-bearing assertions:
-//   1. Before approval: a pending `approval` row + `signal_correlation` row
-//      exist for the minted correlationId, and the tool has NOT run yet.
-//   2. Approve once -> 200.
-//   3. After approval: the run resumes, the recording tool executes EXACTLY
-//      ONCE, the run reaches terminal `completed` carrying the tool's REAL
-//      result, the post-resume conversation history is a well-formed
-//      tool_call/tool_result sequence (no dangling tool_use), and there was
-//      NO re-park (one `SignalAwaited`, one `approval` row, one
-//      `signal_correlation` row -- the one-shot bypass let the re-dispatched
-//      call through without a second suspension).
+// Assertions: parked before approval (rows present, tool not run); approve
+// once -> 200; after approval the tool executes EXACTLY ONCE, the run reaches
+// terminal `completed`, and there is NO re-park (one `SignalAwaited`, one
+// `approval` row, one `signal_correlation` row -- the one-shot bypass let the
+// re-dispatched call through without a second suspension).
 //
-// The mock model is the discriminator between fixed and broken. It re-issues
-// the tool call on every inference whose history does not yet carry a
-// tool_result answering it, and only replies once it sees that result. Under
-// the OLD broken resume rail the decision arrived as a bare user turn, so the
-// mock re-issued the call, re-hit the still-`ask` grant, and re-parked -- an
-// endless loop that never completes. A latched "call once" mock would hide
-// the loop; this one does not.
+// The mock model is the discriminator between fixed and broken: it re-issues
+// the tool call until a tool_result answers it. Under the old broken resume
+// rail the decision arrived as a bare user turn, so the call re-issued,
+// re-hit the still-`ask` grant, and re-parked forever; a latched "call once"
+// mock would hide that loop.
 //
-// Harness composition. The suspend/register/resume half runs against the real
-// sidecar subprocess through the shared `deploy-flow-env` fixture. The
-// approval-store + approve-route half runs against a real migrated Postgres
-// schema (`@intx/test-harness`), bridged by wiring the fixture hub's
-// `registerSignalCorrelation` lookup to the real DB co-write and pointing the
-// real `createApprovalRoutes` app at the same schema and the same sidecar
-// router. The deployment is seeded as its anchor `workflow_run` row so the
-// co-write resolves tenancy exactly as production does.
-//
+// Harness: the suspend/register/resume half runs against the real sidecar
+// subprocess through the shared `deploy-flow-env` fixture; the approval-store
+// + approve-route half runs against a real migrated Postgres schema, with the
+// fixture hub's `registerSignalCorrelation` bridged to the real DB co-write.
 // Approval is driven through the REAL hub HTTP route: a mock betterAuth
-// session bound to a seeded active user-principal, which `resolveTenant`
-// resolves into the tenant + principal the route reads. The approver's
-// authority is a real `approval:<anchorRunId>` / `resolve` grant evaluated by
-// the route's `authorize` call.
+// session bound to a seeded active user-principal, authorized by a real
+// `approval:<anchorRunId>` / `resolve` grant.
 //
-// Single-test file. The shared `deploy-flow-env` (real sidecar subprocess +
-// its on-disk warm step-state) is `beforeAll`-scoped, while the DB resets per
-// test. A second test would inherit the first run's warm workspace, and
-// "sentinel written exactly once" would silently stop meaning what it claims.
-// A run-once guard below fails loud if a second test is ever added here.
+// Single-test file: the shared env (real sidecar subprocess + on-disk warm
+// step-state) is beforeAll-scoped while the DB resets per test; a second test
+// would inherit the first run's warm workspace and "sentinel written exactly
+// once" would silently stop meaning what it claims. A run-once guard below
+// fails loud if a second test is ever added here.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -131,11 +106,9 @@ import { MAIL_TOOL_NAME } from "./fixtures/mail-tool";
 import { singleStepMailToolEntry } from "./fixtures/single-step-mail-tool";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
-// A single-agent run id: `run_` + a hex-shaped local part, mirroring
-// the single-step grants-bridge shape. The deploy mail address is the
-// run's own top-level `run_<hex>@<domain>` address, and the sidecar's
-// deploy router recognizes the single-step projection and applies the
-// single-agent identity strategy.
+// A single-agent run id, mirroring the single-step grants-bridge shape: the
+// deploy mail address is the run's top-level `run_<hex>@<domain>` address,
+// and the sidecar's deploy router applies the single-agent identity strategy.
 const INSTANCE_LOCAL = "run_feedface0001feedface0002feedface";
 const DEPLOYMENT_ID = INSTANCE_LOCAL;
 const STEP_ID = "step1";
@@ -269,12 +242,10 @@ const approverGrant: GrantRule = {
 /**
  * The real hub co-write, mirroring `createHubSessionLookups`'s
  * `registerSignalCorrelation`: resolve tenancy from the deployment's anchor
- * run -- the `workflow_run` whose id is the deployment id -- cross-check the
- * frame's `anchorRunId` against the address-derived slug, and co-write the
- * `signal_correlation` + `approval` rows in one transaction through the real
- * stores. Wired into the fixture hub's sidecar router so the
- * `signal.correlation.register` frame the parked run emits lands durable rows
- * on the same schema the approve route reads.
+ * run, cross-check the frame's `anchorRunId` against the address-derived
+ * slug, and co-write the `signal_correlation` + `approval` rows in one
+ * transaction. Wired into the fixture hub's sidecar router so the parked
+ * run's register frame lands rows on the same schema the approve route reads.
  */
 function createRegisterSignalCorrelation(db: TestDb["db"]) {
   const signalCorrelationStore = createSignalCorrelationStore(db);

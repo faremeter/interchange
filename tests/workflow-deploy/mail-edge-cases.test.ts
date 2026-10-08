@@ -1,50 +1,32 @@
 // Mail-handling edge-case integration test.
 //
-// Coverage for mail-flow corner cases. The supervisor's
-// `deriveMessageId` derivation is the load-bearing identity the
-// FIFO inbox, dedup index, and run-id mint all depend on. The
-// existing FIFO test pins the happy path on well-formed RFC 2822
-// Message-Id headers; this file pins three documented-but-untested
-// shapes:
+// Pins three documented-but-untested Message-Id shapes against the
+// supervisor's `deriveMessageId` (the identity the FIFO inbox, dedup index,
+// and run-id mint all depend on):
 //
-// 1. Mail with NO `Message-Id:` header at all. The parser returns
-//    `null` and `deriveMessageId` falls back to `sha256(rawMessage)`.
-//    Two byte-identical mails therefore mint the same messageId, which
-//    triggers the substrate's claim-check dedup invariant
-//    (`claim_check_already_consumed` after the first run terminates, or
-//    `claim_check_already_processing` / `claim_check_already_inbox` if
-//    the duplicate arrives sooner). The duplicate is dropped silently.
+// 1. No `Message-Id:` header at all. The parser returns null and
+//    `deriveMessageId` falls back to `sha256(rawMessage)`, so two
+//    byte-identical mails mint the same messageId and the substrate's
+//    claim-check dedup drops the duplicate silently.
+// 2. A malformed header (`Message-Id: <invalid`, no closing bracket). The
+//    parser does NOT validate the angle-bracket shape -- it returns the
+//    trimmed suffix-after-colon verbatim, so the messageId is `<invalid` and
+//    the run materialises with that runId. This is the documented contract;
+//    if it changes, this test is the regression signal.
+// 3. Two mails with the same Message-Id. Dedup catches the duplicate via the
+//    same path as case 1; the first run materialises, the second is dropped
+//    at the `enqueueInbox` boundary.
 //
-// 2. Mail with a malformed `Message-Id:` header (here: no closing
-//    angle bracket -- `Message-Id: <invalid`). The parser does NOT
-//    validate the angle-bracket shape -- it returns the trimmed
-//    suffix-after-colon verbatim. So the messageId is `<invalid` and
-//    the run materialises with that runId. This is the documented
-//    contract; if it changes, this test is the regression signal.
+// The supervisor's mail-flow path is onMailMessage -> deriveMessageId ->
+// enqueueInbox -> dispatch loop; the loop mints the run-id from the
+// messageId, and the child commits `RunStarted.consumedMessageId` so tests
+// can correlate runs back to the bytes that triggered them.
 //
-// 3. Two mails with the same `Message-Id` header. The substrate's
-//    dedup catches the duplicate via the same path as case 1; the
-//    first run materialises, the second is dropped at the
-//    `enqueueInbox` boundary with one of the `claim_check_already_*`
-//    errors.
-//
-// The supervisor's mail-flow path:
-//   onMailMessage -> deriveMessageId -> enqueueInbox -> dispatch loop
-// The dispatch loop, when it forwards `trigger.fire` with
-// `runId === messageId`, mints the run-id from the messageId. The
-// workflow-process child commits `RunStarted.consumedMessageId` to the
-// run's events log, so the test can correlate observed runs back to
-// the bytes that triggered them.
-//
-// The fixture's existing `fireMailTrigger` uses `assembleMessage`,
-// which validates Message-Id shape -- it would reject case 2's
-// `<invalid` value before we ever exercise the supervisor's parser.
-// This file constructs raw mail bytes by hand to bypass the
-// fixture-side validator and exercise the supervisor's parser
-// directly. The hub's `routeMail` takes a base64 string and the
-// sidecar's hub-link decodes it back into the `Uint8Array` the
-// supervisor's `onMailMessage` consumes; the wire transport
-// preserves bytes verbatim.
+// The fixture's `fireMailTrigger` uses `assembleMessage`, which validates
+// Message-Id shape and would reject case 2's `<invalid`; this file constructs
+// raw mail bytes by hand to exercise the supervisor's parser directly. The
+// hub's `routeMail` takes base64 and the sidecar's hub-link decodes it back
+// into the bytes `onMailMessage` consumes.
 
 import {
   afterAll,
@@ -168,11 +150,9 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
     const ctx = await deployEdgeWorkflow(env, NO_HEADER_DEPLOYMENT_ID);
 
     // Construct two byte-identical raw mails with NO Message-Id header.
-    // The supervisor's parser walks for a `message-id:` line
-    // case-insensitively; without one, `parseMessageIdHeader` returns
-    // null and `deriveMessageId` falls back to `sha256(rawMessage)`.
-    // Under the stable-runId model the runId is the deployment address,
-    // but the messageId (used for claim-check dedup) is still sha256.
+    // Without one, `deriveMessageId` falls back to `sha256(rawMessage)`; the
+    // runId is the deployment address, the messageId (used for claim-check
+    // dedup) is the sha256 hash.
     const raw = buildMinimalMail({
       from: EDGE_SENDER,
       to: ctx.deploymentMailAddress,
@@ -204,17 +184,15 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
     if (started === undefined) throw new Error("unreachable");
     expect(started.body["consumedMessageId"]).toBe(messageId);
 
-    // Fire a second byte-identical mail. The supervisor's
-    // `deriveMessageId` derives the same sha256 hash; the
-    // claim-check substrate sees the messageId is already in
-    // `consumed/` (or `processing/`, depending on timing), so
-    // `enqueueInbox` returns an `already-present` outcome. The
-    // supervisor acknowledges it (the bytes are durably on disk) but
-    // dispatches no second run -- the duplicate is deduped.
+    // Fire a second byte-identical mail. `deriveMessageId` derives the same
+    // sha256 hash, so the claim-check substrate sees the messageId already in
+    // `consumed/` (or `processing/`, depending on timing) and `enqueueInbox`
+    // returns an already-present outcome. The supervisor acknowledges the
+    // bytes (durably on disk) but dispatches no second run -- the duplicate
+    // is deduped.
     //
-    // Wait for the supervisor's `markConsumed` to land on the first run
-    // (strictly after the run's terminal event observation above), then
-    // read consumed/ for a baseline.
+    // Wait for `markConsumed` to land on the first run (strictly after the
+    // terminal observation above), then read consumed/ for a baseline.
     const consumedBefore = await waitForConsumedFilename(
       env,
       ctx.workflowRunRepoId,
@@ -264,12 +242,9 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
   test("mail with malformed Message-Id (no closing bracket) mints the raw value as messageId", async () => {
     const ctx = await deployEdgeWorkflow(env, MALFORMED_DEPLOYMENT_ID);
 
-    // Construct a mail with a malformed Message-Id header. The
-    // parser does NOT validate angle-bracket shape; it returns the
-    // trimmed suffix after `Message-Id:`. So `<invalid` becomes
-    // the messageId verbatim. Under the stable-runId model the
-    // runId is the deployment address, but the messageId is still
-    // the parsed header value.
+    // Construct a mail with a malformed Message-Id header. The parser does
+    // NOT validate angle-bracket shape; it returns the trimmed suffix after
+    // `Message-Id:` verbatim, so `<invalid` becomes the messageId.
     const malformedMessageId = "<invalid";
     const raw = buildMinimalMail({
       from: EDGE_SENDER,

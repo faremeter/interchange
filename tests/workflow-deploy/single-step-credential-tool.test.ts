@@ -3,36 +3,30 @@
 // workflow carries in its own source closure.
 //
 // A single-step workflow is deployed BY SOURCE-REF; its agent carries the
-// inline `probe` tool from `fixtures/credential-tool-bundle.ts`. When the
-// definition declares a `credentialBindings` entry, the deploy resolves the
-// binding against the DB-seeded provider + credential, decrypts through the
-// credential cipher, and carries the `CredentialDelivery` on the source-ref
-// deploy frame; the supervisor pushes it into the child's material cell before
-// the step agent builds. When the model drives the `probe` tool, the tool
-// resolves its declared handle through the consumer-scoped `credentials`
-// capability (Gate 2 authorizes it against a `credential:{id}` / `use` grant),
+// inline `probe` tool. When the definition declares a `credentialBindings`
+// entry, the deploy resolves the binding against the DB-seeded provider +
+// credential, decrypts through the cipher, and carries the `CredentialDelivery`
+// on the source-ref deploy frame; the supervisor pushes it into the child's
+// material cell before the step agent builds. When the model drives `probe`,
+// the tool resolves its handle through the consumer-scoped `credentials`
+// capability (Gate 2 authorizes against a `credential:{id}` / `use` grant),
 // obtains an http mediated credential, and fetches a path on the credential's
 // pinned origin -- an in-process mock server that records the Authorization
 // header it sees.
 //
 // The consumer both ends key on is the probe factory's `id`: the source-ref
 // arm sets the synthetic `StepToolFactory.packageName` to the factory id, and
-// the author names `credentialBindings[].package` = that same id, so the
-// delivered descriptor's `consumer` and the source tool's runtime consumer
-// match.
+// the author names `credentialBindings[].package` = that same id.
 //
-// The proofs:
+// Proofs:
 //   * Positive: the exact source-resolved secret arrives at the pinned origin
-//     as a bearer -- the whole rail (source-binding resolution -> deploy-frame
-//     delivery -> child cell -> Gate 2 -> provider shape -> authed fetch)
-//     carried it, without the secret ever touching disk or the tool's own API.
+//     as a bearer -- the whole rail carried it, without the secret ever
+//     touching disk or the tool's own API.
 //   * Channel-only: a workflow that declares NO binding takes its credential
-//     purely over the live `credentials.update` channel; the pushed secret
-//     reaches the running child and the shaped handle reads it, proving the
-//     channel delivers to a source-workflow tool. (A binding-declaring deploy
-//     re-applies its frame material on every run's pre-trigger barrier, so a
-//     channel push would be clobbered; the channel-only shape is what proves
-//     the live channel.)
+//     purely over the live `credentials.update` channel, proving the channel
+//     delivers to a source-workflow tool. (A binding-declaring deploy
+//     re-applies its frame material on every pre-trigger barrier, so a channel
+//     push would be clobbered.)
 //   * Negative: a run whose grant does not authorize the consumer fails the
 //     resolve closed -- no request ever reaches the origin.
 

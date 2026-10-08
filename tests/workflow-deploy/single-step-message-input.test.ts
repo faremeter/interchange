@@ -8,12 +8,12 @@
 //
 // The mock inference server runs in echo mode: it reflects the last user
 // message's text back as `echo:<text>`. The agent delivers the inbound
-// conversation content as the user turn, so the echoed reply is the load-
-// bearing proof that the mail body traversed trigger.payload -> step input ->
-// synthesizeInputContent -> agent.send. Against the pre-4.2 behaviour
-// (trigger.fire carries no bytes; the child threads no triggerPayload, so the
-// first step's `{ from: "trigger.payload" }` input resolves to null/empty),
-// the echoed reply would be `echo:` with no body -- this test fails there.
+// conversation content as the user turn, so the echoed reply is the
+// load-bearing proof that the mail body traversed trigger.payload -> step
+// input -> synthesizeInputContent -> agent.send. Against pre-4.2 behaviour
+// (trigger.fire carries no bytes; the first step's input resolves to
+// null/empty) the echoed reply would be `echo:` with no body -- this test
+// fails there.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { type } from "arktype";

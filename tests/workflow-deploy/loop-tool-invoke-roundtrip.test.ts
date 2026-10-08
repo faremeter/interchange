@@ -6,19 +6,15 @@
 // deployed loop fixture -- so the body never reaches the tool-invocation
 // authorize seam. This proves the stronger property: the body's real agent
 // CALLS the tool and feeds the result back into a follow-up turn, the real
-// `tool_use` -> execute -> `tool_result` -> reply round-trip. The mock provider
-// drives a `tool_use` on the first request of every run that exposes the tool.
+// `tool_use` -> execute -> `tool_result` -> reply round-trip.
 //
-// The assertion reads the tool_result's TEXT, not merely its presence: a tool
-// call the authorize seam blocks still appends an error tool_result and the
-// agent then replies normally, so a presence-only check passes while nothing
-// ever ran. Only the tool's own return value (`wrote <filename>`) proves the
-// body executed it. The env runs exactly one workflow, and only the loop body's
-// step carries a tool, so a tool_result in ANY captured request can only have
-// originated in the loop body.
+// The assertion reads the tool_result's TEXT, not merely its presence: a
+// blocked call still appends an error tool_result and the agent replies
+// normally, so a presence-only check passes while nothing ever ran. Only the
+// tool's own return value proves the body executed it. The env runs exactly
+// one workflow, and only the loop body's step carries a tool.
 //
-// Harness justification: SPAWN-REAL. A real hub server, a real sidecar
-// subprocess, and a real workflow-process child evaluating the deployed source.
+// Harness: SPAWN-REAL.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 

@@ -12,18 +12,16 @@
 //
 // The tests exercise the same seeded ciphertext through the route:
 //   * Positive: the app holds the SAME key the secret was sealed under, so the
-//     binding resolves and decrypts -- 201. If the route dropped the cipher or
-//     the shared deploy stopped forwarding it, resolution fails closed and the
-//     deploy is 502; the positive assertion catches that.
-//   * Wrong key: the app holds a DIFFERENT key over the same ciphertext, so the
-//     AEAD decrypt refuses the key-id mismatch and the deploy fails closed
-//     (502). If the cipher stopped being invoked (a pass-through regression),
-//     the wrong key would 201; this assertion catches that.
-//   * Keyless: the app is built with NO cipher, so it resolves the noop cipher
-//     (a hub booted without CREDENTIAL_ENCRYPTION_KEY). The noop refuses the
-//     real ciphertext rather than passing it through, so the deploy fails
-//     closed (502) instead of delivering an un-decrypted secret -- the
-//     misconfigured-production case.
+//     binding resolves and decrypts -- 201. A route that dropped the cipher or
+//     stopped forwarding it fails closed to 502; the positive assertion catches
+//     that.
+//   * Wrong key: the app holds a DIFFERENT key, so the AEAD decrypt refuses the
+//     key-id mismatch and the deploy fails closed (502). A pass-through
+//     regression that stopped invoking the cipher would 201; this catches it.
+//   * Keyless: the app is built with NO cipher (a hub booted without
+//     CREDENTIAL_ENCRYPTION_KEY). The noop refuses the real ciphertext rather
+//     than passing it through, so the deploy fails closed (502) instead of
+//     delivering an un-decrypted secret.
 //
 // The credential delivery is not observable as a return value or a DB row (it
 // rides the sidecar frame), and a real AES-256-GCM decrypt authenticates the

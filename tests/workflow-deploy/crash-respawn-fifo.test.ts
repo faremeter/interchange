@@ -3,22 +3,17 @@
 // Proves the INTR-193 acceptance requirement end to end: a workflow-process
 // child SIGKILLed mid-run is respawned by the supervisor WITHOUT external
 // intervention, the stranded mail is replayed, and the deployment recovers
-// with FIFO preserved -- all inside the SAME sidecar process (this is
-// crash-respawn, not the boot-restore path that a full sidecar restart
-// exercises).
+// with FIFO preserved -- all inside the SAME sidecar process (crash-respawn,
+// not the boot-restore path a full sidecar restart exercises).
 //
 // The proof that CRASH-RESPAWN (not boot-restore, not redeploy) recovered
-// the deployment is a conjunction: the sidecar process stays alive, a new
-// workflow-child pid appears under it, and the run reaches `RunCompleted`
-// after the post-respawn signal. Mail 0 reaching `consumed/` is the proof
-// that the replay ran -- an un-replayed `processing/` entry is orphaned
-// (the dead child's dispatch loop never reaches its `markConsumed`) and
-// would never re-consume.
+// the deployment: the sidecar process stays alive, a new workflow-child pid
+// appears under it, and the run reaches `RunCompleted` after the post-respawn
+// signal. Mail 0 reaching `consumed/` proves the replay ran -- an
+// un-replayed `processing/` entry is orphaned and would never re-consume.
 //
-// Harness justification: SPAWN-REAL. Real hub, real sidecar subprocess,
-// real workflow-process child, mock inference. The crash is a genuine
-// SIGKILL of the child process; recovery rides the production respawn path.
-// This discharges the crash-replay follow-up the FIFO mail test deferred.
+// Harness: SPAWN-REAL. The crash is a genuine SIGKILL of the child process;
+// recovery rides the production respawn path.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 

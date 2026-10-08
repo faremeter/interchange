@@ -2,37 +2,35 @@
 //
 // This is the first test to drive a genuine `definePlugin` package
 // (`@intx/tools-lsp`) through the source-ref deploy path. Unlike a plain tool
-// factory -- which a workflow imports and places in `agent.tools`, so Option A
-// carries it on `req.agent.toolFactories` for free -- a plugin package
+// factory -- which a workflow imports and places in `agent.tools`, so the
+// deploy carries it on `req.agent.toolFactories` for free -- a plugin package
 // contributes NO agent-visible factory: its factory reaches the agent only
-// through `env.plugins`. The workflow therefore declares it with a per-agent
+// through `env.plugins`. The workflow declares it with a per-agent
 // `plugins: ["@intx/tools-lsp"]` list, and three mechanisms cooperate for the
 // plugin's `lsp` tool to run and authorize:
 //
 //   1. The deploy-time probe loads the declared plugin's STATIC tool
 //      `definitions` from the frozen closure and surfaces a `tool:lsp` grant
 //      into the approved grant-walk snapshot (Tier-2 governance -- no floor).
-//   2. The run-child materializes the plugin FACTORY from the same closure
-//      (no re-download) and feeds it into the existing per-step plugin chain,
-//      which threads it onto `env.plugins`; posix's bundle (imported inline by
-//      the workflow, so present in `agent.toolFactories`) consumes it and
-//      registers the plugin's `lsp` tool.
+//   2. The run-child materializes the plugin FACTORY from the same closure (no
+//      re-download) and feeds it into the existing per-step plugin chain, which
+//      threads it onto `env.plugins`; posix's bundle (imported inline by the
+//      workflow, so present in `agent.toolFactories`) consumes it and registers
+//      the plugin's `lsp` tool.
 //   3. At call time the reactor authorizes `tool:lsp` against the frozen
 //      snapshot -- the plugin tool's runtime name is the bare `lsp`, matching
 //      the walked grant -- and the tool's handler runs in-child.
 //
-// posix is inlined into the workflow bundle (the entry imports its sidecar
-// bundle, which the test bundler rewrites to on-disk source), so the closure
-// need only carry `@intx/tools-lsp`. That plugin package is published to an
-// in-process npm registry as a SELF-CONTAINED bundle (all of its own deps
-// inlined by `Bun.build`), so the closure resolves it to a single registry
-// entry with an integrity SRI -- the sidecar materializes exactly those bytes.
+// posix is inlined into the workflow bundle, so the closure need only carry
+// `@intx/tools-lsp`. That plugin package is published to an in-process npm
+// registry as a SELF-CONTAINED bundle (its own deps inlined by `Bun.build`),
+// so the closure resolves it to a single registry entry with an integrity SRI.
 //
 // The mock inference server drives the agent to call the ungated `lsp` tool
 // (posix's own six tools are approval-gated, so calling one would suspend for
-// approval; `lsp` is not gated and completes cleanly). The tool has no language
-// server configured, so its handler returns "no LSP server available" -- a
-// valid tool result -- and the run completes.
+// approval; `lsp` is not gated and completes cleanly). With no language server
+// configured, its handler returns "no LSP server available" -- a valid tool
+// result -- and the run completes.
 
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";

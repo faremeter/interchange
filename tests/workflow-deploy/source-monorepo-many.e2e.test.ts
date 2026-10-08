@@ -8,12 +8,10 @@
 //    reaches inference.
 //
 //  - COLLAPSE: two members with an IDENTICAL needs-surface but a different
-//    `packageName` install to ONE shared row (equal wire hashes; the key
-//    resolves both to the same definition). The second install's carried
-//    closure and inline bodies are re-probed from the SECOND member's own
-//    source, independent of the row it collapses onto; asserting them is a
-//    forward regression guard against a future short-circuit that returned the
-//    pre-existing row's cached first projection instead of re-probing.
+//    `packageName` install to ONE shared row (equal wire hashes). The second
+//    install's carried closure and inline bodies are re-probed from the SECOND
+//    member's own source -- a forward regression guard against a future
+//    short-circuit that returned the pre-existing row's cached projection.
 //
 // Both facets share one seeded monorepo (four members under `packages/*`).
 

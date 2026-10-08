@@ -1,22 +1,19 @@
 // Single-step real-agent round-trip integration test: the proof that the
 // spawned workflow-process child runs a REAL agent for a step, not the
-// placeholder stub. Deploys a one-step workflow BY SOURCE-REF (bundle a source
-// entry module into a hub asset, probe it, approve+freeze it against a real
-// DB, deploy the source-ref frame) against the real hub + real sidecar
-// subprocess + mock inference fixture, fires the deployment's mail trigger,
-// and asserts the step's committed output carries the agent's deterministic
-// inference reply produced by `agent.send` -- NOT the old stub value
-// `req.agent.id`.
+// placeholder stub. Deploys a one-step workflow BY SOURCE-REF against the
+// real hub + real sidecar subprocess + mock inference fixture, fires the
+// deployment's mail trigger, and asserts the step's committed output carries
+// the agent's deterministic inference reply produced by `agent.send` -- NOT
+// the old stub value `req.agent.id`.
 //
 // The mock inference server returns a canned assistant reply built from the
-// tool names it was handed (`I see these tools: <names>`); with an empty tool
-// set the reply is the stable prefix `I see these tools: `. That deterministic
-// reply is the test-provider seam this phase drives the real agent against,
-// since real inference in CI is impractical. The test additionally asserts the
-// per-step agent storage/workspace materialized under the sidecar data dir,
-// rooted per run/step in a `workflow-step-state/` subtree that is a sibling of
-// the workflow-run repo's git directory (where the run-event log lives), so
-// the per-step store cannot clobber the run-event tree.
+// tool names it was handed; with an empty tool set the reply is the stable
+// prefix `I see these tools: `. That deterministic reply is the test-provider
+// seam this phase drives the real agent against. The test additionally
+// asserts the per-step agent storage/workspace materialized under the sidecar
+// data dir, rooted per run/step in a `workflow-step-state/` subtree sibling
+// to the workflow-run repo's git directory, so the per-step store cannot
+// clobber the run-event tree.
 
 import fs from "node:fs";
 import path from "node:path";

@@ -4,15 +4,13 @@
 // mail is visible to the agent's `mail_search` read tool WITHIN the same turn,
 // and the agent's reply drains back out as a signed outbound send. Deploys a
 // warm single-step agent (source-ref lineage) pinning the real `@intx/tools-mail`
-// bundle (so it carries `mail_search` / `mail_read` / `mail_wait`) against the
-// real hub + real sidecar subprocess + mock inference, fires a mail, and asserts
-// the loop.
+// bundle against the real hub + real sidecar subprocess + mock inference, fires
+// a mail, and asserts the loop.
 //
 // The mock drives `mail_search` deterministically: the first turn exposing the
-// tool returns a `tool_use` calling `mail_search`; once the tool_result lands,
-// the mock replies with `MAILSAW:<the tool_result content>`. Because the
-// supervisor eager-commits an arrived message into the substrate INBOX BEFORE
-// `wakeDispatch` (the mailbox commit is awaited ahead of it), the agent's
+// tool returns a `tool_use` calling it; once the tool_result lands, the mock
+// replies with `MAILSAW:<content>`. Because the supervisor eager-commits an
+// arrived message into the substrate INBOX BEFORE `wakeDispatch`, the agent's
 // `mail_search` opens a committed snapshot that already holds the message. The
 // reply therefore echoes the fired mail's own identity (Message-Id and sender) --
 // the load-bearing proof that the delivered inbound was visible to the read tool

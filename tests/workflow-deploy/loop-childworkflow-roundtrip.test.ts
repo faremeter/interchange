@@ -1,22 +1,20 @@
 // Deployed loop-body -> childWorkflow real-execution round-trip: the deployed
-// counterpart to the runLocal test
-// (packages/workflow/src/runtime/loop-child-workflow.test.ts) and the deploy
-// unit tests (inert-ontrigger-bodies.test.ts). Those prove a loop body's
-// childWorkflow is LIFTED and RESOLVED; this proves the nested grandchild
-// EXECUTES for real on the deployed path, and that its per-step inference source
-// was staged under the transitive `<workflowId>__<loopStepId>__<spawnStepId>`
-// ref (the deploy enumerator recurses into the loop body).
+// counterpart to the runLocal test and the deploy unit tests, which prove a
+// loop body's childWorkflow is LIFTED and RESOLVED; this proves the nested
+// grandchild EXECUTES for real on the deployed path, with its per-step
+// inference source staged under the transitive
+// `<workflowId>__<loopStepId>__<spawnStepId>` ref.
 //
 // A workflow whose single suspending/spawning top-level step is a `loop` is
 // deployed BY SOURCE-REF against the real hub + sidecar subprocess + mock
 // inference. The loop body's only step is a `childWorkflow` spawn of a trivial
 // one-agent grandchild. Firing the mail trigger runs iteration 0 under the
 // inherited env; the body's `childWorkflow` step spawns the grandchild, whose
-// agent runs a REAL agent through the sidecar and produces a real `{ reply,
-// turn }` output, and its completion propagates up the spawn chain.
+// agent runs a REAL agent through the sidecar, and its completion propagates
+// up the spawn chain.
 //
-// Harness justification: SPAWN-REAL. Mirrors on-trigger-childworkflow-roundtrip
-// with a loop container instead of an onTrigger section.
+// Harness: SPAWN-REAL. Mirrors on-trigger-childworkflow-roundtrip with a loop
+// container instead of an onTrigger section.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 

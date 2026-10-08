@@ -7,13 +7,12 @@
 // deploy stack.
 //
 // Distinct from `on-trigger-between-events-restart.test.ts`, whose sleep body
-// (`duration: 10`) completes BEFORE the crash so the CONTAINER is parked between
-// events at kill time. Here the body's sleep is long, so the BODY child is still
-// parked in `awaiting-timer` at kill time; the container is a live in-flight
-// resident awaiting the body terminal, with no container park.
+// completes BEFORE the crash so the CONTAINER is parked between events at kill
+// time. Here the body's sleep is long, so the BODY child is still parked in
+// `awaiting-timer` at kill time; the container is a live in-flight resident
+// awaiting the body terminal, with no container park.
 //
-// Harness justification: SPAWN-REAL. Real hub, real sidecar subprocess, real
-// workflow-process child, genuine kill + fresh-sidecar restart against the dead
+// Harness: SPAWN-REAL. Genuine kill + fresh-sidecar restart against the dead
 // process's data dir, so recovery rides the production boot-time restore +
 // self-discovery + container-re-drive + body timer re-adopt path.
 

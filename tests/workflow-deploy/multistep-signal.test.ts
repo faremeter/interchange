@@ -7,16 +7,15 @@
 // and asserts the runtime resumes through `step2` to `RunCompleted`.
 //
 // The orchestrator's multi-step branch is composed in-test: the per-step
-// launch callback drives `env.hub.sessionService.stageWorkflowStep` (the
-// stage-only path, no warm harness) and the `sendMultiStepDeploy` hand-off
-// is supplied against `env.hub.router.sendAgentDeploy` so the sidecar's
-// deploy router takes the workflow-process spawn path. The deployment
-// handle is registered on the env via `registerDeployment` so the fixture's
-// `injectSignal`, `readWorkflowRunEvents`, and `waitForWorkflowRunComplete`
-// helpers can resolve it by id.
+// launch callback drives `stageWorkflowStep` (stage-only, no warm harness)
+// and the `sendMultiStepDeploy` hand-off is supplied against
+// `env.hub.router.sendAgentDeploy` so the sidecar's deploy router takes the
+// workflow-process spawn path. The deployment handle is registered on the
+// env so the fixture's injectSignal / readWorkflowRunEvents /
+// waitForWorkflowRunComplete helpers can resolve it by id.
 //
-// The pre-landed `deploy-flow-env` fixture supplies every other helper;
-// this file does not modify the fixture.
+// The pre-landed `deploy-flow-env` fixture supplies every other helper; this
+// file does not modify the fixture.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 

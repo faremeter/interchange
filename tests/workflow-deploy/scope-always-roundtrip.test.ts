@@ -2,66 +2,41 @@
 // approval on real substrate: after the operator approves-with-always, the SAME
 // run does not ask again for that tool.
 //
-//   deploy a single-step source-ref workflow whose agent carries the inline
-//   ask-marked `mail_send` tool
-//     -> start the run through the REAL trigger route, which materializes the
-//        frozen ask snapshot into COMMITTED run grants (a `tool:<name>` grant
-//        whose effect is `ask`) and delivers them as `runs/<runId>/grants.json`
-//     -> the model calls the tool; the call hits the committed `ask` floor and
-//        SUSPENDS, minting a correlation the register frame co-writes as a
-//        pending `approval` row
-//     -> approve via the REAL hub HTTP route with scope "always"
-//     -> the resolver mutates the run's committed grant for the standing-approved
-//        tool in place, ask -> allow, rewrites `grants.json` via `sendRunGrants`,
-//        and the supervisor pushes `grants-updated` to the live child ahead of
-//        the resume signal
-//     -> the parked call RE-DISPATCHES and runs; the agent then makes a SECOND
-//        call to the SAME tool IN THE SAME RUN
-//     -> that second call sees the now-`allow` committed grant and RUNS WITHOUT
-//        RE-PARKING, and the run reaches terminal `completed`.
+// Flow: deploy a single-step source-ref workflow whose agent carries the inline
+// ask-marked `mail_send` tool -> start the run through the REAL trigger route
+// (materializes the frozen ask snapshot into committed run grants) -> the model
+// calls the tool, the committed `ask` floor suspends and mints a pending
+// `approval` row -> approve via the REAL hub HTTP route with scope "always" ->
+// the resolver mutates the run's committed grant ask -> allow and pushes
+// `grants-updated` ahead of the resume signal -> the parked call re-dispatches
+// and runs; the agent then makes a SECOND call to the SAME tool, which sees the
+// now-`allow` grant and runs WITHOUT re-parking, and the run completes.
 //
-// Load-bearing assertions:
-//   1. Before approval: exactly one pending `approval` row + `signal_correlation`
-//      row for the minted correlation, exactly one `SignalAwaited`, no terminal
-//      event, and the tool has NOT run (neither call sentinel exists).
-//   2. Approve with scope "always" -> 200, the row records scope "always".
-//   3. After approval: the run reaches `RunCompleted`, BOTH tool calls executed
-//      (both call sentinels exist), and there was NO re-park -- exactly ONE
-//      `SignalAwaited` and exactly ONE `approval` / `signal_correlation` row for
-//      the run. The second call to the same tool ran without a second approval.
-//      That is the run-local guarantee: completion requires the mock to have
-//      seen TWO tool results (it only replies after two), so the second call
-//      must have run; one park means it did not re-ask.
+// Assertions: parked before approval (one pending row pair, one SignalAwaited,
+// tool not run); approve -> 200 with scope "always" recorded; after approval the
+// run completes with BOTH calls executed and NO re-park (one SignalAwaited, one
+// row pair) -- the completion requires the mock to have seen two tool results,
+// so the second call must have run; one park means it did not re-ask.
 //
-// The mock model is the discriminator. It counts the `tool_result` blocks in
-// history: it issues the tool call twice (once per absent result) before
-// replying. Under a regression where the mutated grant never reaches the child,
-// the second call re-hits the `ask` floor and re-parks -- a second correlation +
-// approval row would appear and this test's single-park assertion fails (and the
-// completion wait times out because no second decision is ever delivered). The
-// two calls carry DISTINCT `tool_use` ids so the re-dispatched first call is not
-// confused with the second.
+// The mock is the discriminator: it counts `tool_result` blocks and issues the
+// call twice before replying. If the mutated grant never reached the child, the
+// second call re-hits the `ask` floor and re-parks -- a second row pair appears
+// and the single-park assertion fails. The two calls carry DISTINCT `tool_use`
+// ids so the re-dispatched first call is not confused with the second.
 //
 // Why the second call is not defeated by the tool-mark floor: the deployment is
-// SOURCE-REF (`deployWorkflowSourceForTest`), and the child skips the tool-mark
-// floor on the source-ref lineage -- the frozen snapshot's `tool:<name>` grant
-// authorizes the inline tool directly with its own effect. So the mutated
-// `allow` in the run grants is the sole matching grant for the tool; there is no
-// competing `ask` floor grant to outrank it at equal specificity.
+// SOURCE-REF, and the child skips the tool-mark floor on the source-ref lineage
+// -- the frozen snapshot's `tool:<name>` grant authorizes the inline tool
+// directly with its own effect, so the mutated `allow` is the sole matching
+// grant.
 //
-// Harness composition: SPAWN-REAL. A real hub server, a real sidecar subprocess,
-// a real workflow-process child, and a real migrated Postgres schema. The run is
-// started and approved through the real hub HTTP routes (`createApp`); the parked
-// run's register frame co-writes real approval/correlation rows via the fixture
-// hub's `registerSignalCorrelation` lookup wired to the real DB co-write. The
-// inference server is a test-local two-call mock so the run makes two sequential
-// calls to the same tool.
+// Harness: SPAWN-REAL -- real hub server, sidecar subprocess, workflow-process
+// child, and migrated Postgres schema; started and approved through the real hub
+// HTTP routes with a test-local two-call inference mock.
 //
-// Single-test file. The `deploy-flow-env` (real sidecar subprocess + its on-disk
-// warm step-state) is `beforeAll`-scoped, while the DB resets per test. A second
-// test would inherit the first run's warm workspace and live parked/completed
-// run, so the sentinel and single-park assertions would stop meaning what they
-// claim. A run-once guard below fails loud if a second test is ever added here.
+// Single-test file: the env is beforeAll-scoped while the DB resets per test; a
+// second test would inherit the first run's warm workspace and live run. A
+// run-once guard below fails loud if a second test is ever added here.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -183,13 +158,12 @@ const deploymentMailAddress = deriveRunAddress({
 // --- test-local two-call inference mock ------------------------------------
 //
 // A minimal Anthropic-style SSE server that issues the ask-marked tool call
-// `CALL_INPUTS.length` times in a single run before replying. It counts the
-// `tool_result` blocks already in history: while fewer than that many results
-// are present it re-issues a `tool_use` (with a distinct id per call); once all
-// are present it replies with `${RESUME_REPLY_PREFIX}<last result>`. The shared
-// harness mock only drives one call per run, so this small server -- not a
-// harness change -- is what lets the run make the SECOND call that proves the
-// run's committed grant was mutated. The SSE framing mirrors the harness mock's.
+// `CALL_INPUTS.length` times in a single run before replying: while fewer
+// `tool_result` blocks are present in history it re-issues a `tool_use` (with a
+// distinct id per call); once all are present it replies with
+// `${RESUME_REPLY_PREFIX}<last result>`. The shared harness mock only drives one
+// call per run, so this small server -- not a harness change -- is what lets the
+// run make the SECOND call that proves the run's committed grant was mutated.
 
 type MockBlock = {
   type?: string;

@@ -1,35 +1,30 @@
 // Single-step conversation-durability integration test (Phase 4.5).
 //
-// THE durability dividend: a warm single-step agent's multi-turn
-// conversation survives a child respawn. Today (4.4) the warm agent holds
-// conversation state in memory only; kill the child and the conversation is
-// lost. 4.5 makes that state durable in the workflow-run substrate --
-// committed at the run boundary to a per-agent path (`agent-state/<stepId>/`,
-// a bucket-sharded WAL plus a periodic checkpoint, sibling to the per-run
-// event log under `runs/<runId>/...`) -- and restored (checkpoint load + WAL
+// THE durability dividend: a warm single-step agent's multi-turn conversation
+// survives a child respawn. 4.4 held conversation state in memory only (kill
+// the child and the conversation is lost); 4.5 commits it to the workflow-run
+// substrate at the run boundary (`agent-state/<stepId>/` -- a bucket-sharded
+// WAL plus a periodic checkpoint) and restores it (checkpoint load + WAL
 // replay) when the warm agent is rebuilt lazily after respawn.
 //
-// Harness choice (in-process run-loop, mirroring 4.4's warm round-trip test).
-// A respawn IS a second `runWorkflowChild` invocation against the SAME
-// on-disk substrate with a FRESH (empty) warm cache and a FRESH
-// durable-conversation registry. The in-process harness models exactly that,
-// deterministically, and exercises the REAL sidecar wiring
-// (`createSidecarStepBuildEnv` + `createDurableConversationRegistry`)
-// against a real `workflow-run` substrate -- the same production path a
-// spawned child takes, minus the OS process boundary whose kill timing would
-// only add nondeterminism to the durability assertion.
+// Harness choice (in-process run-loop, mirroring 4.4's warm round-trip test):
+// a respawn IS a second `runWorkflowChild` invocation against the SAME on-disk
+// substrate with a FRESH (empty) warm cache and a FRESH durable-conversation
+// registry. The in-process harness models exactly that deterministically and
+// exercises the REAL sidecar wiring (`createSidecarStepBuildEnv` +
+// `createDurableConversationRegistry`) against a real `workflow-run` substrate
+// -- the same production path a spawned child takes, minus the OS process
+// boundary whose kill timing would only add nondeterminism.
 //
 // The spy agent is storage-aware: it loads its prior turns from `env.storage`
-// at build (exactly as a real reactor does via `contextStore.load()`),
-// appends each inbound message, and writes the turns back through
-// `env.storage`. The reply echoes the running transcript, so a reply
-// reflecting a PRIOR message is the load-bearing proof of continuity. After
-// respawn the rebuilt spy's prior turns come only from the substrate restore
-// -- there is no in-memory carry-over across the two `runWorkflowChild`
-// invocations.
+// at build (as a real reactor does via `contextStore.load()`), appends each
+// inbound message, and writes the turns back. The reply echoes the running
+// transcript, so a reply reflecting a PRIOR message is the load-bearing proof
+// of continuity. After respawn the rebuilt spy's prior turns come only from
+// the substrate restore -- there is no in-memory carry-over.
 //
-// Against the pre-4.5 behaviour (per-run/per-attempt isogit storage, no
-// substrate mirror, no restore) the post-respawn reply would reflect ONLY the
+// Against pre-4.5 behaviour (per-run/per-attempt isogit storage, no substrate
+// mirror, no restore) the post-respawn reply would reflect ONLY the
 // post-respawn message -- this test fails there.
 
 import { describe, test, expect } from "bun:test";

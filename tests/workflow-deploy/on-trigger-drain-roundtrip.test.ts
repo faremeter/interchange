@@ -20,7 +20,7 @@
 //     abort test, whose operator cancel with a `wait` section reaches the
 //     re-arm without the `shouldAbortForDrain` guard this drain path adds.
 //
-// Harness justification: SPAWN-REAL.
+// Harness: SPAWN-REAL.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 

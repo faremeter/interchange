@@ -7,20 +7,18 @@
 // its body ref from the same bodies map as its parent and inherits the parent's
 // env one further rung down, so the innermost step's tool call authorizes
 // against a credentials snapshot the executable-step walk had to reach through
-// two nested descents rather than one. `loop-nested-roundtrip.test.ts` already
-// proves a nested loop ITERATES on the deployed path, but its body agents
-// declare `tools: []`, so this is the stronger property at that depth.
+// two nested descents. `loop-nested-roundtrip.test.ts` already proves a nested
+// loop ITERATES on the deployed path, but its body agents declare `tools: []`,
+// so this is the stronger property at that depth.
 //
-// The assertion reads the tool_result's TEXT, not merely its presence: a tool
-// call the authorize seam blocks still appends an error tool_result and the
-// agent then replies normally, so a presence-only check passes while nothing
-// ever ran. Only the tool's own return value (`wrote <filename>`) proves the
-// innermost body executed it. The env runs exactly one workflow, and only the
-// innermost body step carries a tool, so a tool_result in ANY captured request
-// can only have originated two rungs down.
+// The assertion reads the tool_result's TEXT, not merely its presence: a
+// blocked call still appends an error tool_result and the agent replies
+// normally, so a presence-only check passes while nothing ever ran. Only the
+// tool's own return value proves the innermost body executed it. The env runs
+// exactly one workflow, and only the innermost body step carries a tool, so a
+// tool_result in ANY captured request can only have originated two rungs down.
 //
-// Harness justification: SPAWN-REAL. A real hub server, a real sidecar
-// subprocess, and a real workflow-process child evaluating the deployed source.
+// Harness: SPAWN-REAL.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 

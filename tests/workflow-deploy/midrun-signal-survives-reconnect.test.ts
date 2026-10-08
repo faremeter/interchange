@@ -5,21 +5,17 @@
 // Shape: deploy a `step1 -> awaitSignal{name: "go"} -> step2` workflow
 // through the workflow-deploy orchestrator's multi-step branch (the same
 // wiring `multistep-signal.test.ts` uses), fire the deployment's mail
-// trigger, and drive the run to the mid-run `SignalAwaited` pause. With the
-// run parked at the signal gate, settle the workflow-run pack-push pipeline
-// and drop the hub link (`settleThenDrop`), wait for the sidecar to
-// re-establish the link and the deployment address to become routable again
-// (`waitForReconnect`), then inject the awaited signal. The run must resume
-// through `step2` to `RunCompleted`, and the run-event log must show each
-// lifecycle effect exactly once -- no duplicate `SignalReceived`, no re-run
-// of `step1`, no doubled `RunStarted`/`RunCompleted`.
+// trigger, and drive the run to the mid-run `SignalAwaited` pause. Settle
+// the pack-push pipeline, drop the hub link (`settleThenDrop`), wait for the
+// sidecar to re-establish the link (`waitForReconnect`), then inject the
+// awaited signal. The run must resume through `step2` to `RunCompleted`, and
+// the run-event log must show each lifecycle effect exactly once -- no
+// duplicate `SignalReceived`, no re-run of `step1`, no doubled
+// `RunStarted`/`RunCompleted`.
 //
-// Harness justification: SPAWN-REAL. A real hub server, a real sidecar
-// subprocess, a real workflow-process child, and a test inference provider.
-// The interruption is a genuine server-side WebSocket close while the run is
-// parked at `SignalAwaited`; the resume rides the sidecar's real
-// allocation-authenticated `hub-link` reconnect path, after which the
-// injected signal reaches the still-parked run.
+// Harness: SPAWN-REAL. The interruption is a genuine server-side WebSocket
+// close while the run is parked at `SignalAwaited`; the resume rides the
+// sidecar's real allocation-authenticated `hub-link` reconnect path.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 

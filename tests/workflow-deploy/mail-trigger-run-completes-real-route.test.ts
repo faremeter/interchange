@@ -18,13 +18,11 @@
 // `mail-trigger-derived-grants-roundtrip` sibling proves the derivation + DB
 // commit; this one proves the run actually runs.
 //
-// The deployment is stood up through the shared code-sourced front
-// (`deployWorkflowSourceForTest`): it bundles the tool-less single-step
-// fixture, installs/probes/gates/freezes the definition against the real DB
-// (writing the frozen grant snapshot the trigger route materializes from),
-// deploys it by source-ref to the real sidecar, and writes the anchor
-// `workflow_run` row. The route then hydrates the run's grants from that
-// frozen snapshot -- the static `workflow.json` definition path is gone.
+// The deployment is stood up through the shared code-sourced front: it
+// bundles the tool-less single-step fixture, installs/probes/gates/freezes
+// the definition against the real DB (writing the frozen grant snapshot the
+// trigger route materializes from), deploys it by source-ref to the real
+// sidecar, and writes the anchor `workflow_run` row.
 
 import {
   afterAll,

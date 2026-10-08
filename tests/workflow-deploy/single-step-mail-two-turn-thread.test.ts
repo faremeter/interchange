@@ -4,32 +4,25 @@
 // wire bytes.
 //
 // Run model. A workflow deployment has exactly ONE addressable top-level run
-// (its runId is the deployment's mail-address local part; see
-// `deriveWorkflowRunId` -- "the runId is a property of the deployment, not of
-// the individual trigger occurrence"). A second inbound mail is therefore NOT
-// a second dispatched run; the conversation is held open WITHIN the one run by
-// `mail_wait`. The agent replies to the first message, waits for the next
-// inbound, and replies to that -- all in a single run whose connector/agent
-// state is warm across the exchange.
+// (its runId is the deployment's mail-address local part), so a second inbound
+// is NOT a second dispatched run; the conversation is held open WITHIN the one
+// run by `mail_wait`. The agent replies to the first message, waits for the
+// next inbound, and replies to that -- all in a single run whose connector/
+// agent state is warm across the exchange.
 //
-// The scripted mock provider drives that loop deterministically:
-//   turn 0: mail_send a reply to mail 1, threaded on m1 (inReplyTo = m1).
-//   turn 1: mail_wait for the next sender (userB) -- blocks.
-//   turn 2 (after mail 2 arrives): mail_send a reply to mail 2, threaded on m2.
-//   turn 3: a closing text turn, which ends the run.
-// The reply message-ids the agent threads on (m1, m2) are the ones THIS test
-// fired, so every scripted tool input is known up front.
+// The scripted mock drives that loop deterministically: turn 0 mail_send a
+// reply to mail 1 (inReplyTo = m1); turn 1 mail_wait for the next sender
+// (blocks); turn 2 mail_send a reply to mail 2 (inReplyTo = m2); turn 3 a
+// closing text turn ends the run. The reply message-ids the agent threads on
+// (m1, m2) are the ones THIS test fired, so every scripted tool input is known
+// up front.
 //
-// Assertions, read off the delivered `mail.outbound` bytes (via `persistMail`'s
-// retained `raw`, parsed with `parseHeaderSection`):
-//   * A reply threaded onto mail 1: In-Reply-To == m1, To == userA.
-//   * A reply threaded onto mail 2: In-Reply-To == m2, To == userB.
-//   * The whole exchange ran under ONE run: a single RunStarted, consuming
-//     m1; mail 2 never opened a RunStarted of its own -- it was consumed
-//     mid-run by mail_wait, the continuation.
-//   * The `mail_wait` tool_result the agent answered carries mail 2's sender,
-//     which is what proves mail 2's arrival resolved the wait rather than the
-//     wait expiring on its own timer.
+// Assertions, off the delivered `mail.outbound` bytes: a reply threaded onto
+// mail 1 (In-Reply-To == m1, To == userA); a reply threaded onto mail 2
+// (In-Reply-To == m2, To == userB); the whole exchange ran under ONE run (a
+// single RunStarted consuming m1; mail 2 was consumed mid-run by mail_wait,
+// the continuation); and the `mail_wait` tool_result carries mail 2's sender,
+// proving mail 2's arrival resolved the wait rather than the wait expiring.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 

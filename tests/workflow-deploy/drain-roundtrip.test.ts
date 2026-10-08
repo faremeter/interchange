@@ -2,41 +2,29 @@
 //
 // Deploys a `step1 -> awaitSignal{name: "never-arrives",
 // drainBehavior: "cancel"}` workflow through the workflow-deploy
-// orchestrator's multi-step branch, fires the deployment's mail
-// trigger, observes the runtime pause at `SignalAwaited`, then
-// initiates drain through the production hub -> sidecar -> supervisor
-// -> workflow-process child pipeline.
+// orchestrator's multi-step branch, fires the deployment's mail trigger,
+// observes the runtime pause at `SignalAwaited`, then initiates drain
+// through the production hub -> sidecar -> supervisor -> workflow-process
+// child pipeline.
 //
-// The H1 in-process drain tests
-// (`packages/workflow-host/src/...` and
-// `packages/workflow/src/runtime/drain.test.ts`) pin the canonical
-// observable sequence: an `awaitSignal` step parked in cancel mode
-// aborts the local step controller the moment the drain signal flips
-// on the child side, the primitive's runner commits `StepFailed`, and
-// the run reaches terminal `RunFailed`. The drainTimeout accumulator
-// on the supervisor side stays armed but never escalates because the
-// step's own abort tears the run down before the deadline lapses --
-// the accumulator's role is to escalate when cancel-mode work
-// *outlasts* the wire deadline, not when it cooperates immediately.
+// The H1 in-process drain tests pin the canonical sequence: an `awaitSignal`
+// step parked in cancel mode aborts its local step controller the moment the
+// drain signal flips, the runner commits `StepFailed`, and the run reaches
+// terminal `RunFailed`. The supervisor-side drainTimeout accumulator stays
+// armed but never escalates -- its role is to escalate when cancel-mode work
+// OUTLASTS the wire deadline, not when it cooperates immediately.
 //
-// This test pins the wire-level uniformity gate for that sequence:
-// the hub router's `sendDrain` ships a `drain.deliver` frame to the
-// sidecar, the sidecar's hub-link routes the frame through the
-// multi-step drain registry into the supervisor's `drain`, which
-// forwards a `drain` control IPC payload to the workflow-process
-// child. The child's `DrainController` flips its signal; the runtime
-// body's observation points pick it up on the next tick and abort
-// the cancel-mode `awaitSignal` step; the local step's abort surfaces
-// as `StepFailed`; the run terminates as `RunFailed`. The cascade is
-// asserted end-to-end so a regression in any of the seven hops surfaces
-// at this test.
+// This test pins the wire-level uniformity gate for that sequence: hub
+// `sendDrain` -> `drain.deliver` frame -> sidecar hub-link -> supervisor
+// `drain` -> child `DrainController` -> runtime aborts the cancel-mode step ->
+// `StepFailed` -> `RunFailed`, asserted end-to-end so a regression in any of
+// the seven hops surfaces here.
 //
-// The orchestrator's multi-step branch is composed in-test (matching
-// the multi-step signal round-trip): the per-step launch callback drives
-// `env.hub.sessionService.stageWorkflowStep` (the stage-only path, no warm
-// harness) and the `sendMultiStepDeploy` hand-off is supplied against
-// `env.hub.router.sendAgentDeploy` so the sidecar's deploy router
-// takes the workflow-process spawn path.
+// The orchestrator's multi-step branch is composed in-test (matching the
+// multi-step signal round-trip): the per-step launch callback drives
+// `stageWorkflowStep` (stage-only, no warm harness) and the
+// `sendMultiStepDeploy` hand-off is supplied against
+// `env.hub.router.sendAgentDeploy`.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdir, readFile, writeFile } from "node:fs/promises";

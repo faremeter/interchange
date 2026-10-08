@@ -9,13 +9,10 @@
 // It covers the seam this surface adds over the shared core: the run-first
 // pre-resolution (`findRoutableById`) and the `assetService`/dispatch deps
 // threaded into `createRunRoutes`. The trigger core itself is proven by the
-// deployment Trigger route's own real-route tests; this proves the run surface
-// reaches it.
+// deployment Trigger route's own real-route tests.
 //
-// The deployment is stood up BY SOURCE-REF through `deployWorkflowSourceForTest`
-// (bundle a source entry module into a hub asset, probe + approve + freeze it
-// against the real DB, deploy the source-ref frame, insert the anchor
-// `workflow_run` row); the run surface then triggers the resulting anchor run.
+// The deployment is stood up BY SOURCE-REF through `deployWorkflowSourceForTest`;
+// the run surface then triggers the resulting anchor run.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { type } from "arktype";

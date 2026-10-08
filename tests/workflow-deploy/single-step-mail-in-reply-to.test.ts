@@ -3,22 +3,18 @@
 // EQUALS the inbound message's `Message-Id` -- observed on the delivered wire
 // bytes, not inferred from a hub mail row.
 //
-// Obstacle and how this test observes the wire. The deploy-flow harness's mock
-// hub records outbound mail through its `persistMail` lookup, which the wire
-// layer calls with the full signed MIME (`raw`) it base64-decoded from the
-// delivered `mail.outbound` frame. The harness retains that `raw` on
-// `env.hub.outboundMail`, so this test reads the reply's real
-// `In-Reply-To`/`Message-ID` headers with `parseHeaderSection` (from
-// `@intx/mime`) -- the bytes are exactly what the sidecar signed and delivered,
-// so the header read is a faithful on-the-wire observation.
+// The deploy-flow harness's mock hub records outbound mail through its
+// `persistMail` lookup with the full signed MIME (`raw`) from the delivered
+// `mail.outbound` frame; the harness retains that on `env.hub.outboundMail`,
+// so this test reads the reply's real `In-Reply-To`/`Message-ID` headers with
+// `parseHeaderSection` -- the exact bytes the sidecar signed and delivered.
 //
 // Why the reply threads onto the inbound: the warm agent's connector thread
 // opens on the first inbound (its `Message-Id` becomes the thread's
-// `lastMessageId`), and the reply drain composes the outbound `inReplyTo` from
-// that thread state. The outbound send path stamps it into the wire
-// `In-Reply-To` header. So the reply's `In-Reply-To` must equal the inbound's
-// `Message-Id`; this test fires a mail with a distinctive id and asserts that
-// exact equality on the delivered bytes.
+// `lastMessageId`), and the reply drain composes the outbound `inReplyTo`
+// from that thread state. So the reply's `In-Reply-To` must equal the
+// inbound's `Message-Id`; the test fires a mail with a distinctive id and
+// asserts that exact equality on the delivered bytes.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
