@@ -16,7 +16,11 @@
 // caller runs the closure machinery and hands the resulting package
 // directory in. This module only performs the import + evaluate +
 // validate step, which is the part that must run inside the child's
-// address space because it evaluates author code.
+// address space because it evaluates author code. The loader resolves
+// whatever the materializer laid out: the closure lays direct deps
+// (workspace members or pinned registry deps) into the workflow
+// package's `node_modules/`, and a published tarball that bundles its
+// own `node_modules` can also place them there.
 
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -164,19 +168,20 @@ export interface LoadWorkflowDirectorRegistryFromClosureArgs {
  * and is sanitized as an npm package name (not a filesystem path): `.` /
  * `..` segments and extra slashes beyond a scope (`@scope/name`) are
  * rejected. An id prefixed by the workflow package's own name resolves to
- * its own `interchange.directors` module; any other legal prefix resolves
+ * its own `interchange.directors` module; any other legal prefix routes
  * to `node_modules/<package-name>` under the materialized workflow
- * package, i.e. the workflow must declare the director's package as a
- * direct dependency (workspace member or pinned registry dep -- the
- * closure materializer lays both out identically). After resolve, the
- * package's `package.json` `name` must equal that prefix. A prefix that
- * names no laid-out dependency, fails the package-name grammar, or
- * resolves to a directory whose manifest name does not match, contributes
- * nothing: the id stays unregistered and `registry.resolve` reports it
- * unknown, which the probe surfaces as the "unresolvable director" deploy
- * failure. Every loaded package's exported ids must sit under its own
- * name, so the approved `director:<id>` grant names the package whose
- * code runs.
+ * package, and the loader resolves whatever is laid out there: the closure
+ * materializer lays direct deps (workspace members or pinned registry
+ * deps) in that spot, and a published tarball that bundles its own
+ * `node_modules` can also place packages there. After resolve, the
+ * package's `package.json` `name` must equal that prefix. A prefix whose
+ * slot cannot be resolved (names no laid-out dependency, fails the
+ * package-name grammar, or resolves to a directory whose manifest name
+ * does not match) contributes nothing: the id stays unregistered and
+ * `registry.resolve` reports it unknown, which the probe surfaces as the
+ * "unresolvable director" deploy failure. Every loaded package's exported
+ * ids must sit under its own name, so the approved `director:<id>` grant
+ * names the package whose code runs.
  *
  * @throws if a directors entry path escapes its package, a module cannot
  *   be imported, it exports no `AnnotatedDirectorFactory` value, or an
@@ -256,9 +261,13 @@ function collectDirectorIds(definition: WorkflowDefinition): string[] {
  * prefix so a directory whose layout name and manifest name disagree cannot
  * register. `undefined` when the id fails `validateNamespacedId`, carries
  * no package prefix, fails the package-name grammar, is not a direct
- * `node_modules` child, no such dependency is laid out, or the slot is
- * a file rather than a package directory (ENOTDIR) -- either way the
- * id stays unregistered.
+ * `node_modules` child, no such dependency is laid out, or the slot cannot
+ * be resolved as a package directory -- including when it is a file rather
+ * than a directory (ENOTDIR), unreadable/inaccessible (EACCES/EPERM), or a
+ * self-referential symlink (ELOOP / ENAMETOOLONG) -- either way the id stays
+ * unregistered. Systemic failures like process-wide file descriptor
+ * exhaustion (EMFILE/ENFILE) are not slot-local "cannot resolve" conditions:
+ * they propagate loudly rather than masquerade as an unresolvable director.
  *
  * The realpath targets `package.json`, not the directory: a bare scope dir
  * (`node_modules/@scope`) exists whenever any scoped dep does but is not a
@@ -300,7 +309,7 @@ async function resolveDirectorPackageDir(
     if (pkgJson.name !== packageName) return undefined;
     return pkgDir;
   } catch (cause) {
-    if (isErrnoNotFound(cause)) return undefined;
+    if (isUnresolvableDirectorSlotError(cause)) return undefined;
     throw cause;
   }
 }
@@ -357,10 +366,33 @@ function isDirectNodeModulesPackage(
   return segments.join("/") === packageName;
 }
 
-function isErrnoNotFound(cause: unknown): boolean {
+// Each of these errno codes means the dependency slot itself cannot be
+// resolved as a package directory, so the referenced director stays
+// unregistered and the probe fails closed on an unresolvable director:
+//   - ENOENT/ENOTDIR: no such slot, or a non-directory (file) where the
+//     package dir should be.
+//   - EACCES/EPERM: the slot (or an ancestor) is unreadable or otherwise
+//     inaccessible, so it cannot be stat'ed.
+//   - ELOOP: the slot (or a component of it) is a self-referential symlink.
+//   - ENAMETOOLONG: the path exceeds NAME_MAX (precluded by the 214-char
+//     npm-name cap, but kept for defense in depth).
+// EMFILE/ENFILE are deliberately NOT here: they signal process-wide file
+// descriptor exhaustion -- a systemic failure, not a slot-local "cannot
+// resolve" condition -- so they must propagate loudly rather than be silent
+// as an unresolvable director.
+// Anything else (e.g. an EINVAL invariant bug) is a programming error and must
+// still throw rather than being silently swallowed.
+function isUnresolvableDirectorSlotError(cause: unknown): boolean {
   if (cause === null || typeof cause !== "object") return false;
   const code = (cause as { code?: unknown }).code;
-  return code === "ENOENT" || code === "ENOTDIR";
+  return (
+    code === "ENOENT" ||
+    code === "ENOTDIR" ||
+    code === "EACCES" ||
+    code === "EPERM" ||
+    code === "ELOOP" ||
+    code === "ENAMETOOLONG"
+  );
 }
 
 /**

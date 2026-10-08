@@ -657,6 +657,63 @@ export const b = make("@fixture/director-pkg/b");
     ).toThrow(UnknownDirectorIdError);
   });
 
+  test("an unreadable dependency slot stays unresolved instead of throwing EACCES", async () => {
+    const packageDir = await createClosureFixture({
+      workflowEntry: "./workflow.js",
+      entrySource: DEFAULT_EXPORT_ENTRY,
+      dependencies: [
+        {
+          name: "ghost-pkg",
+          directorsEntry: "./directors.js",
+          directorsSource: dependencyDirectorEntry("ghost-pkg/coding"),
+        },
+      ],
+    });
+    // The slot is a symlink to the materialized store dir; the loader
+    // realpaths `node_modules/<name>/package.json`. Make that target
+    // directory unreadable so the realpath fails with EACCES, then restore
+    // it so cleanup can remove the fixture.
+    const depRealDir = await fs.realpath(
+      path.join(packageDir, "node_modules", "ghost-pkg"),
+    );
+    await fs.chmod(depRealDir, 0o000);
+    try {
+      const registry = await loadWorkflowDirectorRegistryFromClosure({
+        packageDir,
+        definition: definitionNamingDirectors("ghost-pkg/coding"),
+      });
+
+      expect(() =>
+        registry.resolve({ id: "ghost-pkg/coding", config: {} }),
+      ).toThrow(UnknownDirectorIdError);
+    } finally {
+      await fs.chmod(depRealDir, 0o755);
+    }
+  });
+
+  test("a self-referential symlink dependency slot stays unresolved instead of throwing ELOOP", async () => {
+    const packageDir = await createClosureFixture({
+      workflowEntry: "./workflow.js",
+      entrySource: DEFAULT_EXPORT_ENTRY,
+    });
+    // A slot symlinked to itself: realpath of `node_modules/<name>/package.json`
+    // recurses forever and fails with ELOOP.
+    await fs.symlink(
+      "ghost-pkg",
+      path.join(packageDir, "node_modules", "ghost-pkg"),
+      "dir",
+    );
+
+    const registry = await loadWorkflowDirectorRegistryFromClosure({
+      packageDir,
+      definition: definitionNamingDirectors("ghost-pkg/coding"),
+    });
+
+    expect(() =>
+      registry.resolve({ id: "ghost-pkg/coding", config: {} }),
+    ).toThrow(UnknownDirectorIdError);
+  });
+
   test("a package prefix over npm's 214-character limit stays unresolved instead of throwing ENAMETOOLONG", async () => {
     const packageDir = await createClosureFixture({
       workflowEntry: "./workflow.js",

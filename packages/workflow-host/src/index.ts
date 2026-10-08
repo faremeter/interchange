@@ -44,6 +44,9 @@ export {
 export {
   createWorkflowSupervisor,
   assembleCredentialsSnapshot,
+  // ENOENT-only predicate (re-exported from the supervisor credentials
+  // layer). The director loader uses its own wider slot-error set; a future
+  // cleanup must NOT merge that set into this narrower one.
   isErrnoNotFound,
   commitCancelRequested,
   createDrainTimeoutAccumulator,
