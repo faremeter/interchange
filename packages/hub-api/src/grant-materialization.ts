@@ -18,10 +18,9 @@ export type MaterializedGrantRow = {
   updatedAt: Date;
 };
 
-// Build a materialized grant row: mint the id and stamp createdAt/updatedAt from
-// a single `now`, so every materialization site -- creator/invoker delegation,
-// ad-hoc invoker grants, and the launch route's tenant-owned credential
-// bindings -- constructs the identical row shape one way.
+// Build a materialized grant row: mint the id and stamp createdAt/updatedAt
+// from a single `now`, so every materialization site constructs the identical
+// row shape one way.
 export function makeGrantRow(fields: {
   tenantId: string;
   principalId: string;
@@ -101,14 +100,11 @@ export const INVOKER_GRANT_TTL_MS = 24 * 60 * 60 * 1000;
  *
  * Pure over its inputs: it runs creator- and invoker-sourced delegation
  * checks with `authorizeAction` against the supplied collected grants and
- * accumulates the rows to insert. Only `system`/`role`/`creator` grants can be
- * delegated, so invoker-origin grants are filtered out of the invoker's
- * delegatable set before resolving invoker-sourced requirements. Nothing is
- * written to the database; the caller inserts the returned rows.
- *
- * Returns a rejection instead of rows when the creator or invoker lacks the
- * authority a requirement demands (403 `insufficient_grants`), or when a
- * requirement carries an unrecognized source (409 `not_launchable`).
+ * accumulates the rows to insert. Nothing is written to the database; the
+ * caller inserts the returned rows. Returns a rejection instead of rows when
+ * the creator or invoker lacks the authority a requirement demands (403
+ * `insufficient_grants`), or when a requirement carries an unrecognized
+ * source (409 `not_launchable`).
  */
 export async function resolveGrantMaterialization({
   tenantId,

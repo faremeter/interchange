@@ -103,10 +103,9 @@ function isRunStatusFilter(
 type WorkflowRunStatus = (typeof workflowRun.$inferSelect)["status"];
 
 // The `workflow_run` statuses that present as a given run-view status filter,
-// derived as the inverse of `mapRunStatusToViewStatus` so the two cannot drift:
-// every run status is bucketed under the view status it maps onto. No run
-// status maps onto `updating`, so that filter selects no runs and the caller
-// skips the run query entirely.
+// derived as the inverse of `mapRunStatusToViewStatus` so the two cannot drift.
+// No run status maps onto `updating`, so that filter selects no runs and the
+// caller skips the run query entirely.
 const RUN_STATUSES_BY_VIEW_STATUS: Record<
   RunStatusFilter,
   WorkflowRunStatus[]
@@ -147,15 +146,13 @@ export type CreateRunRoutesDeps = {
   sessionService: SessionService;
   sidecarRouter: SidecarRouter;
   eventCollectors: EventCollectorRegistry;
-  // The workflow-run substrate that backs the durable run-event log the
+  // The workflow-run substrate backing the durable run-event log the
   // turns/events routes read and the run-event state the mail-send trigger
-  // reads. Null when the hub runs without the deploy surface; the
-  // substrate-backed routes then answer 503 rather than fabricating state,
-  // since createRunRoutes mounts unconditionally.
+  // reads. Null when the hub runs without the deploy surface; those routes
+  // then answer 503 rather than fabricating state.
   repoStore: RepoStore | null;
-  // The durable dispatch queue a provisioned deployment's trigger enqueues onto.
-  // Absent when the hub runs without durable dispatch; the trigger then 503s a
-  // provisioned send, exactly as the deployment Trigger route does.
+  // The durable dispatch queue a provisioned deployment's trigger enqueues
+  // onto; absent without durable dispatch, which 503s a provisioned send.
   workflowDispatchService?: WorkflowDispatchService;
   workflowLifecycleService?: WorkflowLifecycleService;
   grantStore: GrantStore;
@@ -180,16 +177,16 @@ export function createRunRoutes({
 }: CreateRunRoutesDeps): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
 
-  // The run-event log reader is available only when the workflow-run substrate
-  // is; a null reader makes the turns/events routes answer 503, never an empty
-  // log masquerading as real state.
+  // The run-event log reader is available only when the workflow-run
+  // substrate is; a null reader makes the turns/events routes answer 503,
+  // never an empty log masquerading as real state.
   const runReader =
     repoStore !== null ? createWorkflowRunReader(repoStore) : null;
   const lifecycleService = workflowLifecycleService ?? null;
 
   // The mail-send trigger fires the run through its workflow-native Trigger
-  // path. It needs the run-event substrate (terminal-state read), so a null
-  // repoStore leaves the trigger null and the mail-send route answers 503.
+  // path, which needs the run-event substrate; a null repoStore leaves the
+  // trigger null and the mail-send route answers 503.
   const triggerWorkflowRun =
     repoStore !== null
       ? createWorkflowRunTrigger({
@@ -205,10 +202,10 @@ export function createRunRoutes({
       : null;
 
   // The turns and events routes project the same top-level run: its committed,
-  // git-backed event log, read whole and seq-ordered. `turns` presents that log
-  // as the run's step and lifecycle events; the `events` stream is the same
-  // projection the admin UI polls, deduplicating on seq. Both resolve the run
-  // first (a 404 tenant-scopes the read) and 503 when the substrate is absent.
+  // git-backed event log, read whole and seq-ordered. `turns` presents the log
+  // as the run's step and lifecycle events; `events` is the projection the
+  // admin UI polls, deduplicating on seq. Both resolve the run first (a 404
+  // tenant-scopes the read) and 503 when the substrate is absent.
   async function serveRunEvents(c: Context<TenantEnv>, runId: string) {
     const tenantCtx = c.get("tenant");
 
@@ -226,11 +223,9 @@ export function createRunRoutes({
     }
 
     // The top-level run's own events live under `runs/<runId>/` in its
-    // deployment's event repo: the run id is the local part of the deployment
-    // address the supervisor keys the log by, so this reads exactly the run
-    // named by `:runId` and excludes its section/body child runs. A run that
-    // has not been triggered yet has no `runs/<runId>/` and reads as an empty
-    // timeline -- honestly empty, distinct from the 503 absent-substrate case.
+    // deployment's event repo, excluding its section/body child runs. A run
+    // not yet triggered has no `runs/<runId>/` and reads as an empty timeline
+    // -- honestly empty, distinct from the 503 absent-substrate case.
     const events = await runReader.readRunEvents(
       workflowRunRepoId(runId, tenantCtx.domain),
       WORKFLOW_RUN_REF,
@@ -273,10 +268,9 @@ export function createRunRoutes({
       });
 
       // A run is listed when it is a top-level run: it owns a routing address
-      // and self-anchors (`anchorRunId === id`). This is the SQL form of the
-      // shared `isTopLevelRun` predicate the detail resolver classifies on, so
-      // the list and the resolver cannot drift. When a status filter selects no
-      // run statuses (`updating`), skip the query entirely.
+      // and self-anchors (`anchorRunId === id`), the SQL form of the shared
+      // `isTopLevelRun` predicate the detail resolver classifies on. When a
+      // status filter selects no run statuses (`updating`), skip the query.
       const statusFilter = isRunStatusFilter(status) ? status : undefined;
 
       const runStatuses =
@@ -375,13 +369,12 @@ export function createRunRoutes({
         return errorResponse(c, "not_found", "Blob not found");
       }
 
-      // The authorization subject is the mail's owning routable. A folded run's
-      // mail carries a null runId and keys on its session, so recover the
-      // run id from the session; a legacy row's non-null runId is used
-      // directly. Route the run resolution through workflow_run so the subject
-      // is proven to name a real run of this tenant -- a session held by any
-      // non-run principal fails closed to 404 rather than authorizing a
-      // fabricated subject.
+      // The authorization subject is the mail's owning routable. A folded
+      // run's mail carries a null runId and keys on its session, so recover
+      // the run id from the session; a legacy row's non-null runId is used
+      // directly. Route the resolution through workflow_run so a session held
+      // by any non-run principal fails closed to 404 rather than authorizing
+      // a fabricated subject.
       const resolvedRunId =
         mailRow.runId ??
         (await resolveRunIdForSession(db, mailRow.sessionId, tenant.id));
@@ -446,15 +439,15 @@ export function createRunRoutes({
       const tenantCtx = c.get("tenant");
       const runId = c.req.param("runId");
 
-      // Resolve the top-level workflow run. The run's definition supplies the
+      // Resolve the top-level workflow run; its definition supplies the
       // display name.
       const record = await findRoutableById(db, runId, tenantCtx.id);
       if (record === undefined) {
         return errorResponse(c, "not_found", "Run not found");
       }
 
-      // The display name lives on the definition the record belongs to,
-      // scoped to the tenant.
+      // The display name lives on the tenant-scoped definition the record
+      // belongs to.
       const definitionRow = await db.query.workflowDefinition.findFirst({
         where: and(
           eq(workflowDefinition.id, record.definitionId),
@@ -496,12 +489,11 @@ export function createRunRoutes({
         return errorResponse(c, "not_found", "Run not found");
       }
 
-      // The run's committed per-run grants ARE its effective floor: a standing
-      // ("always") resolution mutates them in place (ask -> allow on
+      // The run's committed per-run grants ARE its effective floor: a
+      // standing ("always") resolution mutates them in place (ask -> allow on
       // approve-always, ask -> deny on reject-always), so what the child
-      // enforces and what this returns are the same rows -- the view cannot
-      // drift from enforcement. A run with no committed grants (deployed but
-      // never triggered) has an empty floor.
+      // enforces and what this returns are the same rows. A run with no
+      // committed grants (deployed but never triggered) has an empty floor.
       const committed = await loadCommittedRunGrants(db, tenantCtx.id, runId);
       if (committed === null) {
         return c.json({ runId, grants: [] });
@@ -606,8 +598,7 @@ export function createRunRoutes({
       }
 
       // Offerings are keyed on the definition (their `agentId` column holds a
-      // definition id). Resolve the record's definition, then filter offerings
-      // on its id and display its name.
+      // definition id); resolve the record's definition, then filter on its id.
       const definitionRow = await db.query.workflowDefinition.findFirst({
         where: eq(workflowDefinition.id, record.definitionId),
       });
@@ -831,17 +822,17 @@ export function createRunRoutes({
       const tenantCtx = c.get("tenant");
       const runId = c.req.param("runId");
 
-      // Resolve the top-level run first so an unknown id tenant-scopes to a 404,
-      // exactly as the turns/events routes do, before the trigger runs.
+      // Resolve the top-level run first so an unknown id tenant-scopes to a
+      // 404, as the turns/events routes do, before the trigger runs.
       const record = await findRoutableById(db, runId, tenantCtx.id);
       if (record === undefined) {
         return errorResponse(c, "not_found", "Run not found");
       }
 
-      // Mail send fires the run through its workflow-native Trigger path. That
-      // path needs the workflow asset and the run-event substrate; when the hub
-      // runs without the deploy surface the trigger is null, so answer 503
-      // rather than silently dropping the send.
+      // Mail send fires the run through its workflow-native Trigger path,
+      // which needs the workflow asset and the run-event substrate; without
+      // the deploy surface the trigger is null, so answer 503 rather than
+      // silently dropping the send.
       if (triggerWorkflowRun === null) {
         return errorResponse(
           c,

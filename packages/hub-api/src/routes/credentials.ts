@@ -372,9 +372,8 @@ export function createCredentialRoutes({
       // instances -- UNLESS the same request also revokes the credential. A
       // revoke and a secret re-resolve target overlapping addresses with no
       // ordering guarantee (both fire-and-forget), and the source re-resolve
-      // does not consult credential status, so it would re-deliver the rotated
-      // material and could re-populate the revoked secret in a live child's
-      // cell. The revoke wins.
+      // does not consult credential status, so it could re-populate the
+      // revoked secret in a live child's cell. The revoke wins.
       if (body.secret !== undefined && body.status !== "revoked") {
         void pushSourceUpdates(
           db,
@@ -425,17 +424,16 @@ export function createCredentialRoutes({
       // Delete the credential and its per-credential grants atomically. Two
       // invariants, each owned by exactly one layer:
       //   - Existence within the tenant is owned by the delete's WHERE clause
-      //     (`id` AND `tenantId`). authz cannot own it: the resource string
-      //     `credential:{id}` is opaque, so a wildcard grant matches an id in
-      //     any tenant. A foreign or unknown id matches zero rows -> 404.
+      //     (`id` AND `tenantId`). authz cannot own it: `credential:{id}` is
+      //     opaque, so a wildcard grant matches an id in any tenant; a foreign
+      //     or unknown id matches zero rows -> 404.
       //   - "Cannot delete a credential a model provider still references" is
-      //     owned by the model_provider.credential_id foreign key, which is
-      //     onDelete "restrict" (catalog.ts). The delete fires it only for a
-      //     row actually being deleted (an in-tenant credential), so the catch
-      //     maps the raw violation to a 409 instead of a 500.
-      // The grant delete keys on the exact `credential:{id}` resource, which has
-      // no foreign key to `credential` (nothing cascades) and never matches the
-      // coarse `credential:*` role grant.
+      //     owned by the model_provider.credential_id foreign key (onDelete
+      //     "restrict"), which fires only for a row actually being deleted, so
+      //     the catch maps the raw violation to a 409 instead of a 500.
+      // The grant delete keys on the exact `credential:{id}` resource, which
+      // has no foreign key to `credential` (nothing cascades) and never
+      // matches the coarse `credential:*` role grant.
       let outcome: "not_found" | "deleted";
       try {
         outcome = await db.transaction(async (tx) => {

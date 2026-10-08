@@ -7,11 +7,10 @@
  * channel-1 frames.
  *
  * Denial during negotiation is reported as a pkt-line `ERR <msg>\n`
- * frame, never as a non-200 HTTP status: stock git surfaces the ERR
+ * frame, never a non-200 HTTP status: stock git surfaces the ERR
  * payload as `remote: <msg>; fatal: protocol error`, the
  * protocol-correct shape for refPattern denial and unknown-ref
- * rejections. (Receive-pack uses `ng` during report-status instead;
- * that vocabulary is not used here.)
+ * rejections. (Receive-pack uses `ng` during report-status instead.)
  */
 
 import fs from "node:fs";
@@ -204,20 +203,13 @@ async function classifyWants(
   wants: readonly string[],
   allowedObjects: ReadonlySet<string>,
 ): Promise<WantClassification> {
-  // Two-pass classification with a stable preference: `forbidden`
-  // outranks `unknown` so the client always sees the same error
-  // vocabulary regardless of how it ordered its want lines. A SHA
-  // that exists but is reachable only from refs the token cannot see
-  // is more useful diagnostic information than a SHA we cannot find
-  // at all, and incident triage benefits from determinism.
-  //
-  // Membership in `allowedObjects` is necessary but not sufficient:
-  // the substrate's reachable-objects walk includes commits, trees,
-  // and blobs alike, so a hand-crafted client could otherwise want a
-  // blob OID that appears in some allowed ref's tree. This handler
-  // expects `want` lines to name commits -- annotated-tag wants are
-  // not supported here today; a non-commit want is classified the
-  // same as a SHA that does not exist at all.
+  // Two-pass classification with a stable preference: `forbidden` outranks
+  // `unknown` so the client always sees the same error vocabulary regardless
+  // of want-line order. Membership in `allowedObjects` is necessary but not
+  // sufficient: the reachable-objects walk includes trees and blobs, so a
+  // hand-crafted client could otherwise want a blob OID in some allowed ref's
+  // tree. `want` lines must name commits -- annotated-tag wants are not
+  // supported; a non-commit want is classified as unknown.
   let sawForbidden = false;
   let sawUnknown = false;
   for (const want of wants) {
@@ -324,17 +316,12 @@ function successResponse(pack: Uint8Array | null): Response {
 }
 
 /**
- * Translate substrate-thrown errors that escape the listRefs /
- * getRepoDir / pack-build call chain into the upload-pack pkt-line
- * ERR vocabulary. Only `authorize_denied:` is reachable from the
- * upload-pack call chain; the receive-pack prefixes belong to
- * `receive-pack.ts`'s translator. Upload-pack has no per-ref status
- * channel, so an authorize denial collapses into the same
- * `ERR forbidden ref` shape used for refPattern denial.
- *
- * Returns `null` when the error message does not carry a known
- * substrate prefix; the caller rethrows so a genuine crash still
- * bubbles to the HTTP layer as a 500.
+ * Translate substrate-thrown errors that escape the listRefs / getRepoDir /
+ * pack-build call chain into the upload-pack pkt-line ERR vocabulary. Only
+ * `authorize_denied:` is reachable from this chain; the receive-pack prefixes
+ * belong to `receive-pack.ts`'s translator. Returns `null` when the error
+ * message carries no known substrate prefix; the caller rethrows so a genuine
+ * crash still bubbles to the HTTP layer as a 500.
  */
 function translateSubstrateError(err: unknown): Response | null {
   if (!(err instanceof Error)) return null;

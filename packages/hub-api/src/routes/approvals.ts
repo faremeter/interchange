@@ -56,12 +56,10 @@ const log = getLogger(["hub", "approvals"]);
  * `run.grants` handler also refreshes a live child), so the running child sees
  * the change in-flight and any respawn re-reads it.
  *
- * Best-effort relative to the resume: this runs after the resolve committed
- * and the parked run must still be resumed, so a failure is logged loudly but
- * never propagated -- a throw would skip the caller's signal delivery and hang
- * the run. It self-heals regardless: the mutation is already durable in the
- * committed grants, and the next dispatch's per-run re-establish reads the
- * same committed grants, so a missed push only delays the effect.
+ * Best-effort relative to the resume: a failure is logged loudly but never
+ * propagated (a throw would skip the caller's signal delivery and hang the
+ * run). It self-heals regardless: the mutation is durable, and the next
+ * dispatch's per-run re-establish reads the same committed grants.
  */
 async function propagateRunGrantsToSidecar(
   deps: CreateApprovalRoutesDeps,
@@ -162,13 +160,12 @@ type PendingFailureKind = Extract<
 /**
  * Close the approval round-trip: authorize the approver, claim the correlation
  * so a redelivered decision cannot resolve twice, flip the approval to its
- * terminal status, and hand the decision to the parked run.
+ * terminal status, and hand the decision to the parked run. Cross-tenant
+ * existence is masked as `not_found` so a caller cannot learn that an approval
+ * id exists in another tenant.
  *
- * Cross-tenant existence is masked as `not_found` rather than `forbidden`: a
- * caller in one tenant must not learn that an approval id exists in another.
- *
- * The claim and the resolve happen inside a single transaction so a duplicate
- * delivery cannot observe a claimed-but-unresolved intermediate state. For a
+ * The claim and the resolve share one transaction so a duplicate delivery
+ * cannot observe a claimed-but-unresolved intermediate state. For a
  * provisioned deployment, that transaction also locks the allocation and
  * enqueues the stable signal id and payload; delivery then follows the
  * allocation's durable, generation-fenced dispatch path and remains replayable
@@ -209,8 +206,7 @@ export async function resolveApproval(
 
   // A standing resolution mutates the run's committed grant for the approved
   // tool. Resolve the tool name up front (before the claim) so a malformed
-  // snapshot fails the resolve cleanly rather than mid-transaction. `allow` for
-  // approve-always, `deny` for reject-always.
+  // snapshot fails the resolve cleanly rather than mid-transaction.
   const standingToolName =
     args.scope === "always" ? approvalToolName(approval.toolDefinition) : null;
   const standingEffect = args.status === "approved" ? "allow" : "deny";
@@ -265,8 +261,8 @@ export async function resolveApproval(
         );
       }
       // Pack receipt advances the committed Git ref while holding this same
-      // allocation lock. Re-read lifecycle evidence after acquiring the fence
-      // so a terminal pack cannot race between this check and the claim.
+      // allocation lock; re-read lifecycle evidence after the fence so a
+      // terminal pack cannot race between this check and the claim.
       const lifecycles = await readRunLifecycles(
         approval.agentAddress,
         approval.anchorRunId,
@@ -325,8 +321,6 @@ export async function resolveApproval(
     // A standing resolution durably mutates the run's committed grant for this
     // tool IN this transaction -- `allow` on approve-always, `deny` on
     // reject-always -- so a rolled-back resolve reverts the grant change too.
-    // The run keeps it: enforcement, the authorization view, and the
-    // per-dispatch re-establish all read the committed grant.
     if (standingToolName !== null) {
       await setRunToolGrantEffect(
         tx,
@@ -369,16 +363,16 @@ export async function resolveApproval(
   // Standing resolution: the committed grant was mutated in the transaction
   // above. Push the now-durable grants to the sidecar so the running child sees
   // the change in-flight. Post-commit, so a rolled-back resolve pushes nothing.
-  // It runs before the wake/signal delivery so the floor lands promptly, but
-  // correctness does not depend on that ordering: `deliverSignal` refreshes
-  // grants on the child's control FIFO immediately ahead of the resume signal,
-  // and the next dispatch re-establishes them regardless.
+  // Runs before the wake/signal delivery so the floor lands promptly; the
+  // ordering is not correctness-critical (`deliverSignal` refreshes grants on
+  // the control FIFO ahead of the resume signal, and the next dispatch
+  // re-establishes them regardless).
   if (args.scope === "always") {
     await propagateRunGrantsToSidecar(deps, approval, args.tenantId);
   }
 
   if (claimed.provisionedDispatchService !== undefined) {
-    // enqueueSignal may wake before its surrounding transaction commits. Wake
+    // enqueueSignal may wake before its surrounding transaction commits; wake
     // once more after commit so the row cannot wait for the periodic sweep.
     claimed.provisionedDispatchService.wake();
     return { kind: "resolved", approval: claimed.resolved };
@@ -426,9 +420,8 @@ export function createApprovalRoutes(
       // Listing spans the whole tenant, so it needs a tenant-wide grant
       // (`approval:*`), not a per-deployment one: a per-deployment approver
       // holds only `approval:<their deployment>` and reads individual
-      // approvals by id via the detail route. The action is `resolve`, the
-      // same capability the approve/reject routes gate on -- reading an
-      // approval is part of being able to resolve it.
+      // approvals via the detail route. The action is `resolve`, the same
+      // capability the approve/reject routes gate on.
       const authz = await authorize(
         deps.grantStore,
         principal.id,
