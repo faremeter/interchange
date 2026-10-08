@@ -24,10 +24,9 @@ function toGrantRule(row: typeof grant.$inferSelect): GrantRule {
 }
 
 /**
- * Collects a principal's live (non-expired) grants — the ones the principal
- * owns directly plus the ones granted to any role it holds — restricted to
- * the tenants matched by `tenantScope`. The scope is the sole knob that
- * decides single-tenant versus chain-aware collection.
+ * Collect a principal's live (non-expired) grants: those owned directly plus
+ * those granted to any role it holds, restricted to the tenants matched by
+ * `tenantScope`.
  */
 async function collectGrantsScoped(
   db: DB["db"],
@@ -63,14 +62,11 @@ export function createGrantStore(db: DB["db"]): GrantStore {
       return collectGrantsScoped(db, principalId, eq(grant.tenantId, tenantId));
     },
 
-    // Union the principal's grants across the tenant ancestor chain — the
-    // acting tenant plus every ancestor up to the root. Mirrors the
-    // ancestor-chain resolution credential lookup already performs, so a
-    // `credential:{id}` / `use` grant stamped with an ancestor tenant (as the
-    // mint path and 0037 backfill do) still authorizes use of a credential
-    // inherited down the chain. Kept distinct from the single-tenant
-    // `collectGrants` so only the source-resolution credential-use check
-    // widens to the chain; the general RBAC path stays single-tenant.
+    // Union the principal's grants across the tenant ancestor chain, mirroring
+    // the ancestor-chain resolution credential lookup already performs, so a
+    // `credential:{id}` / `use` grant stamped with an ancestor tenant still
+    // authorizes an inherited credential. Kept distinct from `collectGrants`
+    // so only the source-resolution credential-use check widens to the chain.
     async collectGrantsInChain(principalId, tenantId) {
       const chain = await getAncestorChain(db, tenantId);
       return collectGrantsScoped(

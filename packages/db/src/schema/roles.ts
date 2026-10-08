@@ -26,9 +26,8 @@ export const agentRole = pgTable(
   "agent_role",
   {
     // Retains the agent_id column name, but its values are workflow_definition
-    // ids: every agent was folded to exactly one definition, and role
-    // assignments follow the definition so they survived the agent table's
-    // retirement.
+    // ids: role assignments follow the folded definition, so they survived the
+    // agent table's retirement.
     agentId: text("agent_id")
       .notNull()
       .references(() => workflowDefinition.id, { onDelete: "cascade" }),

@@ -12,9 +12,9 @@ export const provider = pgTable(
     name: text("name").notNull(),
     plugin: text("plugin").notNull(),
     // The API origin a credential from this provider authenticates to (e.g.
-    // https://api.github.com). Optional: OAuth-login-only providers have no
-    // API-call origin. A provider that backs an origin-pinned credential must
-    // have one, enforced loudly at credential-shape time, not by the schema.
+    // https://api.github.com). OAuth-login-only providers have none; a
+    // provider backing an origin-pinned credential must have one, enforced at
+    // credential-shape time, not by the schema.
     apiBaseUrl: text("api_base_url"),
     authorizationUrl: text("authorization_url"),
     tokenUrl: text("token_url"),

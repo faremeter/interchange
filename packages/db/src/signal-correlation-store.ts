@@ -10,10 +10,10 @@ type SignalCorrelationInsert = typeof signalCorrelation.$inferInsert;
 type ParsedSignalCorrelation = ReturnType<typeof parseSignalCorrelationRow>;
 
 /**
- * Store for the `signal_correlation` table, which maps an in-flight signal
- * (correlation id) to the run and address that must be resumed when the signal
- * resolves. Each method accepts an optional transaction handle so the resolver
- * can claim the correlation and flip its approval atomically.
+ * Store for the `signal_correlation` table: maps an in-flight signal's
+ * correlation id to the run and address to resume when it resolves. Methods
+ * accept an optional transaction handle so a claim and its approval flip are
+ * atomic.
  */
 export function createSignalCorrelationStore(db: DBHandle) {
   return {
@@ -34,12 +34,10 @@ export function createSignalCorrelationStore(db: DBHandle) {
     },
 
     /**
-     * Idempotent variant of `register`. On a `correlationId` primary-key
-     * conflict the insert is a no-op and this returns `null` rather than
-     * throwing, so a redelivered register frame (sidecar reconnect,
-     * workflow-log replay, supervisor restart re-emitting) does not fail the
-     * co-write. Returns the parsed row only when this call performed the
-     * insert.
+     * Idempotent `register`: on a `correlationId` primary-key conflict the
+     * insert is a no-op and this returns `null`, so a redelivered register
+     * frame (sidecar reconnect, log replay, supervisor restart) does not fail
+     * the co-write. Returns the parsed row only when this call inserted.
      */
     async registerIfAbsent(
       row: SignalCorrelationInsert,
@@ -67,11 +65,9 @@ export function createSignalCorrelationStore(db: DBHandle) {
 
     /**
      * Atomically claim a correlation for terminal delivery. The
-     * `resolved_at IS NULL` guard makes the claim single-shot: the first caller
-     * stamps `resolvedAt` and gets the row back; any second caller matches no
-     * row and receives null, so a redelivered signal is not delivered twice.
-     * When `signalId` is provided it is persisted on the same update, recording
-     * which signal instance won the claim for redelivery idempotency.
+     * `resolved_at IS NULL` guard makes the claim single-shot, so a
+     * redelivered signal is not delivered twice. `signalId`, when provided,
+     * records which signal instance won the claim.
      */
     async claimTerminal(
       correlationId: string,

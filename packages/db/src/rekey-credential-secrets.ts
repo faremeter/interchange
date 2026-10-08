@@ -1,15 +1,11 @@
-// Re-key existing credential secrets: encrypt any secret still stored as
-// plaintext, in place, under the given cipher.
+// Encrypt any credential secret still stored as plaintext, in place, under
+// the given cipher. Rows written after encryption-at-rest landed are already
+// encrypted; this covers databases whose rows predate it, where the strict
+// read path throws on a non-ciphertext value. Run against a stopped hub so no
+// write races an un-re-keyed row.
 //
-// Ordinarily every secret is encrypted at its write site, so on a database
-// created after encryption-at-rest landed there is nothing to do. This pass
-// exists for the transition: a database whose rows predate encryption still
-// holds plaintext, and the strict read path throws on a non-ciphertext value.
-// Running this once (against a stopped hub, so no write races an un-re-keyed
-// row) brings every row to the encrypted form.
-//
-// Idempotent: a value already a ciphertext is skipped, so the pass is safe to
-// re-run or resume after a partial failure.
+// Idempotent: ciphertext values are skipped, so the pass is safe to re-run or
+// resume after a partial failure.
 
 import { eq } from "drizzle-orm";
 

@@ -154,10 +154,8 @@ export function parseWorkflowDefinitionRow(
       row.modelRequirements !== null
         ? ModelRequirements.assert(row.modelRequirements)
         : null,
-    // Nullable jsonb: `null` on a real drizzle row, `undefined` only on a
-    // partial row-shaped test stub that predates the column. Both mean "no
-    // bindings" -- treat them alike rather than asserting `undefined` as an
-    // array.
+    // Nullable jsonb: `null` on a real row, `undefined` only on a partial
+    // test stub that predates the column. Both mean "no bindings".
     credentialBindings:
       row.credentialBindings === null || row.credentialBindings === undefined
         ? null
