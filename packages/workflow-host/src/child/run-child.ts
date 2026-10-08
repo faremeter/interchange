@@ -99,7 +99,7 @@ import {
 } from "../drain-controller";
 
 import type { InferenceSource, MailPartReader } from "@intx/types/runtime";
-import type { CredentialDelivery } from "@intx/types/sidecar";
+import type { CredentialDelivery } from "@intx/types/credential-delivery";
 
 import { createWorkflowRunRepoStore } from "../adapters/repo-store";
 import { createCancellationBarrier } from "./cancellation-barrier";
@@ -116,15 +116,17 @@ import {
 } from "../adapters/spawn-child";
 import {
   createControlChannelSender,
-  createEventChannelSender,
   receiveControlChannel,
   type ControlChannelSender,
   type ControlPayload,
-  type EventPayload,
-  type FrameWriter,
   type NdjsonReader,
   type NdjsonWriter,
-} from "../ipc/index";
+} from "../ipc/control-channel";
+import {
+  createEventChannelSender,
+  type FrameWriter,
+} from "../ipc/event-sender";
+import type { EventPayload } from "../ipc/event-channel";
 import { runBodyThenCleanup } from "../run-body-then-cleanup";
 import { createWorkflowHostSignalChannel } from "../seams/signal-channel";
 import type { CredentialsSnapshot } from "../supervisor/credentials";

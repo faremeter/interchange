@@ -22,7 +22,7 @@
 import { authorize } from "@intx/authz";
 import { repoActionToGrantVerb } from "@intx/hub-common";
 import type { RefEntry, RepoStore, UserPrincipal } from "@intx/hub-sessions";
-import type { RepoAction } from "@intx/types/sidecar";
+import type { RepoAction } from "@intx/types/repo";
 import type { ConditionRegistry, GrantStore } from "@intx/types/authz";
 
 import type { GitTokenClaims } from "../middleware/git-token-auth";

@@ -20,7 +20,7 @@ import {
   type SidecarRouter,
 } from "@intx/hub-sessions";
 import type { InferenceSource } from "@intx/types/runtime";
-import type { CredentialDelivery } from "@intx/types/sidecar";
+import type { CredentialDelivery } from "@intx/types/credential-delivery";
 import {
   createTestDb,
   harnessDbEnvAvailable,

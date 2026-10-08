@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { type } from "arktype";
 import { createEnvKeyCredentialCipher } from "@intx/crypto";
-import type { CredentialDelivery } from "@intx/types/sidecar";
+import type { CredentialDelivery } from "@intx/types/credential-delivery";
 
 import {
   WorkflowRunRecord,

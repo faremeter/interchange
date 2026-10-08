@@ -166,7 +166,7 @@ import fs from "node:fs";
 import git from "isomorphic-git";
 import { type } from "arktype";
 import { getLogger } from "@intx/log";
-import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
+import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy/addresses";
 import {
   authorizeUserPrincipal,
   type AuthorizeFn,

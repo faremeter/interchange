@@ -16,7 +16,7 @@ import { type } from "arktype";
 import postgres from "postgres";
 
 import { hexEncode } from "@intx/types";
-import type { RepoAction } from "@intx/types/sidecar";
+import type { RepoAction } from "@intx/types/repo";
 import { generateId } from "@intx/hub-common";
 import { loadHarnessDbConfig } from "@intx/test-harness/db-harness";
 

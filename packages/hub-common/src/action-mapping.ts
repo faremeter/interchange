@@ -1,4 +1,4 @@
-import type { RepoAction } from "@intx/types/sidecar";
+import type { RepoAction } from "@intx/types/repo";
 
 /**
  * Translations between the HTTP request shape, the `RepoAction`

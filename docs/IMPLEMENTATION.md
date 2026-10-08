@@ -388,7 +388,7 @@ The workflow-process runs code the operator deploys but the sidecar does not ful
 Each deployment gets two channels:
 
 - **Control channel.** NDJSON over stdio, Ed25519-signed by the supervisor. Carries trigger fires, signal deliveries, drain, recycle, shutdown, grants-updated, sources-updated, and the child's `ready` signal back. Low rate, high authority. Implementation lives in `packages/workflow-host/src/ipc/control-channel.ts`.
-- **Event channel.** A UNIX socketpair, HMAC-SHA256-authenticated with a 32-byte symmetric key derived at spawn time. Carries `InferenceEvent`s from the reactor (including the per-message `message.run.started` / `message.run.ended` brackets). High rate. Implementation lives in `packages/workflow-host/src/ipc/event-channel.ts`.
+- **Event channel.** A UNIX socketpair, HMAC-SHA256-authenticated with a 32-byte symmetric key derived at spawn time. Carries `InferenceEvent`s from the reactor (including the per-message `message.run.started` / `message.run.ended` brackets). High rate. Sending lives in `packages/workflow-host/src/ipc/event-sender.ts`; receiving and payload validation live in `event-channel.ts`.
 
 Asymmetric crypto on control is correct because only the supervisor signs and the child must not forge supervisor commands. Symmetric HMAC on events is correct because both sides must authenticate every frame at reactor cadence — Ed25519 per frame at that rate would dominate runtime cost. The two channels' payload unions are disjoint by construction; the typed `ControlPayload` validator does not accept inference-event shapes and the typed `EventPayload` validator does not accept control-plane shapes, so a confused-deputy attack that smuggles a `drain` or `recycle` over the event channel fails at validation.
 
@@ -906,7 +906,7 @@ branches on the frame shape:
 A frame carrying neither shape is rejected -- there is no in-process
 deploy path. A single agent deploys as a single-step workflow whose
 lone step IS the deployment head (`deriveRunAddress` in
-`packages/workflow-deploy/src/orchestrator.ts`), so single- and
+`packages/workflow-deploy/src/addresses.ts`), so single- and
 multi-step deployments run the same supervised-child topology and
 differ only in step count.
 
@@ -924,7 +924,7 @@ The workflow-run repo's substrate `repoId.id` is constrained to
 run-address shape (`run_<id>@<domain>`) does not satisfy. The sidecar
 wiring derives the deploy-phase repo slug by substituting disallowed
 characters with `-`; see `deriveWorkflowRunRepoId` in
-`packages/workflow-deploy/src/orchestrator.ts`. The supervisor principal's
+`packages/workflow-deploy/src/addresses.ts`. The supervisor principal's
 `anchorRunId` and the workflow-run `repoId.id` are kept equal so the
 workflow-run kind handler's principal-vs-repo authz check holds for
 every supervisor-authored event commit.

@@ -373,7 +373,7 @@ export interface WorkflowSupervisorBindings {
    * deployment binds no credentials. A rotation flows through
    * `deliverCredentials`, not this static binding.
    */
-  credentialDelivery?: import("@intx/types/sidecar").CredentialDelivery;
+  credentialDelivery?: import("@intx/types/credential-delivery").CredentialDelivery;
   /** Subprocess spawner the supervisor invokes per spawn. */
   subprocessSpawner: SubprocessSpawner;
   /**

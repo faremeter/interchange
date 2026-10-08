@@ -19,7 +19,7 @@ import { hexEncode } from "@intx/types";
 import type {
   CredentialDelivery,
   CredentialMaterialEntry,
-} from "@intx/types/sidecar";
+} from "@intx/types/credential-delivery";
 import type { CredentialCipher } from "@intx/types";
 import { sessionAsset as sessionAssetTable } from "@intx/db/schema";
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";

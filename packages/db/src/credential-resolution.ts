@@ -7,7 +7,7 @@ import type {
   CredentialBindingDescriptor,
   CredentialDelivery,
   CredentialMaterialEntry,
-} from "@intx/types/sidecar";
+} from "@intx/types/credential-delivery";
 
 import type { DB } from "./client";
 import { credential } from "./schema/credentials";

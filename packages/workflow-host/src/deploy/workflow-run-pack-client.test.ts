@@ -1,7 +1,7 @@
 import { describe, test, expect } from "bun:test";
 
 import type { InferenceSource } from "@intx/types/runtime";
-import type { CredentialDelivery } from "@intx/types/sidecar";
+import type { CredentialDelivery } from "@intx/types/credential-delivery";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 import { waitUntil } from "@intx/types/testing";
 import {

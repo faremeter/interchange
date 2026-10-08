@@ -1,6 +1,6 @@
 import { type } from "arktype";
-import { RepoAction as RepoActionSchema } from "@intx/types/sidecar";
-import type { RepoKind, RepoId, RepoAction } from "@intx/types/sidecar";
+import { RepoAction as RepoActionSchema } from "@intx/types/repo";
+import type { RepoKind, RepoId, RepoAction } from "@intx/types/repo";
 
 export type { RepoKind, RepoId, RepoAction };
 

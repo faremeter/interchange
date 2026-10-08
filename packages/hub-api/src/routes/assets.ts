@@ -51,7 +51,7 @@ import {
   type RepoStore,
   type UserPrincipal,
 } from "@intx/hub-sessions";
-import type { RepoAction, RepoKind } from "@intx/types/sidecar";
+import type { RepoAction, RepoKind } from "@intx/types/repo";
 import type { ConditionRegistry, GrantStore } from "@intx/types/authz";
 import {
   AssetResponse,

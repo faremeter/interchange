@@ -45,7 +45,7 @@ import {
   MessageTransportCondition,
   SignatureStatus,
 } from "@intx/types/runtime";
-import { CredentialDelivery } from "@intx/types/sidecar";
+import { CredentialDelivery } from "@intx/types/credential-delivery";
 
 import {
   decodeEnvelope,

@@ -156,14 +156,16 @@ export {
 export {
   DEFAULT_EVENT_BUFFER_LIMIT,
   EventPayload,
-  createEventChannelSender,
   receiveEventChannel,
-  type EventChannelSender,
-  type EventChannelSenderOpts,
   type EventChannelReceiverOpts,
   type FrameReader,
-  type FrameWriter,
 } from "./event-channel";
+export {
+  createEventChannelSender,
+  type EventChannelSender,
+  type EventChannelSenderOpts,
+  type FrameWriter,
+} from "./event-sender";
 
 export {
   FrameEnvelope,

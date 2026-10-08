@@ -8,6 +8,8 @@
 // efficient but JSON is simpler to debug and inspect.
 
 import { type } from "arktype";
+import { CredentialDelivery } from "./credential-delivery";
+import { RepoId } from "./repo";
 import { GrantWalkSnapshot } from "./grant-snapshot";
 import { ApprovalItem } from "./grants";
 import { WireGrantRule } from "./grant-wire";
@@ -526,42 +528,6 @@ export { WorkflowStep } from "./wire-workflow";
 export { WorkflowProjectionDefinition, WorkflowProjectionWithSources };
 
 /**
- * The decrypted credential material and per-handle binding descriptors
- * delivered to a running agent so its tools can use provider-backed
- * credentials. Secrets are decrypted hub-side and ride this payload on the
- * live channel ONLY -- the deploy frame at launch, a `credentials.update`
- * frame on rotation, and the child's in-memory cell. They are NEVER written to
- * disk (they do not ride the git-committed grants file) and NEVER copied into
- * any snapshot, event, or state -- redaction is by construction, mirroring how
- * an `InferenceSource`'s `apiKey` stays off every egress type.
- *
- * `materials` is keyed by `credentialId` (a credential can back several handles,
- * so its secret is stored once); `bindings` maps each declared tool handle to
- * the credential that backs it and the consumer identity allowed to use it.
- */
-export const CredentialMaterialEntry = type({
-  credentialId: "string",
-  providerKey: "string",
-  origin: "string",
-  secret: "string",
-});
-export type CredentialMaterialEntry = typeof CredentialMaterialEntry.infer;
-
-export const CredentialBindingDescriptor = type({
-  handle: "string",
-  credentialId: "string",
-  consumer: "string",
-});
-export type CredentialBindingDescriptor =
-  typeof CredentialBindingDescriptor.infer;
-
-export const CredentialDelivery = type({
-  bindings: CredentialBindingDescriptor.array(),
-  materials: CredentialMaterialEntry.array(),
-});
-export type CredentialDelivery = typeof CredentialDelivery.infer;
-
-/**
  * The source-ref pin: where a code-sourced (npm) workflow definition's bytes
  * come from (`source`) plus the frozen dependency closure the hub resolved for
  * that pin (`closure`, concrete versions + integrity SRIs). The two ALWAYS
@@ -826,46 +792,6 @@ export type CredentialsUpdateFrame = typeof CredentialsUpdateFrame.infer;
 // Flow control: deferred. Agent deploy trees are small enough that the sender
 // can push all chunks without windowing. If this becomes a problem, a credit-
 // based mechanism can be added later.
-
-/**
- * Tag identifying a kind of repository in the hub's kind-keyed RepoStore.
- * Lives in `@intx/types` because the wire-level pack frames reference it;
- * the substrate package re-exports it for handler authors.
- */
-export const RepoKind = type.enumerated(
-  "agent-state",
-  "skill",
-  "package-registry",
-  "workflow",
-  "workflow-run",
-);
-export type RepoKind = typeof RepoKind.infer;
-
-/**
- * Operations a principal may invoke against a repo in the RepoStore.
- * Lives in `@intx/types` so storage layers (e.g. `@intx/db`) can validate
- * persisted action vocabularies without depending on the substrate
- * package. The substrate re-exports it for handler authors.
- */
-export const RepoAction = type.enumerated(
-  "init",
-  "writeTree",
-  "receivePack",
-  "createPack",
-  "resolveRef",
-);
-export type RepoAction = typeof RepoAction.infer;
-
-/**
- * Hub-side identity of a repository in the RepoStore. Pack frames carry
- * this alongside `agentAddress` so the hub can map a pack back to the
- * originating repo independently of which sidecar/agent it is destined for.
- */
-export const RepoId = type({
-  kind: RepoKind,
-  id: "string",
-});
-export type RepoId = typeof RepoId.infer;
 
 /**
  * A chunk of git pack data. The sender splits the packfile into chunks of at

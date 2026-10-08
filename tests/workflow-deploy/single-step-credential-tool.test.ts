@@ -43,7 +43,7 @@ import { loadFrozenGrantSnapshot } from "@intx/db";
 import { tenant as tenantTable } from "@intx/db/schema";
 import type { GrantEffect, GrantWalkSnapshot } from "@intx/types";
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
-import type { CredentialDelivery } from "@intx/types/sidecar";
+import type { CredentialDelivery } from "@intx/types/credential-delivery";
 import type { WireGrantRule } from "@intx/types/grant-wire";
 import {
   createApprovalSet,

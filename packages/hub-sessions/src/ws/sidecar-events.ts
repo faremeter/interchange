@@ -21,10 +21,10 @@
 
 import type {
   PackRejectReason,
-  RepoId,
   RunGrantsFrame,
   WorkflowRunRefTips,
 } from "@intx/types/sidecar";
+import type { RepoId } from "@intx/types/repo";
 import type {
   ApprovalSnapshot,
   ConnectorThreadState,

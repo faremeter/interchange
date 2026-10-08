@@ -18,11 +18,8 @@ import { type } from "arktype";
 import { getLogger } from "@intx/log";
 import { SourcesUpdatedData } from "../ipc/control-channel";
 import type { InferenceSource } from "@intx/types/runtime";
-import {
-  CredentialDelivery,
-  type SenderIdentity,
-  type WorkflowRunRefTips,
-} from "@intx/types/sidecar";
+import { CredentialDelivery } from "@intx/types/credential-delivery";
+import type { SenderIdentity, WorkflowRunRefTips } from "@intx/types/sidecar";
 import {
   WORKFLOW_RUN_RESTORE_REFS,
   type RepoId,

@@ -30,16 +30,16 @@ import {
   type PackPushFrame,
   type PackDoneFrame,
   type PackRejectFrame,
-  type RepoId,
   type RunGrantsFrame,
   type WorkflowControlFrame,
   type WorkflowControlAckFrame,
   type WorkflowRunRefTips,
   type SignalCorrelationRegisterFrame,
-  type CredentialDelivery,
   type WorkflowSourceAssetMount,
   type WorkflowProjectionDefinition,
 } from "@intx/types/sidecar";
+import type { RepoId } from "@intx/types/repo";
+import type { CredentialDelivery } from "@intx/types/credential-delivery";
 import type {
   ConnectorThreadState,
   HarnessConfig,

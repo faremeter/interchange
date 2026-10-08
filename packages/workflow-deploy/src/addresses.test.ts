@@ -8,7 +8,7 @@ import {
   deriveStepAddress,
   deriveStepAgentId,
   deriveWorkflowRunRepoId,
-} from "./orchestrator";
+} from "./addresses";
 
 describe("per-step address derivation", () => {
   test("deriveStepAddress concatenates the run id, step, and deployment domain", () => {

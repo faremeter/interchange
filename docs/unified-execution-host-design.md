@@ -439,7 +439,7 @@ factories do not ride the wire definition.
 **The tool-execution locus — stated explicitly, because it determines the
 isolation model.** The child _is_ the sidecar binary.
 `apps/sidecar/bin/workflow-child` imports `runWorkflowChildFromProcessEnv`
-from `@intx/workflow-host` and imports `createSubstrate` and
+from `@intx/workflow-host/child` and imports `createSubstrate` and
 `SIDECAR_SUBSTRATE_CONFIG_KEYS` from
 `apps/sidecar/src/workflow-child-bindings.ts`. That binding closes
 `createSidecarSubstrateFactory`
@@ -1009,7 +1009,7 @@ same child/workflow-run model as the multi-step path:
   (`packages/hub-sessions/src/hub-session-orchestrator.ts`).
 - **Workflow-run repo id.** The child's workflow-run repo for a single-agent
   deploy is keyed by `deriveWorkflowRunRepoId(address)`
-  (`packages/workflow-deploy/src/orchestrator.ts`), which sanitizes the run
+  (`packages/workflow-deploy/src/addresses.ts`), which sanitizes the run
   address into a substrate-safe slug. The deploy router calls that injected
   function
   (`packages/workflow-host/src/deploy/workflow-host-wiring.ts`). The read/write repo-id
@@ -1202,7 +1202,7 @@ special case — or deleted where the in-process branch it served is gone:
   **deleted** — single-step deploys route through the multi-step branch, so no
   `isSingleStepDeploy` replacement was needed.
 - `deriveDeploymentId`: deleted. Call sites use `deriveWorkflowRunRepoId`
-  (`packages/workflow-deploy/src/orchestrator.ts`). The deploy router
+  (`packages/workflow-deploy/src/addresses.ts`). The deploy router
   (`packages/workflow-host/src/deploy/workflow-host-wiring.ts`) calls that
   injected function.
 - `TrivialLaunch` / `trivialLaunch` / `trivialClaimedSlugSucceeded`: deleted
@@ -1845,14 +1845,14 @@ are explicitly **not** a go-live gate for INTR-209.
   `filterGrantsToDeclaredResources`). The factory calls all three as
   injected bindings.
 - Child binary (the child _is_ the sidecar binary): `apps/sidecar/bin/workflow-child`
-  (imports `runWorkflowChildFromProcessEnv` from `@intx/workflow-host`, and
+  (imports `runWorkflowChildFromProcessEnv` from `@intx/workflow-host/child`, and
   `createSubstrate` + `SIDECAR_SUBSTRATE_CONFIG_KEYS` from
   `apps/sidecar/src/workflow-child-bindings.ts`).
 - Deploy router: `packages/workflow-host/src/deploy/workflow-host-wiring.ts`
   (`createSidecarDeployRouter`, `deployMultiStep`, `activeSupervisors`,
   `publishWorkflowInferenceEvent` as an injected dependency). The workflow-run
   repo id is `deriveWorkflowRunRepoId`
-  (`packages/workflow-deploy/src/orchestrator.ts`).
+  (`packages/workflow-deploy/src/addresses.ts`).
 - Child-launch / sandbox-boundary seam (Decision 1): `SubprocessSpawner` and
   `SubprocessHandle` on `packages/workflow-host/src/supervisor/types.ts`;
   `defaultSubprocessSpawner` and `SIDECAR_WORKFLOW_CHILD_BINARY` in
@@ -1877,8 +1877,10 @@ are explicitly **not** a go-live gate for INTR-209.
   (`createInMemorySpawnChild`, `SpawnChildWorkflow`, `RunChildWorkflow`,
   `WorkflowSpawnChildOpts`); child-process principal
   `WorkflowRunWorkflowProcessPrincipal`.
-- Identity: `packages/workflow-deploy/src/orchestrator.ts`
-  (`deriveWorkflowRunRepoId`, `buildSingleStepAgentDefinition`);
+- Identity: `packages/workflow-deploy/src/addresses.ts`
+  (`deriveWorkflowRunRepoId`);
+  `packages/workflow-deploy/src/orchestrator.ts`
+  (`buildSingleStepAgentDefinition`);
   `packages/types/src/agent-address.ts`
   (`formatRunAddress`, `parseRunAddress`, `isRunAddress`);
   `packages/hub-sessions/src/hub-session-orchestrator.ts` (deploy-ack listener);

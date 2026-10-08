@@ -26,7 +26,6 @@ import {
   type PackAckFrame,
   type PackRejectFrame,
   type PackRejectReason,
-  RepoId,
   type SignalDeliverFrame,
   type RunGrantsFrame,
   type SenderKeyRefreshFrame,
@@ -40,6 +39,7 @@ import {
   type WorkflowProbeRequestFrame,
   type WorkflowProbeResultFrame,
 } from "@intx/types/sidecar";
+import { RepoId } from "@intx/types/repo";
 import type { SignalKind } from "@intx/types";
 import { createPackReceiver, createPackSender } from "@intx/pack-transport";
 import {

@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import git from "isomorphic-git";
-import type { RepoId } from "@intx/types/sidecar";
+import type { RepoId } from "@intx/types/repo";
 import {
   handleUploadPack,
   UPLOAD_PACK_RESULT_CONTENT_TYPE,

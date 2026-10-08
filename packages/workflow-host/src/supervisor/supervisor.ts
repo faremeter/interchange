@@ -71,7 +71,8 @@ import {
   deriveWorkflowRunId,
   signalName,
 } from "@intx/types";
-import { RepoId, type CredentialDelivery } from "@intx/types/sidecar";
+import { RepoId } from "@intx/types/repo";
+import type { CredentialDelivery } from "@intx/types/credential-delivery";
 import { inboundMessageToRaw } from "@intx/mail-memory";
 import {
   executeSearch,

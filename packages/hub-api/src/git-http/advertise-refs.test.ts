@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import type { RepoId } from "@intx/types/sidecar";
+import type { RepoId } from "@intx/types/repo";
 import {
   advertiseUploadPack,
   advertiseReceivePack,

@@ -16,7 +16,7 @@
 
 import fs from "node:fs";
 import git from "isomorphic-git";
-import type { RepoId } from "@intx/types/sidecar";
+import type { RepoId } from "@intx/types/repo";
 import { glob } from "@intx/hub-common";
 import {
   createNegotiatedPack,

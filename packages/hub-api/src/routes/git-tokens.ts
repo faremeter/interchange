@@ -16,7 +16,7 @@ import {
   SVC_PREFIX,
 } from "@intx/hub-common";
 import { getLogger } from "@intx/log";
-import type { RepoAction } from "@intx/types/sidecar";
+import type { RepoAction } from "@intx/types/repo";
 import { base64urlEncode, paginatedSchema, ErrorResponse } from "@intx/types";
 
 import { unauthorizedResponse, type AppEnv, type TenantEnv } from "../context";

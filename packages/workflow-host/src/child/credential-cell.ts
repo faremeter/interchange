@@ -23,7 +23,7 @@ import type {
   CredentialBindingDescriptor,
   CredentialDelivery,
   CredentialMaterialEntry,
-} from "@intx/types/sidecar";
+} from "@intx/types/credential-delivery";
 
 // A binding's identity is the (consumer, handle) pair: a handle string is only
 // unique within a consumer, so two consumers can each bind their own handle of
