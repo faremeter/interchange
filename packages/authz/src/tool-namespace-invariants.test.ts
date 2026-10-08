@@ -1,18 +1,13 @@
-// How a wildcard grant row and a bare `tool:<name>` row each fare against a
-// PINNED tool's runtime gate.
-//
 // A pinned tool package is loaded through the namespacing loader, which
 // rewrites every definition name to `<bundleId>:<name>`. The workflow child
 // gates each call on `tool:<call.name>`, so the query it issues for a pinned
 // tool is `tool:<bundleId>:<name>`. The deploy-time capability walk, by
-// contrast, reads inline `agent.toolFactories`, which carry no bundle context,
-// so the rows it contributes are bare `tool:<name>`.
+// contrast, reads inline `agent.toolFactories`, which carry no bundle
+// context, so the rows it contributes are bare `tool:<name>`.
 //
-// That asymmetry is what makes the namespaced form a step-scoping mechanism:
-// a bare row cannot address a pinned tool's gate, and the authority a pinned
-// tool actually needs is supplied per step by the sidecar's tool-mark floor,
-// derived from the factories that step loaded. These cases pin what a wildcard
-// row does to that scoping.
+// That asymmetry is the step-scoping mechanism: a bare row cannot address a
+// pinned tool's gate, and the authority a pinned tool needs is supplied per
+// step by the sidecar's tool-mark floor.
 
 import { describe, test, expect } from "bun:test";
 

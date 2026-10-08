@@ -1,16 +1,10 @@
-// In-memory grant store for testing and local demos.
-//
-// The caller provides a pre-scoped array of grants. The store filters by
-// principalId on each collectGrants call, matching the DB store's behavior.
+// In-memory grant store for tests and local demos. Filters by principalId on
+// each collectGrants call, like the DB store.
 //
 // Limitations vs. the DB store:
-//   - tenantId is accepted by the interface but is a no-op here. The caller
-//     scopes grants to the correct tenant when constructing the store.
-//   - Role-based grants (principalId: null, roleId set) are not resolved.
-//     The DB store performs a principalRole join to find role memberships;
-//     this store has no role data. Grants with principalId: null are never
-//     returned. If you need role-based grants in tests, set principalId
-//     directly on each grant.
+//   - tenantId is a no-op here: the caller pre-scopes grants to the tenant.
+//   - Role grants (principalId: null) are not resolved; there is no role data.
+//     Set principalId directly on each grant if you need role-based grants.
 
 import type { GrantRule, GrantStore } from "./types";
 
@@ -24,10 +18,9 @@ export function createInMemoryGrantStore(grants: GrantRule[]): GrantStore {
     });
   }
 
-  // tenantId (and thus the ancestor chain) is a no-op here: the caller
-  // pre-scopes the grant array, so chain collection returns the same set as
-  // single-tenant collection. The DB-backed store is where the chain walk
-  // actually happens.
+  // tenantId (and the ancestor chain) is a no-op: the caller pre-scopes
+  // the grant array, so chain collection returns the same set as
+  // single-tenant collection.
   return {
     async collectGrants(principalId: string): Promise<GrantRule[]> {
       return collect(principalId);

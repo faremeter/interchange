@@ -26,13 +26,8 @@ export type EvalOptions = {
 /**
  * Evaluate grants against a resource/action query.
  *
- * This is the core evaluation logic, separated from grant collection
- * so it can be tested with synthetic grant lists.
- *
- * When a condition registry is provided, grants with non-null
- * conditions are evaluated against it. Unknown condition keys
- * cause an error. When no registry is provided, grants with
- * non-null conditions are skipped (fail-closed).
+ * Conditioned grants need a registry: unknown condition keys error,
+ * and without a registry the grants are skipped (fail-closed).
  */
 export async function evaluateGrants(
   grants: GrantRule[],
@@ -77,18 +72,12 @@ export async function evaluateGrants(
     return { effect: null, matchingGrants: [], resolvedBy: null };
   }
 
-  // Sort ascending by specificity, then by effect priority.
-  // Last element wins -- which is the most specific, and at equal
-  // specificity the strongest effect (deny > ask > allow).
-  //
-  // The `ask > allow` half of that ordering is a load-bearing security
-  // invariant, not just a convention: a tool's static approval mark is
-  // materialized as an `ask` floor grant on the run principal, and a
-  // workflow that declares a competing `allow` grant for the same
-  // `tool:<name>/invoke` resource lands at equal specificity. `ask`
-  // outranking `allow` here is what stops a workflow from declaring its
-  // way below a tool's approval gate. Do not reorder EFFECT_PRIORITY
-  // without accounting for that floor.
+  // Sort ascending by specificity, then effect priority; last wins
+  // (deny > ask > allow at equal specificity). The `ask > allow` half is
+  // a load-bearing security invariant: a tool's static approval mark is
+  // an `ask` floor grant on the run principal, and a competing `allow`
+  // at equal specificity must not slide a workflow below that gate.
+  // Do not reorder EFFECT_PRIORITY without accounting for the floor.
   matching.sort((a, b) => {
     const specDiff = a.specificity - b.specificity;
     if (specDiff !== 0) return specDiff;
@@ -108,15 +97,9 @@ export async function evaluateGrants(
 }
 
 /**
- * Authorize a principal for a resource/action within a tenant.
- *
- * Collects all relevant grants via the provided store, matches them
- * against the requested resource and action, and returns the resolved
- * effect.
- *
- * Returns null when no grants match (fail-closed). The caller
- * interprets the result in context: HTTP routes return 403, the
- * agent runtime blocks the tool call.
+ * Collect grants for the principal/tenant from the store and evaluate
+ * them against the resource/action. Null when nothing matches
+ * (fail-closed); callers interpret the result (HTTP 403, blocked call).
  */
 export async function authorize(
   store: GrantStore,
