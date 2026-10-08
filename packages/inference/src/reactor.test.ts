@@ -2024,7 +2024,6 @@ describe("createReactor — context store failures", () => {
     expect(errorEvent.data.error).toMatch(/disk on fire/);
     expect(errorEvent.data.fatal).toBe(true);
 
-    // reactor.start must NOT be emitted — load failed before the loop began.
     expect(events.some((e) => e.type === "reactor.start")).toBe(false);
 
     // reactor.done must still be emitted for cleanup listeners.
@@ -2077,11 +2076,10 @@ describe("createReactor — tool runner failures", () => {
     reactor.deliver(makeInboundMessage());
     await waitFor("reactor.done");
 
-    // The tool.done event should carry the error result with isError flag.
     const toolDone = getEvent(events, "tool.done");
     expect(toolDone.data.result.isError).toBe(true);
     expect(toolDone.data.result.content).toBe("something went wrong");
-    // No reactor.error should be emitted — isError is a normal result, not a crash.
+    // isError is a normal result, not a crash.
     expect(events.some((e) => e.type === "reactor.error")).toBe(false);
   });
 
@@ -2185,17 +2183,13 @@ describe("createReactor — tool runner failures", () => {
     reactor.deliver(makeInboundMessage());
     await waitFor("reactor.done");
 
-    // Verify commit was actually called before checking its contents.
     expect(committedTurns.length).toBeGreaterThan(0);
 
-    // The committed history should contain the inbound text message but
-    // no tool_result message since addToHistory was false.
     const hasToolResult = committedTurns.some((m) =>
       m.content.some((b) => b.type === "tool_result"),
     );
     expect(hasToolResult).toBe(false);
 
-    // The inbound user message should still be in history.
     const hasUserText = committedTurns.some(
       (m) => m.role === "user" && m.content.some((b) => b.type === "text"),
     );
@@ -2338,15 +2332,12 @@ describe("createReactor — director misbehavior", () => {
     reactor.start();
     reactor.deliver(makeInboundMessage());
 
-    // After wait, deliver a second message which triggers done. The
-    // director's own counter reports that the first message was processed, so
-    // the second delivery is ordered against that rather than a delay.
+    // Deliver the second message once the director reports the first handled.
     await waitUntil(() => messageCount >= 1);
     reactor.deliver(makeInboundMessage());
     await waitFor("reactor.done");
 
     expect(messageCount).toBe(2);
-    // No reactor.error should have been emitted.
     expect(events.some((e) => e.type === "reactor.error")).toBe(false);
   });
 });
@@ -2371,8 +2362,7 @@ describe("createReactor — reply action", () => {
     reactor.start();
     reactor.deliver(makeInboundMessage());
 
-    // After reply, reactor waits for next event. Deliver another message
-    // once the director reports it handled the first one.
+    // Deliver another message once the director reports it handled the first.
     await waitUntil(() => messageCount >= 1);
     reactor.deliver(makeInboundMessage());
     await waitFor("reactor.done");
@@ -2456,9 +2446,7 @@ describe("createReactor — checkpoint failure", () => {
     reactor.start();
     reactor.deliver(makeInboundMessage());
 
-    // After checkpoint failure + wait, deliver another message. The
-    // non-fatal reactor.error the failed checkpoint emits is the signal that
-    // the first cycle got that far.
+    // The failed checkpoint's non-fatal reactor.error signals the first cycle got that far.
     await waitFor("reactor.error");
     reactor.deliver(makeInboundMessage());
     await waitFor("reactor.done");
@@ -2469,7 +2457,6 @@ describe("createReactor — checkpoint failure", () => {
     expect(errorEvent.data.error).toMatch(/storage full/);
     expect(errorEvent.data.fatal).toBe(false);
 
-    // Reactor continued after the error — it processed the second message.
     expect(messageCount).toBe(2);
   });
 });
@@ -2480,7 +2467,6 @@ describe("createReactor — checkpoint failure", () => {
 
 describe("createReactor — abort handling", () => {
   test("abort event is processed with priority over queued events", async () => {
-    // Track how many message.received events the director processed.
     let messagesProcessed = 0;
     const { reactor, waitFor } = createTestReactor({
       director: directorFromTable(
@@ -2497,19 +2483,15 @@ describe("createReactor — abort handling", () => {
     reactor.start();
     reactor.deliver(makeInboundMessage());
 
-    // Wait for reactor to process the first message.
     await waitFor("message.received");
 
-    // Queue more messages and an abort. The abort should jump the queue
-    // and shut down before the extra messages reach the director.
+    // Queue more messages and an abort; the abort must jump the queue.
     reactor.deliver(makeInboundMessage());
     reactor.deliver(makeInboundMessage());
     reactor.abort("admin_kill");
 
     await waitFor("reactor.done");
 
-    // Only the first message should have been processed by the director.
-    // The abort jumped ahead of the two queued messages.
     expect(messagesProcessed).toBe(1);
   });
 
@@ -2533,7 +2515,6 @@ describe("createReactor — abort handling", () => {
 
     await waitFor("reactor.done");
 
-    // Exactly one reactor.done should be emitted.
     const doneEvents = events.filter((e) => e.type === "reactor.done");
     expect(doneEvents.length).toBe(1);
   });
@@ -2557,7 +2538,6 @@ describe("createReactor — abort handling", () => {
     expect(events.some((e) => e.type === "reactor.start")).toBe(true);
     expect(events.some((e) => e.type === "reactor.done")).toBe(true);
 
-    // No messages should have been processed.
     expect(events.some((e) => e.type === "message.received")).toBe(false);
   });
 
@@ -2604,11 +2584,9 @@ describe("createReactor — abort handling", () => {
 
 describe("createReactor — dequeue priority", () => {
   test("tool.done is prioritized over message.received when tool calls are pending", async () => {
-    // Pre-seed history with an assistant message containing a tool_call
-    // block, then run tools with addToHistory=false so no tool-result turn is
-    // appended. pendingContinuations keeps the cycle pending regardless of
-    // history shape: the enqueued tool.done is drained before the message
-    // delivered mid-run.
+    // Pre-seed a tool_call history and run tools with addToHistory=false so no
+    // tool-result turn is appended; pendingContinuations alone must keep the
+    // cycle pending so tool.done drains before the mid-run message.
     const seededTurns: ConversationTurn[] = [
       {
         role: "assistant",
@@ -2627,8 +2605,7 @@ describe("createReactor — dequeue priority", () => {
 
     const order: string[] = [];
 
-    // A minimal inbound message; its content is irrelevant to the cycle-event
-    // drain ordering this test exercises.
+    // Content is irrelevant to the drain ordering this test exercises.
     const emptyMessage: InboundMessage = {
       ref: { uid: 1, mailbox: "INBOX" },
       headers: {
@@ -2648,8 +2625,7 @@ describe("createReactor — dequeue priority", () => {
         async decide(event, _state, caps) {
           order.push(event.type);
           if (event.type === "message.received") {
-            // First message.received: run tools with addToHistory=false.
-            // Second message.received (after tool.done): shut down.
+            // First message runs tools; second (after tool.done) shuts down.
             if (order.filter((t) => t === "message.received").length >= 2) {
               return caps.done();
             }
@@ -2702,13 +2678,11 @@ describe("createReactor — dequeue priority", () => {
   }
 
   test("tool.done is prioritized over message.received with addToHistory=true", async () => {
-    // The production path uses addToHistory=true, so executeTools appends the
-    // tool-result turn to history before its tool.done events are consumed.
-    // The pendingContinuations counter, not history shape, must keep the
-    // cycle pending so mail delivered mid-batch cannot start an overlapping
-    // inference. Against the old history-shape gate the appended tool-result
-    // turn flips the gate false, the queued message.received jumps ahead, the
-    // director shuts down on it, and tool.done is never processed.
+    // Production uses addToHistory=true, so the tool-result turn is appended
+    // before tool.done is consumed; the pendingContinuations counter, not
+    // history shape, must keep the cycle pending. Against the old
+    // history-shape gate the appended turn flips the gate false and the queued
+    // message jumps ahead.
     const order: string[] = [];
 
     const { reactor, events, waitFor } = createTestReactor({
@@ -2733,13 +2707,10 @@ describe("createReactor — dequeue priority", () => {
         },
       },
       toolRunner: makeToolRunner(async (call) => {
-        // Deliver a second message while the tool runs and wait for its
-        // enqueue, so deliver()'s async enqueue lands before executeTools
-        // enqueues tool.done. This pins the queue order to
-        // [message.received, tool.done] — the interleave that triggers the
-        // bug. processDelivery emits `message.received` in the same
-        // synchronous step as the enqueue, so the emitted event carrying this
-        // message's id is the enqueue's own signal.
+        // Deliver a second message while the tool runs and wait for its enqueue
+        // so message.received queues before tool.done — the interleave the bug
+        // lived in. The emitted event carrying this message's id is published
+        // in the same synchronous step as the enqueue.
         const mail = makeInboundMessage();
         reactor.deliver(mail);
         await waitUntil(() =>
@@ -2798,10 +2769,10 @@ describe("createReactor — dequeue priority", () => {
         },
       },
       toolRunner: makeToolRunner(async (call) => {
-        // Mail delivered mid-batch must be enqueued before this call's
-        // tool.done. The emitted `message.received` carrying this message's
-        // id is published in the same synchronous step as the enqueue, so it
-        // is the signal that the delivery landed.
+        // Deliver a second message while the tool runs and wait for its enqueue
+        // so message.received queues before tool.done. The emitted event
+        // carrying this message's id is published in the same synchronous step
+        // as the enqueue.
         const mail = makeInboundMessage();
         reactor.deliver(mail);
         await waitUntil(() =>
@@ -2856,9 +2827,8 @@ describe("createReactor — dequeue priority", () => {
         },
       },
       toolRunner: makeToolRunner(async (call) => {
-        // abort() enqueues the abort event synchronously, so it is already
-        // queued ahead of this call's tool.done when abort() returns; no wait
-        // is needed to order the two.
+        // abort() enqueues synchronously, so it is already queued ahead of
+        // this call's tool.done; no wait is needed to order the two.
         reactor.abort("admin_kill");
         return { callId: call.id, content: "ok" };
       }),
@@ -2874,9 +2844,9 @@ describe("createReactor — dequeue priority", () => {
   test("inference.done is processed before mail delivered mid-inference", async () => {
     // The overlapping-inference window for a plain (no-tool) response: mail
     // arriving while an inference runs must not start a second inference ahead
-    // of the first inference's own completion event. The counter defers it;
-    // the old history-shape gate would have let the mail jump ahead, since a
-    // plain-text assistant turn is not a pending tool_call turn.
+    // of the first's completion event. The counter defers it; the old
+    // history-shape gate would have let the mail jump ahead, since a plain
+    // assistant turn is not a pending tool_call turn.
     const order: string[] = [];
     let inferenceCount = 0;
 
@@ -2898,10 +2868,9 @@ describe("createReactor — dequeue priority", () => {
       },
       inferenceRunner: async function* (opts) {
         inferenceCount += 1;
-        // Deliver mail mid-inference and wait for its enqueue, so the message
-        // is queued before inference.done. The emitted `message.received`
-        // carrying this message's id is published in the same synchronous
-        // step as the enqueue.
+        // Deliver mail mid-inference and wait for its enqueue so the message
+        // is queued before inference.done. The emitted event carrying this
+        // message's id is published in the same synchronous step as the enqueue.
         const mail = makeInboundMessage();
         reactor.deliver(mail);
         await waitUntil(() =>
@@ -2932,8 +2901,8 @@ describe("createReactor — dequeue priority", () => {
     expect(inferenceDoneIdx).toBeGreaterThan(-1);
     expect(secondMessageIdx).toBeGreaterThan(-1);
     expect(inferenceDoneIdx).toBeLessThan(secondMessageIdx);
-    // Sanity check: exactly one inference ran for the single inferring
-    // message. The ordering assertions above are what guard the regression.
+    // Sanity check: one inference per inferring message; the ordering
+    // assertions above guard the regression.
     expect(inferenceCount).toBe(1);
   });
 });
@@ -2995,7 +2964,6 @@ describe("createReactor — correlation validator", () => {
     await waitFor("reactor.done");
 
     expect(events.some((e) => e.type === "message.correlated")).toBe(false);
-    // The message should have been delivered as uncorrelated.
     const receivedEvents = events.filter((e) => e.type === "message.received");
     expect(receivedEvents.length).toBe(2);
   });
@@ -3108,23 +3076,20 @@ describe("createReactor — correlation validator", () => {
     await waitFor("reactor.gate.blocked");
 
     // Deliver two messages with the same correlationId in the same tick.
-    // The first enters the validator (which blocks on the promise).
-    // The second hits the correlatingIds guard and is rejected.
+    // The first enters the validator (which blocks on the promise); the
+    // second hits the correlatingIds guard and is rejected.
     reactor.deliver(makeInboundMessage(CORR_ID));
     reactor.deliver(makeInboundMessage(CORR_ID));
 
-    // Let the validator resolve so the first correlation completes.
     resolveValidator();
 
     await waitFor("reactor.done");
 
-    // Only one message.correlated event should have been emitted.
     const correlatedEvents = events.filter(
       (e) => e.type === "message.correlated",
     );
     expect(correlatedEvents.length).toBe(1);
 
-    // The second message should have been delivered as uncorrelated.
     const receivedEvents = events.filter((e) => e.type === "message.received");
     expect(receivedEvents.length).toBe(2);
   });
@@ -3252,14 +3217,11 @@ describe("createReactor — state snapshot inspection", () => {
     reactor.deliver(makeInboundMessage());
     await waitFor("reactor.gate.blocked");
 
-    // Deliver a second message while the gate is active. The 500ms
-    // gate timeout is far larger than the async overhead of deliver(),
-    // so the second message.received is guaranteed to be processed
-    // before the timeout fires.
+    // Deliver a second message while the gate is active; the 500ms timeout
+    // far exceeds deliver()'s async overhead, so it processes first.
     reactor.deliver(makeInboundMessage());
 
-    // The gate times out after 500ms, firing reactor.gate.cleared
-    // where we capture the post-clear state and return done.
+    // The 500ms gate timeout fires reactor.gate.cleared; capture the post-clear state.
     await waitFor("reactor.done");
 
     expect(gatesDuringSuspend.length).toBe(1);
@@ -3303,7 +3265,6 @@ describe("createReactor — state snapshot inspection", () => {
           if (event.type === "message.received") {
             messageCount++;
             if (messageCount === 1) {
-              // Mutate the snapshot's content block.
               const msg = state.turns[0];
               if (msg !== undefined) {
                 const block = msg.content[0];
@@ -3325,7 +3286,6 @@ describe("createReactor — state snapshot inspection", () => {
     reactor.start();
     reactor.deliver(makeInboundMessage());
 
-    // Wait for the first message to be processed, then deliver a second.
     await waitUntil(() => messageCount >= 1);
     reactor.deliver(makeInboundMessage());
     await waitFor("reactor.done");
@@ -3363,15 +3323,11 @@ describe("createReactor — deliver after done", () => {
     reactor.deliver(makeInboundMessage());
     reactor.deliver(makeInboundMessage());
 
-    // A macrotask boundary drains the microtask queue, which is the whole
-    // window in which a spurious event could appear: the only path from
-    // deliver() to an emitted event is processDelivery's async body, and for
-    // an uncorrelated message (these carry no correlationId) tryCorrelate
-    // returns on its first statement, so the emit would land in a microtask.
-    // If the done guard had regressed, the event would be here by now.
+    // A macrotask boundary drains the microtask queue — the only window in
+    // which a spurious event could appear. If the done guard had regressed,
+    // the event would be here by now.
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    // No new events should have been emitted after reactor.done.
     expect(events.length).toBe(eventsBeforeDeliver);
     const doneEvents = events.filter((e) => e.type === "reactor.done");
     expect(doneEvents.length).toBe(1);
@@ -3416,12 +3372,9 @@ function makeInferenceRunner(
 }
 
 // ---------------------------------------------------------------------------
-// afterInferenceDone abort/halt policy, end to end
-// These drive the real DefaultDirector so the action sets its abort and halt
-// branches build are validated by the reactor, not just asserted in
-// isolation. The bug was that those sets were rejected, so the reactor
-// crashed with a fatal "Invalid action set" instead of terminating (abort)
-// or pausing and replying (halt).
+// afterInferenceDone abort/halt policy, end to end. Drives the real
+// DefaultDirector so the action sets its abort and halt branches build are
+// validated by the reactor; the regression was those sets being rejected.
 // ---------------------------------------------------------------------------
 
 describe("createReactor — afterInferenceDone abort and halt", () => {
@@ -3538,7 +3491,6 @@ describe("createReactor — inference path", () => {
     reactor.deliver(makeInboundMessage());
     await waitFor("reactor.done");
 
-    // The emitted event stream should contain inference.done.
     const inferDone = getEvent(events, "inference.done");
     expect(inferDone.data.turn.content[0]).toEqual({
       type: "text",
@@ -3546,13 +3498,10 @@ describe("createReactor — inference path", () => {
     });
     expect(inferDone.data.usage).toEqual(inferUsage);
 
-    // The director should have received the inference.done event with
-    // accumulated token usage visible in the state snapshot.
     if (stateAtInferenceDone === undefined)
       throw new Error("director never received inference.done");
     expect(stateAtInferenceDone.tokenUsage).toEqual(inferUsage);
 
-    // The assistant message should have been appended to the conversation.
     const lastMsg =
       stateAtInferenceDone.turns[stateAtInferenceDone.turns.length - 1];
     if (lastMsg === undefined) throw new Error("no messages in state snapshot");
@@ -3594,13 +3543,11 @@ describe("createReactor — inference path", () => {
     reactor.deliver(makeInboundMessage());
     await waitFor("reactor.done");
 
-    // Verify the director received the error event with correct fields.
     if (capturedError === undefined)
       throw new Error("director never received inference.error");
     expect(capturedError.category).toBe("retryable");
     expect(capturedError.message).toBe("rate limited");
 
-    // The emitted event stream should contain inference.error.
     const inferErr = getEvent(events, "inference.error");
     expect(inferErr.data.error.category).toBe("retryable");
     expect(inferErr.data.partial.text).toBe("partial output");
@@ -3629,12 +3576,10 @@ describe("createReactor — inference path", () => {
     reactor.deliver(makeInboundMessage());
     await waitFor("reactor.done");
 
-    // The reactor should have emitted a reactor.error for observability.
     const reactorErr = getEvent(events, "reactor.error");
     expect(reactorErr.data.fatal).toBe(true);
     expect(reactorErr.data.error).toContain("without a terminal event");
 
-    // The director should have received inference.error with category "fatal".
     if (capturedError === undefined)
       throw new Error("director never received inference.error");
     expect(capturedError.category).toBe("fatal");
@@ -3748,11 +3693,9 @@ describe("createReactor — beforeToolExtensions", () => {
 
     expect(toolsRun).toEqual([]);
 
-    // No tool.start for blocked tools.
     const starts = events.filter((e) => e.type === "tool.start");
     expect(starts.length).toBe(0);
 
-    // tool.done is emitted with isError and the block reason.
     const doneEvents = events.filter(
       (e): e is Extract<ReactorEmittedEvent, { type: "tool.done" }> =>
         e.type === "tool.done",
@@ -3915,7 +3858,6 @@ describe("createReactor — beforeToolExtensions", () => {
 
     if (capturedState === undefined)
       throw new Error("extension was never called");
-    // State should contain the inbound message and the assistant tool_call message.
     expect(capturedState.turns.length).toBeGreaterThanOrEqual(2);
     expect(capturedState.sessionId).toContain("test-sess-");
   });
@@ -3996,18 +3938,14 @@ describe("createReactor — beforeToolExtensions", () => {
     reactor.deliver(makeInboundMessage());
     await waitFor("reactor.done");
 
-    // Only the allowed tool should have run.
     expect(toolsRun).toEqual(["read_file"]);
 
-    // tool.start only for the allowed tool.
     const starts = events.filter((e) => e.type === "tool.start");
     expect(starts.length).toBe(1);
 
-    // Both tools produce tool.done events.
     const doneEvents = events.filter((e) => e.type === "tool.done");
     expect(doneEvents.length).toBeGreaterThanOrEqual(2);
 
-    // The blocked tool has isError.
     const blockedDone = doneEvents.find(
       (e) => e.type === "tool.done" && e.data.result.callId === "call-bash",
     );
@@ -4016,7 +3954,6 @@ describe("createReactor — beforeToolExtensions", () => {
     expect(blockedDone.data.result.isError).toBe(true);
     expect(blockedDone.data.result.content).toBe("Denied by policy");
 
-    // The allowed tool has the real result.
     const allowedDone = doneEvents.find(
       (e) => e.type === "tool.done" && e.data.result.callId === "call-read",
     );
@@ -4031,10 +3968,8 @@ describe("createReactor — beforeToolExtensions", () => {
 // Before-tool suspension on an `ask` grant, and rehydration across restart
 // ---------------------------------------------------------------------------
 
-// A context store that keeps the persisted pending operations and turns in a
-// shared cell so a second reactor can reload exactly what the first committed.
-// This is what lets the rehydration test observe the cross-restart behavior a
-// stateless makeContextStore cannot.
+// A context store that keeps persisted state in a shared cell so a second
+// reactor can reload exactly what the first committed.
 type PersistedCell = {
   turns: ConversationTurn[];
   pendingOperations: PendingOperation[];
@@ -4240,11 +4175,9 @@ describe("createReactor — before-tool suspension on ask grant", () => {
   });
 
   test("a before-tool suspension in a cycle with no inference and no completed tool call still persists the pending op", async () => {
-    // The suspension is raised from a message.received handler that dispatches
-    // executeTools directly, so the cycle runs no inference and completes no
-    // tool call (the sole call is parked). Registering the gate and pending
-    // operation is nonetheless durable state that must be committed; otherwise
-    // the pending op lives only in memory and is lost on restart.
+    // The cycle runs no inference and completes no tool call (the sole call is
+    // parked), yet the gate and pending op are durable state that must be
+    // committed; otherwise the pending op is lost on restart.
     const cell: PersistedCell = {
       turns: [],
       pendingOperations: [],
@@ -4284,7 +4217,6 @@ describe("createReactor — before-tool suspension on ask grant", () => {
     if (correlationId === undefined)
       throw new Error("expected reactor.gate.blocked to carry a correlationId");
 
-    // No inference and no completed tool call ran in this cycle.
     expect(events.some((e) => e.type === "inference.done")).toBe(false);
     expect(events.some((e) => e.type === "tool.start")).toBe(false);
     expect(events.some((e) => e.type === "tool.done")).toBe(false);
@@ -4486,9 +4418,8 @@ describe("createReactor — before-tool suspension on ask grant", () => {
 
 describe("createReactor — approval resume re-dispatch", () => {
   // A two-phase inference runner: the first inference emits the tool_call that
-  // parks on the ask gate; the re-inference after the re-dispatched call
-  // completes emits a plain text reply that terminates the run. Mirrors how a
-  // real model first calls a tool and then answers with the tool's result.
+  // parks on the ask gate; the re-inference after the call completes emits a
+  // plain text reply that terminates the run.
   function twoPhaseInferenceRunner() {
     let call = 0;
     return async function* (
@@ -4550,13 +4481,11 @@ describe("createReactor — approval resume re-dispatch", () => {
     const correlationId = blocked.data.correlationId;
     if (correlationId === undefined) throw new Error("expected correlationId");
 
-    // The parked call has not run yet.
     expect(toolsRun).toEqual([]);
 
     reactor.deliver(makeApprovalMessage(correlationId));
 
-    // The resume re-runs the parked tool and the model re-infers to a reply
-    // that carries the tool's real result, terminating the run.
+    // The resume re-runs the parked tool and re-infers to a terminating reply.
     const reply = await waitForEvent(
       events,
       (e) => e.type === "connector.reply",
@@ -4580,20 +4509,17 @@ describe("createReactor — approval resume re-dispatch", () => {
     expect(resultTurn).toBeDefined();
     expect(() => assertWellFormedToolSequence(cell.turns)).not.toThrow();
 
-    // The correlation was claimed and the parked op removed.
     const correlated = getEvent(events, "message.correlated");
     expect(correlated.data.correlationId).toBe(correlationId);
     expect(cell.pendingOperations).toHaveLength(0);
   });
 
   test("the re-dispatched approved call re-infers exactly once and leaves no outstanding results", async () => {
-    // This guards the pendingToolResults counter trap. A re-dispatch driven
-    // from the correlation path never passes through inference.done, so unless
-    // the director seeds its outstanding-result count off resume.execute_tools,
+    // Guards the pendingToolResults counter trap: a re-dispatch driven from the
+    // correlation path never passes through inference.done, so the director
+    // seeds its outstanding-result count off resume.execute_tools; otherwise
     // the count sits at zero and the re-dispatched call's tool.done drives an
-    // accidental re-inference off a negative count. The seed makes the
-    // continuation deterministic: exactly one re-inference after exactly one
-    // re-dispatched result.
+    // accidental re-inference off a negative count.
     const cell: PersistedCell = {
       turns: [],
       pendingOperations: [],
@@ -4622,10 +4548,8 @@ describe("createReactor — approval resume re-dispatch", () => {
     reactor.deliver(makeApprovalMessage(correlationId));
     await waitForEvent(events, (e) => e.type === "connector.reply");
 
-    // Two inferences total: the initial tool-call inference and exactly one
-    // continuation re-inference after the re-dispatched tool completed. A
-    // counter left unseeded would either hang (no re-infer) or, once the
-    // negative-count accident is removed, fail to continue at all.
+    // Two inferences total: the initial tool-call inference plus exactly one
+    // continuation re-inference; an unseeded counter would hang or fail.
     const inferenceDones = events.filter((e) => e.type === "inference.done");
     expect(inferenceDones).toHaveLength(2);
 
@@ -4784,8 +4708,7 @@ describe("createReactor — approval resume re-dispatch", () => {
 
 describe("createReactor — approval resume error result", () => {
   // A two-phase inference runner: the first inference emits the tool_call that
-  // parks on the ask gate; the re-inference after the parked call is answered
-  // with an error result emits a plain text reply that terminates the run.
+  // parks on the ask gate; the second emits a plain reply after the error result.
   function twoPhaseInferenceRunner() {
     let call = 0;
     return async function* (
@@ -4884,12 +4807,11 @@ describe("createReactor — approval resume error result", () => {
     expect(resultTurn).toBeDefined();
     expect(() => assertWellFormedToolSequence(cell.turns)).not.toThrow();
 
-    // Exactly one re-inference after the park: the initial tool-call inference
-    // plus one continuation off the error result.
+    // Exactly one re-inference after the park: initial inference plus one
+    // continuation off the error result.
     const inferenceDones = events.filter((e) => e.type === "inference.done");
     expect(inferenceDones).toHaveLength(2);
 
-    // The correlation was claimed and the parked op removed.
     const correlated = getEvent(events, "message.correlated");
     expect(correlated.data.correlationId).toBe(correlationId);
     expect(cell.pendingOperations).toHaveLength(0);
@@ -4946,10 +4868,9 @@ describe("createReactor — approval resume error result", () => {
   });
 
   test("a timed-out parked call answers with an error result and re-infers exactly once", async () => {
-    // The double-infer regression guard. A gate timeout on a parked ask call
-    // must enqueue resume.tool_result INSTEAD OF reactor.gate.cleared. If the
-    // fork ever enqueued both, the parked call would drive two re-inferences
-    // for one timeout. Assert exactly one continuation inference.
+    // Double-infer regression guard: a gate timeout on a parked ask call must
+    // enqueue resume.tool_result instead of reactor.gate.cleared. Enqueuing
+    // both would drive two re-inferences for one timeout.
     const cell: PersistedCell = {
       turns: [],
       pendingOperations: [],
@@ -5003,12 +4924,11 @@ describe("createReactor — approval resume error result", () => {
     expect(text).toBe("approval timed out");
     expect(() => assertWellFormedToolSequence(cell.turns)).not.toThrow();
 
-    // Exactly one continuation inference: the initial tool-call inference plus
-    // one re-inference off the timeout error result — never two.
+    // Exactly one continuation inference: initial inference plus one
+    // re-inference off the timeout error result — never two.
     const inferenceDones = events.filter((e) => e.type === "inference.done");
     expect(inferenceDones).toHaveLength(2);
 
-    // The parked op was removed.
     expect(cell.pendingOperations).toHaveLength(0);
   });
 
@@ -5096,7 +5016,7 @@ describe("createReactor — corrupt persisted state", () => {
     expect(error.data.fatal).toBe(true);
     expect(error.data.error).toMatch(/dup-corr/);
 
-    // The brick symptom is the absence of lifecycle events; assert both fired.
+    // The failure symptom is the absence of lifecycle events; assert both fired.
     expect(events.some((e) => e.type === "reactor.done")).toBe(true);
   });
 });
@@ -5183,7 +5103,6 @@ describe("createReactor — afterCheckpoint", () => {
     }
     expect(hookError.data.fatal).toBe(false);
 
-    // reactor.done should still be emitted
     const done = events.find((e) => e.type === "reactor.done");
     expect(done).toBeDefined();
   });
@@ -5514,8 +5433,8 @@ describe("createReactor — tool result transform chain", () => {
     reactor.start();
     reactor.deliver(makeInboundMessage());
     await waitFor("reactor.done");
-    // The default reactor in this test has no transforms; the commit should
-    // still have happened (cycle had tool calls).
+    // The default reactor has no transforms; the commit must still happen
+    // (the cycle ran tool calls).
     expect(recording.commits.length).toBeGreaterThan(0);
   });
 });
@@ -6131,7 +6050,6 @@ describe("createReactor — message.run bracket emission", () => {
     const unique = new Set(runIds);
     expect(unique.size).toBe(3);
 
-    // Every started event has a matching ended event with the same messageRunId.
     const ended = events.filter((e) => e.type === "message.run.ended");
     expect(ended.length).toBe(3);
     const endedRunIds = ended.map((e) => {
@@ -6271,7 +6189,6 @@ describe("createReactor — source failover", () => {
     reactor.deliver(makeInboundMessage());
     await waitFor("reactor.done");
 
-    // s0 failed on a source-specific error -> immediate failover -> s1.
     expect(attemptedSourceIds).toEqual(["s0", "s1"]);
     const done = getEvent(events, "inference.done");
     expect(done.data.source.sourceId).toBe("s1");
@@ -6313,8 +6230,8 @@ describe("createReactor — source failover", () => {
     await waitFor("reactor.done");
 
     // Single source: quota is attempted once, then surfaces. The harness
-    // wrapper owns quota retry, so the reactor does no same-source backoff
-    // and has nowhere to fail over to. attemptedSourceIds must stay ["s0"].
+    // wrapper owns quota retry, so the reactor does no same-source backoff and
+    // has nowhere to fail over to; attemptedSourceIds must stay ["s0"].
     expect(attemptedSourceIds).toEqual(["s0"]);
     expect(getEvent(events, "inference.error").data.error.category).toBe(
       "quota_exhausted",
@@ -6441,7 +6358,6 @@ describe("createReactor — prompt well-formedness tripwire", () => {
     expect(error.data.fatal).toBe(true);
     expect(error.data.error).toMatch(/Malformed tool sequence/);
     expect(error.data.error).toMatch(/duplicate tool_result for "tc-1"/);
-    // The prompt never reached the inference runner.
     expect(inferenceRan).toBe(false);
   });
 });

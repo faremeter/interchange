@@ -220,18 +220,16 @@ export function createReactor(config: ReactorConfig): Reactor {
     onShutdown,
     gateTimeout = DEFAULT_GATE_TIMEOUT_MS,
     shutdownTimeoutMs = DEFAULT_SHUTDOWN_TIMEOUT_MS,
-    // Resolve the optional failover hooks once at the construction edge. A
-    // reactor with no source list fails over to nothing and resets to a no-op,
-    // so the loop runs the single active source exactly as before.
+    // Resolve the optional failover hooks once at the construction edge; without
+    // a source list they no-op, so the loop runs the single active source as before.
     failOverToNextSource = () => false,
     resetToPreferredSource = () => {
       /* single-source: nothing to reset */
     },
   } = config;
 
-  // Resolved once at the construction edge: a positive integer while detection
-  // is active, or `null` when the caller disabled it with `false`. Every
-  // downstream comparison reads this binding, never the raw config value.
+  // Resolved once at the construction edge; downstream reads this binding,
+  // never the raw config value.
   const doomLoopThreshold = resolveDoomLoopThreshold(config.doomLoopThreshold);
 
   // Monotonic sequence counter, scoped to this session.
@@ -244,29 +242,19 @@ export function createReactor(config: ReactorConfig): Reactor {
     onEvent(event);
   }
 
-  // Inbound event queue. Events are pushed here and drained by the loop.
   const queue: ReactorInboundEvent[] = [];
   let queueResolve: (() => void) | null = null;
 
-  // A tool cycle spans from the moment the reactor dispatches an inference or
-  // a tool batch until the director has consumed every completion event that
-  // operation produces. Admitting a new inbound message — and the inference it
-  // triggers — ahead of the outstanding completions corrupts the prompt: an
+  // A tool cycle spans from dispatching an inference or tool batch until the
+  // director has consumed every completion event it produces. Admitting a new
+  // inbound message ahead of those completions corrupts the prompt: an
   // assistant tool_call turn must be immediately followed by its tool results.
   //
-  // pendingContinuations is the authoritative count of dispatched operations
-  // whose completion events have not been consumed. Every cycle event is
-  // counted as enqueued and uncounted as dequeued, so the count equals the
-  // number of cycle events waiting in the queue. While positive, dequeueNext
-  // drains cycle events ahead of inbound mail; at zero processing reverts to
-  // FIFO.
-  //
-  // An earlier design inferred "mid-cycle" from history shape — whether the
-  // last turn was an assistant tool_call turn. That underreports in-flight
-  // work: a finished tool batch appends its tool-result turn to history before
-  // its tool.done events are consumed, flipping the last turn away while
-  // completion events are still queued, which let inbound mail start an
-  // overlapping inference.
+  // pendingContinuations counts dispatched operations whose completion events
+  // are still queued; while positive, dequeueNext drains cycle events ahead of
+  // inbound mail. An earlier history-shape gate underreported in-flight work: a
+  // finished batch appends its tool-result turn before its tool.done events are
+  // consumed, letting inbound mail start an overlapping inference.
   const CYCLE_EVENT_TYPES = new Set<ReactorInboundEvent["type"]>([
     "inference.done",
     "inference.error",
@@ -303,9 +291,7 @@ export function createReactor(config: ReactorConfig): Reactor {
       return queue.splice(abortIdx, 1)[0];
     }
 
-    // Mid-cycle: drain inference-cycle events before anything else so the
-    // outstanding inference or tool batch completes before new mail can start
-    // an overlapping inference.
+    // Mid-cycle: drain cycle events before new mail.
     if (pendingContinuations > 0) {
       const idx = queue.findIndex((e) => CYCLE_EVENT_TYPES.has(e.type));
       if (idx !== -1) {
@@ -418,7 +404,6 @@ export function createReactor(config: ReactorConfig): Reactor {
     operationController = new AbortController();
   }
 
-  // Track in-flight inference and tool promises for shutdown cleanup.
   const inFlight = new Set<Promise<unknown>>();
 
   function track<T>(p: Promise<T>): Promise<T> {
@@ -683,7 +668,7 @@ export function createReactor(config: ReactorConfig): Reactor {
       if (signal.aborted) return;
     }
 
-    // Run the context transform chain to produce the materialized prompt.
+    // Context transform chain.
     let prompt: ConversationTurn[] = stateManager.getTurns();
     for (const transform of contextTransforms) {
       const ctx = buildStrategyContext("pre-inference");
@@ -809,7 +794,7 @@ export function createReactor(config: ReactorConfig): Reactor {
           continue;
         }
 
-        // No further source to fail over to: surface the last error.
+        // No source left: surface the error.
         enqueue({ type: "inference.error", error: err, partial });
         return;
       }
@@ -1479,14 +1464,12 @@ export function createReactor(config: ReactorConfig): Reactor {
         continue;
       }
 
-      // Handle infer.
       const inferAction = normalized.find((a) => a.type === "infer");
       if (inferAction !== undefined && inferAction.type === "infer") {
         await executeInfer(inferAction.options);
         continue;
       }
 
-      // Handle execute_tools.
       const toolsAction = normalized.find((a) => a.type === "execute_tools");
       if (toolsAction !== undefined && toolsAction.type === "execute_tools") {
         const parallel = toolsAction.parallel !== false;
@@ -1509,9 +1492,8 @@ export function createReactor(config: ReactorConfig): Reactor {
         continue;
       }
 
-      // No infer/tools/reply/suspend/wait/compact action — if a checkpoint
-      // override was set on its own (or alongside emit/fork), the next event
-      // will pick it up. Nothing to flush here.
+      // No work action: a checkpoint override set on its own is picked up by
+      // the next event.
     }
   }
 
