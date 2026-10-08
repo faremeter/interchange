@@ -7,7 +7,10 @@ import {
   test,
 } from "bun:test";
 
+import { eq } from "drizzle-orm";
+
 import { createInMemoryGrantStore } from "@intx/authz";
+import { credential, principal } from "@intx/db/schema";
 import { createApp, type GetSession } from "@intx/hub-api";
 import {
   createSidecarEmitter,
@@ -23,7 +26,9 @@ import {
 } from "@intx/test-harness/db-harness";
 import {
   seedAsset,
+  seedCredential,
   seedPrincipal,
+  seedProvider,
   seedTenants,
   seedWorkflowRun,
 } from "@intx/test-harness/seed";
@@ -42,6 +47,10 @@ const DEPLOYMENT_ID = "run_wf";
 const RUN_ID = "run_wf_child";
 const WORKFLOW_PRINCIPAL_ID = "prn_workflow";
 const DEPLOYMENT_ADDRESS = "run_wf@principals.test";
+const TARGET_PRINCIPAL_ID = "prn_target";
+const PROVIDER_ID = "prv_principals";
+const PERSONAL_CREDENTIAL_ID = "crd_personal";
+const ORG_CREDENTIAL_ID = "crd_org";
 
 function createMockGetSession(userId: string): GetSession {
   const now = new Date("2025-01-01");
@@ -110,6 +119,20 @@ function createMockEventCollectors(): EventCollectorRegistry {
     getAccumulatedText: () => undefined,
     getCurrentTurnId: () => undefined,
     getLastTurnId: () => undefined,
+  };
+}
+
+function managePrincipalsGrant(): GrantRule {
+  return {
+    id: "grant-actor-principal-manage",
+    resource: "principal:*",
+    action: "manage",
+    effect: "allow",
+    origin: "system",
+    conditions: null,
+    expiresAt: null,
+    roleId: null,
+    principalId: ACTOR_PRINCIPAL_ID,
   };
 }
 
@@ -198,6 +221,40 @@ async function setup() {
   });
 }
 
+async function setupDelete() {
+  await seedTenants(h.db, [{ id: TENANT_ID }]);
+  await seedPrincipal(h.db, {
+    id: ACTOR_PRINCIPAL_ID,
+    tenantId: TENANT_ID,
+    kind: "user",
+    refId: ACTOR_USER_ID,
+  });
+  await seedPrincipal(h.db, {
+    id: TARGET_PRINCIPAL_ID,
+    tenantId: TENANT_ID,
+    kind: "user",
+    refId: "usr_target",
+  });
+  await seedProvider(h.db, {
+    id: PROVIDER_ID,
+    tenantId: TENANT_ID,
+    name: "openai",
+  });
+
+  return createApp({
+    getSession: createMockGetSession(ACTOR_USER_ID),
+    authHandler: () => new Response("", { status: 404 }),
+    db: h.db,
+    grantStore: createInMemoryGrantStore([managePrincipalsGrant()]),
+    sidecarRouter: createMockSidecarRouter(),
+    sessionService: createMockSessionService(),
+    eventCollectors: createMockEventCollectors(),
+    assetService: null,
+    repoStore: null,
+    maxTarballBytes: 10_000_000,
+  });
+}
+
 function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null;
 }
@@ -223,6 +280,84 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(row["kind"]).toBe("workflow");
       expect(row["refId"]).toBe(RUN_ID);
       expect(row["displayName"]).toBe(`Workflow (${DEPLOYMENT_ADDRESS})`);
+    });
+  },
+);
+
+describe.skipIf(!harnessDbEnvAvailable())(
+  "DELETE /api/tenants/:tenantId/principals/:principalId",
+  () => {
+    test("refuses to remove a principal who owns a credential", async () => {
+      const app = await setupDelete();
+      await seedCredential(h.db, {
+        id: PERSONAL_CREDENTIAL_ID,
+        tenantId: TENANT_ID,
+        providerId: PROVIDER_ID,
+        name: "personal",
+        principalId: TARGET_PRINCIPAL_ID,
+      });
+
+      const res = await app.request(
+        `/api/tenants/${TENANT_ID}/principals/${TARGET_PRINCIPAL_ID}`,
+        { method: "DELETE" },
+      );
+      expect(res.status).toBe(409);
+      const body: unknown = await res.json();
+      if (!isObject(body)) throw new Error("expected object body");
+      const error = body["error"];
+      if (!isObject(error)) throw new Error("expected error body");
+      expect(error["code"]).toBe("conflict");
+      expect(error["message"]).toBe("Principal is still referenced");
+
+      const [credentialRow] = await h.db
+        .select()
+        .from(credential)
+        .where(eq(credential.id, PERSONAL_CREDENTIAL_ID));
+      expect(credentialRow?.principalId).toBe(TARGET_PRINCIPAL_ID);
+
+      const [principalRow] = await h.db
+        .select()
+        .from(principal)
+        .where(eq(principal.id, TARGET_PRINCIPAL_ID));
+      expect(principalRow?.id).toBe(TARGET_PRINCIPAL_ID);
+    });
+
+    test("removes a principal who owns no credential", async () => {
+      const app = await setupDelete();
+      await seedCredential(h.db, {
+        id: ORG_CREDENTIAL_ID,
+        tenantId: TENANT_ID,
+        providerId: PROVIDER_ID,
+        name: "org",
+        principalId: null,
+      });
+
+      const res = await app.request(
+        `/api/tenants/${TENANT_ID}/principals/${TARGET_PRINCIPAL_ID}`,
+        { method: "DELETE" },
+      );
+      expect(res.status).toBe(204);
+
+      const principals = await h.db
+        .select()
+        .from(principal)
+        .where(eq(principal.id, TARGET_PRINCIPAL_ID));
+      expect(principals).toHaveLength(0);
+
+      const [orgCredential] = await h.db
+        .select()
+        .from(credential)
+        .where(eq(credential.id, ORG_CREDENTIAL_ID));
+      expect(orgCredential?.principalId).toBeNull();
+    });
+
+    test("returns not found for an unknown principal", async () => {
+      const app = await setupDelete();
+      const res = await app.request(
+        `/api/tenants/${TENANT_ID}/principals/prn_missing`,
+        { method: "DELETE" },
+      );
+      expect(res.status).toBe(404);
     });
   },
 );

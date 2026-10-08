@@ -15,6 +15,7 @@ import {
 
 import type { TenantEnv } from "../context";
 import { errorResponse } from "../error-response";
+import { isReferencedRowViolation } from "../pg-errors";
 import { ts } from "../format";
 import { generateId } from "@intx/hub-common";
 import { idResource } from "../middleware/grant";
@@ -307,21 +308,46 @@ export function createPrincipalRoutes({
           description: "Principal removed",
         },
         403: jsonResponse("Insufficient grants", ErrorResponse),
+        409: jsonResponse("Principal is still referenced", ErrorResponse),
       },
     }),
     async (c) => {
       const tenantCtx = c.get("tenant");
       const principalId = c.req.param("principalId");
 
-      const deleted = await db
-        .delete(principal)
-        .where(
-          and(
-            eq(principal.id, principalId),
-            eq(principal.tenantId, tenantCtx.id),
-          ),
-        )
-        .returning();
+      // Two invariants, each owned by one layer:
+      //   - Existence within the tenant is owned by the delete's WHERE clause
+      //     (`id` AND `tenantId`). authz cannot own it: the resource string
+      //     `principal:{id}` is opaque, so a wildcard grant matches an id in any
+      //     tenant. A foreign or unknown id matches zero rows -> 404, disclosing
+      //     nothing across the tenant boundary.
+      //   - "Cannot delete a principal a row still references" is owned by the
+      //     foreign keys that point at principal.id. The handler does not query
+      //     those dependents. A credential pre-check would miss
+      //     agent_session.principal_id (NO ACTION),
+      //     workflow_run_launch_spec.source_authority_principal_id (restrict),
+      //     and workflow_definition.creator_principal_id (NO ACTION). The delete
+      //     fires a violation only for a row actually being deleted, so the
+      //     catch maps it to a 409 instead of a 500.
+      // Grants, role assignments, and principal keys cascade from the principal,
+      // so this delete does not clean them up and needs no transaction.
+      let deleted;
+      try {
+        deleted = await db
+          .delete(principal)
+          .where(
+            and(
+              eq(principal.id, principalId),
+              eq(principal.tenantId, tenantCtx.id),
+            ),
+          )
+          .returning();
+      } catch (err) {
+        if (!isReferencedRowViolation(err)) {
+          throw err;
+        }
+        return errorResponse(c, "conflict", "Principal is still referenced");
+      }
 
       if (deleted.length === 0) {
         return errorResponse(c, "not_found", "Principal not found");
