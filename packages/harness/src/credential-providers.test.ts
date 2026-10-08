@@ -8,8 +8,9 @@ import {
   type FetchLike,
 } from "./credential-providers";
 
-// A fetch stub that records the URL and Authorization header it was handed,
-// so origin-pinning and auth injection can be checked without a network.
+// A fetch stub that records the URL and Authorization header it was
+// handed, so origin-pinning and auth injection can be checked without a
+// network.
 function recordingFetch(): {
   fetch: FetchLike;
   last: () => { url: string; auth: string | null } | undefined;
@@ -80,7 +81,8 @@ describe("createHttpCredentialProvider", () => {
     ).rejects.toThrow(
       /pinned to https:\/\/api\.example\.com; refusing cross-origin/,
     );
-    // The stub was never called, so the token never left for the other origin.
+    // The stub was never called, so the token never left for the other
+    // origin.
     expect(net.last()).toBeUndefined();
   });
 
@@ -177,9 +179,9 @@ describe("createCredentialProviderRegistry", () => {
 });
 
 describe("http credential origin-pinning (adversarial)", () => {
-  // Origin pinning is the load-bearing security property: in every refusal
-  // case the request must be rejected AND fetch must never be reached, so the
-  // bearer token never leaves for the other origin.
+  // Origin pinning is the load-bearing security property: in every
+  // refusal case the request must be rejected AND fetch must never be
+  // reached, so the bearer never leaves for the other origin.
   test("a protocol-relative //host is refused", async () => {
     const net = recordingFetch();
     await expect(

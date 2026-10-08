@@ -170,7 +170,7 @@ describe("createConnectorRouter", () => {
           }),
         ),
       );
-      // Now: replyTo=second, cc=[user]. The original user returns.
+      // Now replyTo=second, cc=[user]; the original user returns.
       router.commit(
         router.route(
           continuationByReferences("<root@example.com>", {
@@ -182,8 +182,8 @@ describe("createConnectorRouter", () => {
 
       const snap = router.snapshot();
       expect(snap?.replyTo).toBe("user@example.com");
-      // user is now the most recent speaker; second is the only other
-      // participant. user must not appear in cc.
+      // user is now the most recent speaker, so it must not appear in
+      // cc; second is the only other participant.
       expect(snap?.cc).toEqual(["second@example.com"]);
     });
 

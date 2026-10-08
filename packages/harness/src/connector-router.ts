@@ -1,18 +1,14 @@
 // Connector-thread routing for the agent harness.
 //
-// The connector is one durable thread per agent. On a thread holding an
-// anchor -- a thread root or a last message id -- participants accumulate
-// as they speak and no one is displaced: `replyTo` tracks the most recent
-// speaker (the primary recipient on the next outbound reply) and `cc`
-// tracks every other participant who has spoken. A thread holding
-// neither anchor offers nothing for a later message to continue, so the
-// next arrival opens a fresh thread.
+// One durable thread per agent. On a thread holding an anchor (a thread
+// root or last message id), participants accumulate as they speak and no
+// one is displaced: `replyTo` is the most recent speaker, `cc` every
+// other participant. A thread holding neither anchor opens fresh on the
+// next arrival.
 //
-// Two-phase decision: route() is pure and returns a discriminated kind
-// plus an opaque carrier of the next state; commit() advances router
-// state from that carrier. Separating decision from mutation lets the
-// harness sequence the side effects (deliver, INBOX expunge) around the
-// state change however it needs to.
+// Two-phase: route() is pure and returns a kind plus an opaque carrier
+// of the next state; commit() advances state from that carrier, so the
+// harness can sequence side effects around the mutation.
 
 import { getLogger } from "@intx/log";
 import { extractAddrSpec } from "@intx/mime";
@@ -49,29 +45,23 @@ export class NoActiveConnectorThreadError extends Error {
 
 export type ConnectorRouterOptions = {
   /**
-   * Called synchronously after the router's internal state mutates and
-   * the new state is committed to internal storage. Fires only when the
-   * new state differs from the prior state. Single subscriber: the
-   * harness wiring that lifts state changes onto the hub-bound event
-   * channel. Errors the callback throws are caught and logged: the
-   * authoritative state remains in the router and the persisted context
-   * store, so one dropped notification only leaves the projection stale
-   * until the next change.
+   * Called synchronously after state mutates, only when the new state
+   * differs. Single subscriber: the harness wiring that lifts changes
+   * onto the hub-bound event channel. Throwing errors are caught and
+   * logged -- the authoritative state stays in the router and the
+   * persisted store, so a dropped notification only leaves the
+   * projection stale until the next change.
    */
   onStateChanged?(state: ConnectorThreadState | null): void;
 };
 
 export interface ConnectorRouter {
   /**
-   * Classify an inbound message against the current connector state. Pure:
-   * does not mutate router state. The returned decision must be passed to
-   * `commit()` to take effect.
-   *
-   * Returns `passthrough` when `message.headers.from` is absent, and
-   * throws when it is present but not a parseable bare addr-spec; callers
-   * should treat the throw as passthrough. Does not read
-   * `Interchange-Type`: a structured payload that names a `From` starts or
-   * continues the thread exactly as a conversation message does.
+   * Classify an inbound message; pure, so the returned decision must be
+   * passed to `commit()`. Returns `passthrough` when `from` is absent
+   * and throws when it is present but not a parseable bare addr-spec.
+   * Does not read `Interchange-Type`: any message naming a `From` starts
+   * or continues the thread.
    */
   route(message: InboundMessage): RouteDecision;
 
@@ -83,10 +73,8 @@ export interface ConnectorRouter {
   commit(decision: RouteDecision): void;
 
   /**
-   * Produce the threading headers needed to send a reply on the active
-   * connector thread. `to` is the most recent speaker; `cc` is everyone
-   * else who has spoken (deduplicated). The caller composes the full
-   * outbound message by adding its own `content` and `type` fields.
+   * Produce the threading headers for a reply on the active thread:
+   * `to` is the most recent speaker, `cc` everyone else (deduplicated).
    * Throws `NoActiveConnectorThreadError` when no thread is active.
    */
   composeReply(): ConnectorReplyParts;
@@ -97,18 +85,10 @@ export interface ConnectorRouter {
    */
   onReplySent(receipt: SendReceipt): void;
 
-  /**
-   * Return the current connector state as a serializable snapshot, or
-   * `null` when no thread is active. Matches the
-   * `ConnectorThreadState | null` shape used by the storage layer.
-   */
+  /** Current state as a serializable snapshot, or `null` when no thread is active. */
   snapshot(): ConnectorThreadState | null;
 
-  /**
-   * Install a snapshot as the router's current state. Used at startup
-   * to restore from the persisted context store, and in tests to set
-   * up scenarios. Passing `null` clears the active thread.
-   */
+  /** Install a snapshot as the current state (startup restore, test setup); `null` clears the thread. */
   restore(state: ConnectorThreadState | null): void;
 }
 
@@ -133,23 +113,21 @@ export function createConnectorRouter(
   let state: ConnectorThreadState | null = null;
   const onStateChanged = options?.onStateChanged;
 
-  // Pending state per decision is held off the decision object via a
-  // WeakMap so callers see only `{ kind }` — no path to inspect or
-  // mutate the next state, even via type assertions.
+  // Hold pending state off the decision via a WeakMap so callers see
+  // only `{ kind }` -- no path to inspect or mutate the next state.
   const pendingStates = new WeakMap<RouteDecision, ConnectorThreadState>();
 
   function applyState(next: ConnectorThreadState | null): void {
-    // The null -> X transition is what drives bootstrap on restore(); a
-    // future refactor that collapses null into a sentinel "no mutation"
-    // case would silently break the hub-side cache's only fill path.
-    // Keep the equality check as-is; null is a value, not a non-event.
+    // The null -> X transition drives bootstrap on restore(); a refactor
+    // that collapsed null into a "no mutation" sentinel would silently
+    // break the hub-side cache's only fill path. Null is a value, not a
+    // non-event.
     if (statesEqual(state, next)) return;
     state = next;
     if (onStateChanged !== undefined) {
-      // A throwing subscriber would otherwise propagate out of commit()
-      // or onReplySent() and abort the caller; catching here drops one
-      // notification (the projection stays stale until the next change)
-      // instead of corrupting the call chain.
+      // A throwing subscriber would abort commit()/onReplySent(); catch
+      // here to drop one notification (projection stale until the next
+      // change) instead of corrupting the call chain.
       try {
         onStateChanged(snapshot());
       } catch (cause) {
@@ -178,9 +156,8 @@ export function createConnectorRouter(
     return false;
   }
 
-  // Append `value` to `existing` only when it is not already present.
-  // The participant list is small enough that linear-scan dedup is the
-  // right cost.
+  // Append `value` unless already present; the list is small enough
+  // that linear-scan dedup is the right cost.
   function appendUnique(existing: readonly string[], value: string): string[] {
     if (existing.includes(value)) return [...existing];
     return [...existing, value];
@@ -199,9 +176,9 @@ export function createConnectorRouter(
     return { kind: "passthrough" };
   }
 
-  // A thread opened by a message that named no id holds neither anchor, so
-  // `isContinuation` can never match it again; the next message starts a
-  // fresh thread rather than being absorbed by it forever.
+  // A thread opened by a message with no id holds neither anchor, so
+  // nothing can continue it; the next message starts fresh rather than
+  // being absorbed forever.
   function isAnchored(s: ConnectorThreadState): boolean {
     return s.threadRoot !== undefined || s.lastMessageId !== undefined;
   }
@@ -233,9 +210,8 @@ export function createConnectorRouter(
       const nextSpeaker = speakerOf(message);
       if (nextSpeaker === null) return passthroughWithNoReplyAddress(message);
 
-      // The previous most-recent speaker moves into the cc list; the
-      // new speaker becomes replyTo. Dedup so a sender returning after
-      // others have spoken doesn't appear twice.
+      // The previous replyTo moves into cc; the new speaker becomes
+      // replyTo. Dedup so a returning sender does not appear twice.
       const carriedCc = appendUnique(state.cc, state.replyTo).filter(
         (addr) => addr !== nextSpeaker,
       );

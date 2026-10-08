@@ -7,8 +7,8 @@ import type { ToolCredentialDeclaration } from "@intx/types/package-json";
 import { createCredentialProviderRegistry } from "./credential-providers";
 import { buildCredentialCapabilities } from "./step-credential-capabilities";
 
-// A provider that records every shape context it is handed, so a test
-// can reach the `readCurrentMaterial` closure a shaped handle reads.
+// Records every shape context it is handed, so a test can reach the
+// `readCurrentMaterial` closure a shaped handle reads.
 function trackingProvider(): {
   provider: CredentialProvider;
   shapes: CredentialShapeContext[];
@@ -107,7 +107,7 @@ describe("buildCredentialCapabilities", () => {
     }
 
     // pkg-a's grant authorizes it; pkg-b binds the same credential but
-    // holds no grant for it, so Gate 2 refuses -- no sideways leak.
+    // holds no grant, so Gate 2 refuses -- no sideways leak.
     await expect(capA.resolve("shared")).resolves.toMatchObject({
       kind: "http",
     });

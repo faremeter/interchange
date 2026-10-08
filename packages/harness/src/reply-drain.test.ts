@@ -1,8 +1,8 @@
 // Unit tests for the shared connector reply drain, exercised against a
 // plain async stream and stub compose/send/onReplySent seams -- no full
 // agent or transport -- so the contract (one send per connector.reply,
-// correct threading headers, serialized ordering, surfaced send failure)
-// is asserted in isolation.
+// correct threading headers, serialized ordering, surfaced send
+// failure) is asserted in isolation.
 
 import { describe, expect, test } from "bun:test";
 
@@ -21,8 +21,8 @@ function replyEvent(seq: number, content: string): InferenceEvent {
   return { type: "connector.reply", seq, data: { content } };
 }
 
-// A non-reply event the drain must ignore. `reactor.start` carries an empty
-// data object, so it is the cheapest event to interleave.
+// A non-reply event the drain must ignore; `reactor.start` is the
+// cheapest event to interleave.
 function noiseEvent(seq: number): InferenceEvent {
   return { type: "reactor.start", seq, data: {} };
 }
@@ -32,8 +32,8 @@ async function* streamOf(
 ): AsyncGenerator<InferenceEvent> {
   for (const event of events) {
     yield event;
-    // Yield to the microtask queue between events so the drain's reply chain
-    // has a chance to interleave, matching the real agent stream's async
+    // Yield to the microtask queue between events so the drain's reply
+    // chain can interleave, matching the real agent stream's async
     // delivery.
     await Promise.resolve();
   }
@@ -45,9 +45,8 @@ async function* streamOf(
  * can be exercised against a stream that stays open between events.
  *
  * `pulled()` reports how many events the consumer has taken off the
- * queue. The drain consumes serially, so `pulled()` reaching n+1 signals
- * that the drain finished handling event n -- what a test asserting
- * "event n changed nothing" needs.
+ * queue. The drain consumes serially, so `pulled()` reaching n+1
+ * signals that the drain finished handling event n.
  */
 function pushStream(): {
   stream: AsyncGenerator<InferenceEvent>;
@@ -163,8 +162,9 @@ describe("driveConnectorReplies", () => {
 
     await drain.done;
 
-    // The resolver is consulted with the parent id from composeReply, and the
-    // full ancestry it returns rides onto the outbound message verbatim.
+    // The resolver is consulted with the parent id from composeReply,
+    // and the full ancestry it returns rides onto the outbound message
+    // verbatim.
     expect(resolvedFor).toEqual(["<parent@interchange>"]);
     expect(sent[0]?.references).toEqual([
       "<root@interchange>",
@@ -383,7 +383,8 @@ describe("driveConnectorReplies", () => {
     push(replyEvent(1, "the reply"));
     const settlement = await barrier;
 
-    // The barrier resolved only after the send acked, and carries the receipt.
+    // The barrier resolved only after the send acked, and carries the
+    // receipt.
     expect(sendAcked).toBe(true);
     expect(settlement.ok).toBe(true);
     if (settlement.ok) {

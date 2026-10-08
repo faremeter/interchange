@@ -1,9 +1,8 @@
-// Harness-side factory for the RuntimeCapabilities that tool packages
-// consume. The wrapper exists so callers (sidecar, alternate runtimes)
-// pass a config object keyed by domain (`transport`) and the harness
-// owns the translation to RuntimeCapabilityMap keys
-// (`mail.transport`). New capabilities evolve callers' shapes through
-// this wrapper, not at the call site.
+// Harness-side factory for the RuntimeCapabilities tool packages
+// consume. Callers pass a config keyed by domain (`transport`); the
+// harness translates to RuntimeCapabilityMap keys (`mail.transport`),
+// so new capabilities evolve callers' shapes through this wrapper, not
+// at the call site.
 
 import {
   createRuntimeCapabilities,

@@ -1,10 +1,9 @@
 // Composition-layer tests for `createHarness`: INBOX watch
 // subscription, the connector router's pass-through default, lifecycle
 // teardown, and the pass-through surface exposed to consumers.
-// Behaviours that moved into `@intx/agent` as part of the harness
-// split (audit accumulation and flush, reactor lifecycle, source
-// rotation, env-validation field-by-field blame) are exercised by the
-// agent package's own tests.
+// Behaviours moved into `@intx/agent` during the harness split (audit
+// accumulation and flush, reactor lifecycle, source rotation, env
+// validation) are exercised by the agent package's own tests.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -74,9 +73,8 @@ interface MockTransportShape {
 }
 
 function makeInboundMessage(uid: number): InboundMessage {
-  // The harness pipeline reads `ref.uid`, `ref.mailbox`, and (via the
-  // connector router) headers like `from`, `to`, `inReplyTo`,
-  // `references`; anything else stays mock-shaped.
+  // The pipeline reads `ref.uid`, `ref.mailbox`, and the headers the
+  // connector router inspects; anything else stays mock-shaped.
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub, never inspected beyond the fields the harness pipeline reads
   return {
     ref: { uid, mailbox: "INBOX" },
@@ -107,8 +105,8 @@ function makeMockTransport(): {
   const messages = new Map<number, InboundMessage>();
   const unfetchable = new Set<number>();
   // The uids the mailbox holds, and the flags each carries. A uid
-  // leaves `present` only through an expunge, so a test can tell "the
-  // harness left the message alone" from "the harness consumed it".
+  // leaves `present` only through an expunge, so a test can tell "left
+  // alone" from "consumed".
   const present = new Set<number>();
   const flagsByUid = new Map<number, Set<string>>();
   let unsubscribes = 0;
@@ -122,11 +120,10 @@ function makeMockTransport(): {
     return flags;
   }
 
-  // The harness reads `transport.watch`, `transport.fetchFull`,
-  // `transport.search`, `transport.setFlags`, `transport.expunge`, and
-  // `transport.send`; the rest of the `MessageTransport` surface is
-  // satisfied via the double-cast pattern the project conventions
-  // sanction for library-type test stubs.
+  // The harness reads `transport.watch`, `fetchFull`, `search`,
+  // `setFlags`, `expunge`, and `send`; the rest of the surface is
+  // satisfied via the double-cast pattern the conventions sanction for
+  // library-type test stubs.
   const stub = {
     async watch(
       _mailbox: unknown,
@@ -202,8 +199,7 @@ function makeMockTransport(): {
         present.add(uid);
       },
       // An envelope `fetchFull` cannot assemble, a uid a concurrent
-      // expunge removed, or a faulting read: the transport throws rather
-      // than returning a message with its content omitted.
+      // expunge removed, or a faulting read: the transport throws.
       enqueueUnfetchable(uid: number) {
         unfetchable.add(uid);
         present.add(uid);
@@ -400,8 +396,8 @@ describe("createHarness outbound pipeline", () => {
 
   // Exercises the end-to-end outbound path: an INBOX-routed start
   // decision drives the agent through stubbed inference, the agent
-  // emits connector.reply, and the harness's drain forwards the
-  // reply via transport.send.
+  // emits connector.reply, and the drain forwards the reply via
+  // transport.send.
   test("delivers a connector.reply through to transport.send", async () => {
     inference.scenario.replyOnce("anthropic", { text: "outbound reply" });
 
@@ -523,7 +519,6 @@ describe("createWrappedStorageOverrides dirty-bit gating", () => {
     );
     expect(router.snapshot()).toBeNull();
     await overrides.load();
-    // Bit unset -> restore() was called, router now reflects disk.
     expect(router.snapshot()).toEqual(stateFromDisk);
   });
 
@@ -532,8 +527,8 @@ describe("createWrappedStorageOverrides dirty-bit gating", () => {
     router.restore(stateFromRouter);
     expect(router.snapshot()).toEqual(stateFromRouter);
 
-    // Bit set: the in-memory router state is authoritative. The
-    // override must NOT call restore() with the disk's stale payload.
+    // Bit set: the in-memory router state is authoritative; restore()
+    // must NOT be called with the disk's stale payload.
     const bit = true;
     const { storage } = makeStubStorage(stateFromDisk);
     const overrides = createWrappedStorageOverrides(storage, router, () => bit);
@@ -984,12 +979,10 @@ describe("createHarness workdir lock", () => {
 
 describe("createHarness reactor-once", () => {
   // Cross-checks the @intx/agent fixture suite: `createHarness(def,
-  // env)` must wrap the reactor exactly once per instantiation, the
-  // same invariant the planner.test.ts and mail.test.ts fixtures pin
-  // on the agent-only path. The reactor count is a precise proxy:
-  // each createAgent resolves the director through the registry,
-  // calls the resolved factory once, and feeds the resulting
-  // director into createReactorAssembly.
+  // env)` must wrap the reactor exactly once per instantiation. The
+  // reactor count is a precise proxy: each createAgent resolves the
+  // director through the registry, calls the resolved factory once,
+  // and feeds the result into createReactorAssembly.
 
   test("invokes the director factory exactly once per instantiation", async () => {
     let factoryCallCount = 0;
