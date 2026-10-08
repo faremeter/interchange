@@ -423,12 +423,10 @@ describe("workflowRunKindHandler.validatePush — newly-terminal signal", () => 
   });
 
   test("reports a lone seq-1 RunFailed with no preceding RunStarted", async () => {
-    // The crash-loop guard's supervisor-authored tombstone: the anchor run's
-    // events subtree is empty when the guard latches, so RunFailed lands as
-    // the sole event at seq 1 (the runtime's first-event convention) with no
-    // RunStarted ahead. The validator keys contiguity off the first filename
-    // seq, not a fixed 0, and enforces no "RunStarted precedes terminal"
-    // rule, so this is accepted and flips the run to `failed`.
+    // The crash-loop guard's supervisor-authored tombstone: the run's
+    // events subtree is empty when the guard latches, so a lone seq-1
+    // RunFailed must pass — contiguity keys off the first filename seq,
+    // and no "RunStarted precedes terminal" rule applies.
     const r = await validate({
       [WORKFLOW_RUN_GITIGNORE_PATH]: "",
       [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/1.json`]: eventBody(
@@ -672,9 +670,8 @@ describe("workflowRunKindHandler.validatePush — compaction (events.jsonl)", ()
   test("rejects a fold whose bytes differ from the prior blobs even if it decodes to the same content", async () => {
     // The fold gate is BYTE equality, not decoded-string equality: each
     // event is signed over its own bytes, so a sealed file that merely
-    // decodes to the prior content (here, a UTF-8 BOM prepended to the true
-    // fold) must be rejected. The string-based `validate` harness cannot
-    // express this, so drive the handler with raw bytes.
+    // decodes to the prior content must be rejected. The string-based
+    // `validate` harness cannot express this, so drive the handler raw.
     const enc = new TextEncoder();
     const prospectiveKeys: Record<string, string> = {
       [WORKFLOW_RUN_GITIGNORE_PATH]: "",
@@ -1062,12 +1059,10 @@ describe("workflowRunKindHandler.validatePush — CancelRequested principal-vs-o
 
   test("accepts a workflow-process write that carries a supervisor-signed CancelRequested forward unchanged", async () => {
     // The origin-vs-signer rule is a WRITE-TIME check on the commit that
-    // authors the CancelRequested. A run's own cascade write of
-    // RunCancelled is signed workflow-process and re-lists the whole
-    // events prefix, carrying the earlier supervisor-signed
-    // CancelRequested forward byte-for-byte. The handler must accept
-    // that; re-checking the carried-forward cancel's origin against the
-    // cascade write's signer would reject a legitimate terminal.
+    // authors the CancelRequested. A run's cascade write of RunCancelled
+    // is signed workflow-process and carries the earlier supervisor-signed
+    // CancelRequested forward byte-for-byte; the handler must accept that,
+    // or it rejects a legitimate terminal.
     const cancel = eventBody(1, "CancelRequested", {
       origin: "supervisor-operator",
       reason: "cancel",
@@ -1094,10 +1089,9 @@ describe("workflowRunKindHandler.validatePush — CancelRequested principal-vs-o
   });
 
   test("still rejects a workflow-process write that mutates a carried-forward CancelRequested", async () => {
-    // The carry-forward exemption is gated strictly on the blob being
-    // absent from the prior tree; a byte-DIVERGED carried-forward
-    // CancelRequested is not a carry-forward, so the append-only
-    // byte-equality check rejects it first.
+    // The exemption is gated strictly on the blob being absent from the
+    // prior tree; a diverged carried-forward cancel fails append-only
+    // byte equality first.
     const prior = {
       [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/0.json`]: eventBody(
         0,
@@ -1307,7 +1301,7 @@ describe("workflowRunKindHandler.validatePush — mail parts subtree", () => {
   // files under `runs/<runId>/parts/<urlEncoded(messageId)>/<index>-<name>`.
   // Bytes are opaque and immutable, enforced by prior-tree git-OID
   // equality — the filename is not content-addressed, so a same-path
-  // rewrite must be caught by comparing content.
+  // rewrite must be caught by content comparison.
 
   const SEGMENT = encodeURIComponent("<msg-1@host>");
   const SEGMENT_B = encodeURIComponent("<msg-2@host>");
@@ -1510,10 +1504,9 @@ describe("workflowRunKindHandler.validatePush — mail parts subtree", () => {
 describe("workflowRunKindHandler.validatePush — mailbox subtree", () => {
   // The substrate mailbox backing commits the warm agent's durable inbox
   // under `mailbox/INBOX/`: a MUTABLE `index.json` rewritten each flush
-  // plus `<uid>.eml` message blobs carrying raw signed bytes. A RETAINED
-  // message blob is held immutable via prior-tree byte equality,
-  // mirroring `runs/<runId>/blobs/`; a prior blob may be ABSENT (a
-  // legal expunge). The index must persist once it existed.
+  // plus `<uid>.eml` blobs. A retained blob is immutable via prior-tree
+  // byte equality; a prior blob may be ABSENT (a legal expunge). The
+  // index must persist once it existed.
 
   const INBOX = `${WORKFLOW_RUN_MAILBOX_PREFIX}/${WORKFLOW_RUN_MAILBOX_INBOX_DIR}`;
 
@@ -1661,9 +1654,9 @@ describe("workflowRunKindHandler.validatePush — mailbox subtree", () => {
 
   test("accepts expunging a prior message while the index persists", async () => {
     // The warm agent physically removes a message from the live INBOX:
-    // the index is rewritten (mutable) and retained; the `<uid>.eml`
-    // blob is dropped but survives in git history because a workflow-run
-    // repo is never GC'd.
+    // the index is rewritten (mutable) and retained; the `<uid>.eml` blob
+    // is dropped but survives in git history — workflow-run repos are
+    // never GC'd.
     const prior = mailboxTree({
       [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: JSON.stringify({ messages: [1] }),
       "1.eml": "raw-bytes",
@@ -2725,10 +2718,10 @@ describe("claim-check API — resume-owned processing entries survive replay", (
 
   test("scanRunsForBoot proposes a terminal per-event run for sealing and drops it from owned", async () => {
     const { store, repoId, principal } = await makeClaimCheckStore("cc-scan-");
-    // `live` is parked (RunStarted only). `done` reached RunCompleted but is
-    // still in per-event form -- the crash window an interrupted fold leaves
-    // behind. The same event that ends a run stops it owning its message and
-    // makes it a seal candidate.
+    // `live` is parked (RunStarted only). `done` reached RunCompleted but
+    // is still in per-event form — the crash window an interrupted fold
+    // leaves behind. The event that ends a run stops it owning its
+    // message and makes it a seal candidate.
     await store.writeTree(principal, repoId, "refs/heads/main", {
       files: {
         [`${WORKFLOW_RUN_RUNS_PREFIX}/live/events/0.json`]:
@@ -3111,15 +3104,12 @@ describe("claim-check API — resume-owned processing entries survive replay", (
 });
 
 // ---------------------------------------------------------------------
-// Regression: per-messageId atomicity gap. Before the fix,
-// enqueueInbox only rejected a same-receivedAt collision and a
-// processing/consumed scan for the messageId — it did NOT scan the
-// inbox prefix for a same-messageId-at-different-receivedAt match.
-// The validatePush atomicity Set was keyed by kind, so two inbox
-// entries with the same messageId and different receivedAt produced
-// a single-element {"inbox"} Set and did not trip the check.
-// After the fix, the second enqueue is caught as already-present
-// (reason "already_inbox") and the inbox directory holds exactly one entry.
+// Regression: per-messageId atomicity gap. enqueueInbox used to reject
+// only a same-receivedAt collision and a processing/consumed scan, not a
+// same-messageId inbox match at a different receivedAt; the validatePush
+// atomicity Set was keyed by kind, so two inbox entries for one messageId
+// produced a single-element {"inbox"} Set and did not trip the check.
+// Now the second enqueue is caught as already-present ("already_inbox").
 
 describe("claim-check API — enqueueInbox per-messageId atomicity in inbox", () => {
   test("returns already-present for a second enqueue of the same messageId at a different receivedAt", async () => {
@@ -3261,11 +3251,10 @@ describe("claim-check API — dequeueToProcessing filename guard", () => {
 });
 
 // Regression for per-commit-walk pack validation. A pack carrying
-// [enqueue, dequeue] commits (the supervisor's first-mail bootstrap)
-// must validate against a fresh target repo: before the substrate
-// walked per-commit, both commits were validated against the pre-pack
-// tip, so the dequeue's newly-added processing entry had no prior
-// inbox entry and tripped path_violation.
+// [enqueue, dequeue] commits (the first-mail bootstrap) must validate
+// against a fresh target repo: previously both commits were validated
+// against the pre-pack tip, so the dequeue's new processing entry had no
+// prior inbox entry and tripped path_violation.
 describe("workflow-run substrate — per-commit pack validation", () => {
   test("single pack with enqueue + dequeue validates cleanly on a fresh target", async () => {
     const sourceDataDir = await makeClaimCheckTempDir("wfr-percommit-src-");
@@ -3366,10 +3355,9 @@ describe("workflow-run substrate — per-commit pack validation", () => {
 });
 
 // B3.3 per-run validatePush scoping. These cases pin two properties:
-// (1) scoping does not change the verdict for the touched run; (2) a
-// scoped run-event commit produces a byte-identical tree whether the
-// substrate bounds the change set or not, so the commit the substrate
-// signs is identical either way.
+// scoping does not change the verdict for the touched run, and a scoped
+// commit produces a byte-identical tree whether the substrate bounds
+// the change set or not.
 describe("workflowRunKindHandler.validatePush — per-run scoping", () => {
   const TWO_RUN_TREE: Record<string, string> = {
     [WORKFLOW_RUN_GITIGNORE_PATH]: "",
@@ -3601,10 +3589,8 @@ describe("workflowRunKindHandler.validatePush — per-run scoping", () => {
 // B3.3 byte-identical-commit equivalence. validatePush only accepts or
 // rejects — it never alters the tree git.commit builds — so any commit
 // the scoped handler accepts is byte-identical to one the validate-all
-// handler accepts. Replays an identical multi-run, multi-commit
-// sequence into two stores (scoped vs. validate-all) and asserts every
-// commit's tree object id matches; divergence would mean scoping
-// changed which writes were accepted.
+// handler accepts. Replays the same multi-commit sequence into two
+// stores and asserts every commit's tree object id matches.
 describe("workflowRunKindHandler — scoped vs validate-all byte-identity", () => {
   const equivTempDirs: string[] = [];
   let equivKey: KeyPair;
@@ -3734,10 +3720,10 @@ describe("workflowRunKindHandler — scoped vs validate-all byte-identity", () =
 
 // B3.3 pack-path per-run scope completeness. Production writes one run
 // per commit, so the multi-run *pack* path — where
-// computeChangedPathPrefixes derives the touched-run SET from a tree
-// OID diff (design 56c/61) — is the load-bearing derivation site no
-// other test exercises. These author commits directly into a source
-// git repo, pack them, and receivePack into the real scoped handler.
+// computeChangedPathPrefixes derives the touched-run set from a tree
+// OID diff — is the load-bearing derivation site no other test
+// exercises. These author commits into a source repo, pack them, and
+// receivePack into the real scoped handler.
 describe("workflow-run substrate — pack-path per-run scope completeness", () => {
   // Author a commit whose tree adds `files` on top of the index left by
   // `parent`, parented on `parent`. receivePack validates the tree via
@@ -4028,10 +4014,9 @@ describe("workflowRunKindHandler.validatePush — retention watermark contract",
 
   // A non-suffix deletion (drop a recent consumed entry while keeping
   // an older one) is ACCEPTED when both sit below the watermark: the
-  // suffix relation is not enforced, and a retained entry below the
-  // watermark only adds dedup (every resubmit in that region is
-  // stale-rejected at enqueue), so the prune opens no reprocess. The
-  // production writer still prunes only the oldest tail.
+  // suffix relation is not enforced, and a retained entry below it
+  // only adds dedup — every resubmit there is stale-rejected — so the
+  // prune opens no reprocess.
   test("accepts a non-suffix consumed prune below the watermark and locks the boundary", async () => {
     const prior = {
       [watermarkPathFor(ADDRESS_SEG)]: watermarkBody(0),
@@ -4385,12 +4370,10 @@ describe("claim-check API — retention watermark exactly-once + bounded", () =>
   });
 
   // Gate 4: after N >> horizon-worth of messages with advancing time,
-  // consumed/ holds ~one horizon's worth, not N.
-  // Drives ~180 real isogit commits (60 messages through
-  // enqueue/dequeue/markConsumed). The boundedness logic keeps per-commit
-  // work small, but the commit count alone can exceed the 5s fast-suite
-  // default on a loaded machine, so give it an explicit ceiling well
-  // above its normal sub-second runtime.
+  // consumed/ holds ~one horizon's worth, not N. Drives ~180 real
+  // isogit commits (60 messages through enqueue/dequeue/markConsumed);
+  // the commit count alone can exceed the 5s fast-suite default on a
+  // loaded machine, so give it an explicit ceiling.
   test("consumed/ stays bounded under many messages with advancing time", async () => {
     const { store, repoId, principal } =
       await makeClaimCheckStore("cc-bounded-");
@@ -4477,13 +4460,11 @@ describe("claim-check API — retention watermark exactly-once + bounded", () =>
     expect(wmAfterB).toBe(49_000);
   });
 
-  // Replay-vs-watermark regression (the path that becomes a silent
-  // message-loss bug if someone "tightens" replay with a watermark
-  // stale-check). A message already in processing/ — past dedup — whose
-  // receivedAt has fallen BELOW an advanced watermark must be
-  // re-admitted to inbox/ by replayProcessingToInbox (NOT rejected as
-  // stale), then dequeued and consumed exactly once (not lost, not
-  // double-processed).
+  // Replay-vs-watermark regression (a silent message-loss bug if
+  // someone "tightens" replay with a watermark stale-check). A message
+  // already in processing/ — past dedup — whose receivedAt has fallen
+  // below an advanced watermark must be re-admitted by
+  // replayProcessingToInbox, then dequeued and consumed exactly once.
   test("replay re-admits a below-watermark in-flight message and it completes exactly once", async () => {
     const { store, repoId, principal } =
       await makeClaimCheckStore("cc-replay-wm-");

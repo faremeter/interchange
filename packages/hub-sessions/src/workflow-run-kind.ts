@@ -267,9 +267,8 @@ const RUN_DIR_ALLOWED_CHILDREN = new Set<string>([
   // files into one combined file by a compaction commit.
   WORKFLOW_RUN_EVENTS_FILE,
   WORKFLOW_RUN_GRANTS_FILE,
-  // Inbound-mail mail part bytes committed as real files. See
-  // WORKFLOW_RUN_PARTS_DIR; validated by enumerateRunParts and
-  // held immutable by the same prior-tree byte-equality walk as blobs.
+  // Inbound-mail part bytes; validated by enumerateRunParts and held
+  // immutable like blobs.
   WORKFLOW_RUN_PARTS_DIR,
 ]);
 
@@ -481,8 +480,7 @@ async function enumerateEventBlobs(
   for (const runId of runIds) {
     const runDirPath = `${WORKFLOW_RUN_RUNS_PREFIX}/${runId}`;
     const runChildren = await listDir(runDirPath);
-    // A scoped id may name a run absent from this tree (the change set
-    // is the union of both trees' touched runs); skip the empty listing.
+    // A scoped id may name a run absent from this tree; skip the empty listing.
     if (scopeRunIds !== undefined && runChildren.length === 0) continue;
     const offender = runChildren.find((c) => !RUN_DIR_ALLOWED_CHILDREN.has(c));
     if (offender !== undefined) {
@@ -1266,10 +1264,8 @@ async function enumerateClaimCheckBlobs(
         }
       }
     }
-    // FIFO ordering: sort by the parsed numeric receivedAt prefix
-    // with a lexicographic messageId tiebreak. String-sorting the
-    // raw filename would put "99-…" after "100-…" because '9' > '1',
-    // breaking the FIFO invariant for non-uniform digit widths.
+    // FIFO order: numeric receivedAt with a messageId tiebreak
+    // (see compareQueueEntries).
     bucket.inbox.sort(compareQueueEntries);
     bucket.processing.sort(compareQueueEntries);
     bucket.consumed.sort((a, b) =>
@@ -1527,9 +1523,7 @@ async function validateClaimCheckSubtree(
   priorListDirOids?: (path: string) => Promise<{ name: string; oid: string }[]>,
   listDirOids?: (path: string) => Promise<{ name: string; oid: string }[]>,
 ): Promise<ValidatePushResult> {
-  // Surface each consumed entry's git blob OID during enumeration
-  // straight from the tree listing when the substrate provides it,
-  // falling back to hashing the bytes otherwise.
+  // Resolve consumed OIDs from the tree listing when provided, else hash bytes.
   const prospectiveConsumedOid = makeListingOidResolver(
     "prospective",
     listDirOids,
@@ -2214,9 +2208,8 @@ export const workflowRunKindHandler: KindHandler = {
               reason: `event ${entry.blobPath} CancelRequested origin must be a string`,
             };
           }
-          // The origin-vs-signer rule is a write-time check on the commit
-          // that authors the event; a later commit carrying the cancel
-          // forward (e.g. the run's own cascade write) is signed
+          // Write-time check on the commit that authors the event; a
+          // later commit carrying the cancel forward is signed
           // differently and must not be rejected. Byte equality already
           // proves a carried-forward blob unchanged.
           if (await blobIsNewlyAdded(entry.blobPath, priorReadBlob)) {
@@ -2705,11 +2698,9 @@ class InboxEntryAlreadyPresent extends Error {
  * acknowledge on this. Its own type so it surfaces as a distinct signal.
  *
  * Structurally unreachable on the mail-inbound path today: enqueues
- * always carry a freshly stamped `receivedAt`, a full horizon above the
+ * always carry a freshly stamped `receivedAt` a full horizon above the
  * watermark, and the only path that carries an old `receivedAt` back
- * (`replayProcessingToInbox`) bypasses this gate. If a redelivery source
- * ever carries the original `receivedAt` here, this becomes reachable and
- * the withhold-not-ack handling becomes load-bearing.
+ * (`replayProcessingToInbox`) bypasses this gate.
  */
 export class StaleInboxEnqueueError extends Error {
   constructor(message: string) {
@@ -2755,8 +2746,7 @@ export async function enqueueInbox(
       computeDelta: async (_parentCommitSha, prior) => {
         const listing = await readAddressListing(prior, addressSegment);
         // Refuse enqueue below the watermark: the dedup entry may have
-        // been pruned, so a duplicate cannot be ruled out. Above the
-        // watermark the consumed/ index is authoritative; below it, refuse.
+        // been pruned, so a duplicate cannot be ruled out.
         if (args.receivedAt < listing.watermark) {
           throw new StaleInboxEnqueueError(
             `claim_check_stale_enqueue: address ${args.address} message ${args.messageId} receivedAt ${String(args.receivedAt)} is below the retention watermark ${String(listing.watermark)}; its dedup entry may have been pruned, so it is refused as definitively-stale`,
@@ -2835,8 +2825,7 @@ export async function dequeueToProcessing(
     computeDelta: async (_parentCommitSha, prior) => {
       const listing = await readAddressListing(prior, addressSegment);
       const inboxDir = `${addressPrefix(addressSegment)}${WORKFLOW_RUN_INBOX_DIR}/`;
-      // Sort by numeric receivedAt, messageId tiebreak; a raw string
-      // sort misorders non-uniform digit widths.
+      // Sort by numeric receivedAt, messageId tiebreak (see compareQueueEntries).
       type InboxCandidate = {
         entry: ClaimCheckEntry;
         receivedAt: number;
@@ -3031,9 +3020,8 @@ export async function markConsumed(
       };
       consumedEnvelope = envelope;
 
-      // The watermark only advances, never past the entry this commit
-      // writes (a late-consumed message may sit below the horizon and is
-      // pruned once the watermark passes its receivedAt).
+      // The watermark only advances and never passes the entry this
+      // commit writes.
       const horizonBoundary = args.consumedAt - retentionHorizonMs;
       const newWatermark = Math.max(
         listing.watermark,
