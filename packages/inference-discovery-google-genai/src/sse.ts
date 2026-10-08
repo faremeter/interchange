@@ -1,30 +1,28 @@
 // Gemini streams generateContent as Server-Sent Events: each `data: {json}`
-// line is a full GenerateContentResponse chunk whose candidates[0].content.parts
-// carry incremental deltas. To build a turn-2 multi-turn body for a streaming
-// capability, the assistant content has to be reconstructed from those chunks.
+// line is a GenerateContentResponse chunk whose candidates[0].content.parts
+// carry incremental deltas, so a turn-2 multi-turn body must reconstruct the
+// assistant content from those chunks.
 //
-// Reconstruction flattens every chunk's parts in order and coalesces
-// consecutive text deltas that share the same shape — plain text (`{text}`)
-// with plain text, and thought text (`{text, thought: true}`) with thought
-// text — but never across shapes. Every non-text part (a functionCall, or any
-// part carrying a thoughtSignature) is emitted as-is, in order, so the
-// signature the API requires on an echoed thinking turn survives.
+// Reconstruction flattens the parts in order and coalesces consecutive text
+// deltas of the same shape (plain with plain, thought with thought), never
+// across shapes. Non-text parts (a functionCall, a thoughtSignature-bearing
+// part) are emitted as-is so the signature the API requires on an echoed
+// thinking turn survives.
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-// The coalescing signature of a streamed text delta, or null when the part is
-// not a plain text delta (a functionCall, a thoughtSignature-bearing part, …)
-// and must therefore stand as its own part.
+// Coalescing signature of a streamed text delta, or null when the part is not
+// a plain text delta and must stand alone.
 function textDeltaSignature(part: Record<string, unknown>): string | null {
   if (typeof part.text !== "string") return null;
   const keys = Object.keys(part);
   if (keys.length === 1) return "text";
   if (keys.length === 2 && part.thought === true) return "thought-text";
   // A text delta carrying any further key (notably a thoughtSignature) is not
-  // coalescible: it stays its own part so the signature's exact placement in
-  // the thought stream survives verbatim into the echoed turn-2 content.
+  // coalescible: it stays its own part so the signature's placement in the
+  // thought stream survives into the echoed turn-2 content.
   return null;
 }
 
@@ -104,8 +102,8 @@ export function reconstructResponseFromSSE(bytes: Uint8Array): unknown {
     }
   }
   // The assistant role must come off the wire; defaulting it would fabricate a
-  // turn-1 shape the model never sent and mask a provider change the probe
-  // exists to catch. Gemini emits role on the first content-bearing chunk.
+  // turn-1 shape the model never sent and mask a provider change. Gemini emits
+  // role on the first content-bearing chunk.
   if (role === undefined) {
     throw new Error(
       "google-genai SSE: no candidate content carried a role; cannot reconstruct the assistant turn",

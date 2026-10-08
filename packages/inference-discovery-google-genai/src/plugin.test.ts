@@ -195,8 +195,7 @@ function collectSteps(opts: {
     const response = opts.responses[i];
     i += 1;
     if (response === undefined) {
-      // No more responses available; stop pumping the iterator. This is
-      // expected for the final step.
+      // No more responses; stop pumping. Expected for the final step.
       break;
     }
     next = iter.next(response);
@@ -224,9 +223,9 @@ describe("createGoogleGenaiPlugin", () => {
 
   test("advertised models are exactly the classified text and image sets", () => {
     // MODELS (the advertised roster) and TEXT_MODELS/IMAGE_MODELS (which
-    // classify request shape) are separate lists edited by hand. If a model is
-    // advertised but absent from both sets, classifyModel defaults it to text
-    // and the probe builds a text request for it; this catches that drift.
+    // classify request shape) are separate hand-edited lists. A model
+    // advertised but absent from both sets defaults to text; this catches
+    // that drift.
     const plugin = createGoogleGenaiPlugin({ apiKey: TEST_API_KEY });
     expect(new Set(plugin.models)).toEqual(
       new Set([...TEXT_MODELS, ...IMAGE_MODELS]),
@@ -546,16 +545,16 @@ describe("buildRequestBody — wire-shape spot checks", () => {
             allowedFunctionNames: [tool.name],
           },
         },
-        // thinkingBudget -1 (dynamic), and no includeThoughts key: thoughts stay
-        // suppressed on the disable path even where thinking cannot be turned off.
+        // thinkingBudget -1 (dynamic), no includeThoughts key: thoughts stay
+        // suppressed even where thinking cannot be turned off.
         generationConfig: {
           thinkingConfig: { thinkingBudget: -1 },
         },
       });
 
-      // The streaming multi-turn variant shares the same switch case, so the
-      // dynamic budget must apply identically; pin it so a future split of the
-      // case cannot silently drop the fix.
+      // The streaming variant shares the same switch case, so the dynamic
+      // budget must apply identically; pin it so a future case split cannot
+      // drop the fix.
       const streamingCapability: Capability =
         "function-calling-multi-turn-streaming";
       const multiTurnStreaming = buildRequestBody({
