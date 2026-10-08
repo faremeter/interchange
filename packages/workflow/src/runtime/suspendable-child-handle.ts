@@ -14,7 +14,7 @@
 // caller must therefore pass an env that has not wired its own park sinks; a
 // silent override would drop them, so this fails loud instead.
 
-import { signalName } from "@intx/types";
+import { signalName } from "@intx/types/signals";
 
 import type { WorkflowDefinition } from "../definition/index";
 import type {

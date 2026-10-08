@@ -22,7 +22,7 @@
 // time. Binding it to a record's identity prevents transplanting a ciphertext
 // from one record to another.
 
-import { base64Encode, base64Decode } from "@intx/types";
+import { base64Encode, base64Decode } from "@intx/types/base64";
 
 import { asArrayBuffer } from "./keys";
 

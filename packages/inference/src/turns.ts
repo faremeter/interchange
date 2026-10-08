@@ -8,7 +8,8 @@ import type {
   ToolCall,
   ToolResult,
 } from "@intx/types/runtime";
-import { attachmentCategory, base64Encode } from "@intx/types";
+import { attachmentCategory } from "@intx/types/attachments";
+import { base64Encode } from "@intx/types/base64";
 import { getLogger } from "@intx/log";
 
 const logger = getLogger(["interchange", "inference", "turns"]);

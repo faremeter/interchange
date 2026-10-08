@@ -36,7 +36,7 @@ import ssri from "ssri";
 import * as tar from "tar";
 
 import { getLogger } from "@intx/log";
-import { hexEncode } from "@intx/types";
+import { hexEncode } from "@intx/types/hex";
 
 const logger = getLogger(["sidecar", "tool-packaging", "cache"]);
 

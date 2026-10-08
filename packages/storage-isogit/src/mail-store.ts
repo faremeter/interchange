@@ -1,6 +1,7 @@
 import git from "isomorphic-git";
 import { parseHeaderSection } from "@intx/mime";
-import { hasCode, hexEncode } from "@intx/types";
+import { hasCode } from "@intx/types/has-code";
+import { hexEncode } from "@intx/types/hex";
 import { AUTHOR } from "./init";
 import type { CommitSigner } from "./signer";
 import {

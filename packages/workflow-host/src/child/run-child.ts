@@ -51,7 +51,7 @@
 
 import { getLogger } from "@intx/log";
 import { generateKeyPair } from "@intx/crypto";
-import { hexEncode } from "@intx/types";
+import { hexEncode } from "@intx/types/hex";
 
 import type {
   Principal,

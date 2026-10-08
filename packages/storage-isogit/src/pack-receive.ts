@@ -2,7 +2,7 @@ import git from "isomorphic-git";
 import { readRawObject } from "./isogit-helpers";
 import { withRepoDirLock } from "./repo-lock";
 import { decodeUTF8, flushRuntime, type StorageRuntime } from "./runtime";
-import { hasCode } from "@intx/types";
+import { hasCode } from "@intx/types/has-code";
 
 /**
  * Verifies the signature embedded in a git commit object.

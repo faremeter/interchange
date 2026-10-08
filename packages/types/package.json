@@ -104,6 +104,41 @@
       "intx-src": "./src/repo.ts",
       "types": "./dist/repo.d.ts",
       "default": "./dist/repo.js"
+    },
+    "./attachments": {
+      "intx-src": "./src/attachments.ts",
+      "types": "./dist/attachments.d.ts",
+      "default": "./dist/attachments.js"
+    },
+    "./base64": {
+      "intx-src": "./src/base64.ts",
+      "types": "./dist/base64.d.ts",
+      "default": "./dist/base64.js"
+    },
+    "./signals": {
+      "intx-src": "./src/signals.ts",
+      "types": "./dist/signals.d.ts",
+      "default": "./dist/signals.js"
+    },
+    "./agent-address": {
+      "intx-src": "./src/agent-address.ts",
+      "types": "./dist/agent-address.d.ts",
+      "default": "./dist/agent-address.js"
+    },
+    "./has-code": {
+      "intx-src": "./src/has-code.ts",
+      "types": "./dist/has-code.d.ts",
+      "default": "./dist/has-code.js"
+    },
+    "./concat": {
+      "intx-src": "./src/concat.ts",
+      "types": "./dist/concat.d.ts",
+      "default": "./dist/concat.js"
+    },
+    "./workflow-run-id": {
+      "intx-src": "./src/workflow-run-id.ts",
+      "types": "./dist/workflow-run-id.d.ts",
+      "default": "./dist/workflow-run-id.js"
     }
   },
   "dependencies": {

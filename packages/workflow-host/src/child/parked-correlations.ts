@@ -21,7 +21,7 @@ import {
   type RepoStore as RuntimeRepoStore,
 } from "@intx/workflow";
 import type { ApprovalSnapshot, ControlParkKind } from "@intx/types/runtime";
-import { correlationIdFromSignalName } from "@intx/types";
+import { correlationIdFromSignalName } from "@intx/types/signals";
 
 import { discoverInFlightRuns } from "./self-discovery";
 

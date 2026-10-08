@@ -1,4 +1,4 @@
-import { hexEncode } from "@intx/types";
+import { hexEncode } from "@intx/types/hex";
 
 const PREFIXES = {
   tenant: "tnt_",

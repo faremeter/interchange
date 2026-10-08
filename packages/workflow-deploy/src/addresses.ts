@@ -8,7 +8,7 @@
 // head/step collapse decision for a consumer that must choose an address
 // from the host-sourced step count alone.
 
-import { formatRunAddress } from "@intx/types";
+import { formatRunAddress } from "@intx/types/agent-address";
 
 /**
  * Pure function: derive a step's run address from

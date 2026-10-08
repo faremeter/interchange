@@ -15,7 +15,7 @@
 
 import { type } from "arktype";
 
-import { hexDecode } from "@intx/types";
+import { hexDecode } from "@intx/types/hex";
 import { IPC_CRYPTO } from "../ipc/crypto";
 
 /**

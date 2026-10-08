@@ -35,7 +35,7 @@
 // the closure produces, both base64-encoded.
 
 import { getLogger } from "@intx/log";
-import { base64Decode, base64Encode } from "@intx/types";
+import { base64Decode, base64Encode } from "@intx/types/base64";
 
 import type {
   ControlChannelSender,

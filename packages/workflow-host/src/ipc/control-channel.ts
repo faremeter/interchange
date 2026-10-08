@@ -36,7 +36,7 @@
 
 import { type } from "arktype";
 
-import { hexDecode, hexEncode } from "@intx/types";
+import { hexDecode, hexEncode } from "@intx/types/hex";
 import {
   BoundedApprovalSnapshot,
   ControlParkKind,

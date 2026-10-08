@@ -20,7 +20,7 @@
  */
 
 import { type } from "arktype";
-import { base64Decode, base64Encode } from "@intx/types";
+import { base64Decode, base64Encode } from "@intx/types/base64";
 import type {
   MessageAttachment,
   MessageHeaders as ParsedMessageHeaders,

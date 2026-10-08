@@ -11,7 +11,7 @@ import {
   type CommitSigner,
   type GCPolicy,
 } from "@intx/storage-isogit/node";
-import { hasCode } from "@intx/types";
+import { hasCode } from "@intx/types/has-code";
 import { getLogger } from "@intx/log";
 import type {
   AuthorizeFn,

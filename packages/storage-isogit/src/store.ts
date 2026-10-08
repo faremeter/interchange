@@ -30,7 +30,7 @@ import {
 import { withRepoDirLock } from "./repo-lock";
 import { maybeGCUnderLock, type GCPolicy } from "./gc";
 import { decodeUTF8, flushRuntime, type StorageRuntime } from "./runtime";
-import { hasCode } from "@intx/types";
+import { hasCode } from "@intx/types/has-code";
 
 const TURNS_FILE = "turns.jsonl";
 const PROMPT_FILE = "prompt.jsonl";

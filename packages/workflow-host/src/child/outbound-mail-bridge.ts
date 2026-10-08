@@ -33,7 +33,7 @@
 
 import { getLogger } from "@intx/log";
 
-import { base64Encode } from "@intx/types";
+import { base64Encode } from "@intx/types/base64";
 import type { OutboundMessage, SendReceipt } from "@intx/types/runtime";
 
 import type {
