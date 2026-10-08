@@ -1,9 +1,8 @@
-// Composition of an `OutboundMessage` into signed RFC 2822 bytes.
+// Compose an `OutboundMessage` into signed RFC 2822 bytes.
 //
-// Signing and the stored envelope are properties of the message, not of the
-// mailbox that delivers it. This module owns that half: the body checks, the
-// signed content, the header set, and the References chain. The caller keeps
-// delivery.
+// Signing and the stored envelope belong to the message, not to the mailbox
+// that delivers it. This module owns the body checks, the signed content, the
+// header set, and the References chain; the caller keeps delivery.
 //
 // It sits beside `verifyMimeSignature` deliberately: composing a signed
 // message and verifying one are peers over the same byte contract.
@@ -24,11 +23,11 @@ import { isConversationType } from "@intx/types/runtime";
 import type { StoredEnvelope } from "./mailbox";
 
 /**
- * The composed message: the wire bytes, the id stamped into them, the
+ * The composed message: wire bytes, the message id stamped into them, the
  * pre-parsed envelope a mailbox stores beside them, and the address lists the
- * caller routes on. `recipients` is the deduplicated union of `to` and `cc` --
- * the set a transport delivers to -- while `to` and `cc` are kept apart because
- * they are separate header fields and separate audit facts.
+ * caller routes on. `recipients` is the deduplicated union of `to` and `cc`;
+ * `to` and `cc` stay apart because they are separate header fields and audit
+ * facts.
  */
 export type ComposedMessage = {
   messageId: string;
@@ -40,19 +39,17 @@ export type ComposedMessage = {
 };
 
 /**
- * Assemble the wire `References` chain for an outbound message.
- *
- * When the caller supplies a full ancestry (`existingReferences` -- the
- * parent's References plus the parent's Message-Id, built by the threaded
- * reply path), that chain is used and `inReplyTo` is appended only when it is
- * not already the tail. Otherwise the chain is derived from `inReplyTo` alone.
+ * Assemble the wire `References` chain. When the caller supplies a full
+ * ancestry (`existingReferences` -- the parent's References plus its
+ * Message-Id, built by the threaded reply path), use it and append `inReplyTo`
+ * only when it is not already the tail; otherwise derive the chain from
+ * `inReplyTo` alone.
  *
  * The caller-supplied chain is filtered to RFC 2822 message identifiers:
- * inbound mail can carry a headerless-derived (sha256) or otherwise malformed
- * Message-Id that is a valid claim-check key but not a valid `<id@host>`
- * identifier, and such a value must not leak into a `References` header. The
- * `inReplyTo` value is appended without filtering, matching the behavior for a
- * bare reply.
+ * inbound mail can carry a headerless-derived (sha256) Message-Id that is a
+ * valid claim-check key but not a valid `<id@host>` identifier, and it must
+ * not leak into a `References` header. `inReplyTo` is appended without
+ * filtering, as for a bare reply.
  */
 function buildReferences(
   inReplyTo: string | undefined,
@@ -67,8 +64,8 @@ function buildReferences(
 }
 
 /**
- * Split a `to`/`cc` field that accepts either one address or several into a
- * list. Returns a fresh array so a caller cannot alias the message's own.
+ * Split a `to`/`cc` field that takes one address or several into a fresh list
+ * so a caller cannot alias the message's own.
  */
 function addressList(field: string | string[] | undefined): string[] {
   if (field === undefined) return [];
@@ -78,11 +75,11 @@ function addressList(field: string | string[] | undefined): string[] {
 /**
  * Compose an `OutboundMessage` into signed RFC 2822 bytes.
  *
- * Throws when the message contradicts itself -- a conversation type carrying a
+ * Throws when the message contradicts itself: a conversation type carrying a
  * structured payload, a structured type carrying text content or attachments,
- * a blank `inReplyTo`, or no recipient at all. These are the conditions that
- * make the message unsendable whatever the transport, so they are refused here
- * rather than once per transport.
+ * a blank `inReplyTo`, or no recipient at all. These make the message
+ * unsendable whatever the transport, so they are refused here rather than once
+ * per transport.
  */
 export async function composeOutbound(
   senderAddress: string,
@@ -109,8 +106,8 @@ export async function composeOutbound(
     throw new Error("Structured messages must not carry attachments");
   }
 
-  // RFC 5322 section 3.6.4 defines `In-Reply-To` as `1*msg-id`, so a blank
-  // value names nothing rather than naming a shorter parent.
+  // RFC 5322 §3.6.4 defines `In-Reply-To` as `1*msg-id`, so a blank value
+  // names nothing rather than naming a shorter parent.
   if (
     message.inReplyTo !== undefined &&
     message.inReplyTo.trim().length === 0

@@ -9,8 +9,8 @@ import {
 const encoder = new TextEncoder();
 
 /**
- * Threading reads only the stored envelope, never the raw bytes, so every
- * message in this file shares the same placeholder body.
+ * Threading reads only the stored envelope, never raw bytes, so every message
+ * in this file shares the same placeholder body.
  */
 const rawBody = encoder.encode("body");
 
@@ -44,9 +44,9 @@ const jan3 = new Date("2026-01-03T00:00:00Z");
 describe("orderedsubject threading", () => {
   test("roots the thread at the earliest dated message, not at an undated one", async () => {
     // A message that names no date says nothing about where it belongs in the
-    // conversation, so it cannot claim the root slot from a message that does
-    // name one. The undated message is appended between the two dated ones, so
-    // neither append order nor a date decides its position by accident.
+    // conversation, so it cannot claim the root slot. The undated message is
+    // appended between the two dated ones, so neither append order nor a date
+    // decides its position by accident.
     const store = createInMemoryMailboxStore();
     const originalUid = append(store, {
       messageId: "<original@corp>",
@@ -190,9 +190,9 @@ describe("references threading", () => {
   });
 
   test("promotes children of an absent parent and still sorts the undated one last", async () => {
-    // Nothing in the set carries `<absent@corp>`, so the container standing in
-    // for it is dropped and its children rise to the top level, where the same
-    // ordering rule applies to them.
+    // Nothing in the set carries `<absent@corp>`, so the stand-in container is
+    // dropped and its children rise to the top level, where the same ordering
+    // rule applies.
     const store = createInMemoryMailboxStore();
     const undatedOrphanUid = append(store, {
       messageId: "<undated-orphan@elsewhere>",

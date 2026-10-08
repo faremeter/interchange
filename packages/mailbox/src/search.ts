@@ -5,19 +5,15 @@ import { parseHeaderSection } from "@intx/mime";
 /**
  * Execute an IMAP SEARCH-equivalent query over a mailbox.
  *
- * Supports: from, to, cc, bcc, header (field match), before/after/on,
- * sentBefore/sentAfter/sentOn, hasFlags, missingFlags, body, text,
- * largerThan, smallerThan, and boolean and/or/not composition.
- *
- * The envelope- and flag-based predicates (from, to, dates, flags, boolean
- * composition) resolve from metadata alone. The predicates that inspect
- * headers the envelope does not carry (cc, bcc, arbitrary `header`), the body,
- * or the raw size (body, text, largerThan, smallerThan) read a message's raw
- * bytes on demand through `store.readRaw`, memoized per message so a query that
- * touches raw reads each candidate's blob at most once. A query with no
+ * Envelope- and flag-based predicates (from, to, dates, flags, boolean
+ * composition) resolve from metadata alone. Predicates that inspect headers
+ * the envelope does not carry (`cc`, `bcc`, arbitrary `header`), the body, or
+ * the raw size (body, text, largerThan, smallerThan) read a message's raw
+ * bytes on demand through `store.readRaw`, memoized per message so a query
+ * that touches raw reads each candidate's blob at most once. A query with no
  * raw-scanning predicate never reads a blob.
  *
- * Returns MessageRef[] for all matching messages, ordered by UID.
+ * Returns `MessageRef[]` for all matching messages, ordered by UID.
  */
 export async function executeSearch(
   mailboxName: string,
@@ -34,9 +30,9 @@ export async function executeSearch(
 }
 
 /**
- * A per-message memoized reader for the raw bytes. The first raw-scanning
- * predicate reads the blob through `store.readRaw`; every later predicate on
- * the same message reuses the resolved bytes.
+ * A per-message memoized reader for the raw bytes: the first raw-scanning
+ * predicate reads the blob through `store.readRaw`; later predicates on the
+ * same message reuse the resolved bytes.
  */
 function makeRawReader(
   store: MailboxStore,
@@ -97,8 +93,7 @@ async function matchMessage(
     }
   }
 
-  // A message that named no date placed itself nowhere in time, so it falls
-  // outside every date window below rather than inside one.
+  // A message that named no date falls outside every date window below.
   const sent = msg.envelope.date;
 
   if (query.before !== undefined) {

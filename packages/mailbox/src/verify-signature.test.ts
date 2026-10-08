@@ -65,9 +65,8 @@ describe("verifyMimeSignature", () => {
   });
 
   test("returns invalid, not a throw, for a corrupt signature part", async () => {
-    // Signature verification must never let a malformed signature escape as an
-    // exception: a corrupt `application/pgp-signature` part is a verdict
-    // ("invalid"), not an error the caller has to catch.
+    // A corrupt `application/pgp-signature` part is a verdict ("invalid"),
+    // not an error the caller has to catch.
     const crypto = await makeCrypto();
     const content = assembleSignedContent({
       kind: "conversation",
