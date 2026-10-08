@@ -54,23 +54,20 @@ const logger = getLogger(["workflow-host", "step-invoker"]);
 /**
  * Per-step env contributions the caller owns: everything on `BaseEnv`
  * except `authorize`, which the adapter constructs from
- * `WorkflowAuthorizeFn` + the per-call `AuthorizeContext`. Invoked once
- * per step; async so callers can allocate per-step resources.
+ * `WorkflowAuthorizeFn` + the per-call `AuthorizeContext`.
  */
 export type StepEnvBase = Omit<BaseEnv, "authorize">;
 
 export interface WorkflowStepInvokerOpts {
   /**
-   * Workflow-level authorize callback. The adapter wraps it into the
-   * per-step `AuthorizeFn` closure with the per-call `AuthorizeContext`
-   * embedded.
+   * Workflow-level authorize callback, wrapped into the per-step
+   * `AuthorizeFn` with the per-call `AuthorizeContext` embedded.
    */
   workflowAuthorize: WorkflowAuthorizeFn;
   /**
-   * Build the per-step env minus `authorize`. The returned env's
-   * `storage`, `workdir`, and other agent-runtime fields belong to that
-   * one step and are torn down with the agent. Receives the request so
-   * per-step paths can be derived from the run id.
+   * Build the per-step env minus `authorize`. The env's `storage`,
+   * `workdir`, and other agent-runtime fields belong to that one step
+   * and are torn down with the agent.
    */
   buildEnv: (req: StepInvokeRequest) => Promise<StepEnvBase>;
   /**
@@ -82,37 +79,33 @@ export interface WorkflowStepInvokerOpts {
     env: EnvReq,
   ) => Promise<Agent>;
   /**
-   * Observability sink for the per-step agent's event stream. When
-   * supplied, the adapter subscribes `agent.stream()` before send and
-   * forwards every `InferenceEvent` here; the subscription is torn
-   * down with the agent on every exit path. Forwarding is best-effort:
-   * a throwing sink is logged and swallowed so a downstream failure
-   * cannot abort the step. Omitted, the stream is never consumed.
+   * Observability sink for the per-step agent's event stream. The
+   * adapter subscribes `agent.stream()` before send and forwards every
+   * `InferenceEvent` here, torn down with the agent on every exit
+   * path. Forwarding is best-effort: a throwing sink is logged and
+   * swallowed. Omitted, the stream is never consumed.
    */
   onEvent?: (event: InferenceEvent) => void;
   /**
    * Warm-agent cache (design §3b). When supplied the agent is built
    * once on the first invocation and reused instead of torn down per
    * send. The cache owns the agent's lifetime: `close()` runs only at
-   * the run-loop's eviction, never in this adapter's `finally`. The
-   * run-loop supplies a cache only for a single-step long-lived
-   * deployment; multi-step steps omit it.
+   * the run-loop's eviction, never in this adapter's `finally`.
    */
   warmCache?: WarmAgentCache;
   /**
-   * Live per-step inference-source table the run-loop rotates in place.
-   * Warm path only: after storing the freshly built agent the adapter
-   * re-applies the table so a rotation that landed during the async
+   * Live per-step inference-source table the run-loop rotates in
+   * place. Warm path only: the adapter re-applies it after storing a
+   * freshly built agent so a rotation that landed during the async
    * build is not lost.
    */
   sourcesRef?: { current: Record<string, InferenceSource[]> };
   /**
    * Run-boundary hook (design §3c durability). Warm path only: awaited
-   * in the `finally` after each send settles, so the conversation
+   * in the `finally` after each send settles so the conversation
    * snapshot flushes to the durable substrate before the next message.
-   * Awaited (not fire-and-forget) so a respawn cannot lose this
-   * message's turns; a flush failure rejects the step. `key` is the
-   * step identity (`authzContext.stepId`), the warm cache's key.
+   * A flush failure rejects the step. `key` is `authzContext.stepId`,
+   * the warm cache's key.
    */
   onRunBoundary?: (key: string) => Promise<void>;
   /**
@@ -127,23 +120,20 @@ export interface WorkflowStepInvokerOpts {
   /**
    * Connector reply-drain hook (design §3c). Warm path only: invoked
    * ONCE at the first-message build with the step identity and the
-   * agent's lifetime event stream. The sidecar's drain composes a
-   * threaded reply from the durable connector thread on every
-   * `connector.reply` and sends it through the outbound bridge. The
-   * returned handle exposes the drain's lifetime `done` promise
-   * (folded into the warm entry's forward promise so eviction drains
-   * the reply loop) and the per-turn settle barrier (`replySeq` /
-   * `waitForReplyAfter`) the step gates each reply turn on.
+   * agent's lifetime event stream. The returned handle exposes the
+   * drain's `done` promise (folded into the warm entry's forward
+   * promise so eviction drains the reply loop) and the per-turn settle
+   * barrier (`replySeq` / `waitForReplyAfter`) the step gates each
+   * reply turn on.
    */
   driveReplies?: (
     key: string,
     stream: ReturnType<Agent["stream"]>,
   ) => WarmReplyDrive;
   /**
-   * Reader for the run's inbound-mail parts. When the step input is a
-   * decoded `Mail`, part `ref`s resolve to committed bytes through this
-   * reader. Supplied for the top-level run's steps; absent for body
-   * steps, where a byte-requiring part is refused loudly.
+   * Reader for the run's inbound-mail parts: part `ref`s resolve to
+   * committed bytes. Supplied for the top-level run's steps; absent
+   * for body steps, where a byte-requiring part is refused loudly.
    */
   mailPartReader?: MailPartReader;
 }
@@ -187,16 +177,13 @@ async function invokeColdStep(
 
   // Subscribe BEFORE `agent.send` so the inbound `inference.start` and
   // per-turn events are captured. `message.received` is the single
-  // exclusion: an assembly-internal dequeue signal, expressed to the
-  // audit chain as the `message.run.started` / `message.run.ended`
-  // bracket instead.
+  // exclusion: an assembly-internal dequeue signal, expressed as the
+  // `message.run.started` / `message.run.ended` bracket instead.
   const eventForward = subscribeAgentEvents(agent, opts.onEvent);
 
   // Route the close through runBodyThenCleanup so a wrapped-close
   // failure (a plugin/LSP disposer rejecting) surfaces on a clean step
-  // but never masks a step error already unwinding from send.
-  // `agent.close()` ends the forwarder's loop, and the forwarder never
-  // rejects, so awaiting it in cleanup masks nothing.
+  // but never masks a step error unwinding from send.
   return runBodyThenCleanup(
     async () =>
       stepResultFromSend(
@@ -232,11 +219,10 @@ function describeReplyFailure(cause: unknown): string {
 
 /**
  * Warm-keep path (design §3b): build the agent once on the first
- * invocation, reuse it after. The cache owns the agent's lifetime --
- * this adapter never closes it or drains its forwarder; a turn abort
- * cancels only the in-flight send and the agent survives for the next
- * message. Each invocation points the entry's mutable event sink at
- * its own `onEvent` before send and clears it after.
+ * invocation, reuse it after. The cache owns the agent's lifetime; a
+ * turn abort cancels only the in-flight send. Each invocation points
+ * the entry's mutable event sink at its own `onEvent` before send and
+ * clears it after.
  */
 async function invokeWarmStep(
   opts: WorkflowStepInvokerOpts,
@@ -262,11 +248,11 @@ async function invokeWarmStep(
       const sink = eventSinkRef.current;
       if (sink !== null) sink(event);
     });
-    // Establish the reply drain (design §3c) as a second consumer of the
-    // agent's lifetime stream. Fold its `done` promise into the stored
-    // forwarder so eviction drains both; the per-turn barrier is stored
-    // so every message gates its reply turn on a durable send. Present
-    // only on the warm mail path.
+    // Establish the reply drain (design §3c) as a second consumer of
+    // the agent's lifetime stream. Fold its `done` promise into the
+    // stored forwarder so eviction drains both; the per-turn barrier
+    // is stored so every message gates its reply turn on a durable
+    // send.
     const replyDrive =
       opts.driveReplies !== undefined
         ? opts.driveReplies(key, agent.stream())
@@ -289,11 +275,10 @@ async function invokeWarmStep(
   if (opts.onEvent !== undefined) {
     warmCache.setEventSink(key, opts.onEvent);
   }
-  // Bind the seed hook to this step's identity.
   const seedInbound = opts.seedInbound;
-  // Snapshot the barrier before the send: the agent resolves send in the
-  // same step it pushes `connector.reply`, so a post-send snapshot would
-  // miss this turn's reply.
+  // Snapshot the barrier before the send: the agent resolves send in
+  // the same step it pushes `connector.reply`, so a post-send snapshot
+  // would miss this turn's reply.
   const replyDrive = warmCache.getReplyDrive(key);
   const replySeqBeforeSend = replyDrive !== null ? replyDrive.replySeq() : 0;
   try {
@@ -306,12 +291,12 @@ async function invokeWarmStep(
           : undefined,
     });
     const stepResult = stepResultFromSend(sendResult);
-    // Gate the return on this turn's reply being durably sent, so the run
-    // parks only after the auto-reply reaches the transport. Only a reply
-    // turn produces a `connector.reply`; a suspended turn must NOT await
-    // the barrier (that reply never arrives). Fail the turn rather than
-    // claim a reply that never went out; the mail is still consumed, since
-    // a replay could not compose the same reply.
+    // Gate the return on this turn's reply being durably sent, so the
+    // run parks only after the auto-reply reaches the transport. Only
+    // a reply turn produces a `connector.reply`; a suspended turn must
+    // NOT await the barrier (that reply never arrives). Fail the turn
+    // rather than claim a reply that never went out; the mail is still
+    // consumed (a replay could not compose the same reply).
     if (replyDrive !== null && sendResult.type === "reply") {
       const settlement = await replyDrive.waitForReplyAfter(replySeqBeforeSend);
       if (!settlement.ok) {
@@ -327,9 +312,9 @@ async function invokeWarmStep(
   } finally {
     // Do NOT close the agent or drain its forwarder: both are owned by
     // the warm cache. Clear the per-message sink so a stray event
-    // between messages is dropped, then flush the conversation snapshot
-    // to the durable substrate (design §3c) so a respawn before the
-    // next message resumes from this message's turns.
+    // between messages is dropped, then flush the conversation
+    // snapshot (design §3c) so a respawn before the next message
+    // resumes from this message's turns.
     warmCache.clearEventSink(key);
     if (opts.onRunBoundary !== undefined) {
       await opts.onRunBoundary(key);
@@ -355,21 +340,16 @@ async function buildStepAgent(
 
 /**
  * Drive one `agent.send`, racing it against the step's abort signal.
+ * Every path goes through `agent.send`, so a gate park settles as
+ * `"suspended"` regardless of delivery.
  *
- * The delivered message depends on the resume kind: a first invocation
- * sends the synthesized input; an `"approval"` resume sends a correlated
- * `InboundMessage` whose `interchangeCorrelationId` matches the
- * rehydrated gate in the reactor's `tryCorrelate`; an `"input"` resume
- * sends the decision as plain synthesized content, like a first
- * invocation. Every path goes through `agent.send`, so a gate park
- * settles as `"suspended"` regardless of delivery.
- *
- * `closeOnAbort` selects abort semantics: `true` (cold path) leaves the
- * in-flight send to settle via `agent.close()` in the caller's `finally`
- * and does not thread the signal into `agent.send`; `false` (warm path)
- * threads the signal so a mid-turn abort cancels only that turn and the
- * agent survives. In both modes a pre-send or mid-send abort rejects
- * with the abort error so the abort attribution wins.
+ * `closeOnAbort` selects abort semantics: `true` (cold path) leaves
+ * the in-flight send to settle via `agent.close()` in the caller's
+ * `finally` and does not thread the signal into `agent.send`; `false`
+ * (warm path) threads the signal so a mid-turn abort cancels only
+ * that turn and the agent survives. In both modes a pre-send or
+ * mid-send abort rejects with the abort error so the abort attribution
+ * wins.
  */
 async function sendWithAbort(
   agent: Agent,
@@ -405,9 +385,8 @@ async function sendWithAbort(
         return;
       }
       const onAbort = (): void => {
-        // Reject here so the abort attribution wins whether the cold
-        // path's close or the warm path's threaded signal settles the
-        // send first.
+        // Reject here so the abort attribution wins whichever path
+        // settles the send first.
         reject(abortError(req.signal));
       };
       abortListener = onAbort;
@@ -428,8 +407,8 @@ async function sendWithAbort(
  * Subscribe the agent's event stream and forward every `InferenceEvent`
  * to `onEvent`. The returned promise settles when `agent.close()`
  * terminates the stream iterator; with no `onEvent` the stream is never
- * consumed. A throwing sink is logged and swallowed so a downstream
- * failure cannot abort the step; an iterator failure is logged at warn.
+ * consumed. A throwing sink is logged and swallowed; an iterator
+ * failure is logged at warn.
  */
 function subscribeAgentEvents(
   agent: Agent,
@@ -456,10 +435,10 @@ function subscribeAgentEvents(
 }
 
 /**
- * Wrap the workflow-typed authorize into the agent harness's
- * `AuthorizeFn`, capturing the per-call `AuthorizeContext`; the agent
- * layer's generic context slot is ignored. Same shape the `runlocal`
- * step invoker uses.
+ * Wrap the workflow-typed authorize into the harness's `AuthorizeFn`,
+ * capturing the per-call `AuthorizeContext`; the agent layer's generic
+ * context slot is ignored. Same shape the `runlocal` step invoker
+ * uses.
  */
 function wrapAuthorize(
   workflowAuthorize: WorkflowAuthorizeFn,
@@ -470,11 +449,10 @@ function wrapAuthorize(
 }
 
 /**
- * Translate a settled `SendResult` into the step result. A `"reply"`
- * becomes `{ output: { reply, turn } }`. A `"suspended"` becomes a
+ * Translate a settled `SendResult` into the step result: `"reply"`
+ * becomes `{ output: { reply, turn } }`; `"suspended"` becomes a
  * `{ suspend: { correlationId, kind, approvalSnapshot } }` park the
- * runtime resumes via `resume`; a resumed cycle that re-parks flows
- * back through here as another suspend.
+ * runtime resumes via `resume`.
  */
 function stepResultFromSend(result: SendResult): StepInvokeResult {
   if (result.type === "suspended") {
@@ -502,8 +480,9 @@ function stepResultFromSend(result: SendResult): StepInvokeResult {
 /**
  * Resolve the step input into the value `agent.send` receives:
  * - `"approval"` resume: a full `InboundMessage` stamped with
- *   `resume.correlationId`, so the reactor's `tryCorrelate` matches the
- *   rehydrated gate (a plain string would drop the id and never match).
+ *   `resume.correlationId` so the reactor's `tryCorrelate` matches the
+ *   rehydrated gate (a plain string would drop the id and never
+ *   match).
  * - a mail-derived `Mail`: an `InboundMessage` projecting its parts,
  *   resolving non-inline bytes through the reader.
  * - anything else: synthesized plain text; `agent.send` stamps its own
@@ -530,8 +509,8 @@ async function buildSendMessage(
   }
   const rawInput = req.resume === undefined ? req.input : req.resume.decision;
   // The strict `isMail` guard keeps an arbitrary step value from
-  // matching; this branch is the one that carries real threading
-  // headers, so `mailInbound` surfaces for the warm path's seed.
+  // matching; this branch carries real threading headers, so
+  // `mailInbound` surfaces for the warm path's seed.
   if (isMail(rawInput)) {
     const message = await buildInboundMessageFromMail(rawInput, mailPartReader);
     return { message, mailInbound: message };
@@ -564,9 +543,8 @@ function usableAddrs(raw: string[]): string[] {
  * becomes an attachment, resolving bytes through the reader. Real
  * sender/recipient and threading headers ride through; content is
  * omitted when empty (`createInboundMessage` rejects an empty string).
- * The reader is required only when a part's bytes must actually be read
- * -- a text-only mail whose parts all inlined still delivers, while a
- * byte-requiring part with no reader is refused loudly.
+ * The reader is required only when a part's bytes must actually be
+ * read.
  */
 async function buildInboundMessageFromMail(
   mail: Mail,
@@ -636,10 +614,10 @@ async function buildInboundMessageFromMail(
 
 /**
  * Encode the step's resolved `input` as the synthetic inbound content:
- * a string passes verbatim; anything else is JSON-stringified (round-
- * trips through the agent's synthetic mail boundary). Non-serializable
- * inputs (functions, symbols, `undefined`) surface as a thrown error
- * rather than a silent `"undefined"` string.
+ * a string passes verbatim; anything else is JSON-stringified
+ * (round-trips through the agent's synthetic mail boundary).
+ * Non-serializable inputs surface as a thrown error rather than a
+ * silent `"undefined"` string.
  */
 function synthesizeInputContent(input: unknown): string {
   if (typeof input === "string") return input;
@@ -653,8 +631,8 @@ function synthesizeInputContent(input: unknown): string {
 }
 
 /**
- * The abort rejection. Mirrors the DOMException-shaped abort errors the
- * inference harness emits so consumers match a stable shape.
+ * The abort rejection; mirrors the DOMException-shaped abort errors
+ * the inference harness emits.
  */
 function abortError(signal: AbortSignal): Error {
   const reason = signal.reason;

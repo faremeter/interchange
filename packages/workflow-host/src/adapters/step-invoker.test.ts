@@ -90,8 +90,8 @@ interface StubAgentControl {
 
 /**
  * `Agent` stub recording every observable interaction, with
- * controllable `send` / `close` behaviour driven via
- * `resolveSend` / `rejectSend`.
+ * controllable `send` / `close` driven via `resolveSend` /
+ * `rejectSend`.
  */
 function buildStubAgent(): StubAgentControl {
   const events: string[] = [];
@@ -107,7 +107,7 @@ function buildStubAgent(): StubAgentControl {
   });
   // Absorb rejections no consumer observed: a close that rejects the
   // pending promise before `send` was ever called would otherwise
-  // surface as an unhandled rejection that Bun promotes to a failure.
+  // surface as an unhandled rejection.
   pending.catch(() => {
     /* noop */
   });
@@ -176,9 +176,7 @@ interface StreamingStubControl {
  * `InferenceEvent`s and then blocks until `close()` fires. Tracks
  * whether the adapter ever subscribed and whether teardown ran, so a
  * test can prove the no-`onEvent` path never consumes the stream and
- * that the subscription dies with the agent. `send` resolves
- * independently of `close`, matching the real agent's send/stream
- * separation.
+ * that the subscription dies with the agent.
  */
 function buildStreamingStubAgent(
   events: InferenceEvent[],
@@ -358,7 +356,7 @@ describe("workflow-host StepInvoker adapter - happy path", () => {
     // The closure delegating to workflowAuthorize is constructed at
     // env build time. Exercising it through the workflow-typed
     // surface here proves the per-call AuthorizeContext is captured
-    // by the closure for any authz call originating from the step.
+    // by the closure.
     const envBase = stubBuildEnv();
     void envBase;
     const builtAuth = (): Promise<unknown> =>
@@ -417,11 +415,9 @@ describe("workflow-host StepInvoker adapter - happy path", () => {
   });
 
   test("throws on a suspended send result that carries no approval snapshot", async () => {
-    // A suspended reactor outcome is always an approval and must carry a
-    // snapshot; a snapshot-less suspend is not a supported park. The
-    // producer classifies the failure here. (The "input" park -- a
-    // conversational step re-arming -- is the workflow-host's decision,
-    // not a reactor `SendResult`, so it never flows through here.)
+    // A suspended reactor outcome is always an approval and must carry
+    // a snapshot; a snapshot-less suspend is not a supported park. The
+    // producer classifies the failure here.
     const stub = buildStubAgent();
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: async () => ({
@@ -678,9 +674,9 @@ describe("workflow-host StepInvoker adapter - onEvent contract", () => {
     });
 
     // The stub's `stream()` blocks until `close()` fires, so the
-    // forwarder's loop only ends once the agent is torn down. The
+    // forwarder's loop only ends once the agent is torn down; the
     // invoker resolving proves the subscription was drained and closed
-    // with the agent rather than leaking past the step.
+    // with the agent.
     await invoker(buildRequest({ input: { goal: "go" } }));
     expect(stub.state.streamStarted).toBe(true);
     expect(stub.state.closed).toBe(true);
@@ -737,8 +733,7 @@ interface WarmStubControl {
  * LSP-subprocess analogue spawned at construction and disposed on
  * `close()`, an in-memory conversation retaining every user turn (so a
  * later reply reflects earlier messages), and a `stream()` that ends
- * only at `close()`. The reply echoes the running conversation:
- * `reply(N) = "reply<N>:" + every prior user turn`.
+ * only at `close()`. The reply echoes the running conversation.
  */
 function buildWarmStubAgent(): WarmStubControl {
   const lifecycle: WarmStubLifecycle = {
@@ -1066,9 +1061,7 @@ function buildReplyDriveHarness(opts?: {
       }
       // Extra async gap after the stream ends so a test can prove the
       // invoker folded `done` into the warm entry the cache awaits:
-      // `evictAll` returns only after this settles. A loaded machine
-      // only makes the gap longer, making a failure to await `done`
-      // more visible rather than less.
+      // `evictAll` returns only after this settles.
       await new Promise((resolve) => setTimeout(resolve, 20));
       drainDone = true;
     })();
@@ -1167,8 +1160,9 @@ describe("workflow-host StepInvoker adapter - warm reply drain", () => {
   test("drives replies once over the agent lifetime stream and drains at eviction", async () => {
     const warmCache = createWarmAgentCache();
 
-    // A warm stub whose stream carries a `connector.reply` and ends only at
-    // close(), modeling the agent's lifetime event stream the drain consumes.
+    // A warm stub whose stream carries a `connector.reply` and ends
+    // only at close(), modeling the agent's lifetime event stream the
+    // drain consumes.
     let endStream: () => void = () => undefined;
     const streamEnded = new Promise<void>((resolve) => {
       endStream = resolve;
@@ -1462,11 +1456,10 @@ describe("workflow-host StepInvoker adapter - resume send path", () => {
     expect(sentContent.headers.interchangeCorrelationId).toBe("corr-1");
     expect(sentContent.content).toBe(JSON.stringify({ outcome: "approved" }));
 
-    // The message body must be a well-formed ApprovalDecision: the reactor's
-    // re-dispatch path parses it from the content at the correlation boundary
-    // and re-runs the parked tool call on an "approved" outcome. A body that
-    // does not validate would fail loud there, so the invoker's job is to
-    // deliver exactly that shape.
+    // The message body must be a well-formed ApprovalDecision: the
+    // reactor's re-dispatch path parses it from the content at the
+    // correlation boundary and re-runs the parked tool call on an
+    // "approved" outcome.
     if (sentContent.content === undefined) {
       throw new Error("resume message carried no decision body");
     }
@@ -2172,18 +2165,15 @@ describe("workflow-host StepInvoker adapter - inbound mail input", () => {
   });
 
   /**
-   * The projection must not forward the mail's `Interchange-Correlation-ID`.
-   * Resolving a correlation in the reactor clears the gate a parked call
-   * suspended on and, on the approval rail, grants that call a one-shot
-   * authorization bypass. The correlation id on a delivered mail is a value its
-   * sender chose, and the MIME decoder does carry such a header onto the `Mail`
-   * (see `packages/mime/src/mail-decode.test.ts`), so the only thing keeping a
-   * sender's header out of `tryCorrelate` is that this projection drops it.
-   *
-   * This asserts nothing about `createInboundMessage` refusing to stamp the
-   * header: the resume-send-path suite above proves the workflow host's own
-   * resume request does stamp it, so a regression there would fail that test
-   * rather than pass this one vacuously.
+   * The projection must not forward the mail's
+   * `Interchange-Correlation-ID`. Resolving a correlation in the
+   * reactor clears the gate a parked call suspended on and, on the
+   * approval rail, grants that call a one-shot authorization bypass.
+   * The correlation id on a delivered mail is a value its sender
+   * chose, and the MIME decoder does carry such a header onto the
+   * `Mail` (see `packages/mime/src/mail-decode.test.ts`), so the only
+   * thing keeping a sender's header out of `tryCorrelate` is that this
+   * projection drops it.
    */
   test("drops a mail-supplied correlation id rather than forwarding it", async () => {
     const correlated: Mail = {

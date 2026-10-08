@@ -27,9 +27,9 @@
 // live loop owns.
 //
 // Three origins funnel through `triggerRecycle`: operator command,
-// supervisor policy (periodic bounds check), and child self-initiated
-// `recycle.request` over control IPC. All land in the same code path;
-// the reason string is the only origin-specific data carried forward.
+// supervisor policy, and child self-initiated `recycle.request`. All
+// land in the same code path; the reason string is the only
+// origin-specific data carried forward.
 
 import { getLogger } from "@intx/log";
 
@@ -71,18 +71,15 @@ const logger = getLogger(["workflow-host", "supervisor", "recycle"]);
 export const MAX_BUFFERED_MAIL = 256;
 
 /**
- * Default supervisor-policy check interval. The policy thread wakes
- * roughly every minute, evaluates the configured bounds against the
- * live child, and triggers a recycle if any threshold has been
- * crossed. Operator-overridable via the supervisor's policy bindings.
+ * Default supervisor-policy check interval; operator-overridable via
+ * the supervisor's policy bindings.
  */
 export const DEFAULT_POLICY_INTERVAL_MS = 60_000;
 
 /**
- * Origin tag the recycle path stamps onto its log messages. The
- * `crash` origin drives the same respawn sequence after an unexpected
- * child exit; see the header note about steps 1-2 degrading to no-ops
- * for it.
+ * Origin tag the recycle path stamps onto its log messages. `crash`
+ * is an unexpected child exit driving the same respawn; steps 1-2
+ * degrade to no-ops for it (see header).
  */
 export type RecycleOrigin = "operator" | "policy" | "self" | "crash";
 
@@ -98,9 +95,9 @@ export interface RecycleAttempt {
 }
 
 /**
- * Per-handle subprocess wiring the recycle path owns. The supervisor
- * passes the live child's wiring on entry and gets the freshly-spawned
- * child's wiring back via `installNewChild`.
+ * Per-handle subprocess wiring. The supervisor passes the live
+ * child's wiring in and gets the new child's back via
+ * `installNewChild`.
  */
 export interface ChildWiring {
   handle: SubprocessHandle;
@@ -110,27 +107,26 @@ export interface ChildWiring {
 }
 
 /**
- * Bindings the supervisor passes into `triggerRecycle`. Mirrors the
- * subset of supervisor state the recycle sequence touches; it
- * intentionally excludes the mail-subscription disposer (the
- * supervisor holds the registration across the recycle) and the
- * mail-bus binding itself (the recycle path does not re-register).
+ * Bindings the supervisor passes into `triggerRecycle` -- the subset
+ * of supervisor state the sequence touches. Excludes the
+ * mail-subscription disposer and the mail-bus binding: the supervisor
+ * holds the registration across the recycle.
  */
 export interface RecycleContext {
   /** The supervisor's full bindings, reused on respawn for credentials and spawn. */
   readonly bindings: WorkflowSupervisorBindings;
   /**
-   * Every step id in this deployment's flat step-id namespace -- the
-   * definition's own `stepOrder` plus the step ids of every `loop`
-   * body it carries -- for credentials re-assembly.
+   * Every step id in the deployment's flat step-id namespace (the
+   * definition's `stepOrder` plus every `loop` body's step ids), for
+   * credentials re-assembly.
    */
   readonly stepOrder: readonly string[];
   /** Definition hash carried on respawn env (unchanged across recycle). */
   readonly definitionHash: string;
   /**
    * Warm-keep flag carried on the respawn env (design §3b). Unchanged
-   * across recycle: the respawned child rebuilds its empty warm-agent
-   * cache lazily, so the decision must survive the respawn.
+   * across recycle: the respawned child rebuilds its empty cache
+   * lazily, so the decision must survive.
    */
   readonly warmKeep: boolean;
   /** Forward target for InferenceEvents the new child publishes. */
@@ -140,41 +136,38 @@ export interface RecycleContext {
   /** Supervisor-side drain primitive; sends the existing drain mail. */
   readonly drain: (deadlineMs: number) => Promise<void>;
   /**
-   * Replay any `processing/` claim-check entries for the deployment's
-   * mail address back to `inbox/` so FIFO ordering survives the
-   * recycle. Invoked after drain settles, before the kill -- the
-   * window where a processing entry would exist with no owner.
+   * Replay any `processing/` entries for the deployment's mail
+   * address back to `inbox/` so FIFO survives. Invoked after drain
+   * settles, before the kill -- the window where a processing entry
+   * has no owner.
    */
   readonly replayProcessingToInbox: () => Promise<void>;
   /**
-   * Abort the prior cohort's terminal source and wake the dispatch
+   * Abort the prior cohort's terminal source and wake its dispatch
    * loop so it exits before the kill. Invoked after drain and replay
-   * settle: earlier would starve drain accumulators of live terminal
-   * events; later would race the kill against the dispatch loop's
-   * next iteration.
+   * settle: earlier starves drain accumulators of terminal events;
+   * later races the kill against the loop's next iteration.
    */
   readonly abortPriorCohort: () => void;
   /**
-   * Onward sink the supervisor uses to install the new child wiring
-   * once the freshly-spawned child has emitted `ready` and the
-   * credentialsSnapshot has been re-assembled.
+   * Sink the supervisor uses to install the new child wiring once
+   * the child has emitted `ready` and the credentials snapshot is
+   * re-assembled.
    */
   readonly installNewChild: (next: {
     wiring: ChildWiring;
     credentialsSnapshot: CredentialsSnapshot;
     /**
      * Live upstream control iterator the new child's receiver yields.
-     * The supervisor's upstream-control pump continues consuming it
-     * after `installNewChild` returns so child-initiated
-     * `recycle.request` frames keep funneling through
-     * `triggerRecycle`.
+     * The supervisor's upstream-control pump keeps consuming it after
+     * `installNewChild` returns.
      */
     controlIncoming: AsyncGenerator<ControlPayload, void, void>;
   }) => void;
   /**
-   * Crash hook the new child's IPC channels wire to. Identical shape
-   * to the supervisor's spawn-time onCrash so a frame violation on the
-   * recycled wiring tears the deployment down through the same path.
+   * Crash hook the new child's IPC channels wire to, same shape as
+   * spawn-time onCrash so a frame violation tears the deployment down
+   * through the same path.
    */
   readonly onCrash: (reason: string) => void;
   /**
@@ -183,24 +176,21 @@ export interface RecycleContext {
    */
   readonly killTimeoutMs?: number;
   /**
-   * Deadline (ms) for the respawned child's `ready` handshake, matching
-   * the bound the spawn path applies. The supervisor resolves the
-   * effective value at its edge (`bindings.readyTimeoutMs ??
-   * DEFAULT_READY_TIMEOUT_MS`) and passes it through; the `??` fallback
-   * here only fires for a direct test caller.
+   * Deadline (ms) for the respawned child's `ready` handshake,
+   * matching the spawn path's bound. The supervisor resolves the
+   * effective value; the `??` fallback here only fires for a direct
+   * test caller.
    */
   readonly readyTimeoutMs?: number;
   /**
-   * Optional drain deadline (ms) used in step 1. The supervisor's own
-   * drainTimeout accumulator escalates separately; this deadline is
-   * the wait the recycle path itself observes before proceeding to
-   * step 2. Defaults to the drain accumulator's default.
+   * Optional drain deadline (ms) used in step 1; the recycle path's
+   * own wait before step 2, distinct from the supervisor's
+   * drainTimeout accumulator. Defaults to the accumulator's default.
    */
   readonly drainDeadlineMs?: number;
   /**
-   * Optional setTimer/clearTimer pair used by the SIGKILL escalation
-   * wait. Production wires `setTimeout`/`clearTimeout`; tests inject
-   * a deterministic timer so the SIGKILL window is observable.
+   * Optional setTimer/clearTimer pair for the SIGKILL escalation
+   * wait; tests inject a deterministic timer.
    */
   readonly setTimer?: (cb: () => void, ms: number) => unknown;
   readonly clearTimer?: (handle: unknown) => void;
@@ -212,9 +202,8 @@ export interface TriggerRecycleOpts {
 }
 
 /**
- * Run the six-step recycle sequence. The function returns once the
- * new child has emitted `ready` and the supervisor has drained its
- * buffered mail into it; the supervisor installs the new wiring via
+ * Run the six-step recycle sequence. Returns once the new child has
+ * emitted `ready`; the supervisor installs the new wiring via
  * `ctx.installNewChild` before that point.
  */
 export async function triggerRecycle(
@@ -227,16 +216,14 @@ export async function triggerRecycle(
 
   logger.info`recycle ${opts.origin} requested: ${opts.reason} (previousChannelId=${previousChannelId})`;
 
-  // Step 1: drain via the supervisor's shared drain primitive. Each
-  // in-flight step's `drainBehavior` decides abort vs continue;
-  // `drainTimeout` escalation lands through the existing
-  // supervisor-drain origin.
+  // Step 1: drain via the supervisor's shared drain primitive; each
+  // in-flight step's `drainBehavior` decides abort vs continue.
   await ctx.drain(drainDeadlineMs);
 
   // Replay any in-flight `processing/` entries back to `inbox/`
-  // before the kill. The dying dispatch loop already aborted on
-  // cohort teardown and will not reach its `markConsumed`, so
-  // without this the entry would be orphaned with no live owner.
+  // before the kill: the dying dispatch loop aborted on cohort
+  // teardown and will not reach `markConsumed`, leaving an orphaned
+  // entry.
   try {
     await ctx.replayProcessingToInbox();
   } catch (cause) {
@@ -244,11 +231,10 @@ export async function triggerRecycle(
     logger.warn`recycle: replayProcessingToInbox before kill failed: ${message}`;
   }
 
-  // Abort the prior cohort now -- after drain and replay have run
-  // against a live cohort, before the kill drops the child. Aborting
-  // up front would starve drain accumulators of live terminal events;
-  // aborting after the kill would race the dispatch loop's next
-  // iteration against the controlSender about to disappear.
+  // Abort the prior cohort now -- after drain and replay ran against
+  // a live cohort, before the kill drops the child. Earlier starves
+  // drain accumulators of terminal events; later races the loop's
+  // next iteration against the controlSender about to disappear.
   ctx.abortPriorCohort();
 
   // Step 2: kill. SIGTERM first, then SIGKILL after `killTimeoutMs`;
@@ -259,10 +245,9 @@ export async function triggerRecycle(
     ...(ctx.clearTimer !== undefined ? { clearTimer: ctx.clearTimer } : {}),
   });
 
-  // Step 3: respawn. Fresh channelId, HMAC key, Ed25519 IPC keypair.
-  // Per-step credentials are re-read so a grants update that landed
-  // since the original spawn is reflected in the new child's
-  // snapshot. The deploy tree is UNCHANGED.
+  // Step 3: respawn. Fresh channelId, HMAC key, Ed25519 IPC keypair;
+  // per-step credentials re-read so a grants update since the
+  // original spawn is reflected. The deploy tree is UNCHANGED.
   const channelId = generateChannelId();
   const hmacKey = generateHmacKey();
   const ipcKeypair = await (
@@ -300,10 +285,9 @@ export async function triggerRecycle(
   });
 
   const readyPromise = waitForReady(controlIncoming);
-  // Attach a benign catch at creation, before the fold below consumes
-  // the rejection: a child that exits during the credentials read
-  // rejects `readyPromise` with no handler yet attached. Mirrors the
-  // spawn path's identical guard.
+  // Attach a benign catch at creation so a child exiting during the
+  // credentials read does not reject `readyPromise` with no handler
+  // attached. Mirrors the spawn path's guard.
   void readyPromise.catch(() => undefined);
 
   const eventIter = receiveEventChannel({
@@ -314,23 +298,19 @@ export async function triggerRecycle(
   });
   const eventPump = pumpEvents(eventIter, ctx.onInferenceEvent);
 
-  // The child handshake below is deadline-bounded and needs these timer
-  // bindings; the pre-handshake credentials-read reap needs them too, so
-  // derive them before that read.
+  // The handshake below and the pre-handshake credentials-read reap
+  // both need these timer bindings.
   const setTimer = ctx.setTimer ?? defaultSetTimer;
   const clearTimer = ctx.clearTimer ?? defaultClearTimer;
 
-  // Re-read per-step credentials; a grants update that landed during
-  // the previous child's lifetime is picked up here, so recycle
-  // doubles as the supervisor's grant-refresh path. The deploy tree
-  // is not consulted.
+  // Re-read per-step credentials; a grants update since the previous
+  // child's lifetime is picked up here, so recycle doubles as the
+  // grant-refresh path. The deploy tree is not consulted.
   //
-  // The read can reject (a malformed grants file is precisely this
-  // path's refresh case). The new child is spawned and wired but not
-  // yet installed on `state`, so the supervisor's recycle-failure
-  // teardown (which reaps the PRIOR cohort) cannot see it; reap it
-  // here on failure or it leaks. The reap always has live handles
-  // because the handle and pumps are constructed above.
+  // A rejected read reaps the new child here: it is spawned and wired
+  // but not yet installed on `state`, so the supervisor's
+  // recycle-failure teardown (which reaps the PRIOR cohort) cannot
+  // see it.
   let credentialsSnapshot: CredentialsSnapshot;
   try {
     credentialsSnapshot = await assembleCredentialsSnapshot({
@@ -353,15 +333,13 @@ export async function triggerRecycle(
     throw cause;
   }
 
-  // Steps 4 + 5: self-discover + resume. These run inside the child
-  // before it emits `ready`; the supervisor waits, bounded -- a child
-  // that neither readies nor exits must not park the supervisor in
-  // `recycling` forever. Fold ready/failed into values, race a
-  // resolve-only deadline, clear the timer on every path.
+  // Steps 4 + 5: self-discover + resume run inside the child before
+  // `ready`; the supervisor waits, deadline-bounded. Fold ready/failed
+  // into values, race a resolve-only deadline, clear the timer on
+  // every path.
   //
-  // NOTE: `assembleCredentialsSnapshot` above sits OUTSIDE this
-  // deadline; a wedged substrate is a supervisor-side fault bounded at
-  // its own layer, not by overloading this handshake timer.
+  // NOTE: the credentials read above sits OUTSIDE this deadline; a
+  // wedged substrate is bounded at its own layer.
   const readyTimeoutMs = ctx.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS;
   const readyOutcome = readyPromise.then(
     (info) => ({ kind: "ready" as const, info }),
@@ -377,9 +355,9 @@ export async function triggerRecycle(
     // The new child was never installed on `state`, so the
     // supervisor's recycle-failure teardown (which reaps the PRIOR
     // cohort) would leak it; reap it here. `killChildHandle` on an
-    // already-dead handle is a cheap no-op, so the `failed` path is
-    // reaped too (a control-channel end does not guarantee the
-    // process died, since the event channel is separate).
+    // already-dead handle is a no-op, so the `failed` path is reaped
+    // too (a control-channel end does not guarantee the process
+    // died).
     await reapUnreadyChild(handle, eventPump, controlIncoming, {
       killTimeoutMs,
       setTimer,
@@ -408,10 +386,9 @@ export async function triggerRecycle(
     controlIncoming,
   });
 
-  // Step 6: buffered mail. Every inbound message enqueues into the
-  // substrate-backed inbox regardless of phase, so the new dispatch
-  // loop `installNewChild` started dequeues the kill/respawn-gap
-  // entries in arrival order; no in-memory drain step is needed.
+  // Step 6: buffered mail. The new dispatch loop dequeues the
+  // kill/respawn-gap entries from the substrate-backed inbox in
+  // arrival order; no in-memory drain step is needed.
   return {
     origin: opts.origin,
     reason: opts.reason,
@@ -423,12 +400,11 @@ export async function triggerRecycle(
 /**
  * Reap a respawned child that was spawned and wired but never
  * installed on `state`. Kill first, then finalize the pumps: process
- * death drives EOF on both channels, unparks `waitForReady`'s
- * in-flight `next()` (letting `controlIncoming.return` complete) and
- * ends `pumpEvents`; awaiting either finalizer before the kill would
- * hang behind still-open channels. `killChildHandle` on an
- * already-dead handle is a cheap no-op, so a child that died on its
- * own is reaped safely too.
+ * death drives EOF on both channels, ending `waitForReady`'s
+ * in-flight `next()` and `pumpEvents`; awaiting either before the
+ * kill would hang behind still-open channels. Killing an
+ * already-dead handle is a no-op, so a child that died on its own is
+ * reaped safely too.
  */
 async function reapUnreadyChild(
   handle: SubprocessHandle,
@@ -457,19 +433,15 @@ async function reapUnreadyChild(
 }
 
 /**
- * Iterate the new child's control-receive iterator until the `ready`
- * frame lands. Identical shape to the supervisor's spawn-time helper;
- * factored here so the recycle path does not depend on the
- * supervisor's private function.
+ * Iterate the child's control-receive iterator until the `ready`
+ * frame lands; same shape as the supervisor's spawn-time helper.
  */
 async function waitForReady(
   iter: AsyncGenerator<ControlPayload, void, void>,
 ): Promise<{ childPid: number }> {
   // Explicit `next()` instead of `for await ... return` so the
-  // generator is not finalized when ready lands: the supervisor's
-  // upstream-control pump keeps iterating the same generator after
-  // recycle returns, and finalizing here would drop any subsequent
-  // child-initiated upstream frames.
+  // generator is not finalized when `ready` lands: the supervisor's
+  // upstream-control pump keeps iterating it after recycle returns.
   while (true) {
     const next = await iter.next();
     if (next.done === true) {
@@ -482,8 +454,7 @@ async function waitForReady(
       return { childPid: payload.data.childPid };
     }
     // Other upstream payloads before `ready` are dropped silently;
-    // the receiver iterator already verified them, and later upstream
-    // traffic flows through the supervisor's pump once recycle
+    // later traffic flows through the supervisor's pump once recycle
     // returns.
   }
 }
@@ -508,18 +479,15 @@ export interface RecyclePolicyBounds {
    */
   maxUptimeMs?: number;
   /**
-   * Maximum resident-set size (bytes) for the workflow-process child
-   * before a recycle is triggered. `undefined` disables the bound.
-   * The supervisor's `readRssBytes` callback is consulted on every
-   * policy tick; an absent callback disables the bound regardless of
-   * the threshold.
+   * Maximum resident-set size (bytes) before a recycle is triggered.
+   * `undefined` disables the bound; an absent `readRssBytes` callback
+   * disables it regardless of the threshold.
    */
   maxRssBytes?: number;
   /**
    * Maximum age (ms) since grants were last refreshed before a
-   * recycle is triggered. The supervisor's `readGrantsAgeMs` callback
-   * is consulted on every policy tick; an absent callback disables
-   * the bound regardless of the threshold.
+   * recycle is triggered. An absent `readGrantsAgeMs` callback
+   * disables the bound regardless of the threshold.
    */
   maxGrantsAgeMs?: number;
 }
@@ -542,9 +510,8 @@ export interface RecyclePolicyOpts {
   /** Timer disposer; production wires the matching `clearTimer`. */
   clearTimer: (handle: unknown) => void;
   /**
-   * Recycle entry point the policy invokes on a threshold trip. The
-   * supervisor's `recycle()` method wraps `triggerRecycle` and is the
-   * production callback.
+   * Recycle entry point the policy invokes on a threshold trip; the
+   * supervisor's `recycle()` method in production.
    */
   trigger: (reason: string) => Promise<void>;
 }
@@ -557,11 +524,10 @@ export interface RecyclePolicy {
 }
 
 /**
- * Start the supervisor-policy periodic recycle check. Returns a
- * handle the supervisor calls `stop()` on at shutdown. The policy is
- * single-trigger per tick: even if multiple bounds are tripped on the
- * same tick, exactly one `trigger` invocation lands with a reason
- * naming the first tripped bound.
+ * Start the supervisor-policy periodic recycle check; returns a
+ * handle the supervisor calls `stop()` on at shutdown. Single-trigger
+ * per tick: one `trigger` invocation with the first tripped bound's
+ * reason.
  */
 export function createRecyclePolicy(opts: RecyclePolicyOpts): RecyclePolicy {
   const intervalMs = opts.intervalMs ?? DEFAULT_POLICY_INTERVAL_MS;

@@ -63,16 +63,13 @@ const IPC_HMAC_KEY_BYTES = 32;
 /**
  * Self-owned upper bound on how long a single probe child may run before
  * the sidecar reaps it and fails the probe. Independent of the hub's
- * `probeTimeoutMs`, which only rejects the hub-side promise; this
- * deadline is what actually kills a wedged child.
+ * `probeTimeoutMs`, which only rejects the hub-side promise.
  */
 export const DEFAULT_PROBE_CHILD_TIMEOUT_MS = 30_000;
 
 /**
  * Self-owned SIGTERM->SIGKILL escalation window when reaping the child.
- * Mirrors the supervisor's `DEFAULT_KILL_TIMEOUT_MS` so a probe child
- * that ignores SIGTERM is force-killed on the same schedule a supervised
- * child is.
+ * Mirrors the supervisor's `DEFAULT_KILL_TIMEOUT_MS`.
  */
 export const DEFAULT_PROBE_CHILD_KILL_TIMEOUT_MS = DEFAULT_KILL_TIMEOUT_MS;
 
@@ -111,9 +108,7 @@ export type WalkCapabilities = (
  * The child's single result payload, carried inside the HMAC-signed
  * envelope. `ok: true` ships the inert projection, the advisory grant
  * set, the un-flattened grant walk snapshot, and the wire hash; `ok:
- * false` ships the failure reason (eval throw, malformed code) so the
- * host can reject the probe with a meaningful message rather than a bare
- * "child exited" surface.
+ * false` ships the failure reason (eval throw, malformed code).
  */ const ProbeResultPayload = type({
   ok: "true",
   projection: "unknown",
@@ -165,9 +160,8 @@ export interface MaterializedWorkflowClosure {
  * verifies, extracts, and lays out the workflow package (and its
  * dependency closure) into a resolvable tree, returning the package
  * directory the child loads from. Runs on the sidecar host -- it is I/O,
- * not author-code evaluation -- so the airlocked child only performs the
- * load+evaluate step. Host-supplied so `@intx/workflow-host` stays free
- * of a `@intx/tool-packaging` dependency.
+ * not author-code evaluation. Host-supplied so `@intx/workflow-host`
+ * stays free of a `@intx/tool-packaging` dependency.
  */
 export type MaterializeWorkflowClosure = (
   frame: WorkflowProbeRequestFrame,
@@ -178,10 +172,10 @@ export type MaterializeWorkflowClosure = (
 // ---------------------------------------------------------------------------
 
 /**
- * Minimal handle over a spawned probe child. The probe needs only the
- * child's stdout (the single result line), a kill primitive, and the
- * `exited` promise for reaping -- no control/event channels, because the
- * probe carries no bidirectional control traffic.
+ * Minimal handle over a spawned probe child: stdout (the single result
+ * line), a kill primitive, and the `exited` promise for reaping -- no
+ * control/event channels, because the probe carries no bidirectional
+ * control traffic.
  */
 export interface ProbeChildHandle {
   readonly pid: number;
@@ -193,7 +187,7 @@ export interface ProbeChildHandle {
 /**
  * Spawner the handler invokes to launch the one-shot probe child. The
  * sidecar process passes a `Bun.spawn` spawner; tests pass one that
- * records the spawned pid so they can assert the child was reaped.
+ * records the spawned pid.
  */
 export type ProbeChildSpawner = (args: {
   binaryPath: string;
@@ -225,9 +219,6 @@ export interface WorkflowProbeExecutorOpts {
  * satisfies the hub-agent `WorkflowProbeExecutor` seam: `probe(frame)`
  * returns the inert projection + advisory grant set + wire hash, and
  * throws when any step fails so the link answers `workflow.probe.error`.
- * `probe` materializes the frozen closure, spawns a one-shot airlocked
- * child to evaluate the workflow, and reaps that child on every exit
- * path independent of the hub's probe timeout.
  */
 export function createWorkflowProbeExecutor(opts: WorkflowProbeExecutorOpts): {
   probe(frame: WorkflowProbeRequestFrame): Promise<WorkflowProbeResult>;
@@ -268,10 +259,8 @@ interface RunOneShotProbeChildArgs {
 
 /**
  * Spawn a single probe child, drive it to its one result frame, and reap
- * it on every exit path. The `finally` guarantees the child is killed
- * whether the read succeeds, the child ships an error frame, the child
- * exits without a frame (malformed code / crash), or the self-owned
- * deadline fires first.
+ * it on every exit path: success, an error frame, exit without a frame
+ * (malformed code / crash), or the self-owned deadline.
  */
 async function runOneShotProbeChild(
   args: RunOneShotProbeChildArgs,
@@ -305,14 +294,11 @@ async function runOneShotProbeChild(
   const deadline = createDeadline(args.childTimeoutMs);
   try {
     // Race the result line against the deadline ONLY. Child exit is
-    // deliberately not a race arm: a child writes its result line and then
-    // exits promptly, so `handle.exited` and the buffered-line read both
-    // become ready, and an exit arm winning that race would discard an
-    // already-written result and fail the probe spuriously. Exit is not a
-    // distinct outcome the line read misses -- when the child exits its
-    // stdout write end closes, so `readResultLine` settles either with the
-    // trailing line (returned below) or null (the "closed its output"
-    // case). A child that neither writes nor exits is still caught by the
+    // deliberately not a race arm: a child writes its result line and
+    // then exits promptly, so an exit arm winning the race would discard
+    // an already-written result. When the child exits, its stdout write
+    // end closes and `readResultLine` settles with the trailing line or
+    // null; a child that neither writes nor exits is caught by the
     // deadline.
     const outcome = await Promise.race([
       linePromise.then((line) => ({ kind: "line" as const, line })),
@@ -362,8 +348,8 @@ function buildProbeChildEnv(args: {
 /**
  * Reap a probe child: SIGTERM, then SIGKILL if the exit does not land
  * within `killTimeoutMs`. SIGKILL is unignorable, so `exited` is
- * guaranteed to settle -- a child that traps or ignores SIGTERM cannot
- * wedge this call. A kill against an already-exited child is a no-op.
+ * guaranteed to settle; a kill against an already-exited child is a
+ * no-op.
  */ async function reapChild(
   handle: ProbeChildHandle,
   killTimeoutMs: number,
@@ -396,8 +382,8 @@ function buildProbeChildEnv(args: {
  * Authenticate and parse the child's single result frame. Verifies the
  * HMAC over the re-encoded envelope BEFORE trusting any field (mirroring
  * the event channel's receiver), binds the frame to this spawn's
- * channelId, then narrows the payload. A `ok: false` payload is turned
- * into a throw so the probe fails with the child's reason.
+ * channelId, then narrows the payload. An `ok: false` payload throws so
+ * the probe fails with the child's reason.
  */ async function parseProbeResult(
   line: string,
   channelId: string,
@@ -456,9 +442,8 @@ function buildProbeChildEnv(args: {
 // ---------------------------------------------------------------------------
 
 /**
- * One line the child writes to a sink. Production wraps `process.stdout`;
- * tests inject a capture. The bytes are handed to the OS before the child
- * exits so the result is not truncated.
+ * One line the child writes to a sink. Production wraps
+ * `process.stdout`; tests inject a capture.
  */
 export type ProbeChildLineWriter = (line: string) => Promise<void>;
 
@@ -479,8 +464,7 @@ export interface RunProbeChildOpts {
  * An evaluation failure (malformed code, an entry that throws, a package
  * with no `interchange.workflow`) is caught and shipped as an `ok: false`
  * frame so the host reaps cleanly and answers `workflow.probe.error`
- * with the reason -- rather than the child crashing and the host seeing a
- * bare "exited without result".
+ * with the reason.
  */
 export async function runWorkflowProbeChildFromProcessEnv(
   walkCapabilities: WalkCapabilities,
@@ -512,20 +496,16 @@ async function computeProbePayload(
   const wireHash = await computeWireDefinitionHash(projection);
   // Compose the director registry from the SAME closure the run-child
   // will, so the `director:<id>` grants advertised here match what the
-  // runtime resolves. Built-ins-only when the closure ships no
-  // `interchange.directors`.
+  // runtime resolves.
   const directors = await loadWorkflowDirectorRegistryFromClosure({
     packageDir,
   });
   // Load the static tool `definitions` each declared plugin package
   // contributes from the SAME closure, so the walk emits `tool:<name>`
-  // grants for plugin-contributed tools (Tier-2 governance). A plugin
-  // package reaches an agent only through `env.plugins`, so its tool
-  // grant surface is invisible to the walk otherwise -- the run-child
-  // would then load the plugin from the closure and the reactor would
-  // fail closed on an un-approved `tool:<name>`. Loading here (over the
-  // frozen closure the run-child also materializes from) keeps the
-  // approved snapshot and the runtime plugin in lockstep.
+  // grants for plugin-contributed tools. A plugin reaches an agent only
+  // through `env.plugins`, so its tool grant surface is invisible to the
+  // walk otherwise; loading here keeps the approved snapshot and the
+  // runtime plugin in lockstep.
   const pluginToolDefinitions =
     await loadWorkflowPluginToolDefinitionsFromClosure({
       packageDir,
@@ -535,9 +515,8 @@ async function computeProbePayload(
   // Fail closed on an unresolved director: the runtime does not re-gate
   // `director:<id>` against the approved grant set, so this advertisement
   // is the only approval checkpoint for a director. Shipping an ok probe
-  // whose grant set silently omits a director the runtime would still try
-  // to resolve would let the operator approve an incomplete manifest.
-  // Mirrors the live-authored approval gate (`createApprovalSetGate`).
+  // whose grant set silently omits a director would let the operator
+  // approve an incomplete manifest.
   const [unresolved] = walk.unresolvedDirectors;
   if (unresolved !== undefined) {
     return { ok: false, error: `unresolvable director: ${unresolved}` };
@@ -572,12 +551,12 @@ async function computeProbePayload(
 
 /**
  * Serialize the un-flattened capability walk into a plain-data
- * `GrantWalkSnapshot`: the per-step grant declarations (each step's grant
- * strings plus its tool-grant `grantEffects` map, converted from the
- * walk's `Map` to a plain object) and the definition's full, unfiltered
- * `grantRequirements`. Unlike `collectDeploymentGrants`, this preserves
- * the per-step grouping and the effect data the flattened set discards.
- * A definition that declares no requirements snapshots an empty list.
+ * `GrantWalkSnapshot`: the per-step grant declarations (each step's
+ * grant strings plus its tool-grant `grantEffects` map, converted from
+ * the walk's `Map` to a plain object) and the definition's full,
+ * unfiltered `grantRequirements`. Unlike `collectDeploymentGrants`, this
+ * preserves the per-step grouping and the effect data the flattened set
+ * discards.
  */ function buildGrantWalkSnapshot(
   walk: ReturnType<WalkCapabilities>,
   grantRequirements: readonly GrantRequirement[] | undefined,
@@ -701,10 +680,9 @@ const MISSING_MODULE_RE = /Cannot find (?:module|package) ['"]([^'"]+)['"]/;
  * not be resolved from the workflow's dependency closure. The evaluator
  * actually ran the import, so a missing specifier here means the closure
  * did not carry it -- the common cause is a runtime import declared only
- * under `devDependencies` (which the closure does not materialize),
- * whether a workspace-local member or an external package. Rewrite the
- * opaque "Cannot find module" into that actionable diagnostic. A
- * non-resolution failure passes through unchanged.
+ * under `devDependencies` (which the closure does not materialize).
+ * Rewrite the opaque "Cannot find module" into that actionable
+ * diagnostic. A non-resolution failure passes through unchanged.
  */
 export function enrichProbeError(err: unknown): string {
   const message = errorMessage(err);
