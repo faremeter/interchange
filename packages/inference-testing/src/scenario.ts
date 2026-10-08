@@ -27,20 +27,16 @@ export interface HarnessRequest extends Bun.__internal.BunRequestOverride {
 }
 
 /**
- * Predicate run against a constructed `Request` to decide whether a matcher
- * applies. Sync-only on purpose: predicates run on every scan pass and
- * must be referentially transparent. Reading mutable harness state from a
- * predicate is a bug; the type system cannot enforce purity.
+ * Sync-only and referentially transparent: predicates run on every scan
+ * pass, so reading mutable harness state from one is a bug; the type
+ * system cannot enforce purity.
  */
 export type RequestPredicate = (req: HarnessRequest) => boolean;
 
 /**
- * Predicate variant for `scenario.whenRequestBodyMatches`. Receives the
- * buffered request body as UTF-8 plus the original `Request`. The body is
- * buffered once per fetch and shared across body-aware predicates.
- *
- * Same purity contract as `RequestPredicate`: sync, idempotent,
- * side-effect-free, independent of mutable harness state.
+ * Variant for `scenario.whenRequestBodyMatches`: receives the buffered
+ * request body as UTF-8 plus the original `Request`. Same purity contract
+ * as `RequestPredicate`.
  */
 export type BodyAwareRequestPredicate = (
   bodyText: string,
@@ -70,12 +66,7 @@ export type ReplyOnceToolCall =
       readonly callId?: string;
     };
 
-/**
- * Options for `scenario.replyOnce`. `text`/`toolCalls` are the response
- * payload; `headUsage`/`tailUsage` optional usage frames; `predicate`
- * narrows the matched fetch; `responseOpts` shapes the `Response`
- * envelope.
- */
+/** Options for `scenario.replyOnce`. */
 export type ReplyOnceOpts = {
   readonly text?: string;
   readonly toolCalls?: readonly ReplyOnceToolCall[];
@@ -98,11 +89,10 @@ export type ReplyOnceOpts = {
 };
 
 /**
- * Optional response shape for `whenRequestMatches`. Defaults: `status:
- * 200`, `content-type: text/event-stream`. Callers driving the HTTP
- * error-classification branches of `runInference` (4xx, 5xx, retry-after,
- * context-overflow) supply `status` and an `errorBody` chunk through the
- * stream.
+ * Response shape for `whenRequestMatches`. Defaults: `status: 200`,
+ * `content-type: text/event-stream`. Callers driving the HTTP
+ * error-classification branches of `runInference` supply `status` and an
+ * `errorBody` chunk through the stream.
  */
 export type WhenRequestMatchesOpts = {
   /** HTTP status code for the `Response`. Defaults to 200. */
@@ -115,10 +105,6 @@ export type WhenRequestMatchesOpts = {
   readonly headers?: Readonly<Record<string, string>>;
 };
 
-/**
- * Options for `scenario.stall`. `predicate` narrows the matched fetch;
- * `responseOpts` shapes the `Response` envelope.
- */
 export type StallOpts = {
   readonly predicate?: RequestPredicate;
   readonly responseOpts?: WhenRequestMatchesOpts;
@@ -126,16 +112,13 @@ export type StallOpts = {
 
 /**
  * Handle returned by `scenario.stall`. Exposes the underlying
- * `SimulatedStream` (e.g. to release the stall later) and abort
- * telemetry for the matched fetch's `AbortSignal`.
+ * `SimulatedStream` and abort telemetry for the matched fetch's
+ * `AbortSignal`.
  *
  * `aborted` flips true when the matched fetch's signal fires; `dispose()`
  * does NOT flip it (dispose rejects the fetch with an `Error`, it does
- * not abort the signal), but does resolve `awaitAbort` so tests awaiting
- * it past dispose do not hang.
- *
- * `awaitAbort` resolves on the first signal fire or on `dispose()`,
- * whichever comes first.
+ * not abort the signal), but does resolve `awaitAbort`, which settles on
+ * the first signal fire or on `dispose()`, whichever comes first.
  */
 export type StallHandle = {
   readonly stream: SimulatedStream;
@@ -144,17 +127,14 @@ export type StallHandle = {
 };
 
 /**
- * The public scenario seam exposed by the harness. `createStream()` mints
- * a `SimulatedStream` tracked for `dispose()` teardown; the other methods
- * drive matchers, tool handlers, and abort scheduling against the virtual
- * clock.
+ * Mints a `SimulatedStream` tracked for `dispose()` teardown.
  */
 export type Scenario = {
   createStream(): SimulatedStream;
   /**
-   * Register a single-use matcher routing the next fetch whose `Request`
-   * satisfies `predicate` to `responseStream`. Fires at most once;
-   * register N matchers to serve N requests.
+   * Register a single-use matcher: the next fetch whose `Request`
+   * satisfies `predicate` is routed to `responseStream`. Fires at most
+   * once; register N matchers to serve N requests.
    *
    * The scan is non-backtracking: each fetch binds to the first
    * non-consumed accepting matcher and that pairing is never
@@ -162,10 +142,6 @@ export type Scenario = {
    * therefore raise `AmbiguousRequestError` when two concurrent fetches
    * both accept the broad matcher. Register the most specific predicate
    * first.
-   *
-   * `opts` shapes the `Response` envelope: default `status: 200` with
-   * `content-type: text/event-stream`; non-2xx defaults `content-type`
-   * to `application/json` so error bodies parse.
    */
   whenRequestMatches(
     predicate: RequestPredicate,
@@ -182,8 +158,6 @@ export type Scenario = {
    * bind, the harness buffers every still-waiting fetch's body and runs a
    * body-aware scan pass. Ambiguity is detected over the fully-buffered
    * set, matching the sync scan's single-pass model.
-   *
-   * `opts` shapes the `Response` envelope as in `whenRequestMatches`.
    */
   whenRequestBodyMatches(
     predicate: BodyAwareRequestPredicate,
@@ -221,12 +195,11 @@ export type Scenario = {
    */
   matchedRequests(): HarnessRequest[];
   /**
-   * Convenience wrapper: creates a stream, builds a complete single-turn
-   * response for `provider`, enqueues it at `clock.now() + 1`, and
-   * registers a match-any single-use matcher. Returns the stream so
-   * callers can enqueue more chunks. `opts.predicate` narrows the match,
-   * `opts.responseOpts` shapes the envelope. For richer scenarios use
-   * `createStream` + `whenRequestMatches`.
+   * Convenience wrapper: builds a complete single-turn response for
+   * `provider`, enqueues it at `clock.now() + 1`, and registers a
+   * match-any single-use matcher. Returns the stream so callers can
+   * enqueue more chunks. For richer scenarios use `createStream` +
+   * `whenRequestMatches`.
    */
   replyOnce(provider: Provider, opts: ReplyOnceOpts): SimulatedStream;
   /**
