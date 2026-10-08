@@ -138,8 +138,8 @@ export function assertMatrix(
 /** Every internal `@intx/*` dependency in a packed manifest whose specifier
  *  is not the release version. `bun pm pack` rewrites `workspace:`/`catalog:`
  *  to a concrete version using `bun.lock`; a specifier that lands on anything
- *  else means the lockfile is stale. A plain `bun install` after a version
- *  bump does not refresh those records — `bin/release` regenerates them. */
+ *  else means the lockfile is stale — a plain `bun install` after a version
+ *  bump does not refresh those records; `bin/release` regenerates them. */
 export function checkPackedManifest(
   name: string,
   manifest: unknown,

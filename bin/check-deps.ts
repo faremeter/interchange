@@ -5,27 +5,24 @@
 //
 //   1. Phantom dependencies — every module a workspace member imports must
 //      be declared in that member's own package.json. Imports are extracted
-//      with the TypeScript pre-processor, covering value, default, namespace,
-//      re-export, dynamic import(), require(), and the type-only forms
-//      (`import type`, inline `{ type X }`, and `typeof import()`), while
-//      strings, comments, and template literals are ignored. Triple-slash
-//      `/// <reference types="..." />` directives are out of scope. Bun's
-//      flat, hoisted node_modules otherwise lets a package resolve a
+//      with the TypeScript pre-processor (all value and type-only forms,
+//      require(), and dynamic import(); strings, comments, and template
+//      literals ignored; triple-slash reference directives out of scope).
+//      Bun's flat, hoisted node_modules otherwise lets a package resolve a
 //      dependency it never declared, so the manifest lies and a strict
 //      resolver breaks.
-//   2. Catalog convergence — any external dependency used by two or more
+//   2. Catalog convergence — an external dependency used by two or more
 //      members must be referenced as "catalog:", and every root catalog
-//      entry must in turn serve two or more members, so a version lives in
-//      exactly one place and the catalog carries no dead or single-use entries.
-//   3. Lockfile honesty — `bun install --frozen-lockfile` must be a no-op, so a
-//      manifest can declare no dependency that is missing from or stale in
-//      bun.lock. (bun's frozen check validates dependency resolution; it does
-//      not police every lockfile bookkeeping detail, such as bin-map or
-//      workspace-link metadata.)
+//      entry must serve two or more members, so a version lives in exactly
+//      one place and the catalog carries no dead or single-use entries.
+//   3. Lockfile honesty — `bun install --frozen-lockfile` must be a no-op.
+//      (bun's frozen check validates dependency resolution; it does not
+//      police every bookkeeping detail, such as bin-map or workspace-link
+//      metadata.)
 //
 // `checkWorkspace` performs the static checks (1 and 2) and is exported for
-// tests; the lockfile check and CLI gate run only when this file is the entry
-// point. Exits non-zero with a list of violations, or zero when clean.
+// tests; the lockfile check and CLI gate run only when this file is the
+// entry point.
 
 import { dirname, join, relative } from "node:path";
 import { type } from "arktype";
@@ -78,9 +75,9 @@ const NODE_BUILTINS = new Set([
   "zlib",
 ]);
 
-// package.json is external data (a filesystem read), so validate its shape at
-// the boundary and fail loudly rather than trusting an unchecked cast. The
-// narrow rejects arrays, whose numeric indices would otherwise satisfy a bare
+// package.json is external data (a filesystem read), so validate its shape
+// at the boundary rather than trusting an unchecked cast. The narrow
+// rejects arrays, whose numeric indices would otherwise satisfy a bare
 // string-keyed record.
 const depMap = type({ "[string]": "string" }).narrow((value, ctx) =>
   Array.isArray(value) ? ctx.mustBe("a non-array object") : true,
@@ -114,10 +111,11 @@ type MemberConfig = { aliases: AliasMatcher; outDir: string | null };
 /** Read a member's tsconfig for the two things the phantom scan needs: the
  *  `paths` alias matchers to exclude (a key with a trailing `*` matches by
  *  prefix; a key without one matches exactly, so "react" never suppresses
- *  "react-dom"), and the `outDir` to skip so emitted JS is not scanned. Uses
- *  the TypeScript config reader so JSONC and `extends` chains resolve as the
- *  compiler sees them; a config that cannot be read — including an unresolvable
- *  `extends` target — raises rather than silently dropping aliases. */
+ *  "react-dom"), and the `outDir` to skip so emitted JS is not scanned.
+ *  Uses the TypeScript config reader so JSONC and `extends` chains resolve
+ *  as the compiler sees them; an unreadable config — including an
+ *  unresolvable `extends` target — raises rather than silently dropping
+ *  aliases. */
 function memberConfig(dir: string): MemberConfig {
   const empty: MemberConfig = {
     aliases: { exact: new Set(), prefixes: [] },
@@ -172,12 +170,13 @@ function declaredNames(m: Manifest): Set<string> {
   ]);
 }
 
-// Catalog accounting. Every external dependency declaration is recorded with
-// whether it sits in a runtime section (dependencies/devDependencies) or a
-// peer/optional one. Check 2a (a dep shared by two runtime members must be
-// "catalog:") ignores peer/optional, so deliberately-wide peer ranges are never
-// forced onto the catalog; check 2b (a catalog entry must serve two members)
-// counts every section, since a peer consumer is still a consumer.
+// Catalog accounting. Every external dependency declaration is recorded
+// with whether it sits in a runtime section (dependencies/devDependencies)
+// or a peer/optional one. Check 2a (a dep shared by two runtime members
+// must be "catalog:") ignores peer/optional, so deliberately-wide peer
+// ranges are never forced onto the catalog; check 2b (a catalog entry must
+// serve two members) counts every section, since a peer consumer is still a
+// consumer.
 type ExternalUse = { member: string; spec: string; runtime: boolean };
 
 export type WorkspaceReport = {
@@ -199,9 +198,9 @@ export async function checkWorkspace(
   let fileCount = 0;
 
   const manifestPaths = readWorkspaceManifestPaths(repoRoot);
-  // Member directories, repo-relative, used below to exclude member subtrees
-  // from the root-scripts scan: a member is checked against its own manifest
-  // here, not a second time against the root manifest.
+  // Member directories, repo-relative, used below to exclude member
+  // subtrees from the root-scripts scan: a member is checked against its
+  // own manifest here, not a second time against the root manifest.
   const memberDirs: string[] = [];
 
   for (const manifestPath of manifestPaths) {
@@ -305,11 +304,11 @@ export async function checkWorkspace(
   // --- check 1 for the root scripts: files under bin/ and tests/ that are
   // not part of a workspace member. These have no package.json of their own
   // and are never published, so their imports resolve against the root
-  // manifest. Files that DO sit under a member directory — e.g. tests/lib,
-  // the @intx/test-harness package — are already checked against that
-  // member's own manifest in the loop above and are excluded here. Workspace
-  // packages are always available to root scripts; only external imports must
-  // be declared in root. ---
+  // manifest. Files under a member directory — e.g. tests/lib, the
+  // @intx/test-harness package — are already checked against that member's
+  // own manifest above and excluded here. Workspace packages are always
+  // available to root scripts; only external imports must be declared in
+  // root. ---
   const rootDeclared = declaredNames(rootManifest);
   for (const area of ["bin", "tests"]) {
     const areaDir = join(repoRoot, area);

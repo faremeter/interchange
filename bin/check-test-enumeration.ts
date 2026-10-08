@@ -4,34 +4,29 @@
 // Test-enumeration completeness guard.
 //
 // The `make test-unit`, `test-workflow`, and `test-core` passes enumerate
-// their test paths POSITIVELY: each hands `bun test` an explicit list of
-// directories and files rather than letting bun discover everything and
-// filtering. They have to -- bun 1.2.22's `[test].pathIgnorePatterns` is
-// documented but non-functional, so positive enumeration is the only
-// mechanism that keeps the parallel-unsafe integration tests out of the
-// fast unit pass (see CONVENTIONS.md's Testing section).
+// their test paths POSITIVELY (explicit lists handed to `bun test`):
+// bun 1.2.22's `[test].pathIgnorePatterns` is non-functional, so positive
+// enumeration is the only mechanism keeping the parallel-unsafe
+// integration tests out of the fast unit pass (see CONVENTIONS.md's
+// Testing section).
 //
-// The failure mode that buys is silent: a new `*.test.ts` that nobody
-// adds to the list is never run by `make all`, and can sit red
-// indefinitely without anything noticing -- which is exactly what
-// happened to the run-event batching suite. This guard closes that hole.
-// It fails `make lint` when a test file under `packages/` or `tests/` is
-// not reachable from the Makefile's `test` or `test-load` targets, so an
-// un-enumerated file surfaces at lint time instead of by accident.
+// The failure mode that buys is silent: a new `*.test.ts` nobody adds to
+// the list is never run by `make all` and can sit red unnoticed (that is
+// exactly what happened to the run-event batching suite). This guard fails
+// `make lint` when a test file under `packages/` or `tests/` is not
+// reachable from the Makefile's `test` or `test-load` targets.
 //
 // The Makefile is the single source of truth: the guard parses the
 // enumerated paths out of the target recipes rather than duplicating the
-// list, so the two cannot drift. A path argument that is a directory
-// covers every test file beneath it (the fast pass enumerates whole
-// dirs, e.g. `packages/`); a path argument that is a `*.test.ts` file
-// covers itself.
+// list, so the two cannot drift. A directory argument covers every test
+// file beneath it (the fast pass enumerates whole dirs, e.g. `packages/`);
+// a `*.test.ts` argument covers itself.
 //
 // Scope: the universe is `*.test.ts` under `packages/` and `tests/`.
 // `apps/` and `bin/` test files are covered by their whole-directory
 // enumeration in the fast pass and are not re-checked here. There is no
-// silent exclusion list -- if a test file must be excluded, enumerate the
-// reason here explicitly; today there are none. `node_modules` and built
-// `dist` trees are not source and are skipped.
+// silent exclusion list. `node_modules` and built `dist` trees are not
+// source and are skipped.
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -42,9 +37,9 @@ const TEST_ROOTS = ["packages", "tests"] as const;
 /**
  * Makefile targets whose recipes enumerate the test suite. The `test`
  * target is a prerequisite-only aggregate with no recipe of its own, so
- * the enumerating recipes live on the three passes it depends on plus the
- * standalone load target. `bin/check-ci-test-jobs.ts` reuses this list to
- * assert every pass (except `test-load`) actually runs in CI.
+ * the enumerating recipes live on the three passes it depends on plus
+ * the standalone load target. `bin/check-ci-test-jobs.ts` reuses this
+ * list to assert every pass (except `test-load`) runs in CI.
  */
 export const ENUMERATING_TARGETS = [
   "test-unit",
@@ -54,9 +49,9 @@ export const ENUMERATING_TARGETS = [
 ] as const;
 
 /**
- * The TAB-indented recipe lines of a Makefile target. A recipe is the run
- * of tab-prefixed lines immediately following the `target:` line; the
- * first line that is not tab-prefixed ends it (matching make's own rule).
+ * The TAB-indented recipe lines of a Makefile target: the run of
+ * tab-prefixed lines immediately following the `target:` line; the first
+ * non-tab line ends it (matching make's own rule).
  */
 export function recipeLines(makefile: string, target: string): string[] {
   const header = new RegExp(`^${target}:(?:\\s|$)`);
@@ -77,11 +72,10 @@ export function recipeLines(makefile: string, target: string): string[] {
 
 /**
  * The enumerated path arguments across the given targets' `bun test`
- * recipe lines. A path argument is any whitespace-delimited token that
- * contains a `/` -- the command and flag tokens (`$(BUN)`, `test`,
- * `--timeout`, the numeric timeout) never do, and every enumerated
- * directory or file does. Returned verbatim (a trailing slash marks a
- * directory), de-duplicated.
+ * recipe lines. A path argument is any whitespace-delimited token
+ * containing a `/` — command and flag tokens (`$(BUN)`, `test`,
+ * `--timeout`, the timeout value) never do. Returned verbatim (a trailing
+ * slash marks a directory), de-duplicated.
  */
 export function enumeratedPaths(
   makefile: string,
@@ -128,9 +122,9 @@ export type EnumerationReport = {
 /**
  * Compare every `*.test.ts` under the source roots against the Makefile's
  * enumerated test paths. Throws when the Makefile yields no enumerated
- * paths at all -- that means the recipe format changed out from under the
- * parser, and flagging every test file would be a false alarm; failing
- * loud forces the parser to be repaired instead.
+ * paths at all — the recipe format changed out from under the parser, and
+ * flagging every test file would be a false alarm; failing loud forces
+ * the parser to be repaired instead.
  */
 export function checkTestEnumeration(repoRoot: string): EnumerationReport {
   const makefile = readFileSync(join(repoRoot, "Makefile"), "utf8");

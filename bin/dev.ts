@@ -1,15 +1,12 @@
 #!/usr/bin/env bun
 /* eslint-disable no-console */
 
-// Local development orchestrator.
-//
-// Starts the database migration, hub server, and admin UI dev
-// server in the correct order, with colored log prefixes and graceful
-// shutdown.
+// Local development orchestrator: starts the database migration, hub
+// server, and admin UI dev server in the correct order, with colored log
+// prefixes and graceful shutdown.
 //
 // This module is Node-bound: it spawns child processes via zx (which
-// wraps `node:child_process`), so it cannot run under a non-Node
-// runtime regardless of whether it references Buffer.
+// wraps `node:child_process`), so it cannot run under a non-Node runtime.
 //
 // Usage:
 //   bun bin/dev.ts                       # start hub + admin-ui
@@ -56,11 +53,11 @@ if (args.size > 0) {
 }
 
 // The seed pins three built-in tool packages (`@intx/tools-*`); their
-// tarballs live in the workspace-builtins package-registry asset and
-// are published by the build/publish step above. Seeding without
-// publishing produces agent definitions whose launch immediately
-// fails with `tarball.missing` because the registry asset is empty.
-// Fail loudly here rather than after a successful seed run.
+// tarballs live in the workspace-builtins package-registry asset,
+// published by the step above. Seeding without publishing produces agent
+// definitions whose launch immediately fails with `tarball.missing`
+// because the registry asset is empty. Fail loudly here rather than
+// after a successful seed run.
 if (skipPublishBuiltins && wantSeed) {
   console.error(
     "--no-publish-builtins is incompatible with --seed: the seed creates agent definitions that pin the workspace built-ins; without a publish the launch would fail with tarball.missing. Either drop --no-publish-builtins or drop --seed.",
@@ -150,10 +147,10 @@ function spawnLabeled(
 
 let shuttingDown = false;
 // The highest-severity exit code requested so far. Repeated shutdown
-// calls (SIGINT during teardown, child-process failure landing while
-// we are already winding down) monotonically escalate this value
-// rather than overwriting it — a child-process failure that arrived
-// after a Ctrl-C must not be silently downgraded to exit-0.
+// calls (SIGINT during teardown, a child-process failure landing while
+// already winding down) monotonically escalate this value rather than
+// overwriting it — a failure after a Ctrl-C must not be silently
+// downgraded to exit-0.
 let pendingExitCode = 0;
 
 async function shutdown(code: number): Promise<never> {
@@ -273,16 +270,11 @@ console.log("Hub is ready.");
 // -- Step 3a: Publish built-in tool packages --
 //
 // Built-ins ride the same asset-substrate path as any operator-published
-// package-registry asset. Build the tarballs deterministically, then
+// package-registry asset: build the tarballs deterministically, then
 // publish them into the workspace-builtins registry on the dev tenant.
-// The publish step authenticates as the seeded admin and is idempotent:
-// it sign-ups-or-signs-in, ensures the tenant exists, ensures the asset
-// row exists, and PUTs every tarball under `dist/builtins/`.
-//
-// Runs before `--seed` so that when the seed wires up agent pins those
-// pins reference tarballs that are already in the registry. The seed
-// step itself remains the canonical place for agent/role/credential
-// fixtures.
+// The publish is idempotent (sign-up-or-in, ensure tenant and asset
+// rows, PUT every tarball). Runs before `--seed` so the agent pins the
+// seed wires reference tarballs already in the registry.
 
 if (!skipPublishBuiltins) {
   console.log("Building built-in tool-package tarballs...");
@@ -310,9 +302,8 @@ if (!skipPublishBuiltins) {
   console.log("Publishing built-in tool packages to the hub...");
   // Dev orchestration owns the publish parameters: it knows the seed's
   // admin identity and tenant slug, and the publish entry point itself
-  // is a boundary that takes a fully-populated PublishOptions. Defaults
-  // are resolved here, at the edge, rather than inside the publish
-  // function. Env overrides let an operator point dev.ts at a non-seed
+  // takes a fully-populated PublishOptions. Defaults resolve here, at
+  // the edge; env overrides let an operator point dev.ts at a non-seed
   // hub without editing the script.
   const adminEmailEnv = process.env["HUB_ADMIN_EMAIL"];
   const adminPasswordEnv = process.env["HUB_ADMIN_PASSWORD"];

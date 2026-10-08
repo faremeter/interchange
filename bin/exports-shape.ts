@@ -8,11 +8,9 @@
 // carries three conditions, in order:
 //
 //   "<subpath>": {
-//     "intx-src": "./src/<stem>.ts",     // in-repo resolvers (see
-//                                         //   tsconfig customConditions,
-//                                         //   the BUN variable, vite)
-//     "types":    "./dist/<stem>.d.ts",   // TypeScript for consumers
-//     "default":  "./dist/<stem>.js"      // runtime for consumers
+//     "intx-src": "./src/<stem>.ts",     // in-repo resolvers
+//     "types":    "./dist/<stem>.d.ts",   // consumer types
+//     "default":  "./dist/<stem>.js"      // consumer runtime
 //   }
 //
 // The three targets must name the same logical module (`<stem>`), or an

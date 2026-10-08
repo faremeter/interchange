@@ -13,17 +13,16 @@
 // This lives in `bin/lib` rather than in the entry point because the entry
 // point `bin/publish-tool-packages.ts` shares a basename with the
 // `bin/publish-tool-packages` launcher wrapper; an importer using
-// `./publish-tool-packages` would resolve to the extensionless bash wrapper,
-// not the `.ts`. A `bin/lib` module has no such twin, so both the CLI
-// entry point and `bin/dev.ts`'s in-process publish path import the
+// `./publish-tool-packages` would resolve to the extensionless bash
+// wrapper, not the `.ts`. A `bin/lib` module has no such twin, so both the
+// CLI entry point and `bin/dev.ts`'s in-process publish path import the
 // publisher from here.
 //
-// Auth pattern: the hub's REST endpoints are session-gated; this reuses the
-// same sign-in flow that `bin/seed.ts` uses, since there is no pre-existing
+// Auth pattern: the hub's REST endpoints are session-gated; this reuses
+// the same sign-in flow `bin/seed.ts` uses, since there is no pre-existing
 // bearer-token convention for human-facing assets. The admin credentials
-// default to the seed's `alice@example.com` / `password123`; in dev
-// orchestration `bin/dev.ts` and the CLI share these defaults. Operators
-// running this against a non-dev hub set `HUB_ADMIN_EMAIL` and
+// default to the seed's `alice@example.com` / `password123`; operators
+// running against a non-dev hub set `HUB_ADMIN_EMAIL` and
 // `HUB_ADMIN_PASSWORD`.
 //
 // Publishing is idempotent: re-running uploads every tarball under
@@ -178,11 +177,10 @@ async function putTarball(
   }
   const url = `${hubURL}/api/tenants/${tenantId}/assets/${assetId}/tarballs/${filename}`;
   // Retry once on a 5xx response. The hub's tarball upload path is
-  // idempotent (the asset's tip is keyed by integrity, not by
-  // request id), so a single immediate retry is safe and matches the
-  // honest-error-surfaces pattern: transient 5xx survives, persistent
-  // failures still surface. No exponential backoff — this is a dev
-  // workflow tool, not a hot-path producer.
+  // idempotent (the asset's tip is keyed by integrity, not request id),
+  // so a single immediate retry is safe: transient 5xx survives,
+  // persistent failures still surface. No exponential backoff — this is a
+  // dev workflow tool, not a hot-path producer.
   let res: Response | undefined;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
@@ -231,12 +229,11 @@ async function authenticate(
     { name: "Publish Admin", email, password },
     [],
   );
-  // better-auth's sign-up returns 200 on success (with the new
-  // session's cookies) and 422 UNPROCESSABLE_ENTITY with body
-  // `{ code: "USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL", ... }` when the
-  // address is already registered. Anything else is a hub-side fault
-  // that must not silently fall through to sign-in; that fall-through
-  // would mask a real misconfiguration as an authentication failure.
+  // better-auth's sign-up returns 200 on success (with the new session's
+  // cookies) and 422 UNPROCESSABLE_ENTITY when the address is already
+  // registered. Anything else is a hub-side fault that must not silently
+  // fall through to sign-in; that would mask a real misconfiguration as an
+  // authentication failure.
   if (signUp.status === 200) {
     parseSchema(AuthResponse, signUp.data, "sign-up response");
     return signUp.cookies;
@@ -279,11 +276,11 @@ async function ensureTenant(
     return parseSchema(TenantResponse, create.data, "create tenant response")
       .id;
   }
-  // 409 is the documented "tenant already exists" response: fall
-  // through to the slug lookup. Anything else (400 validation, 403
-  // permission, 5xx) is surfaced explicitly so a hub-side regression
-  // does not silently degrade into a misleading "tenant slug not
-  // visible" error from the fallback path.
+  // 409 is the documented "tenant already exists" response: fall through
+  // to the slug lookup. Anything else (400 validation, 403 permission,
+  // 5xx) is surfaced explicitly so a hub-side regression does not
+  // silently degrade into a misleading "tenant slug not visible" error
+  // from the fallback path.
   if (create.status !== 409) {
     throw new Error(
       `publish-tool-packages: failed to create tenant ${slug}: ${String(create.status)} ${JSON.stringify(create.data)}`,

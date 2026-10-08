@@ -3,14 +3,12 @@
 
 // Launcher-condition guard.
 //
-// The published `@intx/*` packages resolve to compiled `dist` by default;
-// in this repo no `dist` is built, so every bun process that resolves
-// `@intx/*` must pass `--conditions=intx-src` to reach the TypeScript
-// source. `make` (via the `BUN` variable), `tsc` (customConditions), and
-// vite set that structurally, in one place each. The surfaces where the
-// flag is hand-written and can silently rot are the launchers invoked
-// directly; this guard fails `make lint` when one runs an `@intx/*`
-// importer without the flag:
+// Published `@intx/*` packages resolve to compiled `dist` by default; in
+// this repo no `dist` is built, so every bun process resolving `@intx/*`
+// must pass `--conditions=intx-src` to reach the TypeScript source. `make`
+// (via the `BUN` variable), `tsc` (customConditions), and vite set that
+// structurally; this guard fails `make lint` when a directly-invoked
+// launcher runs an `@intx/*` importer without the flag:
 //
 //   1. `bin/*` bash wrappers — the flag rides on the `bun <script>.ts`
 //      exec line.
@@ -20,26 +18,19 @@
 //   3. `examples/*` and `apps/*` package.json `scripts` that `bun run` a
 //      `.ts` — the flag rides on the script command.
 //
-// It never inspects the `bin/*.ts` entry points' own shebangs (inert under
-// `bun x.ts`; they run through a wrapper that supplies the flag), make-
-// invoked scripts (the `BUN` variable covers those), or `bin/lib` helpers
-// (never a launcher target).
+// It never inspects `bin/*.ts` shebangs (inert under `bun x.ts`),
+// make-invoked scripts, or `bin/lib` helpers.
 //
-// The guard also catches the wrapper's other hazard: an extensionless
+// The guard also catches the wrapper shadowing hazard: an extensionless
 // wrapper `bin/<name>` and its `bin/<name>.ts` share a basename, so a
-// top-level `bin/*.ts` importing `./<name>` resolves to the bash wrapper,
-// not the `.ts`, and bun parses shell as TypeScript. It fails any such
-// `./<name>` import and names the `bin/lib/` remedy.
+// top-level `bin/*.ts` importing `./<name>` resolves to the bash wrapper
+// and bun parses shell as TypeScript.
 //
 // Scope boundary: the guard matches the launcher forms the repo uses, not
-// every conceivable one. A `bun` invocation behind an env-assignment,
-// `command`, or `time` prefix is not matched; a line invoking bun on more
-// than one `.ts` guards only the first; and `importsIntx` relies on the
-// TypeScript pre-processor, which surfaces every import/re-export form in
-// use here except `export * as ns from "@intx/..."`. Each is a deliberate
-// false-negative for a form no launcher uses — widening to cover them would
-// reimplement shell and module parsing. Prose commands in docs are likewise
-// out of scope.
+// every conceivable one (env-assignment/`command`/`time` prefixes,
+// multi-`.ts` lines, and `export * as ns` imports are deliberate
+// false-negatives for forms no launcher uses). Prose commands in docs are
+// likewise out of scope.
 //
 // `checkLaunchers` runs the scans and is exported for tests, along with the
 // pure `bunTsTarget`/`scanLauncher`/`importsIntx`/`shadowingImports` helpers;
@@ -53,14 +44,12 @@ const FLAG = "--conditions=intx-src";
 
 // A `bun` command at a command position: line start, after a shell
 // separator (`;`, `&`, `|`, `(`), or after `exec`. This excludes `bun`
-// appearing inside a string (`log::info "running bun install"`) or as an
-// argument (`command -v bun`).
+// inside a string or as an argument.
 const BUN_INVOCATION = /(?:^\s*|[;&|(]\s*|\bexec\s+)bun\b/;
 
-// The condition flag, in either `=` or space form, with `intx-src` present
-// as a whole comma-delimited element of the condition list — so
-// `--conditions=node,intx-src` matches but `--conditions=intx-src-extra`
-// (a different, non-resolving condition) does not.
+// The condition flag, in `=` or space form, with `intx-src` present as a
+// whole comma-delimited element of the condition list: `--conditions=node,
+// intx-src` matches but `--conditions=intx-src-extra` does not.
 const HAS_FLAG = /--conditions[= ](?:[\w.-]+,)*intx-src(?:,[\w.-]+)*(?![\w.-])/;
 
 /** True when a TypeScript source imports any `@intx/*` package directly.
@@ -75,8 +64,7 @@ export function importsIntx(code: string): boolean {
 }
 
 /** The repo-root-relative `.ts` file a launcher line runs `bun` on, or null
- *  when the line does not invoke bun on a `.ts` target (`bun install`,
- *  `bun pm pack`, a `bun` mention inside a string). `wrapperRel` is the
+ *  when the line does not invoke bun on a `.ts` target. `wrapperRel` is the
  *  launcher's own repo-root-relative path, used to resolve the
  *  `$(dirname -- "${BASH_SOURCE[0]}")/x.ts` form against the wrapper's own
  *  directory. Throws when a `.ts` target is present but its path uses a form
@@ -183,10 +171,10 @@ function isShellLauncher(abs: string): boolean {
 
 /** Scan every launcher surface (bin bash wrappers, app/package shebang
  *  binaries, and example/app package.json scripts) and require
- *  `--conditions=intx-src` on each `bun` invocation whose `.ts` target imports
- *  `@intx/*`; also fail any top-level `bin/*.ts` that imports a `./<name>` a
- *  wrapper shadows. Throws when a bin wrapper's bun target cannot be resolved
- *  to an existing file. */
+ *  `--conditions=intx-src` on each `bun` invocation whose `.ts` target
+ *  imports `@intx/*`; also fail any top-level `bin/*.ts` that imports a
+ *  `./<name>` a wrapper shadows. Throws when a bin wrapper's bun target
+ *  cannot be resolved to an existing file. */
 export function checkLaunchers(repoRoot: string): LauncherReport {
   const violations: string[] = [];
   let launcherCount = 0;
@@ -230,7 +218,7 @@ export function checkLaunchers(repoRoot: string): LauncherReport {
   }
 
   // Pass 3: no top-level `bin/*.ts` may import a `./<name>` that a wrapper
-  // shadows. Only top-level files collide — a `bin/lib/*.ts` import resolves
+  // shadows. Only top-level files collide — `bin/lib/*.ts` imports resolve
   // against `bin/lib`, where no wrapper lives.
   for (const rel of entries) {
     if (!rel.endsWith(".ts")) continue;
@@ -276,8 +264,8 @@ export function checkLaunchers(repoRoot: string): LauncherReport {
   }
 
   // Pass 5: package.json `scripts` under `examples/*` and `apps/*` that
-  // `bun run` a `.ts` importing @intx/*. Scripts run with the package dir as
-  // cwd, so the target resolves against that dir.
+  // `bun run` a `.ts` importing @intx/*. Scripts run with the package dir
+  // as cwd, so the target resolves against that dir.
   const manifests = [
     ...new Bun.Glob("examples/*/package.json").scanSync(repoRoot),
     ...new Bun.Glob("apps/*/package.json").scanSync(repoRoot),

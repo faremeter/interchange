@@ -4,31 +4,26 @@
 // Emit compiled ESM (`.js` + `.d.ts`) into each non-private workspace
 // package's `dist/`, for npm distribution.
 //
-// The packages type-check with `noEmit` and are consumed inside the
-// repo as `.ts` source (via the `intx-src` exports condition). For
-// publication they must ship compiled JavaScript that runs on plain
-// Node. This script produces that output per package:
+// Packages type-check with `noEmit` and are consumed in-repo as `.ts`
+// source (via the `intx-src` exports condition). For publication they must
+// ship compiled JavaScript that runs on plain Node:
 //
 //   1. Generate an ephemeral build tsconfig inside the package that
-//      `extends` the package's own `tsconfig.json` — so each package's
-//      real compiler options (including any that deviate from the base)
-//      carry over — and overrides only the emit knobs.
+//      `extends` the package's own `tsconfig.json`, overriding only the
+//      emit knobs.
 //   2. Run `tsc -p` against it to emit `dist/*.js` and `dist/*.d.ts`.
-//   3. Rewrite the emitted relative import specifiers to carry explicit
+//   3. Rewrite emitted relative import specifiers to carry explicit
 //      extensions (see `dist-rewrite`), which Node's ESM loader requires
 //      and `tsc` under `moduleResolution: "bundler"` does not add.
 //
 // Packages emit independently: a package's `@intx/*` dependencies resolve
 // to their `.ts` source through the exports map, not to a sibling `dist`,
-// so emit order does not matter here. Leaf-first ordering is the concern
-// of the publish path, not of emit.
-//
-// `dist/` is gitignored; nothing this script writes is committed. The
-// generated build config is removed after each package, even on failure.
+// so emit order does not matter here. `dist/` is gitignored; nothing this
+// script writes is committed. The generated build config is removed after
+// each package, even on failure.
 //
 // Usage: `build-dist` emits every non-private package. `build-dist <name>
-// [<name>...]` emits only the named packages (by `package.json#name`),
-// for targeted verification.
+// [<name>...]` emits only the named packages (by `package.json#name`).
 
 import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -52,8 +47,8 @@ function publishTargets(repoRoot: string): Target[] {
 /** The ephemeral per-package build config: inherit the package's own
  *  options, then override only what emit needs. `composite: false` keeps
  *  the emit a standalone one-shot (no `.tsbuildinfo`); `declarationMap`
- *  is off so no `.d.ts.map` litters `dist`; tests are excluded so they do
- *  not ship. */
+ *  is off so no `.d.ts.map` litters `dist`; tests are excluded so they
+ *  do not ship. */
 function generatedConfig(): string {
   return JSON.stringify(
     {

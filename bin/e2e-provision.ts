@@ -2,13 +2,13 @@
 
 // Standalone provisioning CLI for the browser end-to-end harness.
 //
-// The Playwright harness (`tests/admin-ui-e2e`) must not import `@intx/*`
-// — it is a leaf test package with only `@playwright/test`, `arktype`,
-// and `zx` as dependencies. This CLI is the single boundary that reaches
-// into the `@intx/test-harness` primitives on its behalf: `up` provisions
-// a fresh migrated database and prints the hub's connection env as one
-// line of JSON on stdout, and `down` drops a named database again. The
-// harness's global setup shells out to both.
+// The Playwright harness (`tests/admin-ui-e2e`) must not import
+// `@intx/*` — it is a leaf test package with only `@playwright/test`,
+// `arktype`, and `zx` as dependencies. This CLI is the single boundary
+// that reaches into the `@intx/test-harness` primitives on its behalf:
+// `up` provisions a fresh migrated database and prints the hub's
+// connection env as one JSON line on stdout, `down` drops a named
+// database. The harness's global setup shells out to both.
 //
 // Run under `bun --conditions=intx-src` so the `@intx/*` specifiers
 // resolve to TypeScript source, exactly as `bin/dev.ts` does.
@@ -35,8 +35,7 @@ async function up(): Promise<void> {
   try {
     // DB_HOST/DB_PORT come from `.env` (the shared connection target);
     // DB_USER/DB_PASSWORD/BETTER_AUTH_SECRET come from `.env.hub` (the
-    // hub app's own role and auth secret). The spawned hub runs as the
-    // hub role against the freshly-provisioned database name.
+    // hub app's own role and auth secret).
     const shared = await loadEnvFile(path.join(REPO_ROOT, ".env"));
     const hubEnv = await loadEnvFile(path.join(REPO_ROOT, ".env.hub"));
 
@@ -63,12 +62,12 @@ async function up(): Promise<void> {
           ".env.hub",
         ),
       },
-      // The migration role's connection to the provisioned database. It owns
-      // the freshly-migrated tables, so it is the identity harness pre-flight
-      // steps (sidecar provisioning, seeding) use to write rows directly. The
-      // hub role above may authenticate under trust auth with an empty
-      // password, which those bin scripts reject at their env boundary; the
-      // migration role always carries a concrete password.
+      // The migration role's connection to the provisioned database. It
+      // owns the freshly-migrated tables, so it is the identity harness
+      // pre-flight steps (sidecar provisioning, seeding) use to write rows
+      // directly. The hub role may authenticate under trust auth with an
+      // empty password, which those bin scripts reject at their env
+      // boundary; the migration role always carries a concrete password.
       dbEnv: {
         DB_HOST: provisioned.config.host,
         DB_PORT: String(provisioned.config.port),
@@ -78,9 +77,9 @@ async function up(): Promise<void> {
       },
     };
 
-    // Await the write callback so a piped stdout is fully drained
-    // before the process exits; exiting early can truncate the JSON
-    // line the parent parses.
+    // Await the write callback so a piped stdout is fully drained before
+    // the process exits; exiting early can truncate the JSON line the
+    // parent parses.
     const line = `${JSON.stringify(payload)}\n`;
     await new Promise<void>((resolve, reject) => {
       process.stdout.write(line, (err) => (err ? reject(err) : resolve()));
@@ -101,8 +100,8 @@ async function down(database: string): Promise<void> {
 
 // Success paths let the process exit naturally so stdio drains fully;
 // `process.exit` races exit against pending pipe writes. Bad argv sets
-// `process.exitCode` instead, which still yields a non-zero exit
-// without cutting off the usage message.
+// `process.exitCode` instead, which still yields a non-zero exit without
+// cutting off the usage message.
 const args = process.argv.slice(2);
 const command = args[0];
 
