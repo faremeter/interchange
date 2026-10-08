@@ -5,27 +5,20 @@ import type { PackMaterializationLimits } from "./materialization-limits";
 
 /**
  * Materialize the git tree `treeOid` (and everything it references) as
- * plain files under `targetDir`. `dir` is a git directory whose object
- * database holds `treeOid`, its subtrees, and its blobs. Subtrees recurse;
- * a regular blob is written with mode `0o755` when its git mode is
- * `100755`, else `0o644`.
+ * plain files under `targetDir`, recursing into subtrees and writing
+ * blobs with mode `0o755` when git mode is `100755`, else `0o644`.
  *
- * Throws on a submodule (`commit`) entry and on a symlink (git mode
+ * Throws on a submodule (`commit`) entry and on a symlink (mode
  * `120000`): a submodule's object is not in this pack, and writing a
- * symlink verbatim would let a link target escape `targetDir`. Failing
- * loud keeps the materialized tree from silently diverging from its
- * source; a caller that tolerates either must handle it before this.
+ * symlink verbatim would let a link target escape `targetDir`.
  *
- * `limits` bounds the CUMULATIVE disk footprint: a checkout whose blob
- * content totals more than `maxTreeBytes`, or whose files plus directories
- * exceed `maxTreeEntries`, fails loud rather than filling the host or
- * exhausting inodes. The tree the pack carries is untrusted (a pushed
- * asset). Note the bound is on the running total, not a single blob's
- * peak: `git.readBlob` materializes each blob (delta-reconstructed when
- * needed) fully into memory before the byte check runs, so a single delta
- * chain reconstructing to gigabytes is DETECTED here but allocated once
- * before rejection — bounding that single-blob peak is the pre-index
- * guard's and the hub ingest's job.
+ * `limits` bounds the CUMULATIVE disk footprint (`maxTreeBytes` blob
+ * content, `maxTreeEntries` files plus directories); the pack's tree is
+ * untrusted. The bound is on the running total, not a single blob's
+ * peak: `git.readBlob` materializes each blob fully into memory before
+ * the byte check runs, so a huge delta chain is detected here but
+ * allocated once before rejection — bounding that single-blob peak is
+ * the pre-index guard's and the hub ingest's job.
  */
 export async function writeTreeToDisk(
   runtime: StorageRuntime,

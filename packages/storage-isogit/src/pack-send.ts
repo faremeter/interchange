@@ -36,12 +36,10 @@ export async function createDeployPack(
 }
 
 /**
- * Predicate used by `createNegotiatedPack` to filter the set of object
- * OIDs actually placed in the resulting packfile. The walker computes the
- * full set of objects reachable from the wants and not reachable from any
- * have; `includeSha(sha)` then filters that set per-oid (`true` keeps the
- * object, `false` drops it). Used by the upload-pack route to suppress
- * objects reachable only via refs the requester is not permitted to fetch.
+ * Per-oid filter applied by `createNegotiatedPack` to the negotiated
+ * object set (`true` keeps, `false` drops). Used by the upload-pack route
+ * to suppress objects reachable only via refs the requester is not
+ * permitted to fetch.
  */
 export type IncludeShaPredicate = (sha: string) => boolean | Promise<boolean>;
 
@@ -85,12 +83,9 @@ async function reachableFromCommits(
 }
 
 /**
- * Build a packfile from a multi-want, multi-have negotiation. The walker
- * computes the set of objects reachable from any commit in `wants`, then
- * subtracts the set reachable from any commit in `haves`. The remainder is
- * run through `includeSha(sha)` for per-oid filtering (used by the
- * upload-pack route to drop objects reachable only via forbidden refs),
- * and the surviving OIDs are handed to `git.packObjects`.
+ * Build a packfile from a multi-want, multi-have negotiation: objects
+ * reachable from `wants` minus objects reachable from `haves`, filtered
+ * per-oid by `includeSha`, packed via `git.packObjects`.
  *
  * `haves` may include OIDs that do not exist locally; unknown commits are
  * silently ignored, matching smart-HTTP semantics where the client may
@@ -101,17 +96,15 @@ async function reachableFromCommits(
  */
 export type CreateNegotiatedPackOptions = {
   /**
-   * Precomputed set of object OIDs reachable from `wants`, supplied by
-   * callers that already walked this set (the upload-pack route layer
-   * pre-walks the allowed-ref tree to enforce the bearer token's
-   * refPattern, then folds the want walk into the same pass).
+   * Precomputed objects reachable from `wants`, supplied by callers that
+   * already walked this set (the upload-pack route layer pre-walks the
+   * allowed-ref tree for the bearer token's refPattern, then folds the
+   * want walk into the same pass).
    *
-   * Contract: when set, this MUST equal
-   * `reachableFromCommits(dir, wants)`. A superset over-packs (sending
-   * objects the client did not ask for); a subset under-packs (omitting
-   * objects the client needs). Callers that omit this option pay one walk
-   * inside `createNegotiatedPack`; either way the byte output is identical
-   * for the same `(wants, haves, includeSha)` triple.
+   * Contract: when set, this MUST equal `reachableFromCommits(dir,
+   * wants)`. A superset over-packs; a subset under-packs. Callers that
+   * omit it pay one walk inside `createNegotiatedPack`; the byte output
+   * is identical either way.
    */
   wantedObjects?: ReadonlySet<string>;
 };

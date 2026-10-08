@@ -41,14 +41,11 @@ export type GCResult = {
 
 /**
  * Write-path reclaim policy. A writer holding the per-directory lock
- * samples the repo's object counts after its mutation and repacks under
- * `retention` once the pack count reaches `packThreshold` OR the
- * loose-object count reaches `looseThreshold`. Both triggers matter: a hub
- * repo accumulates packs as it receives state, a sidecar repo accumulates
- * loose objects as the reactor commits. When a reclaim runs, the `.git`
- * byte size is checked against `warnBytes` and a disk-pressure warning is
- * emitted if reached, so the byte check rides the reclaim rather than
- * every write.
+ * repacks under `retention` once the pack count reaches `packThreshold`
+ * or the loose-object count reaches `looseThreshold` (a hub repo
+ * accumulates packs, a sidecar repo accumulates loose objects). A reclaim
+ * also checks `.git` bytes against `warnBytes` and emits a disk-pressure
+ * warning, so the byte walk rides the reclaim rather than every write.
  */
 export type GCPolicy = {
   packThreshold: number;
@@ -236,33 +233,25 @@ async function quarantineSupersededObjects(
 }
 
 /**
- * Reclaim disk in an agent git repo by repacking everything reachable from
- * its refs into a single pack and dropping the superseded packs and loose
- * objects.
+ * Repack everything reachable from the repo's refs into one pack and
+ * drop the superseded packs and loose objects. The keep set is the union
+ * of reachability over every head ref (agent repos carry two diverging
+ * heads, `main` and `deploy`; repacking one alone would discard the
+ * other's live objects). The consolidated pack is published through the
+ * same atomic staging dance receives use, so an unlocked reader never
+ * observes a torn pack; only then are the prior packs and loose-object
+ * fan-out dirs renamed into an unscanned quarantine. A flush makes the
+ * new pack and retired namespace durable together; object bodies are
+ * deleted only after that commit point, followed by a second cleanup
+ * flush.
  *
- * The keep set is the union of reachability over every head ref (agent
- * repos carry two diverging heads, `main` and `deploy`; repacking one
- * alone would discard the other's live objects). The keep set is packed
- * via `git.packObjects` and published through the same atomic staging
- * dance receives use, so a concurrent unlocked reader never observes a
- * torn pack. Only then are the packs that predated this pass and every
- * loose-object fan-out directory renamed into an unscanned quarantine. A
- * flush makes the new pack and retired namespace durable together; object
- * bodies are deleted only after that commit point, followed by a second
- * cleanup flush.
- *
- * Concurrency: the caller MUST already hold the repo's per-directory lock
- * (`withRepoDirLock`); this is the lock-free core, and external callers
- * not already under it use {@link runGC}. The lock excludes concurrent
- * writers, so the keep set computed from the refs cannot be invalidated by
- * a commit landing mid-pass. Retirement races only with unlocked readers,
- * the same window `unpublishPack` already accepts. Indexes are retired
- * before their packs, and every retired-but-reachable object is also in
- * the freshly published consolidated pack.
- *
- * Returns disk usage before and after plus the reclaimed delta. A repo
- * with no resolvable refs is not repacked, though stale quarantine is
- * still reclaimed. Exported for use within the storage package only.
+ * Caller MUST already hold the per-directory lock (`withRepoDirLock`);
+ * external callers use {@link runGC}. Retirement races only with
+ * unlocked readers, the same window `unpublishPack` already accepts;
+ * indexes are retired before their packs, and every retired-but-reachable
+ * object is also in the fresh consolidated pack. Returns disk usage
+ * before/after plus the reclaimed delta. A repo with no resolvable refs
+ * is not repacked, though stale quarantine is still reclaimed.
  */
 export async function gcUnderLock(
   runtime: StorageRuntime,
@@ -352,22 +341,17 @@ function warnIfOverBudget(dir: string, bytes: number, warnBytes: number): void {
 }
 
 /**
- * Apply a write-path reclaim policy to the repo at `dir`. Reclaims when
- * the pack count or loose-object count has reached its threshold.
- * Intended to be called by a writer that has just mutated the repo and is
- * still holding the per-directory lock, so the reclaim runs without
- * re-entering the lock.
+ * Apply a write-path reclaim policy to the repo at `dir`, for a writer
+ * that has just mutated the repo and still holds the per-directory lock.
  *
  * The trigger samples only the object counts — two directory reads — on
- * every write; the full `.git` byte walk that feeds the disk-pressure
- * warning runs only when a reclaim does. So the warning is evaluated at
- * reclaim time, not on every write, and the common below-threshold write
- * pays no byte walk.
- *
- * A reclaim failure is logged, not propagated: the write that triggered
- * this has already committed, so failing the caller would falsely report
- * the write as failed. The disk-pressure warning still fires on a failed
- * reclaim — the case where accumulation is most likely runaway.
+ * every write; the full `.git` byte walk for the disk-pressure warning
+ * runs only when a reclaim does, so below-threshold writes pay no byte
+ * walk. A reclaim failure is logged, not propagated: the write that
+ * triggered this has already committed, so failing the caller would
+ * falsely report the write as failed. The disk-pressure warning still
+ * fires on a failed reclaim — the case where accumulation is most
+ * likely runaway.
  */
 export async function maybeGCUnderLock(
   runtime: StorageRuntime,

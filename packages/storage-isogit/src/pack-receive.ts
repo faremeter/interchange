@@ -19,17 +19,16 @@ export type CommitVerifier = (
 export type TreeValidatorResult = true | { ok: false; reason: string };
 
 /**
- * Validates the contents of a commit's tree. Callers bind this to their
- * policy (e.g. state packs only contain entries named "state"). Return
- * `true` to accept; `{ ok: false, reason }` rejects with a reason the
- * substrate splices into its thrown `path_violation:` message. `false` is
- * accepted for back-compat as an opaque rejection.
+ * Validates the contents of a commit's tree against a caller policy
+ * (e.g. state packs only contain entries named "state"). Return `true`
+ * to accept; `{ ok: false, reason }` rejects with a reason the substrate
+ * splices into its thrown `path_violation:` message; `false` is accepted
+ * for back-compat as an opaque rejection.
  *
  * `topLevelPaths` lists names directly under the tree root. `readBlob`
- * reads any blob by repo-root-relative POSIX path. `listDir` enumerates
+ * reads a blob by repo-root-relative POSIX path; `listDir` enumerates
  * names directly under a tree-root-relative POSIX directory path (empty
- * string lists the root). Validators that only need path-level checks
- * can ignore `readBlob` and `listDir`.
+ * string lists the root).
  */
 export type TreeValidator = (
   topLevelPaths: string[],
@@ -99,12 +98,11 @@ async function pathExists(
 }
 
 /**
- * Remove a previously-published `.pack` + `.idx` pair from objects/pack/,
- * used when post-publish validation fails. A reader that already loaded
- * the rejected pack can finish against those bytes; subsequent calls will
- * not discover the removed pair (iso-git retains no pack resources
- * between calls). Each removal is catch-wrapped so a secondary failure
- * does not mask the rejection the caller is about to throw.
+ * Remove a published `.pack` + `.idx` pair from objects/pack/, used when
+ * post-publish validation fails. A reader that already loaded the pack
+ * can finish against those bytes; subsequent calls will not rediscover
+ * the pair (iso-git retains no pack resources between calls). Removals
+ * are catch-wrapped so a secondary failure does not mask the rejection.
  */
 async function unpublishPack(
   runtime: StorageRuntime,
@@ -139,10 +137,9 @@ async function topLevelNames(
 }
 
 /**
- * Remove stale working-tree content and write the commit's tree to disk.
- * The managed top-level entries are the union of the old and new commit
- * trees; paths never in any commit tree (e.g. .git, state, keys) are
- * untouched.
+ * Replace the working tree with the commit's tree. The managed top-level
+ * entries are the union of the old and new commit trees; paths never in
+ * any commit tree (e.g. .git, state, keys) are untouched.
  *
  * NOTE: rm-then-write is not atomic. If writeTree fails after rm succeeds
  * (e.g. disk full), the working tree is missing the cleared paths. The ref
@@ -226,76 +223,35 @@ async function writeTreeEntries(
 }
 
 /**
- * Index a packfile and update a ref without materializing the working
- * tree; used by the hub to store state packs where only object history
- * matters. When `validateTree` is provided, the commit's top-level tree
- * entries are checked after indexing but before the ref is promoted;
- * rejection throws with a `"path_violation"` prefix.
- *
- * Returns the SHA the ref pointed at before this call (or `null` if the
- * ref did not exist). `expectedOldSha` enforces a compare-and-set: the
- * current ref value is read after indexing and compared, aborting with
- * `non_fast_forward:` on mismatch. Pass a SHA string to require the ref
- * points there; `null` to require it does not yet exist. The caller is
- * responsible for serializing concurrent updates to the same ref; this
- * primitive enforces the CAS check but does not own the lock.
- */
-/**
  * Atomically publish a packfile into a git repository's pack directory.
  *
  * Race: `git.indexPack` writes the `.idx` with a single non-atomic
- * `fs.write` (`_indexPack` at index.cjs:11953). Pack discovery scans
- * `objects/pack/` non-recursively for `*.idx` files (`readObjectPacked`
- * at index.cjs:3394-3398 and the sibling enumerator at :9286-9290) and
- * derives the matching `.pack` from each. A reader landing mid-`.idx`
- * write can see a truncated buffer or an `.idx` that does not list the
- * OID it wants.
+ * `fs.write`, and readers derive the `.pack` from visible `.idx` files
+ * (`readObjectPacked` at index.cjs:3394-3398). Invariant: an `.idx`
+ * becomes visible only after its `.pack` is fully written. So the pack
+ * is staged in `objects/pack-staging/<transferId>/` — a sibling
+ * directory iso-git never scans (the per-transfer subdirectory isolates
+ * concurrent receives, and the storage namespace shares the runtime's
+ * atomic rename contract) — indexed there, then renamed into
+ * `objects/pack/`: `.pack` first, then `.idx` as the reader-visible
+ * transition.
  *
- * Invariant: whenever an `.idx` is visible to a reader's scan, the
- * `.pack` it references is fully written under the derived filename.
- * Readers see either no new pack or the complete pair; no intermediate
- * state.
+ * Cleanup: on success no staging files remain; on any throw before
+ * publish completes the staging directory is removed. A throw between
+ * the two renames leaves an unindexed `.pack` in `objects/pack/`,
+ * harmless because iso-git ignores `.pack` files with no matching
+ * `.idx`, and the recovery path removes the orphan without masking the
+ * original error.
  *
- * Strategy: write the `.idx` where readers do not scan. iso-git scans
- * only the literal path `<gitdir>/objects/pack`, non-recursively, so
- * any sibling directory under `objects/` is invisible to discovery. We
- * stage in `objects/pack-staging/<transferId>/`; the per-transfer
- * subdirectory isolates concurrent receives, and the directory shares
- * the storage namespace with `objects/pack/`, so the runtime's atomic
- * rename contract applies between them.
- *
- * Sequence: 1) write the pack bytes to the staging directory; 2) run
- * `git.indexPack` against the staging path (the non-atomic `.idx` write
- * happens here, unobserved); 3) atomic publish -- a) rename staging
- * `.pack` to final `.pack`, b) rename staging `.idx` to final `.idx`
- * (this is the moment readers transition to the new pair), c) remove
- * the staging directory; 4) on any throw before publish completes,
- * recursively remove the staging directory.
- *
- * Cleanup contract: on success, no staging files remain. On throw before
- * publish, the staging directory is removed. A throw between 3a and 3b
- * leaves an unindexed `.pack` in `objects/pack/`; harmless because
- * iso-git ignores `.pack` files with no matching `.idx` (verified at
- * index.cjs:3394-3398), and the recovery path removes the orphan
- * without masking the original error.
- *
- * Validation timing: callers inspecting the pack's contents
- * (`git.readCommit`, `git.readTree`, signature verification) must do so
- * after this returns, because pack discovery does not find the pack
- * until step 3. Callers that reject the published pack call
- * `unpublishPack` to remove the pair; a concurrent reader that already
- * loaded it can finish against those bytes.
- *
- * Scope: this helper does not own the lock serializing concurrent
- * receives on the same `dir` (callers do, e.g. `withRepoLock`); its
- * guarantee covers arbitrary `dir`-level isomorphic-git reads from any
- * code sharing the filesystem, including code that ignores the lock
- * (e.g. tests calling `git.readCommit` directly).
- *
- * Forward compatibility: if isomorphic-git's `_indexPack` becomes
- * atomic upstream or pack discovery changes, this staging dance can
- * collapse back to writing directly into `objects/pack/`; the cited
- * line refs are the anchor for that decision.
+ * Callers must read pack contents (`git.readCommit`, `git.readTree`,
+ * signature verification) only after this returns — discovery does not
+ * find the pack until the rename — and unpublish a rejected pack via
+ * `unpublishPack`. The caller owns the lock serializing concurrent
+ * receives; this guarantee covers any `dir`-level isomorphic-git reads
+ * from code sharing the filesystem, including code that ignores the
+ * lock. If `_indexPack` becomes atomic upstream or pack discovery
+ * changes, this staging dance can collapse back to writing directly
+ * into `objects/pack/`.
  */
 export async function publishPackAtomically(
   runtime: StorageRuntime,
@@ -352,8 +308,8 @@ export async function publishPackAtomically(
 
   let oids: string[];
   try {
-    // Steps 1-2: write the pack and index it, both inside the staging
-    // directory, invisible to readers scanning objects/pack/.
+    // Steps 1-2: write and index the pack inside staging, invisible to
+    // readers scanning objects/pack/.
     await runtime.fs.writeFile(stagingPackPath, pack);
     const result = await git.indexPack({
       fs: runtime.fs.git,
@@ -371,17 +327,16 @@ export async function publishPackAtomically(
   }
 
   // Step 3: atomic publish (3a pack rename, 3b idx rename). A failure
-  // here means the publish is partial or absent; the recovery rms below
-  // clear the half-published pack. Staging-directory cleanup is NOT part
-  // of this block — see below.
+  // means the publish is partial or absent; the recovery rms below clear
+  // it. Staging cleanup is deliberately NOT in this block — see below.
   try {
     await runtime.fs.rename(stagingPackPath, finalPackPath); // 3a
     await runtime.fs.rename(stagingIdxPath, finalIdxPath); // 3b
   } catch (err) {
-    // If 3a succeeded and 3b failed we leave an unindexed .pack in
-    // objects/pack/; remove it (finalIdxPath cannot exist since 3b
-    // never completed). Recovery rms are wrapped so a secondary
-    // failure does not mask the publish error.
+    // 3a succeeded but 3b failed: an unindexed .pack is left in
+    // objects/pack/ (finalIdxPath cannot exist since 3b never ran).
+    // Recovery rms are wrapped so a secondary failure does not mask the
+    // publish error.
     await runtime.fs
       .remove(stagingDir, { recursive: true, force: true })
       .catch(() => undefined);
@@ -391,14 +346,12 @@ export async function publishPackAtomically(
     throw err;
   }
 
-  // Step 3c: staging-directory cleanup runs only after the pack is
-  // fully published, and the rm is wrapped and swallowed: a failure
-  // here is benign, and it MUST NOT live inside the publish try/catch
-  // or an EACCES/EBUSY/EIO on the staging rm would trigger the
-  // recovery rms and delete an already-published (possibly already
-  // read) pack. A leftover staging directory leaks disk until
-  // external cleanup, which is preferable to destroying a successful
-  // publish.
+  // Step 3c: staging cleanup runs only after the pack is fully
+  // published, wrapped and swallowed. A failure is benign and MUST NOT
+  // live inside the publish try/catch, or an EACCES/EBUSY/EIO here
+  // would trigger the recovery rms and delete an already-published
+  // (possibly already read) pack; a leaked staging directory is
+  // preferable to destroying a successful publish.
   await runtime.fs
     .remove(stagingDir, { recursive: true, force: true })
     .catch(() => undefined);
@@ -406,6 +359,22 @@ export async function publishPackAtomically(
   return oids;
 }
 
+/**
+ * Publish a pack and update a ref without materializing the working
+ * tree; used by the hub to store state packs where only object history
+ * matters. Returns the SHA the ref pointed at before this call, or
+ * `null` if the ref did not exist.
+ *
+ * `expectedSha` must be one of the objects the pack delivers.
+ * `expectedOldSha` enforces a compare-and-set: the ref value is read
+ * after publishing and compared, aborting with `non_fast_forward:` on
+ * mismatch — a SHA string requires the ref to point there, `null`
+ * requires it not to exist yet. When `validateTree` is provided, the
+ * commit's top-level tree entries are checked before the ref is
+ * promoted; rejection throws with a `"path_violation"` prefix. The
+ * caller is responsible for serializing concurrent updates to the same
+ * ref; this primitive enforces the CAS check but does not own the lock.
+ */
 export async function receivePackObjects(
   runtime: StorageRuntime,
   dir: string,
@@ -421,9 +390,8 @@ export async function receivePackObjects(
 
   // Post-publish validation runs inside a try so any rejection path
   // (sha mismatch, CAS non-fast-forward, tree validator) unpublishes
-  // the pack before re-throwing. The immediate unpublish keeps a flood
-  // of rejected packs from accumulating before write-path GC would
-  // reclaim them.
+  // the pack before re-throwing, so rejected packs do not accumulate
+  // before write-path GC would reclaim them.
   try {
     if (!oids.includes(expectedSha)) {
       throw new Error(
@@ -547,9 +515,8 @@ export async function receivePackObjects(
 
 /**
  * Apply a git packfile to a repository, check out the working tree, and
- * update the ref. Publishes the pack, creates the `.idx` via indexPack,
- * checks out the tree, then updates `ref` last so it never points at a
- * commit whose working tree has not been materialized.
+ * update the ref — `ref` is updated last so it never points at a commit
+ * whose working tree has not been materialized.
  *
  * When `verifyCommit` is provided, the commit's embedded signature is
  * verified before materialization. Throws `"signature_unsigned"` if the

@@ -32,13 +32,10 @@ async function countDirEntries(
 }
 
 /**
- * Count loose git objects under `.git/objects/<xx>/`. Loose objects are the
- * un-packed per-commit objects isomorphic-git writes on each commit; their
- * count rising and collapsing after a repack is the pack-growth signature
- * a GC pass reclaims. The two-hex-char fan-out dirs plus `pack`/`info` are
- * the only children of `objects/`; the latter two are skipped. Keep this
- * filter in step with the synchronous Node counterpart in
- * `node-metrics.ts`.
+ * Count loose git objects under `.git/objects/<xx>/`. The two-hex-char
+ * fan-out dirs plus `pack`/`info` are the only children of `objects/`;
+ * the latter two are skipped. Keep this filter in step with the
+ * synchronous Node counterpart in `node-metrics.ts`.
  */
 export async function countLooseObjects(
   runtime: StorageRuntime,
@@ -69,9 +66,8 @@ export async function countLooseObjects(
 
 /**
  * Count `.pack` files under `.git/objects/pack/`. Each accepted receive
- * publishes one pack and the prior tip's pack is never reclaimed without a
- * GC pass, so the pack count is the monotonic accumulation a write-path GC
- * trigger watches.
+ * publishes one pack and prior packs are reclaimed only by GC, so the
+ * count is the monotonic accumulation the write-path GC trigger watches.
  */
 export async function countPackFiles(
   runtime: StorageRuntime,
@@ -126,9 +122,9 @@ export async function gitBytes(
 
 /**
  * The object counts alone, without the full `.git` byte walk. The
- * write-path GC trigger samples these on every write, so they must stay
- * cheap — two directory reads — and leave the recursive byte walk
- * (`gitBytes`) for the infrequent reclaim path.
+ * write-path GC trigger samples these on every write, so they stay cheap
+ * (two directory reads) and leave the recursive byte walk (`gitBytes`)
+ * for the infrequent reclaim path.
  */
 export type RepoObjectCounts = {
   packCount: number;
@@ -170,10 +166,9 @@ export async function repoDiskUsage(
 /**
  * Resolve every local branch ref of the repo at `dir` to its tip SHA.
  * Agent repos carry two diverging heads (`refs/heads/main` and
- * `refs/heads/deploy`); GC must union reachability across all of them, so
- * it enumerates them here rather than assuming a single ref. No tags or
- * other ref namespaces are created in these repos, so listing branches is
- * complete.
+ * `refs/heads/deploy`), and GC must union reachability across all of
+ * them; no tags or other ref namespaces are created in these repos, so
+ * listing branches is complete.
  */
 export async function listRepoRefs(
   runtime: StorageRuntime,

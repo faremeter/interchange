@@ -128,15 +128,12 @@ function parseMetadata(raw: unknown): MetadataData {
 
 /**
  * Walk the first-parent commit chain from HEAD, newest-first, stopping at
- * `limit` entries or at the first parent that is not present on disk.
- *
- * `git.log` throws `NotFoundError` when it reaches a missing commit, which
- * is the steady state under `tip-only` GC: the collector prunes ancestry,
- * leaving the tip's older parents absent. The durable conversation lives
- * in the working-tree files at the tip, not in this history, so the commit
- * log is a best-effort time-travel surface — degrade to the surviving
- * slice rather than throwing into a caller (e.g. the agent's `checkpoints`
- * tool). Any non-absence read error still surfaces.
+ * `limit` entries or at the first parent absent on disk. Under `tip-only`
+ * GC that absence is the steady state — the collector prunes ancestry —
+ * so degrade to the surviving slice rather than throwing into a caller
+ * (e.g. the agent's `checkpoints` tool). The durable conversation lives
+ * in the working-tree files at the tip, not in this history. Any
+ * non-absence read error still surfaces.
  */
 async function tolerantLog(
   runtime: StorageRuntime,
@@ -283,13 +280,12 @@ function parseTurns(text: string): ConversationTurn[] {
 
 /**
  * isomorphic-git-backed implementation of ContextStore and AuditStore.
- * Conversation state lives in `turns.jsonl`; per-cycle prompt/response/
- * manifest data in `prompt.jsonl`, `response.jsonl`, `manifest.jsonl`.
- * Pending operations, token usage, and connector state are serialized
- * into `metadata.json`. Audit records are written as individual JSON
- * files under `state/audit/{sessionId}/`. All files are tracked by the
- * git repository at `dir`. The caller is responsible for calling
- * `initAgentRepo(dir)` before constructing.
+ * Conversation state lives in `turns.jsonl`; per-cycle data in
+ * `prompt.jsonl`, `response.jsonl`, `manifest.jsonl`; pending operations,
+ * token usage, and connector state in `metadata.json`; audit records as
+ * individual JSON files under `state/audit/{sessionId}/`. All files are
+ * tracked by the git repository at `dir`. Call `initAgentRepo(dir)`
+ * before constructing.
  */
 /**
  * Extra reads the durable WAL mirror needs beyond `ContextStore`, kept

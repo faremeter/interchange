@@ -1,18 +1,17 @@
-// Bound a pushed pack's per-object INFLATED size before `git.indexPack` runs.
-//
-// `git.indexPack` inflates every object to hash it; a single highly
+// Bound a pushed pack's per-object INFLATED size before `git.indexPack`
+// runs: indexing inflates every object to hash it, so a single highly
 // compressible blob (32 MiB of zeros inflates ~1000x) allocates its full
-// inflated size in memory during indexing, before any disk-side checkout
-// guard runs. This walks the pack object-by-object and inflates each with a
-// HARD output cap on the ACTUAL produced bytes (not the size the header
-// claims), destroying the stream the moment the cap is exceeded.
+// inflated size in memory before any disk-side checkout guard runs. Each
+// object is inflated with a hard output cap on the ACTUAL produced bytes
+// (not the header-declared size), destroying the stream the moment the
+// cap is exceeded.
 //
-// Node-only (it uses `node:zlib`); the node entry wraps
-// `indexPackIntoGitDir` with it, so index-pack.ts stays browser-safe. It
-// does NOT reconstruct deltas, so a crafted delta chain that reconstructs
-// to a large object is not caught here; that residual is caught by
-// `writeTreeToDisk`'s cumulative-byte cap, and the definitive single-object
-// bound belongs at the hub ingest that first indexes the pushed pack.
+// Node-only (uses `node:zlib`); the node entry wraps `indexPackIntoGitDir`
+// with it, so index-pack.ts stays browser-safe. Deltas are not
+// reconstructed, so a crafted delta chain is not caught here; that
+// residual is caught by `writeTreeToDisk`'s cumulative-byte cap, and the
+// definitive single-object bound belongs at the hub ingest that first
+// indexes the pushed pack.
 
 import zlib from "node:zlib";
 
