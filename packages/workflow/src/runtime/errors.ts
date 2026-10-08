@@ -12,8 +12,7 @@
  * mid-`map`, or otherwise `in-flight` (a `childWorkflow`, or a
  * timeout-bearing `awaitSignal`) has no schedulable primitive to advance it;
  * the host (supervisor) owns the recovery decision. Surfacing the limitation
- * as a structured error keeps the contract honest instead of stalling with an
- * opaque "no schedulable primitives" message.
+ * as a structured error keeps the contract honest.
  */
 export class RuntimeResumeUnsupportedError extends Error {
   readonly stepId: string;

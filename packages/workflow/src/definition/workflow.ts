@@ -384,8 +384,8 @@ function validateStepIds(steps: Record<string, Primitive>): void {
   for (const [stepId, primitive] of Object.entries(steps)) {
     // The record key is the id every id-derived table is built on, while the
     // runtime authorizes under the primitive's own `id`. At the root these
-    // cannot disagree, because `normalize` assigns the key over the embedded
-    // id before this pass runs. A nested body never passes through that
+    // cannot disagree (`normalize` assigns the key over the embedded id
+    // before this pass runs); a nested body never passes through that
     // assignment, so a hand-assembled one can point the two halves at
     // different steps.
     if (primitive.id !== "" && primitive.id !== stepId) {
@@ -399,12 +399,10 @@ function validateStepIds(steps: Record<string, Primitive>): void {
       throw new Error("step ids cannot be empty");
     }
     // The workflow-deploy orchestrator derives per-step mail addresses
-    // of the form `<runId>-<stepId>@<deploymentDomain>` for
-    // multi-step deployments. Constraining `stepId` to
-    // `[a-zA-Z0-9_-]+` at definition time means the derived local-part
-    // never needs escaping and the address parser at the substrate
-    // boundary never sees a step-id-shaped local-part it cannot
-    // round-trip.
+    // `<runId>-<stepId>@<deploymentDomain>` for multi-step deployments.
+    // Constraining `stepId` to `[a-zA-Z0-9_-]+` at definition time means the
+    // derived local-part never needs escaping and the address parser never
+    // sees a step-id-shaped local-part it cannot round-trip.
     if (!STEP_ID_PATTERN.test(stepId)) {
       throw new Error(
         `step id ${JSON.stringify(stepId)} must match ${STEP_ID_PATTERN.source}`,
@@ -478,14 +476,14 @@ function straddlerOutputSelector(p: Primitive): Selector | undefined {
 /**
  * Enforce the onFailure sentinel-guard contract. When a unit U with handler H
  * fails, U's normal after-dependents are pruned EXCEPT nodes reachable from H,
- * so a "straddler" -- live on both the failure path (reachable from H) and the
- * normal path (reachable from a normal dependent) -- reads U's own output,
- * which on failure is the sentinel `{ failed, stepId, error: { message } }`,
- * not U's success shape. A selector throws at the first missing segment, so a
- * straddler reading a deep, indexed, or project-narrowed path into U's success
- * shape breaks at runtime on the failure path. Only an agent `step` selecting
- * the WHOLE `steps.<U>.output` (to branch on `.failed` in its body) is safe;
- * an action/childWorkflow straddler, or any narrowed read, is rejected.
+ * so a straddler -- reachable from both the failure path and a normal
+ * dependent -- reads U's own output, which on failure is the sentinel
+ * `{ failed, stepId, error: { message } }`, not U's success shape. A selector
+ * throws at the first missing segment, so a straddler reading a deep, indexed,
+ * or project-narrowed path into U's success shape breaks at runtime on the
+ * failure path. Only an agent `step` selecting the WHOLE `steps.<U>.output`
+ * (to branch on `.failed` in its body) is safe; an action/childWorkflow
+ * straddler, or any narrowed read, is rejected.
  */
 function validateOnFailureStraddlers(steps: Record<string, Primitive>): void {
   for (const [unitId, primitive] of Object.entries(steps)) {
@@ -618,9 +616,8 @@ function validateAfterRefs(steps: Record<string, Primitive>): void {
       if (primitive.onExhausted === stepId) {
         throw new Error(`loop ${stepId} cannot name itself as onExhausted`);
       }
-      // onExhausted routes only on exhaustion, so it must depend on the
-      // loop; otherwise it would be schedulable from RunStarted and fire on
-      // every run.
+      // Must depend on the loop: onExhausted routes only on exhaustion;
+      // without the dependency it would fire from RunStarted on every run.
       const target = steps[primitive.onExhausted];
       if (target !== undefined && !(target.after?.includes(stepId) ?? false)) {
         throw new Error(
@@ -647,9 +644,7 @@ function validateAfterRefs(steps: Record<string, Primitive>): void {
           `awaitSignal ${stepId} cannot name itself as onTimeout`,
         );
       }
-      // onTimeout routes only on a fired timer, so it must depend on the
-      // gate; otherwise it would be schedulable from RunStarted and fire on
-      // every run.
+      // Same rule as onExhausted: onTimeout routes only on a fired timer.
       const target = steps[primitive.onTimeout];
       if (target !== undefined && !(target.after?.includes(stepId) ?? false)) {
         throw new Error(
@@ -673,9 +668,8 @@ function validateAfterRefs(steps: Record<string, Primitive>): void {
             `${primitive.kind} ${stepId} cannot name itself as onFailure`,
           );
         }
-        // onFailure routes only on a permanent failure, so the handler must
-        // depend on the unit; otherwise it would be schedulable from
-        // RunStarted and fire on every run.
+        // Same rule as onExhausted: onFailure routes only on a permanent
+        // failure.
         const target = steps[primitive.onFailure];
         if (
           target !== undefined &&
@@ -706,9 +700,9 @@ const LOOP_BODY_FORBIDDEN = new Set<Primitive["kind"]>(["sleep", "onTrigger"]);
 // definition tree, so it is bounded here, at construction, rather than by the
 // runtime `MAX_CHILD_SPAWN_DEPTH` ceiling (which bounds the dynamic,
 // possibly self-referential childWorkflow recursion -- a different constraint
-// that must not be spent on static loop structure). Because a body is built
-// bottom-up and each `defineWorkflow` validates as it constructs, a definition
-// deeper than this cannot be built through `defineWorkflow`, so no downstream
+// that must not be spent on static loop structure). A body is built bottom-up
+// and each `defineWorkflow` validates as it constructs, so a definition deeper
+// than this cannot be built through `defineWorkflow` and no downstream
 // recursive reader (`projectForHash`, `runLoop`'s frames) ever sees one from
 // an authored definition. Small on purpose: nobody hand-authors deep loop
 // nesting.
@@ -898,18 +892,14 @@ function buildDependencyAdjacency(
       addEdge(stepId, primitive.onExhausted);
     }
     if (primitive.kind === "awaitSignal" && primitive.onTimeout !== undefined) {
-      // An awaitSignal's onTimeout is a routing target like a loop's
-      // onExhausted: on a timeout the gate routes to it instead of failing.
-      // Same shape -- include the edge so an onTimeout naming an ancestor is
-      // rejected as a cycle rather than corrupting branch pruning at runtime.
+      // Same routing-edge rule as onExhausted: include onTimeout so an
+      // ancestor target is rejected as a cycle.
       addEdge(stepId, primitive.onTimeout);
     }
     if ("onFailure" in primitive && primitive.onFailure !== undefined) {
-      // onFailure is a routing target like a loop's onExhausted: on a permanent
-      // failure the unit routes to it instead of failing the run. Include the
-      // edge so an onFailure naming an ancestor is rejected as a cycle. Runs
-      // after validateAfterRefs has already rejected onFailure on any
-      // non-member kind, so it fires only for step/action/childWorkflow.
+      // Same routing-edge rule as onExhausted: include onFailure so an
+      // ancestor target is rejected as a cycle. Runs after validateAfterRefs,
+      // which already rejected onFailure on non-member kinds.
       addEdge(stepId, primitive.onFailure);
     }
   }

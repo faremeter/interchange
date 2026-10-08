@@ -66,10 +66,9 @@ export interface StepWalkDescent {
  * Descend into every body form a deployment carries: loop bodies, inline
  * onTrigger section bodies, and inline childWorkflow definitions -- EVERY STEP
  * ID THAT CAN EXECUTE IN THIS DEPLOYMENT. A step reached under this descent
- * runs as part of the deployment the walked definition describes, so a
- * consumer asking what the deployment can run uses this one; the deploy-time
- * capability walk does, because an operator approving a deployment must
- * approve everything it can run.
+ * runs as part of the deployment the walked definition describes, so the
+ * deploy-time capability walk uses this one: an operator approving a
+ * deployment must approve everything it can run.
  *
  * It deliberately crosses the lifted-body boundary, so the ids it reaches
  * span more than one step-id namespace; see {@link executableStepIds}.

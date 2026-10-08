@@ -124,11 +124,11 @@ export interface StepInvokeRequest {
   signal: AbortSignal;
   /**
    * Present only on a resume re-invocation of a step that previously
-   * suspended. `kind` tells the invoker how to synthesize the inbound: an
-   * `"approval"` resume delivers a body stamped with `correlationId` so the
-   * reactor's `tryCorrelate` matches the rehydrated gate; an `"input"`
-   * resume delivers the `decision` as a plain next user turn. Absent on the
-   * first invocation (a plain `agent.send`).
+   * suspended. `kind` tells the invoker how to synthesize the inbound:
+   * `"approval"` delivers a body stamped with `correlationId` so the
+   * reactor's `tryCorrelate` matches the rehydrated gate; `"input"`
+   * delivers the `decision` as a plain next user turn. Absent on the first
+   * invocation (a plain `agent.send`).
    */
   resume?: { correlationId: string; decision: unknown; kind: ControlParkKind };
 }
@@ -246,7 +246,7 @@ export interface BlobSubstrate {
  * `definitionRef` (the internal ref the deploy step assigned) to a concrete
  * `WorkflowDefinition` via the runtime-supplied lookup (lifted-body map in
  * runLocal, re-evaluated closure map in production) and returns the terminal
- * status. The runtime body carries no lookup of its own.
+ * status.
  */
 export type SpawnChildWorkflow = (input: {
   definitionRef: string;
@@ -502,15 +502,14 @@ export interface WorkflowRuntimeEnv {
    */
   hasUpstreamSignalResolver: boolean;
   /**
-   * Optional suspension-notify sink. Fired once each time a step commits a
+   * Optional suspension-notify sink. Fired once when a step commits a
    * `SignalAwaited` on a reserved `signalName(correlationId)` channel, so
    * the host can register the correlation out-of-band (the sidecar sends a
    * `signal.correlation.register` frame; the hub co-writes routing + approval
-   * rows). Fires exactly once per suspension, on the initial park: a resume
-   * that finds the step already `awaiting-signal` does not re-fire. Recovering
-   * a registration lost across a crash is driven from durable state on a later
-   * re-establishment, whose hub write is idempotent on the correlationId.
-   * runLocal leaves it unset.
+   * rows). Fires on the initial park only; a re-park resume does not re-fire,
+   * and a registration lost across a crash is recovered from durable state on
+   * a later re-establishment (the hub write is idempotent on the
+   * correlationId). runLocal leaves it unset.
    */
   onPark?: (park: WorkflowPark) => void;
   /**
@@ -518,23 +517,23 @@ export interface WorkflowRuntimeEnv {
    * `onPark`. Fired once per park on an author `awaitSignal` gate (a plain,
    * author-chosen `name`, not a reserved `signalName(correlationId)`
    * channel) that must surface for a container to relay; a re-park resume
-   * does not re-fire, the same discipline as `onPark`. Two sites fire it: a
-   * body's leaf `awaitSignal` gate, and a container's own signal-relay await
-   * when that container is itself a suspendable child, so the park composes
-   * up one layer at a time. The suspendable-child seam wires it on every
-   * body env; a TOP-LEVEL container run and runLocal leave it unset.
+   * does not re-fire (as `onPark`). Two sites fire it: a body's leaf
+   * `awaitSignal` gate, and a container's own signal-relay await when that
+   * container is itself a suspendable child, so the park composes up one
+   * layer at a time. The suspendable-child seam wires it on every body env;
+   * a TOP-LEVEL container run and runLocal leave it unset.
    */
   onSignalPark?: (park: WorkflowSignalPark) => void;
   /**
    * Optional read-only recovery hook: enumerate the durable pending approval
    * operations a step left behind, keyed by `{ runId, stepId, attempt }`. The
-   * resume classifier consults it for a step that crashed mid-invocation to
-   * distinguish a step that crashed AFTER the reactor durably recorded an
-   * approval suspension but BEFORE the `SignalAwaited` flushed -- resumable,
-   * by reconstructing the missing `SignalAwaited` and re-parking -- from a
-   * genuine crash mid-agent-turn, which stays a terminal failure. Production
-   * wires it to the sidecar's durable step store; runLocal leaves every
-   * crashed invocation a terminal failure.
+   * resume classifier consults it to distinguish a step that crashed AFTER
+   * the reactor durably recorded an approval suspension but BEFORE the
+   * `SignalAwaited` flushed -- resumable, by reconstructing the missing
+   * `SignalAwaited` and re-parking -- from a genuine crash mid-agent-turn,
+   * which stays a terminal failure. Production wires it to the sidecar's
+   * durable step store; runLocal leaves every crashed invocation a terminal
+   * failure.
    */
   readParkedApprovalOps?: ReadParkedApprovalOps;
 }

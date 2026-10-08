@@ -8,15 +8,10 @@
 // entries are dropped via `dropChain` when a run settles so long-lived
 // processes do not accumulate dead promise chains.
 //
-// Segment buffering. `commitBuffered` keeps the per-event in-memory
-// state-machine validation but defers the durable write into a per-runId
-// pending buffer, flushed in ONE `appendBatch` at a segment boundary -- a
-// suspension or completion. Persistence-TIMING only: the state machine sees
-// the identical transition sequence; only the durable write is coalesced.
-// `reloadState` folds the pending buffer into the durable log for seq
-// assignment, and `commit` (immediate) flushes any pending buffer before its
-// own event so a buffered run body and an external immediate writer never
-// compute a colliding seq.
+// Segment buffering. `commitBuffered` validates the transition in memory but
+// defers the durable write into a per-runId pending buffer, flushed in ONE
+// `appendBatch` at a segment boundary (a suspension or completion);
+// persistence-TIMING only, the transition sequence is unchanged.
 
 import {
   applyEvent,

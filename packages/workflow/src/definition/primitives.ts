@@ -20,12 +20,11 @@ import type { Type } from "arktype";
 
 // Type-only import: an action handler's `ctx` parameter is the runtime's
 // EffectContext. A type-level cycle (runtime/env.ts imports Primitive
-// from here), erased at runtime by `import type`.
+// from here).
 import type { EffectContext } from "../runtime/env";
 import type { Selector } from "./selectors";
 // Type-only import: a loop or onTrigger body is a full WorkflowDefinition.
-// A type-level cycle (workflow.ts imports Primitive from here), erased at
-// runtime by `import type`.
+// A type-level cycle (workflow.ts imports Primitive from here).
 import type { WorkflowDefinition } from "./workflow";
 import type { Trigger } from "./triggers";
 
@@ -124,8 +123,8 @@ export interface GatePrimitive extends PrimitiveBase {
 
 /**
  * Parks the run until a signal named `name` is delivered, then completes with
- * that signal's payload. This is the human gate: the run holds here while a
- * decision is made somewhere outside it.
+ * that signal's payload. The run holds here while a decision is made outside
+ * it.
  *
  * `timeout` (milliseconds) gives the gate a second exit. Such a gate resolves
  * on its own timer with nothing delivered, routing to the step `onTimeout`
@@ -258,9 +257,8 @@ export interface ActionPrimitive extends PrimitiveBase {
  * receives exactly these three parameters and nothing else: no injected
  * services, no chance to close over host configuration, because nothing in
  * the deployment constructs it. Per-deployment configuration must
- * therefore arrive through `input`, which in practice means the author
- * selects it out of the trigger payload via the action's
- * {@link ActionPrimitive.input} selector.
+ * therefore arrive through `input`, which the author selects via the
+ * action's {@link ActionPrimitive.input} selector.
  */
 export type ActionHandler = (
   input: unknown,

@@ -134,12 +134,9 @@ export interface SignalReceived extends EventBase {
 
 /**
  * Retire a step's outstanding `signal-relay` await without delivering a
- * payload. An onTrigger container that proxied a body child's author-named
- * `awaitSignal` up onto its own log commits this when the body progresses by
- * another exit -- its own await timeout, or any later body event -- before the
- * external signal arrives, so a late signal does not resolve a park the body no
- * longer waits on. Distinct from `SignalReceived`: nothing is delivered, the
- * await is simply torn down.
+ * payload. Distinct from `SignalReceived`: nothing is delivered, the await
+ * is simply torn down. The transition handler in `transition.ts` documents
+ * the concurrent-delivery race and the strict scope.
  */
 export interface SignalAwaitAbandoned extends EventBase {
   kind: "SignalAwaitAbandoned";

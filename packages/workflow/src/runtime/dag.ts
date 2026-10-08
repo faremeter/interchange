@@ -43,8 +43,6 @@ export function isResumableLoopStep(
  *     `SignalAwaited`, re-parks, and re-invokes the agent with the delivered
  *     decision once the signal arrives -- without re-invoking it against the
  *     original input.
- *
- * Without this the re-driving run would stall at the still-awaiting step.
  */
 export function isResumableAwaitingSignalStep(
   def: WorkflowDefinition,
@@ -63,11 +61,10 @@ export function isResumableAwaitingSignalStep(
  * `StepCompleted` -- the crash-after-move-before-`StepCompleted` window;
  * `runAwaitSignal` reconstructs the outcome from the log and short-circuits
  * to completion without parking (distinct from `isResumableAwaitingSignalStep`,
- * which re-parks a gate whose signal has NOT yet arrived).
- *
- * The reduced state cannot distinguish "signal received" from "timeout
- * fired"; the durable log can, so a fired timeout resolves to a timeout
- * outcome rather than a signal payload it never received.
+ * which re-parks a gate whose signal has NOT yet arrived). The reduced state
+ * cannot distinguish "signal received" from "timeout fired"; the durable log
+ * can, so a fired timeout resolves to a timeout outcome rather than a signal
+ * payload it never received.
  */
 export function isResumableReceivedAwaitSignalStep(
   def: WorkflowDefinition,
