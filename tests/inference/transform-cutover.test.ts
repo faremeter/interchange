@@ -1,11 +1,9 @@
 // Headline integration tests for Phase 4 (pluggable context transforms).
 //
-// These tests wire the real `IsogitStore`, the real `createSizeCapTransform`,
-// the real `read_file` POSIX tool, and a real `BlobReader`, against a
-// temporary git repo. The inference HTTP path is driven by the
-// `@intx/inference-testing` harness so every production code path
-// (the real adapter, the real SSE parser, the real reactor) runs end to end;
-// only the live network and live SMTP transports are stubbed.
+// Real IsogitStore, createSizeCapTransform, read_file tool, and BlobReader
+// against a temporary git repo; the inference HTTP path runs through the
+// real adapter, SSE parser, and reactor via the testing harness. Only the
+// live network and SMTP transports are stubbed.
 
 import { describe, test, expect, afterAll, afterEach } from "bun:test";
 import fs from "node:fs";
@@ -60,12 +58,9 @@ function emptyUsage(): TokenUsage {
   return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, thinking: 0 };
 }
 
-// The wire-driven inference cycles below use the Anthropic provider; the
-// harness creates the SSE stream, registers the matcher, and serves
-// `wire.completeResponse("anthropic", ...)` bytes whose head + tail usage
-// frames decode to a positive `tokenUsage.input`/`tokenUsage.output`. This
-// matches the original `emittedDoneRunner` default of `{ input: 10,
-// output: 20 }` so Test C's `tokenUsage > 0` assertion still holds.
+// The wire-driven cycles use the Anthropic provider; the completeResponse
+// bytes' head + tail usage frames decode to positive tokenUsage, matching
+// the original `{ input: 10, output: 20 }` default Test C asserts on.
 const HEAD_USAGE: TokenUsage = {
   input: 10,
   output: 0,
@@ -178,10 +173,8 @@ async function startReactor(opts: {
     type: ReactorEmittedEvent["type"],
   ): Promise<ReactorEmittedEvent> {
     const predicate = (e: ReactorEmittedEvent) => e.type === type;
-    // Callers reach a `waitFor` after the awaited event has already been
-    // emitted -- `reactor.done` lands while the test is still awaiting an
-    // earlier step. The already-collected scan covers that; the waiter list
-    // covers the event that has yet to arrive.
+    // `waitFor` can be called after the event already fired; the
+    // already-collected scan covers that, the waiter list the rest.
     const emitted = events.find(predicate);
     if (emitted !== undefined) return Promise.resolve(emitted);
     return new Promise<ReactorEmittedEvent>((resolve) => {
@@ -211,9 +204,8 @@ describe("Phase 4 headline tests", () => {
     const blobReader = createBlobReader(store);
     const posix = createPosixTools({ cwd: workDir, blobReader });
 
-    // The "noisy" tool returns an oversize payload; the reactor's size-cap
-    // transform spills the full content to the context store and replaces
-    // the inline content with a marker pointing at `tool-output:///{callId}`.
+    // The size-cap transform spills the oversize payload and replaces
+    // inline content with a `tool-output:///{callId}` marker.
     const fullPayload = "A".repeat(500);
     const noisyTool: ToolRunner = {
       async run(call) {
@@ -344,11 +336,8 @@ describe("Phase 4 headline tests", () => {
     expect(loaded.tokenUsage).toEqual(emptyUsage());
     expect(loaded.connectorState).toBeNull();
 
-    // Run one inference cycle driven by real wire bytes from the testing
-    // harness. The director asks for inference on `message.received` and
-    // calls done on `inference.done`; the harness serves a complete
-    // Anthropic SSE response carrying the assistant text plus head/tail
-    // usage frames.
+    // One inference cycle: the harness serves a complete Anthropic SSE
+    // response with assistant text plus head/tail usage frames.
     const director: ReactorDirector = {
       async decide(event, _state, caps) {
         if (event.type === "message.received") {

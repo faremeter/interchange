@@ -6,12 +6,10 @@ import {
   OpenAIQuirks,
 } from "@intx/inference/providers";
 
-// These import the quirk validators from the package boundary rather than a
-// relative path on purpose: the point is to prove the re-exports in the
-// providers barrel are wired up. A dropped or renamed re-export would pass
-// tsc and every other suite, because nothing else imports these symbols; only
-// exercising them from `@intx/inference/providers` catches it. The catalog
-// resolver builds typed quirk values against exactly these exports.
+// Import from the package boundary on purpose: proving the providers
+// barrel re-exports are wired up. A dropped or renamed re-export would
+// otherwise pass tsc and every other suite, since nothing else imports
+// these symbols; the catalog resolver builds quirk values against them.
 describe("provider quirk validators are exported and usable", () => {
   test("OpenAIQuirks validates a well-formed bag and returns the value", () => {
     const parsed = OpenAIQuirks({

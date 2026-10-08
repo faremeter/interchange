@@ -1,19 +1,11 @@
-// Pluggable mechanical retry policy for the inference harness.
+// Pluggable mechanical retry policy for the inference harness. On
+// `inference.error` the `runInference` wrapper consults the configured
+// `RetryPolicy`, emits one `inference.retry` event, awaits a
+// Scheduler-driven delay, and re-issues the same HTTP request.
 //
-// The wrapper exposed as `runInference` buffers each attempt's events
-// until the attempt terminates with `inference.done` or
-// `inference.error`. On `inference.error` the wrapper consults the
-// configured `RetryPolicy` (or `createDefaultRetryPolicy()` when none
-// is supplied) and either flushes the buffered events to the caller
-// or discards them, emits one `inference.retry` event between
-// attempts, awaits a Scheduler-driven delay, and re-issues the same
-// HTTP request.
-//
-// These tests drive the wrapper against the deterministic test
-// harness's virtual clock (`enableInferenceTimers: true`) so every
-// retry delay is asserted exactly without sleeping real wall-clock,
-// and so the scheduler the wrapper awaits is the one whose firing
-// timing the test controls.
+// Tests drive the wrapper against the harness's virtual clock
+// (`enableInferenceTimers: true`) so every retry delay is asserted
+// exactly without sleeping real wall-clock.
 
 import { describe, test, expect } from "bun:test";
 
@@ -30,12 +22,8 @@ import { setupHarness } from "@intx/inference-testing";
 import type { Harness } from "@intx/inference-testing";
 
 async function withHarness<T>(body: (h: Harness) => Promise<T>): Promise<T> {
-  // `enableInferenceTimers: true` is required: the wrapper awaits the
-  // scheduler-driven retry delay and the inert default scheduler's
-  // setTimeout is a no-op (deliberately, to keep tests that do not
-  // exercise timers from advancing virtual time through ten-minute
-  // defaults). Without virtual-clock firing the retry delay would
-  // never resolve.
+  // Required: the inert default scheduler's setTimeout is a no-op, so
+  // the retry delay would never resolve without virtual-clock firing.
   const harness = setupHarness({ enableInferenceTimers: true });
   try {
     return await body(harness);
@@ -88,10 +76,8 @@ function retryEvents(
   return out;
 }
 
-// Register N single-use 5xx responses with a small JSON body. Each
-// classifies as `retryable` through `classifyHTTPError`. Used by tests
-// that target `category: "retryable"` without depending on timeout
-// semantics.
+// N single-use 5xx responses that classify as `retryable` via
+// classifyHTTPError, without timeout semantics.
 function registerRetryable5xx(harness: Harness, count: number): void {
   const encoder = new TextEncoder();
   for (let i = 0; i < count; i++) {
@@ -267,15 +253,11 @@ describe("runInference — custom retry policy", () => {
 
   test("unlimited retries on `retryable`: success on attempt N produces a single clean event stream", async () => {
     await withHarness(async (harness) => {
-      // Two failures then one success. The custom policy retries
-      // indefinitely with delayMs: 0 so the test does not need to
-      // advance virtual time through real backoff.
+      // Two failures then one success; delayMs: 0 avoids advancing
+      // virtual time through real backoff.
       registerRetryable5xx(harness, 2);
-      // Third matcher: a successful 200 response with a short payload.
-      // The OpenAI adapter accepts a single text delta followed by the
-      // SSE `[DONE]` sentinel; we serialise both inline rather than
-      // building a wire helper since the test only needs one well-
-      // formed reply.
+      // Third matcher: a successful 200; a single text delta + `[DONE]`
+      // sentinel serialised inline.
       const encoder = new TextEncoder();
       const okStream = harness.scenario.createStream();
       harness.scenario.whenRequestMatches(() => true, okStream);
@@ -540,11 +522,9 @@ describe("runInference — policy failure handling", () => {
   });
 
   test("policy throw does not allocate an extra seq for a phantom inference.retry", async () => {
-    // The wrapper allocates one new seq via nextSeq() per
-    // inference.retry it actually emits. A policy that throws and
-    // gets coerced to abort must NOT call nextSeq() for the abort
-    // path — the seq counter should match what a non-throwing
-    // abort-only policy produces.
+    // One new seq per emitted inference.retry; the throw→abort path
+    // must not allocate one, so the seq counter matches a plain
+    // abort-only policy.
     async function seqsConsumed(policy: RetryPolicy): Promise<number> {
       return await withHarness(async (harness) => {
         registerRetryable5xx(harness, 1);
@@ -573,12 +553,9 @@ describe("runInference — policy failure handling", () => {
   });
 
   test("caller-visible seqs stay contiguous across a retry that discards an attempt", async () => {
-    // The seq stream is documented as supporting gap detection for
-    // missed events. A retry that discards a failed attempt's
-    // buffered events must NOT leak the discarded attempt's seq
-    // allocations into the caller's counter — otherwise the
-    // consumer's first event arrives at a non-zero seq, looking
-    // exactly like a network drop.
+    // A discarded attempt must not leak its seq allocations into the
+    // caller's counter — a non-zero first seq would look like a
+    // network drop to the gap-detection consumer.
     await withHarness(async (harness) => {
       registerRetryable5xx(harness, 2);
       const encoder = new TextEncoder();
@@ -657,9 +634,8 @@ describe("runInference — retry delay scheduling", () => {
       const after = harness.clock.now();
       const events = await eventsP;
 
-      // Two retries → virtual clock advanced at least 2 * 250 ms.
-      // We assert greater-than-or-equal because the fetch chunks
-      // themselves consume a small amount of virtual time on top.
+      // Two retries → at least 2 * 250 ms of virtual time (the fetch
+      // chunks themselves consume a little on top).
       expect(retryEvents(events)).toHaveLength(2);
       expect(after - before).toBeGreaterThanOrEqual(500);
     });
@@ -668,26 +644,18 @@ describe("runInference — retry delay scheduling", () => {
   test("aborting the caller signal partway through a retry delay surfaces an aborted error on the next attempt", async () => {
     await withHarness(async (harness) => {
       registerRetryable5xx(harness, 1);
-      // The retry policy asks for a 1000ms delay before attempt 2.
-      // The test schedules `controller.abort()` to fire at virtual
-      // time +500ms — squarely inside the delay window — so the
-      // wrapper is awaiting `scheduler.setTimeout` when the signal
-      // aborts. When the delay's setTimeout fires the wrapper
-      // re-enters `runSingleAttempt`, which checks `signal.aborted`
-      // at entry and yields `inference.error` of category `aborted`.
-      // The default policy aborts on that category; no further
-      // attempts are issued.
+      // Abort fires at +500ms, inside the 1000ms delay window; when
+      // the delay's setTimeout fires, runSingleAttempt checks
+      // signal.aborted at entry and yields category `aborted`, which
+      // the default policy does not retry.
 
       const controller = new AbortController();
       let policyCalls = 0;
       const policy: RetryPolicy = () => {
         policyCalls += 1;
         if (policyCalls === 1) {
-          // First failure (the registered 503): schedule the abort
-          // to fire mid-delay, then return a long-enough delay that
-          // the abort lands well before the next attempt would
-          // start. The scheduling is done against the harness clock
-          // directly so the abort is settled in virtual time.
+          // Schedule the abort mid-delay, well before the next attempt
+          // would start, against the harness clock directly.
           harness.clock.schedule(harness.clock.now() + 500, () => {
             controller.abort();
           });
@@ -720,16 +688,11 @@ describe("runInference — retry delay scheduling", () => {
   test("aborting during the retry delay short-circuits the await within the delay window", async () => {
     await withHarness(async (harness) => {
       registerRetryable5xx(harness, 1);
-      // The retry policy asks for a long delay; the abort fires
-      // early in that window. If the wrapper honours `signal`
-      // during the delay, the policy's second invocation — which
-      // sees the aborted-category error from the next attempt —
-      // reads an `elapsedMs` shortly after `ABORT_AT_MS`, not
-      // after the full delay. Reading from the policy callback
-      // is the precise signal: virtual time elsewhere may still
-      // advance to drain the cancelled-but-still-heap retry
-      // setTimeout entry, which has no bearing on whether the
-      // wrapper resumed promptly.
+      // If the wrapper honours `signal` during the delay, the policy's
+      // second invocation sees elapsedMs shortly after ABORT_AT_MS,
+      // not after the full delay. Reading from the policy callback is
+      // the precise signal; other virtual time may still advance to
+      // drain the cancelled setTimeout entry.
       const controller = new AbortController();
       const RETRY_DELAY_MS = 5_000;
       const ABORT_AT_MS = 100;
@@ -763,11 +726,9 @@ describe("runInference — retry delay scheduling", () => {
       const events = await eventsP;
 
       expect(policyCalls).toBe(2);
-      // The second policy call (the aborted error from the next
-      // attempt) happens shortly after the abort fired, not after
-      // the configured retry delay. Bound the assertion well
-      // below the retry delay — the order-of-magnitude separation
-      // makes this robust without pinning exact timing.
+      // The second policy call happens shortly after the abort, not
+      // after the configured delay; bounding well below the delay
+      // keeps the assertion robust without pinning exact timing.
       expect(secondCallElapsedMs).toBeDefined();
       expect(secondCallElapsedMs).toBeLessThan(RETRY_DELAY_MS / 5);
       expect(retryEvents(events)).toHaveLength(1);
@@ -798,9 +759,8 @@ describe("runInference — retry delay scheduling", () => {
       await harness.run();
       const events = await eventsP;
 
-      // Exactly one policy invocation (the throw → abort path does
-      // not loop), no retry event leaks out, original retryable
-      // error surfaces.
+      // One policy invocation (the throw→abort path does not loop),
+      // no retry event leaks, the original retryable error surfaces.
       expect(policyCalls).toBe(1);
       expect(retryEvents(events)).toHaveLength(0);
       expect(findError(events)?.category).toBe("retryable");

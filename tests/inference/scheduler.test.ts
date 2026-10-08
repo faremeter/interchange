@@ -1,9 +1,6 @@
-// Tests for the `Scheduler` exposed by `setupHarness` via `deps.scheduler`.
-// Both modes (`enableInferenceTimers: false` and `true`) report `now()`
-// from the harness's virtual clock so the harness's authoritative time
-// source agrees with whatever a consumer reads through the injected
-// Scheduler. The inert-mode scheduler additionally guarantees that
-// `setTimeout` is a no-op — only `now()` follows the clock.
+// Tests for the `Scheduler` exposed by `setupHarness` via
+// `deps.scheduler`. Both modes report `now()` from the harness's virtual
+// clock; inert mode also guarantees `setTimeout` is a no-op.
 
 import { describe, test, expect } from "bun:test";
 
@@ -33,10 +30,8 @@ describe("inference-testing Scheduler.now() (inert mode)", () => {
   });
 
   test("setTimeout remains a no-op even though now() tracks the clock", async () => {
-    // The asymmetry is deliberate: production timers are suppressed,
-    // but a test that advances the clock for unrelated reasons still
-    // sees `now()` move. The callback handed to `setTimeout` must
-    // not fire even after the clock advances well past `delayMs`.
+    // Deliberate asymmetry: timers are suppressed but `now()` follows
+    // the clock; the callback must not fire even well past `delayMs`.
     const harness = setupHarness();
     try {
       let fired = false;

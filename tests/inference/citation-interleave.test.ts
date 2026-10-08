@@ -1,18 +1,12 @@
-// Citation interleaving in the inference harness. CitationBlocks
-// emitted via `inference.citation` events carry an optional `index`
-// naming the source content block; the harness interleaves indexed
-// citations into the finalized turn's `content[]` immediately after
-// the block at the matching index. Citations without an index append
-// at the tail per the legacy positional rule on CitationBlock.
+// Citation interleaving in the inference harness. Indexed
+// `inference.citation` events interleave into the finalized turn's
+// `content[]` immediately after the block at the matching index;
+// citations without an index append at the tail (legacy positional
+// rule on CitationBlock).
 //
-// These tests exercise the harness end-to-end via `runInference`,
-// covering:
-//
-//   - Indexed citations from the Anthropic adapter (which propagates
-//     `content_block_delta.index` onto every emitted citation event)
-//     interleave at their source block index across two text blocks.
-//   - Citations without an index (stub adapter that omits the field
-//     on the event payload) append at the end of `content[]`.
+// Indexed citations from the Anthropic adapter interleave at their
+// source block index across two text blocks; unindexed citations from
+// a stub adapter append at the end of `content[]`.
 
 import { describe, expect, test } from "bun:test";
 
@@ -119,13 +113,9 @@ function finalTurn(events: InferenceEvent[]): ConversationTurn {
 
 describe("runInference — citation interleaving", () => {
   test("indexed citations from Anthropic interleave at their source block", async () => {
-    // Two text blocks at indices 0 and 1, each with one citation
-    // delivered via the citations_delta wire shape on the same
-    // content_block_delta index. The harness must produce a final
-    // content[] of [text@0, citation@0, text@1, citation@1] — not
-    // [text@0, text@1, citation@0, citation@1] (the old flat-tail
-    // behavior) and not [text@0, text@1, citation@1, citation@0]
-    // (a hypothetical sort-by-index regression).
+    // Two text blocks, each with one citation: the final content[] must
+    // be [text@0, citation@0, text@1, citation@1] — neither flat-tail
+    // nor sort-by-index order.
     const chunks: Uint8Array[] = [
       wire.anthropic.messageStart({
         usage: { inputTokens: 5, outputTokens: 0 },
@@ -188,11 +178,8 @@ describe("runInference — citation interleaving", () => {
   });
 
   test("citation interleaves after text in a thinking + text + citation turn", async () => {
-    // INTR-119's stated DoD scenario: thinking block at one index,
-    // text block at another, citation indexed to the text block.
-    // Final layout must be [thinking, text, citation] — the
-    // citation interleaves directly after the text it annotates,
-    // not at the tail after the thinking block.
+    // INTR-119 DoD scenario: citation interleaves directly after the
+    // text it annotates — [thinking, text, citation], not tail.
     const chunks: Uint8Array[] = [
       wire.anthropic.messageStart({
         usage: { inputTokens: 5, outputTokens: 0 },
@@ -243,13 +230,10 @@ describe("runInference — citation interleaving", () => {
   });
 
   test("citation indexed at a block that never emits surfaces as ProtocolMismatchError", async () => {
-    // A citation whose `index` names a block that doesn't exist in
-    // the final turn (either no block at that index, or a block
-    // that the finalize walk filtered out) would otherwise be
-    // silently dropped. The harness surfaces the bookkeeping
-    // mismatch loudly via ProtocolMismatchError instead, matching
-    // the defensive posture used elsewhere (e.g., an unmatched
-    // tool_use callId throws via the same error type).
+    // A citation indexing a block absent from the final turn would
+    // otherwise be silently dropped; surface it via
+    // ProtocolMismatchError, the same posture as an unmatched
+    // tool_use callId.
     const providerName = `test-orphan-citation-${Math.random().toString(36).slice(2)}`;
     const make = () => ({
       buildRequest: () => ({
@@ -317,27 +301,20 @@ describe("runInference — citation interleaving", () => {
     const encoder = new TextEncoder();
     const chunks: Uint8Array[] = [encoder.encode("data: go\n\n")];
 
-    // The orphan-index check fires from the finalize path -- after
-    // the SSE stream's try/catch boundary -- so the
-    // ProtocolMismatchError surfaces by rejecting the async iterator,
-    // matching the existing tool_use-marker-missing throw pattern at
-    // the same finalize layer rather than being classified to an
-    // inference.error event.
+    // The orphan check fires from the finalize path, so the error
+    // rejects the async iterator (like the tool_use-marker-missing
+    // throw) rather than surfacing as an inference.error event.
     await expect(runWithChunks(source, chunks, adapters)).rejects.toThrow(
       /no matching emitted block.*42|42.*no matching emitted block/,
     );
   });
 
   test("citations without an index append at the tail of content[]", async () => {
-    // The wire `index?: number` field is optional on `inference.citation`
-    // events for adapters whose protocol does not carry per-citation
-    // block indices. The harness must append unindexed citations at
-    // the end of `content[]` per the CitationBlock attribution rule.
-    // A stub adapter exercises this path directly: emit a text block
-    // and a citation event without `index`. The adapter is injected
-    // through `deps.adapters` as a per-test registry, so a fresh
-    // provider name per run keeps independent runs isolated with no
-    // shared global state.
+    // `index` is optional on citation events for protocols without
+    // per-citation block indices; unindexed citations append at the
+    // end of `content[]`. A stub adapter emits a text block and an
+    // unindexed citation; a fresh provider name per run keeps runs
+    // isolated.
     const providerName = `test-citations-no-index-${Math.random().toString(36).slice(2)}`;
     const make = () => ({
       buildRequest: () => ({
@@ -347,11 +324,8 @@ describe("runInference — citation interleaving", () => {
       }),
       parseJSONResponse: () => [],
       parseResponse: (sse: string): InferenceEvent[] => {
-        // The stub emits a fixed event sequence on the "go" payload
-        // and nothing on others. Sequence numbers and partial-state
-        // snapshots are placeholders the harness either overwrites
-        // or never reads — adapters legitimately don't know the
-        // outer event sequence.
+        // The stub emits a fixed sequence on the "go" payload; seq and
+        // partial snapshots are placeholders the harness overwrites.
         if (sse !== "go") return [];
         return [
           {

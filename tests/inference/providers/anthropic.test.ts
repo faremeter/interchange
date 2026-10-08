@@ -29,10 +29,8 @@ const AnthropicContentBlock = type({
   "id?": "string",
   "name?": "string",
   "data?": "string",
-  // `source` is a nested object whose shape depends on the block
-  // variant (base64 vs file). Validated separately via
-  // AnthropicMediaSourceBase64 / AnthropicMediaSourceFile at each
-  // test site rather than baking the union here.
+  // `source`'s shape depends on the variant; validated at each test
+  // site via AnthropicMediaSourceBase64 / AnthropicMediaSourceFile.
   "source?": "unknown",
   "title?": "string",
   "context?": "string",
@@ -94,10 +92,8 @@ const AnthropicRequestBody = type({
   "temperature?": "number",
 });
 
-// Drives a sequence of wire DSL chunks (full SSE-framed Uint8Arrays) through
-// the production SSE parser and the supplied adapter's parseResponse, mirroring
-// the harness's pipeline. Returns the flattened sequence of emitted events so
-// the test site can assert on them.
+// Drives SSE-framed chunks through the production parseSSE + parseResponse
+// pipeline and returns the flattened event sequence.
 async function parseWire(
   adapterInstance: ProviderAdapter,
   chunks: Uint8Array[],
@@ -243,10 +239,8 @@ describe("Anthropic adapter: buildRequest", () => {
   });
 
   test("echoes thinking block signature back in the request body", () => {
-    // Anthropic requires that any thinking block included in a
-    // follow-up turn's history carries the cryptographic signature
-    // the API issued when the block was originally generated. Without
-    // the signature, the next request 400s with
+    // Follow-up thinking blocks must carry the signature the API
+    // issued at generation; without it the next request 400s with
     // "messages.N.content.M.thinking.signature: Field required".
     const messages: ConversationTurn[] = [
       {
@@ -401,9 +395,8 @@ describe("Anthropic adapter: buildRequest", () => {
   });
 
   test("emits a file-reference image as { type: file, file_id }", () => {
-    // Anthropic identifies uploaded files by id alone; the
-    // content-type is encoded server-side at upload time. The
-    // MediaSource's `mimeType` is intentionally not propagated.
+    // Files are identified by id alone; the content-type is encoded
+    // server-side, so `mimeType` is not propagated.
     const messages: ConversationTurn[] = [
       {
         role: "user",
@@ -437,11 +430,9 @@ describe("Anthropic adapter: buildRequest", () => {
   });
 
   test("emits a URL image as { type: url, url }", () => {
-    // Anthropic accepts public URLs alongside base64 and file uploads
-    // for both image and document inputs. The provider fetches the URL
-    // itself and infers content type from the response, so the
-    // MediaSource's `mimeType` is intentionally not propagated to the
-    // wire.
+    // Anthropic accepts public URLs for image and document inputs; it
+    // fetches the URL itself and infers the content type, so
+    // `mimeType` is not propagated.
     const messages: ConversationTurn[] = [
       {
         role: "user",
@@ -475,9 +466,8 @@ describe("Anthropic adapter: buildRequest", () => {
   });
 
   test("emits a URL document as { type: url, url }", () => {
-    // Anthropic's url variant accepts documents under the same shape
-    // as images. No media_type is sent on the wire; the provider
-    // infers from the fetch response.
+    // The url variant accepts documents under the same shape as
+    // images; no media_type goes on the wire.
     const messages: ConversationTurn[] = [
       {
         role: "user",
@@ -511,8 +501,8 @@ describe("Anthropic adapter: buildRequest", () => {
   });
 
   test("emits a base64 document as { type: document, source: { type: base64, media_type, data } }", () => {
-    // PDF input — Anthropic's documented multimodal-pdf shape carries
-    // `media_type: "application/pdf"` and base64 payload.
+    // The documented multimodal-pdf shape: `media_type:
+    // "application/pdf"` and a base64 payload.
     const messages: ConversationTurn[] = [
       {
         role: "user",
@@ -702,9 +692,9 @@ describe("Anthropic adapter: buildRequest", () => {
         },
       ];
 
-      // Anthropic's tool_result.content accepts only text and image
-      // blocks; document/audio/video are surfaced at the marshaling
-      // site rather than as an opaque HTTP error from Anthropic.
+      // tool_result.content accepts only text and image blocks;
+      // others surface at the marshaling site, not as an opaque
+      // Anthropic HTTP error.
       expect(() =>
         adapter.buildRequest(messages, "claude-3-5-sonnet-20241022", {}),
       ).toThrow(
@@ -759,11 +749,9 @@ describe("Anthropic adapter: buildRequest", () => {
   });
 
   test("echoes a redacted_thinking content block back verbatim", () => {
-    // Anthropic delivers redacted_thinking as a one-shot start event
-    // carrying an opaque `data` blob. That blob must echo back
-    // verbatim on every follow-up turn that includes the block —
-    // mutation or omission produces a 400 or silent context
-    // corruption.
+    // redacted_thinking arrives as a one-shot start event with an
+    // opaque `data` blob that must echo back verbatim on follow-up
+    // turns; mutation or omission 400s or silently corrupts context.
     const data = "EncryptedOpaqueBlobAAAA==";
     const messages: ConversationTurn[] = [
       {
@@ -797,8 +785,7 @@ describe("Anthropic adapter: buildRequest", () => {
       );
     }
     expect(block.data).toBe(data);
-    // Negative: must NOT carry the legacy wire-invalid shape that an
-    // earlier branch of this adapter emitted
+    // Negative: must not carry the legacy invalid shape
     // ({ type: "thinking", thinking: "", thinking_type: "redacted" }).
     expect(block.thinking).toBeUndefined();
     // The arktype schema does not list `thinking_type`, so the assert
@@ -883,11 +870,9 @@ describe("Anthropic adapter: buildRequest", () => {
       "claude-3-5-sonnet-20241022",
       {},
     );
-    // The arktype AnthropicRequestBody schema doesn't carry the
-    // tool_result.content[].source shape (it's deeply nested and
-    // variant-specific). Walk into the body with type-guard helpers
-    // so each step surfaces violations explicitly rather than via
-    // `as` casts.
+    // The request-body schema omits tool_result.content[].source
+    // (deeply nested, variant-specific); walk in with type-guard
+    // helpers instead of `as` casts.
     const parsed: unknown = JSON.parse(req.body);
     if (!isRecord(parsed)) throw new Error("expected body to be a JSON object");
     const msgs = parsed["messages"];
@@ -925,9 +910,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 describe("Anthropic adapter: parseResponse", () => {
   test("throws ProtocolMismatchError on malformed JSON in SSE payload", () => {
-    // The harness's stream-error catch maps this to inference.error with
-    // category "protocol_mismatch" via classifyStreamError. The raw
-    // payload is carried in error.raw for operator inspection.
+    // The harness maps this to inference.error with category
+    // "protocol_mismatch"; the raw payload rides in error.raw.
     expect(() => adapter.parseResponse("not json {")).toThrow(
       ProtocolMismatchError,
     );
@@ -945,10 +929,9 @@ describe("Anthropic adapter: parseResponse", () => {
   });
 
   test("throws ProtocolMismatchError on schema-mismatched event", () => {
-    // `{"type":42}` is well-formed JSON but rejects against the
-    // AnthropicSSEEvent schema (type must be a string). The thrown
-    // error carries the parsed object in raw and the arktype summary
-    // in message.
+    // `{"type":42}` rejects the AnthropicSSEEvent schema; the error
+    // carries the parsed object in raw and the arktype summary in
+    // message.
     const malformed = '{"type":42}';
 
     expect(() => adapter.parseResponse(malformed)).toThrow(
@@ -968,11 +951,8 @@ describe("Anthropic adapter: parseResponse", () => {
   });
 
   test("throws ProtocolMismatchError on input_json_delta with no preceding tool_use start", () => {
-    // The adapter tracks tool_use content-block IDs by index so that
-    // subsequent input_json_delta events can resolve to the right
-    // tool call. A delta for an unknown index means the upstream
-    // emitted events out of order — a protocol violation, not a
-    // transport flake.
+    // A delta for an unknown tool_use index means the upstream emitted
+    // events out of order — a protocol violation, not a transport flake.
     const malformed =
       '{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"x\\":1}"}}';
 
@@ -1023,10 +1003,8 @@ describe("Anthropic adapter: parseResponse", () => {
   });
 
   test("parses signature_delta into inference.block.signature", async () => {
-    // Anthropic emits the thinking-block signature after the thinking
-    // content stream. The signature must be propagated end-to-end —
-    // without it, follow-up turns that echo the thinking block are
-    // rejected by Anthropic with
+    // The signature must propagate end-to-end; without it, follow-up
+    // turns echoing the thinking block are rejected with
     // "messages.N.content.M.thinking.signature: Field required".
     const events = await parseWire(adapter, [
       wire.anthropic.contentBlockDelta({
@@ -1043,10 +1021,9 @@ describe("Anthropic adapter: parseResponse", () => {
   });
 
   test("parses redacted_thinking content_block_start into inference.thinking.redacted", async () => {
-    // Anthropic delivers redacted thinking as a one-shot inside
-    // content_block_start carrying an opaque `data` blob — no delta
-    // stream. The parser must surface it as inference.thinking.redacted
-    // with the index propagated for downstream routing.
+    // Redacted thinking is a one-shot in content_block_start (opaque
+    // `data` blob, no deltas); surface it as
+    // inference.thinking.redacted with the index propagated.
     const a = createAnthropicAdapter(TEST_SOURCE);
     const events = await parseWire(
       a,

@@ -1,21 +1,11 @@
 // Live drift smoke test for the Gemini adapter. Runs only when
-// `GEMINI_API_KEY` is set in the environment; CI and local
-// developer runs without the variable skip cleanly.
+// `GEMINI_API_KEY` is set; CI and local runs skip cleanly.
 //
-// The captured fixtures pin every wire shape the parser handles,
-// but they freeze a particular moment in time -- Google can
-// (and does) change Gemini's wire format under us. This test
-// exercises the smallest end-to-end path (a plain-text streaming
-// inference) against the real endpoint and asserts that the
-// parser still produces the structural shape downstream code
-// depends on. A red here means either the API drifted (re-capture
-// the fixtures) or the parser regressed against the real wire
-// (fix the adapter); the offline test corpus alone cannot
-// distinguish those.
-//
-// Deliberately small: a longer or more elaborate prompt would
-// burn API quota for no signal. The test asserts shape, not
-// content -- the model is free to answer however it wants.
+// The fixtures freeze a moment in time; this runs the smallest
+// end-to-end path against the real endpoint to catch wire-format
+// drift the offline corpus cannot distinguish from a parser
+// regression. Deliberately small to save quota; asserts shape, not
+// content.
 
 import { describe, expect, test } from "bun:test";
 
@@ -37,9 +27,8 @@ describe("Google GenAI adapter: live drift", () => {
   test.skipIf(GEMINI_API_KEY === undefined || GEMINI_API_KEY === "")(
     "plain-text streaming against the live endpoint produces text deltas + a final inference.done turn",
     async () => {
-      // `skipIf` evaluates the predicate at test-collection time;
-      // the inner guard keeps the type-narrowing honest without a
-      // non-null assertion.
+      // `skipIf` evaluates at collection time; the inner guard narrows
+      // the type without a non-null assertion.
       const apiKey = GEMINI_API_KEY;
       if (apiKey === undefined || apiKey === "") {
         throw new Error(
@@ -56,10 +45,8 @@ describe("Google GenAI adapter: live drift", () => {
         model: "gemini-2.5-flash",
       };
 
-      // Default `fetch` against the real endpoint. The harness
-      // performs credential substitution between the adapter's
-      // `buildRequest` (which emits a sentinel) and the actual
-      // fetch call.
+      // Real fetch; the harness swaps the sentinel for the key between
+      // buildRequest and the fetch call.
       const deps: Dependencies = {
         fetch: globalThis.fetch.bind(globalThis),
         scheduler: inertScheduler,
@@ -85,9 +72,8 @@ describe("Google GenAI adapter: live drift", () => {
         nextSeq: () => seq++,
         deps,
         readMaterial: () => ({ secret: apiKey }),
-        // Disable thinking to keep the response shape minimal and
-        // the round-trip latency low. The drift test is a shape
-        // check, not a quality check.
+        // No thinking: minimal shape, low latency — a shape check,
+        // not a quality check.
         inferenceOptions: {
           thinking: { enabled: false },
           maxTokens: 16,
@@ -96,9 +82,8 @@ describe("Google GenAI adapter: live drift", () => {
         events.push(ev);
       }
 
-      // Structural assertions only. The model's exact text is not
-      // pinned -- "ready" is the requested response, but the model
-      // may add punctuation, capitalization, or a trailing period.
+      // Structural only; the model may vary punctuation or casing on
+      // the "ready" reply.
       const textDeltas = events.filter(
         (e) => e.type === "inference.text.delta",
       );
@@ -119,11 +104,9 @@ describe("Google GenAI adapter: live drift", () => {
       }
       expect(done.data.turn.role).toBe("assistant");
       expect(done.data.turn.content.length).toBeGreaterThan(0);
-      // The final turn must lead with a text block (the model's
-      // reply). A different leading block kind would mean the
-      // parser misrouted the response; the offline corpus would
-      // have caught that, but the assertion here is a backstop
-      // against an unexpected wire shape.
+      // Must lead with a text block; any other kind means the parser
+      // misrouted the response — a backstop against an unexpected
+      // wire shape.
       const firstBlock = done.data.turn.content[0];
       if (firstBlock?.type !== "text") {
         throw new Error(

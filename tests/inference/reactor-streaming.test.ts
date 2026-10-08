@@ -32,10 +32,8 @@ import type {
 } from "@intx/types/runtime";
 
 // ---------------------------------------------------------------------------
-// Helpers (duplicated from packages/inference/src/reactor.test.ts so that
-// these wire-driven tests can live in the top-level tests/inference/ tree
-// without introducing a workspace dependency cycle between @intx/
-// inference and @intx/inference-testing).
+// Helpers (duplicated from packages/inference/src/reactor.test.ts so the
+// top-level tests tree avoids a workspace dependency cycle).
 // ---------------------------------------------------------------------------
 
 function emptyUsage(): TokenUsage {
@@ -130,10 +128,8 @@ function collectEvents(): {
     type: ReactorEmittedEvent["type"],
   ): Promise<ReactorEmittedEvent> {
     const predicate = (e: ReactorEmittedEvent) => e.type === type;
-    // Callers reach a `waitFor` after the awaited event has already been
-    // emitted -- driving the harness clock runs the reactor to `reactor.done`
-    // before the test awaits it. The already-collected scan covers that; the
-    // waiter list covers the event that has yet to arrive.
+    // `waitFor` can be called after the event already fired; the
+    // already-collected scan covers that, the waiter list the rest.
     const emitted = events.find(predicate);
     if (emitted !== undefined) return Promise.resolve(emitted);
     return new Promise<ReactorEmittedEvent>((resolve) => {
@@ -195,10 +191,9 @@ function directorFromTable(
 ): ReactorDirector {
   return {
     async decide(event, state, caps) {
-      // TypeScript cannot correlate the runtime key with the mapped type's
-      // per-key handler signature (correlated union problem): table[event.type]
-      // is typed as a union of all handlers, but we know it matches this event.
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- correlated union: table[event.type] is guaranteed to be typed for this event.type by the DirectorTable mapped type
+      // Correlated-union problem: table[event.type] is typed as a union of
+      // all handlers, but we know it matches this event.
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- table[event.type] is typed for this event.type by the DirectorTable mapped type
       const handler = table[event.type] as
         | DirectorHandler<typeof event>
         | undefined;
@@ -415,20 +410,15 @@ function makeRecordingContextStore(): {
 // ---------------------------------------------------------------------------
 // Port B (7a): wire-driven inference-path tests
 //
-// These tests exercise the same reactor-side assertions as the
-// `createReactor — inference path` describe block in
-// packages/inference/src/reactor.test.ts, but feed the reactor through the
-// real fetch → parseSSE → provider adapter → reactor pipeline using the
-// `@intx/inference-testing` harness. The synthetic
-// `mockInferenceRunner` / `makeInferenceRunner` tests in reactor.test.ts
-// continue to validate the reactor's state-machine logic with a cheap
-// in-process generator; this file validates that the same end state is
-// produced when the inference cycle is fed by real bytes parsed by the
-// production adapter.
+// Same reactor-side assertions as the `createReactor — inference path`
+// block in reactor.test.ts, but fed through the real fetch → parseSSE →
+// provider adapter → reactor pipeline via the `@intx/inference-testing`
+// harness. The synthetic runner tests keep validating the state machine
+// cheaply in-process; this file proves the same end state from real bytes.
 //
-// See `dispatch/intr-60-inference-testing/7a-port_reactor_streaming_subset/audit.md`
-// for the audit that selected these tests and the rationale for which
-// reactor.test.ts tests stay on the synthetic path.
+// See the audit at
+// `dispatch/intr-60-inference-testing/7a-port_reactor_streaming_subset/audit.md`
+// for which reactor.test.ts tests stay on the synthetic path.
 // ---------------------------------------------------------------------------
 
 const ANTHROPIC_SOURCE = {
@@ -683,11 +673,9 @@ describe("createReactor — inference path [wire-driven]", () => {
         deps: harness.deps,
         source: ANTHROPIC_SOURCE,
         director: directorFromTable({
-          // Pin an abort-only retry policy: the test asserts error
-          // classification and partial-text capture on a single
-          // scripted stream. Default policy would retry on
-          // `retryable` and deadlock against the inert harness
-          // scheduler with no second stream registered.
+          // Abort-only policy: the default would retry `retryable`
+          // and deadlock against the inert scheduler with no second
+          // stream registered.
           "message.received": (_e, _s, caps) =>
             caps.infer({ retryPolicy: () => ({ kind: "abort" }) }),
           "inference.error": (e, _s, caps) => {
@@ -828,19 +816,16 @@ describe("createReactor — inference path [wire-driven]", () => {
 
   test("Anthropic: HTTP 400 with context-overflow body produces inference.error category=context_overflow and drives compact-then-reinfer recovery", async () => {
     await withHarness(async (harness) => {
-      // First stream: HTTP 400 with a body that classifyHTTPError treats as
-      // context overflow. The adapter's extractErrorMessage parses
-      // { error: { message } } from the JSON body, and isContextOverflowMessage
-      // matches the "input is too long" substring.
+      // First stream: HTTP 400 classified as context overflow via the
+      // adapter's extractErrorMessage + isContextOverflowMessage.
       const overflowStream = harness.scenario.createStream();
       const overflowBody =
         '{"error":{"message":"input is too long for the model context window"}}';
       overflowStream.enqueueAt(5, new TextEncoder().encode(overflowBody));
       overflowStream.closeAt(6);
 
-      // Second stream: HTTP 200 with a clean inference.done. This must satisfy
-      // the second fetch dispatched after the director's compact-then-reinfer
-      // cycle.
+      // Second stream: HTTP 200 with a clean inference.done for the
+      // compact-then-reinfer cycle's second fetch.
       const successStream = harness.scenario.createStream();
       const successChunks = wire.completeResponse("anthropic", {
         text: "ok-after-compact",
@@ -854,9 +839,8 @@ describe("createReactor — inference path [wire-driven]", () => {
       }
       successStream.closeAt(successWhen);
 
-      // Counter-driven predicates make the first matcher accept the first
-      // fetch and the second matcher accept the second fetch, deterministic
-      // regardless of URL (both target the same Anthropic endpoint).
+      // Counter-driven matchers accept the first and second fetches in
+      // order, regardless of URL (both hit the same endpoint).
       let fetchCount = 0;
       harness.scenario.whenRequestMatches(
         () => fetchCount++ === 0,
@@ -907,9 +891,8 @@ describe("createReactor — inference path [wire-driven]", () => {
       reactor.start();
       reactor.deliver(makeInboundMessage());
       await harness.advanceTo(12);
-      // The director has now issued compact; the second fetch hasn't been
-      // dispatched yet. Deliver the second message to trigger the second
-      // inference cycle.
+      // The director issued compact; deliver the second message to
+      // trigger the second inference cycle.
       reactor.deliver(makeInboundMessage());
       await harness.advanceTo(successWhen + 10);
       await waitFor("reactor.done");
@@ -937,15 +920,10 @@ describe("createReactor — inference path [wire-driven]", () => {
   });
 
   test("Anthropic: HTTP 5xx body produces inference.error category=retryable through classifyHTTPError", async () => {
-    // Port of the synthetic `infer action with inference.error delivers
-    // error event to director` test (originally at line 2398), now driving
-    // through the production HTTP error-classification branch in
-    // `runInference` (response.ok === false → classifyHTTPError). The
-    // original hand-built `{ category: "retryable", message: "rate limited" }`;
-    // `classifyHTTPError` produces `retryable` for any 5xx, so we drive HTTP
-    // 503 with a matching error message body. Unlike 429 (which the reactor
-    // would retry up to 3 times internally), retryable surfaces straight to
-    // the director on the first cycle.
+    // Port of the synthetic error-delivery test (reactor.test.ts:2398),
+    // now through the production classifyHTTPError branch: a 503
+    // classifies `retryable` and, unlike 429, surfaces straight to the
+    // director on the first cycle.
     await withHarness(async (harness) => {
       const stream = harness.scenario.createStream();
       const body = '{"error":{"message":"rate limited"}}';
@@ -960,10 +938,9 @@ describe("createReactor — inference path [wire-driven]", () => {
         deps: harness.deps,
         source: ANTHROPIC_SOURCE,
         director: directorFromTable({
-          // Pin an abort-only retry policy: this test asserts the HTTP
-          // 5xx → category=retryable classification path. The default
-          // policy would retry on retryable and deadlock against the
-          // inert harness scheduler with no second stream registered.
+          // Abort-only policy: the default would retry `retryable`
+          // and deadlock against the inert scheduler with no second
+          // stream registered.
           "message.received": (_e, _s, caps) =>
             caps.infer({ retryPolicy: () => ({ kind: "abort" }) }),
           "inference.error": (e, _s, caps) => {

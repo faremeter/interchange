@@ -1,19 +1,10 @@
 // End-to-end refusal-event routing through the inference harness.
 //
-// The adapter parses `delta.refusal` chunks and emits
-// `inference.refusal.delta` raw events; the harness must accumulate
-// those into a per-index BlockState and emit a `RefusalBlock` in
-// the finalized assistant turn alongside any text content. These
-// tests drive runInference with synthesized OpenAI SSE bytes that
-// carry refusal fragments and assert the full pipeline:
-//
-//   - Refusal-only stream produces inference.refusal.delta events
-//     through the harness iterator and a RefusalBlock in the
-//     finalized turn.
-//   - Mixed text + refusal stream preserves both content blocks
-//     in arrival order.
-//   - Repeated refusal fragments at the same index concatenate
-//     into one block.
+// The harness accumulates `inference.refusal.delta` events into a
+// per-index BlockState and emits a `RefusalBlock` in the finalized
+// turn alongside any text. Coverage: refusal-only streams, mixed
+// text + refusal in arrival order, and same-index fragment
+// concatenation.
 
 import { describe, expect, test } from "bun:test";
 

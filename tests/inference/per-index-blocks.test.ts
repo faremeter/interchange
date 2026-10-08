@@ -1,21 +1,12 @@
-// Per-index block tracking in the inference harness. The harness
-// keys block state by `content_block` index (Map<number, BlockState>),
-// preserving insertion order so the final assistant turn reproduces
-// the wire-arrival order of content blocks even when those blocks
-// were authored at non-monotonic or non-contiguous indices.
+// Per-index block tracking in the inference harness. Block state is
+// keyed by `content_block` index (Map<number, BlockState>) preserving
+// insertion order, so the final turn reproduces wire-arrival order
+// even for non-monotonic or non-contiguous indices.
 //
-// These tests exercise the harness end-to-end via `runInference` with
-// synthesized SSE bytes from the Anthropic wire DSL, covering:
-//
-//   - Multi-block interleaving: thinking@0 → text@1 → tool_use@2
-//     lands in the final turn's content[] in that order.
-//   - Map insertion order with non-monotonic keys: index 2 inserted
-//     before index 0 still iterates in insertion order.
-//   - Signature arrives after the next block's deltas: signature
-//     attaches to the right thinking block by index.
-//   - Empty thinking block with signature only: emitted, not dropped.
-//   - Kind collision at the same index: ProtocolMismatchError.
-//   - Missing index at the harness boundary: ProtocolMismatchError.
+// These tests drive `runInference` with synthesized SSE bytes from the
+// Anthropic wire DSL: interleaved blocks, non-monotonic keys,
+// out-of-order signatures, empty signed thinking blocks, and
+// kind-collision / missing-index ProtocolMismatchErrors.
 
 import { describe, expect, test } from "bun:test";
 
@@ -33,8 +24,7 @@ import type {
   InferenceSource,
 } from "@intx/types/runtime";
 
-// ThinkingBlock is not exported from @intx/types/runtime, so narrow
-// to it via Extract on the ContentBlock union.
+// ThinkingBlock is not exported; narrow via Extract on ContentBlock.
 type ThinkingBlock = Extract<ContentBlock, { type: "thinking" }>;
 
 const SOURCE: InferenceSource = {
@@ -112,9 +102,8 @@ function finalTurn(events: InferenceEvent[]): ConversationTurn {
 
 describe("runInference — per-index final turn assembly", () => {
   test("thinking@0 + text@1 + tool_use@2 lands in arrival order in the final turn", async () => {
-    // function-calling-with-thinking-streaming corpus shape: thinking
-    // at block 0, text at block 1, tool_use at block 2. The final
-    // turn's content[] must reproduce that order.
+    // thinking@0, text@1, tool_use@2 must land in the final content[]
+    // in that order.
     const chunks: Uint8Array[] = [
       wire.anthropic.messageStart({
         usage: { inputTokens: 5, outputTokens: 0 },
@@ -170,12 +159,9 @@ describe("runInference — per-index final turn assembly", () => {
   });
 
   test("non-monotonic block index arrival preserves insertion order", async () => {
-    // Anthropic doesn't actually emit non-monotonic indices in
-    // practice, but the harness's per-index Map must use insertion
-    // order rather than numeric key order. If a future provider
-    // streams content_block_start at index 2 before index 0
-    // (e.g., for re-ordered server-side rendering), the final turn
-    // must reflect arrival order, not key order.
+    // The per-index Map must use insertion order, not numeric key
+    // order, so a future provider streaming index 2 before index 0
+    // still yields arrival order.
     const chunks: Uint8Array[] = [
       wire.anthropic.messageStart({
         usage: { inputTokens: 5, outputTokens: 0 },
@@ -203,19 +189,15 @@ describe("runInference — per-index final turn assembly", () => {
     if (first?.type !== "text" || second?.type !== "text") {
       throw new Error("expected two text blocks");
     }
-    // Verify Map insertion-order semantics: index 2 was inserted
-    // first, so it appears first in the final turn even though its
-    // numeric key is higher than index 0.
+    // Index 2 was inserted first, so it appears first despite its
+    // higher numeric key.
     expect(first.text).toBe("FIRST_INSERTED");
     expect(second.text).toBe("SECOND_INSERTED");
   });
 
   test("signature attaches to the right thinking block when it arrives after another block's deltas", async () => {
-    // Anthropic emits signature_delta for a thinking block after
-    // content_block_stop for that block — but the wire-level
-    // streaming model permits the signature to arrive after deltas
-    // for a subsequent block have already started. The harness must
-    // route the signature by index, not by recency.
+    // The signature may arrive after a subsequent block's deltas have
+    // started; the harness must route it by index, not by recency.
     const chunks: Uint8Array[] = [
       wire.anthropic.messageStart({
         usage: { inputTokens: 5, outputTokens: 0 },
@@ -253,10 +235,8 @@ describe("runInference — per-index final turn assembly", () => {
   });
 
   test("empty thinking block with signature only is still emitted", async () => {
-    // A thinking block whose visible text is empty but whose
-    // signature must round-trip on follow-up turns. The signature is
-    // load-bearing for multi-turn redacted-thinking-adjacent flows;
-    // dropping the empty-text block would lose it.
+    // Empty-text thinking blocks still carry load-bearing signatures
+    // for follow-up turns; dropping the block would lose the signature.
     const chunks: Uint8Array[] = [
       wire.anthropic.messageStart({
         usage: { inputTokens: 5, outputTokens: 0 },
@@ -296,12 +276,9 @@ describe("runInference — per-index final turn assembly", () => {
   });
 
   test("partial.thinking is a running concat across multiple thinking blocks under interleaving", async () => {
-    // Under per-index, thinking@0 "A" then thinking@2 "B" produces
-    // two distinct ThinkingBlocks in the final turn, but
-    // `partial.thinking` (the live snapshot) is the running concat
-    // "AB" — backwards compatible with the pre-per-index single-
-    // buffer semantics where `partial.thinking` was the cumulative
-    // thinking text the assistant had emitted so far.
+    // thinking@0 "A" + thinking@2 "B" yield two distinct blocks in
+    // the final turn, but `partial.thinking` stays the running
+    // concat "AB" (the pre-per-index cumulative-buffer semantics).
     const chunks: Uint8Array[] = [
       wire.anthropic.messageStart({
         usage: { inputTokens: 5, outputTokens: 0 },
@@ -361,11 +338,8 @@ describe("runInference — per-index protocol violations", () => {
   }
 
   test("kind collision at the same index produces inference.error protocol_mismatch", async () => {
-    // A text delta arriving at index 0 after a thinking delta at the
-    // same index is a wire-level protocol violation — distinct kinds
-    // can't share an index. Surface as protocol_mismatch with the
-    // colliding kind named in the message so a future regression is
-    // immediately diagnosable.
+    // Distinct kinds sharing an index is a wire violation; surface as
+    // protocol_mismatch naming the colliding kind.
     const chunks: Uint8Array[] = [
       wire.anthropic.messageStart({
         usage: { inputTokens: 5, outputTokens: 0 },
@@ -389,18 +363,11 @@ describe("runInference — per-index protocol violations", () => {
   });
 
   test("signature targeting a non-signable block at that index throws a kind-specific protocol_mismatch", async () => {
-    // The signature error path has two distinct branches with
-    // different operator triage signals: "no block at this index"
-    // (the empty-slot case) vs. "wrong kind at this index" (the
-    // collision case). The second branch fires when a signature_delta
-    // arrives at an index already populated by a block kind that
-    // carries no signature — e.g., a redacted_thinking block was
-    // opened at that index and now a signature tries to attach. (Text,
-    // tool_use, image, and code_execution_request blocks all carry a
-    // signature, so the non-signable kinds are the ones that collide.)
-    // The error message must name the colliding kind so an operator
-    // knows whether the bug is upstream (the block landed at the wrong
-    // index) or downstream (the signature routed to the wrong index).
+    // Two error branches: "no block at this index" vs. "wrong kind at
+    // this index" (a signature_delta landing on a non-signable kind
+    // like redacted_thinking). The message names the colliding kind
+    // so an operator knows whether the block or the signature landed
+    // at the wrong index.
     const chunks: Uint8Array[] = [
       wire.anthropic.messageStart({
         usage: { inputTokens: 5, outputTokens: 0 },
@@ -422,8 +389,7 @@ describe("runInference — per-index protocol violations", () => {
   });
 
   test("signature with no block opened at that index throws protocol_mismatch", async () => {
-    // A signature_delta arriving at an index where no block has been
-    // opened is a wire violation — the signature has nothing to
+    // A signature with no opened block at its index has nothing to
     // authenticate.
     const chunks: Uint8Array[] = [
       wire.anthropic.messageStart({
@@ -445,20 +411,16 @@ describe("runInference — per-index protocol violations", () => {
   });
 });
 
-// A small synthetic verifier that the harness's tool_use marker in
-// the per-index map resolves to the right ContentBlock at assembly
-// time. This locks in the design where tool_use markers stay
-// separate from the openToolCalls state machine.
+// A synthetic verifier that the harness's tool_use marker resolves
+// to the right ContentBlock at assembly time (markers stay separate
+// from the openToolCalls state machine).
 describe("runInference — OpenAI tool_call slot/blockIndex resolution", () => {
-  // Regression: an OpenAI tool_call whose `tcDelta.index` is non-zero
-  // and non-contiguous (a single tool call at slot 3, or sparse
-  // parallel slots) used to land its argument fragments under a
-  // placeholder callId that the harness had never registered in
-  // `indexToCallId`. The fragments were silently dropped and the
-  // final tool_call.end carried empty arguments. This test exercises
-  // the full path: parser emits start at slot 3, delta with
-  // placeholder callId, harness resolves to the real id, finalized
-  // turn carries the assembled arguments.
+  // Regression: a tool_call at a non-zero, non-contiguous slot (e.g.
+  // 3) used to land its fragments under a placeholder callId the
+  // harness never registered in `indexToCallId`, silently dropping
+  // them and finalizing with empty arguments. Exercises the full path:
+  // start at slot 3, delta with placeholder callId, harness resolves
+  // to the real id, final turn carries the assembled arguments.
 
   test("OpenAI tool_call at sparse tcDelta.index accumulates argument fragments", async () => {
     const { wire } = await import("@intx/inference-testing");

@@ -1,16 +1,10 @@
 // Inference harness lifecycle hygiene: timers cancelled on every exit
 // path; AbortSignal listeners on the caller's signal do not accumulate
-// across calls. These tests pin the invariants the timeout work in
-// INTR-87 added to `runInference` — they were originally written to
-// demonstrate three concrete leaks in the first draft of that work and
-// are kept here as regression coverage so future edits to the error
-// paths or the signal-combining logic cannot quietly reintroduce them.
+// across calls. Regression coverage for the leaks the INTR-87 timeout
+// work fixed.
 //
-// Drive `runInference` with synthetic Dependencies (recording scheduler,
-// counting signal, stub fetch) rather than the inference-testing harness
-// — these tests scrutinise the harness's plumbing, not the wire
-// behaviour, so going through `setupHarness` would only obscure the
-// assertions.
+// Synthetic Dependencies (recording scheduler, counting signal, stub
+// fetch) keep the assertions on the harness's plumbing, not the wire.
 
 import { describe, test, expect } from "bun:test";
 
@@ -72,12 +66,9 @@ async function drain(
 }
 
 describe("runInference — timer cancellation on non-streaming exit paths", () => {
-  // Both tests pin an abort-only retry policy: they assert that the
-  // per-attempt timers are cancelled when the attempt exits before
-  // streaming begins. The default policy retries on `retryable` (5xx)
-  // and would block the wrapper on the recording scheduler's
-  // setTimeout — which records but never fires. Abort-only keeps the
-  // per-attempt invariant assertion focused.
+  // Abort-only policy: the default would retry 5xx and block on the
+  // recording scheduler's never-firing setTimeout. The assertion is
+  // per-attempt timer cancellation, so it stays focused.
   const ABORT_ONLY_POLICY = { retryPolicy: () => ({ kind: "abort" as const }) };
 
   test("non-OK HTTP response cancels the total timer", async () => {
@@ -146,16 +137,10 @@ describe("runInference — timer cancellation on non-streaming exit paths", () =
 
 describe("runInference — timer cancellation on consumer abandonment", () => {
   test("aborting the caller signal mid-stream cancels every timer", async () => {
-    // Earlier the consumer abandoned the iterator by `break`ing on the
-    // first `inference.text.delta`. The retry wrapper buffers every
-    // attempt's events until a terminal event arrives, so deltas no
-    // longer reach the caller incrementally — there is no observable
-    // event to break on while the upstream stream is still parked.
-    // The same invariant (timer cleanup on a mid-stream exit path)
-    // still holds via the caller-supplied `signal`: aborting it after
-    // the fetch has resolved but before the stream completes flows
-    // through `runSingleAttempt`'s try/finally and cancels both
-    // timers via the recorded canceller.
+    // Buffering means there is no incremental delta to `break` on
+    // mid-stream; the same mid-stream-exit invariant holds via the
+    // caller's `signal`: aborting after the fetch resolves cancels
+    // both timers through runSingleAttempt's try/finally.
     const { scheduler, entries } = recordingScheduler();
     let firstByteResolved: () => void = () => undefined;
     const firstByteEmitted = new Promise<void>((resolve) => {
@@ -190,11 +175,8 @@ describe("runInference — timer cancellation on consumer abandonment", () => {
     const controller = new AbortController();
     let seq = 0;
     const collector = (async () => {
-      // Drain the iterator until it ends; with buffering the only
-      // way out is the abort flowing through to `runSingleAttempt`
-      // and yielding the terminal `inference.error` from the catch
-      // block (category `aborted`), which the abort-only retry
-      // policy then surfaces.
+      // With buffering, only the abort flows through to
+      // runSingleAttempt and yields the terminal `aborted` error.
       for await (const _ev of runInference({
         readMaterial: () => ({ secret: "test-secret" }),
         turns: makeTurns(),
@@ -222,10 +204,9 @@ describe("runInference — timer cancellation on consumer abandonment", () => {
 
 describe("runInference — caller-signal listener accounting", () => {
   test("a successful call does not leak abort listeners on the caller signal", async () => {
-    // The DOM-shaped EventListener types are not in the project's
-    // `lib` (ESNext only), but `Parameters<EventTarget["addEventListener"]>`
-    // recovers the right tuple structurally without naming the missing
-    // types directly.
+    // `Parameters<EventTarget["addEventListener"]>` recovers the
+    // listener tuple without naming the DOM types missing from the
+    // ESNext-only lib.
     class CountingSignal extends EventTarget {
       added = 0;
       removed = 0;
@@ -272,9 +253,8 @@ describe("runInference — caller-signal listener accounting", () => {
     };
 
     const counter = new CountingSignal();
-    // The Signal-typed view of the counter is intentional: runInference
-    // requires an AbortSignal at the parameter level, and the counter
-    // satisfies the structural shape EventTarget exposes for that use.
+    // runInference requires an AbortSignal; the counter satisfies the
+    // structural shape EventTarget exposes.
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- CountingSignal extends EventTarget and exposes the AbortSignal shape runInference relies on (addEventListener/removeEventListener + aborted + reason).
     const fakeSignal = counter as unknown as AbortSignal;
 
