@@ -1,5 +1,4 @@
-// This module is Node-bound: it reads the filesystem through node:fs and is
-// not portable to environments without that API.
+// Node-bound: reads the filesystem through node:fs.
 
 import type { Dirent } from "node:fs";
 import { readFile, readdir, stat } from "node:fs/promises";
@@ -71,11 +70,7 @@ async function searchFile(
   return { matches, lines };
 }
 
-/**
- * Format matches with optional context lines. When context is requested,
- * we derive context from the cached file lines to avoid duplicating
- * lines when matches are adjacent.
- */
+/** Render matches with optional context, deduped across adjacent matches. */
 function formatMatches(
   matches: Match[],
   contextLines: number,
@@ -85,7 +80,7 @@ function formatMatches(
     return matches.map((m) => `${m.file}:${m.lineNumber}:${m.line}`).join("\n");
   }
 
-  // Group matches by file to deduplicate context across adjacent matches
+  // Group by file so adjacent matches share one context range
   const groups = new Map<string, Match[]>();
   for (const m of matches) {
     const list = groups.get(m.file) ?? [];
@@ -102,7 +97,7 @@ function formatMatches(
 
     const matchLineNums = new Set(fileMatches.map((m) => m.lineNumber));
 
-    // Build ranges of lines to print (match lines + context), merged
+    // Merge adjacent match+context ranges
     const ranges: { start: number; end: number }[] = [];
     for (const m of fileMatches) {
       const start = Math.max(1, m.lineNumber - contextLines);
@@ -220,7 +215,7 @@ export async function runGrep(
       }
     }
 
-    // Cache lines from the single read for context rendering
+    // Reuse the lines already read for context rendering
     if (contextLines > 0 && allMatches.length <= maxResults) {
       fileLinesCache.set(displayPath, result.lines);
     }

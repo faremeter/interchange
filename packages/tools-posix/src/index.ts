@@ -26,11 +26,7 @@ export { TOOL_NAMES } from "./registry";
 export interface PosixToolsOptions {
   cwd: string;
   plugins?: ToolPlugin[];
-  /**
-   * Optional blob reader used to resolve `tool-output:///{callId}` URIs passed
-   * to the read tool. When omitted, attempting to read a `tool-output:` URI
-   * throws a clear error; filesystem reads are unaffected.
-   */
+  /** Resolves `tool-output:///{callId}` URIs for the read tool; without one, those URIs throw. */
   blobReader?: BlobReader;
 }
 

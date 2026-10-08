@@ -1,8 +1,5 @@
-// Behavior guard: the sidecar bundle must scope its filesystem tools to
-// `env.toolCwd`, not `env.workdir`. Every other test keeps the two keys
-// equal, so a regression that reads `env.workdir` again would pass the
-// suite silently. This test forces the two directories apart and proves a
-// relative write lands under `toolCwd` while `workdir` stays untouched.
+// Guard: posix tools must scope to `env.toolCwd`, not `env.workdir`.
+// Other tests keep both keys equal, so this one forces them apart.
 
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { mkdtemp, rm, readFile, access } from "node:fs/promises";

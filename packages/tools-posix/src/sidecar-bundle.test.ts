@@ -1,13 +1,7 @@
 // Drift guard: the static `posix.definitions` declaration must match the
-// tool names the factory's bundle actually emits when instantiated. The
-// deploy-time capability walk reads the static declaration WITHOUT
-// invoking the factory, so the two must not diverge.
-//
-// The factory is instantiated with a minimal real env and NO plugins.
-// Plugin/env-injected tools (e.g. LSP) are intentionally out of scope
-// for the static declaration: they are contributed at runtime via
-// `env.plugins`, which the walk never sees, so they cannot appear in a
-// declaration read before instantiation.
+// names the instantiated bundle emits, because the deploy-time capability
+// walk reads the declaration without invoking the factory. Plugin tools
+// are out of scope: they arrive at runtime via `env.plugins`.
 
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -63,13 +57,9 @@ describe("posix sidecar-bundle static declaration", () => {
   });
 
   test("every posix tool is gated behind per-invocation approval", () => {
-    // Pin the exact name -> approval partition the capability walk will
-    // consume. Normalize an absent marker to "allow" so an ungated tool
-    // stays a visible key: `toEqual` drops keys whose value is
-    // `undefined`, so a raw `d.approval` would let a future ungated tool
-    // vanish from the comparison and pass silently. With the normalized
-    // value, a newly-added ungated tool surfaces as an extra "allow" key
-    // and fails this comparison.
+    // Normalize an absent marker to "allow": `toEqual` drops undefined
+    // values, so a raw `d.approval` would hide an ungated tool from the
+    // comparison instead of failing it.
     const partition = Object.fromEntries(
       posix.definitions.map((d) => [d.name, d.approval ?? "allow"]),
     );
