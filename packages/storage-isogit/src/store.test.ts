@@ -547,7 +547,7 @@ describe("audit store", () => {
 
     await store.commitAudit([makeAuditRecord({ callId: "c1", seq: 0 })]);
 
-    // Batch contains a new record and a duplicate. Pre-flight should
+    // Batch contains a new record and a duplicate; pre-flight should
     // reject before writing the new record to disk.
     const fresh = makeAuditRecord({ callId: "c2", seq: 1 });
     const dup = makeAuditRecord({ callId: "c1", seq: 2 });
@@ -636,8 +636,8 @@ describe("error store", () => {
     const good = makeErrorRecord({ seq: 1, category: "first" });
     await store.commitErrors([good]);
 
-    // Second batch contains a duplicate of the first record and a new one.
-    // The duplicate should be caught in pre-flight before any writes.
+    // Second batch: a duplicate of the first record plus a new one,
+    // caught in pre-flight before any writes.
     const dup = makeErrorRecord({
       seq: 1,
       category: "first",
@@ -990,7 +990,7 @@ describe("connector thread state", () => {
   test("a persisted suspendedCall survives commit and reload end-to-end", async () => {
     // End-to-end persistence check: write, commit, reload, compare. This
     // does not by itself pin the schema declaration (arktype passes
-    // undeclared keys through), so store.ts carries a compile-time guard
+    // undeclared keys through); store.ts carries a compile-time guard
     // that keeps `PendingOperationSchema.suspendedCall` load-bearing.
     const dir = await tempDir();
     const store = await createIsogitStore(dir);
@@ -1381,8 +1381,8 @@ describe("commit({ message }) overload", () => {
 
     const { tree } = await git.readTree({ fs, dir, oid: result.hash });
     const paths = tree.map((entry) => entry.path).sort();
-    // Initial commit included .gitignore; the new commit stages turns.jsonl
-    // at the repo root. The legacy single-file serializer is gone.
+    // The new commit stages turns.jsonl at the repo root; the legacy
+    // single-file serializer is gone.
     expect(paths).toContain("turns.jsonl");
     expect(paths).not.toContain("state");
   });
@@ -1458,8 +1458,8 @@ describe("commit({ message }) overload", () => {
     const dir = await tempDir();
     await createIsogitStore(dir);
 
-    // The legacy serializer wrote a single state file under `state/`. The
-    // working-tree layout replaces it with per-cycle files at the repo root.
+    // The legacy serializer wrote one state file under `state/`; the
+    // layout now uses per-cycle files at the repo root.
     const legacyName = ["context", "json"].join(".");
     const exists = await fs.promises
       .access(path.join(dir, "state", legacyName))
@@ -1528,8 +1528,8 @@ describe("readManifestHistory", () => {
     const dir = await tempDir();
     const store = await createIsogitStore(dir);
 
-    // The initial commit from initAgentRepo and the legacy commit below both
-    // have no manifest.jsonl, so they should be skipped.
+    // The initial commit and the legacy commit below both lack
+    // manifest.jsonl, so they should be skipped.
     await store.writeTurns([]);
 
     await store.commit({ message: "legacy" });
@@ -1546,8 +1546,8 @@ describe("readManifestHistory", () => {
     const dir = await tempDir();
     const store = await createIsogitStore(dir);
 
-    // Hand-write a corrupt manifest.jsonl and commit it via the working-tree
-    // overload so it lands in git without going through writeManifest.
+    // Hand-write a corrupt manifest.jsonl and commit it via the
+    // working-tree overload so it lands in git without writeManifest.
     await fs.promises.writeFile(
       path.join(dir, "manifest.jsonl"),
       JSON.stringify({ strategy: "bogus" }) + "\n",

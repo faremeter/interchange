@@ -26,8 +26,8 @@ afterEach(async () => {
   );
 });
 
-// Build a one-commit repo and return its commit sha plus a packfile carrying
-// every object reachable from that commit.
+// Build a one-commit repo and return its commit sha plus a packfile
+// carrying every object reachable from that commit.
 async function buildPack(): Promise<{ commitSha: string; pack: Uint8Array }> {
   const dir = await tempDir();
   await git.init({ fs, dir, defaultBranch: "main" });
@@ -59,8 +59,8 @@ describe("indexPackIntoGitDir", () => {
       DEFAULT_PACK_MATERIALIZATION_LIMITS,
     );
 
-    // The retained object store serves the commit and its tree, so a later
-    // checkout can walk it.
+    // The retained object store serves the commit and its tree, so a
+    // later checkout can walk it.
     const { commit } = await git.readCommit({
       fs,
       dir: gitDir,
@@ -85,8 +85,8 @@ describe("indexPackIntoGitDir", () => {
   });
 
   test("rejects a pack whose header declares more objects than the cap", async () => {
-    // The one-file commit carries three objects (commit, tree, blob); a cap of
-    // two rejects it from the header alone, before any object is indexed.
+    // The one-file commit carries three objects (commit, tree, blob); a
+    // cap of two rejects it from the header alone, before indexing.
     const { commitSha, pack } = await buildPack();
     const gitDir = await tempDir();
 

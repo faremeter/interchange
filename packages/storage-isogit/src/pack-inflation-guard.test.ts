@@ -46,8 +46,7 @@ async function packWithFile(content: string): Promise<Uint8Array> {
 
 describe("assertPackInflationWithinBounds", () => {
   test("accepts a normal pack and walks exactly to the trailer", async () => {
-    // A tiny pack passes and the walk lands on the trailer; a misframed walk
-    // would throw the ended-at/trailer error instead.
+    // A tiny pack passes and the walk lands exactly on the trailer.
     const pack = await packWithFile("hello\n");
     await expect(
       assertPackInflationWithinBounds(
@@ -58,8 +57,7 @@ describe("assertPackInflationWithinBounds", () => {
   });
 
   test("rejects an object that inflates past the per-object cap", async () => {
-    // 200 KiB of zeros compresses to a tiny blob that inflates far past a
-    // 1 KiB cap; the guard destroys the inflate the moment it is exceeded.
+    // 200 KiB of zeros inflates far past a 1 KiB cap.
     const pack = await packWithFile("\0".repeat(200 * 1024));
     await expect(
       assertPackInflationWithinBounds(pack, {
@@ -70,8 +68,8 @@ describe("assertPackInflationWithinBounds", () => {
   });
 
   test("rejects an over-count pack from the header before inflating", async () => {
-    // The one-file commit packs three objects (commit, tree, blob); a cap of
-    // two rejects it from the declared count alone, before the per-object walk.
+    // The one-file commit packs three objects; a cap of two rejects it
+    // from the header count alone, before the per-object walk.
     const pack = await packWithFile("hello\n");
     await expect(
       assertPackInflationWithinBounds(pack, {

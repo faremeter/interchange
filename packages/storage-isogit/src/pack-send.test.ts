@@ -155,9 +155,8 @@ async function makeForkedRepo(): Promise<{
     "branch A",
   );
 
-  // Reset working tree by removing branch-A artifact, then commit branch B
-  // on top of base. We use git.commit with explicit parent via writeCommit
-  // semantics through a fresh branch.
+  // Reset the working tree by removing branch-A's artifact, then commit
+  // branch B on top of base via a fresh branch.
   await git.writeRef({
     fs,
     dir,
@@ -268,22 +267,20 @@ describe("createNegotiatedPack", () => {
   });
 
   test("precomputed wantedObjects matches the from-scratch path byte-for-byte", async () => {
-    // Callers that pre-walk reachable-from-wants for their own
-    // purposes can hand the set in via `options.wantedObjects`. The
-    // result must be identical to letting `createNegotiatedPack`
-    // recompute the set internally — same OIDs in the same order,
-    // same pack bytes — so the optimization is invisible to
+    // Callers that pre-walk reachable-from-wants can hand the set in via
+    // `options.wantedObjects`; the result must be identical to letting
+    // `createNegotiatedPack` recompute it internally — same OIDs in the
+    // same order, same pack bytes — so the optimization is invisible to
     // downstream consumers.
     const { dir, c1, c3 } = await makeLinearRepo();
 
     const fromScratch = await createNegotiatedPack(dir, [c3], [c1]);
     if (fromScratch === null) throw new Error("expected pack");
 
-    // Walk reachable-from-wants ourselves to construct the
-    // precomputed set the caller would hand in. We use the same
-    // helper `createNegotiatedPack` uses internally to keep the
-    // contract obvious: precomputed must equal what the function
-    // would have computed.
+    // Walk reachable-from-wants ourselves to build the precomputed set
+    // the caller would hand in, using the same helper
+    // `createNegotiatedPack` uses internally so the contract stays
+    // obvious: precomputed must equal what the function would compute.
     const wantedObjects = new Set<string>();
     const chainHead = await git.readCommit({ fs, dir, oid: c3 });
     const queue: string[] = [c3];

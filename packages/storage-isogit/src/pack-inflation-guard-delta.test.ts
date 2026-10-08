@@ -8,12 +8,11 @@ import path from "node:path";
 import { assertPackInflationWithinBounds } from "./pack-inflation-guard";
 import { DEFAULT_PACK_MATERIALIZATION_LIMITS } from "./materialization-limits";
 
-// The committed guard test only packs a fresh isomorphic-git repo, which
+// The committed guard test packs only a fresh isomorphic-git repo, which
 // produces NO delta objects, so the OFS_DELTA / REF_DELTA framing in
-// assertPackInflationWithinBounds (the base-offset varint skip and the 20-byte
-// ref-base skip) has zero regression coverage. A real pushed pack routinely
-// carries deltas; a misframe there would spuriously reject a valid pack at the
-// trailer-landing check. These tests build real delta packs with the git CLI.
+// assertPackInflationWithinBounds (varint skip, 20-byte ref-base skip)
+// has zero coverage; a misframe would spuriously reject a real pack at
+// the trailer check. These tests build real delta packs with the git CLI.
 
 const tmpDirs: string[] = [];
 afterEach(async () => {

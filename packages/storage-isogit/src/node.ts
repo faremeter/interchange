@@ -71,11 +71,11 @@ export const {
 } = storage;
 
 /**
- * The node build guards `indexPackIntoGitDir` with a per-object inflation scan
- * (`assertPackInflationWithinBounds`) before it indexes, so every node caller
- * that materializes an untrusted pushed pack is protected against a zip bomb
- * without having to remember a separate call. The browser build indexes only
- * its own repos and needs no such guard.
+ * The node build guards `indexPackIntoGitDir` with a per-object inflation
+ * scan (`assertPackInflationWithinBounds`) before it indexes, so every
+ * node caller that materializes an untrusted pushed pack is protected
+ * against a zip bomb without having to remember a separate call. The
+ * browser build indexes only its own repos and needs no such guard.
  */
 export async function indexPackIntoGitDir(
   gitDir: string,

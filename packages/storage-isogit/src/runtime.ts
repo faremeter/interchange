@@ -68,8 +68,8 @@ function operation(
 }
 
 /**
- * Invoke either shape accepted by isomorphic-git without changing errors.
- * Promise clients expose methods under `promises`; callback clients expose
+ * Invoke either shape accepted by isomorphic-git without changing errors:
+ * promise clients expose methods under `promises`; callback clients expose
  * the same methods on the client itself.
  */
 function callFs(

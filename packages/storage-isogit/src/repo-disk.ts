@@ -5,7 +5,7 @@ import type { StorageRuntime } from "./runtime";
 /**
  * Disk-occupancy snapshot of an agent repo's `.git` directory. Drives the
  * write-path GC trigger (pack count crossing a threshold) and the
- * disk-pressure observability warning (byte size crossing a threshold).
+ * disk-pressure warning (byte size crossing a threshold).
  */
 export type RepoDiskUsage = {
   gitBytes: number;
@@ -15,8 +15,7 @@ export type RepoDiskUsage = {
 
 /**
  * Count the immediate child entries of `dir`. Returns 0 when the directory
- * does not exist (a repo subtree that has not been created yet) -- absence
- * is a real zero, not an error to surface.
+ * does not exist — absence is a real zero, not an error to surface.
  */
 async function countDirEntries(
   runtime: StorageRuntime,
@@ -35,10 +34,11 @@ async function countDirEntries(
 /**
  * Count loose git objects under `.git/objects/<xx>/`. Loose objects are the
  * un-packed per-commit objects isomorphic-git writes on each commit; their
- * count rising and collapsing after a repack is the pack-growth signature a
- * GC pass reclaims. The two-hex-char fan-out dirs plus `pack`/`info` are the
- * only children of `objects/`; the latter two are skipped. Keep this filter in
- * step with the synchronous Node counterpart in `node-metrics.ts`.
+ * count rising and collapsing after a repack is the pack-growth signature
+ * a GC pass reclaims. The two-hex-char fan-out dirs plus `pack`/`info` are
+ * the only children of `objects/`; the latter two are skipped. Keep this
+ * filter in step with the synchronous Node counterpart in
+ * `node-metrics.ts`.
  */
 export async function countLooseObjects(
   runtime: StorageRuntime,
@@ -92,9 +92,7 @@ export async function countPackFiles(
 
 /**
  * Total byte size of the repo's `.git` directory (loose + pack + refs +
- * logs). A coarse repo-size proxy for the disk-pressure warning. Walks the
- * tree through the configured filesystem; bounded by the repo size, which is
- * the thing being measured.
+ * logs); a coarse repo-size proxy for the disk-pressure warning.
  */
 export async function gitBytes(
   runtime: StorageRuntime,
@@ -171,11 +169,10 @@ export async function repoDiskUsage(
 
 /**
  * Resolve every local branch ref of the repo at `dir` to its tip SHA.
- *
  * Agent repos carry two diverging heads (`refs/heads/main` and
- * `refs/heads/deploy`); GC must union reachability across all of them, so it
- * enumerates them here rather than assuming a single ref. No tags or other
- * ref namespaces are created in these repos, so listing branches is
+ * `refs/heads/deploy`); GC must union reachability across all of them, so
+ * it enumerates them here rather than assuming a single ref. No tags or
+ * other ref namespaces are created in these repos, so listing branches is
  * complete.
  */
 export async function listRepoRefs(

@@ -4,8 +4,8 @@ import path from "node:path";
 import { hasCode } from "@intx/types";
 import type { RepoDiskUsage, RepoObjectCounts } from "./repo-disk";
 
-// Synchronous Node counterparts to the runtime-backed helpers in repo-disk.ts.
-// Keep their counting and absence semantics aligned.
+// Synchronous Node counterparts to the runtime-backed helpers in
+// repo-disk.ts. Keep their counting and absence semantics aligned.
 
 function countDirEntries(dir: string): number {
   try {

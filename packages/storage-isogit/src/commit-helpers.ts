@@ -66,12 +66,12 @@ export async function restoreIndexAfterFailedCommit(
 }
 
 /**
- * Create a commit without exposing its ref until the new objects are durable.
- *
- * LightningFS persists existing file bodies before its directory namespace.
- * Updating a live ref in the same phase that creates loose-object paths can
- * therefore leave a durable ref pointing at an absent object after a reload.
- * The first flush publishes the object namespace; only then is the ref moved.
+ * Create a commit without exposing its ref until the new objects are
+ * durable. LightningFS persists existing file bodies before its directory
+ * namespace; updating a live ref in the same phase that creates
+ * loose-object paths can leave a durable ref pointing at an absent object
+ * after a reload. The first flush publishes the object namespace; only
+ * then is the ref moved.
  */
 export async function commitDurably(
   runtime: StorageRuntime,

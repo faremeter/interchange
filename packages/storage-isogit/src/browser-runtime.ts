@@ -17,10 +17,9 @@ function ensureBuffer(): void {
 
 /**
  * Claim a fresh, single-owner IndexedDB filesystem for this page.
- *
- * Construction clears any prior contents for `name`. Create one instance per
- * name and pass it to every consumer; a second owner for the same name may
- * clear the first owner's active data.
+ * Construction clears any prior contents for `name`. Create one instance
+ * per name and pass it to every consumer; a second owner for the same
+ * name may clear the first owner's active data.
  */
 export function createBrowserIsogitRuntime(
   name = "interchange",

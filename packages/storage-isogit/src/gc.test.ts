@@ -53,8 +53,8 @@ async function packFor(sourceDir: string, oids: string[]): Promise<Uint8Array> {
 }
 
 /**
- * A single-commit source repo. `tipOids` is the tip-tree reachable set, the
- * same shape a deploy pack carries (commit + tree + blobs, no ancestors).
+ * A single-commit source repo; `tipOids` is the tip-tree reachable set
+ * (commit + tree + blobs, no ancestors).
  */
 async function sourceRepo(files: Record<string, string>): Promise<{
   dir: string;
@@ -200,8 +200,7 @@ describe("runGC", () => {
     await runGC(dir, { retention: "tip-only" });
 
     // The full tree-reachable closure of both diverging heads survives the
-    // consolidation; walking it re-reads every commit and tree, and the
-    // enumerated object set is unchanged.
+    // consolidation.
     expect(new Set(await collectReachableObjects(dir, mainTip))).toEqual(
       mainBefore,
     );
@@ -243,9 +242,9 @@ describe("runGC", () => {
     const dir = await tempDir();
     await initAgentRepo(dir);
 
-    // A two-commit source whose tip carries a parent pointer; the pack only
-    // contains the tip's tree-reachable objects, so the parent is absent on
-    // disk once applied — the steady state of a real deploy ref.
+    // A two-commit source whose pack carries only the tip's tree-reachable
+    // objects; the parent is absent on disk — the steady state of a deploy
+    // ref.
     const source = await tempDir();
     await git.init({ fs, dir: source, defaultBranch: "main" });
     await fs.promises.writeFile(path.join(source, "a.txt"), "a");
@@ -276,9 +275,9 @@ describe("runGC", () => {
     await initAgentRepo(dir);
     const store = new IsogitStore(dir);
 
-    // Fire context commits and GC passes against the same repo concurrently.
-    // Every commit and every GC acquires the per-directory lock, so they run
-    // one-at-a-time and the object store is never observed mid-mutation.
+    // Fire context commits and GC passes against the same repo
+    // concurrently; every commit and GC acquires the per-directory lock,
+    // so the object store is never observed mid-mutation.
     const ops: Promise<unknown>[] = [];
     for (let i = 0; i < 12; i += 1) {
       await fs.promises.writeFile(
@@ -290,7 +289,7 @@ describe("runGC", () => {
     }
     await Promise.all(ops);
 
-    // The repo is intact: HEAD resolves and walking its entire tree-reachable
+    // The repo is intact: HEAD resolves and its entire tree-reachable
     // closure re-reads every commit and tree without a missing object.
     const head = await git.resolveRef({ fs, dir, ref: "refs/heads/main" });
     const reachable = await collectReachableObjects(dir, head);
@@ -315,9 +314,9 @@ describe("runGC", () => {
 
     await runGC(dir, { retention: "tip-only" });
 
-    // tip-only prunes the older commits. The reads must not throw into the
-    // caller (the agent's checkpoints tool) — they return the surviving
-    // slice from the tip, which is itself intact.
+    // tip-only prunes the older commits. The reads must not throw into
+    // the caller (the agent's checkpoints tool) — they return the
+    // surviving slice from the tip, which is itself intact.
     const after = await store.log(10);
     expect(after.length).toBeGreaterThanOrEqual(1);
     expect(after[0]?.hash).toBe(before[0]?.hash);

@@ -1091,10 +1091,9 @@ describe("receivePackObjects CAS", () => {
 });
 
 // Helpers used by the unpublish-on-rejection tests below. The pack
-// filename layout is derived from `transferId` per
-// `publishedPackPaths` in pack-receive.ts; replicate the derivation
-// here so the assertions stay decoupled from that helper's accessors
-// (no internals exported).
+// filename layout is derived from `transferId` per `publishedPackPaths`
+// in pack-receive.ts; replicate the derivation here so the assertions
+// stay decoupled from that helper's accessors.
 function publishedPackFile(targetDir: string, transferId: string): string {
   return path.join(
     targetDir,
@@ -1222,11 +1221,11 @@ describe("post-promotion flush failures", () => {
 
 // These tests assert that post-publish validation rejections in
 // receivePackObjects and applyPack remove the published .pack + .idx
-// pair from objects/pack/. Without this, rejected packs would
-// accumulate as orphan files in objects/pack/ — iso-git does not run
-// periodic GC, and the hub does not invoke git gc on agent repos. The
-// CAS/sha/path_violation tests above verify the throw and ref state
-// but do not verify file cleanup; this section closes that gap.
+// pair from objects/pack/. Without this, rejected packs would accumulate
+// as orphan files in objects/pack/ — iso-git does not run periodic GC,
+// and the hub does not invoke git gc on agent repos. The CAS/sha/
+// path_violation tests above verify the throw and ref state but not file
+// cleanup; this section closes that gap.
 describe("receivePackObjects unpublishes on post-publish rejection", () => {
   test("non_fast_forward removes .pack and .idx; the accepted earlier pack stays", async () => {
     const sourceA = await makeRepoWithPaths([
