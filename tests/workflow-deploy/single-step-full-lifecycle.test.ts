@@ -434,9 +434,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
         );
 
       // THE durability dividend: the post-respawn agent's conversation
-      // reflects the PRE-respawn turn. The fresh local
-      // store started EMPTY, so the only possible source is the substrate
-      // restore. A broken restore would have loaded zero turns.
+      // reflects the PRE-respawn turn. The fresh local store started EMPTY, so
+      // the only possible source is the substrate restore. A broken restore
+      // would have loaded zero turns.
       expect(restoredUserTexts.some((t) => t.includes(FIRST_BODY))).toBe(true);
 
       // The restore wrote the prior conversation into the previously-empty

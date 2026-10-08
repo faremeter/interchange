@@ -61,8 +61,7 @@
 // Single-test file. The `deploy-flow-env` (real sidecar subprocess + its
 // on-disk warm step-state) is `beforeAll`-scoped, while the DB resets per test.
 // A second test would inherit the first run's warm workspace and live parked
-// run; a run-once guard below fails loud if a second test is ever added here
-// rather than letting that assumption rot.
+// run; a run-once guard below fails loud if a second test is ever added here.
 
 import {
   afterAll,
@@ -374,8 +373,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
     // the live parked run) is shared across the describe block, so a second
     // test would inherit this run's parked correlation and the "absent then
     // present" assertions would stop meaning what they claim. Fail loud if a
-    // second test is ever added rather than letting the assumption rot; a
-    // genuinely independent scenario belongs in its own file with its own env.
+    // second test is ever added; a genuinely independent scenario belongs in
+    // its own file with its own env.
     let hasRun = false;
 
     beforeAll(async () => {
@@ -430,9 +429,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // definition asset the deployment references, a workflow_definition the
       // co-write's lazily-anchored per-message run row FKs, and an active
       // approver principal. The deployment's anchor `workflow_run` row is
-      // written by the source-ref deploy below (keyed by the run id the deploy
-      // passes), not seeded here; the co-write resolves tenancy from it by
-      // address.
+      // written by the source-ref deploy below, not seeded here.
       await seedTenants(h.db, [{ id: TENANT_ID }]);
       await seedAsset(h.db, {
         id: DEFINITION_ASSET_ID,
@@ -511,8 +508,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // fully live and the address is routable before firing the trigger and
       // before the drop below has an established route to restore. The
       // source-ref frame round-trips through the real sidecar subprocess, so
-      // routability is asynchronous; wait for it rather than asserting it
-      // synchronously.
+      // routability is asynchronous.
       await waitFor(() => env.hub.deployAcks.has(deploymentMailAddress), {
         diagnostics: env.sidecarDiagnostics,
       });
@@ -527,8 +523,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // Fire the trigger. The model calls the tool; the call hits the ask grant
       // and suspends, so the run parks and mints a correlation. Because the link
       // is up, the suspend-time `signal.correlation.register` co-writes the rows
-      // -- which both proves the run genuinely parked and gives us the
-      // correlationId to track across the drop/reconnect.
+      // -- proving the run genuinely parked and giving us the correlationId to
+      // track across the drop/reconnect.
       await fireMailTrigger(env, deploymentMailAddress, {
         messageId: "<reconnect-reemit-1@integration.interchange>",
         grants: [ASK_GRANT],

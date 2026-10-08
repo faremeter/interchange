@@ -9,13 +9,11 @@
 //
 // 1. Mail with NO `Message-Id:` header at all. The parser returns
 //    `null` and `deriveMessageId` falls back to `sha256(rawMessage)`.
-//    Two byte-identical mails therefore mint the same runId, which
+//    Two byte-identical mails therefore mint the same messageId, which
 //    triggers the substrate's claim-check dedup invariant
-//    (`claim_check_already_consumed` after the first run terminates,
-//    or `claim_check_already_processing` / `claim_check_already_inbox`
-//    if the duplicate arrives sooner). The supervisor's
-//    `onMailMessage` catches the error and logs it; the duplicate
-//    is dropped silently on the floor.
+//    (`claim_check_already_consumed` after the first run terminates, or
+//    `claim_check_already_processing` / `claim_check_already_inbox` if
+//    the duplicate arrives sooner). The duplicate is dropped silently.
 //
 // 2. Mail with a malformed `Message-Id:` header (here: no closing
 //    angle bracket -- `Message-Id: <invalid`). The parser does NOT
@@ -27,10 +25,8 @@
 // 3. Two mails with the same `Message-Id` header. The substrate's
 //    dedup catches the duplicate via the same path as case 1; the
 //    first run materialises, the second is dropped at the
-//    `enqueueInbox` boundary with one of the
-//    `claim_check_already_*` errors. The supervisor's
-//    `onMailMessage` `.catch` callback logs and continues; nothing
-//    fires `trigger.fire` for the duplicate.
+//    `enqueueInbox` boundary with one of the `claim_check_already_*`
+//    errors.
 //
 // The supervisor's mail-flow path:
 //   onMailMessage -> deriveMessageId -> enqueueInbox -> dispatch loop
@@ -216,11 +212,9 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
     // supervisor acknowledges it (the bytes are durably on disk) but
     // dispatches no second run -- the duplicate is deduped.
     //
-    // We pin the documented behavior: the duplicate must NOT
-    // produce a second run. Wait for the supervisor's
-    // `markConsumed` to land on the first run (which happens
-    // strictly after the run's terminal event observation above),
-    // then read consumed/ for a baseline.
+    // Wait for the supervisor's `markConsumed` to land on the first run
+    // (strictly after the run's terminal event observation above), then
+    // read consumed/ for a baseline.
     const consumedBefore = await waitForConsumedFilename(
       env,
       ctx.workflowRunRepoId,
@@ -273,7 +267,7 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
     // Construct a mail with a malformed Message-Id header. The
     // parser does NOT validate angle-bracket shape; it returns the
     // trimmed suffix after `Message-Id:`. So `<invalid` becomes
-    // the messageId verbatim.  Under the stable-runId model the
+    // the messageId verbatim. Under the stable-runId model the
     // runId is the deployment address, but the messageId is still
     // the parsed header value.
     const malformedMessageId = "<invalid";
@@ -341,8 +335,7 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
     // `markConsumed` lands strictly after the terminal observation
     // above; wait for the dedup entry to surface so the duplicate
     // collides on the consumed/ branch rather than the processing/
-    // or inbox branch (the test pins documented behavior; we want a
-    // stable error class to assert against).
+    // or inbox branch (a stable error class to assert against).
     const consumedBefore = await waitForConsumedFilename(
       env,
       ctx.workflowRunRepoId,

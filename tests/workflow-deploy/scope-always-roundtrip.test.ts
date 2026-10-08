@@ -11,7 +11,6 @@
 //        SUSPENDS, minting a correlation the register frame co-writes as a
 //        pending `approval` row
 //     -> approve via the REAL hub HTTP route with scope "always"
-//        (POST /api/tenants/:tenantId/approvals/:approvalId/approve)
 //     -> the resolver mutates the run's committed grant for the standing-approved
 //        tool in place, ask -> allow, rewrites `grants.json` via `sendRunGrants`,
 //        and the supervisor pushes `grants-updated` to the live child ahead of
@@ -62,8 +61,7 @@
 // warm step-state) is `beforeAll`-scoped, while the DB resets per test. A second
 // test would inherit the first run's warm workspace and live parked/completed
 // run, so the sentinel and single-park assertions would stop meaning what they
-// claim. A run-once guard below fails loud if a second test is ever added here
-// rather than letting that assumption rot.
+// claim. A run-once guard below fails loud if a second test is ever added here.
 
 import fs from "node:fs";
 import path from "node:path";

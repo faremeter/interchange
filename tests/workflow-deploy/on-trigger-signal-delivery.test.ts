@@ -9,14 +9,12 @@
 // await on the container, a signal delivered to the parent run resolves that
 // await, and the section relays it back down into the body, which continues.
 //
-// The workflow is deployed BY SOURCE-REF (bundle a source entry module into a
-// hub asset, probe it, approve+freeze it against a real DB, deploy the
-// source-ref frame): a single-step workflow whose one step is an `onTrigger`
-// section subscribed to the deployment mail address, with a NON-AGENT body -- a
-// single `awaitSignal({ name })` gate with no timeout. (Body agent-step
-// execution is exercised by the tool-invoke round-trips; this case is non-agent
-// by nature, so the body IS an awaitSignal, exercising exactly the capability
-// under test.)
+// The workflow is deployed BY SOURCE-REF: a single-step workflow whose one step
+// is an `onTrigger` section subscribed to the deployment mail address, with a
+// NON-AGENT body -- a single `awaitSignal({ name })` gate with no timeout.
+// (Body agent-step execution is exercised by the tool-invoke round-trips; this
+// case is non-agent by nature, so the body IS an awaitSignal, exercising
+// exactly the capability under test.)
 //
 //   1. Fire mail #1 -> the container run starts and spawns the body
 //      `section__0`, which parks on `awaitSignal({ name: "proceed" })`. The

@@ -1,50 +1,44 @@
 // The interchange-demo dispatch orchestrator on the extended workflow engine,
 // driven by REAL @intx/agent agents through the production step-invoker seam.
 //
-// `tests/workflow/dispatch-orchestrator.test.ts` proves the full composition -- the
-// outer per-level loop, the Phase-5 verification loop, crash-resume exactly-once
-// and the seven resume cases -- with a stubbed `invokeStep`. This test proves
-// the SAME composition runs end-to-end with real agents: every agent step is a
-// genuine `defineAgent` reactor with an arktype-validated terminal tool, built
-// via `createAgent` and driven by deterministic mock inference from
-// `@intx/inference-testing`, wired through the production
-// `createWorkflowStepInvoker` into an in-process `runtimeRun(definition, env)` --
-// the same in-process harness the per-level real-agent sibling uses, NOT the
-// deploy hub/sidecar/subprocess harness.
+// `tests/workflow/dispatch-orchestrator.test.ts` proves the full composition
+// (outer per-level loop, Phase-5 verification loop, crash-resume exactly-once,
+// seven resume cases) with a stubbed `invokeStep`. This test proves the SAME
+// composition end-to-end: every agent step is a genuine `defineAgent` reactor
+// with an arktype-validated terminal tool, driven by deterministic mock
+// inference and wired through the production `createWorkflowStepInvoker` into
+// an in-process `runtimeRun`.
 //
 // The authored workflow mirrors the shape test: captureBaseline -> plan ->
-// parsePlan -> perLevelLoop(pickLevel -> implement map -> commit -> critique ->
-// amend loop) -> phase5(build -> cleanGate -> attribution -> task loop, each
-// task retried by its own retry loop -> rebuild) -> consolidate. The Phase-5 fix
-// nesting is depth-3: phase5 -> taskLoop -> retryLoop. As in the shape test,
-// every loop convergence decider keys off a DETERMINISTIC host action, never an
-// agent: `buildDirty` reads the `build` action's `clean`, `moreTasks` reads a
-// carried cursor, the retry loop's `taskUnfixed` reads the `verify` action's
-// `fixed`, and only the amendment loop's `critic` verdict -- a real agent output
-// lifted through `extractAgentPayload` -- drives routing. Keeping agent output
-// out of every loop `while`/`carry` is what keeps the real-agent composition
-// deterministic; a real agent's reply cannot destabilize a loop.
+// parsePlan -> perLevelLoop (pickLevel -> implement map -> commit -> critique
+// -> amend loop) -> phase5 (build -> cleanGate -> attribution -> task loop,
+// each task retried by its own retry loop -> rebuild) -> consolidate. The
+// Phase-5 fix nesting is depth-3: phase5 -> taskLoop -> retryLoop. Every loop
+// convergence decider keys off a DETERMINISTIC host action, never an agent:
+// `buildDirty` reads the `build` action's `clean`, `moreTasks` reads a carried
+// cursor, `taskUnfixed` reads the `verify` action's `fixed`, and only the
+// amendment loop's `critic` verdict -- a real agent output lifted through
+// `extractAgentPayload` -- drives routing. Keeping agent output out of every
+// loop `while`/`carry` keeps the real-agent composition deterministic.
 //
-// Two things the shape test cannot prove are deliberately scoped out here and
-// covered elsewhere. The operator escalation (an `awaitSignal` park relayed up
-// through the fix and Phase-5 loops) is pure engine mechanics with no inference
-// in it, and both its continue and abort branches are driven with a real
-// `run.signal(...)` in the shape test; the one agent it gates (the Phase-5
-// fixer) is exercised below. The seven resume cases are mapped and tested in the
-// shape test. The plan is single-level on purpose: the amendment loop's `round`
-// resets to 1 each level, and the gate-critic matcher keys on `round` alone, so
-// a multi-level plan would serve a level's round-1 verdict to another level.
+// Two things the shape test cannot prove are scoped out here. The operator
+// escalation (a signal-free park relayed up through the fix and Phase-5 loops)
+// is pure engine mechanics with no inference in it, driven in the shape test;
+// the one agent it gates (the Phase-5 fixer) is exercised below. The seven
+// resume cases are mapped and tested in the shape test. The plan is
+// single-level on purpose: the amendment loop's `round` resets to 1 each
+// level, and the gate-critic matcher keys on `round` alone, so a multi-level
+// plan would serve a level's round-1 verdict to another level.
 //
 // Scenarios:
 //   1. Clean-first Phase 5: the first build is clean, so the fix path is
-//      pruned and Phase 5 converges without running its attributor/fixer.
+//      pruned and Phase 5 converges without its attributor/fixer.
 //   2. Dirty-then-clean Phase 5: round 1 builds dirty, so the real attributor
 //      and Phase-5 fixer run, rebuild commits, and round 2 builds clean.
-//   3. Crash-resume exactly-once through Phase 5: a crash at the Phase-5 loop's
-//      first ChildSpawned on the dirty path re-drives the Phase-5 body -- its
-//      attributor and fixer re-run through the real step-invoker -- while the
-//      shared ledger holds build/rebuild to one execution. A defeated-ledger
-//      probe proves the assertion non-vacuous.
+//   3. Crash-resume exactly-once through Phase 5: a crash at the Phase-5
+//      loop's first ChildSpawned on the dirty path re-drives the Phase-5 body
+//      while the shared ledger holds build/rebuild to one execution. A
+//      defeated-ledger probe proves the assertion non-vacuous.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -1046,9 +1040,7 @@ describe("dispatch orchestrator with real agents", () => {
   // The harness's default wall-clock budget bounds a single `harness.run()`
   // drain pass (250ms). This pass now runs 4-way parallel in the Makefile, so
   // an honest drain can briefly overshoot under CPU contention; widen the
-  // hang-detection budget so scheduling jitter is not misread as a hang. A
-  // real hang still trips this (and the per-test timeout) well before the
-  // suite stalls.
+  // hang-detection budget so scheduling jitter is not misread as a hang.
   const HANG_BUDGET_MS = 2000;
   async function drive(
     env: WorkflowRuntimeEnv,
@@ -1149,10 +1141,10 @@ describe("dispatch orchestrator with real agents", () => {
     // Reaching `iterations: 2` proves the whole dirty fix path ran with real
     // agents: round 1's build was dirty, so the real attributor and the task
     // loop's per-task retry loops ran, and the run only converges once every
-    // scripted fixer/verify attempt is served -- with fixAtAttempt: 1 each
-    // task's retry loop MUST have iterated twice, or `verify` would never pass
-    // and the retry loop would exhaust into a failed run. An unscripted agent
-    // would hang into the drain guard.
+    // scripted fixer/verify attempt is served. With fixAtAttempt: 1 each task's
+    // retry loop MUST have iterated twice, or `verify` would never pass and the
+    // retry loop would exhaust into a failed run. An unscripted agent would
+    // hang into the drain guard.
     expect(phase5OutcomeOf(result)).toEqual({
       outcome: "converged",
       iterations: 2,

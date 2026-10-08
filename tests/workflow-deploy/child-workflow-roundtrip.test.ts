@@ -5,10 +5,8 @@
 // against a real DB, deploy the source-ref frame) against the real hub +
 // sidecar subprocess + mock inference fixture, fires the parent's mail trigger,
 // and asserts the canonical parent/child event chain materializes in the
-// deployment's workflow-run repo. Child events land under
-// `runs/<childRunId>/events/` in the same workflow-run repo as the parent's
-// `runs/<parentRunId>/events/` -- the sub-namespace shape the in-process
-// `runChild` recursion produces.
+// deployment's workflow-run repo. Child events land under `runs/<childRunId>/`
+// in the same workflow-run repo as the parent's `runs/<parentRunId>/`.
 //
 // The child workflow is embedded inline in the parent (an owned import), so
 // only the parent is deployed. The deploy step lifts the inline child to an
@@ -17,8 +15,7 @@
 // (`createInMemorySpawnChild`) resolves the ref from that map with no on-disk
 // read. The in-process `runChild` (`createSidecarRunChild`) builds a
 // per-childRunId `WorkflowRuntimeEnv` and drives the child's `runtimeRun` to
-// terminal status, settling the parent's spawn step with the child's terminal
-// status.
+// terminal status, settling the parent's spawn step with that status.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
@@ -144,8 +141,8 @@ const TOOL_CHILD_DEPLOYMENT_ID = "run_child-workflow-tool-child-1";
 const TOOL_PARENT_WORKFLOW_ID = `wf_${TOOL_PARENT_DEPLOYMENT_ID}`;
 const TOOL_CHILD_WORKFLOW_ID = `wf_${TOOL_CHILD_DEPLOYMENT_ID}`;
 
-// Live-event deployment ids. The parent's ONLY step is the childWorkflow spawn,
-// so the parent runs no agent of its own -- any inference event on the
+// Live-event deployment ids. The parent's ONLY step is the childWorkflow
+// spawn, so the parent runs no agent of its own -- any inference event on the
 // deployment's stream can only have originated in the child.
 const LIVE_EVENT_PARENT_DEPLOYMENT_ID = "run_child-workflow-liveevent-parent-1";
 const LIVE_EVENT_CHILD_DEPLOYMENT_ID = "run_child-workflow-liveevent-child-1";
