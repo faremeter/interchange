@@ -344,6 +344,18 @@ export function createToolLoader(config: LoaderConfig): ToolLoader {
         package: { name: entry.name, version: entry.version },
       });
     }
+    // The pin is the name the operator approved, and the namespace check
+    // below is made against it. Reject a tarball whose own manifest
+    // disagrees so the pin and the manifest name are interchangeable
+    // for everything downstream.
+    const manifestName = readPackageName(pkgJson);
+    if (manifestName !== entry.name) {
+      throw new ToolLoaderError({
+        category: "package.entry.invalid",
+        message: `${entry.name}@${entry.version} package.json declares name ${JSON.stringify(manifestName)}, which does not match the pinned package name`,
+        package: { name: entry.name, version: entry.version },
+      });
+    }
     const toolsRel = readInterchangeEntry(pkgJson, "tools");
     if (toolsRel === null) {
       throw new ToolLoaderError({
@@ -740,6 +752,13 @@ export function createToolLoader(config: LoaderConfig): ToolLoader {
       }
     };
   }
+}
+
+function readPackageName(pkgJson: unknown): string | undefined {
+  if (pkgJson === null || typeof pkgJson !== "object") return undefined;
+  if (!("name" in pkgJson)) return undefined;
+  const name = (pkgJson as { name: unknown }).name;
+  return typeof name === "string" ? name : undefined;
 }
 
 function readInterchangeEntry(
