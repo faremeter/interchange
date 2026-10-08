@@ -30,7 +30,7 @@ import type { FrameReader, NdjsonReader, NdjsonWriter } from "../ipc/index";
 /** Terminal run event union the drain accumulators settle on; consumers switch on kind without importing the workflow package. */
 export type TerminalRunEvent = RunCompleted | RunFailed | RunCancelled;
 
-/** Per-runId terminal-event source for the drain accumulators and dispatch loop; each call returns an AsyncIterable scoped to one runId. The per-cohort broadcaster implements it from the child's terminal.event frames. */
+/** Per-runId terminal-event source for the drain accumulators and dispatch loop; returns an AsyncIterable scoped to one runId. */
 export type TerminalEventSource = (
   runId: string,
 ) => AsyncIterable<TerminalRunEvent>;
@@ -52,9 +52,11 @@ export type PrincipalSigner = (
   payload: Uint8Array,
 ) => Promise<SignedPayload>;
 
-/** Minimal mail-bus surface for the supervisor's spawn/mail/teardown lifecycle; not pinned to any concrete bus.
-
-subscribeMailForAddress returns a disposer; the handler resolves on durable acceptance (ack) and rejects otherwise (withhold). sendOutbound is the OUTBOUND half of mailbox ownership (§3a): the supervisor performs the signed send through the host transport so the mail carries the agent's signature; an address with no registered crypto throws loudly. */
+/** Minimal mail-bus surface for the supervisor's spawn/mail/teardown lifecycle.
+ * subscribeMailForAddress returns a disposer; the handler resolves on durable
+ * acceptance (ack) and rejects otherwise (withhold). sendOutbound is the
+ * OUTBOUND mailbox-ownership half (§3a): the supervisor signs and sends via
+ * the host transport; an address with no registered crypto throws. */
 export interface MailBusBindings {
   registerAddress(address: string): void;
   unregisterAddress(address: string): void;
@@ -68,7 +70,7 @@ export interface MailBusBindings {
   ): Promise<SendReceipt>;
 }
 
-/** Handle the spawner returns; mirrors Bun.spawn's shape so tests can substitute an in-process implementation. stdin/stdout carry the signed control channel, eventReader the HMAC-authenticated event channel. */
+/** Handle the spawner returns; mirrors Bun.spawn's shape so tests can substitute an in-process implementation. */
 export interface SubprocessHandle {
   readonly pid: number;
   /** Writer for the supervisor-to-child control channel (child stdin); the control sender feeds NDJSON lines through it. */
@@ -81,7 +83,7 @@ export interface SubprocessHandle {
   exited: Promise<number>;
 }
 
-/** Spawner the supervisor invokes per spawn; production injects Bun.spawn, tests a deterministic mock. The env carries only IPC trust anchors plus substrate-config keys, never the supervisor's private key. */
+/** Per-spawn subprocess spawner; production injects Bun.spawn, tests a mock. Env holds only IPC anchors and substrate keys, never the key. */
 export type SubprocessSpawner = (args: {
   /** Absolute path to the host-owned `bin/workflow-child` script. */
   binaryPath: string;
@@ -89,16 +91,18 @@ export type SubprocessSpawner = (args: {
   env: Record<string, string>;
 }) => SubprocessHandle;
 
-/** Logical pointer to the mail bytes stamped on every claim-check envelope; the substrate never dereferences it, the boot edge supplies a derivation coherent with where mail audit lives. */
+/** Pointer to the mail bytes on every claim-check envelope; the substrate never dereferences it, the boot edge derives it from mail audit. */
 export type MailAuditRef = { store: string; path: string };
 
-/** Pure host-supplied derivation of the claim-check mail audit ref; absent, an in-process { store: "in-process", path: messageId } fallback keeps library tests audit-store-free. */
+/** Host-supplied derivation of the claim-check mail audit ref; absent, an in-process fallback keeps library tests audit-store-free. */
 export type DeriveMailAuditRef = (
   messageId: string,
   rawMessage: Uint8Array,
 ) => MailAuditRef;
 
-/** Inbox claim-check primitives; production wires the @intx/hub-sessions functions, tests a deterministic in-memory stub. The shape mirrors the upstream functions exactly so a binding miss is a type error, not a runtime surprise. */
+/** Inbox claim-check primitives; production wires the @intx/hub-sessions
+ * functions, tests a deterministic in-memory stub. Shape mirrors the
+ * upstream functions exactly: a binding miss is a type error, not a surprise. */
 export interface InboxPrimitives {
   enqueueInbox(
     store: SubstrateRepoStore,
@@ -127,7 +131,7 @@ export interface InboxPrimitives {
   ): Promise<ReplayProcessingToInboxResult>;
 }
 
-/** A park the supervisor forwards to the host, stamped with its own anchorRunId and agentAddress; the host turns it into a signal.correlation.register frame. */
+/** A park the supervisor forwards to the host, stamped with its anchorRunId and agentAddress; registered via signal.correlation.register. */
 export interface SuspensionRegistration {
   runId: string;
   correlationId: string;
@@ -138,7 +142,9 @@ export interface SuspensionRegistration {
   approvalSnapshot?: ApprovalSnapshot;
 }
 
-/** Constructor arguments for createWorkflowSupervisor: a RepoStore handle plus a signAsPrincipal callback; every write site claims its principal and the supervisor never holds a private key. */
+/** Constructor arguments for createWorkflowSupervisor: a RepoStore handle plus a
+ * signAsPrincipal callback; every write site claims its principal, so the
+ * supervisor never holds a private key. */
 export interface WorkflowSupervisorBindings {
   /** Substrate handle the supervisor reads grants from and commits events to. */
   repoStore: SubstrateRepoStore;
@@ -146,14 +152,21 @@ export interface WorkflowSupervisorBindings {
   signAsPrincipal: PrincipalSigner;
   /** Mail-bus surface for address registration and inbound subscription. */
   mailBus: MailBusBindings;
-  /** Optional suspension sink, invoked by the park.notify arm and reEmitParkedCorrelations. Best-effort: a throwing sink is logged and both callers keep going. */
+  /** Optional suspension sink for the park.notify arm and reEmitParkedCorrelations; a throwing sink is logged and both callers keep going. */
   onSuspensionRegister?: (registration: SuspensionRegistration) => void;
-  /** Self-termination sink, fired on a self-driven terminal phase (crash-loop latch, channel crash while recycling, recycle failure), not on host shutdown or a failed initial spawn; the sidecar reclaims the deployment address. MUST be idempotent and total (unlike onSuspensionRegister): a missed reclaim strands the address until an operator undeploys. */
+  /** Self-termination sink, fired on a self-driven terminal phase (crash-loop latch,
+   * channel crash while recycling, recycle failure), not on host shutdown or a failed
+   * initial spawn; the sidecar reclaims the deployment address. MUST be idempotent and
+   * total (unlike onSuspensionRegister): a missed reclaim strands the address until an
+   * operator undeploys. */
   onSelfTerminate?: (info: {
     phase: "stopped" | "crash-looping";
     reason: string;
   }) => void;
-  /** Per-run grants source consulted before each trigger.fire. Request/response: the supervisor pushes the returned snapshot before the trigger; a throwing sink fails the run (synthesized RunFailed) rather than firing against absent grants. When wired it is the SOLE grants push (spawn skips its snapshot). */
+  /** Per-run grants source consulted before each trigger.fire. The supervisor pushes the
+   * returned snapshot before the trigger; a throwing sink fails the run (synthesized
+   * RunFailed) rather than firing against absent grants. When wired, it is the SOLE
+   * grants push (spawn skips its snapshot). */
   onRunStart?: (args: {
     runId: string;
     anchorRunId: string;
@@ -166,7 +179,7 @@ export interface WorkflowSupervisorBindings {
   binaryPath: string;
   /** Substrate-config keys carried into the child's spawn-time env; the supervisor never inspects them. */
   substrateEnv: Record<string, string>;
-  /** Per-spawn env entries recomputed for every spawn and recycle respawn (unlike the frozen substrateEnv), so a host-revised value reaches the respawned child. Keys layer over substrateEnv, under the IPC anchors. */
+  /** Per-spawn env entries recomputed on every spawn and recycle respawn (unlike substrateEnv), so a host-revised value reaches the new child. */
   dynamicSpawnEnv: () => Record<string, string>;
   /**
    * Workflow-run repo identity for the deployment. The supervisor
@@ -177,7 +190,9 @@ export interface WorkflowSupervisorBindings {
   workflowRunRef: string;
   /** Anchor run id baked into the supervisor's principal claims. */
   anchorRunId: string;
-  /** Step count (stepOrder.length), threaded as STEP_COUNT so the child's deploy-tree read collapses onto the head for single-step deployments exactly as the host's push does. Fixed for the deployment's lifetime. */
+  /** Step count (stepOrder.length), threaded as STEP_COUNT so the child's deploy-tree
+   * read collapses onto the head for single-step deployments, as the host's push does.
+   * Fixed for the deployment's lifetime. */
   stepCount: number;
   /** Mail address registered on spawn, unregistered on teardown; inbound mail flows through the trigger.fire path. */
   deploymentMailAddress: string;
@@ -201,7 +216,7 @@ export interface WorkflowSupervisorBindings {
   drainTimeoutAccumulatorFactory?: import("./drain-timeout").DrainTimeoutAccumulatorFactory;
   /** Clock threaded into the drain accumulator; tests inject a deterministic fake, defaults to Date.now. */
   now?: () => number;
-  /** Scheduling primitive for the drain accumulator, ready handshake, and kill escalation; tests inject a deterministic timer host, defaults to setTimeout. */
+  /** Scheduling primitive for the drain accumulator, ready handshake, and kill escalation; tests inject a deterministic timer host. */
   setTimer?: (cb: () => void, ms: number) => unknown;
   /** Disposer paired with setTimer; defaults to clearTimeout. */
   clearTimer?: (handle: unknown) => void;
@@ -222,9 +237,11 @@ export interface WorkflowSupervisorBindings {
   inboxPrimitives?: InboxPrimitives;
   /** Principal authoring claim-check writes; defaults to { kind: "supervisor", anchorRunId }, overridable for structural assertions. */
   inboxWritePrincipal?: Principal;
-  /** Consumed-dedup retention horizon (ms) threaded into every markConsumed, pruning the index to a bounded steady state. Operator-policy value: must be >= the max redelivery window of any at-least-once source, or dedup breaks (a breach surfaces as a refused stale enqueue). */
+  /** Consumed-dedup retention horizon (ms) threaded into every markConsumed, pruning the
+   * index to a bounded steady state. Must be >= the max redelivery window of any
+   * at-least-once source, or dedup breaks (surfacing as a refused stale enqueue). */
   consumedRetentionMs?: number;
-  /** Bound on the ready handshake: a child that neither readies nor exits would block spawn forever, so on expiry the supervisor kills it (SIGTERM then SIGKILL) and rejects. */
+  /** Ready-handshake bound: on expiry the supervisor kills (SIGTERM then SIGKILL) and rejects a child that never readied, so spawn cannot block. */
   readyTimeoutMs?: number;
   /** Crash-loop guard: unexpected exits within the window before the deployment latches; operator-owned bound. */
   crashLoopMaxCount?: number;
@@ -234,17 +251,23 @@ export interface WorkflowSupervisorBindings {
   crashLoopStableResetMs?: number;
   /** Initial respawn backoff (ms); each respawn doubles it up to the cap, a stable run resets it. */
   respawnBackoffInitialMs?: number;
-  /** Cap on exponential respawn backoff (ms). Config invariant: keep it below crashLoopWindowMs -- a cap at or above the window lets a slow flapper's crashes age out before the count latches. */
+  /** Respawn backoff cap (ms); keep it below crashLoopWindowMs, or a slow flapper's crashes age out before the count latches. */
   respawnBackoffMaxMs?: number;
-  /** Watchdog on the parked-correlations response wait: a wedged-but-alive child never aborts its cohort, so cap the wait; on expiry the next re-establishment re-drives. */
+  /** Watchdog on the parked-correlations response wait: a wedged-but-alive child never aborts its cohort; cap it, re-establishment re-drives. */
   parkedQueryWatchdogMs?: number;
-  /** Optional per-message dispatch-timing observer: dispatch-start on dequeue, reply-produced when the run's terminal frame lands, both on a monotonic clock so the per-message round-trip is computable. Pure observability, absent in production; a throwing observer is swallowed and logged. */
+  /** Optional per-message dispatch-timing observer: dispatch-start on dequeue,
+   * reply-produced when the run's terminal frame lands, both on a monotonic clock
+   * so the per-message round-trip is computable. Pure observability, absent in
+   * production; a throwing observer is swallowed and logged. */
   onDispatchTiming?: (mark: DispatchTimingMark) => void;
-  /** D2 §10c forced-repack A/B toggle (measurement-only): force a repack every everyMessages-th message to measure pack growth vs tree fan-out as the dominant per-message cost. Absent in production. */
+  /** D2 §10c forced-repack A/B toggle (measurement-only): repack every everyMessages-th message to measure pack growth vs tree fan-out cost. */
   repackEveryMessages?: { everyMessages: number };
 }
 
-/** The five per-message substrate legs D2 attribution splits the substrate tax across: enqueue (before dispatch), dequeue (the claim-check read), runevent (run-event commits, inside the window), markconsumed (after reply-produced), and wal (the D1 conversation WAL). */
+/** The five per-message substrate legs D2 attribution splits the substrate tax across:
+ * enqueue (before dispatch), dequeue (the claim-check read), runevent (run-event
+ * commits, inside the window), markconsumed (after reply-produced), and wal (the D1
+ * conversation WAL). */
 export type DispatchSubstrateLeg =
   | "enqueue"
   | "dequeue"
@@ -252,7 +275,7 @@ export type DispatchSubstrateLeg =
   | "markconsumed"
   | "wal";
 
-/** Structural counters sampled at a leg's end so the D2 attribution can explain WHY a leg grows: runs/ and consumed/ fan-out, loose-object count (pack-growth proxy), and .git byte size. */
+/** Structural counters sampled at a leg's end so D2 explains WHY a leg grows: runs/ and consumed/ fan-out, loose-object count, .git byte size. */
 export type DispatchStructuralCounters = {
   runsFanOut: number;
   consumedFanOut: number;
@@ -260,7 +283,10 @@ export type DispatchStructuralCounters = {
   gitBytes: number;
 };
 
-/** One onDispatchTiming observation, keyed on messageId (the top-level run id is stable per deployment and cannot distinguish messages). "roundtrip" pairs dispatch-start/reply-produced; "leg" pairs start/end around one substrate commit, with structural counters on the end mark. */
+/** One onDispatchTiming observation, keyed on messageId (the top-level run id is
+ * stable per deployment and cannot distinguish messages). "roundtrip" pairs
+ * dispatch-start/reply-produced; "leg" pairs start/end around one substrate commit,
+ * with structural counters on the end mark. */
 export type DispatchTimingMark =
   | {
       kind: "roundtrip";
