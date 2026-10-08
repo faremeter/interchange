@@ -1,13 +1,6 @@
-// Server-Sent Events byte stream parser.
-//
-// Converts a ReadableStream<Uint8Array> (the raw HTTP response body) into an
-// AsyncIterable<string> of SSE data payloads. Each yielded string is the
-// value of one `data:` field. Comments (`:`) and blank-line separators are
-// consumed internally. The `[DONE]` sentinel (OpenAI convention) terminates
-// the iteration.
-//
-// The parser buffers incomplete lines across chunk boundaries so split chunks
-// are handled correctly regardless of where chunk boundaries fall.
+// SSE byte-stream parser: ReadableStream<Uint8Array> → AsyncIterable<string>
+// of `data:` payloads. Blank lines, `:` comments, and the `[DONE]` sentinel
+// are consumed internally; incomplete lines buffer across chunk boundaries.
 
 const decoder = new TextDecoder();
 
@@ -34,8 +27,7 @@ export async function* parseSSE(
 
       buffer += decoder.decode(value, { stream: true });
 
-      // Process all complete lines (lines terminated by \n).
-      // A line ending in \r\n counts as terminated at the \n.
+      // Process all complete lines; \r\n terminates at the \n.
       let newlineIndex: number;
       while ((newlineIndex = buffer.indexOf("\n")) !== -1) {
         const rawLine = buffer.slice(0, newlineIndex);

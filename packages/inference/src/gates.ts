@@ -1,10 +1,6 @@
-// Gate management for the agent reactor.
-//
-// Gates block the reactor until an external condition resolves. Each gate has
-// a type, an ID, and a mandatory timeout. The gate manager owns all active
-// gates and exposes methods to register, clear, and time out gates.
-//
-// (INFERENCE.md § Gates, Gate Timeouts, Gate Behavior During Suspension)
+// Gate management for the agent reactor. Gates block the reactor until an
+// external condition resolves; each has a type, an ID, and a mandatory
+// timeout.
 
 import type { GateType } from "@intx/types/runtime";
 
@@ -93,12 +89,9 @@ export function createGateManager() {
     return true;
   }
 
-  // Clear a gate without invoking its onCleared callback. The caller has
-  // already decided how the reactor resumes and does not want the standard
-  // cleared-event enqueue that onCleared drives. Used by the approval
-  // re-dispatch path, which resumes by re-running the parked tool call rather
-  // than by re-inferring off a gate-cleared event: firing onCleared there
-  // would enqueue a second, spurious continuation.
+  // Clear without onCleared: the approval re-dispatch path resumes by
+  // re-running the parked call, so a gate-cleared continuation would be
+  // spurious.
   function clearSilently(gateId: string): boolean {
     const gate = gates.get(gateId);
     if (gate === undefined) return false;

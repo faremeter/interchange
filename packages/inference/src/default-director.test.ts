@@ -125,8 +125,7 @@ describe("DefaultDirector — afterInferenceDone hook", () => {
       makeInferenceDoneEvent(turn),
     );
 
-    // The hook saw the post-cycle state and the turn — verifies the
-    // director plumbed both arguments through, not just called the hook.
+    // Verifies the director plumbed both the state and the turn through.
     expect(receivedTurn).toEqual(turn);
     expect(receivedState?.lastCycleSource).toEqual(TEST_SOURCE);
     expect(receivedState?.lastCycleUsage).toEqual(TEST_USAGE);
@@ -197,9 +196,8 @@ describe("DefaultDirector — afterInferenceDone hook", () => {
 
   test("hook returning a Promise is awaited", async () => {
     const hook: AfterInferenceHook = async () => {
-      // Yield a full event-loop turn so the hook's promise cannot be settled
-      // when decide() receives it. The director awaits the hook, so the
-      // assertions below do not depend on how long this takes.
+      // Yield a full event-loop turn so the promise is still pending when
+      // decide() awaits it.
       await new Promise((resolve) => setTimeout(resolve, 0));
       const decision: AfterInferenceDecision = {
         type: "abort",
@@ -228,8 +226,7 @@ describe("DefaultDirector — afterInferenceDone hook", () => {
       makeInferenceErrorEvent(),
     );
     expect(hookFired).toBe(false);
-    // The inference.error branch produces its own checkpoint + reply
-    // shape; the hook is not in that path.
+    // The inference.error branch produces its own checkpoint shape.
     expect(actions[0]).toEqual({
       type: "checkpoint",
       message: "checkpoint: inference-error",
@@ -246,9 +243,8 @@ describe("DefaultDirector — afterInferenceDone hook", () => {
       { afterInferenceDone: hook },
       makeInferenceDoneEvent(turn),
     );
-    // The model's tool call is on the turn, but the hook's abort
-    // routes to done before execute_tools is reached. The TSDoc warns
-    // policy authors about this; the test pins the behavior.
+    // The hook's abort routes to done before execute_tools runs; pins the
+    // TSDoc warning to policy authors.
     expect(actions).toEqual([
       { type: "checkpoint", message: "checkpoint: after-inference-abort" },
       { type: "done" },
@@ -259,10 +255,8 @@ describe("DefaultDirector — afterInferenceDone hook", () => {
 // ---------------------------------------------------------------------------
 // Firing boundary: hook fires only on inference.done
 //
-// The "does NOT fire on inference.error" test above pins one negative
-// case; this block exhausts the rest of the ReactorInboundEvent union
-// so a future switch refactor (e.g. extracting a shared post-event
-// helper) can't quietly start invoking the hook on the wrong branch.
+// Exhausts the rest of the ReactorInboundEvent union so a switch refactor
+// cannot quietly start invoking the hook on the wrong branch.
 // ---------------------------------------------------------------------------
 
 async function fireHook(event: ReactorInboundEvent): Promise<boolean> {
@@ -315,12 +309,10 @@ describe("DefaultDirector — afterInferenceDone firing boundary", () => {
 // ---------------------------------------------------------------------------
 // resume.execute_tools seeds the outstanding-result counter
 //
-// The re-dispatch path never passes through inference.done, which is the only
-// place the tool batch's count is seeded. Without a seed off resume.execute_
-// tools the count stays zero and the re-dispatched call's tool.done decrements
-// to -1 and re-infers off a negative count by accident. These tests drive one
-// director instance across the event sequence so the seed-then-decrement math
-// is exercised against real state, not asserted per fresh instance.
+// The re-dispatch path never passes through inference.done, the only place
+// the batch count is seeded; unseeded, tool.done would decrement to -1 and
+// re-infer off a negative count. One director instance is driven across the
+// sequence so the seed-then-decrement math runs against real state.
 // ---------------------------------------------------------------------------
 
 describe("DefaultDirector — resume.execute_tools counter seeding", () => {
@@ -343,8 +335,7 @@ describe("DefaultDirector — resume.execute_tools counter seeding", () => {
   test("seeds the count to the number of re-dispatched calls and re-infers only at zero", async () => {
     const director = createDefaultDirector("test agent", []);
 
-    // Two calls are about to run. The director must return the execute_tools
-    // action and seed its outstanding count to two.
+    // Seeds the outstanding count to two.
     const dispatch = await decideOn(director, {
       type: "resume.execute_tools",
       calls: [makeToolCall("a"), makeToolCall("b")],
@@ -358,8 +349,7 @@ describe("DefaultDirector — resume.execute_tools counter seeding", () => {
       },
     ]);
 
-    // First result: count 2 -> 1, no re-inference yet. An unseeded count would
-    // have gone 0 -> -1 and re-inferred here.
+    // Count 2 -> 1: no re-inference yet.
     const afterFirst = await decideOn(director, {
       type: "tool.done",
       result: { callId: "a", content: "ok" },

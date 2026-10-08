@@ -1,12 +1,9 @@
 import { type } from "arktype";
 import type { AdapterFactory } from "./adapter";
 
-// Describes one custom adapter: the provider identifier it serves, the module
-// specifier to import, and the named export within that module to use as its
-// factory. Specifiers are operator-config-only and resolve to arbitrary code
-// via `import()`, so they must originate solely from trusted operator
-// configuration, never from tenant or deploy data. The shape is validated at
-// every deserialization boundary; the value is trusted operator input.
+// One custom adapter entry: provider id, module specifier, and named export.
+// Specifiers resolve to arbitrary code via `import()`, so they must come only
+// from trusted operator config, never from tenant or deploy data.
 export const AdapterManifestEntry = type({
   provider: "string",
   specifier: "string",
@@ -23,18 +20,10 @@ export type AdapterManifest = typeof AdapterManifest.infer;
 export type ModuleImporter = (specifier: string) => Promise<unknown>;
 
 /**
- * Imports each manifest entry's module and narrows its named export to an
- * {@link AdapterFactory}, returning a record keyed by provider identifier.
- * Later entries override earlier ones sharing a provider key.
- *
- * Fails loud (naming the specifier, and the export where relevant) when a
- * module does not resolve to an object, the named export is missing, or the
- * named export is not a function. The importer seam defaults to `import()` and
- * is injectable for testing.
- *
- * @param manifest - Validated manifest entries to load
- * @param opts - Optional injected module importer
- * @returns A record of provider identifier to adapter factory
+ * Load each manifest entry's module and narrow its named export to an
+ * {@link AdapterFactory}. Later entries override earlier ones on the same
+ * provider key. Throws with the specifier (and export) on any resolution
+ * failure.
  */
 export async function loadAdapterFactories(
   manifest: AdapterManifest,

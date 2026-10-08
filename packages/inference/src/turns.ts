@@ -18,26 +18,11 @@ export type { ConversationTurn, ContentBlock, AssistantTurn };
 export type { ToolCall, ToolResult };
 
 /**
- * Map a received attachment to a model ContentBlock.
- *
- * The dispatch uses two policies that look unified but are not, and must
- * stay distinct:
- *   - major-type dispatch for image/*, video/*, audio/* → the matching block;
- *   - allowlist-category dispatch for the document category
- *     (application/pdf, application/json, text/plain, text/csv,
- *     text/markdown) → DocumentBlock.
- * Do NOT collapse this into "always dispatch by major type": that would
- * route text/plain to a text block instead of DocumentBlock.
- *
- * This function is total — it never throws. The hub route allowlist only
- * guards the local user-upload path; inbound attachments arrive from remote
- * senders via fetchFull and are not subtype-filtered here (provider adapters
- * are the contract layer that rejects unsupported media at marshal time, per
- * INTERCHANGE message design). Any major-type media is therefore passed
- * through to the adapter. A type that maps to no block at all (e.g. an
- * archive) degrades to a visible text marker rather than throwing: throwing
- * here would propagate into the reactor's ungoverned delivery path and let a
- * single malformed remote attachment tear down the session.
+ * Map a received attachment to a ContentBlock. Dispatch is by major type for
+ * image/video/audio and by allowlist category for documents; do not collapse
+ * to major type alone, or text/plain would become a text block. Total: a type
+ * with no block degrades to a visible text marker instead of throwing, so a
+ * malformed remote attachment cannot tear down the session.
  */
 function attachmentToContentBlock(att: MessageAttachment): ContentBlock {
   const majorType = att.contentType.split("/")[0];
@@ -98,19 +83,10 @@ export function createInboundTurn(
 }
 
 /**
- * Assert that a prompt's tool_call / tool_result blocks are structurally
- * well-formed before it is sent to a provider.
- *
- * Throws if a tool_call id is emitted twice, if a tool_result references a
- * callId with no preceding tool_call, or if two tool_result blocks answer the
- * same callId. None of these are valid in a coherent tool conversation — a
- * tool call has exactly one result. Catching it here surfaces the corruption
- * as an internal error at the assembly boundary, with the offending id and
- * turn index, instead of an opaque downstream provider rejection.
- *
- * This deliberately does NOT require every tool_call to have a result: an
- * unanswered tool_call is left legitimately by an after-inference halt/abort
- * and is repaired downstream for cross-provider replay.
+ * Validate tool_call/tool_result structure before a prompt goes to a
+ * provider. Throws on duplicate tool_call ids, results without a preceding
+ * call, or duplicate results for one call, naming the offending id and turn.
+ * An unanswered tool_call is allowed: a halt/abort can leave one legitimately.
  */
 export function assertWellFormedToolSequence(turns: ConversationTurn[]): void {
   const calledIds = new Set<string>();
