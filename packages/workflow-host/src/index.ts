@@ -44,6 +44,9 @@ export {
 export {
   createWorkflowSupervisor,
   assembleCredentialsSnapshot,
+  // ENOENT-only predicate (re-exported from the supervisor credentials
+  // layer). The director loader uses its own wider slot-error set; a future
+  // cleanup must NOT merge that set into this narrower one.
   isErrnoNotFound,
   commitCancelRequested,
   createDrainTimeoutAccumulator,
@@ -161,6 +164,7 @@ export {
   createSupervisorBackedTransport,
   createWarmAgentCache,
   discoverInFlightRuns,
+  loadVerifiedWorkflowDefinitionFromClosure,
   parseSpawnTimeEnv,
   runWorkflowChild,
   runWorkflowChildFromProcessEnv,
@@ -180,6 +184,7 @@ export {
   type DrainController,
   type GrantEvaluator,
   type LoadParkedApproval,
+  type LoadVerifiedWorkflowDefinitionFromClosureOpts,
   type MailboxWatchRegistry,
   type RunWorkflowChildBindings,
   type RunWorkflowChildFromProcessEnvOpts,

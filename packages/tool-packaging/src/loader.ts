@@ -52,6 +52,7 @@ import type {
 import {
   isAnnotatedDirectorFactory,
   isAnnotatedPluginFactory,
+  isOwnedDirectorId,
 } from "@intx/agent";
 import type { ToolCredentialDeclaration } from "@intx/types/package-json";
 import { ToolCredentialDeclarationArray } from "@intx/types/package-json";
@@ -343,6 +344,18 @@ export function createToolLoader(config: LoaderConfig): ToolLoader {
         package: { name: entry.name, version: entry.version },
       });
     }
+    // The pin is the name the operator approved, and the namespace check
+    // below is made against it. Reject a tarball whose own manifest
+    // disagrees so the pin and the manifest name are interchangeable
+    // for everything downstream.
+    const manifestName = readPackageName(pkgJson);
+    if (manifestName !== entry.name) {
+      throw new ToolLoaderError({
+        category: "package.entry.invalid",
+        message: `${entry.name}@${entry.version} package.json declares name ${JSON.stringify(manifestName)}, which does not match the pinned package name`,
+        package: { name: entry.name, version: entry.version },
+      });
+    }
     const toolsRel = readInterchangeEntry(pkgJson, "tools");
     if (toolsRel === null) {
       throw new ToolLoaderError({
@@ -406,6 +419,19 @@ export function createToolLoader(config: LoaderConfig): ToolLoader {
           message: `${entry.name}@${entry.version} interchange.directors entry exported no AnnotatedDirectorFactory values`,
           package: { name: entry.name, version: entry.version },
         });
+      }
+      // Every exported factory id must sit under the shipping package's own
+      // name: the operator approves `director:<id>` only, so the id prefix is
+      // the only thing that ties the approved grant to the package whose code
+      // runs. Same rule as the workflow-host closure loader.
+      for (const director of directors) {
+        if (!isOwnedDirectorId(director.id, entry.name)) {
+          throw new ToolLoaderError({
+            category: "package.entry.invalid",
+            message: `${entry.name}@${entry.version} interchange.directors entry exports director ${JSON.stringify(director.id)} outside the package's own namespace ${JSON.stringify(entry.name)}`,
+            package: { name: entry.name, version: entry.version },
+          });
+        }
       }
     }
 
@@ -726,6 +752,13 @@ export function createToolLoader(config: LoaderConfig): ToolLoader {
       }
     };
   }
+}
+
+function readPackageName(pkgJson: unknown): string | undefined {
+  if (pkgJson === null || typeof pkgJson !== "object") return undefined;
+  if (!("name" in pkgJson)) return undefined;
+  const name = (pkgJson as { name: unknown }).name;
+  return typeof name === "string" ? name : undefined;
 }
 
 function readInterchangeEntry(

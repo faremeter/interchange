@@ -20,7 +20,7 @@ import path from "node:path";
 
 import { generateKeyPair } from "@intx/crypto";
 import type { ApprovalSnapshot, KeyPair } from "@intx/types/runtime";
-import { defineAgent } from "@intx/agent";
+import { defineAgent, createDefaultDirectorRegistry } from "@intx/agent";
 import {
   builtinCredentialProviders,
   createCredentialProviderRegistry,
@@ -243,6 +243,7 @@ function makeSpawner(
     collectDeclaredCredentialConsumers: () => new Set<string>(),
     filterGrantsToDeclaredResources: (parentGrants: readonly unknown[]) =>
       parentGrants,
+    directors: createDefaultDirectorRegistry(),
   });
 }
 
