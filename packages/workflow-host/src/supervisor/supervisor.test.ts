@@ -372,8 +372,7 @@ function parseCredentialsUpdatedFrames(lines: readonly string[]) {
   });
 }
 
-// Like `parseCredentialsUpdatedFrames` but returns the whole frame data
-// (delivery plus the optional `revoke` list) so a test can assert removal.
+// Like `parseCredentialsUpdatedFrames` but returns the whole frame data (delivery plus the optional `revoke` list) so a test can assert removal.
 function parseCredentialsUpdatedData(lines: readonly string[]) {
   return lines.flatMap((line) => {
     if (!line.includes("credentials-updated")) return [];
@@ -540,9 +539,7 @@ function createStubRepoStore(opts: {
         }
         committed.set(key, next);
       }
-      // Track the tip for every write (even non-stateful) so the eager-mailbox
-      // path's post-flush `resolveRef` resolves and does not log a spurious
-      // fault in tests that do not opt into stateful reads.
+      // Track the tip for every write (even non-stateful) so the eager-mailbox path's post-flush `resolveRef` resolves and does not log a spurious fault in tests that do not opt into stateful reads.
       refTipSeq += 1;
       refTip.set(
         repoRefKey(repoId, ref),
@@ -687,8 +684,7 @@ function filenameKey(receivedAt: number, messageId: string): string {
 }
 
 function createMemoryInboxPrimitives(): MemoryInboxPrimitives {
-  // Reports every mutation so a test can wait for the state it needs
-  // instead of re-reading the maps on a timer.
+  // Reports every mutation so a test can wait for the state it needs instead of re-reading the maps on a timer.
   const changes = createChangeNotifier();
   const byAddress = new Map<string, MemoryInboxState>();
   function getOrCreate(address: string): MemoryInboxState {
@@ -711,8 +707,7 @@ function createMemoryInboxPrimitives(): MemoryInboxPrimitives {
     async enqueueInbox(_store, _principal, _repoId, args) {
       const state = getOrCreate(args.address);
       const key = filenameKey(args.receivedAt, args.messageId);
-      // Mirror the real `enqueueInbox` contract: an already-present messageId
-      // is a returned outcome (ack-worthy), not a throw.
+      // Mirror the real `enqueueInbox` contract: an already-present messageId is a returned outcome (ack-worthy), not a throw.
       if (state.consumed.has(args.messageId)) {
         return { outcome: "already-present", reason: "consumed" };
       }
@@ -1018,8 +1013,7 @@ describe("createWorkflowSupervisor", () => {
     });
     // Wait for the address registration so delivers land in the subscription handler (a pre-subscription deliver is a no-op on the mock bus).
     await mailBus.awaitRegistered("run_deployment-x@example.com");
-    // Deliver mail while the supervisor is still in `starting`; the
-    // supervisor buffers it and replays it after `ready` lands.
+    // Deliver mail while the supervisor is still in `starting`; the supervisor buffers it and replays it after `ready` lands.
     mailBus.deliver(
       "run_deployment-x@example.com",
       new TextEncoder().encode("m1"),
@@ -1057,9 +1051,7 @@ describe("createWorkflowSupervisor", () => {
     expect(mailBus.registered()).toContain("run_deployment-x@example.com");
     expect(supervisor.getCredentialsSnapshot()).not.toBeNull();
 
-    // The first buffered mail fires the stable top-level run. The FIFO
-    // claim-check pipeline holds the second until that run terminates, then
-    // rejects it rather than issuing a second trigger.fire.
+    // The first buffered mail fires the stable top-level run. The FIFO claim-check pipeline holds the second until that run terminates, then rejects it rather than issuing a second trigger.fire.
     const firstFired = await waitForTriggerFireRunIds(supervisorToChild, 1);
     expect(firstFired.length).toBeGreaterThanOrEqual(1);
     const firstRunId = firstFired[0];
@@ -1220,8 +1212,7 @@ describe("createWorkflowSupervisor", () => {
   test("delivering inbound mail eager-commits an INBOX entry and emits mailbox.notify", async () => {
     const baseDir = await makeTempDir("supervisor-mailbox-commit-");
     const writes: CapturedWrite[] = [];
-    // The recorded write is the event these tests wait on: the mailbox index
-    // they assert against only changes when one lands.
+    // The recorded write is the event these tests wait on: the mailbox index they assert against only changes when one lands.
     const writeChanges = createChangeNotifier();
     const wired = await spawnWithRunStart({
       baseDir,
@@ -1252,16 +1243,13 @@ describe("createWorkflowSupervisor", () => {
     expect(notify.headers.to).toEqual([MAILBOX_ADDRESS]);
     expect(notify.headers.messageId).toBe("<msg-1@example.com>");
 
-    // The arrival commit holds exactly one entry with the assigned uid, and it
-    // is unflagged on arrival; the raw bytes are stored verbatim in <uid>.eml.
+    // The arrival commit holds exactly one entry with the assigned uid, and it is unflagged on arrival; the raw bytes are stored verbatim in <uid>.eml.
     const arrival = mailboxIndexes(writes)[0];
     if (arrival === undefined) throw new Error("no mailbox index committed");
     expect(arrival.messages).toHaveLength(1);
     expect(arrival.messages[0]?.uid).toBe(1);
     expect(arrival.messages[0]?.flags).toEqual([]);
-    // The `<uid>.eml` is put once, by the arrival flush that appended it; the
-    // later flag-mark flush is a delta that touches only `index.json`, so the
-    // blob is committed in the arrival write, not necessarily the last.
+    // The `<uid>.eml` is put once, by the arrival flush that appended it; the later flag-mark flush is a delta that touches only `index.json`, so the blob is committed in the arrival write, not necessarily the last.
     const emlWrite = writes.find(
       (w) =>
         w.preservePrefix === "mailbox/INBOX/" &&
@@ -1273,8 +1261,7 @@ describe("createWorkflowSupervisor", () => {
       typeof eml === "string" ? new TextEncoder().encode(eml) : eml;
     expect(emlBytes).toEqual(raw);
 
-    // Regression: the step-input trigger.fire is unchanged -- it still carries a
-    // Mail payload, and the notify's runId matches the run the trigger fired.
+    // Regression: the step-input trigger.fire is unchanged -- it still carries a Mail payload, and the notify's runId matches the run the trigger fired.
     await waitForUpstreamPayloads(wired.supervisorToChild, "trigger.fire", 1);
     const fireIds = parseTriggerFireRunIds(wired.supervisorToChild.flushed());
     expect(fireIds).toHaveLength(1);
@@ -1310,16 +1297,14 @@ describe("createWorkflowSupervisor", () => {
       body: "two",
     });
 
-    // Deliver sequentially so the arrival order (and thus the assigned uids) is
-    // deterministic, then confirm each arrival eager-committed on its own.
+    // Deliver sequentially so the arrival order (and thus the assigned uids) is deterministic, then confirm each arrival eager-committed on its own.
     wired.mailBus.deliver(MAILBOX_ADDRESS, m1);
     await waitForUpstreamPayloads(wired.supervisorToChild, "mailbox.notify", 1);
     let notifies = parseMailboxNotifies(wired.supervisorToChild.flushed());
     wired.mailBus.deliver(MAILBOX_ADDRESS, m2);
     await waitForUpstreamPayloads(wired.supervisorToChild, "mailbox.notify", 2);
     notifies = parseMailboxNotifies(wired.supervisorToChild.flushed());
-    // Both messages committed with fresh, monotonic uids even though FIFO
-    // dispatch holds the second until the first run terminates.
+    // Both messages committed with fresh, monotonic uids even though FIFO dispatch holds the second until the first run terminates.
     expect(notifies.map((n) => n.uid)).toEqual([1, 2]);
     expect(notifies.map((n) => n.headers.messageId)).toEqual([
       "<m1@example.com>",
@@ -1352,8 +1337,7 @@ describe("createWorkflowSupervisor", () => {
   test("a dispatched message's mailbox entry is flagged Seen and Processed", async () => {
     const baseDir = await makeTempDir("supervisor-mailbox-flags-");
     const writes: CapturedWrite[] = [];
-    // The recorded write is the event these tests wait on: the mailbox index
-    // they assert against only changes when one lands.
+    // The recorded write is the event these tests wait on: the mailbox index they assert against only changes when one lands.
     const writeChanges = createChangeNotifier();
     const wired = await spawnWithRunStart({
       baseDir,
@@ -1382,8 +1366,7 @@ describe("createWorkflowSupervisor", () => {
       data: { runId, seq: 0, kind: "RunCompleted", at: "test" },
     });
 
-    // The on-dispatch flag mark (fire-and-forget) flushes the \Seen/$Processed
-    // flags onto the entry; poll the committed index until they land.
+    // The on-dispatch flag mark (fire-and-forget) flushes the \Seen/$Processed flags onto the entry; poll the committed index until they land.
     const latest = () => {
       const all = mailboxIndexes(writes);
       return all[all.length - 1];
@@ -1404,8 +1387,7 @@ describe("createWorkflowSupervisor", () => {
   test("a child mailbox mutation flags and expunges the owned INBOX", async () => {
     const baseDir = await makeTempDir("supervisor-mailbox-mutate-");
     const writes: CapturedWrite[] = [];
-    // The recorded write is the event these tests wait on: the mailbox index
-    // they assert against only changes when one lands.
+    // The recorded write is the event these tests wait on: the mailbox index they assert against only changes when one lands.
     const writeChanges = createChangeNotifier();
     const wired = await spawnWithRunStart({
       baseDir,
@@ -1432,9 +1414,7 @@ describe("createWorkflowSupervisor", () => {
     const awaitResponse = (requestId: string) =>
       awaitMutateResponse(wired.supervisorToChild, requestId);
 
-    // A mutation targeting a mailbox the agent does not own is rejected -- the
-    // supervisor owns only INBOX and must not silently mutate it under another
-    // name.
+    // A mutation targeting a mailbox the agent does not own is rejected -- the supervisor owns only INBOX and must not silently mutate it under another name.
     await wired.childSender.send({
       type: "mailbox.mutate.request",
       data: {
@@ -1488,8 +1468,7 @@ describe("createWorkflowSupervisor", () => {
     );
     expect(latest()?.messages[0]?.flags ?? []).toContain("\\Deleted");
 
-    // Expunge sweeps every \Deleted message out of the live INBOX and reports
-    // the swept uids; the index persists (uidNext stays 2, never reused).
+    // Expunge sweeps every \Deleted message out of the live INBOX and reports the swept uids; the index persists (uidNext stays 2, never reused).
     await wired.childSender.send({
       type: "mailbox.mutate.request",
       data: {
@@ -1515,8 +1494,7 @@ describe("createWorkflowSupervisor", () => {
   test("a removeFlags mutation clears a flag from the owned INBOX entry", async () => {
     const baseDir = await makeTempDir("supervisor-mailbox-removeflags-");
     const writes: CapturedWrite[] = [];
-    // The recorded write is the event these tests wait on: the mailbox index
-    // they assert against only changes when one lands.
+    // The recorded write is the event these tests wait on: the mailbox index they assert against only changes when one lands.
     const writeChanges = createChangeNotifier();
     const wired = await spawnWithRunStart({
       baseDir,
@@ -1589,8 +1567,7 @@ describe("createWorkflowSupervisor", () => {
   test("an expunge sweeps every \\Deleted message and reports all their uids", async () => {
     const baseDir = await makeTempDir("supervisor-mailbox-multi-expunge-");
     const writes: CapturedWrite[] = [];
-    // The recorded write is the event these tests wait on: the mailbox index
-    // they assert against only changes when one lands.
+    // The recorded write is the event these tests wait on: the mailbox index they assert against only changes when one lands.
     const writeChanges = createChangeNotifier();
     const wired = await spawnWithRunStart({
       baseDir,
@@ -1681,8 +1658,7 @@ describe("createWorkflowSupervisor", () => {
   test("an expunge with no \\Deleted message is a no-op that reports no uids", async () => {
     const baseDir = await makeTempDir("supervisor-mailbox-empty-expunge-");
     const writes: CapturedWrite[] = [];
-    // The recorded write is the event these tests wait on: the mailbox index
-    // they assert against only changes when one lands.
+    // The recorded write is the event these tests wait on: the mailbox index they assert against only changes when one lands.
     const writeChanges = createChangeNotifier();
     const wired = await spawnWithRunStart({
       baseDir,
@@ -1707,8 +1683,7 @@ describe("createWorkflowSupervisor", () => {
     const notifies = parseMailboxNotifies(wired.supervisorToChild.flushed());
     expect(notifies[0]?.uid).toBe(1);
 
-    // Nothing is flagged \Deleted, so the sweep removes nothing and the message
-    // survives. The dispatch marks it \Seen/$Processed, never \Deleted.
+    // Nothing is flagged \Deleted, so the sweep removes nothing and the message survives. The dispatch marks it \Seen/$Processed, never \Deleted.
     await wired.childSender.send({
       type: "mailbox.mutate.request",
       data: {
@@ -2312,8 +2287,7 @@ describe("createWorkflowSupervisor", () => {
       throw new Error("trigger.fire frame carried no runId");
     }
 
-    // The barrier is load-bearing on ordering: the run's grants-updated
-    // must appear on the child stream STRICTLY before its trigger.fire.
+    // The barrier is load-bearing on ordering: the run's grants-updated must appear on the child stream STRICTLY before its trigger.fire.
     const frameTypes = parseControlFrameTypes(
       wired.supervisorToChild.flushed(),
     );
@@ -2323,8 +2297,7 @@ describe("createWorkflowSupervisor", () => {
     expect(triggerIdx).toBeGreaterThanOrEqual(0);
     expect(grantsIdx).toBeLessThan(triggerIdx);
 
-    // The sink was consulted once for this run with the supervisor's
-    // deployment id stamped on.
+    // The sink was consulted once for this run with the supervisor's deployment id stamped on.
     expect(runStartCalls).toEqual([
       { runId: firedRunId, anchorRunId: "run_deployment-x" },
     ]);
@@ -2391,9 +2364,7 @@ describe("createWorkflowSupervisor", () => {
     const wired = await spawnWithRunStart({ baseDir, onRunStart });
     await wired.supervisor.shutdown();
 
-    // After shutdown the child is gone. A mid-run grants refresh for a non-live
-    // run is normal (the durable file governs the next barrier), so
-    // deliverGrants no-ops rather than throwing.
+    // After shutdown the child is gone. A mid-run grants refresh for a non-live run is normal (the durable file governs the next barrier), so deliverGrants no-ops rather than throwing.
     const result = await wired.supervisor.deliverGrants("run_deployment-x");
     expect(result).toBe("skipped");
   });
@@ -2441,9 +2412,7 @@ describe("createWorkflowSupervisor", () => {
 
     await waitForTriggerFireRunIds(wired.supervisorToChild, 1);
 
-    // The material lands on the child's control stream STRICTLY before the
-    // trigger, so a tool that resolves a credential on the first step already
-    // has it in its cell.
+    // The material lands on the child's control stream STRICTLY before the trigger, so a tool that resolves a credential on the first step already has it in its cell.
     const frameTypes = parseControlFrameTypes(
       wired.supervisorToChild.flushed(),
     );
@@ -2519,9 +2488,7 @@ describe("createWorkflowSupervisor", () => {
     );
     await waitForTriggerFireRunIds(wired.supervisorToChild, 1);
 
-    // The barrier's re-assertion (the last credentials-updated frame) carries
-    // the post-revoke set: cred_a is gone (material AND its binding), cred_b
-    // survives. It does NOT re-add cred_a from the frozen deploy delivery.
+    // The barrier's re-assertion (the last credentials-updated frame) carries the post-revoke set: cred_a is gone (material AND its binding), cred_b survives. It does NOT re-add cred_a from the frozen deploy delivery.
     const deliveries = parseCredentialsUpdatedFrames(
       wired.supervisorToChild.flushed(),
     );
@@ -2535,9 +2502,7 @@ describe("createWorkflowSupervisor", () => {
 
   test("a throwing onRunStart fails the run and never fires its trigger", async () => {
     const baseDir = await makeTempDir("supervisor-barrier-fail-");
-    // No seedStepGrants: the sink throws regardless, standing in for any
-    // barrier failure (a broken read, an unauthorized run). The run must
-    // fail LOUDLY -- the trigger is never fired against absent grants.
+    // No seedStepGrants: the sink throws regardless, standing in for any barrier failure (a broken read, an unauthorized run). The run must fail LOUDLY -- the trigger is never fired against absent grants.
     const onRunStart: WorkflowSupervisorBindings["onRunStart"] = async () => {
       throw new Error("synthetic grants-barrier failure");
     };
@@ -2549,16 +2514,14 @@ describe("createWorkflowSupervisor", () => {
       new TextEncoder().encode("barrier-fail-m1"),
     );
 
-    // The failed run is settled through the claim-check pipeline: the
-    // message moves to `consumed`. Wait on that observable settle.
+    // The failed run is settled through the claim-check pipeline: the message moves to `consumed`. Wait on that observable settle.
     const address = "run_deployment-x@example.com";
     await wired.inboxPrimitives.awaitState(
       () => wired.inboxPrimitives.snapshot(address).consumed.size >= 1,
     );
     expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
 
-    // The barrier suppressed the trigger: NO trigger.fire and NO
-    // grants-updated ever reached the child for the failed run.
+    // The barrier suppressed the trigger: NO trigger.fire and NO grants-updated ever reached the child for the failed run.
     const frameTypes = parseControlFrameTypes(
       wired.supervisorToChild.flushed(),
     );
@@ -2596,8 +2559,7 @@ describe("createWorkflowSupervisor", () => {
       mailBus.settle(address, new TextEncoder().encode("m-fresh")),
     ).resolves.toBeUndefined();
 
-    // An already-present message is also durably accounted for -> ack, and the
-    // hub stops retrying (no infinite retry on a message the sidecar holds).
+    // An already-present message is also durably accounted for -> ack, and the hub stops retrying (no infinite retry on a message the sidecar holds).
     mode = "already-present";
     await expect(
       mailBus.settle(address, new TextEncoder().encode("m-dup")),
@@ -2632,14 +2594,12 @@ describe("createWorkflowSupervisor", () => {
     });
     const address = "run_deployment-x@example.com";
 
-    // (a) A transient failure -> the receipt rejects, so no ack is sent and the
-    // hub redelivers.
+    // (a) A transient failure -> the receipt rejects, so no ack is sent and the hub redelivers.
     await expect(
       mailBus.settle(address, new TextEncoder().encode("m-1")),
     ).rejects.toThrow(/disk exploded/);
 
-    // (b) A stale refusal also withholds, and surfaces as its own loud type
-    // rather than blending into generic failure noise.
+    // (b) A stale refusal also withholds, and surfaces as its own loud type rather than blending into generic failure noise.
     onEnqueue = () => {
       throw new StaleInboxEnqueueError("claim_check_stale_enqueue: synthetic");
     };
@@ -2651,8 +2611,7 @@ describe("createWorkflowSupervisor", () => {
     }
     expect(staleCause).toBeInstanceOf(StaleInboxEnqueueError);
 
-    // (c) Self-heal: the same message, redelivered once the failure clears,
-    // enqueues on a fresh receivedAt and the receipt resolves (ack).
+    // (c) Self-heal: the same message, redelivered once the failure clears, enqueues on a fresh receivedAt and the receipt resolves (ack).
     onEnqueue = (args) => enqueuedOutcome(args);
     await expect(
       mailBus.settle(address, new TextEncoder().encode("m-1")),
@@ -2668,8 +2627,7 @@ describe("createWorkflowSupervisor", () => {
       defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
-    // enqueue would resolve if it were reached; the phase gate must reject
-    // first, without touching the inbox.
+    // enqueue would resolve if it were reached; the phase gate must reject first, without touching the inbox.
     const inboxPrimitives = inboxPrimitivesWithEnqueue(
       async (_store, _principal, _repoId, args) => enqueuedOutcome(args),
     );
@@ -2681,9 +2639,7 @@ describe("createWorkflowSupervisor", () => {
     });
     await wired.supervisor.shutdown();
 
-    // The bus retained the handler, so this drives onMailMessage's own phase
-    // gate: phase is "stopped", so it rejects BEFORE calling enqueue -> the
-    // ack is withheld and the hub redelivers into a live generation later.
+    // The bus retained the handler, so this drives onMailMessage's own phase gate: phase is "stopped", so it rejects BEFORE calling enqueue -> the ack is withheld and the hub redelivers into a live generation later.
     await expect(
       mailBus.settle(
         "run_deployment-x@example.com",
@@ -2697,8 +2653,7 @@ describe("createWorkflowSupervisor", () => {
     type FakeTimer = { cb: () => void; ms: number; cancelled: boolean };
     const timers = new Set<FakeTimer>();
     const createdTimers: FakeTimer[] = [];
-    // Arming a timer is the event `waitForReadyDeadline` waits on; the
-    // registry it reads only grows when `setTimer` is called.
+    // Arming a timer is the event `waitForReadyDeadline` waits on; the registry it reads only grows when `setTimer` is called.
     const timerChanges = createChangeNotifier();
 
     const baseDir = await makeTempDir("supervisor-ready-timeout-");
@@ -2759,8 +2714,7 @@ describe("createWorkflowSupervisor", () => {
     };
     const supervisor = supervisors.track(createWorkflowSupervisor(bindings));
 
-    // Resolve once the spawn has armed its ready deadline (which happens
-    // after the spawner is invoked, so this also confirms the child spawned).
+    // Resolve once the spawn has armed its ready deadline (which happens after the spawner is invoked, so this also confirms the child spawned).
     async function waitForReadyDeadline(): Promise<FakeTimer> {
       const armed = () => createdTimers.find((x) => x.ms === readyTimeoutMs);
       await timerChanges.until(() => armed() !== undefined);
@@ -2897,8 +2851,7 @@ describe("createWorkflowSupervisor", () => {
     await expect(h.supervisor.spawn(preRegistrationSpawnOpts)).rejects.toThrow(
       "injected subscribe failure",
     );
-    // The address was registered just before subscribe threw; the
-    // teardown must unregister it so no orphaned registration survives.
+    // The address was registered just before subscribe threw; the teardown must unregister it so no orphaned registration survives.
     expect(h.registered()).toHaveLength(0);
     expect(h.killSignals.length).toBeGreaterThan(0);
   });
@@ -3108,8 +3061,7 @@ describe("createWorkflowSupervisor", () => {
     const runIds = stubs.map((s) => s.__opts.runId);
     expect(new Set(runIds).size).toBe(stubs.length);
 
-    // Shutdown stops every armed accumulator before tearing the
-    // child down.
+    // Shutdown stops every armed accumulator before tearing the child down.
     await supervisor.shutdown();
     for (const stub of stubs) {
       expect(stub.__stopCount).toBe(1);
@@ -3164,8 +3116,7 @@ describe("createWorkflowSupervisor", () => {
       ref: string;
       files: Record<string, string | Uint8Array>;
     }[] = [];
-    // The captured commit is the event the escalation assertion waits on: the
-    // accumulator's CancelRequested reaches this test only as a write.
+    // The captured commit is the event the escalation assertion waits on: the accumulator's CancelRequested reaches this test only as a write.
     const writeChanges = createChangeNotifier();
 
     const mailBus = createMockMailBus();
@@ -3250,8 +3201,7 @@ describe("createWorkflowSupervisor", () => {
 
     await supervisor.drain({ deadlineMs: 1_000 });
     expect(timers.size).toBe(1);
-    // Advance the fake clock past the timeout and fire the
-    // accumulator's pending timer.
+    // Advance the fake clock past the timeout and fire the accumulator's pending timer.
     fakeNow += 1_000;
     const due = [...timers];
     for (const t of due) {
@@ -3311,8 +3261,7 @@ describe("createWorkflowSupervisor", () => {
       },
       signSpy: (kind, payload) => {
         signSpyCalls.push({ kind, payload });
-        // Synthetic 64-byte signature with the run id encoded in the
-        // first bytes so the test asserts which call produced it.
+        // Synthetic 64-byte signature with the run id encoded in the first bytes so the test asserts which call produced it.
         const sig = new Uint8Array(64);
         sig[0] = signSpyCalls.length;
         return { sig, principalKind: "supervisor" };
@@ -3535,10 +3484,7 @@ describe("createWorkflowSupervisor", () => {
     ).toBeGreaterThanOrEqual(1);
     await supervisor.drain({ deadlineMs: 5_000 });
 
-    // The supervisor's per-cohort terminal broadcaster always backs
-    // the accumulator's terminal-event source; the accumulator factory
-    // sees a non-undefined slot and can mint a per-runId iterator
-    // through it.
+    // The supervisor's per-cohort terminal broadcaster always backs the accumulator's terminal-event source; the accumulator factory sees a non-undefined slot and can mint a per-runId iterator through it.
     expect(stubs).toHaveLength(1);
     const stub = stubs[0];
     if (stub === undefined) throw new Error("expected one stub accumulator");
@@ -3975,8 +3921,7 @@ describe("createWorkflowSupervisor", () => {
     };
     const supervisor = supervisors.track(createWorkflowSupervisor(bindings));
 
-    // Revoke cred_a while the supervisor is idle (no child spawned yet). It must
-    // resolve without throwing and send nothing.
+    // Revoke cred_a while the supervisor is idle (no child spawned yet). It must resolve without throwing and send nothing.
     await supervisor.deliverCredentials({
       delivery: { bindings: [], materials: [] },
       revoke: ["cred_a"],
@@ -4237,8 +4182,7 @@ describe("createWorkflowSupervisor", () => {
     await wired.inboxPrimitives.awaitState(
       () => wired.inboxPrimitives.snapshot(address).consumed.size >= 1,
     );
-    // markConsumed only runs once the dispatch wait returns; a wait still
-    // hanging on the approval park would leave this at 0 until the backstop.
+    // markConsumed only runs once the dispatch wait returns; a wait still hanging on the approval park would leave this at 0 until the backstop.
     expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
 
     const runIds = parseTriggerFireRunIds(wired.supervisorToChild.flushed());
@@ -4274,8 +4218,7 @@ describe("createWorkflowSupervisor", () => {
       new TextEncoder().encode("msg-1"),
     );
 
-    // Wait for trigger.fire to land before parking, then send park.notify
-    // so the unified-dispatch path can complete markConsumed.
+    // Wait for trigger.fire to land before parking, then send park.notify so the unified-dispatch path can complete markConsumed.
     await waitForTriggerFireRunIds(wired.supervisorToChild, 1);
 
     const address = "run_deployment-x@example.com";
@@ -4302,7 +4245,7 @@ describe("createWorkflowSupervisor", () => {
 
     // Wait for msg-2's signal.deliver (arming the durable-consume watcher); markConsumed holds until the run re-parks or terminates.
     await waitForUpstreamPayload(wired.supervisorToChild, "signal.deliver");
-    // The signal is written but not taken up, so msg-2's markConsumed is held; only msg-1 is consumed. The wait above is the positive barrier: the loop has reached where a regressed markConsumed would run, and nothing later signals the take-up. The forbidden event is a premature consume; a slow worker weakens this check, it cannot invert it.
+    // The signal is written but not taken up, so msg-2's markConsumed is held; only msg-1 is consumed. The wait above is the positive barrier: a regressed markConsumed would have run by now, and nothing later signals the take-up. The forbidden event is a premature consume; a slow worker weakens the check but cannot invert it.
     await new Promise((r) => setTimeout(r, 25));
     expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
 
@@ -4375,8 +4318,7 @@ describe("createWorkflowSupervisor", () => {
       () => wired.inboxPrimitives.snapshot(address).inbox.size >= 1,
     );
 
-    // Still no signal.deliver and still nothing consumed because the
-    // channel is unknown and the first run has not parked.
+    // Still no signal.deliver and still nothing consumed because the channel is unknown and the first run has not parked.
     let signals = parseSignalDelivers(wired.supervisorToChild.flushed());
     expect(signals.length).toBe(0);
     expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(0);
@@ -4399,12 +4341,11 @@ describe("createWorkflowSupervisor", () => {
     if (firstSignal === undefined) throw new Error("unreachable");
     expect(firstSignal.signalName).toBe(signalName("corr-input-1"));
 
-    // msg-1 is consumed off its park; msg-2's signal is not taken up, so its markConsumed is held. The wait above is the positive barrier behind this window: a regressed markConsumed would have run by now, and nothing later signals the take-up. The forbidden event is msg-2 consuming early; a slow worker weakens this check, it cannot invert it.
+    // msg-1 is consumed off its park; msg-2's signal is not taken up, so its markConsumed is held. The wait above is the positive barrier: a regressed markConsumed would have run by now, and nothing later signals the take-up. The forbidden event is msg-2 consuming early; a slow worker weakens the check but cannot invert it.
     await new Promise((r) => setTimeout(r, 25));
     expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
 
-    // The signal.deliver above is observed, so its durable-consume watcher
-    // is armed; complete the resumed run so markConsumed for msg-2 releases.
+    // The signal.deliver above is observed, so its durable-consume watcher is armed; complete the resumed run so markConsumed for msg-2 releases.
     await wired.childSender.send({
       type: "terminal.event",
       data: {
@@ -4477,8 +4418,7 @@ describe("createWorkflowSupervisor", () => {
 
     await wired.supervisor.drain({ deadlineMs: 5_000 });
 
-    // Drain skips accumulators for runs that have parked (runtime-
-    // determined long-lived state).
+    // Drain skips accumulators for runs that have parked (runtime-determined long-lived state).
     expect(armedStubs.length).toBe(0);
     await wired.supervisor.shutdown();
   });
@@ -4500,9 +4440,7 @@ describe("createWorkflowSupervisor", () => {
       new TextEncoder().encode("msg-1"),
     );
 
-    // A failed barrier fans out a synthesized RunFailed to the run's own
-    // watcher, so the dispatch reaches markConsumed without the child
-    // reporting anything: nothing here has to drive the mock child.
+    // A failed barrier fans out a synthesized RunFailed to the run's own watcher, so the dispatch reaches markConsumed without the child reporting anything: nothing here has to drive the mock child.
     const address = "run_deployment-x@example.com";
     await wired.inboxPrimitives.awaitState(
       () => wired.inboxPrimitives.snapshot(address).consumed.size >= 1,
@@ -4561,8 +4499,7 @@ describe("createWorkflowSupervisor", () => {
     );
     expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
 
-    // Second message arrives after the deployment's one top-level run
-    // terminated. It must be durably rejected, not treated as a new run.
+    // Second message arrives after the deployment's one top-level run terminated. It must be durably rejected, not treated as a new run.
     wired.mailBus.deliver(
       "run_deployment-x@example.com",
       new TextEncoder().encode("msg-2"),
@@ -4608,8 +4545,7 @@ describe("createWorkflowSupervisor", () => {
     });
     const address = "run_deployment-x@example.com";
 
-    // Model restart recovery: the child owns the durable live run, but has not
-    // yet re-emitted an input park/correlation for it.
+    // Model restart recovery: the child owns the durable live run, but has not yet re-emitted an input park/correlation for it.
     await wired.childSender.send({
       type: "resumed.runs",
       data: { runIds: ["run_deployment-x"] },
@@ -4670,8 +4606,7 @@ describe("createWorkflowSupervisor", () => {
       },
     });
 
-    // `grants.json` may be staged before delivery, but without an event log
-    // this is still the deployment's one allowed first fire.
+    // `grants.json` may be staged before delivery, but without an event log this is still the deployment's one allowed first fire.
     wired.mailBus.deliver(
       "run_deployment-x@example.com",
       new TextEncoder().encode("msg-1"),
@@ -4969,9 +4904,7 @@ describe("createWorkflowSupervisor", () => {
     await waitForUpstreamPayloads(wired.supervisorToChild, "signal.deliver", 1);
     const signals = parseSignalDelivers(wired.supervisorToChild.flushed());
     expect(signals.length).toBe(1);
-    // The frame carries the decoded Mail, resolved at the dispatch site, not
-    // the raw base64 MIME envelope. The text/plain part's inline text is the
-    // conversation body.
+    // The frame carries the decoded Mail, resolved at the dispatch site, not the raw base64 MIME envelope. The text/plain part's inline text is the conversation body.
     const payload = signals[0]?.payload;
     if (!isMail(payload)) throw new Error("signal payload is not a Mail");
     expect(payload.parts).toHaveLength(1);
@@ -5058,9 +4991,7 @@ describe("createWorkflowSupervisor", () => {
       },
     });
 
-    // A mail whose only leaf part carries a malformed body under a recognised
-    // content-transfer-encoding: decodeMail throws deterministically. It must
-    // be dropped and CONSUMED, not thrown-and-replayed forever.
+    // A mail whose only leaf part carries a malformed body under a recognised content-transfer-encoding: decodeMail throws deterministically. It must be dropped and CONSUMED, not thrown-and-replayed forever.
     const bad = new TextEncoder().encode(
       "Content-Type: text/plain\r\nContent-Transfer-Encoding: base64\r\n\r\n!!! not base64 !!!",
     );
@@ -5108,14 +5039,12 @@ describe("createWorkflowSupervisor", () => {
       defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
-    // The injected fault is the event this test waits on: the dispatch
-    // iteration it fails is the one the assertions describe.
+    // The injected fault is the event this test waits on: the dispatch iteration it fails is the one the assertions describe.
     const partsFaults = createChangeNotifier();
     let partsFaultCount = 0;
     const wired = await spawnWithRunStart({
       baseDir,
-      // Fail ONLY the mail-parts commit -- credential and cancel writes still
-      // succeed -- to model a transient substrate fault reaching prepareMail.
+      // Fail ONLY the mail-parts commit -- credential and cancel writes still succeed -- to model a transient substrate fault reaching prepareMail.
       beforeWrite: ({ preservePrefix }) => {
         if (preservePrefix.includes("/parts/")) {
           partsFaultCount += 1;
@@ -5146,9 +5075,7 @@ describe("createWorkflowSupervisor", () => {
       },
     });
 
-    // A well-formed mail whose parts commit throws a NON-deterministic fault.
-    // Unlike a malformed mail (deterministic drop), it must NOT be consumed --
-    // it stays reclaimable in processing -- and no signal is delivered.
+    // A well-formed mail whose parts commit throws a NON-deterministic fault. Unlike a malformed mail (deterministic drop), it must NOT be consumed -- it stays reclaimable in processing -- and no signal is delivered.
     const good = new TextEncoder().encode(
       "Content-Type: text/plain\r\n\r\nhello",
     );
@@ -5177,8 +5104,7 @@ describe("createWorkflowSupervisor", () => {
     );
     const memoryInbox = createMemoryInboxPrimitives();
     let failMarkConsumed = true;
-    // The injected failure is the event this test waits on: the refusal is
-    // what leaves the entry in `processing`, and nothing else reports it.
+    // The injected failure is the event this test waits on: the refusal is what leaves the entry in `processing`, and nothing else reports it.
     const markConsumedFaults = createChangeNotifier();
     let markConsumedFaultCount = 0;
     const failingInbox: MemoryInboxPrimitives = {
@@ -5221,9 +5147,7 @@ describe("createWorkflowSupervisor", () => {
       },
     });
 
-    // The failure propagates into the dispatch fault handler rather than being
-    // swallowed: the mail is NOT recorded consumed -- it stays in processing/,
-    // reclaimable -- and the dispatch loop survives the throw.
+    // The failure propagates into the dispatch fault handler rather than being swallowed: the mail is NOT recorded consumed -- it stays in processing/, reclaimable -- and the dispatch loop survives the throw.
     await markConsumedFaults.until(() => markConsumedFaultCount >= 1);
     expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(0);
     expect(wired.inboxPrimitives.snapshot(address).processing.size).toBe(1);
@@ -5281,9 +5205,7 @@ describe("createWorkflowSupervisor", () => {
       },
     });
 
-    // The forwarded trigger is the proof the wake was not lost: the loop
-    // re-dequeued msg-1 and fired its run. Drive that run to terminal so the
-    // mail can be consumed.
+    // The forwarded trigger is the proof the wake was not lost: the loop re-dequeued msg-1 and fired its run. Drive that run to terminal so the mail can be consumed.
     await waitForTriggerFireRunIds(wired.supervisorToChild, 1);
     await wired.childSender.send({
       type: "terminal.event",
@@ -5326,8 +5248,7 @@ describe("createWorkflowSupervisor", () => {
     wired.mailBus.deliver(address, new TextEncoder().encode("msg-1"));
 
     await waitForTriggerFireRunIds(wired.supervisorToChild, 1);
-    // The watcher is subscribed before trigger.fire, so an immediate terminal
-    // frame cannot be lost between forwarding the trigger and entering wait.
+    // The watcher is subscribed before trigger.fire, so an immediate terminal frame cannot be lost between forwarding the trigger and entering wait.
     await wired.childSender.send({
       type: "terminal.event",
       data: {
@@ -5338,8 +5259,7 @@ describe("createWorkflowSupervisor", () => {
       },
     });
 
-    // The wait releases and the mail is consumed WITHOUT the (minutes-long)
-    // backstop firing.
+    // The wait releases and the mail is consumed WITHOUT the (minutes-long) backstop firing.
     await wired.inboxPrimitives.awaitState(
       () => wired.inboxPrimitives.snapshot(address).consumed.size >= 1,
     );
@@ -5513,9 +5433,7 @@ describe("IPC integration smoke", () => {
     const eventSender = createEventChannelSender({
       hmacKey,
       channelId,
-      // The sender terminates each frame itself, so its bytes go through the
-      // writer verbatim. Routing them through `inject` would append a second
-      // terminator.
+      // The sender terminates each frame itself, so its bytes go through the writer verbatim. Routing them through `inject` would append a second terminator.
       writer: eventStream.writer,
     });
     await eventSender.send({
@@ -5689,8 +5607,7 @@ describe("supervisor inbox FIFO dispatch loop", () => {
   test("deriveMailAuditRef override is invoked with messageId and stamps the envelope", async () => {
     const inbox = createMemoryInboxPrimitives();
     const observed: { messageId: string; len: number }[] = [];
-    // The override being invoked is the event; the poll it replaces re-read
-    // the array on a timer until something landed in it.
+    // The override being invoked is the event; the poll it replaces re-read the array on a timer until something landed in it.
     const observedChanges = createChangeNotifier();
     const { supervisor, mailBus } = await buildFifoTestFixture({
       label: "fifo-override-audit-",
@@ -5736,8 +5653,7 @@ describe("supervisor inbox FIFO dispatch loop", () => {
         label: "fifo-serial-",
         inbox,
       });
-    // Two messages. The first fires the run; the second waits behind its
-    // terminal gate and is then rejected.
+    // Two messages. The first fires the run; the second waits behind its terminal gate and is then rejected.
     mailBus.deliver(
       "run_deployment-x@example.com",
       new TextEncoder().encode("serial-msg-A"),
@@ -5746,8 +5662,7 @@ describe("supervisor inbox FIFO dispatch loop", () => {
       "run_deployment-x@example.com",
       new TextEncoder().encode("serial-msg-B"),
     );
-    // Helper that pulls the runId carried on the first/next
-    // trigger.fire frame the supervisor wrote to the child stream.
+    // Helper that pulls the runId carried on the first/next trigger.fire frame the supervisor wrote to the child stream.
     function triggerRunIds(): string[] {
       return parseTriggerFireRunIds(supervisorToChild.flushed());
     }
@@ -5755,8 +5670,7 @@ describe("supervisor inbox FIFO dispatch loop", () => {
     await waitForTriggerFireRunIds(supervisorToChild, 1);
     let firedIds = triggerRunIds();
     expect(firedIds.length).toBe(1);
-    // Release the first run's terminal event. The dispatch loop
-    // proceeds to markConsumed and pulls the second message.
+    // Release the first run's terminal event. The dispatch loop proceeds to markConsumed and pulls the second message.
     const firstRunId = firedIds[0];
     if (firstRunId === undefined) throw new Error("first run not minted");
     await childSender.send({
@@ -5785,21 +5699,18 @@ describe("supervisor inbox FIFO dispatch loop", () => {
 
   test("spawn-time replayProcessingToInbox moves orphaned processing entries back to inbox", async () => {
     const inbox = createMemoryInboxPrimitives();
-    // Seed a `processing/` entry before the supervisor spawns. The
-    // entry should be moved back to `inbox/` during `spawn()`.
+    // Seed a `processing/` entry before the supervisor spawns. The entry should be moved back to `inbox/` during `spawn()`.
     const state = inbox.snapshot("run_deployment-x@example.com");
     state.processing.set("1000-msg-orphan", {
       messageId: "msg-orphan",
       receivedAt: 1000,
       mailAuditRef: { store: "test", path: "test/orphan" },
-      // The recovered entry must carry decodable mail bytes: the dispatch loop
-      // decodes and commits them before forwarding the trigger.fire.
+      // The recovered entry must carry decodable mail bytes: the dispatch loop decodes and commits them before forwarding the trigger.fire.
       rawMessage: base64Encode(
         new TextEncoder().encode("Content-Type: text/plain\r\n\r\norphan body"),
       ),
     });
-    // In the unified-dispatch path markConsumed waits for the child to
-    // reach terminal or park before consuming the message.
+    // In the unified-dispatch path markConsumed waits for the child to reach terminal or park before consuming the message.
     const { supervisor, supervisorToChild, childSender } =
       await buildFifoTestFixture({
         label: "fifo-replay-spawn-",
@@ -5812,9 +5723,7 @@ describe("supervisor inbox FIFO dispatch loop", () => {
       .filter((f) => f.includes("trigger.fire"));
     expect(triggerFires.length).toBeGreaterThanOrEqual(1);
 
-    // Drive the run to terminal so markConsumed can proceed. The wait above
-    // already observed the forwarded trigger, and the terminal watcher is
-    // subscribed before that forward, so this frame cannot be missed.
+    // Drive the run to terminal so markConsumed can proceed. The wait above already observed the forwarded trigger, and the terminal watcher is subscribed before that forward, so this frame cannot be missed.
     await childSender.send({
       type: "terminal.event",
       data: {
@@ -5825,9 +5734,7 @@ describe("supervisor inbox FIFO dispatch loop", () => {
       },
     });
 
-    // The processing entry was moved back to inbox during spawn,
-    // then dequeued by the dispatch loop and forwarded as trigger.fire.
-    // After the child reaches terminal, markConsumed moves it to consumed.
+    // The processing entry was moved back to inbox during spawn, then dequeued by the dispatch loop and forwarded as trigger.fire. After the child reaches terminal, markConsumed moves it to consumed.
     await inbox.awaitState(
       () => inbox.snapshot("run_deployment-x@example.com").consumed.size >= 1,
     );

@@ -30,7 +30,7 @@ import type { FrameReader, NdjsonReader, NdjsonWriter } from "../ipc/index";
 /** Terminal run event union the drain accumulators settle on; consumers switch on kind without importing the workflow package. */
 export type TerminalRunEvent = RunCompleted | RunFailed | RunCancelled;
 
-/** Per-runId terminal-event source the drain accumulators and dispatch loop consume; each call returns an AsyncIterable scoped to one runId. The supervisor's per-cohort broadcaster implements it from the child's terminal.event frames, so consumers never round-trip the substrate. */
+/** Per-runId terminal-event source the drain accumulators and dispatch loop consume; each call returns an AsyncIterable scoped to one runId. The supervisor's per-cohort broadcaster implements it from the child's terminal.event frames. */
 export type TerminalEventSource = (
   runId: string,
 ) => AsyncIterable<TerminalRunEvent>;
@@ -46,7 +46,7 @@ export type SignedPayload = {
   readonly principalKind: WorkflowSupervisorPrincipalKind;
 };
 
-/** Host-supplied per-principal signing callback: the supervisor never holds the principal's private key, it asks the host to sign. The host wires it against its own key inventory; the callback is the entire surface. */
+/** Host-supplied per-principal signing callback: the supervisor never holds the principal's private key, it asks the host to sign. */
 export type PrincipalSigner = (
   kind: WorkflowSupervisorPrincipalKind,
   payload: Uint8Array,
@@ -54,7 +54,7 @@ export type PrincipalSigner = (
 
 /** Minimal mail-bus surface for the supervisor's spawn/mail/teardown lifecycle; not pinned to any concrete bus.
 
-subscribeMailForAddress returns a disposer; the handler resolves on durable acceptance (ack) and rejects otherwise (withhold). sendOutbound is the OUTBOUND half of mailbox ownership (§3a): the child forwards replies and mail-send tool calls, and the supervisor performs the signed send through the host transport so the mail carries the agent's signature. The signing identity lives at the host transport; an address with no registered crypto throws loudly. */
+subscribeMailForAddress returns a disposer; the handler resolves on durable acceptance (ack) and rejects otherwise (withhold). sendOutbound is the OUTBOUND half of mailbox ownership (§3a): the supervisor performs the signed send through the host transport so the mail carries the agent's signature; an address with no registered crypto throws loudly. */
 export interface MailBusBindings {
   registerAddress(address: string): void;
   unregisterAddress(address: string): void;
@@ -68,7 +68,7 @@ export interface MailBusBindings {
   ): Promise<SendReceipt>;
 }
 
-/** Handle the spawner returns; mirrors Bun.spawn's shape so tests can substitute an in-process implementation. stdin/stdout carry the signed control channel, eventReader the HMAC-authenticated event channel; exited resolves with the exit code. */
+/** Handle the spawner returns; mirrors Bun.spawn's shape so tests can substitute an in-process implementation. stdin/stdout carry the signed control channel, eventReader the HMAC-authenticated event channel. */
 export interface SubprocessHandle {
   readonly pid: number;
   /** Writer for the supervisor-to-child control channel (child stdin); the control sender feeds NDJSON lines through it. */
@@ -146,14 +146,14 @@ export interface WorkflowSupervisorBindings {
   signAsPrincipal: PrincipalSigner;
   /** Mail-bus surface for address registration and inbound subscription. */
   mailBus: MailBusBindings;
-  /** Optional suspension sink, invoked by the park.notify arm and reEmitParkedCorrelations (which recovers registers the hub missed while down). Best-effort: a throwing sink is logged and both callers keep going. */
+  /** Optional suspension sink, invoked by the park.notify arm and reEmitParkedCorrelations. Best-effort: a throwing sink is logged and both callers keep going. */
   onSuspensionRegister?: (registration: SuspensionRegistration) => void;
-  /** Self-termination sink, fired when the supervisor reaches a terminal phase on its own (crash-loop latch, channel crash while recycling, recycle failure) but not on host shutdown or a failed initial spawn. The sidecar reclaims the deployment address. MUST be idempotent (firing is not exactly-once), and unlike onSuspensionRegister it should be total: a missed reclaim strands the address until an operator undeploys. */
+  /** Self-termination sink, fired when the supervisor reaches a terminal phase on its own (crash-loop latch, channel crash while recycling, recycle failure) but not on host shutdown or a failed initial spawn; the sidecar reclaims the deployment address. MUST be idempotent and, unlike onSuspensionRegister, total: a missed reclaim strands the address until an operator undeploys. */
   onSelfTerminate?: (info: {
     phase: "stopped" | "crash-looping";
     reason: string;
   }) => void;
-  /** Per-run grants source consulted before each trigger.fire. A request/response contract, not fire-and-forget: the supervisor pushes the returned snapshot before the trigger, and a throwing sink fails the run (synthesized RunFailed) rather than firing against absent grants. When wired it is the SOLE grants push (spawn skips its snapshot). */
+  /** Per-run grants source consulted before each trigger.fire. A request/response contract: the supervisor pushes the returned snapshot before the trigger, and a throwing sink fails the run (synthesized RunFailed) rather than firing against absent grants. When wired it is the SOLE grants push (spawn skips its snapshot). */
   onRunStart?: (args: {
     runId: string;
     anchorRunId: string;
@@ -234,11 +234,11 @@ export interface WorkflowSupervisorBindings {
   crashLoopStableResetMs?: number;
   /** Initial respawn backoff (ms); each respawn doubles it up to the cap, a stable run resets it. */
   respawnBackoffInitialMs?: number;
-  /** Cap on exponential respawn backoff (ms). Config invariant: keep it below crashLoopWindowMs -- a cap at or above the window lets a slow flapper's crashes age out before the count latches. Windowed detection cannot catch an arbitrarily slow flapper; the trio bounds the fast flap this guard targets. */
+  /** Cap on exponential respawn backoff (ms). Config invariant: keep it below crashLoopWindowMs -- a cap at or above the window lets a slow flapper's crashes age out before the count latches. */
   respawnBackoffMaxMs?: number;
   /** Watchdog on the parked-correlations response wait: a wedged-but-alive child never aborts its cohort, so cap the wait; on expiry the next re-establishment re-drives. */
   parkedQueryWatchdogMs?: number;
-  /** Optional per-message dispatch-timing observer: dispatch-start on dequeue, reply-produced when the run's terminal frame lands, both on a monotonic clock so the per-message infra round-trip is computable. Pure observability, absent in production (the Phase 4.7 latency-gate benchmark wires it); a throwing observer is swallowed and logged. */
+  /** Optional per-message dispatch-timing observer: dispatch-start on dequeue, reply-produced when the run's terminal frame lands, both on a monotonic clock so the per-message round-trip is computable. Pure observability, absent in production; a throwing observer is swallowed and logged. */
   onDispatchTiming?: (mark: DispatchTimingMark) => void;
   /** D2 §10c forced-repack A/B toggle (measurement-only): force a repack every everyMessages-th message to discriminate pack growth from tree fan-out as the dominant per-message substrate cost. Absent in production. */
   repackEveryMessages?: { everyMessages: number };
@@ -252,7 +252,7 @@ export type DispatchSubstrateLeg =
   | "markconsumed"
   | "wal";
 
-/** Structural counters sampled at a leg's end so the D2 attribution can explain WHY a leg grows: runs/ and consumed/ fan-out, loose-object count (pack-growth proxy), and .git byte size. Cheap reads, taken only when the observer is wired. */
+/** Structural counters sampled at a leg's end so the D2 attribution can explain WHY a leg grows: runs/ and consumed/ fan-out, loose-object count (pack-growth proxy), and .git byte size. */
 export type DispatchStructuralCounters = {
   runsFanOut: number;
   consumedFanOut: number;
@@ -260,7 +260,7 @@ export type DispatchStructuralCounters = {
   gitBytes: number;
 };
 
-/** One onDispatchTiming observation, keyed on messageId (the top-level run id is stable per deployment and cannot distinguish messages). "roundtrip" pairs dispatch-start/reply-produced for the 4.7 latency bracket; "leg" pairs start/end around one substrate commit so each leg's slope and floor fit independently, with structural counters on the end mark. Production leaves the observer unwired. */
+/** One onDispatchTiming observation, keyed on messageId (the top-level run id is stable per deployment and cannot distinguish messages). "roundtrip" pairs dispatch-start/reply-produced; "leg" pairs start/end around one substrate commit, with structural counters on the end mark. */
 export type DispatchTimingMark =
   | {
       kind: "roundtrip";
