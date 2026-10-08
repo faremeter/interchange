@@ -8,8 +8,8 @@ describe("stepDeployTreeDir base-step resolution", () => {
 
   test("a map iteration resolves the base step's deploy tree", () => {
     // Deploy stages one deploy tree per base step; every map iteration
-    // `<base>[<index>]` must read that one tree, not a per-iteration address
-    // that was never staged.
+    // `<base>[<index>]` must read that one tree, not a per-iteration
+    // address that was never staged.
     const base = stepDeployTreeDir({
       dataDir,
       mailboxAddress,

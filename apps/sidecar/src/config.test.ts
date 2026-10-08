@@ -4,10 +4,9 @@ import { parseReconnectDelayMs } from "./config";
 
 // The first link of the reconnect-delay chain: operator env string to the
 // `reconnectDelayMs` option the boot edge forwards to the hub link. The
-// remaining links are pinned elsewhere -- that the fixture puts "3000" in the
-// spawned sidecar's env (`tests/hub-agent/lib/deploy-flow-env.test.ts`), and
-// that the option reaches the reconnect scheduler as the delay
-// (`packages/hub-agent/src/ws/hub-link.test.ts`).
+// remaining links are pinned elsewhere -- the deploy-flow fixture puts
+// "3000" in the spawned sidecar's env and the option reaches the reconnect
+// scheduler as the delay.
 describe("parseReconnectDelayMs", () => {
   test("yields undefined when the variable is unset", () => {
     expect(parseReconnectDelayMs(undefined)).toBeUndefined();
@@ -49,10 +48,11 @@ describe("parseReconnectDelayMs", () => {
     );
   });
 
-  // A digit-at-a-time reading accepts these as their leading numeric prefix,
-  // which is how a mistyped delay reaches the hub link as a real value: "5abc"
-  // would arrive as a 5ms backoff, a hot reconnect loop against the hub. The
-  // rule rejects the whole string instead, so the typo fails the boot.
+  // A digit-at-a-time reading accepts these as their leading numeric
+  // prefix, which is how a mistyped delay reaches the hub link as a real
+  // value: "5abc" would arrive as a 5ms backoff, a hot reconnect loop
+  // against the hub. The rule rejects the whole string instead, so the
+  // typo fails the boot.
   test("throws on a number with a trailing unit or garbage", () => {
     expect(() => parseReconnectDelayMs("5abc")).toThrow(
       /SIDECAR_RECONNECT_DELAY_MS must be a positive integer \(milliseconds\), got 5abc/,
