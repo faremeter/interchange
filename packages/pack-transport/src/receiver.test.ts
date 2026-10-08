@@ -112,8 +112,7 @@ describe("PackReceiver", () => {
     expect(threw).toBe(false);
     expect(reason).toBe("corrupt");
 
-    // The malformed frame cleaned the transfer up, mirroring the seq-gap
-    // path, so a fresh transfer for the same agent is accepted.
+    // The malformed frame cleaned up the transfer, so a fresh one is accepted.
     expect(receiver.hasTransfer("t1")).toBe(false);
     expect(
       receiver.handlePush(makePush({ transferId: "t2", seq: 0 })),

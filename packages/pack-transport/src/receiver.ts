@@ -1,9 +1,5 @@
-// Pack transfer chunk accumulator.
-//
-// Manages in-flight pack transfers arriving over the WebSocket. Each transfer
-// is identified by a transferId and consists of ordered repo.pack.push
-// frames followed by a repo.pack.done. The receiver validates seq continuity
-// and rejects concurrent transfers for the same agent.
+// Pack transfer chunk accumulator. Orders `repo.pack.push` frames by
+// transferId and seq, assembles the pack on `repo.pack.done`.
 
 import { base64Decode } from "@intx/types";
 import type {
@@ -60,11 +56,9 @@ export function createPackReceiver(): PackReceiver {
       return "corrupt";
     }
 
-    // `base64Decode` throws on malformed input. `handlePush` is a wire-
-    // boundary validator whose contract is to RETURN a reject reason for a
-    // bad frame, so a peer-controlled decode failure is converted to
-    // "corrupt" the same way the seq-gap path above is, rather than
-    // escaping past the caller's reject reply.
+    // `base64Decode` throws on malformed input; convert that to
+    // "corrupt" like the seq-gap path rather than escaping the
+    // wire-boundary reject contract.
     let chunk: Uint8Array;
     try {
       chunk = base64Decode(frame.data);
