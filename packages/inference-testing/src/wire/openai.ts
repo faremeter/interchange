@@ -1,27 +1,19 @@
-// OpenAI SSE wire DSL.
-//
-// Each helper emits a single SSE event encoded as UTF-8 bytes the existing
-// `createOpenAIAdapter()` in `@intx/inference/providers/openai` will
-// parse without error. The DSL produces the same byte shape OpenAI's
-// `/v1/chat/completions` stream emits, including the terminal `[DONE]`
-// sentinel that `parseSSE` consumes internally.
+// OpenAI SSE wire DSL. Each helper emits one SSE event as UTF-8 bytes the
+// `createOpenAIAdapter()` in `@intx/inference/providers/openai` parses
+// without error — the same byte shape OpenAI's `/v1/chat/completions` stream
+// emits, including the terminal `[DONE]` sentinel `parseSSE` consumes.
 
 const encoder = new TextEncoder();
 
-/**
- * Encode a JSON-serializable payload as an OpenAI-style SSE event. OpenAI
- * does not emit an `event:` line — just `data: <json>\n\n`.
- */
+/** Encode a payload as an OpenAI-style SSE event: `data: <json>\n\n` (no `event:` line). */
 function encodeSSE(data: unknown): Uint8Array {
   return encoder.encode(`data: ${JSON.stringify(data)}\n\n`);
 }
 
 /**
- * A single tool-call delta within `choices[0].delta.tool_calls[]`. Use `id`
- * + `name` for the first delta of a tool call (the adapter emits
- * `inference.tool_call.start`); subsequent deltas typically carry only
- * `arguments` (the adapter emits `inference.tool_call.delta` keyed by
- * `index`).
+ * A single tool-call delta within `choices[0].delta.tool_calls[]`. The
+ * first delta carries `id`+`name` (`inference.tool_call.start`); later
+ * deltas carry only `argumentsChunk` (`inference.tool_call.delta` by index).
  */
 export type OpenAIToolCallDeltaOpts = {
   index: number;
@@ -31,13 +23,9 @@ export type OpenAIToolCallDeltaOpts = {
 };
 
 /**
- * Options for `chunk`. Provides every field the adapter currently consumes:
- * text content, reasoning text (under either `reasoning_content` or
- * `reasoning`), tool-call deltas (index-based), and a usage block.
- *
- * Pass `extra` to layer arbitrary fields onto the emitted `chunk` object —
- * useful for non-standard fields the adapter ignores but a test needs to
- * see surface in the bytes.
+ * Options for `chunk`: text content, reasoning (under either
+ * `reasoning_content` or `reasoning`), tool-call deltas, and a usage
+ * block. `extra` layers arbitrary fields onto the chunk object.
  */
 export type OpenAIChunkOpts = {
   /** Text content forwarded as `inference.text.delta`. */
@@ -72,10 +60,7 @@ export type OpenAIChunkOpts = {
   extra?: Record<string, unknown>;
 };
 
-/**
- * Emit one OpenAI-style streaming chunk. Supply only the fields the test
- * cares about — every option is independent.
- */
+/** Emit one OpenAI-style streaming chunk; every option is independent. */
 export function chunk(opts: OpenAIChunkOpts = {}): Uint8Array {
   const delta: Record<string, unknown> = {};
   if (opts.contentNull === true) {
@@ -141,29 +126,17 @@ export function chunk(opts: OpenAIChunkOpts = {}): Uint8Array {
   return encodeSSE(payload);
 }
 
-/**
- * Emit the `[DONE]` sentinel. `parseSSE` consumes this and terminates the
- * iteration, so adapters never see an event for it. Tests that drive a
- * complete request through `parseSSE` should end with this byte.
- */
+/** Emit the `[DONE]` sentinel `parseSSE` consumes to end an iteration. */
 export function done(): Uint8Array {
   return encoder.encode("data: [DONE]\n\n");
 }
 
-/**
- * Wire-level escape hatch. Emits the supplied string as-is (no `data:` or
- * trailing blank line added). Use when a test needs to model bytes the
- * structured helpers cannot express — split SSE events, malformed framing,
- * or experimental event types not yet covered by a helper.
- */
+/** Wire-level escape hatch: emit the string as-is (no `data:` framing). */
 export function raw(rawSSE: string): Uint8Array {
   return encoder.encode(rawSSE);
 }
 
-/**
- * Convenience: emit a tool-call start chunk (carries `id` + `name` for index
- * 0; empty arguments). The adapter emits `inference.tool_call.start`.
- */
+/** Convenience: a tool-call start chunk (`id`+`name`, empty args); the adapter emits `inference.tool_call.start`. */
 export function toolCallStart(
   index: number,
   id: string,
@@ -174,11 +147,7 @@ export function toolCallStart(
   });
 }
 
-/**
- * Convenience: emit an index-based tool-call argument fragment. The adapter
- * emits `inference.tool_call.delta` keyed by `String(index)`; the harness
- * remaps it to the real callId from the corresponding `toolCallStart`.
- */
+/** Convenience: an index-keyed tool-call argument fragment (`inference.tool_call.delta`). */
 export function toolCallArgumentsDelta(
   index: number,
   argumentsChunk: string,
@@ -188,14 +157,7 @@ export function toolCallArgumentsDelta(
   });
 }
 
-/**
- * Convenience: emit a complete tool-call sequence (start + argument chunks +
- * empty trailing chunk). `argChunks` is broken across multiple delta chunks
- * so consumers exercise their chunked-argument accumulation path.
- *
- * Tests that need a specific chunk boundary should call `toolCallStart` and
- * `toolCallArgumentsDelta` directly.
- */
+/** Convenience: a complete tool-call sequence with `argChunks` split across deltas. */
 export function toolCallSequence(
   index: number,
   id: string,
@@ -209,13 +171,7 @@ export function toolCallSequence(
   return chunks;
 }
 
-/**
- * Convenience: emit a deprecated `function_call` chunk (pre-`tool_calls`
- * OpenAI shape). The current `parseResponse` does not handle this directly
- * because the adapter only understands the modern `tool_calls` array, but
- * the bytes match what older deployments emit — useful for tests that
- * verify the adapter quietly ignores legacy events.
- */
+/** Convenience: a legacy `function_call` chunk (pre-`tool_calls` shape) the adapter ignores. */
 export function legacyFunctionCall(name: string, args: string): Uint8Array {
   return encodeSSE({
     id: "chatcmpl-test",
@@ -230,12 +186,7 @@ export function legacyFunctionCall(name: string, args: string): Uint8Array {
   });
 }
 
-/**
- * Convenience: emit a complete malformed-arguments tool call (start + a
- * single unterminated JSON fragment). The adapter still emits
- * `inference.tool_call.start` and `inference.tool_call.delta`; the harness's
- * final `JSON.parse` falls back to `{ _raw: ... }`.
- */
+/** Convenience: a tool call with an unterminated JSON args fragment; the harness's `JSON.parse` falls back to `{ _raw: ... }`. */
 export function malformedToolCall(
   index: number,
   id: string,
@@ -247,11 +198,7 @@ export function malformedToolCall(
   ];
 }
 
-/**
- * Convenience: emit a chunk that mimics a real OpenAI usage-only frame —
- * empty `choices` and a populated `usage`. The adapter emits one
- * `inference.usage`.
- */
+/** Convenience: a usage-only frame (empty `choices`, populated `usage`); the adapter emits one `inference.usage`. */
 export function usageChunk(opts: {
   promptTokens?: number;
   completionTokens?: number;
@@ -261,11 +208,7 @@ export function usageChunk(opts: {
   return chunk({ usage: opts });
 }
 
-/**
- * Convenience: emit a chunk with a missing `delta.role` and `null` content.
- * The adapter emits no events. Useful for confirming the adapter tolerates
- * the keep-alive shape some gateways inject.
- */
+/** Convenience: a keep-alive chunk (`null` content, no `delta.role`) the adapter silently ignores. */
 export function emptyKeepAliveChunk(): Uint8Array {
   return chunk({ contentNull: true });
 }

@@ -183,9 +183,7 @@ describe("scenario.onTool: promise return", () => {
         seen.push({ at: harness.clock.now(), result });
       });
 
-      // Drive the clock to +49; the handler's promise resolves on the
-      // first microtask drain inside `advanceTo`, which schedules the
-      // delayed dispatch at now+50. At +49 the dispatch hasn't fired.
+      // At +49 the now+50 delayed dispatch has not fired yet.
       await harness.advanceTo(49);
       expect(seen).toEqual([]);
 
@@ -240,26 +238,16 @@ describe("scenario.onTool: quiescence accounting", () => {
         seen.push(result);
       });
 
-      // Park a fetch with no matcher. If the in-flight handler did NOT
-      // block quiescence, `harness.run()` would see only the unmatched
-      // fetch and throw UnmatchedFetchError before our handler resolves.
-      // We arrange for the handler to release AFTER a tick of waiting so
-      // we can observe ordering: run() must await the handler first.
+      // Park a fetch with no matcher. If the in-flight handler did not block
+      // quiescence, run() would throw UnmatchedFetchError before the handler
+      // resolves. Release the handler after run() has begun awaiting it.
       const fetchPromise = harness.deps.fetch("https://example/unmatched");
       const fetchSettled = fetchPromise.catch((err: unknown) => err);
 
-      // Schedule the handler release on the next macrotask via the clock:
-      // we want it to fire only after `run()` has begun awaiting the
-      // in-flight handler. Using queueMicrotask would resolve immediately
-      // and not exercise the blocking behavior. We can't use real
-      // setTimeout (it'd trip the watchdog). Instead, kick a microtask
-      // chain that flips a flag, and assert the run-before-resolve
-      // ordering via the resolution order of the dispatch callback and
-      // the unmatched error.
-      //
-      // We resolve the gate on a deeper microtask so `run()` definitely
-      // enters its quiescence loop at least once with the handler still
-      // in-flight.
+      // Release the gate on a deeper microtask so run() enters its quiescence
+      // loop with the handler still in-flight; a plain queueMicrotask would
+      // resolve before run() begins awaiting, and real setTimeout would trip
+      // the watchdog.
       void Promise.resolve()
         .then(() => undefined)
         .then(() => {
@@ -360,13 +348,10 @@ describe("scenario.onTool: quiescence accounting", () => {
 });
 
 describe("inFlightErrors aggregation contract", () => {
-  // Pins the documented contract at `harness.ts` around `inFlightErrors`:
-  // when multiple in-flight tool handlers reject in the same tick, only the
-  // first rejection surfaces from harness.run(); subsequent rejections are
-  // dropped. The harness's `takeInFlightError` comment explicitly notes
-  // this is a deliberate simplification a future slice can extend to
-  // AggregateError if real tests require it — DO NOT change this behavior
-  // to AggregateError without first revisiting that contract.
+  // Pins the inFlightErrors contract: when multiple in-flight handlers reject
+  // in the same tick, only the first surfaces from run(); the rest are
+  // dropped. `harness.ts` documents this as a deliberate simplification — do
+  // not switch to AggregateError without revisiting that contract.
   test("two simultaneous tool handler rejections surface exactly one error", async () => {
     const harness = setupHarness();
     try {
@@ -390,9 +375,7 @@ describe("inFlightErrors aggregation contract", () => {
       }
       expect(caught).toBeInstanceOf(Error);
       if (!(caught instanceof Error)) throw new Error("unreachable");
-      // Exactly one of the two messages surfaces; whichever it is, the
-      // other is dropped. The contract is "single rejection per drain",
-      // not "AggregateError of all rejections".
+      // Exactly one rejection surfaces; the other is dropped.
       const matchedFirst = caught.message.includes("first-failure");
       const matchedSecond = caught.message.includes("second-failure");
       expect(matchedFirst || matchedSecond).toBe(true);
@@ -434,14 +417,12 @@ describe("harness.runInference auto-dispatch", () => {
       await harness.advanceTo(close + 10);
       await collected;
 
-      // The handler fired automatically with the parsed args; no
-      // `scenario.invokeTool` call appeared in this test.
+      // The handler fired automatically with the parsed args.
       expect(handlerCalls).toEqual([{ args: { location: "SF" } }]);
       expect(harness.scenario.lastToolDispatch("weather")).toEqual({
         temperatureF: 68,
       });
-      // Sanity: the iterator yielded the tool_call.end the auto-dispatch
-      // path observed.
+      // Sanity: the iterator yielded the tool_call.end.
       const toolEnd = events.find((e) => e.type === "inference.tool_call.end");
       expect(toolEnd).toBeDefined();
     } finally {
@@ -474,16 +455,14 @@ describe("harness.runInference auto-dispatch", () => {
           deps: harness.deps,
           readMaterial: () => ({ secret: "test-secret" }),
         })) {
-          // Intentionally swallow events; we only care that the handler
-          // does NOT auto-fire on this path.
+          // Swallow events; the handler must NOT auto-fire on this path.
         }
       })();
       await harness.advanceTo(close + 10);
       await collected;
 
-      // The handler is registered but the production runInference path
-      // bypasses the auto-dispatch wrapper. The handler must NOT have
-      // fired, and no dispatch record exists.
+      // Production runInference bypasses the auto-dispatch wrapper; the
+      // registered handler must not fire.
       expect(handlerCalls).toEqual([]);
       expect(harness.scenario.lastToolDispatch("weather")).toBeUndefined();
     } finally {
@@ -492,11 +471,9 @@ describe("harness.runInference auto-dispatch", () => {
   });
 
   test("dispatches the handler even when the consumer breaks on tool_call.end", async () => {
-    // Pins the contract that auto-dispatch runs BEFORE the event is
-    // yielded. If a future change moves dispatch back after the yield, a
-    // consumer that breaks out of the `for await` loop on
-    // `inference.tool_call.end` would silently never see the handler
-    // fire — a sharp edge this test exists to catch.
+    // Pins that auto-dispatch runs before `inference.tool_call.end` is
+    // yielded; a consumer breaking out of the loop on that event would
+    // otherwise never see the handler fire.
     const harness = setupHarness();
     try {
       const handlerCalls: { args: unknown }[] = [];
