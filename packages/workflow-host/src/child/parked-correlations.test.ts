@@ -233,10 +233,8 @@ describe("collectParkedApprovalCorrelations", () => {
     // An `"input"` park (a long-lived run awaiting its next mail) reduces to
     // the same `awaiting-signal` on a reserved channel as an approval, but it
     // carries no snapshot and is never hub-registered. Enumeration must skip it
-    // BEFORE the snapshot lookup -- so it does not throw even with no
-    // `loadParkedApproval` binding wired. Were it not skipped, its mere
-    // presence would take the whole deployment's approval re-registration down
-    // on every reconnect.
+    // BEFORE the snapshot lookup, so it does not throw even with no
+    // `loadParkedApproval` binding wired.
     const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "parked-corr-"));
     const runsDir = path.join(baseDir, repoId.kind, repoId.id, "runs");
     const runtimeRepoStore = createInMemoryRepoStore();

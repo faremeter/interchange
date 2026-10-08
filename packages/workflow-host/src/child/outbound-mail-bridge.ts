@@ -14,9 +14,7 @@
 // a pending awaiter, and emits `outbound.message` upstream (attachment
 // bytes base64-encoded); the supervisor performs the signed send and
 // replies with `outbound.result`; the bridge resolves/rejects the
-// awaiter. A supervisor-side failure surfaces as a rejection so the
-// agent's mail-tool call fails loudly rather than silently dropping the
-// send.
+// awaiter.
 
 import { getLogger } from "@intx/log";
 
@@ -39,9 +37,8 @@ const logger = getLogger(["workflow-host", "child", "outbound-mail-bridge"]);
  * supervisor's matching `outbound.result` lands. `handleResult` is the
  * receiver-side entry point the child's control loop invokes when the
  * downstream `outbound.result` frame arrives. `cancelAll` is the
- * cleanup hook the control loop invokes on any exit path so a pending
- * send does not leak an awaiter when the supervisor has torn the IPC
- * down.
+ * cleanup hook for any exit path so a pending send does not leak an
+ * awaiter when the supervisor has torn the IPC down.
  */
 export interface ChildOutboundMailBridge {
   submit(

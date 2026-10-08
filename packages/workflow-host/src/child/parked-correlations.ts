@@ -6,8 +6,8 @@
 // approval snapshot, so a snapshot-less correlated suspend reduces to
 // `phase === "failed"`, never `awaiting-signal`. Filtering on the reduced
 // `awaiting-signal` phase therefore surfaces only the parks that carry a
-// durable snapshot; a snapshot-less enumerated step is a disagreement between
-// the log and the step store, surfaced loudly.
+// durable snapshot; a snapshot-less enumerated step is a disagreement
+// between the log and the step store, surfaced loudly.
 
 import type {
   RepoId,
@@ -79,11 +79,11 @@ export async function collectParkedApprovalCorrelations(
       if (awaited === undefined) continue;
       const correlationId = correlationIdFromSignalName(awaited.name);
       if (correlationId === undefined) continue;
-      // An `"input"` park (a long-lived run awaiting its next mail) reduces to
-      // the same `awaiting-signal` on a reserved channel as an approval, but
-      // carries NO snapshot and is never hub-registered -- the run's owner
-      // delivers the input directly. Skip it: enumerating it would call
-      // loadParkedApproval, get no snapshot, and throw below, taking the whole
+      // An `"input"` park (a long-lived run awaiting its next mail) reduces
+      // to the same `awaiting-signal` on a reserved channel as an approval,
+      // but carries NO snapshot and is never hub-registered -- the run's
+      // owner delivers the input directly. Skip it: enumerating it would call
+      // `loadParkedApproval`, get no snapshot, and throw, taking the whole
       // deployment's approval re-registration down on every reconnect.
       // `controlParkKindOf` is the single point that reads a reserved-channel
       // park's kind; an absent kind is a legacy approval, not an input park.

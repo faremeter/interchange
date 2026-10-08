@@ -24,8 +24,7 @@ import { IPC_CRYPTO } from "../ipc/index";
  * in the shape below. The producer types its output against this list
  * (`Record<RequiredSpawnEnvKey, string>`), so omitting a listed key is a
  * compile error. Keeping this list in step with the validator shape is
- * covered by the recycle env-contract regression test; drift once
- * omitted `STEP_COUNT` from the recycle env and broke every recycle.
+ * covered by the recycle env-contract regression test.
  */
 export const REQUIRED_SPAWN_ENV_KEYS = [
   "IPC_CHANNEL_ID",
@@ -59,8 +58,7 @@ const SpawnTimeEnvShape = type({
   // Warm-keep signal (§3b): `"true"` only for the single-step long-lived
   // deployment the deploy projection marked a warm candidate; any other
   // value (or absence) means cold instantiate-send-teardown. Carried
-  // explicitly rather than re-derived so the decision is deterministic and
-  // a multi-step agent is never warm-kept by a silent default.
+  // explicitly rather than re-derived so the decision is deterministic.
   "WARM_KEEP?": "string",
   // Sidecar-local dir of the materialized workflow-definition closure the
   // deployment evaluates. Source-ref is the only deploy lineage, so the

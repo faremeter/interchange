@@ -6,16 +6,14 @@
 // ref. Flag writes (`\Seen`, `\Deleted`, ...) and `expunge` route up
 // to the supervisor through this bridge rather than being flushed from
 // the child: a second writer flushing the same ref would race the
-// supervisor's in-memory mirror and break uid / modseq monotonicity,
-// so the child never writes the mailbox directly.
+// supervisor's in-memory mirror and break uid / modseq monotonicity.
 //
 // Lifecycle of one mutation: `submit` mints a `requestId`, registers a
 // pending awaiter, and emits `mailbox.mutate.request` upstream; the
 // supervisor applies the op to its owned store, flushes, and replies
 // with `mailbox.mutate.response` (only after the flush, so a later read
-// observes the mutation -- the same flush-before-signal ordering
-// `mailbox.notify` relies on); the bridge resolves/rejects the awaiter.
-// A supervisor-side failure surfaces as a rejection so the agent's
+// observes the mutation); the bridge resolves/rejects the awaiter. A
+// supervisor-side failure surfaces as a rejection so the agent's
 // mail-tool call fails loudly rather than silently dropping the
 // mutation.
 
@@ -67,9 +65,9 @@ export type MailboxMutationResult = {
  * the supervisor's matching `mailbox.mutate.response` lands.
  * `handleResult` is the receiver-side entry point the child's control
  * loop invokes when the downstream `mailbox.mutate.response` frame
- * arrives. `cancelAll` is the cleanup hook the control loop invokes on
- * any exit path so a pending mutation does not leak an awaiter when the
- * supervisor has torn the IPC down.
+ * arrives. `cancelAll` is the cleanup hook for any exit path so a
+ * pending mutation does not leak an awaiter when the supervisor has
+ * torn the IPC down.
  */
 export interface ChildMailboxMutationBridge {
   submit(mutation: MailboxMutation): Promise<MailboxMutationResult>;

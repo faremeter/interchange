@@ -7,11 +7,10 @@
 // bridge, flag writes and `expunge` through the mailbox-mutation bridge,
 // and the rest through the mailbox-call bridge.
 //
-// `watch` registers its callback before the round trip. `mailbox.notify` is
-// not queued: a callback installed only after the supervisor accepts would
-// miss mail that lands while the call is in flight, and `mail_wait` would
-// then wait until its timeout. A refusal unregisters the callback and
-// rejects, so nothing stays armed for a mailbox the supervisor refused.
+// `watch` registers its callback before the round trip, because
+// `mailbox.notify` is not queued: a callback installed only after the
+// supervisor accepts would miss mail that lands while the call is in
+// flight. A refusal unregisters the callback and rejects.
 //
 // Without `inbound`, every inbound method fails with `SERVERBUG`
 // "not wired": a spawned child has no inbox surface, and that failure is

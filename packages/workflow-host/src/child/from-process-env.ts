@@ -55,10 +55,6 @@ export const EVENT_CHANNEL_FD = 3;
  * (IPC trust anchors + deployment ids) plus the substrate-config keys
  * the host placed in `WorkflowSupervisorBindings.substrateEnv`. The
  * factory narrows the record again on the way in.
- *
- * The factory does NOT receive `NodeJS.ProcessEnv` directly: the surface
- * is intentionally narrow so a future env-shaped surface crosses this
- * contract explicitly rather than via an opaque process-shaped slot.
  */
 export interface SubstrateFactoryEnv {
   /** Parsed spawn-time env (IPC trust anchors + deployment ids). */
@@ -120,9 +116,6 @@ export type SubstrateFactory = (
 /**
  * Optional overrides for the process-shaped surfaces the wrapper crosses.
  * Production hosts use the defaults; tests can inject in-memory streams.
- * The fields exist so a host can compose the wrapper around its own
- * logging or telemetry surface without exposing `process.env` to the
- * factory.
  */
 export interface RunWorkflowChildFromProcessEnvOpts {
   /** Override the raw env record (defaults to `process.env`). */

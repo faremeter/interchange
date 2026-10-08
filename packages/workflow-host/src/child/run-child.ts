@@ -2,8 +2,7 @@
 // sidecar binary parses `process.env`, opens the IPC streams, builds the
 // substrate, and invokes this function; tests call it directly with mock
 // streams and an in-memory substrate. Every I/O and substrate handle is an
-// injected dependency -- nothing here reads `process.env` or reaches into a
-// singleton.
+// injected dependency.
 //
 // Lifecycle: open the control and event channels; construct the
 // `WorkflowRuntimeEnv`; resume any in-flight runs; emit `ready`; loop on
@@ -217,8 +216,7 @@ export type DrainController = WorkflowHostDrainController;
  * pushed). `buildRuntimeEnv` wraps it back into a narrow `StepInvoker`.
  *
  * `warmCache` (§3b) is the run-loop's per-deployment warm-agent cache,
- * present only for a warm single-step deployment; the binding only reads it
- * through to the step-invoker adapter.
+ * present only for a warm single-step deployment.
  */
 /**
  * Per-run credential inputs the top-level step invoker carries to the
@@ -336,11 +334,11 @@ export interface RunWorkflowChildBindings {
    */
   readParkedApprovalOps?: ReadParkedApprovalOps;
   /**
-   * Mailbox watch registry backing the warm agent's `mail_wait` (INBOUND
-   * half of mailbox ownership, §3b): built at child boot, shared with the
-   * transport, and exposed so the control loop routes each `mailbox.notify`
-   * frame to the same instance. Absent, inbound notifications are logged and
-   * dropped. `RunWorkflowChildOpts.mailboxWatchRegistry` takes precedence.
+   * Mailbox watch registry backing the warm agent's `mail_wait` (§3b): built
+   * at child boot, shared with the transport, and exposed so the control loop
+   * routes each `mailbox.notify` frame to the same instance. Absent, inbound
+   * notifications are logged and dropped.
+   * `RunWorkflowChildOpts.mailboxWatchRegistry` takes precedence.
    */
   mailboxWatchRegistry?: MailboxWatchRegistry;
   /** Optional clock override; production wires `() => new Date()`. */
@@ -428,10 +426,10 @@ export interface RunWorkflowChildOpts {
    */
   mailboxCallBridge?: ChildMailboxCallBridge;
   /**
-   * Mailbox watch registry (INBOUND half of mailbox ownership, §3b). The
-   * control loop routes each `mailbox.notify` frame to this registry's `fire`,
-   * which delivers `exists` events to the `watch` callbacks backing
-   * `mail_wait`. Omitted, notifications are logged and dropped.
+   * Mailbox watch registry (§3b). The control loop routes each
+   * `mailbox.notify` frame to this registry's `fire`, which delivers
+   * `exists` events to the `watch` callbacks backing `mail_wait`. Omitted,
+   * notifications are logged and dropped.
    */
   mailboxWatchRegistry?: MailboxWatchRegistry;
 }
@@ -888,7 +886,7 @@ export async function runWorkflowChild(
 
   // Run the control loop, then always run the cleanup above. A failing
   // eviction surfaces on a clean exit but must not mask a control-loop error
-  // already unwinding -- logged, not rethrown, in that case.
+  // already unwinding.
   await runBodyThenCleanup(
     runControlLoop,
     cleanupControlLoop,
@@ -1046,8 +1044,7 @@ async function handleControlPayload(
       // Merge into the live cell (see `mergeCredentialDelivery`) rather than
       // replace it: the cell has several independently-scoped producers, so a
       // swap would evict another producer's credentials. One atomic assignment
-      // keeps readers from observing a torn cell. The secret stays on this
-      // ref only.
+      // keeps readers from observing a torn cell.
       ctx.credentialMaterialRef.current = mergeCredentialDelivery(
         ctx.credentialMaterialRef.current,
         payload.data.delivery,
@@ -1071,9 +1068,7 @@ async function handleControlPayload(
       // `pack.push.request` upstream and awaits `pack.push.response` on this
       // SAME downstream stream. Awaiting inline would deadlock the iterator
       // against the response it is blocking on (observed end-to-end), so the
-      // deliver fires off the loop and the iterator keeps pumping. A commit
-      // failure surfaces via the logger; the `awaitNext` peer resolves or
-      // stays pending until a later delivery.
+      // deliver fires off the loop and the iterator keeps pumping.
       const transientSignalChannel = createWorkflowHostSignalChannel({
         repoStore: ctx.bindings.substrate,
         principal: ctx.bindings.principal,
@@ -1179,44 +1174,37 @@ async function handleControlPayload(
       );
     }
     case "recycle.request": {
-      // Child->supervisor frame; receiving one downstream is the same
-      // shape of protocol violation as a downstream `ready`.
+      // Child->supervisor; a downstream `ready`-shaped violation.
       throw new Error(
         "workflow-child received a `recycle.request` frame on its inbound control channel; this is a child-only upstream payload",
       );
     }
     case "substrate.write.request": {
-      // Child->supervisor proxied write; receiving one downstream is a
-      // protocol violation in the same shape as a downstream `ready`.
+      // Child->supervisor proxied write; a downstream `ready`-shaped violation.
       throw new Error(
         "workflow-child received a `substrate.write.request` frame on its inbound control channel; this is a child-only upstream payload",
       );
     }
     case "substrate.merge.response": {
-      // Child->supervisor merge result; receiving one downstream is a
-      // protocol violation in the same shape as a downstream `ready`.
+      // Child->supervisor merge result; a downstream `ready`-shaped violation.
       throw new Error(
         "workflow-child received a `substrate.merge.response` frame on its inbound control channel; this is a child-only upstream payload",
       );
     }
     case "terminal.event": {
-      // Child->supervisor terminal-run notification; receiving one
-      // downstream is a protocol violation like a downstream `ready`.
+      // Child->supervisor terminal-run notification; a downstream `ready`-shaped violation.
       throw new Error(
         "workflow-child received a `terminal.event` frame on its inbound control channel; this is a child-only upstream payload",
       );
     }
     case "park.notify": {
-      // Child->supervisor suspension notification; receiving one
-      // downstream is a protocol violation like a downstream
-      // `terminal.event`.
+      // Child->supervisor suspension notification; a downstream `ready`-shaped violation.
       throw new Error(
         "workflow-child received a `park.notify` frame on its inbound control channel; this is a child-only upstream payload",
       );
     }
     case "outbound.message": {
-      // Child->supervisor outbound-mail request; receiving one
-      // downstream is a protocol violation like a downstream `ready`.
+      // Child->supervisor outbound-mail request; a downstream `ready`-shaped violation.
       throw new Error(
         "workflow-child received an `outbound.message` frame on its inbound control channel; this is a child-only upstream payload",
       );
@@ -1235,7 +1223,7 @@ async function handleControlPayload(
     case "mailbox.notify": {
       // Route the supervisor's new-mail notification to the watch registry
       // so a step agent's `watch`/`mail_wait` observes the arrival; without
-      // one, log and drop (mirrors the `outbound.result` arm).
+      // one, log and drop.
       if (ctx.mailboxWatchRegistry === undefined) {
         logger.warn`workflow-child mailbox.notify received without a watch registry wired; mailbox=${payload.data.mailbox} uid=${String(payload.data.uid)} dropped`;
         return false;
@@ -1248,9 +1236,8 @@ async function handleControlPayload(
       return false;
     }
     case "mailbox.mutate.request": {
-      // Child->supervisor mailbox-mutation request; receiving one
-      // downstream is a protocol violation like a downstream
-      // `outbound.message`.
+      // Child->supervisor mailbox-mutation request; a downstream
+      // `outbound.message`-shaped violation.
       throw new Error(
         "workflow-child received a `mailbox.mutate.request` frame on its inbound control channel; this is a child-only upstream payload",
       );
@@ -1266,8 +1253,8 @@ async function handleControlPayload(
       return false;
     }
     case "mailbox.call.request": {
-      // Child->supervisor mailbox-call frame; receiving one downstream is
-      // a protocol violation like a downstream `mailbox.mutate.request`.
+      // Child->supervisor mailbox-call frame; a downstream
+      // `mailbox.mutate.request`-shaped violation.
       throw new Error(
         "workflow-child received a `mailbox.call.request` frame on its inbound control channel; this is a child-only upstream payload",
       );
@@ -1323,27 +1310,21 @@ async function handleControlPayload(
       return false;
     }
     case "resumed.runs": {
-      // Child->supervisor self-discovery report; receiving one downstream
-      // is a protocol violation like a downstream `ready`.
+      // Child->supervisor self-discovery report; a downstream `ready`-shaped
+      // violation.
       throw new Error(
         "workflow-child received a `resumed.runs` frame on its inbound control channel; this is a child-only upstream payload",
       );
     }
     case "parked-correlations.response": {
-      // Child->supervisor reply frame; receiving one downstream is a
-      // protocol violation like a downstream `substrate.merge.response`.
+      // Child->supervisor reply frame; a downstream
+      // `substrate.merge.response`-shaped violation.
       throw new Error(
         "workflow-child received a `parked-correlations.response` frame on its inbound control channel; this is a child-only upstream payload",
       );
     }
   }
 }
-
-/**
- * Construct a `WorkflowRuntimeEnv` for one run. Each run gets its own
- * `BlobSubstrate` and `SignalChannel` (both are per-run by shape); the
- * substrate handle and per-deployment `RepoStore` adapter are shared.
- */
 
 /**
  * Force-resolve every `action` handler ref reachable from these definitions
@@ -1379,6 +1360,11 @@ function unwiredMailPartReader(): MailPartReader {
   };
 }
 
+/**
+ * Construct a `WorkflowRuntimeEnv` for one run. Each run gets its own
+ * `BlobSubstrate` and `SignalChannel` (both are per-run by shape); the
+ * substrate handle and per-deployment `RepoStore` adapter are shared.
+ */
 function buildRuntimeEnv(args: {
   runId: string;
   bindings: RunWorkflowChildBindings;
@@ -1512,9 +1498,7 @@ function buildRuntimeEnv(args: {
       // write is write-once and its shallow-prefix rebuild is safe only while
       // the iteration's subtree is still empty. The cap must walk the
       // PRE-rewrite loop body (grandchild still inline); the rewritten body in
-      // `bodiesMap` would skip the grandchild's resources. Sidecar-only seam:
-      // the in-process host keeps no per-run grants file, so an absent binding
-      // leaves the grants unmaterialized.
+      // `bodiesMap` would skip the grandchild's resources.
       const preRewriteBody = args.loopBodyPreRewrite.get(
         loopInput.definitionRef,
       );
@@ -1562,9 +1546,8 @@ function buildRuntimeEnv(args: {
   // `StepStarted` durably before the effect and the runtime never re-invokes
   // a crashed action, so the ledger is never consulted across a crash. Its
   // cross-crash exactly-once rests on that store-consistency invariant, which
-  // the store layer owns; a durable ledger here would re-enforce a constraint
-  // a lower layer already guarantees. Within one invocation the ledger still
-  // dedups a handler that performs the same effect twice.
+  // the store layer owns. Within one invocation the ledger still dedups a
+  // handler that performs the same effect twice.
   const effects = createInMemoryEffectLedger();
   env.effects = effects;
   env.invokeAction = createDefaultActionInvoker(
@@ -1618,13 +1601,11 @@ export function emitParkNotify(
  * frame anyway would desync the supervisor from the durable log
  * `discoverInFlightRuns` reads on resume -- so this throws instead: no frame
  * keeps supervisor and log agreeing the run is unsettled, and the next
- * recycle/restart resumes it. The throw propagates to the caller's
- * `complete` continuation, which logs it.
+ * recycle/restart resumes it.
  *
  * A transport send failure is different: logged, not rethrown. The
  * supervisor's dispatch loop is the authoritative settler, so a lost frame
- * surfaces as a wedged dispatch rather than a silent lifecycle failure. The
- * invariant throws run before the send, so that catch never swallows them.
+ * surfaces as a wedged dispatch rather than a silent lifecycle failure.
  */
 export function emitTerminalEvent(
   upstreamSender: ControlChannelSender,

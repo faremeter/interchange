@@ -128,8 +128,7 @@ function createStubRepoStore(baseDir: string): RepoStore {
       // `createWorkflowRunRepoStore` adapter's disk read round-trips: run
       // the merge callback against the prior entries under the preserved
       // prefix, then replace that subtree with the merged result (files
-      // outside the prefix are untouched). Discarding the write here would
-      // make a completed run's `result.events` read back empty.
+      // outside the prefix are untouched).
       const repoDir = path.join(baseDir, repoId.kind, repoId.id);
       const existing = await readPrefixEntries(repoDir, args.preservePrefix);
       const merged = await args.merge(existing);
@@ -148,9 +147,7 @@ function createStubRepoStore(baseDir: string): RepoStore {
       // The fake substrate persists commits to the working tree, so back
       // committed reads with those same files (oid = repo-relative path).
       // This test drives a single writer with no concurrent flush, so
-      // there is no torn-read window to model -- the adapter's read just
-      // needs a committed-tree view that round-trips what
-      // writeTreePreservingPrefix persisted.
+      // there is no torn-read window to model.
       const repoDir = path.join(baseDir, repoId.kind, repoId.id);
       return {
         async listDir(relPath: string) {
@@ -223,11 +220,8 @@ function agentStep(id: string): Record<string, unknown> {
 /**
  * Materialize a source-ref workflow-definition closure on disk and return its
  * package dir plus the hub-approved wire hash the closure evaluates to
- * (project-then-hash via `computeLiveDefinitionHash`). Source-ref is the only
- * deploy lineage, so the child loads its definition by evaluating this closure
- * and re-verifying the recompute against `DEFINITION_HASH`; the caller threads
- * the returned dir into `CLOSURE_PACKAGE_DIR` and the hash into
- * `DEFINITION_HASH`.
+ * (project-then-hash via `computeLiveDefinitionHash`). The caller threads the
+ * returned dir into `CLOSURE_PACKAGE_DIR` and the hash into `DEFINITION_HASH`.
  */
 async function materializeClosure(
   prefix: string,
@@ -716,9 +710,8 @@ describe("runWorkflowChild", () => {
     // the deliver off the control loop, so its commit COMPLETES at an
     // unbounded later point -- but `SignalChannel.deliver` reaches
     // `writeTreePreservingPrefix` with no await before it, so the call itself
-    // lands inside the frame's own dispatch. Recording the call therefore
-    // makes "the commit never started" observable by the time the child has
-    // processed the following `shutdown`.
+    // lands inside the frame's own dispatch. A recorded call proves the
+    // commit started; its absence proves it never did.
     const writtenPrefixes: string[] = [];
     const base = buildBindings({ baseDir, childKeyPair });
     const bindings: RunWorkflowChildBindings = {
@@ -961,15 +954,14 @@ describe("runWorkflowChild", () => {
     });
 
     // Decode the child's upstream frames so the test can observe the run
-    // reach TERMINAL. The warm gate lives in the same void-ed
-    // `handle.complete.then(...)` continuation that emits the
-    // `terminal.event`, and that continuation runs the gate BEFORE the
-    // emit. Waiting for `terminal.event` therefore proves the continuation
-    // executed -- so a subsequent `cleaned` assertion fires at exactly the
-    // point the cold path WOULD have deleted, making the suppression proof
-    // non-vacuous. The receiver bootstraps the child's verifying key from
-    // `ready`; `flushed()`-based waits elsewhere are non-consuming, so
-    // `ready` is still queued for this iterator.
+    // reach TERMINAL. The warm gate runs in the same void-ed
+    // `handle.complete.then(...)` continuation that emits `terminal.event`,
+    // BEFORE the emit. Waiting for `terminal.event` therefore proves the
+    // continuation executed -- so a subsequent `cleaned` assertion fires at
+    // exactly the point the cold path WOULD have deleted, making the
+    // suppression proof non-vacuous. The receiver bootstraps the child's
+    // verifying key from `ready`; `flushed()`-based waits elsewhere are
+    // non-consuming, so `ready` is still queued for this iterator.
     const recvIter = receiveControlChannel({
       publicKey: { bootstrapFromReady: true },
       channelId,
@@ -1300,9 +1292,9 @@ describe("runWorkflowChild", () => {
     // throws while settling the crashed residual (a StepFailed-onto-already-
     // terminal TransitionError) and that throw lands in its fire-and-forget
     // continuation, logged through the child's `logger.error`. No such
-    // string may escape when exactly one driver runs. This is the check
-    // that fails when the guard is removed -- the loser throws BEFORE it
-    // reaches a terminal emission, so `terminals` still has length 1.
+    // string may escape when exactly one driver runs. This check fails when
+    // the guard is removed -- the loser throws BEFORE it reaches a terminal
+    // emission, so `terminals` still has length 1.
     expect(
       capturedErrors.some((line) => line.includes("TransitionError")),
     ).toBe(false);
@@ -1310,8 +1302,7 @@ describe("runWorkflowChild", () => {
     // the first one, so this counts nothing beyond that -- at-least-one is
     // also all the code promises: the guard prevents two CONCURRENT drivers,
     // not a duplicate terminal from a re-fire that arrives after the resumed
-    // driver settled, which short-circuits without re-invoking and re-emits
-    // benignly for the supervisor to absorb.
+    // driver settled.
     expect(terminals.length).toBeGreaterThanOrEqual(1);
     // The crashed step settled without re-invoking the agent (commit 2a's
     // at-most-once refusal); the load-bearing zero-invocation assertion.
@@ -1846,9 +1837,7 @@ function stubReactorEvent(type: string): StreamEvent {
 /**
  * The one-step warm-roundtrip workflow definition whose sole step's input
  * defaults to the trigger payload, so the child's `trigger.fire` delivers the
- * inbound mail body to `agent.send`. The step's `agent` carries `inference`
- * (the live shape the projector canonicalizes and the child runs); the spy
- * agentFactory ignores the metadata. Materialized as a source-ref closure the
+ * inbound mail body to `agent.send`. Materialized as a source-ref closure the
  * child evaluates and re-verifies at boot.
  */
 function warmWorkflowDefinition(stepId: string): {

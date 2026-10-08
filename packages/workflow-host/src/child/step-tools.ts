@@ -72,15 +72,12 @@ export interface StepToolMaterialization {
  * pinned package tool loads in the child and never produces a `tool:<name>`
  * grant on the run principal. These derived rows supply that missing floor
  * as ADDITIONAL rows: `evaluateGrants` precedence still resolves an
- * explicit `deny` over the derived `ask`/`allow` -- the floor only raises
- * the minimum authority to the tool's mark, never overriding a declared
- * denial.
+ * explicit `deny` over the derived `ask`/`allow`.
  *
  * The grant `id` is deterministic (`floor:tool:<name>`): `evaluateGrants`
- * never dedupes or joins on `id` (it ranks by specificity then effect), so
- * a stable id keeps the rows reproducible, and a floor row that coincides
- * with a hub-supplied `tool:<name>` row resolves by effect precedence
- * regardless of the ids.
+ * never dedupes or joins on `id`, so a stable id keeps the rows
+ * reproducible, and a floor row that coincides with a hub-supplied
+ * `tool:<name>` row resolves by effect precedence regardless of the ids.
  */
 export function deriveToolMarkFloorGrants(
   factories: readonly {
@@ -409,9 +406,8 @@ export function createToolBearingAgentFactory(): <EnvReq extends BaseEnv>(
     // sees the prior plugins' instances on `env.plugins` (posix's bundle reads
     // `env.plugins`; the LSP plugin factory populates them). On a midway
     // factory throw, every plugin instance already constructed releases what
-    // it acquired (the LSP plugin starts a subprocess) before the construction
-    // error propagates, so a partial-success chain never leaks an LSP
-    // subprocess.
+    // it acquired before the construction error propagates, so a
+    // partial-success chain never leaks an LSP subprocess.
     const pluginInstances: unknown[] = [];
     let chainEnv: BaseEnv = env;
     try {

@@ -55,13 +55,11 @@ export interface DiscoverRunsOpts {
  * terminal resume would settle without progress and generate spurious reads).
  *
  * Child runs are excluded. A run spawned by another run -- a `childWorkflow`
- * child or an `onTrigger` section's per-event body, whichever committed a
- * `ChildSpawned` naming it -- is driven by its PARENT's runtime, not on its
- * own: resuming it here would re-run it under the deployment definition rather
- * than the child's own, and for a body approval park it would hub-register an
- * internal park the parent already proxies up on the shared correlation. A
- * child run is identified structurally, by appearing as a
- * `ChildSpawned.childRunId` in some log, rather than by its id shape.
+ * child or an `onTrigger` section's per-event body -- is driven by its
+ * PARENT's runtime, not on its own: resuming it here would re-run it under
+ * the deployment definition rather than the child's own. A child run is
+ * identified structurally, by appearing as a `ChildSpawned.childRunId` in
+ * some log, rather than by its id shape.
  */
 export async function discoverInFlightRuns(
   opts: DiscoverRunsOpts,

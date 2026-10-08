@@ -36,10 +36,7 @@ export type PendingEntryHandle<Value, Meta> = {
 
 /**
  * Options for {@link createPendingRequestCore}. `label` prefixes every
- * error the core builds (`<label>: upstream send failed for requestId
- * <id>: ...`, `(requestId=<id>) rejected by supervisor: ...`,
- * `(requestId=<id>) cancelled: ...`, `<label>: no pending entry for
- * requestId <id>`), so each bridge's observable error strings stay its
+ * error the core builds, so each bridge's observable error strings stay its
  * own. `allocatorPrefix` seeds the default requestId allocator
  * (`<prefix>-<counter>-<rand>`); tests inject `allocateRequestId` for a
  * deterministic id.

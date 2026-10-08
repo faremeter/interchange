@@ -108,7 +108,7 @@ export function createProxyWorkflowRunRepoStore(
     // The substrate derives the canonical seq from the ref's history; the
     // proxy cannot know it. `subscribeKind` does not consult the value (it
     // walks the commit tree from `oldSha` to `newSha`), so any monotonic
-    // value preserves the downstream contract -- use a per-ref counter.
+    // value preserves the downstream contract.
     const seq = (lastRefSeq.get(key) ?? 0) + 1;
     lastRefSeq.set(key, seq);
     for (const sub of set) {
@@ -219,9 +219,7 @@ export function createProxyWorkflowRunRepoStore(
       // `from: { seq }` replay against historical commits is not emitted
       // here today: the runtime's signal-channel and similar consumers attach
       // with `from: "head"`, so only events committed after subscription
-      // fire. A `from: { seq }` caller would miss historical commits -- the
-      // bare store's `subscribe` supports replay today, and resume code can
-      // call it directly if needed.
+      // fire.
       const key = refKey(repoId, ref);
       let set = subscribers.get(key);
       if (set === undefined) {

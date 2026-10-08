@@ -1,12 +1,12 @@
 // Source-ref definition load + re-verify barrier for the workflow-process child.
 //
 // A source-ref deployment's runnable definition is the evaluated pinned code
-// closure, not an on-disk `workflow.json`. `loadVerifiedWorkflowDefinitionFromClosure`
-// evaluates that closure to a live `WorkflowDefinition` and re-verifies it by
-// project-then-hash: it projects the live definition back to its inert form,
-// hashes it (`computeLiveDefinitionHash`), and refuses to return a definition
-// whose recompute does not match the hub-approved hash. A mismatch throws --
-// fail closed, no fallback and no coercion.
+// closure, not an on-disk `workflow.json`. This loader evaluates that closure
+// to a live `WorkflowDefinition` and re-verifies it by project-then-hash: it
+// projects the live definition back to its inert form, hashes it
+// (`computeLiveDefinitionHash`), and refuses to return a definition whose
+// recompute does not match the hub-approved hash. A mismatch throws -- fail
+// closed, no fallback and no coercion.
 //
 // The re-verify barrier is load-bearing because the approved hash arrives
 // OUT-OF-BAND from the bytes being checked (a signed spawn env the closure
@@ -50,10 +50,8 @@ export interface LoadVerifiedWorkflowDefinitionFromClosureOpts {
  * Evaluate a source-ref deployment's pinned code closure to a live
  * `WorkflowDefinition` and re-verify it by project-then-hash before returning
  * it. The inert projection is a non-executable approval surface, so the runtime
- * needs the live definition the closure evaluates to. The re-verify projects
- * that live definition back to its inert form and hashes it
- * (`computeLiveDefinitionHash`), matching the hub-approved wire hash by byte
- * equality; a divergent closure fails closed here and never runs.
+ * needs the live definition the closure evaluates to. A divergent closure
+ * fails closed here and never runs.
  */
 export async function loadVerifiedWorkflowDefinitionFromClosure(
   opts: LoadVerifiedWorkflowDefinitionFromClosureOpts,

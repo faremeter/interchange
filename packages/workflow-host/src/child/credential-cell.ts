@@ -1,12 +1,10 @@
 // Merge semantics for the child's in-memory credential-material cell. The cell
-// has several independently-scoped producers (deploy frame, inference rotation,
-// tool-grant push), so a wholesale swap would let one producer evict another's
-// credentials. A `credentials-updated` frame therefore merges: materials upsert
-// by `credentialId`, bindings upsert by `(consumer, handle)`. Revocation is
-// explicit: the frame's `revoke` list names the credentialIds to drop, and
-// dropping one also drops every binding that references it. Revoke applies
-// before the upsert, so a frame that both revokes and re-adds the same
-// credentialId resolves to the re-add.
+// has several independently-scoped producers, so a wholesale swap would let one
+// evict another's credentials. A `credentials-updated` frame therefore merges:
+// materials upsert by `credentialId`, bindings by `(consumer, handle)`.
+// Revocation is explicit: the `revoke` list drops the named credentialIds and
+// every binding that references them, applied before the upsert so a frame that
+// both revokes and re-adds resolves to the re-add.
 
 import type {
   CredentialBindingDescriptor,

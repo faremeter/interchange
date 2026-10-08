@@ -64,11 +64,9 @@ export interface SubstrateWriteRequest {
  * supervisor's matching `substrate.write.response` lands. The
  * `handleMergeRequest` and `handleWriteResponse` hooks are the
  * receiver-side entry points the child's control loop invokes when
- * the corresponding downstream frames arrive.
- *
- * `cancelAll` is the cleanup hook the control loop invokes on any
- * exit path so a pending write does not leak an awaiter when the
- * supervisor has torn the IPC down.
+ * the corresponding downstream frames arrive. `cancelAll` is the
+ * cleanup hook for any exit path so a pending write does not leak an
+ * awaiter when the supervisor has torn the IPC down.
  */
 export interface ChildSubstrateWriteBridge {
   submit(req: SubstrateWriteRequest): Promise<{ commitSha: string }>;

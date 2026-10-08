@@ -1,14 +1,10 @@
-// Child-side mailbox watch registry (INBOUND half of mailbox ownership,
-// design §3b).
-//
-// The supervisor is the sole mail owner: it commits an arrived message to the
-// substrate mailbox and fires a `mailbox.notify` control frame; the child's
-// control loop routes that frame to `fire`, which delivers an `exists`
-// `MailboxEvent` to every callback registered through `watch`.
-//
-// Delivery is asynchronous: `fire` schedules each callback on a microtask per
-// the IMAP IDLE contract, and re-checks registration at delivery so a watcher
-// that unsubscribed in between observes no event.
+// Child-side mailbox watch registry (INBOUND half of mailbox ownership, §3b).
+// The supervisor is the sole mail owner: it commits an arrived message and
+// fires a `mailbox.notify` control frame; the child's control loop routes that
+// frame to `fire`, which delivers an `exists` `MailboxEvent` to every callback
+// registered through `watch`. Delivery is asynchronous per the IMAP IDLE
+// contract: each callback fires on its own microtask, re-checking registration
+// at delivery so an unsubscribed watcher observes no event.
 
 import type { MailboxEvent, Unsubscribe } from "@intx/types/runtime";
 

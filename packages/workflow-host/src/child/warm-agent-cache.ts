@@ -34,8 +34,7 @@ const logger = getLogger(["workflow-host", "child", "warm-agent-cache"]);
  * before forwarding each event. The step-invoker swaps `current` to the
  * active step's `onEvent` before every `agent.send`, so events from the
  * agent's single lifetime stream reach whichever run is in flight. A
- * `null` `current` drops events (no run is driving the agent), which is
- * the correct behaviour in the gap between sends.
+ * `null` `current` drops events (no run is driving the agent).
  */
 export interface WarmEventSinkRef {
   current: ((event: InferenceEvent) => void) | null;
@@ -46,8 +45,7 @@ export interface WarmEventSinkRef {
  * step (§3c durability). The step snapshots `replySeq()` before its send
  * and, for a turn that produced a reply, awaits `waitForReplyAfter(snapshot)`
  * so the run parks -- and the supervisor consumes the inbound mail -- only
- * after the reply is durably sent. The structural subset of the harness
- * `ConnectorReplyDrain` the warm path needs.
+ * after the reply is durably sent.
  */
 export type WarmReplySettlement =
   | { readonly ok: true }
@@ -133,8 +131,7 @@ export interface WarmAgentCache {
    * (disposing plugins, killing the LSP subprocess) and drain the stream
    * forwarder. Idempotent -- a second call on an empty cache is a no-op, so
    * the run-loop can evict on both shutdown and the exit-path `finally`
-   * without double-closing. Resolves once every agent is closed and every
-   * forwarder drained.
+   * without double-closing.
    */
   evictAll(reason: string): Promise<void>;
 }
