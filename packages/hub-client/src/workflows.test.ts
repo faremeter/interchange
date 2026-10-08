@@ -181,9 +181,8 @@ describe("deliverWorkflowSignal", () => {
   });
 
   // The signal route returns 202 with an empty body. Driving the call
-  // through the real browser transport (rather than a mock that returns
-  // undefined) exercises the no-content path: a transport that tried to
-  // JSON-parse the empty body would reject with "Unexpected end of JSON
+  // through the real browser transport exercises the no-content path: a
+  // JSON-parse of the empty body would reject with "Unexpected end of JSON
   // input" even though the hub accepted the signal.
   test("resolves on a real 202 empty-body response without throwing", async () => {
     const originalFetch = globalThis.fetch;
@@ -275,11 +274,10 @@ describe("triggerWorkflowRun", () => {
     ).rejects.toThrow(/Invalid workflow run trigger response/);
   });
 
-  // The trigger route returns 202 WITH a JSON acknowledgement body, unlike
-  // the signal route's empty 202. Driving the call through the real browser
-  // transport (rather than a mock) exercises the 202-with-body path: a
-  // transport that discarded every 202 body would resolve to undefined and
-  // lose the runId/address/messageId the caller needs.
+  // The trigger route returns 202 WITH a JSON ack body, unlike the signal
+  // route's empty 202. Driving the call through the real browser transport
+  // exercises the 202-with-body path: discarding it would lose the
+  // runId/address/messageId the caller needs.
   test("returns the parsed ack from a real 202-with-body response", async () => {
     const ack = {
       runId: DEPLOYMENT_ID,

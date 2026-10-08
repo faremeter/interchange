@@ -5,14 +5,12 @@ import type { WorkflowRunEvent } from "./validators";
 import { WorkflowRunEvents } from "./validators";
 import { isTerminalRunEvents } from "./transforms";
 
-// How often to re-read the run's event log while it is still live. The log is
-// git-backed and settles quickly, so a few-second cadence keeps the timeline
-// fresh without hammering the substrate.
+// Re-read the run's event log on this cadence while it is live; the log
+// is git-backed, so a few seconds keeps it fresh without hammering it.
 const DEFAULT_RUN_POLL_INTERVAL_MS = 2000;
 
-// A read-only view of one workflow run's committed event log. The session
-// polls the run's `/events` endpoint, replacing its timeline with each read,
-// and stops once the run reaches a terminal event.
+// Read-only view of one run's committed event log: polls `/events`,
+// replaces the timeline on each read, stops at a terminal event.
 export interface RunSession {
   readonly events: WorkflowRunEvent[];
   readonly hydrated: boolean;
@@ -78,9 +76,8 @@ export function createRunSession(opts: {
       return;
     }
 
-    // The endpoint returns the full seq-ordered log on every call, so the
-    // latest read replaces the timeline outright -- there is no delta to merge,
-    // and a replay of the same seqs cannot duplicate an entry.
+    // The endpoint returns the full seq-ordered log each call, so the
+    // latest read replaces the timeline outright -- no delta to merge.
     events = validated.events;
     hydrated = true;
     terminal = isTerminalRunEvents(events);
@@ -122,8 +119,8 @@ export function createRunSession(opts: {
       }
       started = true;
 
-      // Poll immediately so the timeline hydrates without waiting a full
-      // interval, then keep polling until the run settles.
+      // Poll immediately so the timeline hydrates without a full interval
+      // wait, then keep polling until the run settles.
       void (async () => {
         await poll();
         schedule();

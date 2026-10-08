@@ -1,13 +1,9 @@
 import type { RepoAction } from "@intx/types/sidecar";
 
 /**
- * Translations between the HTTP request shape, the `RepoAction`
- * vocabulary used by the repo-store substrate, and the verb
- * vocabulary used by the grant store. This module is the single
- * source of truth: both the bearer middleware (which queries authz
- * with `repoActionToGrantVerb(httpToRepoAction(req))`) and the kind
- * handler (which receives the resolved `RepoAction`) import from
- * here, so the two layers cannot drift.
+ * Single source of truth mapping smart-HTTP requests to `RepoAction`s
+ * and `RepoAction`s to grant verbs, so the bearer middleware and the
+ * repo-store kind handler cannot drift.
  */
 
 export type HTTPRequestShape = {
@@ -20,13 +16,9 @@ const UPLOAD_PACK_SERVICE = "git-upload-pack";
 const RECEIVE_PACK_SERVICE = "git-receive-pack";
 
 /**
- * Resolve a smart-HTTP request to the `RepoAction` it requires. The
- * match is on the trailing smart-HTTP suffix so the same logic works
- * for every mount prefix (asset routes, agent-state routes, etc.).
- *
- * Throws when the request shape is not a recognised smart-HTTP
- * endpoint; callers are expected to gate this behind their route
- * matcher.
+ * Resolve a smart-HTTP request to the `RepoAction` it requires, matching
+ * on the trailing suffix so it works under any mount prefix. Throws for
+ * unrecognised endpoints; callers gate this behind their route matcher.
  */
 export function httpToRepoAction(req: HTTPRequestShape): RepoAction {
   const path = req.path;
@@ -63,10 +55,8 @@ function hasSuffix(path: string, suffix: string): boolean {
 }
 
 /**
- * Translate a `RepoAction` to the grant verb used by the authz
- * grant store. Every `RepoAction` has exactly one verb; an
- * exhaustive switch makes the compiler enforce coverage when the
- * `RepoAction` union grows.
+ * Every `RepoAction` maps to exactly one grant verb; the exhaustive
+ * switch makes the compiler enforce coverage as the union grows.
  */
 export function repoActionToGrantVerb(action: RepoAction): string {
   switch (action) {
@@ -82,10 +72,8 @@ export function repoActionToGrantVerb(action: RepoAction): string {
 }
 
 /**
- * Mint-API friendly aliases that expand to one or more
- * `RepoAction`s. Callers that issue a token specify `actions:
- * ["can_read"]` or `actions: ["can_push"]` rather than enumerating
- * the underlying repo-store verbs.
+ * Mint-API aliases expanding to one or more `RepoAction`s, so callers
+ * issue `["can_read"]` instead of enumerating the underlying verbs.
  */
 export const RepoActionAliases = {
   can_read: ["createPack", "resolveRef"],
@@ -93,10 +81,9 @@ export const RepoActionAliases = {
 } as const satisfies Record<string, readonly RepoAction[]>;
 
 /**
- * Expand a mint-API actions string into the underlying RepoActions.
- * Accepts both aliases (`can_read`, `can_push`) and bare RepoAction
- * names. Unknown strings throw — callers receive the rejection at
- * the mint boundary rather than producing an empty grant set.
+ * Expand a mint-API actions string (alias or bare `RepoAction` name) to
+ * RepoActions. Unknown strings throw, so the mint boundary rejects
+ * rather than granting an empty set.
  */
 export function expandRepoActionAlias(name: string): RepoAction[] {
   const alias = lookupAlias(name);

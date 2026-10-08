@@ -1,8 +1,7 @@
 import type { WorkflowRunEvent } from "./validators";
 import type { AwaitingSignal } from "./types";
 
-// The run-event types that seal a run: once one of these is committed the run
-// has settled and its event log will not grow.
+// Event types that seal a run: once one is committed the log will not grow.
 export const TERMINAL_RUN_EVENT_TYPES: readonly string[] = [
   "RunCompleted",
   "RunFailed",
@@ -14,10 +13,9 @@ export function isTerminalRunEvents(events: WorkflowRunEvent[]): boolean {
 }
 
 /**
- * Returns the awaited signal from the latest unresolved `SignalAwaited`
- * event, or null when the run is not currently parked on a signal. A later
- * `SignalReceived` carrying the same `signalName`, or a terminal event, clears
- * the await.
+ * Latest unresolved `SignalAwaited` (its seq and name), or null when the
+ * run is not parked on a signal. A later `SignalReceived` with the same
+ * name, or a terminal event, clears it.
  */
 export function findAwaitingSignal(
   events: WorkflowRunEvent[],

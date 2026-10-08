@@ -55,15 +55,11 @@ function eventsResponse(events: WorkflowRunEvent[]) {
 }
 
 /**
- * A second, still-live session used as a pacer for a negative assertion.
- *
- * "No further read happened" cannot be waited for -- it is already true the
- * instant it is checked -- and a pause proves only that the machine got
- * through that pause. This session is started AFTER the one under test and
- * polls on the same interval, so a read the session under test had wrongly
- * scheduled was armed earlier with the same delay and therefore fires first.
- * A completed scheduled read here is proof that read would already have
- * happened.
+ * A second, still-live session used as a pacer for a negative assertion:
+ * "no further read happened" cannot be waited for, and a pause proves
+ * nothing. Started after the session under test on the same interval, a
+ * completed read here proves any read the test session had wrongly
+ * scheduled would have fired too.
  */
 function createPollPacer(): {
   reads: () => number;
@@ -295,10 +291,9 @@ describe("run session polling", () => {
 
     const cleanup = session.start();
     cleanup();
-    // Releasing the parked fetch leaves only microtask work between here and
-    // the poll's post-fetch `stopped` check, so this macrotask yield resumes
-    // after that check has run. The assertion is a negative, which a wait on
-    // state could not express.
+    // Releasing the parked fetch leaves only microtask work before the
+    // poll's post-fetch `stopped` check, so this macrotask yield resumes
+    // after that check has run. The assertion is a negative.
     resolveFetch();
     await tick();
 

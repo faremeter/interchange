@@ -48,9 +48,8 @@ export type DeployWorkflowInput = {
   /** The default catalog offering id; normally the head of the chain. */
   defaultSourceOfferingId: string;
   /**
-   * A `name@range` pin selecting the definition package. Required for the
-   * `registry` and asset-`tarball` source variants; omitted for asset-`source`,
-   * whose member is selected by the source's `packageName`.
+   * `name@range` pin for the definition package. Required for `registry`
+   * and asset-`tarball` sources; omitted for asset-`source`.
    */
   pin?: string;
 };
