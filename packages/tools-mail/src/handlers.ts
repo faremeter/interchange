@@ -1,9 +1,7 @@
 // Per-tool handler factories for the mail tools. Each factory takes
 // the bound MessageTransport and returns a closed-over ToolHandler.
 // One factory per tool keeps the public surface in index.ts a single
-// wiring point.
-//
-// (MESSAGE.md § Mail Tools)
+// wiring point. (MESSAGE.md § Mail Tools)
 
 import { scope, type, type Type } from "arktype";
 import { getLogger } from "@intx/log";

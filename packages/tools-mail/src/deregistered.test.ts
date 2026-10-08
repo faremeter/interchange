@@ -4,7 +4,6 @@
 // mailbox is touched. It raises RFC 5530's `CANNOT`, and reissuing the same
 // call does not address it -- which is what separates it from the `*_failed`
 // codes: those say the transport was reached and the outcome is unknown.
-//
 // These assertions run against a real in-memory transport rather than a mock,
 // because the value under test is what a caller actually receives from the
 // pair -- the condition the transport raises and the code the classifier
@@ -30,9 +29,8 @@ const signal = new AbortController().signal;
 
 // mail_wait is the one tool here that declares a deadline, and it must answer
 // the refusal rather than the deadline. Capturing the callback without firing
-// it leaves the handler no deadline to reach, so a case that does not settle on
-// the refusal hangs, and the test runner's own budget charges that as a
-// failure.
+// it leaves the handler no deadline to reach, so a case that does not settle
+// on the refusal hangs, which the test runner's budget charges as a failure.
 const heldDeadline: WaitScheduler = {
   setTimeout() {
     return () => undefined;

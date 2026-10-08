@@ -1,8 +1,6 @@
 // Public surface for @intx/tools-mail. createMailTools resolves the
 // bound agent's MessageTransport from the supplied RuntimeCapabilities
-// once at handler-init and wires the mail handlers around it. The
-// returned MailTools satisfies the ToolRunner contract the harness
-// consumes.
+// once at handler-init and wires the mail handlers around it.
 
 import type {
   ToolDefinition,

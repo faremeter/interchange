@@ -172,9 +172,7 @@ describe("mail_wait classifies a refused watch install", () => {
   // The same two removals, performed before the opening search rather than
   // after it, are the contrast that makes the pair above the interesting
   // case: the code a caller receives must not depend on which of the two
-  // calls saw the removal first. deregistered.test.ts covers the
-  // deregistered handle across the whole toolset; the vanished mailbox is
-  // covered here.
+  // calls saw the removal first.
   test("a mailbox already gone at the opening search is invalid_mailbox", async () => {
     const { scoped } = await liveHandle();
     await scoped.deleteMailbox("INBOX");

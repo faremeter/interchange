@@ -17,12 +17,9 @@
 // compiled constraint nodes. `toJsonSchema` looks like the shorter route
 // but is not usable here: it renders the recursive query shape with a `$ref`
 // to a `$defs` entry it never emits, and throws on the date filters' morph.
-//
-// What is compared: each key, whether it is required, which JSON types it
-// accepts, the constraints it puts on the value, the values of an enumerated
-// key, and the default it advertises. The element type of an array key is
-// not compared: arktype answers no question about the query's 'and'/'or'
-// element, which is the query shape itself.
+// The element type of an array key is not compared: arktype answers no
+// question about the query's 'and'/'or' element, which is the query shape
+// itself.
 
 import { describe, expect, test } from "bun:test";
 import { scope, type } from "arktype";
