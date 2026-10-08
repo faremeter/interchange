@@ -36,24 +36,22 @@ const THINKING_MANDATORY_MODELS: ReadonlySet<string> = new Set([
   "gemini-3.6-flash",
 ]);
 
-// Sentinel meaning "let the model decide"; used on thinking-mandatory models
-// that reject a zero budget.
+// Sentinel meaning "let the model decide".
 const DYNAMIC_THINKING_BUDGET = -1;
 
 function minimalThinkingBudget(model: string): number {
   return THINKING_MANDATORY_MODELS.has(model) ? DYNAMIC_THINKING_BUDGET : 0;
 }
 
-// Validates that a parsed JSON value is a plain object; avoids an `as`
-// assertion that would lie about runtime shape.
+// Plain-object validation; avoids an `as` assertion that would lie about
+// runtime shape.
 const ParsedJSONObject = type("Record<string, unknown>");
 
 // ---------------------------------------------------------------------------
 // Request building
 //
-// Translates internal ConversationTurn[] messages into a Gemini
-// `generateContent` body. The harness always streams, so the URL pins
-// `:streamGenerateContent?alt=sse`.
+// Translates ConversationTurn[] into a Gemini `generateContent` body. The
+// harness always streams, so the URL pins `:streamGenerateContent?alt=sse`.
 // ---------------------------------------------------------------------------
 
 function buildRequest(
@@ -64,8 +62,8 @@ function buildRequest(
   const systemMessages = messages.filter((m) => m.role === "system");
   const conversationMessages = messages.filter((m) => m.role !== "system");
 
-  // System text from history, overridden by `options.systemPrompt`. Non-text
-  // blocks in a system turn error rather than drop.
+  // History system text, overridden by `options.systemPrompt`; non-text
+  // blocks error rather than drop.
   const systemText = systemMessages
     .flatMap((m) =>
       m.content.map((b) => {
@@ -83,13 +81,12 @@ function buildRequest(
     : systemText || undefined;
 
   // `callId -> functionName` from prior assistant `tool_call` blocks.
-  // Gemini's `functionResponse` needs the name (Anthropic needs the callId);
-  // the internal `ToolResultBlock` carries only the callId. Built once to
-  // avoid an O(N^2) per-block walk.
+  // Gemini's `functionResponse` needs the name, but `ToolResultBlock` carries
+  // only the callId; built once to avoid an O(N^2) per-block walk.
   const callIdToFunctionName = buildCallIdToFunctionName(messages);
 
   // safety_rating is output-only; rewrite to text so history keeps role
-  // alternation (same policy as the other adapters).
+  // alternation.
   const contents: GeminiContent[] = conversationMessages.map((msg) => {
     const rewritten: ConversationTurn = {
       ...msg,
@@ -150,8 +147,7 @@ function buildRequest(
 // ---------------------------------------------------------------------------
 
 // Round-trip wire shapes. `thought` marks thinking text; `thoughtSignature`
-// rides each block's signature back on that block's own part. Both are
-// optional on every part.
+// rides each block's signature back on that block's own part.
 interface GeminiTextPart {
   text: string;
   thought?: boolean;
@@ -226,8 +222,6 @@ function toGeminiContent(
     }
   }
 
-  // Each block's signature rides back on that block's own part, so the
-  // round-trip needs no cross-part pairing.
   const parts = msg.content.map((block) =>
     toGeminiPart(block, callIdToFunctionName),
   );
@@ -346,19 +340,14 @@ function toGeminiMediaPart(
       fileData: { mimeType: source.mimeType, fileUri: source.url },
     };
   }
-  // Exhaustiveness: a new MediaSource variant added without a case
-  // here fails this compile-time check.
   source satisfies never;
   throw new Error(`unreachable: unknown MediaSource kind`);
 }
 
-// Gemini's `response` must be a JSON object. One text block that parses as a
-// plain object becomes `response`; otherwise `{ result: text }` (or
-// `{ error: text }` when isError). Any other shape throws: zero or multiple
-// text blocks (caller must collapse first), any non-text block (Gemini
-// accepts no media), or an unknown callId — the throw names the unknown id
-// and the known ids so the failure surfaces here, not as an opaque HTTP 400
-// a round-trip later.
+// Gemini's `response` must be a JSON object: one text block that parses as a
+// plain object becomes `response`, else `{ result: text }` (`{ error: text }`
+// when isError). Zero or multiple text blocks, non-text blocks, or an
+// unknown callId throw here instead of surfacing as an opaque 400 later.
 function toGeminiFunctionResponse(
   block: Extract<ContentBlock, { type: "tool_result" }>,
   callIdToFunctionName: Map<string, string>,
@@ -409,9 +398,6 @@ function toGeminiFunctionResponse(
   };
 }
 
-// Returns the parsed value when `text` is exactly a JSON object, else `null`
-// (arrays, primitives, and parse errors all map to `null`). Wrapping is the
-// caller's job.
 function tryParseJSONObject(text: string): Record<string, unknown> | null {
   let parsed: unknown;
   try {
@@ -450,8 +436,7 @@ function buildGenerationConfig(
   }
 
   // enabled  -> budget (default 1024) plus includeThoughts
-  // disabled -> budget 0, or dynamic (-1) on thinking-mandatory models that
-  //             reject a zero budget with HTTP 400
+  // disabled -> budget 0, or the dynamic sentinel on mandatory-thinking models
   // absent   -> omit thinkingConfig; the model's default applies
   if (options.thinking !== undefined) {
     if (options.thinking.enabled) {
@@ -484,9 +469,8 @@ function buildGenerationConfig(
 
 // Gemini exposes structured output via (`responseMimeType`, `responseSchema`):
 // MIME alone gives free-form JSON, the pair constrains it. The OpenAI
-// `name`/`strict` fields are ignored. The schema is forwarded verbatim;
-// Gemini enforces its own JSON Schema subset and surfaces an HTTP error on
-// anything it rejects (INFERENCE.md documents the subset).
+// `name`/`strict` fields are ignored; the schema is forwarded verbatim and
+// Gemini rejects anything outside its JSON Schema subset.
 function applyResponseFormat(
   config: Record<string, unknown>,
   format: NonNullable<InferenceOptions["responseFormat"]>,
@@ -519,28 +503,23 @@ function toGeminiModality(m: "text" | "image" | "audio"): string {
 // ---------------------------------------------------------------------------
 // Response parsing
 //
-// Each SSE event is one complete JSON object; a partial would mean the
-// `parseSSE` framing broke, not a Gemini protocol violation. Per the adapter
-// contract in `packages/inference/src/adapter.ts`, `ProtocolMismatchError` is
-// the only throw type the parser may raise.
-//
-// Text deltas are incremental; the parser emits `EMPTY_PARTIAL` placeholders
-// and the harness accumulates the real text.
+// Each SSE event is one complete JSON object; a partial means the `parseSSE`
+// framing broke, not a Gemini protocol violation. Per the adapter contract,
+// `ProtocolMismatchError` is the only throw type the parser may raise. Text
+// deltas are incremental; the harness accumulates `EMPTY_PARTIAL` placeholders.
 // ---------------------------------------------------------------------------
 
 const EMPTY_PARTIAL: PartialMessage = { text: "" };
 
-// Every field is optional: candidates can lack content (safety rejections),
-// events can carry only `usageMetadata`, and `finishReason` appears only on
-// the terminal event. The five payload kinds (`text`, `functionCall`,
-// `inlineData`, `executableCode`, `codeExecutionResult`) are mutually
-// exclusive; arktype's open-object semantics would admit multiples, so
-// `parseResponse` enforces exclusivity via `assertSinglePayload`. `inlineData`
-// is further constrained to `image/*` at the `emitPart` boundary.
+// The five payload kinds (`text`, `functionCall`, `inlineData`,
+// `executableCode`, `codeExecutionResult`) are mutually exclusive; arktype's
+// open-object semantics would admit multiples, so `parseResponse` enforces
+// exclusivity via `assertSinglePayload`. `inlineData` is further constrained
+// to `image/*` at the `emitPart` boundary.
 //
 // `thought: true` is only valid on a `text` part; `thoughtSignature` is the
 // opaque per-thinking-block signature Gemini requires echoed back on
-// follow-up turns. Both can be absent.
+// follow-up turns.
 const GeminiFunctionCallPayload = type({
   name: "string",
   args: "Record<string, unknown>",
@@ -580,9 +559,8 @@ const GeminiContent = type({
 
 // Grounding citation metadata. `groundingChunks[].web` are the sources
 // (`{uri, title}`); `groundingSupports[]` pair an output text span
-// (`segment`) with chunk indices. Each support expands into one citation per
-// referenced chunk. `searchEntryPoint` and `webSearchQueries` carry no
-// per-span attribution and are not surfaced.
+// (`segment`) with chunk indices. `searchEntryPoint` and `webSearchQueries`
+// carry no per-span attribution and are not surfaced.
 const GeminiGroundingChunk = type({
   // Only `web` chunks appear in the captured corpus; other kinds are
   // admitted as absences and skipped at emission.
@@ -640,20 +618,14 @@ const GeminiSSEEvent = type({
 });
 
 // Gemini provides no content-block index on the wire; block boundaries are
-// positional. `nextBlockIndex` allocates indices monotonically;
-// `currentBlock` extends consecutive same-kind parts and resets when a
-// different kind appears. Function-call blocks are atomic (one part = one
-// tool call) and never become `currentBlock`.
-//
-// A `thoughtSignature` authenticates the block whose part carries it, so it
-// emits against that block's own index with no cross-part signature state.
+// positional. `currentBlock` extends consecutive same-kind parts and resets
+// when a different kind appears; function-call blocks are atomic (one part =
+// one tool call) and never become `currentBlock`.
 interface GeminiParserState {
   nextBlockIndex: number;
   currentBlock: { kind: "text" | "thinking"; index: number } | null;
   // Depth-1 LIFO slot: the synthetic request id lands here on an
-  // `executableCode` part and is consumed by the next `codeExecutionResult`
-  // part. A second request while occupied, a result while empty, or a
-  // non-empty slot at response end all throw `ProtocolMismatchError`.
+  // `executableCode` part and is consumed by the next `codeExecutionResult`.
   pendingExecutionRequestId: string | null;
 }
 
@@ -665,8 +637,7 @@ function createParserState(): GeminiParserState {
   };
 }
 
-// Emit a signature event against the block's own index; nothing when the
-// provider did not sign the part.
+// Emit a signature event against the block's own index.
 function emitBlockSignature(
   signature: string | undefined,
   index: number,
@@ -681,8 +652,6 @@ function emitBlockSignature(
   });
 }
 
-// Same-kind part extends the current block; otherwise close it and allocate
-// a new index.
 function openOrExtendBlock(
   state: GeminiParserState,
   kind: "text" | "thinking",
@@ -696,17 +665,13 @@ function openOrExtendBlock(
   return index;
 }
 
-// Reset so the next part of any kind starts a fresh block; signatures ride
-// on their own parts, so closing keeps no state.
 function closeCurrentBlock(state: GeminiParserState): void {
   state.currentBlock = null;
 }
 
 // Enforce payload exclusivity and `thought` placement, which arktype's
 // open-object semantics would otherwise admit. Zero-payload parts pass only
-// when a `thoughtSignature` is present; `emitPart` rejects signature-only
-// parts separately, since a signature with no payload has no block to
-// authenticate.
+// with a `thoughtSignature` present.
 function assertSinglePayload(
   part: typeof GeminiPart.infer,
   raw: unknown,
@@ -736,8 +701,7 @@ function assertSinglePayload(
       raw,
     );
   }
-  // `thought` only discriminates thinking text from regular text; anywhere
-  // else it has no wire meaning.
+  // `thought` only discriminates thinking text from regular text.
   if (part.thought === true && part.text === undefined) {
     throw new ProtocolMismatchError(
       `google-genai parseResponse: \`thought: true\` set on a part with ` +
@@ -756,7 +720,6 @@ function emitPart(
 ): void {
   assertSinglePayload(part, raw);
 
-  // `thought: true` text belongs to a thinking block.
   if (part.text !== undefined && part.thought === true) {
     const index = openOrExtendBlock(state, "thinking");
     // Anchor the block so a later signature event targets an index the
@@ -774,10 +737,8 @@ function emitPart(
     return;
   }
 
-  // Empty text with no signature is a true no-op: it neither opens nor
-  // closes a block, so a follow-on same-kind part extends what was open.
-  // Empty text with a signature still opens a block so the signature has
-  // one to sign.
+  // Unsigned empty text is a true no-op: it neither opens nor closes a
+  // block; signed empty text still opens one so the signature has a block.
   if (part.text !== undefined) {
     if (part.text === "" && part.thoughtSignature === undefined) {
       return;
@@ -796,7 +757,6 @@ function emitPart(
     return;
   }
 
-  // Atomic block: fresh index, never `currentBlock`.
   if (part.functionCall !== undefined) {
     closeCurrentBlock(state);
     const fc = part.functionCall;
@@ -815,9 +775,8 @@ function emitPart(
         index,
       },
     });
-    // Args arrive complete in one part; emit the full serialized args in
-    // one delta so end-of-stream finalization produces the right
-    // `tool_call.end`.
+    // Args arrive complete in one part; emit them in one delta so
+    // end-of-stream finalization produces the right `tool_call.end`.
     out.push({
       type: "inference.tool_call.delta",
       seq,
@@ -832,7 +791,6 @@ function emitPart(
     return;
   }
 
-  // Atomic image-output block; the image arrives complete in one event.
   if (part.inlineData !== undefined) {
     // inlineData becomes an ImageBlock, so a non-image MIME would silently
     // mistype the payload; reject at the boundary.
@@ -866,10 +824,9 @@ function emitPart(
     return;
   }
 
-  // Atomic request block; full source arrives in one part. Synthetic id
-  // `gemini-exec-<index>` is deterministic per response so replays match
-  // (`CodeExecutionRequestBlock.id` contract) and lands in
-  // `pendingExecutionRequestId` for the next result part to back-point to.
+  // Atomic request block. Synthetic id `gemini-exec-<index>` is
+  // deterministic per response so replays match (`CodeExecutionRequestBlock.id`
+  // contract); it lands in `pendingExecutionRequestId` for the result part.
   if (part.executableCode !== undefined) {
     // Check before mutating state so the throw rejects the part cleanly.
     if (state.pendingExecutionRequestId !== null) {
@@ -907,8 +864,7 @@ function emitPart(
   }
 
   // Atomic result block; pairs with the preceding request via the slot
-  // (Gemini's wire carries no back-pointer). The destructive read enforces
-  // the depth-1 invariant.
+  // (Gemini's wire carries no back-pointer).
   if (part.codeExecutionResult !== undefined) {
     const requestId = state.pendingExecutionRequestId;
     if (requestId === null) {
@@ -940,8 +896,6 @@ function emitPart(
       type: "code_execution_result",
       requestId,
       status,
-      // Combined stdout+stderr maps to `stdout` with `stderr` empty
-      // (CodeExecutionResultBlock contract).
       ...(cer.output !== undefined ? { stdout: cer.output } : {}),
       providerOutcome: cer.outcome,
     };
@@ -962,8 +916,7 @@ function emitPart(
     );
   }
 
-  // A payload no branch claimed means the schema grew a new field without a
-  // matching branch in `emitPart`.
+  // The schema admitted a payload field with no matching branch here.
   throw new ProtocolMismatchError(
     `google-genai parseResponse: unhandled part shape; the schema admits ` +
       `a payload field that emitPart has no branch for.`,
@@ -974,8 +927,7 @@ function emitPart(
 // One citation per referenced chunk: a span citing four sources yields four
 // citations sharing `citedText`/`textOffset` with distinct `source` entries.
 // Anchored to the current text block; grounding without a text anchor is a
-// protocol mismatch rather than a synthesized index. Non-web chunks are
-// skipped (no `uri`/`title` to populate); out-of-range chunk indices throw.
+// protocol mismatch rather than a synthesized index. Non-web chunks are skipped.
 function emitGroundingCitations(
   metadata: typeof GeminiGroundingMetadata.infer,
   state: GeminiParserState,
@@ -1113,8 +1065,8 @@ function parseResponse(
     }
   }
 
-  // Processed after parts so same-event text deltas settle the currentBlock
-  // first; citations precede the terminal usage emission.
+  // After parts, so same-event text deltas settle currentBlock first;
+  // citations precede the terminal usage emission.
   if (candidate?.groundingMetadata !== undefined) {
     emitGroundingCitations(
       candidate.groundingMetadata,
@@ -1179,9 +1131,7 @@ function parseResponse(
     const tokenUsage: TokenUsage = {
       input: usage.promptTokenCount ?? 0,
       output: usage.candidatesTokenCount ?? 0,
-      // Single counter; the API does not split read/write the way Anthropic
-      // does. Absent here since the plain-text path does not exercise
-      // caching.
+      // Single counter; the API does not split read/write the way Anthropic does.
       cacheRead: usage.cachedContentTokenCount ?? 0,
       cacheWrite: 0,
       thinking: usage.thoughtsTokenCount ?? 0,
@@ -1192,8 +1142,6 @@ function parseResponse(
       data: { usage: tokenUsage, source },
     });
 
-    // An unmatched request at the terminal event is a wire bug, not
-    // something to swallow.
     if (state.pendingExecutionRequestId !== null) {
       throw new ProtocolMismatchError(
         `google-genai parseResponse: response terminated with an ` +
@@ -1211,9 +1159,7 @@ function parseResponse(
 
 // A non-streaming response is one terminal SSE event, so decode it through
 // the same parser with fresh per-call state — parity by construction, since
-// nothing in the parser branches on event boundaries. The shared
-// "malformed JSON in SSE data payload" message stays shared; the body is
-// JSON either way.
+// nothing in the parser branches on event boundaries.
 function parseJSONResponse(
   body: string,
   source: LastCycleSource,
