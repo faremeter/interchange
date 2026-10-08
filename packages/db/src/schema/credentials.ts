@@ -12,8 +12,11 @@ export const credential = pgTable(
     tenantId: text("tenant_id")
       .notNull()
       .references(() => tenant.id, { onDelete: "cascade" }),
+    // Null means tenant-owned. `onDelete: "set null"` would hand the secret
+    // to the tenant. `restrict` keeps the row bound to this principal until
+    // the credential row itself is deleted.
     principalId: text("principal_id").references(() => principal.id, {
-      onDelete: "set null",
+      onDelete: "restrict",
     }),
     providerId: text("provider_id")
       .notNull()
