@@ -1,12 +1,8 @@
-// Schema for the subset of `package.json` fields the asset substrate
-// and tool-package builders read.
-//
-// Promoted here so the package-registry kind handler (in
-// `@intx/hub-sessions`) and the workspace builtin-packing script
-// (`bin/build-builtins.ts`) share one definition: the asset
-// substrate's validation of an uploaded tarball must match the field
-// set the build path emits, otherwise a freshly-packed builtin would
-// be rejected for shape reasons the build did not anticipate.
+// Schema for the subset of `package.json` fields the asset substrate and
+// tool-package builders read. Shared by the package-registry kind handler
+// (`@intx/hub-sessions`) and the builtin-packing script
+// (`bin/build-builtins.ts`), so an uploaded tarball validates against the
+// same field set the build path emits.
 
 import path from "node:path";
 
@@ -15,9 +11,8 @@ import { type } from "arktype";
 /**
  * A tool package's static declaration of one provider-backed credential it
  * needs: an abstract handle plus optional scopes. Advisory only -- a request
- * the workflow definition later binds to a concrete credential and the launch-time
- * grant gate authorizes; a declaration consents to nothing on its own. The
- * handle is the key the binding and the runtime delivery use.
+ * the workflow definition later binds to a concrete credential and the
+ * launch-time grant gate authorizes. The handle is the binding/delivery key.
  */
 export const ToolCredentialHandle = type(/^[a-z0-9][a-z0-9._-]*$/);
 
@@ -29,9 +24,8 @@ export type ToolCredentialDeclaration = typeof ToolCredentialDeclaration.infer;
 
 /**
  * The credential declarations for one package, with the unique-handle
- * invariant enforced at parse time: a handle is the binding/delivery key, so a
- * duplicate within a single package is a defect the upload boundary must
- * reject rather than let collapse silently downstream.
+ * invariant enforced at parse time: a duplicate handle is a defect the upload
+ * boundary must reject, since the handle is the binding/delivery key.
  */
 export const ToolCredentialDeclarationArray =
   ToolCredentialDeclaration.array().narrow((decls, ctx) => {
@@ -50,17 +44,14 @@ export type ToolCredentialDeclarationArray =
   typeof ToolCredentialDeclarationArray.infer;
 
 /**
- * Required fields plus the `interchange` extensions used to identify
- * interchange packages: `tools` names the sidecar-bundle entry, `credentials`
- * statically declares the provider-backed credentials the package's tools may
- * need, `workflow` names the module whose evaluation produces a workflow
- * package's `WorkflowDefinition`, `directors` names the module whose exports
- * are the package's custom `defineDirector` factories, `loops` names the module
- * whose exports are the package's `loop` `while`/`carry` functions, and
- * `actions` names the module whose exports are the package's `action` handlers.
- * `loops` and `actions` refs are resolved by export name at establish.
- * `onUndeclaredKey("ignore")` lets the arbitrary upstream npm fields pass
- * through without listing them.
+ * Required fields plus the `interchange` extensions identifying interchange
+ * packages: `tools` (sidecar-bundle entry), `credentials` (provider-backed
+ * credential declarations), `workflow` (module producing the
+ * `WorkflowDefinition`), `directors` (custom `defineDirector` factories),
+ * `loops` (the package's `loop` `while`/`carry` functions), and `actions`
+ * (the package's `action` handlers). `loops`/`actions` refs resolve by
+ * export name at establish; `onUndeclaredKey("ignore")` passes arbitrary
+ * upstream npm fields through.
  */
 export const PackageJSON = type({
   name: "string",
@@ -81,13 +72,11 @@ export type PackageJSON = typeof PackageJSON.infer;
  * module path relative to its package -- stays inside the package directory.
  * An absolute path or a `..` traversal escapes and returns false.
  *
- * This is the string-level half of the loader's containment rule. The
- * load-time loader (`resolveContainedEntry`) pairs it with a realpath-based
- * symlink-escape check that only a materialized directory can run; the
- * push-time asset validator, which has no filesystem, relies on this string
- * half alone. Both boundaries call this one predicate so they cannot diverge
- * on what "contained" means. The check uses POSIX path semantics so the
- * result does not depend on the host's separator or cwd.
+ * The string-level half of the loader's containment rule: the load-time
+ * loader (`resolveContainedEntry`) adds a realpath symlink-escape check; the
+ * push-time asset validator has no filesystem and relies on this half alone.
+ * Both boundaries call this predicate so they cannot diverge. POSIX path
+ * semantics, so the result is independent of the host separator or cwd.
  */
 export function isContainedEntryPath(entry: string): boolean {
   if (path.posix.isAbsolute(entry)) {
