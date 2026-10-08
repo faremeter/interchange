@@ -9,9 +9,9 @@ const ED25519 = { name: "Ed25519" } as const;
 //       06 03 2b 65 70  OID 1.3.101.112 (id-Ed25519)
 //     04 22           OCTET STRING (OneAsymmetricKey)
 //       04 20         OCTET STRING (32-byte seed)
-// The 32-byte raw seed follows. This framing is byte-identical to what
-// `subtle.exportKey("pkcs8", ...)` emits for an Ed25519 private key, so
-// `subtle.importKey("pkcs8", ...)` consumes the same structure.
+// The 32-byte raw seed follows. Byte-identical to `subtle.exportKey("pkcs8",
+// ...)` output, so `subtle.importKey("pkcs8", ...)` consumes the same
+// structure.
 const PKCS8_ED25519_PREFIX = new Uint8Array([
   0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04,
   0x22, 0x04, 0x20,
@@ -30,17 +30,12 @@ const SPKI_ED25519_PREFIX = new Uint8Array([
 ]);
 
 /**
- * View a byte string as `ArrayBuffer`-backed so it satisfies the Web
- * Crypto `BufferSource` parameter types under TypeScript 5.9's generic
- * `Uint8Array<ArrayBufferLike>`. Funneling every `subtle.*` byte argument
- * through this one helper keeps the type workaround to a single
- * eslint-disable instead of scattering assertions across call sites.
- *
- * The assertion is type-only and erased at runtime: `subtle.*` copies and
- * validates its inputs, so a `SharedArrayBuffer`-backed view fails loudly
- * at the Web Crypto boundary rather than corrupting silently.
- *
- * See microsoft/TypeScript#62240.
+ * View a byte string as `ArrayBuffer`-backed so it satisfies Web Crypto's
+ * `BufferSource` parameter types under TypeScript 5.9's generic
+ * `Uint8Array<ArrayBufferLike>`, keeping the type workaround to one
+ * eslint-disable. The assertion is erased at runtime; `subtle.*` copies and
+ * validates its inputs, so a `SharedArrayBuffer`-backed view fails loudly at
+ * the Web Crypto boundary. See microsoft/TypeScript#62240.
  */
 export function asArrayBuffer(b: Uint8Array): Uint8Array<ArrayBuffer> {
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- ArrayBuffer-backed by construction at every call site; see microsoft/TypeScript#62240
@@ -48,14 +43,9 @@ export function asArrayBuffer(b: Uint8Array): Uint8Array<ArrayBuffer> {
 }
 
 /**
- * Generate a fresh Ed25519 key pair.
- *
- * Returns raw 32-byte key material. The private key is the 32-byte seed;
- * the public key is the 32-byte compressed point on Ed25519.
- *
- * Web Crypto exports the private key in PKCS#8 DER and the public key in
- * SubjectPublicKeyInfo DER; the raw 32 bytes occupy the last 32 bytes of
- * each structure.
+ * Generate a fresh Ed25519 key pair as raw 32-byte material: the private
+ * seed and the compressed public point. Web Crypto exports PKCS#8/SPKI DER,
+ * whose last 32 bytes are the raw key bytes.
  */
 export async function generateKeyPair(): Promise<KeyPair> {
   const pair = await crypto.subtle.generateKey(ED25519, true, [
@@ -83,11 +73,8 @@ export async function generateKeyPair(): Promise<KeyPair> {
 }
 
 /**
- * Import a raw 32-byte Ed25519 private key seed into a Web Crypto
- * `CryptoKey` usable for signing.
- *
- * Wraps the raw seed in the fixed PKCS#8 DER structure that
- * `subtle.importKey("pkcs8", ...)` expects.
+ * Import a raw 32-byte Ed25519 private key seed as a signing `CryptoKey`,
+ * wrapping it in the PKCS#8 DER structure above.
  */
 export async function importPrivateKeyBytes(
   rawKey: Uint8Array,
@@ -110,11 +97,8 @@ export async function importPrivateKeyBytes(
 }
 
 /**
- * Import a raw 32-byte Ed25519 public key into a Web Crypto `CryptoKey`
- * usable for verification.
- *
- * Wraps the raw point in the fixed SubjectPublicKeyInfo DER structure
- * that `subtle.importKey("spki", ...)` expects.
+ * Import a raw 32-byte Ed25519 public key as a verification `CryptoKey`,
+ * wrapping it in the SubjectPublicKeyInfo DER structure above.
  */
 export async function importPublicKeyBytes(
   rawKey: Uint8Array,
@@ -133,15 +117,12 @@ export async function importPublicKeyBytes(
 }
 
 /**
- * Derive the raw 32-byte Ed25519 public key from a 32-byte private key
- * seed.
+ * Derive the raw 32-byte Ed25519 public key from a private seed.
  *
- * Web Crypto offers no direct public-from-private export: `subtle` cannot
- * export a public key from an imported private `CryptoKey`. Round-trip
- * through JWK instead — a private Ed25519 JWK carries the public point in
- * its `x` member (RFC 8037 §2), which re-imports as a public key whose
- * SubjectPublicKeyInfo export yields the raw point in the trailing 32
- * bytes, the same slice `generateKeyPair` takes.
+ * Web Crypto cannot export a public key from an imported private one, so
+ * round-trip through JWK: a private Ed25519 JWK carries the public point
+ * in its `x` member (RFC 8037 §2), which re-imports as a public key whose
+ * SPKI export yields the raw point in the trailing 32 bytes.
  */
 export async function derivePublicKeyBytes(
   seed: Uint8Array,
@@ -178,12 +159,8 @@ export async function derivePublicKeyBytes(
 }
 
 /**
- * Produce a raw 64-byte Ed25519 signature over `message` using the
- * 32-byte private key seed.
- *
- * This is the low-level signing primitive: no PGP or SSH framing, just
- * the RFC 8032 detached signature. Callers that need an envelope wrap
- * this output themselves.
+ * Raw 64-byte Ed25519 signature (RFC 8032) over `message` with a 32-byte
+ * private seed. No PGP or SSH framing; callers wrap the output.
  */
 export async function signEd25519(
   seed: Uint8Array,
@@ -195,11 +172,8 @@ export async function signEd25519(
 }
 
 /**
- * Verify a raw Ed25519 signature over arbitrary data.
- *
- * Unlike `verifyDetachedSignature` which expects PGP-armored input,
- * this operates on raw bytes — suitable for challenge/response protocols
- * where no PGP framing is involved.
+ * Verify a raw Ed25519 signature over arbitrary bytes; unlike
+ * `verifyDetachedSignature` there is no PGP armor.
  */
 export async function verifyEd25519(
   data: Uint8Array,

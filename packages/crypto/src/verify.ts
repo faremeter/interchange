@@ -8,17 +8,10 @@ import {
 } from "./pgp";
 
 /**
- * Verify a PGP/MIME detached signature against content and a public key.
- *
- * Returns true if the signature is valid; throws for malformed input.
- *
- * Verification process (MESSAGE.md §Verification Process):
- *   1. Decode ASCII armor to get the raw packet bytes
- *   2. Parse the OpenPGP v4 signature packet
- *   3. Extract the creation time from hashed subpackets
- *   4. Reconstruct the hash input (content || sig_header || trailer) using
- *      the same creation time that was used during signing
- *   5. Verify the Ed25519 signature against the hash input and public key
+ * Verify a PGP/MIME detached signature: decode the armor, parse the v4
+ * packet, rebuild the hash input with the signature's creation time, and
+ * check the Ed25519 signature. Returns true when valid; throws on
+ * malformed input.
  */
 export async function verifyDetachedSignature(
   content: Uint8Array,

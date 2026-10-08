@@ -4,24 +4,14 @@
  * Rewriting these as conditionals would obscure the packet format. */
 
 /**
- * OpenPGP packet encoding and ASCII armor.
+ * OpenPGP packet encoding and ASCII armor for the RFC 4880 subset required
+ * for EdDSA detached signatures over Ed25519 keys.
  *
- * Implements the subset of RFC 4880 and draft-koch-eddsa-for-openpgp-04
- * required for EdDSA detached signatures over Ed25519 keys.
- *
- * Verified values from the RFCs:
- * - Public-key algorithm 22 = EdDSA (draft-koch-eddsa-for-openpgp-04 §4)
- * - Hash algorithm 10 = SHA-512 (RFC 4880 §9.4; matches MESSAGE.md micalg=pgp-sha512)
- * - Signature type 0x00 = binary document (RFC 4880 §5.2.1)
- * - Signature version 4 (RFC 4880 §5.2.3)
- * - Ed25519 OID: 2B 06 01 04 01 DA 47 0F 01 (9 bytes)
- *   (draft-koch-eddsa-for-openpgp-04 §Appendix)
- * - MPI encoding for EdDSA r and s: native little-endian octet strings up to
- *   32 bytes each, stored as OpenPGP MPIs (2-byte bit count + bytes with
- *   leading zero octets stripped) (draft-koch-eddsa-for-openpgp-04 §4)
- * - Mandatory hashed subpacket: signature creation time, type 2 (RFC 4880 §5.2.3.4)
- * - Issuer subpacket (type 16) placed in unhashed area for detached sigs
- *   where no key fingerprint is available
+ * Wire constants (RFC refs sit beside the numbered constants below):
+ * algorithm 22 EdDSA, hash 10 SHA-512, signature type 0x00, version 4,
+ * creation-time subpacket type 2. EdDSA r/s MPIs are native little-endian
+ * octet strings with leading zero octets stripped (see `encodeMPI`), and
+ * detached sigs carry no unhashed subpackets (see `buildSignaturePacket`).
  */
 
 import { base64Encode, base64Decode } from "@intx/types";
@@ -44,26 +34,15 @@ const SIG_VERSION_4 = 4;
 const SUBPKT_CREATION_TIME = 2;
 
 /**
- * Encode a value as an OpenPGP MPI.
+ * Encode a value as an OpenPGP MPI (RFC 4880 §3.2): a 2-octet big-endian
+ * bit count followed by the value's bytes with leading zero octets stripped.
  *
- * Per RFC 4880 §3.2, an MPI is a 2-octet big-endian bit count followed by
- * the minimum number of octets needed to represent the value (leading zero
- * octets stripped).
- *
- * For EdDSA r and s values (draft-koch-eddsa-for-openpgp-04 §4), the input
- * is a native little-endian octet string. We must NOT reverse it — the bytes
- * are stored as-is after stripping leading-zero octets from the most
- * significant (last) end of the little-endian representation.
- *
- * However, in OpenPGP MPI format the bit count is counted from the most
- * significant non-zero bit of the value interpreted as a big-endian integer.
- * For EdDSA specifically, the R and S components are stored in their native
- * little-endian form, and the MPI bit-length field accounts for the most
- * significant byte (the last byte in little-endian order).
+ * The EdDSA r/s input is a native little-endian octet string (not reversed
+ * here); its bytes are kept as-is and the bit count is taken from the most
+ * significant byte, the last byte in little-endian order.
  */
 export function encodeMPI(nativeLE: Uint8Array): Uint8Array {
-  // Strip trailing zero bytes from the little-endian representation.
-  // These correspond to leading zero bytes in the big-endian/numeric view.
+  // Trailing zero bytes in little-endian order are leading zeros numerically.
   let sigLen = nativeLE.length;
   while (sigLen > 0 && nativeLE[sigLen - 1] === 0) {
     sigLen--;
@@ -126,9 +105,7 @@ export function decodeMPI(
  * (RFC 4880 §5.2.3.4). We include it as a 4-byte Unix timestamp.
  */
 function buildHashedSubpackets(creationTimeUnix: number): Uint8Array {
-  // Subpacket: creation time
-  // Body: 1 byte type (2) + 4 bytes timestamp = 5 bytes body
-  // Subpacket length prefix = 1 byte (value = 5)
+  // Subpacket: 1-byte length (5) + type 2 + 4-byte Unix timestamp.
   const subpkt = new Uint8Array(6);
   subpkt[0] = 5; // length of body
   subpkt[1] = SUBPKT_CREATION_TIME;
@@ -140,12 +117,8 @@ function buildHashedSubpackets(creationTimeUnix: number): Uint8Array {
 }
 
 /**
- * Build the v4 signature packet body up to and including the hashed
- * subpackets. This is the data that gets hashed together with the message
- * content per RFC 4880 §5.2.4.
- *
- * Returns both the hashed header bytes (for inclusion in the packet) and
- * the trailer bytes (appended during hash computation).
+ * Build the v4 signature header (version through hashed subpackets) and the
+ * 6-byte trailer RFC 4880 §5.2.4 appends when hashing.
  */
 function buildSignatureHashedHeader(hashedSubpackets: Uint8Array): {
   header: Uint8Array;
@@ -176,12 +149,8 @@ function buildSignatureHashedHeader(hashedSubpackets: Uint8Array): {
 }
 
 /**
- * Build the data to hash for a v4 OpenPGP detached signature.
- *
- * Per RFC 4880 §5.2.4:
- *   hash_data = message_content || sig_header || trailer
- *
- * The resulting hash is then signed with Ed25519.
+ * The data to hash for a v4 detached signature (RFC 4880 §5.2.4):
+ * content || sig_header || trailer.
  */
 export function buildSignatureHashInput(
   content: Uint8Array,
@@ -203,14 +172,10 @@ export function buildSignatureHashInput(
 }
 
 /**
- * Assemble a complete OpenPGP v4 signature packet.
- *
- * The 64-byte Ed25519 signature is split into the 32-byte R and 32-byte S
- * components (both native little-endian per RFC 8032) and encoded as
- * OpenPGP MPIs.
- *
- * No unhashed subpackets are included — for detached signatures we have no
- * key fingerprint or key ID to embed, and none are required by the spec.
+ * Assemble a complete OpenPGP v4 signature packet: split the 64-byte
+ * Ed25519 signature into 32-byte R and S components (native little-endian
+ * per RFC 8032) and encode them as MPIs. Detached sigs carry no unhashed
+ * subpackets — there is no key fingerprint or key ID to embed.
  */
 export function buildSignaturePacket(
   sigHeader: Uint8Array,
@@ -221,14 +186,13 @@ export function buildSignaturePacket(
     throw new Error(`Ed25519 signature must be 64 bytes, got ${rawSig.length}`);
   }
 
-  // Split the 64-byte signature into R (first 32) and S (last 32).
-  // Both are native little-endian per RFC 8032.
+  // R = first 32 bytes, S = last 32 (both native little-endian per RFC 8032).
   const r = rawSig.slice(0, 32);
   const s = rawSig.slice(32, 64);
   const rMPI = encodeMPI(r);
   const sMPI = encodeMPI(s);
 
-  // Unhashed subpackets: empty (0 bytes, 2-byte length field of 0x0000)
+  // Unhashed subpackets are empty: a 2-byte length field of 0x0000.
   const unhashedSubpacketsLen = 0;
 
   // Packet body per RFC 4880 §5.2.3:
@@ -254,8 +218,7 @@ export function buildSignaturePacket(
   pos += rMPI.length;
   body.set(sMPI, pos);
 
-  // Wrap in new-format packet header (RFC 4880 §4.2).
-  // Packet tag for signature = 2; new format tag byte = 0xc0 | 2 = 0xc2.
+  // Wrap in a new-format packet header (RFC 4880 §4.2); signature tag = 2.
   return encodeNewFormatPacket(0x02, body);
 }
 
@@ -296,24 +259,20 @@ function encodeNewFormatPacket(tag: number, body: Uint8Array): Uint8Array {
 }
 
 /**
- * Sign a hash input with Ed25519, producing a raw 64-byte detached
- * signature (r || s, native little-endian per RFC 8032).
- *
- * This is the seam that lets callers holding only a signing capability —
- * rather than raw private key bytes — share this module's packet assembly.
+ * Sign a hash input with Ed25519, returning the raw 64-byte signature
+ * (r || s, native little-endian per RFC 8032). The seam that lets callers
+ * holding only a signing capability use this module's packet assembly.
  */
 export type Ed25519Signer = (input: Uint8Array) => Promise<Uint8Array>;
 
 /**
- * Build a complete ASCII-armored OpenPGP v4 detached signature for the
- * given content, delegating the raw Ed25519 signing step to `sign`.
- *
- * The signer receives the OpenPGP hash input (content || sig_header ||
- * trailer per RFC 4880 §5.2.4) and must return the raw 64-byte signature
- * over it. Web Crypto's Ed25519 hashes that input with SHA-512 internally;
- * the OpenPGP hash-algorithm field (10 = SHA-512) documents that step. The
- * "left 16 bits of signed hash" field is taken from a separate SHA-512
- * digest of the same hash input (RFC 4880 §5.2.3).
+ * Build an ASCII-armored v4 detached signature, delegating the raw Ed25519
+ * signing step to `sign`. The signer receives the OpenPGP hash input
+ * (content || sig_header || trailer, RFC 4880 §5.2.4) and returns the raw
+ * 64-byte signature over it; Web Crypto hashes that input with SHA-512
+ * internally, which the hash-algorithm field (10) records. The left-2 hash
+ * bytes come from a separate SHA-512 digest of the same input (RFC 4880
+ * §5.2.3).
  */
 export async function createDetachedSignatureWithSigner(
   content: Uint8Array,
@@ -549,11 +508,9 @@ const ARMOR_HEADER = "-----BEGIN PGP SIGNATURE-----";
 const ARMOR_FOOTER = "-----END PGP SIGNATURE-----";
 
 /**
- * Encode binary OpenPGP packet data as ASCII armor.
- *
- * Per RFC 4880 §6: header line, blank line, base64-encoded data (76-char
- * lines), optional CRC24 line. We include the CRC24 for compatibility with
- * existing OpenPGP implementations.
+ * Encode binary packet data as ASCII armor (RFC 4880 §6): header line,
+ * blank line, base64 on 76-char lines, CRC24 line, footer. CRC24 is
+ * included for compatibility with other OpenPGP implementations.
  */
 export function armorEncode(data: Uint8Array): string {
   const b64 = base64Encode(data);
@@ -637,11 +594,7 @@ export function armorDecode(armor: string): Uint8Array {
 }
 
 /**
- * Compute the CRC-24 checksum as specified in RFC 4880 §6.1.
- *
- * CRC-24 polynomial: x^24 + x^23 + x^6 + x^5 + x + 1
- * Generator: 0x864CFB
- * Initial value: 0xB704CE
+ * CRC-24 checksum per RFC 4880 §6.1 (polynomial 0x1864CFB, init 0xB704CE).
  */
 function crc24(data: Uint8Array): number {
   const CRC24_INIT = 0xb704ce;

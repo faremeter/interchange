@@ -52,7 +52,7 @@ describe("createNoopCredentialCipher", () => {
     const cipher = createNoopCredentialCipher();
     const aad = credentialAad("cred_x", "secret");
     const stored = await cipher.encrypt("sk-plain", aad);
-    // The noop cipher stores the value verbatim -- NOT an enc:aead ciphertext.
+    // Stored verbatim, not as an enc:aead ciphertext.
     expect(stored).toBe("sk-plain");
     expect(stored).not.toStartWith("enc:aead:");
     expect(await cipher.decrypt(stored, aad)).toBe("sk-plain");
@@ -63,15 +63,14 @@ describe("createNoopCredentialCipher", () => {
     const aad = credentialAad("cred_x", "secret");
     const sealed = await real.encrypt("sk-secret", aad);
     expect(sealed).toStartWith("enc:aead:");
-    // A value a real cipher sealed is unreadable through the keyless noop: it
-    // must throw, not hand the ciphertext back as a garbage secret.
+    // A value a real cipher sealed is unreadable through the keyless noop.
     await expect(
       createNoopCredentialCipher().decrypt(sealed, aad),
     ).rejects.toThrow(/refusing to pass an enc: ciphertext/);
   });
 
   test("refuses any enc: scheme, not just enc:aead:", async () => {
-    // The noop holds no key of any scheme, so it rejects every ciphertext form.
+    // No key of any scheme, so every ciphertext form is rejected.
     await expect(
       createNoopCredentialCipher().decrypt("enc:kms:opaque-blob", "aad"),
     ).rejects.toThrow(/refusing to pass an enc: ciphertext/);
@@ -79,12 +78,10 @@ describe("createNoopCredentialCipher", () => {
 });
 
 describe("credentialAad injectivity", () => {
-  // Injectivity is the property that makes ciphertext transplant impossible:
-  // distinct (id, column) pairs must never share an aad. Fuzz it across ids and
-  // columns packed with JSON-structural characters -- quotes, backslashes,
-  // brackets, commas -- and unicode edge cases. A collision here would mean the
-  // binding is broken; this would catch a regression that "simplified" the
-  // builder to a naive id:column join or any other non-injective encoding.
+  // Distinct (id, column) pairs must never share an aad, or ciphertext
+  // transplant becomes possible. Fuzz across JSON-structural characters and
+  // unicode edge cases; a collision would catch a regression to a naive
+  // id:column join.
   test("no collision across crafted structural and unicode inputs", () => {
     const ids = [
       "a",
