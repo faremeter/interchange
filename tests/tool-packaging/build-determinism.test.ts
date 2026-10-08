@@ -1,32 +1,11 @@
-// Determinism gate for `bin/build-builtins.ts`.
-//
-// The packer's contract is bit-identical output across runs and
-// machines: same workspace inputs produce the same tarball bytes (and
-// therefore the same SRI integrity) so the seed's pin set can refer to
-// an exact version without coordinating with the build step. The
-// gate boils down to three invariants:
-//
-//   - `listFilesSorted` walks the staging tree in lexical order so
-//     `tar.create` writes a stable entry sequence regardless of
-//     `fs.readdir` ordering.
-//   - `normalizeStagingModes` rewrites mode bits to canonical values
-//     before tar reads the entry stats, so two builders with different
-//     umasks emit identical headers.
-//   - `tar.create` is called with `{ mtime: epoch, portable: true,
-//     noDirRecurse: true }`, zeroing per-entry mtimes and stripping
-//     uid/gid/uname/gname.
-//
-// `packStaging` and `normalizeStagingModes` mirror the production
-// helpers in `bin/build-builtins.ts` step-for-step. Keeping the test
-// self-contained avoids dragging `bin/`'s tsconfig project into the
-// test project graph, at the cost of having to keep the two copies in
-// lockstep — if a future change rewrites the production packer, this
-// test must follow.
-//
-// The umask test is the load-bearing piece: without
-// `normalizeStagingModes`, two builders with different umasks produce
-// distinct headers and the SRI diverges, but the same-tree tests
-// above would still pass.
+// Determinism gate for `bin/build-builtins.ts`: same workspace inputs
+// must yield identical tarball bytes (and SRI) so the seed's pin set
+// can reference an exact version without coordinating with the build
+// step. `packStaging` and `normalizeStagingModes` mirror the production
+// helpers step-for-step, kept self-contained so `bin/`'s tsconfig
+// stays out of the test project graph. The umask test is the
+// load-bearing piece: without mode normalization, two builders with
+// different umasks emit distinct headers.
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { promises as fs } from "node:fs";
@@ -139,10 +118,8 @@ describe("build-builtins determinism", () => {
   });
 
   test("packing two staging trees with different mtimes still yields identical SRI", async () => {
-    // The packer zeroes mtimes via `{ mtime: epoch }`; the source
-    // files' mtimes must not leak into the tarball. Create the same
-    // tree twice with deliberately different filesystem mtimes and
-    // assert the integrity is unchanged.
+    // The packer zeroes mtimes; the source files' mtimes must not
+    // leak into the tarball.
     async function buildTree(dir: string, mtimeMs: number): Promise<void> {
       const pkgDir = path.join(dir, "package");
       await fs.mkdir(pkgDir, { recursive: true });
@@ -180,19 +157,16 @@ describe("build-builtins determinism", () => {
   });
 
   test("packing two staging trees with different mode bits still yields identical SRI", async () => {
-    // `normalizeStagingModes` runs before `tar.create` reads each
-    // entry's stat, so two builders whose umasks landed different mode
-    // bits on disk emit identical headers. Without that step (or if a
-    // future refactor reordered it after the tar walk), this test
-    // would fail because tar would record the as-on-disk modes.
+    // `normalizeStagingModes` must run before the tar walk reads
+    // modes; otherwise two builders with different umasks emit
+    // distinct headers.
     const stagingA = path.join(scratch, "modes-a");
     const stagingB = path.join(scratch, "modes-b");
     await writeMinimalPackage(stagingA);
     await writeMinimalPackage(stagingB);
 
-    // Force divergent mode bits on the two staging trees, both for a
-    // directory and a regular file, so the normalization step has
-    // work to do on both shapes.
+    // Force divergent mode bits on both trees so normalization has
+    // work to do on directories and files.
     await fs.chmod(path.join(stagingA, "package"), 0o700);
     await fs.chmod(path.join(stagingA, "package", "package.json"), 0o600);
     await fs.chmod(path.join(stagingA, "package", "dist"), 0o711);
