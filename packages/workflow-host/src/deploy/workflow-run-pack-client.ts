@@ -167,11 +167,10 @@ export type MultistepMailHandler = (message: Uint8Array) => Promise<void>;
  * Per-deployment-address mail handler registry the hub-link consults before
  * falling back to `transport.deliver`. An inbound `mail.inbound` frame for a
  * registered address dispatches into the supervisor's mail-bus subscription
- * rather than a never-provisioned transport mailbox.
- *
- * Owned at the sidecar host layer, not inside the workflow-host library:
- * the routing decision is between the "legacy single-agent path" and the
- * "supervisor mail-bus path", two concrete sidecar host concerns.
+ * rather than a never-provisioned transport mailbox. Owned at the sidecar host
+ * layer, not inside the workflow-host library: the routing decision is between
+ * the "legacy single-agent path" and the "supervisor mail-bus path", two
+ * concrete sidecar host concerns.
  */
 export type MultistepMailRouter = {
   register(address: string, handler: MultistepMailHandler): void;
@@ -222,10 +221,6 @@ export type MultistepSignalHandler = (args: {
  * Per-deployment-address signal handler registry the hub-link consults on
  * every inbound `signal.deliver` frame. Registered after `spawn` succeeds
  * for single- and multi-step deployments alike.
- *
- * Lives at the sidecar host layer for the same boundary reason as
- * `MultistepMailRouter`: the routing decision is a concrete sidecar host
- * concern.
  */
 export type MultistepSignalRouter = {
   register(address: string, handler: MultistepSignalHandler): void;
@@ -283,9 +278,6 @@ export type MultistepGrantsHandler = (args: {
  * Per-deployment-address grants handler registry the hub-link consults on
  * every inbound `run.grants` frame. Registered after `spawn` succeeds for
  * single- and multi-step deployments alike.
- *
- * Lives at the sidecar host layer for the same boundary reason as the other
- * routers: the routing decision is a concrete sidecar host concern.
  */
 export type MultistepGrantsRouter = {
   register(address: string, handler: MultistepGrantsHandler): void;
@@ -339,9 +331,6 @@ export type MultistepDrainHandler = (args: {
  * Per-deployment-address drain handler registry the hub-link consults on
  * every inbound `drain.deliver` frame. Registered after `spawn` succeeds for
  * single- and multi-step deployments alike.
- *
- * Lives at the sidecar host layer for the same boundary reason as the other
- * routers: the routing decision is a concrete sidecar host concern.
  */
 export type MultistepDrainRouter = {
   register(address: string, handler: MultistepDrainHandler): void;
@@ -390,9 +379,6 @@ export type MultistepSourcesHandler = (args: {
  * single-step warm deployment registers a handler, so `tryRoute` resolves a
  * rotation only for a registered single-step address and returns `false`
  * otherwise.
- *
- * Lives at the sidecar host layer for the same boundary reason as the other
- * routers: the routing decision is a concrete sidecar host concern.
  */
 export type MultistepSourcesRouter = {
   register(address: string, handler: MultistepSourcesHandler): void;
@@ -459,8 +445,7 @@ export type MultistepCredentialsHandler = (args: {
  * Per-deployment-address credential-delivery handler registry. Mirrors
  * `MultistepSourcesRouter`: `credentials.update` is a REQUEST/ACK frame, so a
  * registered address that throws surfaces as a `session.error` and an
- * unregistered one returns `false`. Lives at the sidecar host layer for the
- * same boundary reason as the other routers.
+ * unregistered one returns `false`.
  */
 export type MultistepCredentialsRouter = {
   register(address: string, handler: MultistepCredentialsHandler): void;
@@ -522,10 +507,9 @@ export function createMultistepCredentialsRouter(): MultistepCredentialsRouter {
  *
  * Failure surfacing: a failed push latches its error on the slot; the next
  * write on that (repoId, ref) re-throws it rather than swallowing it in the
- * fire-and-forget pipeline.
- *
- * Flush: `flushWorkflowRunPushes(repoId, ref)` awaits the slot to drain for
- * callers that need a hub-visible barrier (shutdown, hub-side reads).
+ * fire-and-forget pipeline. Flush: `flushWorkflowRunPushes(repoId, ref)`
+ * awaits the slot to drain for callers that need a hub-visible barrier
+ * (shutdown, hub-side reads).
  */
 export type WorkflowRunPackPushingRepoStoreOpts = {
   underlying: RepoStore;

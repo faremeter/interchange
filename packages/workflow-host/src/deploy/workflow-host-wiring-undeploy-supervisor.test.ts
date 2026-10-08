@@ -1,14 +1,13 @@
-// Pins C-A: the multi-step undeploy hook must shut down the per-
-// deployment supervisor so the workflow-process child, its IPC pipes,
-// and its event-channel fd are released. Without the shutdown the
-// supervisor's reference outlives every other piece of routing state
-// the undeploy hook tears down, leaking the child for the life of the
-// sidecar.
+// Pins C-A: the multi-step undeploy hook must shut down the per-deployment
+// supervisor so the workflow-process child, its IPC pipes, and its
+// event-channel fd are released. Without the shutdown the supervisor's
+// reference outlives every other piece of routing state the undeploy hook
+// tears down, leaking the child for the life of the sidecar.
 //
-// The harness drives the multi-step deploy through the same spawn
-// handshake the existing wiring tests use, captures the
-// `SubprocessHandle.kill` call, and asserts that `undeploy(frame)`
-// invokes it and awaits the handle's `exited` settlement.
+// The harness drives the multi-step deploy through the same spawn handshake
+// the existing wiring tests use, captures the `SubprocessHandle.kill` call,
+// and asserts that `undeploy(frame)` invokes it and awaits the handle's
+// `exited` settlement.
 
 import { describe, test, expect } from "bun:test";
 import fs from "node:fs/promises";

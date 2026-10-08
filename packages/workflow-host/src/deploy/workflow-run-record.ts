@@ -6,11 +6,11 @@
 //
 // It carries the inputs that are otherwise frame/in-memory only: `sources`
 // (each step's inference-source failover chain, durable nowhere else),
-// `sessionId`, `hubPublicKey`, `approvedWireHash` (so a restore re-spawn
-// feeds the child the same re-verify anchor), and -- for a source-ref
-// deployment -- the `sourceRef` pin a restore needs to re-materialize the
-// pinned code. The definition is re-materialized from that closure and each
-// step's grants live in its agent-state repo, so neither is duplicated here.
+// `sessionId`, `hubPublicKey`, `approvedWireHash` (so a restore re-spawn feeds
+// the child the same re-verify anchor), and -- for a source-ref deployment --
+// the `sourceRef` pin a restore needs to re-materialize the pinned code. The
+// definition is re-materialized from that closure and each step's grants live
+// in its agent-state repo, so neither is duplicated here.
 
 import { mkdir, readdir, readFile, rm } from "node:fs/promises";
 import { dirname, join as pathJoin } from "node:path";
@@ -134,7 +134,7 @@ async function transformDeliveryMaterials(
 /**
  * Persist a run record. Written after the run's slug is claimed and before
  * the child is spawned, so a crash mid-spawn leaves a record the boot scan
- * re-drives. Idempotent: it overwrites any existing record for the same run.
+ * re-drives. Idempotent: overwrites any existing record for the same run.
  *
  * Every credential secret is sealed under the sidecar `cipher` before it
  * touches disk (version 2); the `sources`/`bodySources` config is non-secret

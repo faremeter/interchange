@@ -1,11 +1,9 @@
-// Sidecar deploy program for the workflow host.
-//
-// Stages a workflow deployment onto a supervised workflow-process child:
-// materializes the frozen closure, records the run, and registers the
-// deployment's mail, signal, drain, and grants routes. The process that
-// boots this program supplies the host bindings: closure apply, asset
-// delivery, registry and platform resolution, repo-id derivation, and the
-// child spawner and binary.
+// Sidecar deploy program for the workflow host. Stages a workflow deployment
+// onto a supervised workflow-process child: materializes the frozen closure,
+// records the run, and registers the deployment's mail, signal, drain, and
+// grants routes. The booting process supplies the host bindings: closure
+// apply, asset delivery, registry/platform resolution, repo-id derivation,
+// and the child spawner and binary.
 
 import { rm, stat } from "node:fs/promises";
 import { join as pathJoin } from "node:path";
@@ -101,10 +99,9 @@ const ED25519_PUBLIC_KEY_BYTES = 32;
 
 /**
  * Durable per-deployment store for a source-ref deployment's checked-out
- * source assets. A SIBLING of the closure instance dir, not a child:
- * `materializeDeploymentClosure` reclaims the closure dir on every apply and
- * restore, but never this store, so the assets survive restart and need no
- * re-delivery. Reclaimed on redeploy and undeploy.
+ * source assets. Sibling of the closure instance dir: the closure dir is
+ * reclaimed on every apply/restore, this store is not, so the assets survive
+ * restart without re-delivery. Reclaimed on redeploy and undeploy.
  */
 function deploymentSourceAssetRoot(
   dataDir: string,
@@ -188,11 +185,11 @@ async function isExistingDir(dir: string): Promise<boolean> {
 
 /**
  * Resolve the durable source-asset store root and `assetId -> mountPath` map a
- * pinned deployment materializes its `kind:"asset"` closure entries from,
- * asserting every referenced asset's mount directory exists on disk. Derived
- * purely from the pin so deploy and restore resolve identical mounts. A
- * missing mount is a broken deployment the hub must re-drive; the loader
- * still SRI-verifies each tarball's bytes at materialization.
+ * pinned deployment's `kind:"asset"` closure entries materialize from,
+ * asserting every referenced asset's mount dir exists on disk. Derived purely
+ * from the pin so deploy and restore resolve identical mounts. A missing
+ * mount is a broken deployment the hub must re-drive; the loader still
+ * SRI-verifies each tarball's bytes at materialization.
  */
 export async function resolveDeploymentAssetMounts(
   dataDir: string,
@@ -231,12 +228,11 @@ export async function resolveDeploymentAssetMounts(
 }
 
 /**
- * Read a substrate-config byte cap (`SIDECAR_CACHE_MAX_BYTES` /
- * `SIDECAR_REGISTRY_MAX_TARBALL_BYTES`) from the multi-step substrate env and
- * parse it to a positive finite number, sizing the tarball cache and per-fetch
- * cap when the frozen workflow closure is materialized. The boot edge threads
- * these values through the substrate env; a missing or non-numeric value is a
- * boot-edge wiring bug, so it fails loud rather than defaulting.
+ * Parse a substrate-config byte cap (`SIDECAR_CACHE_MAX_BYTES` /
+ * `SIDECAR_REGISTRY_MAX_TARBALL_BYTES`) from the multi-step substrate env to a
+ * positive finite number, sizing the tarball cache and per-fetch cap at
+ * closure materialization. The boot edge threads these values through; a
+ * missing or non-numeric value is a boot-edge wiring bug, so it fails loud.
  */
 function requireSubstrateByteCap(
   env: Record<string, string>,
@@ -258,12 +254,11 @@ function requireSubstrateByteCap(
 }
 
 /**
- * Hub principal the deploy router presents when it writes a step's grants into
- * the agent-state repo on the sidecar's substrate. The agent-state kind handler
- * gates `writeTree` as hub-only; the deploy router is the local stand-in for
- * the hub on the sidecar's disk, so it claims the hub principal for this
- * single bookkeeping write. The child reads the same repo via the working-tree
- * path (`getRepoDir`), which is not authorize-gated.
+ * Principal the deploy router presents when writing a step's grants into the
+ * agent-state repo. The kind handler gates `writeTree` as hub-only; the router
+ * is the hub's local stand-in on the sidecar's disk, so it claims the hub
+ * principal for this single bookkeeping write. The child reads the same repo
+ * via the working-tree path (`getRepoDir`), which is not authorize-gated.
  */
 const GRANTS_WRITE_PRINCIPAL: Principal = { kind: "hub" };
 
@@ -286,12 +281,11 @@ type StepStrategy = {
  * derived multi-step deploy: each step gets a derived `<runId>-<stepId>` mail
  * address and agent-state repo.
  *
- * NOTE: the supervisor's `deriveStepAddress` feeds the credentials snapshot's
- * per-step mail `address` and the grants-repo derivation. It does NOT feed the
- * child's on-disk tool read (`stepDeployTreeDir`), which re-derives the step
- * address from the deployment mailbox address independently. The deploy tree
- * must therefore be staged at the address `stepDeployTreeDir` computes,
- * regardless of this strategy's address choice.
+ * NOTE: `deriveStepAddress` feeds the credentials snapshot's per-step mail
+ * address and the grants-repo derivation, NOT the child's on-disk tool read
+ * (`stepDeployTreeDir`), which re-derives the step address from the deployment
+ * mailbox address independently. The deploy tree must be staged at the address
+ * `stepDeployTreeDir` computes regardless of this strategy's choice.
  */
 function createStepStrategy(args: {
   legacyAddress: string;
@@ -302,11 +296,10 @@ function createStepStrategy(args: {
   if (args.stepOrder.length === 1) {
     return {
       deriveStepAddress: () => args.legacyAddress,
-      // `parseAgentId` is deferred into the closure rather than computed
-      // eagerly: the supervisor only invokes `deriveStepRepoId` while
-      // assembling the credentialsSnapshot inside `spawn()`, so a malformed
-      // address surfaces at the same point the rest of the spawn path would
-      // fault rather than ahead of the deploy router's other boundary checks.
+      // Defer `parseAgentId` into the closure: the supervisor invokes
+      // `deriveStepRepoId` only while assembling the credentialsSnapshot inside
+      // `spawn()`, so a malformed address surfaces there, at the same point the
+      // rest of the spawn path would fault.
       deriveStepRepoId: () => ({
         kind: "agent-state",
         id: args.parseAgentId(args.legacyAddress),
@@ -323,32 +316,23 @@ function createStepStrategy(args: {
 }
 
 /**
- * Write a grant set into the sidecar's substrate as the canonical
- * `{ grants: WireGrantRule[] }` envelope -- the shape
- * `assembleCredentialsSnapshot` validates (`{ grants: unknown[] }`) and the
- * child's `evaluateGrants` adapter narrows to `GrantRule[]`.
+ * Write a grant set as the canonical `{ grants: WireGrantRule[] }` envelope the
+ * snapshot validator accepts (`{ grants: unknown[] }`), into one of two
+ * destinations selected by `runId`:
  *
- * Two destinations share this write machinery, selected by `runId`:
+ *   - Absent (deploy time): each step's grants go into its own `agent-state`
+ *     repo at `STEP_GRANTS_PATH`, keyed by the same `deriveStepRepoId` the
+ *     supervisor reads with. `stepOrder` is the whole flat step-id namespace,
+ *     loop-body steps included, because the supervisor assembles a snapshot
+ *     entry for every body step too. On the spawn critical path: a failure
+ *     rejects the deploy rather than spawning a child that would fail every
+ *     authorize closed against an empty grant set.
  *
- *   - `runId` absent (deploy time): write every step's grants into its own
- *     `agent-state` repo at `STEP_GRANTS_PATH`, keyed by the same
- *     `deriveStepRepoId` the supervisor reads with, so read and write address
- *     the same repo. `stepOrder` here is the deployment's whole flat step-id
- *     namespace, not the bare top-level order, because the supervisor
- *     assembles a snapshot entry for every loop-body step too. The write is on
- *     the spawn critical path: a failure rejects the deploy (the caller's
- *     `finally` unwinds the partial state) rather than spawning a child that
- *     would fail every authorize closed against an empty grant set.
+ *   - Present (per-run delivery): a single `runs/<runId>/grants.json` into the
+ *     deployment's `workflow-run` repo, sibling to the run's `events/` subtree;
+ *     `stepOrder`/`deriveStepRepoId` are unused in this mode.
  *
- *   - `runId` present (per-run delivery): write a single
- *     `runs/<runId>/grants.json` into the deployment's `workflow-run` repo,
- *     sibling to that run's `runs/<runId>/events/` subtree. The `stepOrder` /
- *     `deriveStepRepoId` fields are unused in this mode -- the destination is
- *     the one workflow-run repo keyed by `runId`, not a per-step fan-out.
- *
- * Both destinations use the same hub principal and `refs/heads/main` ref: the
- * agent-state kind handler gates `writeTree` as hub-only, and the workflow-run
- * repo pins its run subtree under the same moving ref.
+ * Both destinations use the same hub principal and `refs/heads/main` ref.
  */
 async function writeStepGrants(args: {
   repoStore: RepoStore;
@@ -358,11 +342,8 @@ async function writeStepGrants(args: {
   grants: readonly unknown[] | undefined;
   runId?: string;
 }): Promise<void> {
-  // The deploy frame's validated HarnessConfig always carries a `grants`
-  // array (possibly empty); an absent array means "no grants", which
-  // serializes to the same fail-closed empty file the snapshot expects.
-  // Coerce here so the on-disk envelope is always a valid `{ grants: [] }`
-  // rather than `{}` (which the snapshot's validator rejects).
+  // Coerce an absent array to `[]` so the on-disk envelope is always a valid
+  // `{ grants: [] }`, never `{}` (which the snapshot's validator rejects).
   const grants = args.grants ?? [];
   const serialized = JSON.stringify({ grants }, null, 2);
   if (args.runId !== undefined) {
@@ -401,11 +382,7 @@ export type AssembleRunCredentialsSnapshotOpts = {
   anchorRunId: string;
   /** Run whose per-run grants file is read. */
   runId: string;
-  /**
-   * Every step id the snapshot must cover -- the deployment's flat step-id
-   * namespace, loop-body step ids included. The per-run grants apply
-   * uniformly across them.
-   */
+  /** The deployment's flat step-id namespace, loop-body ids included. */
   stepOrder: readonly string[];
   /** Per-step mail-address derivation. */
   deriveStepAddress: DeriveStepAddress;
@@ -415,20 +392,17 @@ export type AssembleRunCredentialsSnapshotOpts = {
  * Resolve a run's credentials snapshot for the `onRunStart` grants barrier
  * from its per-run grants file.
  *
- * Every legitimate run birth path writes `runs/<runId>/grants.json` in the
- * deployment's workflow-run repo before the run dispatches -- the external
- * trigger route and the mail-triggered path both ship a `run.grants` frame the
- * sidecar writes, and a spawned child inherits its parent's grants directly at
- * spawn without reaching this barrier. The per-run file IS the run's snapshot:
- * the run's single flat grant set is applied uniformly across every step,
- * keyed on each step's address.
+ * Every legitimate run birth path writes `runs/<runId>/grants.json` before the
+ * run dispatches (external trigger and mail-triggered paths ship a
+ * `run.grants` frame; a spawned child inherits its parent's grants at spawn
+ * without reaching this barrier). The per-run file IS the run's snapshot: one
+ * flat grant set applied uniformly across every step, keyed on each step's
+ * address.
  *
- * A missing file is therefore not an internal run inheriting deploy-time
- * grants -- it is a run that reached its barrier with no grants written, so it
- * FAILS CLOSED here rather than running under-authorized. A file that exists
- * but is malformed also throws (via `readRunGrants`), for the same reason: the
- * file's presence implies a grants frame was delivered, so a structural
- * failure is a boundary bug, not a default.
+ * A missing file is therefore a run that reached its barrier with no grants
+ * written -- it FAILS CLOSED here rather than running under-authorized. A
+ * malformed file also throws (via `readRunGrants`): its presence implies a
+ * grants frame was delivered, so a structural failure is a boundary bug.
  */
 export async function assembleRunCredentialsSnapshot(
   opts: AssembleRunCredentialsSnapshotOpts,
@@ -471,7 +445,7 @@ export type CreateSidecarWorkflowSupervisorOpts = {
   runId: string;
   /**
    * Decrypted credential material for the deployment's tools (from the deploy
-   * frame). Delivered to the child on the pre-trigger barrier. Absent when the
+   * frame), delivered to the child on the pre-trigger barrier. Absent when the
    * deployment binds no credentials.
    */
   credentialDelivery?: CredentialDelivery;
@@ -482,12 +456,10 @@ export type CreateSidecarWorkflowSupervisorOpts = {
    */
   stepCount: number;
   /**
-   * Every step id in the deployment's flat step-id namespace: its `stepOrder`
-   * plus the step ids of every `loop` body it carries. The `onRunStart` grants
-   * sink walks these to assemble the per-run credentialsSnapshot, so it needs
-   * the ids rather than the bare count -- and it needs the loop-body ids too,
-   * because a loop iteration inherits the parent run's env and authorizes
-   * against this same snapshot.
+   * The deployment's flat step-id namespace: `stepOrder` plus the step ids of
+   * every `loop` body. The `onRunStart` grants sink walks these to assemble
+   * the per-run snapshot; a loop iteration inherits the parent run's env and
+   * authorizes against this same snapshot.
    */
   stepOrder: readonly string[];
   /** Deployment's mail address. */
@@ -497,18 +469,17 @@ export type CreateSidecarWorkflowSupervisorOpts = {
   /**
    * Optional override of the per-step `agent-state` repo identity the
    * supervisor reads grants from while assembling the credentialsSnapshot.
-   * Defaults to the `<runId>-<stepId>` convention; the single-step launched-agent
-   * deploy supplies a derivation that returns the legacy agent-state repo so
-   * the spawned child reads grants from the same repo the legacy agent
-   * identity keys.
+   * Defaults to `<runId>-<stepId>`; the single-step launched-agent deploy
+   * supplies a derivation returning the legacy agent-state repo so the child
+   * reads grants from the same repo the legacy agent identity keys.
    */
   deriveStepRepoId?: DeriveStepRepoId;
   /** Substrate-config keys propagated to the child via spawn-time env. */
   substrateEnv: Record<string, string>;
   /**
-   * Dynamic spawn-env fragment the supervisor recomputes on every spawn and
-   * recycle respawn (e.g. a live-rotated inference-source list). Its keys
-   * layer over `substrateEnv`. See the `dynamicSpawnEnv` supervisor binding.
+   * Dynamic spawn-env fragment recomputed on every spawn and recycle respawn
+   * (e.g. a live-rotated inference-source list); its keys layer over
+   * `substrateEnv`.
    */
   dynamicSpawnEnv: () => Record<string, string>;
   /**
@@ -521,28 +492,22 @@ export type CreateSidecarWorkflowSupervisorOpts = {
   /**
    * Optional per-message dispatch-timing observer, forwarded verbatim to the
    * supervisor's `onDispatchTiming` binding. Wired only for the Phase 4.7
-   * latency gate, which needs the per-message infra round-trip from inside the
+   * latency gate, which needs the per-message round-trip from inside the
    * sidecar subprocess. Absent in production.
    */
   onDispatchTiming?: (mark: DispatchTimingMark) => void;
-  /**
-   * D2 §10c forced-repack A/B toggle, forwarded verbatim to the supervisor's
-   * `repackEveryMessages` binding. Wired only for the D2 attribution run.
-   * Absent in production.
-   */
+  /** D2 §10c forced-repack A/B toggle, forwarded to `repackEveryMessages`. */
   repackEveryMessages?: { everyMessages: number };
   /**
-   * Consumed-dedup retention horizon (ms), forwarded to the
-   * supervisor's `consumedRetentionMs` binding. The boot edge resolves
-   * the operator's `CONSUMED_RETENTION_MS` config; absent, the
-   * supervisor applies `DEFAULT_CONSUMED_RETENTION_MS` (24h).
+   * Consumed-dedup retention horizon (ms), forwarded to `consumedRetentionMs`.
+   * The boot edge resolves `CONSUMED_RETENTION_MS`; absent, the supervisor
+   * applies `DEFAULT_CONSUMED_RETENTION_MS` (24h).
    */
   consumedRetentionMs?: number;
   /**
-   * Spawn ready-handshake timeout (ms), forwarded to the supervisor's
-   * `readyTimeoutMs` binding. The boot edge resolves the operator's
-   * `CHILD_READY_TIMEOUT_MS` config; absent, the supervisor applies
-   * `DEFAULT_READY_TIMEOUT_MS` (30s).
+   * Spawn ready-handshake timeout (ms), forwarded to `readyTimeoutMs`. The
+   * boot edge resolves `CHILD_READY_TIMEOUT_MS`; absent, the supervisor
+   * applies `DEFAULT_READY_TIMEOUT_MS` (30s).
    */
   readyTimeoutMs?: number;
   /**
@@ -603,11 +568,10 @@ export type SidecarWorkflowSupervisor = {
  * Env key the multi-step branch uses to carry each step's ordered
  * inference-source failover chain from `frame.workflow.sources` down to the
  * workflow-process child. The substrate factory's `buildEnv` reads this and
- * resolves a step's chain at step invocation; the supervisor itself is opaque
- * to the value (it is plumbed through `bindings.substrateEnv` verbatim).
- *
- * Listed here so the router and the substrate-factory consumer spell the key
- * the same way without a magic-string trip hazard.
+ * resolves a step's chain at step invocation; the supervisor is opaque to the
+ * value (it is plumbed through `bindings.substrateEnv` verbatim). Listed here
+ * so the router and the substrate-factory consumer spell the key the same way
+ * without a magic-string trip hazard.
  */
 export const STEP_INFERENCE_SOURCES_ENV_KEY = "STEP_INFERENCE_SOURCES";
 
@@ -626,9 +590,9 @@ export const WORKFLOW_BODY_SOURCES_ENV_KEY = "WORKFLOW_BODY_SOURCES";
  * (`MAX_ARG_STRLEN`, 128 KiB on Linux); an over-long value makes the child
  * `execve` fail opaquely at spawn. `WORKFLOW_BODY_SOURCES` sums over every
  * body at every depth, so the deploy path validates the serialized size
- * against this bound and rejects an over-large deployment loudly at deploy
- * time rather than letting a much-later spawn fail. Held below the ceiling
- * with headroom for the rest of the env block.
+ * against this bound and rejects an over-large deployment at deploy time
+ * rather than at a much-later spawn. Held below the ceiling with headroom for
+ * the rest of the env block.
  */
 const WORKFLOW_BODY_SOURCES_MAX_BYTES = 96 * 1024;
 
@@ -656,27 +620,24 @@ function buildBodySourcesMap(
 /**
  * Validate the wire-projected workflow definition at the deploy-router
  * boundary. The arktype `AgentDeployFrame` validator enforces the wire shape
- * (`id` is non-empty, `stepOrder` is `string[]`, `steps` is an object,
- * `sources` covers every `stepOrder` entry); this function takes
- * `unknown`-typed inputs so it can also gate callers that bypass the wire
- * boundary, and it enforces the invariants the router and the downstream
- * supervisor rely on:
+ * (`id` non-empty, `stepOrder` `string[]`, `steps` an object, `sources`
+ * covering every `stepOrder` entry); this function takes `unknown`-typed
+ * inputs so it can also gate callers that bypass the wire boundary, and it
+ * enforces the invariants the router and the downstream supervisor rely on:
  *
  *   - `definition.id` is a non-empty string.
- *   - `definition.stepOrder` is non-empty. The wire shape admits `[]`; a
- *     zero-step workflow has no semantics here.
+ *   - `definition.stepOrder` is non-empty; a zero-step workflow has no
+ *     semantics here.
  *   - Every `stepOrder` entry matches `STEP_ID_PATTERN` so per-step
- *     mail-address derivation never needs escaping at the substrate
- *     boundary.
- *   - Every `stepOrder` entry has a corresponding `steps[id]` entry, required
- *     so the workflow-process child can resolve each step's primitive at run
- *     time.
- *   - Every `stepOrder` entry has a corresponding `sources[id]` entry, and
- *     that entry is a non-empty array (the step's ordered failover chain). An
- *     empty chain would leave the reactor with no initial source, so it is
- *     rejected here rather than deferred to a deep-stack child failure.
+ *     mail-address derivation never needs escaping at the substrate boundary.
+ *   - Every `stepOrder` entry has a `steps[id]` entry, required so the
+ *     workflow-process child can resolve each step's primitive at run time.
+ *   - Every `stepOrder` entry has a `sources[id]` entry, and that entry is a
+ *     non-empty array (the step's ordered failover chain). An empty chain
+ *     would leave the reactor with no initial source, so it is rejected here
+ *     rather than deferred to a deep-stack child failure.
  *
- * A rejection here surfaces as a thrown `Error` the link's deploy frame caller
+ * A rejection surfaces as a thrown `Error` the link's deploy frame caller
  * converts into a structured failure reply.
  */
 export function validateWorkflowProjection(projection: {
@@ -776,29 +737,26 @@ export interface SidecarDeployRouter {
    * Re-establish every persisted workflow deployment on this sidecar's local
    * substrate. Runs once at boot, before `hubLink.connect()`, so a single-step
    * head's mailbox/transport registration is live before the hub routes to it.
-   * Soft-fails per deployment: a record that cannot be restored (unbuildable
-   * provider, source closure that cannot be re-materialized, spawn failure) is
-   * logged and left on disk for a later boot to retry -- never deleted here.
+   * Soft-fails per deployment: a record that cannot be restored is logged and
+   * left on disk for a later boot to retry -- never deleted here.
    */
   restoreWorkflowRuns(): Promise<void>;
   /**
    * The workflow-substrate deployment addresses (`run_<hex>@domain`) this
    * router currently hosts a live supervisor for -- the set of addresses this
    * sidecar can route mail to. The boot edge announces these to the hub on
-   * (re)connect so the hub re-registers them for routing: they are hub-minted
-   * and carry no per-address key; the allocation-authenticated announcement is
-   * what re-establishes their routes after a WS reconnect. A caller re-reads
-   * it per connect.
+   * (re)connect; they are hub-minted and carry no per-address key, so the
+   * allocation-authenticated announcement is what re-establishes their routes
+   * after a WS reconnect. Re-read per connect.
    */
   activeAddresses(): string[];
   /**
-   * Trigger B: re-register every correlation the deployment at `address` is
-   * currently parked on, by asking its live supervisor to re-emit them to the
-   * hub. The boot edge calls this per address the hub link re-routes on an
-   * authenticated reconnect (`onWorkflowAddressesRoutable`), so a register
-   * frame the hub dropped from its bounded send queue during the outage is
-   * recovered. Fire-and-forget (the driver is best-effort and watchdog-bounded
-   * inside the supervisor).
+   * Re-register every correlation the deployment at `address` is parked on, by
+   * asking its live supervisor to re-emit them to the hub. The boot edge calls
+   * this per address the hub link re-routes on an authenticated reconnect, so
+   * a register frame the hub dropped from its bounded send queue during the
+   * outage is recovered. Fire-and-forget: the driver is best-effort and
+   * watchdog-bounded inside the supervisor.
    */
   reEmitParkedCorrelations(address: string): void;
 }
@@ -834,31 +792,27 @@ export function createSidecarDeployRouter<THost, TRegistries>(deps: {
    */
   credentialCipher: CredentialCipher;
   /**
-   * Per-agent crypto factory. Receives the agent's raw key pair and returns a
+   * Per-agent crypto factory: takes the agent's raw key pair and returns a
    * `CryptoProvider` bound to it (production wires `@intx/crypto`'s
-   * `createEd25519Crypto`). The multi-step branch uses this to register the
-   * spawned single-step agent's signing key on the host transport before
-   * `spawn()`, so the supervisor's outbound mail path (`MailBusBindings.sendOutbound`)
-   * signs the agent's replies with the AGENT's identity -- the OUTBOUND half
-   * of mailbox ownership (§3a). Without this registration the spawned agent's
-   * address has no `CryptoProvider` on the transport (nothing else registers
-   * one for it), and an outbound send would throw "address is not registered"
-   * rather than emit unsigned mail.
+   * `createEd25519Crypto`). The multi-step branch registers the spawned
+   * single-step agent's signing key on the host transport before `spawn()` so
+   * outbound mail signs with the AGENT's identity -- the OUTBOUND half of
+   * mailbox ownership (§3a). Without it the spawned address has no
+   * `CryptoProvider` on the transport and an outbound send would throw
+   * "address is not registered" rather than emit unsigned mail.
    */
   createAgentCrypto: (keyPair: KeyPair) => CryptoProvider;
   /**
    * Source-admission gate: throws if a step's pinned inference source names a
    * provider this sidecar cannot build. The buildable-provider set is sidecar
-   * config (the boot edge's adapter registry), so this admission control lives
-   * at the sidecar -- the hub is a different process and cannot know a given
-   * sidecar's providers. Production wires the default harness builder's
-   * `canBuildSource` verbatim, so a rejected provider carries the same
-   * `"... is not registered"` message.
+   * config (the boot edge's adapter registry), so admission control lives at
+   * the sidecar -- the hub cannot know a given sidecar's providers. Production
+   * wires the default harness builder's `canBuildSource` verbatim, so a
+   * rejected provider carries the same `"... is not registered"` message.
    *
    * Distinct from the orchestrator's operator-approval check
    * (`pickStepInferenceSource`): that gates on whether the operator approved a
    * `provider:model`; this gates on whether the provider is buildable at all.
-   * A source can be approved yet unbuildable.
    */
   assertSourceBuildable: (source: InferenceSource) => void;
   /**
@@ -866,17 +820,15 @@ export function createSidecarDeployRouter<THost, TRegistries>(deps: {
    * pack push facade consults when it must address an outbound pack frame.
    * Fires once per inbound `agent.deploy` frame before the deployment's
    * supervisor spawns, so the first pack push the child triggers sees the
-   * mapping. Tests that do not exercise the pack push path may pass a no-op.
+   * mapping.
    */
   registerDeployment: (entry: { runId: string; agentAddress: string }) => void;
   /**
-   * Symmetric removal hook for `registerDeployment`. Fires from the link's
-   * `agent.undeploy` path so the boot edge's `DeploymentAddressRegistry` drops
-   * the mapping when the deployment is torn down. A subsequent stale
-   * `writeTreePreservingPrefix` against the dead deployment's workflow-run ref
-   * surfaces structurally (`registry.resolve` returns `null`) rather than
-   * silently resolving to the prior address. Tests that do not exercise the
-   * pack push path may pass a no-op.
+   * Symmetric removal hook for `registerDeployment`, fired from the link's
+   * `agent.undeploy` path. A subsequent stale `writeTreePreservingPrefix`
+   * against the dead deployment's workflow-run ref surfaces structurally
+   * (`registry.resolve` returns `null`) rather than resolving to the prior
+   * address.
    */
   unregisterDeployment: (entry: {
     runId: string;
@@ -884,9 +836,8 @@ export function createSidecarDeployRouter<THost, TRegistries>(deps: {
   }) => void;
   /**
    * Read the tips of a stopped deployment's workflow-run refs and schedule a
-   * push of any commit the hub has not acknowledged. The hub confirms the stop
-   * only once it holds these tips. Tests that do not exercise the pack push
-   * path may report no refs.
+   * push of any commit the hub has not acknowledged; the hub confirms the stop
+   * only once it holds these tips.
    */
   reportDeploymentRefTips: (
     agentAddress: string,
@@ -894,9 +845,9 @@ export function createSidecarDeployRouter<THost, TRegistries>(deps: {
   /**
    * Substrate-config env keys the multi-step branch propagates into the
    * workflow-process child's spawn-time env (see `SIDECAR_SUBSTRATE_CONFIG_KEYS`
-   * in `substrate-factory.ts`). The router merges `STEP_INFERENCE_SOURCES` on
-   * top per multi-step frame. Defaults to an empty record so a router built
-   * without substrate config (e.g. a test) needs no boot-edge threading.
+   * in `substrate-factory.ts`), with `STEP_INFERENCE_SOURCES` merged on top per
+   * multi-step frame. Defaults to an empty record so a router built without
+   * substrate config needs no boot-edge threading.
    */
   multistepSubstrateEnv?: Record<string, string>;
   /**
@@ -913,14 +864,11 @@ export function createSidecarDeployRouter<THost, TRegistries>(deps: {
   /**
    * Callback the supervisor invokes for every verified InferenceEvent the
    * workflow-process child publishes. The router threads the deployment's run
-   * address plus the deploy's session id through to the callback so a
-   * downstream fan-out can route each event to the hub timeline keyed to the
-   * right session. The `InferenceEvent` itself is sessionless; the session id
-   * rides alongside it, sourced from the deploy frame's `HarnessConfig.sessionId`
-   * per deployment. Optional because a deploy frame need not carry a session id
-   * (a headless deployment with no hub-side session); the sink decides what an
-   * absent session id means. Defaults to a no-op; production wiring supplies
-   * the event publisher.
+   * address plus the deploy's session id through so a downstream fan-out can
+   * route each event to the hub timeline keyed to the right session; the
+   * `InferenceEvent` itself is sessionless. Optional because a deploy frame
+   * need not carry a session id; the sink decides what an absent id means.
+   * Defaults to a no-op.
    */
   publishWorkflowInferenceEvent?: (
     agentAddress: string,
@@ -933,8 +881,7 @@ export function createSidecarDeployRouter<THost, TRegistries>(deps: {
    * threads it into the supervisor's `onSuspensionRegister` binding so a
    * parked run's correlation is registered at the hub (routing + approval
    * rows). The supervisor stamps `runId` + `agentAddress` before invoking it.
-   * Defaults to a no-op; production wiring supplies the hub-link-backed
-   * publisher.
+   * Defaults to a no-op.
    */
   publishWorkflowSuspension?: (registration: {
     correlationId: string;
@@ -947,7 +894,7 @@ export function createSidecarDeployRouter<THost, TRegistries>(deps: {
   /**
    * Optional override for the multi-step branch's per-step mail-address
    * derivation. Defaults to `${runId}-${stepId}@<deploymentDomain>` derived
-   * from the frame's run address. Tests inject a deterministic factory.
+   * from the frame's run address.
    */
   multistepDeriveStepAddress?: DeriveStepAddress;
   /**
@@ -956,10 +903,7 @@ export function createSidecarDeployRouter<THost, TRegistries>(deps: {
    * The multi-step branch registers `wired.routeInbound` against the
    * deployment's mail address once `supervisor.spawn` succeeds so inbound mail
    * aimed at the deployment address flows into the supervisor's mail-bus
-   * subscription.
-   *
-   * Optional so tests that exercise the multi-step branch without an
-   * end-to-end mail loop can omit the binding.
+   * subscription. Optional for tests without an end-to-end mail loop.
    */
   multistepMailRouter?: MultistepMailRouter;
   /**
@@ -968,12 +912,9 @@ export function createSidecarDeployRouter<THost, TRegistries>(deps: {
    * resolves this deployment's authored `inboundMailPolicy` into the registry
    * once `supervisor.spawn` succeeds -- beside the mail-router registration --
    * and removes the entry in the same teardown, so a reused address never
-   * inherits a stale policy.
-   *
-   * Optional so tests that exercise the multi-step branch without the hub-link
-   * seam can omit it; an absent registry means an inbound frame for the address
-   * resolves to the fully-closed default and is rejected until the wiring is
-   * plumbed.
+   * inherits a stale policy. Optional for tests without the hub-link seam; an
+   * absent registry rejects inbound frames for the address (fully-closed
+   * default) until wired.
    */
   inboundMailPolicyRegistry?: {
     register(address: string, policy: ResolvedInboundMailPolicy): void;
@@ -984,13 +925,10 @@ export function createSidecarDeployRouter<THost, TRegistries>(deps: {
    * `signal.deliver` path consults. The multi-step branch registers
    * `wired.supervisor.deliverSignal` against the deployment's mail address once
    * `supervisor.spawn` succeeds so a hub-side `signal.deliver` frame flows into
-   * the workflow-process child via the IPC's `signal.deliver` payload. The
+   * the workflow-process child via the IPC's `signal.deliver` payload; the
    * child commits the resulting `SignalReceived` event through its own
-   * substrate, preserving the workflow-run repo's single-writer invariant on
-   * the sidecar side.
-   *
-   * Optional so tests that exercise the multi-step branch without an
-   * end-to-end signal loop can omit the binding.
+   * substrate, preserving the workflow-run repo's single-writer invariant.
+   * Optional for tests without an end-to-end signal loop.
    */
   multistepSignalRouter?: MultistepSignalRouter;
   /**
@@ -1001,11 +939,8 @@ export function createSidecarDeployRouter<THost, TRegistries>(deps: {
    * the workflow-process child via the IPC's `drain` payload and arms the
    * supervisor's per-run `drainTimeout` accumulators. Cancel-mode in-flight
    * steps abort on the child side; wait-mode steps continue. Accumulators
-   * commit a signed `CancelRequested{origin: "supervisor-drain"}` against the
-   * workflow-run repo when the deadline expires.
-   *
-   * Optional so tests that exercise the multi-step branch without an
-   * end-to-end drain loop can omit the binding.
+   * commit a signed `CancelRequested{origin: "supervisor-drain"}` when the
+   * deadline expires. Optional for tests without an end-to-end drain loop.
    */
   multistepDrainRouter?: MultistepDrainRouter;
   /**
@@ -1015,10 +950,8 @@ export function createSidecarDeployRouter<THost, TRegistries>(deps: {
    * single-step and multi-step deployments alike, so a hub-side `run.grants`
    * frame writes the run's grants to `runs/<runId>/grants.json` inside the
    * deployment's `workflow-run` repo. The write is awaited in `tryRoute` so
-   * the frame's FIFO completion means the grants are durable on disk.
-   *
-   * Optional so tests that exercise the multi-step branch without an
-   * end-to-end grants loop can omit the binding.
+   * the frame's FIFO completion means the grants are durable on disk. Optional
+   * for tests without an end-to-end grants loop.
    */
   multistepGrantsRouter?: MultistepGrantsRouter;
   /**
@@ -1028,10 +961,7 @@ export function createSidecarDeployRouter<THost, TRegistries>(deps: {
    * its address flows into `wired.supervisor.deliverSources` and on to the
    * child's warm agent. A multi-step deployment registers none -- it has no
    * single warm agent to rotate -- so `tryRoute` reports its address as
-   * unrouted.
-   *
-   * Optional so tests that exercise deploys without a rotation loop can omit
-   * the binding.
+   * unrouted. Optional for tests without a rotation loop.
    */
   multistepSourcesRouter?: MultistepSourcesRouter;
   /**
@@ -1039,25 +969,21 @@ export function createSidecarDeployRouter<THost, TRegistries>(deps: {
    * deployment with a supervisor registers a handler after `spawn` (not only
    * warm single-step ones -- the material cell is per-child and read by every
    * step's tool capabilities), and an inbound `credentials.update` for an
-   * unregistered (torn-down) address is unrouted. Optional so tests without a
-   * credential-delivery loop can omit the binding.
+   * unregistered (torn-down) address is unrouted. Optional for tests without a
+   * credential-delivery loop.
    */
   multistepCredentialsRouter?: MultistepCredentialsRouter;
   /**
    * Optional per-message dispatch-timing observer the multi-step branch
-   * forwards to each supervisor it constructs. Resolved at the sidecar
-   * boot edge from the Phase 4.7 latency-gate env gate; absent in
-   * ordinary production. The supervisor runs in this sidecar subprocess,
-   * so the observer sees both ends of the per-message IPC round-trip in
-   * one process and can emit a parseable timing line the benchmark
-   * harness reads off the subprocess's output stream.
+   * forwards to each supervisor it constructs. Resolved at the sidecar boot
+   * edge from the Phase 4.7 latency-gate env gate; absent in ordinary
+   * production. The supervisor runs in this sidecar subprocess, so the
+   * observer sees both ends of the per-message IPC round-trip in one process
+   * and can emit a parseable timing line the benchmark harness reads off the
+   * subprocess's output stream.
    */
   onDispatchTiming?: (mark: DispatchTimingMark) => void;
-  /**
-   * D2 §10c forced-repack A/B toggle the multi-step branch forwards to
-   * each supervisor it constructs. Resolved at the sidecar boot edge from
-   * the same benchmark env gate; absent in ordinary production.
-   */
+  /** D2 §10c forced-repack A/B toggle forwarded to each supervisor. */
   repackEveryMessages?: { everyMessages: number };
   /**
    * Consumed-dedup retention horizon (ms) forwarded to every supervisor the
@@ -1280,43 +1206,33 @@ export function createSidecarDeployRouter<THost, TRegistries>(deps: {
   // Reclaim a deployment address whose supervisor drove ITSELF to a terminal
   // phase (crash-loop latch, channel crash, recycle failure) without an
   // operator undeploy. Drops the address's runtime/routing state so a redeploy
-  // of the same address succeeds without a manual undeploy: the `has`-guarded
-  // `activeSupervisors` entry is the redeploy gate, and `transport.register`
-  // throws on a double-register, so both must be released here. The routers
-  // and the slug are released too so a frame racing the reclaim is rejected at
-  // the boundary rather than dispatched into the dead supervisor, and the slug
-  // is free to re-claim.
+  // succeeds without a manual undeploy: the `has`-guarded `activeSupervisors`
+  // entry is the redeploy gate and `transport.register` throws on a
+  // double-register, so both must be released here. The routers and slug are
+  // released too so a frame racing the reclaim is rejected at the boundary.
   //
   // Three deliberate invariants:
-  //   - This NEVER calls back into `wired.supervisor.*`. It runs as the
-  //     supervisor's own `onSelfTerminate` sink, i.e. re-entrantly during the
-  //     supervisor's terminal teardown; a call back in (e.g. `shutdown()`)
-  //     would re-enter that teardown. The supervisor has already terminated,
-  //     so there is nothing to shut down.
-  //   - It does NOT delete the durable run record or on-disk state (unlike the
-  //     `undeploy` hook). The run record mirrors the hub's deployment intent,
-  //     and a self-termination is not a hub-initiated undeploy: the hub still
+  //   - Never calls back into `wired.supervisor.*`: it runs as the supervisor's
+  //     own `onSelfTerminate` sink, i.e. re-entrantly during terminal teardown;
+  //     a call back in would re-enter that teardown. The supervisor has already
+  //     terminated, so there is nothing to shut down.
+  //   - Does NOT delete the durable run record or on-disk state (unlike the
+  //     `undeploy` hook). The record mirrors the hub's deployment intent, and a
+  //     self-termination is not a hub-initiated undeploy: the hub still
   //     believes the address is deployed. Leaving the record lets a boot
-  //     restore re-spawn a fresh supervisor for the address, and a
-  //     same-process redeploy overwrites the record destructively. This
-  //     preserves the pre-existing boot-restore behavior exactly -- a
-  //     self-terminated deployment already left its record on disk before this
-  //     reclaim existed; the reclaim only drops in-memory routing state, never
-  //     durable state.
-  //   - It does NOT call `unregisterDeployment`, so the deployment address
-  //     mapping (`deploymentAddressRegistry`) is RETAINED. That mapping is
-  //     consulted only by the OUTBOUND workflow-run pack push
-  //     (`registry.resolve`), which the supervisor itself drives; no inbound
-  //     frame consults it (a frame racing the reclaim is rejected by the
-  //     routers above, not routed through this mapping). The crash-loop latch
-  //     commits its `RunFailed` tombstone, resolving this mapping, before this
-  //     sink fires. Retaining a stale entry never blocks a redeploy: `record`
-  //     overwrites idempotently, and an operator `undeploy` or a process
-  //     restart clears it.
+  //     restore re-spawn the address, preserving the pre-existing boot-restore
+  //     behavior exactly; the reclaim only drops in-memory routing state.
+  //   - Does NOT call `unregisterDeployment`, so the deployment-address mapping
+  //     (`deploymentAddressRegistry`) is RETAINED. That mapping is consulted
+  //     only by the OUTBOUND pack push (`registry.resolve`), which the
+  //     supervisor itself drives; no inbound frame consults it. The crash-loop
+  //     latch commits its `RunFailed` tombstone, resolving this mapping, before
+  //     this sink fires, and a stale entry never blocks a redeploy (`record`
+  //     overwrites idempotently; an undeploy or process restart clears it).
   //
   // Fully synchronous with no `await` between the guard and the mutations, so
   // it is idempotent and cannot interleave with a concurrent operator
-  // `undeploy` of the same address (both are "if present, drop").
+  // `undeploy` of the same address.
   function reclaimSelfTerminatedSupervisor(args: {
     runId: string;
     agentAddress: string;
@@ -1335,8 +1251,8 @@ export function createSidecarDeployRouter<THost, TRegistries>(deps: {
    * pre-sealed-record deploy wrote for a body (a world-readable plaintext
    * `sources.json`, INTR-310). Body sources now ride sealed in the run record
    * and reach the child through the spawn env, so the staging is retired; a
-   * redeploy of an address that predates the change reaches here and reclaims
-   * its orphaned file. A never-staged body is a no-op (`force`).
+   * redeploy of an address that predates the change reclaims its orphaned
+   * file here. A never-staged body is a no-op (`force`).
    */
   async function sweepLegacyBodySources(
     sidecarDataDir: string | undefined,
@@ -1367,7 +1283,7 @@ export function createSidecarDeployRouter<THost, TRegistries>(deps: {
     /**
      * The runnable definition, projected to its inert wire shape. Source-ref is
      * the only deploy lineage, so this is always the closure evaluation
-     * (`projectLiveToInert(applied.definition)`), NOT a frame-carried inline
+     * (`projectLiveToInert(applied.definition)`), never a frame-carried inline
      * definition (the deploy frame carries none). Both the deploy path and the
      * boot-time restore derive it the same way, from the materialized closure.
      */
@@ -1410,9 +1326,9 @@ export function createSidecarDeployRouter<THost, TRegistries>(deps: {
      * Sidecar-local directory of the materialized workflow-definition closure,
      * set after the frozen closure is applied. The spawn core threads it into
      * the child's spawn env so the run child evaluates the pinned code to a
-     * live definition. Sidecar-local: it never travels on the hub deploy frame
-     * and is not persisted to the deployment record. Always present -- source-ref
-     * is the only deploy lineage.
+     * live definition. Never travels on the hub deploy frame and is not
+     * persisted to the deployment record. Always present -- source-ref is the
+     * only deploy lineage.
      */
     closurePackageDir: string;
     /**
@@ -1426,11 +1342,11 @@ export function createSidecarDeployRouter<THost, TRegistries>(deps: {
   }
 
   /**
-   * Build the durable run record from a spec and a source table. The
-   * table is a parameter (not `spec.sources`) so the deploy path writes the
-   * deploy-time sources while the rotation handler writes the live-rotated
-   * ones -- both through one shape, so a rotation persists the same record a
-   * boot-time restore reseeds from.
+   * Build the durable run record from a spec and a source table. The table is a
+   * parameter (not `spec.sources`) so the deploy path writes the deploy-time
+   * sources while the rotation handler writes the live-rotated ones -- both
+   * through one shape, so a rotation persists the same record a boot-time
+   * restore reseeds from.
    */
   function buildWorkflowRunRecord(
     spec: WorkflowDeploySpec,
@@ -1438,7 +1354,7 @@ export function createSidecarDeployRouter<THost, TRegistries>(deps: {
   ): WorkflowRunRecord {
     // The record schema requires both for a source-ref record -- the only
     // lineage -- so a spec missing either is a wiring defect. Fail loudly here
-    // rather than persist a record the boot scan would then reject as corrupt.
+    // rather than persist a record the boot scan would reject as corrupt.
     if (spec.approvedWireHash === undefined) {
       throw new Error(
         `buildWorkflowRunRecord: a source-ref deployment (${spec.agentAddress}) must carry approvedWireHash`,
@@ -1478,13 +1394,12 @@ export function createSidecarDeployRouter<THost, TRegistries>(deps: {
    * `applied.definition` and takes `packageDir`; restore takes `packageDir` and
    * re-carries the pin on its spec.
    *
-   * The instance dir is force-reclaimed before the apply. `deploymentId` is
-   * deterministic per agent address, so a redeploy or a boot-restore reuses the
-   * same dir; a prior soft-failed deploy or a dead prior process can leave it
-   * half-materialized. The rm makes the apply write into a clean dir either way
-   * (a no-op on a never-deployed address). It is safe to reclaim only because
-   * no live reader holds the dir when this runs -- a precondition each caller
-   * establishes and notes at its call site.
+   * The instance dir is force-reclaimed before the apply: `deploymentId` is
+   * deterministic per address, so a redeploy or boot-restore reuses the same
+   * dir, and a prior soft-failed deploy or dead process can leave it
+   * half-materialized. The rm is a no-op on a never-deployed address and is
+   * safe only because no live reader holds the dir when this runs -- a
+   * precondition each caller establishes at its call site.
    */
   async function materializeDeploymentClosure(
     dataDir: string,
@@ -1552,15 +1467,13 @@ export function createSidecarDeployRouter<THost, TRegistries>(deps: {
     // the boot-restore path carry it here (restore unseals it from the record),
     // and it is delivered to the child on the pre-trigger barrier.
     const credentialDelivery = spec.credentials;
-    // Fail loud if this address already has a live supervisor. Both single- and
-    // multi-step now register on the transport, so both carry the
-    // `transport.register` duplicate-throw backstop; this `has()` check is the
-    // primary early guard that gives a clean error before that lower-level
-    // throw and before the `activeSupervisors.set` below could clobber the
-    // running deployment's handle. Both the deploy path and the boot restore
-    // path route through here, so this is the single transition guard against
-    // a double-spawn -- notably a boot restore racing a legacy restore for the
-    // same address (the B-reroute follow-up relies on it).
+    // Fail loud if this address already has a live supervisor. This `has()`
+    // check is the primary early guard: it gives a clean error before the
+    // `transport.register` duplicate-throw backstop and before the
+    // `activeSupervisors.set` below could clobber the running deployment's
+    // handle. Both the deploy path and the boot restore route through here, so
+    // this is the single transition guard against a double-spawn -- notably a
+    // boot restore racing a legacy restore for the same address.
     if (activeSupervisors.has(spec.agentAddress)) {
       throw new Error(
         `sidecar deploy router: a supervisor is already active for ${spec.agentAddress}; refusing to spawn a second`,
@@ -1583,11 +1496,11 @@ export function createSidecarDeployRouter<THost, TRegistries>(deps: {
     // Every step id the deployment's credentials snapshot must cover. This is
     // NOT `stepOrder`: a `loop` body runs in-process as a child run inheriting
     // the parent's env, so a body step authorizes against the SAME snapshot the
-    // top-level steps do, keyed by its own plain step id. A snapshot built from
+    // top-level steps do, keyed by its own plain step id; a snapshot built from
     // `stepOrder` alone carries no entry for it and the child's authorize
-    // throws on the body's first tool call. The address/repo strategy above
-    // stays on `stepOrder`, because the head/step collapse is a property of the
-    // deployment's own step count, not of what a body can run.
+    // throws on the body's first tool call. The address/repo strategy stays on
+    // `stepOrder`: the head/step collapse is a property of the deployment's own
+    // step count, not of what a body can run.
     const credentialStepIds = deps.inertFlatNamespaceStepIds({
       definition: spec.definition,
       context: "sidecar deploy router credentials snapshot: ",
@@ -1597,7 +1510,7 @@ export function createSidecarDeployRouter<THost, TRegistries>(deps: {
     // failed spawn leaks no freshly-spawned workflow-process child,
     // `activeSupervisors` entry, transport registration, or multistep router
     // registration. (The deployment-address registration happens before spawn
-    // and is unwound by its own guard.) The ordering inside the finally is the
+    // and is unwound by its own guard.) Ordering inside the finally is the
     // reverse of the success-path registration order. The caller owns the
     // deployment slug: it must claim the collision guard before any durable
     // write and release it on failure, so the slug is not touched here.
@@ -1611,13 +1524,13 @@ export function createSidecarDeployRouter<THost, TRegistries>(deps: {
     try {
       // The child's `DEFINITION_HASH` is the HUB-APPROVED wire hash the deploy
       // frame carried (`spec.approvedWireHash`) -- the hub is the authority, so
-      // the child re-verifies its own recompute against it. Both feeds into this
-      // core carry it: the production hub deploy builder always stamps it, and
-      // the boot restore re-attaches it from the persisted record. A missing
-      // hash here is therefore a wiring bug, not a legacy case to paper over:
+      // the child re-verifies its own recompute against it. Both feeds into
+      // this core carry it: the production hub deploy builder always stamps it,
+      // and the boot restore re-attaches it from the persisted record. A
+      // missing hash here is therefore a wiring bug, not a legacy case:
       // substituting a sidecar recompute would make the child re-verify against
-      // the sidecar's own hash rather than the hub authority -- a circular check
-      // that gives false assurance. Fail loud instead.
+      // the sidecar's own hash rather than the hub authority -- a circular
+      // check that gives false assurance. Fail loud instead.
       if (spec.approvedWireHash === undefined) {
         throw new Error(
           `workflow deploy spawn (${spec.agentAddress}): the deploy spec carries no approvedWireHash. The hub deploy builder must stamp the hub-approved wire hash and a restore must re-attach it from the persisted record; the sidecar will not recompute it, which would collapse the child's re-verify to a self-check.`,
@@ -1625,16 +1538,12 @@ export function createSidecarDeployRouter<THost, TRegistries>(deps: {
       }
       const definitionHash = spec.approvedWireHash;
 
-      // Per-deployment substrate-config keys the substrate factory validator
-      // requires. The boot edge's `multistepSubstrateEnv` carries the boot-edge
-      // constants; the two workflow-run identity keys are derived per-deploy
-      // here.
       // Spawned bodies' plaintext inference sources, serialized once for the
       // deployment's lifetime (bodies do not live-rotate, unlike the top-level
       // sources below). The child looks each body up by definition id and never
       // holds the sidecar's cipher key. Guarded against the OS argument-string
-      // ceiling here, at deploy, so an over-large deployment fails loudly rather
-      // than at a later child `execve`.
+      // ceiling at deploy so an over-large deployment fails loudly rather than
+      // at a later child `execve`.
       const bodySourcesEnv = JSON.stringify(spec.bodySources ?? {});
       const bodySourcesBytes = Buffer.byteLength(bodySourcesEnv, "utf8");
       if (bodySourcesBytes > WORKFLOW_BODY_SOURCES_MAX_BYTES) {
@@ -1649,10 +1558,8 @@ export function createSidecarDeployRouter<THost, TRegistries>(deps: {
         WORKFLOW_RUN_REF: "refs/heads/main",
         // Thread the materialized closure's sidecar-local package dir so the
         // run child EVALUATES the pinned code to a live definition and
-        // re-verifies by project-then-hash against `DEFINITION_HASH`. Source-ref
-        // is the only deploy lineage, so this is always present. Sidecar-local;
-        // carried on the frozen substrate env because the value is fixed for the
-        // deployment's lifetime.
+        // re-verifies by project-then-hash against `DEFINITION_HASH`. Fixed
+        // for the deployment's lifetime, so it rides the frozen substrate env.
         CLOSURE_PACKAGE_DIR: spec.closurePackageDir,
         [WORKFLOW_BODY_SOURCES_ENV_KEY]: bodySourcesEnv,
       };
@@ -1665,11 +1572,11 @@ export function createSidecarDeployRouter<THost, TRegistries>(deps: {
       let currentSources = spec.sources;
 
       // RunIds whose `run.grants` write was attempted and failed. The grants
-      // handler below records a runId here on a write failure; the grants
-      // barrier reads it through `isRunPoisoned` and fails the run rather than
-      // starting it under the empty deploy-time grant set. Scoped to this
-      // deployment's supervisor; a run that never had a `run.grants` frame is
-      // never added, so internal runs inherit the deployment's grants normally.
+      // handler records a runId here on a write failure; the grants barrier
+      // reads it through `isRunPoisoned` and fails the run rather than starting
+      // it under the empty deploy-time grant set. Scoped to this deployment's
+      // supervisor; a run that never had a `run.grants` frame is never added,
+      // so internal runs inherit the deployment's grants normally.
       const poisonedRunIds = new Set<string>();
 
       const wired = createSidecarWorkflowSupervisor({
@@ -1781,9 +1688,9 @@ export function createSidecarDeployRouter<THost, TRegistries>(deps: {
 
       // Record the deployment-address mapping BEFORE `spawn`: the spawn's
       // `replayProcessingToInbox` writes through the pack-pushing facade,
-      // which resolves this mapping. Recording it after `spawn` loses the
-      // race and the replay's write throws "no run address registered". The
-      // finally unwinds it on any failure.
+      // which resolves this mapping; recording after `spawn` loses the race
+      // and the replay's write throws "no run address registered". The finally
+      // unwinds it on any failure.
       deps.registerDeployment({
         runId,
         agentAddress: spec.agentAddress,
@@ -1889,10 +1796,8 @@ export function createSidecarDeployRouter<THost, TRegistries>(deps: {
             // Swap `currentSources` synchronously BEFORE the durable persist:
             // it is the process-local respawn hint, so a recycle interleaving
             // the persist must respawn on the SAME sources being persisted.
-            // Persisting first would leave the child on the old sources during
-            // the persist window; swapping first leaves only child-ahead-of-
-            // durable on a failed persist, which the next recycle heals -- the
-            // benign direction.
+            // Swapping first leaves only child-ahead-of-durable on a failed
+            // persist, which the next recycle heals -- the benign direction.
             const prevSources = currentSources;
             currentSources = rotated;
             // The durable write still precedes the LIVE swap, so
@@ -1973,12 +1878,10 @@ export function createSidecarDeployRouter<THost, TRegistries>(deps: {
         }
         if (hubKeyRecorded) {
           // Reverse `recordHubKey` so a failed deploy leaves no in-memory hub
-          // key or keypair cache behind (the transport registration is already
-          // unwound; a redeploy reloads the keypair from disk). The deploy-tree
-          // repo `initRepo` created is deliberately NOT reversed: the durable
-          // identity keypair lives inside it (`keys/` nests under the agent
-          // repo dir), so removing it would destroy an identity a rerouted
-          // head must keep.
+          // key or keypair cache behind (a redeploy reloads the keypair from
+          // disk). The deploy-tree repo `initRepo` created is deliberately NOT
+          // reversed: the durable identity keypair lives inside it, so
+          // removing it would destroy an identity a rerouted head must keep.
           deps.keyStore.forgetAgent(spec.agentAddress);
         }
         if (deploymentRegistered) {
