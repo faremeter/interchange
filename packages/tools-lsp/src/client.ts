@@ -15,35 +15,25 @@ const DIAGNOSTICS_DOCUMENT_WAIT_MS = 5_000;
 const DIAGNOSTICS_FULL_WAIT_MS = 10_000;
 const SHUTDOWN_TIMEOUT_MS = 5_000;
 // Bound for a notification write. These resolve when the bytes reach the
-// child's stdin, not when the server acts on them, so a server that stays
-// alive but stops draining parks the write once the pipe buffer fills -- and
-// the JSON-RPC writer serializes behind one semaphore, so every later
-// notification queues behind the parked one. Unbounded, that hangs the tool
-// call awaiting it; bounded, the caller gets an error it can report.
-//
-// Two seconds is three orders of magnitude above the sub-millisecond flush a
-// draining server gives, and it is deliberately far tighter than the request
-// budgets above: a wedged server should surface quickly, and `openFile` can
-// issue two of these per call.
+// child's stdin, not when the server acts on them, so a server that stops
+// draining parks the write once the pipe buffer fills, and the writer
+// serializes behind one semaphore, so every later notification queues behind
+// the parked one. Unbounded, that hangs the awaiting call; bounded, the
+// caller gets an error it can report. Deliberately far tighter than the
+// request budgets above: a wedged server should surface quickly, and
+// `openFile` can issue two of these per call.
 const NOTIFY_TIMEOUT_MS = 2_000;
 // A server that honors `exit` leaves on its own; this is how long it gets to
-// do so before the hard kill. Without it the protocol's graceful path is
-// never taken, because the kill follows the notification immediately.
-//
-// Kept generous deliberately. A server that honors `exit` resolves on its
-// exit event in a couple of milliseconds and never reaches this bound, so the
-// cost falls only on one that ignores `exit` -- and the manager disposes
-// clients serially, so that cost is per client. Trading a slower teardown for
-// a misbehaving server against a wide margin for a well-behaved one is the
-// right way round: the margin is what keeps the shutdown assertion from
-// becoming the kind of load-sensitive test this package is being cleaned of.
+// do so before the hard kill. Without it the graceful path is never taken,
+// because the kill follows the notification immediately. Kept generous
+// deliberately: the cost falls only on a server that ignores `exit`, and the
+// manager disposes clients serially, so the cost is per client.
 const EXIT_GRACE_MS = 1_000;
 
 /**
- * Raised by `withTimeout` when its bound elapses. Distinct from whatever the
- * bounded operation itself rejects with, because the two mean different
- * things to a caller: a rejection came back from the operation, while this
- * one means the operation was abandoned and may still be running.
+ * Raised by `withTimeout` when its bound elapses. Distinct from a rejection
+ * from the bounded operation itself: this one means the operation was
+ * abandoned and may still be running.
  */
 class LSPTimeoutError extends Error {
   constructor(label: string, ms: number) {
@@ -53,8 +43,8 @@ class LSPTimeoutError extends Error {
 }
 
 /**
- * Raised when a path's document state on the server is no longer knowable,
- * so the client refuses to send for it again; see `poisonedFiles`.
+ * Raised when a path's document state on the server is no longer knowable;
+ * see `poisonedFiles`.
  */
 export class LSPDocumentOutOfSyncError extends Error {
   constructor(
@@ -131,9 +121,8 @@ async function stopProcess(
 }
 
 /**
- * Resolves once the child has exited, or after `ms` if it has not. Used to
- * let a server act on `exit` before the hard kill; the caller still calls
- * `stopProcess`, which no-ops on an already-exited child.
+ * Resolves once the child has exited, or after `ms` if it has not. Lets a
+ * server act on `exit` before the hard kill.
  */
 async function exitedWithin(
   proc: ChildProcessWithoutNullStreams,
@@ -166,17 +155,13 @@ export async function createLSPClient(
 
   const files = new Map<string, FileState>();
   // Paths whose document state on the server is no longer knowable, mapped
-  // to the abandoned write that made it so. A notification the bound gave up
-  // on is still queued in the JSON-RPC writer, so the server may receive it
-  // whenever it resumes draining; the client cannot tell which versions it
-  // holds, and must stop sending for that path rather than guess one.
+  // to the abandoned write that made it so. The write is still queued in the
+  // JSON-RPC writer, so the server may receive it whenever it resumes
+  // draining; the client must stop sending for that path rather than guess.
   const poisonedFiles = new Map<string, unknown>();
-  // `openFile` reads a path's recorded version, awaits its notifications, and
-  // only then records the new one, so two overlapping calls for one path would
-  // both read the same version and send it twice. LSP requires document
-  // versions to strictly increase, and the middleware's fire-and-forget touch
-  // overlaps its awaited one on the same path, so this is reachable rather
-  // than theoretical. One chain per path serializes them.
+  // Serializes overlapping opens per path: two would both read the same
+  // recorded version and send it twice, which LSP forbids. The middleware's
+  // fire-and-forget touch overlaps its awaited one, so this is reachable.
   const openChains = new Map<string, Promise<void>>();
   const pushDiagnostics = new Map<string, Diagnostic[]>();
   const pullDiagnostics = new Map<string, Diagnostic[]>();
@@ -207,9 +192,8 @@ export async function createLSPClient(
     (params: { uri: string; diagnostics: Diagnostic[]; version?: number }) => {
       const { uri } = params;
 
-      // TypeScript language server aggressively publishes diagnostics on
-      // initial load. Seed the map on the first publish so that a
-      // subsequent waitForDiagnostics does not double-wait.
+      // Seed the map on the first publish so a subsequent waitForDiagnostics
+      // does not double-wait.
       if (input.seedsInitialDiagnostics && !seeded) {
         seeded = true;
         pushDiagnostics.set(uri, params.diagnostics);
@@ -367,18 +351,16 @@ export async function createLSPClient(
   /**
    * Sends one version-carrying document notification for `filePath`.
    *
-   * A write ends one of three ways and each leaves `files` differently. A
-   * completed write put the version on the wire, so the caller records it. A
-   * failed write never reached the wire, so the caller leaves the map alone
-   * and a later call may reuse the version. A write `NOTIFY_TIMEOUT_MS`
-   * abandons is neither, and is not cancellable: the JSON-RPC writer still
-   * holds it queued behind the stalled pipe, so the server may receive that
-   * version whenever it resumes draining. Reusing the version after that
-   * would send it twice -- LSP requires them to strictly increase, and
-   * `waitForDiagnostics` would be satisfied by the first send's publish and
-   * report diagnostics for stale text as current. So an abandoned write
-   * poisons the path instead, and every later call for it raises
-   * `LSPDocumentOutOfSyncError` rather than guessing a version.
+   * A write ends one of three ways. A completed write put the version on the
+   * wire, so the caller records it. A failed write never reached the wire,
+   * so the caller leaves the map alone and a later call may reuse the
+   * version. A write the `NOTIFY_TIMEOUT_MS` bound abandoned is neither, and
+   * is not cancellable: the writer still holds it queued behind the stalled
+   * pipe, so the server may receive that version later. Reusing it would
+   * send it twice -- LSP requires versions to strictly increase, and
+   * `waitForDiagnostics` would settle on the first send's publish and report
+   * stale text as current. So an abandoned write poisons the path instead,
+   * and later calls raise `LSPDocumentOutOfSyncError`.
    */
   async function sendDocumentNotification(
     filePath: string,
@@ -411,16 +393,12 @@ export async function createLSPClient(
     const existing = files.get(filePath);
 
     // `files` models what the server holds, so a version is recorded only
-    // once its notification is on the wire. Recording first would leave the
+    // once its notification is on the wire: recording first would leave the
     // map a version ahead after a failed write, and `waitForDiagnostics`
-    // would then wait for a version the server will never publish and report
-    // no diagnostics for a file that has them. A completed write is the
-    // strongest available signal: a server that takes the bytes and never
-    // acts on them still diverges, and nothing here can detect that. The
-    // third ending, an abandoned write, is handled in
-    // `sendDocumentNotification`.
+    // would wait on a version the server never publishes. The third ending,
+    // an abandoned write, is handled in `sendDocumentNotification`.
     //
-    // Reading the version here and recording it after the awaits is only safe
+    // Reading the version here and recording it after the awaits is safe only
     // because `openFile` serializes per path; see `openChains`.
     if (existing === undefined) {
       const version = 1;
@@ -443,9 +421,8 @@ export async function createLSPClient(
 
     const version = existing.version + 1;
 
-    // Carries no version, and the didChange below is never issued when this
-    // one is abandoned, so an abandoned write here leaves `files` describing
-    // the server accurately and a later call may reuse `version`. Only the
+    // Carries no version, so an abandoned write here leaves `files`
+    // accurate and a later call may reuse `version`. Only the
     // version-carrying writes poison the path.
     await withTimeout(
       connection.sendNotification("workspace/didChangeWatchedFiles", {

@@ -11,7 +11,7 @@ export function pretty(d: Diagnostic): string {
   return `${severity} [${line}:${col}] ${d.message}`;
 }
 
-// Output is XML-tagged for structured consumption by LLM tool responses.
+// XML-tagged for structured consumption by LLM tool responses.
 export function report(
   file: string,
   issues: Diagnostic[],

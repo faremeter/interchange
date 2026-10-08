@@ -1,7 +1,6 @@
-// Fake LSP server for testing. Spawned as a child process by tests.
-// Speaks enough of the LSP protocol to exercise client behaviors:
-// initialize handshake, didOpen -> publishDiagnostics, pull diagnostics,
-// dynamic capability registration, and shutdown.
+// Fake LSP server for tests. Speaks enough of the LSP protocol to exercise
+// the client: initialize handshake, didOpen -> publishDiagnostics, pull
+// diagnostics, dynamic capability registration, and shutdown.
 
 import {
   createMessageConnection,
@@ -54,7 +53,7 @@ connection.onNotification(
     const { uri, version, text } = params.textDocument;
     openDocuments.set(uri, { version, text });
 
-    // Simulate publishDiagnostics after a short delay
+    // Publish diagnostics after a short delay.
     setTimeout(() => {
       const diagnostics = generateDiagnostics(uri, text);
       void connection.sendNotification("textDocument/publishDiagnostics", {
@@ -202,7 +201,7 @@ function generateDiagnostics(
     message: string;
   }[] = [];
 
-  // Generate a diagnostic for each line containing "ERROR_MARKER"
+  // One diagnostic per line containing ERROR_MARKER.
   const lines = text.split("\n");
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];

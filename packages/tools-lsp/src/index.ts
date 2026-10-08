@@ -16,8 +16,7 @@ export interface LSPPluginOptions {
 export interface LSPPlugin extends ToolPlugin {
   /**
    * The working directory the plugin's LSP roots its servers under,
-   * surfaced from the manager so a caller can confirm which tree the
-   * plugin is scoped to.
+   * surfaced from the manager.
    */
   readonly cwd: string;
 }

@@ -1,14 +1,9 @@
 // Behavior guard: the LSP sidecar bundle must scope its working directory
 // to `env.toolCwd` (the tool filesystem scope), not `env.workdir` (the lock
 // boundary). Every other test keeps the two equal, so a regression that
-// reads `env.workdir` again would pass the suite silently. This forces the
-// two apart and asserts the constructed plugin is rooted at `toolCwd`.
-//
-// `LSPPlugin.cwd` is surfaced straight from the manager's `ctx.cwd` — the
-// same directory `createLSPManager` hands every server as
-// `serverCtx.directory` and gates file operations against (proven in
-// lsp.test.ts). So this assertion tracks the value that actually drives the
-// LSP, not a copy that could drift from it.
+// reads `env.workdir` again would pass the suite silently; this forces the
+// two apart. `LSPPlugin.cwd` comes straight from the manager's `ctx.cwd`, so
+// the assertion tracks the value that actually drives the LSP.
 
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";

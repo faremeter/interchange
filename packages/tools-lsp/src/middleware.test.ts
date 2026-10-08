@@ -76,8 +76,7 @@ describe("LSP middleware", () => {
     );
 
     expect(result.isError).toBeFalsy();
-    // The file should still have ERROR_MARKER after the edit
-    // so diagnostics should be appended
+    // The file still has ERROR_MARKER after the edit, so diagnostics append.
     expect(String(result.content)).toContain("<diagnostics");
   });
 
@@ -130,7 +129,7 @@ describe("LSP middleware", () => {
     );
 
     expect(result.isError).toBeFalsy();
-    // Clean file should have no diagnostics
+    // Clean file: no diagnostics.
     expect(String(result.content)).not.toContain("<diagnostics");
     await pt.dispose();
   });

@@ -1,12 +1,11 @@
 // A server that completes the initialize handshake, stops draining stdin,
-// and works through the whole backlog when it is sent SIGUSR2 -- the shape of
-// a language server wedged in a synchronous operation that later finishes.
-// Raw framing, so no library holds stdin in flowing mode after the pause.
+// and works through the whole backlog when sent SIGUSR2 -- a language server
+// wedged in a synchronous operation that later finishes. Raw framing, so no
+// library holds stdin in flowing mode after the pause.
 //
-// It answers `intx/versionsReceived` with the document versions it has parsed
-// so far. That answer rides the same stream as the notifications and is
-// written only after them, so a test learns what the server saw by asking
-// rather than by waiting for a duration to pass.
+// It answers `intx/versionsReceived` with the document versions parsed so
+// far. The answer rides the same stream after the notifications, so a test
+// learns what the server saw by asking rather than by waiting for a duration.
 let buf = Buffer.alloc(0);
 let paused = false;
 const received: string[] = [];

@@ -41,8 +41,8 @@ export interface LSPManager {
   /**
    * The working directory the manager roots its servers under. Every
    * server's `root`/`spawn` receives this as `serverCtx.directory`, and
-   * `containsPath` gates file operations against it (together with an
-   * optional distinct `worktree`, when one is supplied).
+   * `containsPath` gates file operations against it (plus an optional
+   * distinct `worktree`).
    */
   readonly cwd: string;
   hasClients(file: string): Promise<boolean>;
@@ -174,8 +174,7 @@ export function createLSPManager(opts: LSPManagerOptions): LSPManager {
       // A concurrent call registered first, so this client is discarded. It
       // never reaches `state.clients`, so the manager's own dispose can never
       // reach it either -- this is its only cleanup. Killing the process
-      // alone would leave the connection listening on a dead pipe, which is
-      // how an orphan write becomes a rejection charged to a later test.
+      // alone would leave the connection listening on a dead pipe.
       await client.shutdown();
       return race;
     }

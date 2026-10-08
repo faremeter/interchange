@@ -33,10 +33,10 @@ describe("notify.open under concurrency", () => {
 
     await client.shutdown();
 
-    // Two overlapping opens must yield two distinct versions; a duplicate
-    // means the read-modify-write on the file map lost an update, and the
-    // server would see the same document version twice. A following serial
-    // open must then continue from the higher of them rather than repeat it.
+    // Two overlapping opens must yield two distinct versions (a duplicate
+    // means the file-map update lost a write, and the server would see the
+    // same version twice); a following serial open must continue from the
+    // higher of them.
     expect(new Set([v1, v2]).size).toBe(2);
     expect(v3).toBe(Math.max(v1, v2) + 1);
   }, 30_000);

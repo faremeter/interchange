@@ -155,11 +155,9 @@ describe("createLSPClient", () => {
     await client.shutdown();
 
     const exitCode = await exitPromise;
-    // Exactly 0: shutdown awaits the `exit` notification and then gives the
-    // server a window to act on it, so one that honors the protocol leaves on
-    // its own instead of racing the kill. This fixture exits in about 2ms
-    // against a window three orders of magnitude larger, so a signal death
-    // here means either the graceful path broke or the fixture got far slower.
+    // Exactly 0: shutdown awaits the `exit` notification and gives the server
+    // a window to act on it, so one that honors the protocol leaves on its
+    // own instead of racing the kill.
     expect(exitCode).toBe(0);
   });
 
@@ -195,11 +193,10 @@ describe("createLSPClient", () => {
 
     const version = await client.notify.open({ path: filePath });
 
-    // The seeded first publish records its diagnostics and returns without
-    // notifying listeners, so a listener-based wait would not see it -- the
-    // recorded map is the signal that it arrived. waitForDiagnostics below
-    // then short-circuits on the already-recorded push, which is the
-    // no-double-wait behavior this test covers.
+    // The seeded first publish records its diagnostics without notifying
+    // listeners, so the recorded map is the signal that it arrived;
+    // waitForDiagnostics below short-circuits on it (the no-double-wait
+    // behavior this test covers).
     await waitUntil(() => client.diagnostics.size > 0);
 
     // Diagnostics should still be present (seeded)
