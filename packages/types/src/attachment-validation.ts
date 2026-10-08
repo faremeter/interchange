@@ -72,14 +72,13 @@ function decode(data: string | Uint8Array): Uint8Array | null {
  * Validate and decode attachments against a policy at either boundary
  * (mail tools or the request body).
  *
- * Order of checks: attachment count first (before anything is decoded);
- * encoded base64 is size-checked from its compact length (whitespace
- * stripped, padding counted) before decode; then in encounter order
- * encoded oversize, malformed base64, decoded per-attachment oversize,
- * disallowed MIME type, invalid name; the per-message total last. The
- * first error returns without decoding later entries. On success the
- * decoded `MessageAttachment[]` is returned with names defaulted to
- * `attachment-{index}` by input position.
+ * Order of checks: attachment count first (before any decode); encoded
+ * base64 is size-checked from its compact length (whitespace stripped,
+ * padding counted) before decode; then in encounter order encoded oversize,
+ * malformed base64, decoded per-attachment oversize, disallowed MIME type,
+ * invalid name; the per-message total last. The first error returns without
+ * decoding later entries. On success the decoded `MessageAttachment[]` is
+ * returned with names defaulted to `attachment-{index}` by input position.
  */
 export function validateAttachments(
   inputs: readonly AttachmentInput[],

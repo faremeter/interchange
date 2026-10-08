@@ -1,8 +1,6 @@
-// Arktype validators for GrantRule wire serialization.
-//
-// GrantRule.expiresAt is a Date | null at runtime, but JSON round-trips
-// turn it into a string | null. This validator accepts either form and
-// coerces strings back to Date instances.
+// Arktype validators for GrantRule wire serialization. GrantRule.expiresAt
+// is a Date | null at runtime but JSON round-trips it to string | null, so
+// this validator accepts either form and coerces strings back to Date.
 
 import { type } from "arktype";
 

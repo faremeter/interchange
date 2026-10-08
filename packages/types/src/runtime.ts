@@ -623,9 +623,7 @@ export interface MessageTransport {
 /**
  * The condition a `MessageTransport` operation failed under. A transport that
  * grows a condition this union does not carry takes its name from RFC 5530 § 3
- * rather than coining one.
- *
- * https://www.rfc-editor.org/rfc/rfc5530.html
+ * rather than coining one (https://www.rfc-editor.org/rfc/rfc5530.html).
  */
 export const MessageTransportCondition = type(
   "'NONEXISTENT' | 'CANNOT' | 'SERVERBUG'",
@@ -829,8 +827,7 @@ export type LastCycleSource = typeof LastCycleSource.infer;
 const TextBlock = type({
   type: "'text'",
   text: "string",
-  // Opaque provider signature; echo back verbatim on follow-up turns
-  // (Gemini `thoughtSignature`, including plain text).
+  // Opaque provider signature; echo back verbatim on follow-up turns (Gemini `thoughtSignature`, including plain text).
   "signature?": "string",
 });
 
@@ -872,8 +869,7 @@ export type MediaSource = typeof MediaSource.infer;
 export const ImageBlock = type({
   type: "'image'",
   source: MediaSource,
-  // Opaque provider signature; echo back verbatim on follow-up turns
-  // (Gemini rides a `thoughtSignature` on the inlineData part).
+  // Opaque provider signature; echo back verbatim on follow-up turns (Gemini rides a `thoughtSignature` on the inlineData part).
   "signature?": "string",
 });
 export type ImageBlock = typeof ImageBlock.infer;
@@ -935,8 +931,7 @@ const ToolCallBlock = type({
   id: "string",
   name: "string",
   arguments: "Record<string, unknown>",
-  // Opaque provider signature; echo back verbatim on follow-up turns
-  // (Gemini rides a `thoughtSignature` on the functionCall part).
+  // Opaque provider signature; echo back verbatim on follow-up turns (Gemini rides a `thoughtSignature` on the functionCall part).
   "signature?": "string",
 });
 /**
@@ -1033,8 +1028,7 @@ export const CodeExecutionRequestBlock = type({
   // Absent when the provider does not emit one; adapters MUST NOT default it
   // — callers narrow on presence rather than fall through to a guess.
   "language?": "string",
-  // Opaque provider signature; echo back verbatim on follow-up turns
-  // (Gemini rides a `thoughtSignature` on the executableCode part).
+  // Opaque provider signature; echo back verbatim on follow-up turns (Gemini rides a `thoughtSignature` on the executableCode part).
   "signature?": "string",
 });
 export type CodeExecutionRequestBlock = typeof CodeExecutionRequestBlock.infer;
@@ -1055,10 +1049,9 @@ export const CodeExecutionResultBlock = type({
   // Normalized outcome. Anthropic: derived from `return_code` and
   // `abort_reason`; Gemini: from the `outcome` enum.
   status: "'ok' | 'error' | 'aborted' | 'timeout'",
-  // Standard output. Providers that don't split (Gemini) map their combined
-  // `output` here and leave `stderr` empty.
+  // Providers that don't split (Gemini) map their combined `output` to
+  // `stdout` and leave `stderr` empty.
   "stdout?": "string",
-  // Standard error; empty for providers that don't split.
   "stderr?": "string",
   // Provider-native numeric return code (Anthropic `return_code`).
   "returnCode?": "number",
@@ -1307,8 +1300,7 @@ export const InferenceEvent = type.or(
     seq: "number",
     // `index` names the cited source content block so the harness can
     // interleave it into the finalized turn; absent when the adapter has no
-    // per-citation index, in which case the harness appends at `content[]`
-    // end.
+    // per-citation index (the harness appends at `content[]` end).
     data: { citation: CitationBlock, "index?": "number" },
   },
   {

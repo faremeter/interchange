@@ -1,5 +1,5 @@
 // Schema for the subset of `package.json` fields the asset substrate and
-// tool-package builders read. Shared by the package-registry kind handler
+// tool-package builders read, shared by the package-registry kind handler
 // (`@intx/hub-sessions`) and the builtin-packing script
 // (`bin/build-builtins.ts`), so an uploaded tarball validates against the
 // same field set the build path emits.
@@ -49,9 +49,8 @@ export type ToolCredentialDeclarationArray =
  * credential declarations), `workflow` (module producing the
  * `WorkflowDefinition`), `directors` (custom `defineDirector` factories),
  * `loops` (the package's `loop` `while`/`carry` functions), and `actions`
- * (the package's `action` handlers). `loops`/`actions` refs resolve by
- * export name at establish; `onUndeclaredKey("ignore")` passes arbitrary
- * upstream npm fields through.
+ * (the package's `action` handlers). `onUndeclaredKey("ignore")` passes
+ * arbitrary upstream npm fields through.
  */
 export const PackageJSON = type({
   name: "string",

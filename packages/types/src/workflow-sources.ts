@@ -1,8 +1,8 @@
-// Where a code-sourced workflow definition's bytes come from at apply time.
-// Two origins exist: a `registry` variant names an EXTERNAL npm registry that
-// publishes the definition package; an `asset` variant names a hub asset -- a
-// checked-out git repo -- holding the definition as a published `tarball`
-// (selected by the install pin) or as a `source` codebase at a pinned commit.
+// Where a code-sourced workflow definition's bytes come from at apply time:
+// a `registry` variant names an EXTERNAL npm registry that publishes the
+// definition package; an `asset` variant names a hub asset -- a checked-out
+// git repo -- holding the definition as a published `tarball` (selected by
+// the install pin) or as a `source` codebase at a pinned commit.
 
 import { type } from "arktype";
 

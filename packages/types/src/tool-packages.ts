@@ -200,9 +200,9 @@ export const ToolPackageSource = ToolPackageRegistrySource.or(
 export type ToolPackageSource = typeof ToolPackageSource.infer;
 
 /**
- * A closure entry's content identity whatever its source: the tarball
- * SRI, or the git tree oid of an `asset` source subtree. Cache-bust keys
- * read this rather than reaching into a shape-specific field.
+ * A closure entry's content identity whatever its source: the tarball SRI,
+ * or the git tree oid of an `asset` source subtree. Cache-bust keys read
+ * this rather than reaching into a shape-specific field.
  */
 export function getToolPackageSourceContentIdentity(
   source: ToolPackageSource,
@@ -222,9 +222,9 @@ export function getToolPackageSourceContentIdentity(
  *
  * `os`/`cpu` appear on entries from an `optionalDependencies`
  * declaration with platform constraints; the sidecar filters by its own
- * host before fetching. `tarballUrl` is preserved for registry-sourced
- * entries so the sidecar can fetch without re-resolving the packument;
- * the hub recorded the exact URL the registry served.
+ * host before fetching. `tarballUrl` lets the sidecar fetch a
+ * registry-sourced entry without re-resolving the packument; the hub
+ * recorded the exact URL the registry served.
  */
 export const ToolPackageManifestEntry = type({
   name: "string",

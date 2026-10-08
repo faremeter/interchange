@@ -2,9 +2,8 @@
 //
 // The deploy gate, the install-time probe, and re-verify must all agree
 // on the deployment's content handle, so they hash the exact same
-// canonical form. This module is the single source of truth those call
-// sites import; the hash is a hex SHA-256 of the definition's canonical
-// JSON.
+// canonical form: a hex SHA-256 of the definition's canonical JSON. This
+// module is the single source of truth those call sites import.
 import { hexEncode } from "./hex";
 
 /**
@@ -13,15 +12,13 @@ import { hexEncode } from "./hex";
  * affect the output, so two structurally equal values serialize to
  * byte-identical strings and therefore hash equal.
  *
- * Values follow `JSON.stringify`'s semantics for what JSON can represent:
- * an object key whose value is `undefined`, a function, or a symbol is
- * dropped, and such an array element renders as `null`. The only intended
- * difference from `JSON.stringify` is the deterministic key order, so for
- * JSON-representable values the output is invariant across a JSON
- * round-trip. A value with a custom `toJSON` (e.g. a `Date`) is NOT
- * round-trip invariant here, because this canonicalizer does not invoke
- * `toJSON` — callers needing round-trip invariance must pass already-JSON
- * values.
+ * Values follow `JSON.stringify`'s semantics: an object key whose value
+ * is `undefined`, a function, or a symbol is dropped, and such an array
+ * element renders as `null`. The only intended difference from
+ * `JSON.stringify` is the deterministic key order. A value with a custom
+ * `toJSON` (e.g. a `Date`) is NOT round-trip invariant here, because this
+ * canonicalizer does not invoke `toJSON` — callers needing round-trip
+ * invariance must pass already-JSON values.
  */
 export function canonicalJsonStringify(value: unknown): string {
   if (value === null) return "null";

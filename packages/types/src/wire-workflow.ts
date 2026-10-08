@@ -36,9 +36,7 @@ const commonStepFields = {
  * through opaque, and the membership is what makes a step's canonical JSON
  * deterministic across the child->hub boundary. Per-variant field validation is
  * deliberately NOT done here (deeper authoring-time validation -- required
- * fields, selector resolvability, DAG shape -- lives on `@intx/workflow`), so
- * the ten variants collapse to one schema over the kind enum rather than ten
- * near-identical arms whose fields were all optional passthrough anyway.
+ * fields, selector resolvability, DAG shape -- lives on `@intx/workflow`).
  */
 export const WorkflowStep = type({
   kind: "'step' | 'map' | 'gate' | 'awaitSignal' | 'sleep' | 'childWorkflow' | 'escalation' | 'action' | 'loop' | 'onTrigger'",
@@ -53,8 +51,7 @@ export type WorkflowStep = typeof WorkflowStep.infer;
  * `{ "[string]": WorkflowStep }` on purpose: the inferred type stays
  * `Record<string, unknown>` so the existing live-deploy producer
  * (`toWireWorkflowDefinition`, which hands a `Record<string, unknown>`
- * steps map to `sendAgentDeploy`) still typechecks, while the runtime
- * validation is fully closed over the primitive-kind set.
+ * steps map to `sendAgentDeploy`) still typechecks.
  */
 const WorkflowSteps = type({ "[string]": "unknown" }).narrow((steps, ctx) => {
   for (const [stepId, step] of Object.entries(steps)) {
@@ -72,8 +69,8 @@ const WorkflowSteps = type({ "[string]": "unknown" }).narrow((steps, ctx) => {
 /**
  * Workflow projection carried on an `agent.deploy` frame. Its presence
  * at the deploy router routes the frame to the workflow deploy path --
- * single- or multi-step, both of which spawn the workflow-process child
- * -- as opposed to a per-step provision frame.
+ * single- or multi-step, both of which spawn the workflow-process child --
+ * as opposed to a per-step provision frame.
  *
  * `definition` is the wire projection of `WorkflowDefinition` from
  * `@intx/workflow`. The arktype validator enforces the structural
@@ -86,17 +83,6 @@ const WorkflowSteps = type({ "[string]": "unknown" }).narrow((steps, ctx) => {
  * against, and the child rejects a tree missing any envelope-required
  * field. Deeper validation of authoring-time primitive shape lives on the
  * workflow definition surface in `@intx/workflow`, not on the wire.
- *
- * `sources` pins an ordered, non-empty inference-source list per step in
- * `definition.stepOrder` so the workflow-process child can resolve inference
- * at step invocation without a round trip to the hub. The list is the step's
- * failover chain: element 0 is the active source (its id is the step's
- * `defaultSource`), and the reactor fails over forward through the tail on a
- * transient inference error. A workflow step pins a single-element list (no
- * per-step failover); a single-agent instance pins the instance's full
- * ordered source chain. Every `stepOrder` entry must have a matching
- * `sources` entry; the validator rejects frames that violate this at the
- * boundary.
  */
 export const WorkflowProjectionDefinition = type({
   id: "string > 0",
@@ -105,22 +91,19 @@ export const WorkflowProjectionDefinition = type({
   steps: WorkflowSteps,
   "state?": "Record<string, unknown>",
   // The definition's credential bindings, projected verbatim by the
-  // live->inert projector (`projectDefinition`). This MUST stay in sync with
-  // that projector: because of the `"+": "delete"` below, a binding the
-  // projector emits but this schema omits would be silently stripped at the
-  // wire boundary, desyncing the hub-resolved bindings from the projection
-  // the sidecar validates and re-verifies. Bindings are the
+  // live->inert projector (`projectDefinition`). MUST stay in sync with that
+  // projector: the `"+": "delete"` below would silently strip a binding the
+  // projector emits but this schema omits, desyncing the hub-resolved
+  // bindings from the projection the sidecar re-verifies. Bindings are the
   // operator-approved surface (no secret material), so they belong in the
   // hashed projection.
   "credentialBindings?": CredentialBinding.array(),
   "sidecarPlacement?": SidecarCapabilityPolicy,
   // The author-declared inbound-mail admission policy, projected verbatim by
-  // the live->inert projector. This MUST stay in sync with that projector: the
+  // the live->inert projector. MUST stay in sync with that projector: the
   // `"+": "delete"` below strips any undeclared key, so a policy the projector
-  // emits but this schema omits would be silently stripped at the wire
-  // boundary and never reach the sidecar. The policy is part of the hashed
-  // surface, so a stripped policy would desync the sidecar's re-verify from
-  // the hub-approved hash.
+  // emits but this schema omits would never reach the sidecar and would desync
+  // the sidecar's re-verify from the hub-approved hash.
   "inboundMailPolicy?": InboundMailPolicy,
   "+": "delete",
 }).narrow((value, ctx) => {
@@ -151,6 +134,12 @@ export type WorkflowProjectionDefinition =
  * under `referencedDefinitions` -- so the field set and the coverage narrow are
  * defined once, and a body's sources cover its stepOrder just as the
  * top-level's cover the top-level's.
+ *
+ * Per step, the `sources` list is the failover chain: element 0 is the active
+ * source (its id is the step's `defaultSource`) and the reactor fails over
+ * forward through the tail on a transient inference error. A workflow step
+ * pins a single-element list; a single-agent instance pins the instance's
+ * full ordered chain.
  */
 export const WorkflowProjectionWithSources = type({
   definition: WorkflowProjectionDefinition,

@@ -4,10 +4,7 @@
  * interface and the single read-for-use site decrypts through it, so the
  * concrete implementation is chosen once at the composition root. The one
  * implementation today is `createEnvKeyCredentialCipher` (@intx/crypto):
- * AES-256-GCM under a single operator-provided key. A future KMS plugin
- * implements the same interface and can keep key material inside the KMS,
- * because the seam abstracts the whole encrypt/decrypt operation rather than
- * just supplying key bytes.
+ * AES-256-GCM under a single operator-provided key.
  *
  * `aad` (additional authenticated data) binds a ciphertext to its context —
  * the row id and column — so a blob cannot be transplanted between rows (or
@@ -26,13 +23,12 @@ export interface CredentialCipher {
 
 /**
  * Build the additional-authenticated-data string binding a credential-secret
- * ciphertext to the row and column it belongs to. The encoding is injective in
- * `(id, column)` — distinct pairs always produce distinct strings — so a
- * ciphertext cannot be transplanted to a row/column it was not sealed for even
- * if an id contained the delimiter of a naive `id:column` scheme. The
- * `"credential-secret"` tag domain-separates this use of the AEAD primitive
- * from any other. Both the write and read sites (and the re-key script) MUST
- * build the `aad` through this one function so the value matches.
+ * ciphertext to the row and column it belongs to. The encoding is injective
+ * in `(id, column)`, so a ciphertext cannot be transplanted to a row/column
+ * it was not sealed for even if an id contained the delimiter of a naive
+ * `id:column` scheme. The `"credential-secret"` tag domain-separates this
+ * use of the AEAD primitive from any other. Write, read, and re-key sites
+ * MUST build the `aad` through this one function so the value matches.
  */
 export function credentialAad(id: string, column: string): string {
   return JSON.stringify(["credential-secret", id, column]);

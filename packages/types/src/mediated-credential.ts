@@ -2,20 +2,21 @@
 // credential reaches the consumer that uses it (a tool, or the built-in
 // reactor) WITHOUT handing over the raw secret.
 //
-// A consumer declares a credential handle (see `ToolCredentialHandle`) and, at
-// handler-init, resolves a *mediated credential* -- a handle that lets it
-// authenticate against the provider without holding the secret on its own API.
-// An HTTP credential mediates by exposing an authed `fetch` pinned to the
-// credential's provider origin; the bearer token is injected per request and
-// never surfaced.
+// A consumer declares a credential handle (see `ToolCredentialHandle`) and,
+// at handler-init, resolves a *mediated credential* -- a handle that lets it
+// authenticate against the provider without holding the secret on its own
+// API. An HTTP credential mediates by exposing an authed `fetch` pinned to
+// the credential's provider origin; the bearer token is injected per request
+// and never surfaced.
 //
 // Honest scope of the mediation: it is NOT containment against hostile tool
-// code. A tool that legitimately receives an http mediated credential can read
-// the Authorization header the fetch sends. What mediation buys is (a) the
-// secret is off the tool's declared API surface, (b) a single rotation point --
-// material is read fresh per use, so a rotation reaches every holder without
-// re-shaping the handle -- and (c) consumer-scoped resolution. Confidentiality
-// from the receiving tool needs process/VM isolation, a different boundary.
+// code. A tool that legitimately receives an http mediated credential can
+// read the Authorization header the fetch sends. What mediation buys is (a)
+// the secret is off the tool's declared API surface, (b) a single rotation
+// point -- material is read fresh per use, so a rotation reaches every holder
+// without re-shaping the handle -- and (c) consumer-scoped resolution.
+// Confidentiality from the receiving tool needs process/VM isolation, a
+// different boundary.
 //
 // The provider plugin owns how a handle is shaped; the acquisition of material
 // (resolve a credential row, authorize, decrypt) lives on the delivery side and
@@ -72,9 +73,9 @@ export interface MediatedCredentialBase {
 /**
  * An HTTP-authenticated mediated credential: an authed `fetch` pinned to the
  * credential's provider origin. A request whose resolved origin is not the
- * pinned one is refused, and redirects are not followed (a 3xx is returned to
- * the caller), so the bearer token is only ever sent to the pinned origin and a
- * holder cannot redirect it to an attacker-chosen host.
+ * pinned one is refused, and redirects are not followed (a 3xx is returned
+ * to the caller), so the bearer token is only ever sent to the pinned origin
+ * and a holder cannot redirect it to an attacker-chosen host.
  */
 export interface HttpMediatedCredential extends MediatedCredentialBase {
   readonly kind: "http";
@@ -89,11 +90,11 @@ export interface HttpMediatedCredential extends MediatedCredentialBase {
 export type MediatedCredential = HttpMediatedCredential;
 
 /**
- * A provider plugin: the seam that owns how a mediated credential is shaped for
- * its provider. Registered under `key`, matched against a resolved provider's
- * plugin identifier. The plugin shapes a handle from a material source; it does
- * not acquire material and never decides authorization -- both happen upstream,
- * at the delivery boundary.
+ * A provider plugin: the seam that owns how a mediated credential is shaped
+ * for its provider. Registered under `key`, matched against a resolved
+ * provider's plugin identifier. The plugin shapes a handle from a material
+ * source; it does not acquire material and never decides authorization --
+ * both happen upstream, at the delivery boundary.
  */
 export interface CredentialProvider {
   readonly key: string;

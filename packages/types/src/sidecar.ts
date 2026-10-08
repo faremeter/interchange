@@ -1,11 +1,9 @@
 // Websocket wire protocol for hub↔sidecar communication.
 //
 // One websocket connection per sidecar↔hub pair. All traffic is multiplexed
-// as JSON frames with a `type` discriminator. The sidecar initiates the
-// connection; the hub is the server.
-//
-// Mail bytes are base64-encoded in JSON frames. Binary frames would be more
-// efficient but JSON is simpler to debug and inspect.
+// as JSON frames with a `type` discriminator; the sidecar initiates the
+// connection and the hub is the server. Mail bytes are base64-encoded in
+// JSON frames — simpler to debug and inspect than binary frames.
 
 import { type } from "arktype";
 import { GrantWalkSnapshot } from "./grant-snapshot";
@@ -101,10 +99,9 @@ export const RegisterFrame = type({
   agentAddresses: type("string")
     .array()
     .atMostLength(MAX_AGENT_ADDRESSES_FRAME),
-  // The rotatable (non-run) sender addresses this sidecar holds cached keys
-  // for, so a rotation that landed while the sidecar was disconnected
-  // reaches its cache on reconnect. Additive-optional, omitted when empty;
-  // absence means "nothing to refresh".
+  // Rotatable (non-run) sender addresses this sidecar holds cached keys for,
+  // so a rotation that landed while disconnected reaches its cache on
+  // reconnect. Additive-optional, omitted when empty.
   "cachedSenderAddresses?": type("string")
     .array()
     .atMostLength(MAX_CACHED_SENDER_ADDRESSES_FRAME),
@@ -268,8 +265,7 @@ export type SignalCorrelationRegisterFrame =
  * Hub acknowledges a `signal.correlation.register`: the co-write for this
  * correlationId is durable (inserted now or found already present), so the
  * sidecar stops retrying. Keyed on correlationId alone — every producer
- * drives the same idempotent co-write, so the ack asserts one fact: a row
- * exists for this correlation.
+ * drives the same idempotent co-write.
  */
 export const SignalCorrelationRegisterAckFrame = type({
   type: "'signal.correlation.register.ack'",
@@ -284,17 +280,15 @@ export type SignalCorrelationRegisterAckFrame =
  * users or other sidecars.
  *
  * `messageId` is the hub-minted id of this delivery, carried so the sidecar's
- * `mail.inbound.ack` keys on the SAME id the hub tracks. It is the id minted
- * at ingress (also the message's `Message-ID` header), so a redelivery
- * replays identical bytes and the downstream `RunStarted` dedup makes
- * at-least-once effectively-once. Present only on hub-originated mail that
- * participates in the ack/retry handshake; agent-to-agent relayed mail omits
- * it.
+ * `mail.inbound.ack` keys on the SAME id the hub tracks — the id minted at
+ * ingress (also the message's `Message-ID` header), so a redelivery replays
+ * identical bytes and the downstream `RunStarted` dedup makes at-least-once
+ * effectively-once. Present only on hub-originated mail in the ack/retry
+ * handshake; agent-to-agent relayed mail omits it.
  *
- * `authenticatedSender` is the hub-verified sender ADDRESS, assigned from a
- * value the hub itself verified — NEVER from the message's own spoofable MIME
- * `From`. The recipient's signature check uses this value as the sender of
- * record.
+ * `authenticatedSender` is the hub-verified sender ADDRESS, NEVER from the
+ * message's own spoofable MIME `From`. The recipient's signature check uses
+ * it as the sender of record.
  */
 export const MailInboundFrame = type({
   type: "'mail.inbound'",
@@ -359,8 +353,8 @@ export type SenderIdentity = typeof SenderIdentity.infer;
  *
  * `stepGrants` carries the same `WireGrantRule` shape as the deploy frame's
  * `config.grants`. `senderIdentities` co-delivers the resolved public keys
- * of the run's authorized senders on the same barrier; a sender with no
- * resolvable key is omitted rather than carried as null.
+ * of the run's authorized senders; a sender with no resolvable key is
+ * omitted rather than carried as null.
  */
 export const RunGrantsFrame = type({
   type: "'run.grants'",
@@ -372,15 +366,15 @@ export const RunGrantsFrame = type({
 export type RunGrantsFrame = typeof RunGrantsFrame.infer;
 
 /**
- * Re-push the current public key the hub vouches for a cached sender, keyed
- * by `address`; the sidecar overwrites its cached key and touches nothing
- * else. Sent once per rotatable sender reported on (re)connect, so a
- * rotation that happened while the sidecar was disconnected lands on it.
+ * Re-push the public key the hub vouches for a cached sender, keyed by
+ * `address`; the sidecar overwrites its cached key and touches nothing else.
+ * Sent once per rotatable sender reported on (re)connect, so a rotation that
+ * landed while the sidecar was disconnected reaches it.
  *
- * A dedicated frame rather than a reuse of `SenderIdentity` (a fact embedded
- * in `run.grants`) or `run.grants` itself (run-keyed; routing a cross-run
- * key update through it would poison an idle run on a transient fault). One
- * address per frame keeps each cache write independently fallible.
+ * A dedicated frame rather than a reuse of `run.grants` (run-keyed; routing a
+ * cross-run key update through it would poison an idle run on a transient
+ * fault). One address per frame keeps each cache write independently
+ * fallible.
  */
 export const SenderKeyRefreshFrame = type({
   type: "'sender.key.refresh'",
@@ -409,12 +403,12 @@ export type SenderKeyEvictFrame = typeof SenderKeyEvictFrame.infer;
 /**
  * Deliver a workflow-host drain control payload to a multi-step deployment's
  * supervisor, which sends a `drain` control frame to the workflow-process
- * child and arms one `drainTimeout` accumulator per in-flight run. Each
- * accumulator commits a signed `CancelRequested{origin: "supervisor-drain"}`
- * against the workflow-run repo when its deadline expires.
+ * child and arms one `drainTimeout` accumulator per in-flight run; each
+ * commits a signed `CancelRequested{origin: "supervisor-drain"}` against the
+ * workflow-run repo when its deadline expires.
  *
  * `deadlineMs` is a wire-level hint the child echoes in its logs; the
- * accumulator itself runs on the supervisor's own `drainTimeoutMs` setting.
+ * accumulator runs on the supervisor's own `drainTimeoutMs` setting.
  */
 export const DrainDeliverFrame = type({
   type: "'drain.deliver'",
@@ -561,10 +555,10 @@ export type AgentDeployWorkflow = typeof AgentDeployWorkflow.infer;
  *   - `workflow` set: a workflow deployment that spawns the child.
  *   - `provisionStep` true: a no-spawn per-step provision of a multi-step
  *     deploy — the sidecar initializes the step's agent-state repo and
- *     records the hub key so the follow-up deploy pack applies, but spawns
- *     nothing. The deployment-level `workflow` frame spawns the child once
- *     every step is provisioned.
- * A frame carrying neither is rejected. The two are mutually exclusive.
+ *     records the hub key so the follow-up deploy pack applies. The
+ *     deployment-level `workflow` frame spawns the child once every step is
+ *     provisioned.
+ * A frame carrying neither is rejected; the two are mutually exclusive.
  */
 export const AgentDeployFrame = type({
   type: "'agent.deploy'",
@@ -645,7 +639,7 @@ export type SourcesUpdateFrame = typeof SourcesUpdateFrame.infer;
  * (materials upsert by credentialId, bindings by consumer-and-handle) and
  * drops each credentialId in `revoke` plus any binding referencing it.
  * Removal is explicit through `revoke` — omitting a material does not evict
- * it, since the cell has several independently-scoped producers. A pure
+ * it, since the cell has several independently-scoped producers; a pure
  * revocation carries an empty `delivery`.
  */
 export const CredentialsUpdateFrame = type({
@@ -663,17 +657,14 @@ export type CredentialsUpdateFrame = typeof CredentialsUpdateFrame.infer;
 // Pack transport (bidirectional)
 // ---------------------------------------------------------------------------
 //
-// Git pack data is streamed over the existing JSON WebSocket. Chunks are
-// base64-encoded; a transfer is a sequence of repo.pack.push frames followed
-// by repo.pack.done, correlated by transferId, answered with repo.pack.ack
-// or repo.pack.reject.
+// Git pack data streams over the existing JSON WebSocket: base64 chunks as
+// repo.pack.push frames, ended by repo.pack.done, correlated by transferId,
+// answered with repo.pack.ack or repo.pack.reject.
 //
-// Each pack frame carries two complementary addressing fields:
-//
-//   - `agentAddress` — the destination agent on the receiving sidecar.
-//   - `repoId` — the source repo at the hub. For `repoId.kind ===
-//     "agent-state"`, `repoId.id` is the run address, so both fields carry
-//     the same value.
+// Each frame carries two complementary addressing fields: `agentAddress`
+// (the destination agent on the receiving sidecar) and `repoId` (the source
+// repo at the hub; for `kind: "agent-state"` its id is the run address, so
+// both fields carry the same value).
 //
 // Flow control is deferred: agent deploy trees are small enough to push all
 // chunks without windowing.
@@ -782,8 +773,8 @@ export const PackRejectFrame = type({
   // A plain string, NOT the `PackRejectReason` enum: a reason a newer peer
   // added must still pass `HubFrame` validation and reach the reject handler
   // (which latches the transfer) rather than being dropped and stalling the
-  // transfer until the next disconnect. Producers still construct through
-  // `PackRejectReason`; the reader treats any reason as a terminal reject.
+  // transfer. Producers still construct through `PackRejectReason`; the
+  // reader treats any reason as a terminal reject.
   reason: "string",
   // Optional human-readable cause alongside the machine reason.
   "detail?": "string",
@@ -808,14 +799,11 @@ export type PackRejectFrame = typeof PackRejectFrame.infer;
  *     `interchange.tools`, or the module exported no AnnotatedToolFactory.
  *   factory.construct.failed — a factory threw or needed a missing
  *     capability key.
- *   tool.name.duplicate — a tool name registered twice. The cross-bundle
- *     case is rejected at apply time; the intra-bundle case surfaces at
- *     first agent construction with the same category.
- *   apply.swap.failed — DEPRECATED, no longer emitted; retained for wire
- *     compatibility so an older sidecar's frame still validates on a newer
- *     hub.
+ *   tool.name.duplicate — a tool name registered twice (cross-bundle at
+ *     apply time, intra-bundle at first agent construction).
+ *   apply.swap.failed — DEPRECATED; retained for wire compatibility.
  *   apply.previous-rotation.failed — the `active-deploy-id` commit degraded
- *     (no-fsync / dirty-marker fallback). The deploy is logically live, so
+ *     (no-fsync / dirty-marker fallback); the deploy is logically live and
  *     `previousDeployId` carries the NEW deploy id.
  */
 export const DeployApplyErrorCategory = type.enumerated(
@@ -854,10 +842,9 @@ export type SyncRequestFrame = typeof SyncRequestFrame.infer;
 //
 // A probe asks a connected sidecar to inspect a code-sourced workflow WITHOUT
 // deploying it: materialize the frozen closure, evaluate the entry module,
-// project it to its inert needs surface, and return the projection plus the
-// derived grant set and content hash. Correlated by `requestId`, independent
-// of the address maps — a token-authed sidecar can serve a probe with no
-// agent deployed.
+// project it, and return the projection plus the derived grant set and
+// content hash. Correlated by `requestId`; a token-authed sidecar can serve a
+// probe with no agent deployed.
 
 /**
  * Hub asks a connected sidecar to probe a code-sourced workflow, correlated
@@ -866,7 +853,7 @@ export type SyncRequestFrame = typeof SyncRequestFrame.infer;
  *
  * The frame carries everything the probe child needs with no further hub
  * round-trip: `source` (registry, package-registry asset, or git asset),
- * `closure` (the frozen dependency closure the hub resolved), `entry` (the
+ * `closure` (the frozen dependency closure), `entry` (the
  * `interchange.workflow` module path to evaluate), and optional `assets`
  * delivered inline. Inline delivery suits a single-shot request that already
  * buffers the whole frame; the sidecar caps the total inline payload.

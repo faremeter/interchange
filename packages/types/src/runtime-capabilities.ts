@@ -3,11 +3,9 @@
 // RuntimeCapabilities instance and hands it to each tool package's factory;
 // the package calls `resolve` to obtain typed handles to host services.
 //
-// The map is the extension point: new capabilities are added by extending
-// RuntimeCapabilityMap inside this file. TypeScript permits module
-// augmentation from any consumer, but augmentation from outside @intx/types
-// is not the supported extension path; contribute keys here so every host
-// sees the same canonical map.
+// The map is the extension point: add capabilities by extending
+// RuntimeCapabilityMap inside this file. Augmentation from outside
+// @intx/types is not the supported extension path.
 
 import type { MessageTransport } from "./runtime";
 import type { CredentialCapability } from "./mediated-credential";
@@ -96,19 +94,17 @@ export function createRuntimeCapabilities(
  * Compose a resolver that answers the keys in `overrides` from the override
  * map and delegates every other key to `base`.
  *
- * The host uses this to add a per-bundle capability — the consumer-scoped
+ * The host uses this to layer a per-bundle capability — the consumer-scoped
  * `credentials` handle, one instance per tool package — onto a shared
- * per-step base bag without re-plumbing the base's keys (`mail.transport`
- * and any future shared key stay owned by the step bag). Each tool package's
- * bundle receives the same base layered with ITS OWN credentials
+ * per-step base bag without re-plumbing the base's keys. Each tool
+ * package's bundle receives the same base layered with ITS OWN credentials
  * capability, so a package cannot resolve a handle scoped to a different
  * package.
  *
  * `overrides` is snapshotted at construction, mirroring
  * `createRuntimeCapabilities`. An overridden key wired to `undefined`
  * throws with the same guard as the base resolver rather than silently
- * shadowing `base` with a hole — a host that layers an undefined value has
- * a wiring bug and must hear about it.
+ * shadowing `base` with a hole.
  */
 export function layerRuntimeCapabilities(
   base: RuntimeCapabilities,

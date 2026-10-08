@@ -1,13 +1,8 @@
-// Run addresses are "<runId>@<domain>" where runId is the local part: the
-// `run_`-prefixed identifier that names the run. These helpers are the single
-// source of truth for that format. The right-hand side of the "@" is only
-// required to be non-empty; tightening the contract (DNS-ish validation, etc.)
-// is a separate follow-up.
-//
-// `@intx/hub-sessions`'s `parseAgentId` is the canonical throwing wrapper
-// over `parseRunAddress` — call it when a `null` return would propagate as a
-// silent bug, and keep this parser's `null` return reserved for callers that
-// already have a structured fallback.
+// Run addresses are "<runId>@<domain>" with the `run_`-prefixed runId as the
+// local part; these helpers are the single source of truth for that format.
+// The domain side is only required to be non-empty. `@intx/hub-sessions`'s
+// `parseAgentId` is the canonical throwing wrapper over `parseRunAddress`;
+// this parser keeps its `null` return for callers with a structured fallback.
 
 const RUN_PREFIX = "run_";
 
