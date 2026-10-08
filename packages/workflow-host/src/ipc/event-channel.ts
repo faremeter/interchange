@@ -1,23 +1,18 @@
-// Event channel: UNIX socketpair, HMAC-SHA256 authenticated.
-//
-// The workflow-process child sends InferenceEvents (high rate, plus the
-// per-message `message.run.started` / `message.run.ended` brackets) to the
-// supervisor, which verifies each frame's MAC and forwards into the hub via
-// the existing `agent.event` session-channel path. The shared 32-byte HMAC
-// key is minted by the supervisor at spawn time and passed to the child in
-// spawn-time env. Both sides authenticate every frame: a malformed or
-// tampered frame is a crash signal, not a recoverable error.
+// Event channel: UNIX socketpair, HMAC-SHA256 authenticated. The child
+// sends InferenceEvents (high rate, plus the per-message
+// `message.run.started` / `message.run.ended` brackets) to the supervisor,
+// which verifies each frame's MAC and forwards into the hub via the
+// existing `agent.event` session-channel path. The shared 32-byte HMAC key
+// is minted at spawn and passed via spawn-time env; a failed check is a
+// crash signal, not a recoverable error.
 //
 // Backpressure: the supervisor keeps a bounded userspace ring (default
-// 1024 frames). On overrun it logs the saturation, fires the caller-supplied
-// crash callback, and the workflow-process kills itself on the next signal
-// cycle: the audit chain cannot tolerate a silent drop, and a blocking
-// writer would deadlock against the reactor's emit path.
+// 1024 frames); on overrun it logs, fires the crash callback, and the
+// child kills itself -- a silent drop would break the audit chain, and a
+// blocking writer would deadlock the reactor's emit path.
 //
-// Mixing failure mode: this payload union covers InferenceEvent shapes
-// only. A frame structurally shaped as `drain` or `recycle` will not
-// satisfy it and the receiver crashes -- the discriminated validators here
-// and in `control-channel.ts` are disjoint by construction.
+// Mixing failure mode: this union covers InferenceEvent shapes only; a
+// `drain`/`recycle`-shaped frame fails validation and crashes.
 
 import { type } from "arktype";
 
@@ -33,11 +28,9 @@ import {
 import { signHmac, verifyHmac } from "./crypto";
 
 /**
- * The event channel carries the two bracket events the reactor emits per
- * message run in addition to InferenceEvents. They are part of the
- * InferenceEvent union upstream; re-exporting the union directly keeps
- * this channel structurally identical to what the hub's `agent.event`
- * frame carries today.
+ * The two bracket events the reactor emits per message run in addition
+ * to InferenceEvents; re-exporting the union keeps this channel
+ * structurally identical to what the hub's `agent.event` frame carries.
  */
 export const EventPayload = InferenceEvent;
 export type EventPayload = typeof EventPayload.infer;
@@ -62,9 +55,9 @@ export interface EventChannelSender {
 }
 
 /**
- * Construct the child-side event-channel sender. The shared HMAC key
- * lives in closure. The child mints monotonic seq values per channelId;
- * the receiver enforces strict monotonicity.
+ * Construct the child-side event-channel sender; the shared HMAC key
+ * lives in closure, and the sender mints monotonic seq values per
+ * channelId, which the receiver enforces strictly.
  */
 export function createEventChannelSender(
   opts: EventChannelSenderOpts,
@@ -138,11 +131,10 @@ export interface EventChannelReceiverOpts {
 }
 
 /**
- * Construct the supervisor-side event-channel receiver. Yields one
+ * Construct the supervisor-side event-channel receiver; yields one
  * verified, in-order `EventPayload` per call. Any frame that fails HMAC
  * verification, carries a non-current channelId, arrives out of order, or
- * arrives faster than the consumer drains triggers `onCrash` and ends the
- * iterator.
+ * outruns the consumer triggers `onCrash` and ends the iterator.
  */
 export async function* receiveEventChannel(
   opts: EventChannelReceiverOpts,

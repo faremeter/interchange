@@ -1,33 +1,21 @@
-// Frame envelope shared by both IPC channels.
+// Frame envelope shared by both IPC channels: `{ seq, channelId, payload }`
+// inside the authenticated bytes. `seq` is a monotonic u64 per channel;
+// `channelId` is the 16-byte hex identity the supervisor mints at spawn
+// and rotates at recycle.
 //
-// Every signed/HMACed frame carries `{ seq, channelId, payload }` inside
-// the bytes the receiver authenticates. `seq` is a monotonic u64 counter
-// the sender maintains per channel; `channelId` is the 16-byte hex
-// identity the supervisor mints at every spawn and rotates at every
-// recycle; `payload` is the channel-specific JSON value.
-//
-// Wire shape: one NDJSON line per control-channel frame, each line
-// `{ envelope: <canonical-json-of-envelope>, sig: <hex Ed25519> }`; for
-// the event channel, `{ envelope, mac }` in the same shape with `mac`
-// carrying the hex HMAC tag. Both wires sign the canonical-JSON
-// serialization of the envelope as a single bytestring; the on-wire byte
-// representation is exactly what the signer signs and the verifier
-// verifies.
-//
-// Canonical JSON: keys appear in fixed insertion order (seq, channelId,
-// payload); no recursive canonicalization of the payload is performed
-// because the verifier never compares two structurally different
-// serializations of the same logical value. Senders and receivers see
-// the same bytes by construction: the sender computes the signature over
-// the exact serialization it transmits, and the receiver verifies over
-// the exact bytes it received.
+// Wire shape: one NDJSON line per frame, `{ envelope: <canonical-json>,
+// sig: <hex Ed25519> }` on the control channel, `{ envelope, mac }` with
+// the hex HMAC tag on the event channel. Both wires sign the canonical
+// JSON serialization of the envelope as one bytestring; canonical JSON =
+// fixed insertion order (seq, channelId, payload), no recursive payload
+// canonicalization because the verifier never compares two serializations
+// of the same logical value.
 
 import { type } from "arktype";
 
 /**
- * Validator for the inner envelope shape. `payload` is `unknown` here
- * because each channel narrows it further via its own typed schema
- * (control payload union vs. InferenceEvent forwarded over event).
+ * Inner envelope shape; `payload` is `unknown` because each channel
+ * narrows it via its own schema.
  */
 export const FrameEnvelope = type({
   seq: "number",
@@ -38,8 +26,7 @@ export const FrameEnvelope = type({
 export type FrameEnvelope = typeof FrameEnvelope.infer;
 
 /**
- * Validator for the signed envelope wire shape. `sig` carries the
- * hex-encoded Ed25519 signature (128 hex chars / 64 bytes).
+ * Signed wire envelope; `sig` is the hex Ed25519 signature (64 bytes).
  */
 export const SignedEnvelope = type({
   envelope: FrameEnvelope,
@@ -49,8 +36,7 @@ export const SignedEnvelope = type({
 export type SignedEnvelope = typeof SignedEnvelope.infer;
 
 /**
- * Validator for the MACed envelope wire shape. `mac` carries the
- * hex-encoded HMAC-SHA256 tag (64 hex chars / 32 bytes).
+ * MACed wire envelope; `mac` is the hex HMAC-SHA256 tag (32 bytes).
  */
 export const MacedEnvelope = type({
   envelope: FrameEnvelope,
@@ -60,10 +46,9 @@ export const MacedEnvelope = type({
 export type MacedEnvelope = typeof MacedEnvelope.infer;
 
 /**
- * Produce the canonical byte serialization of an envelope. The sender
- * signs these bytes; the receiver verifies against these bytes. Both
- * sides reach the same bytestring deterministically because the JSON
- * serialization runs in insertion order over a fixed-shape object.
+ * Canonical byte serialization of an envelope: the sender signs these
+ * bytes, the receiver verifies them; both sides reach the same bytestring
+ * because the JSON runs in insertion order over a fixed-shape object.
  */
 export function encodeEnvelope(envelope: FrameEnvelope): Uint8Array {
   const ordered = {
@@ -75,11 +60,10 @@ export function encodeEnvelope(envelope: FrameEnvelope): Uint8Array {
 }
 
 /**
- * Parse a canonical envelope byte serialization back into the structured
- * shape. Used on the receiver side after the per-frame MAC/signature
- * check passes -- a structural failure on a frame whose authentication
- * tag matched is a programming bug at the sender, not a tampering
- * signal.
+ * Parse a canonical envelope serialization back into the structured
+ * shape, used after the per-frame MAC/signature check passes -- a
+ * structural failure on an authenticated frame is a sender bug, not
+ * tampering.
  */
 export function decodeEnvelope(bytes: Uint8Array): FrameEnvelope {
   let parsed: unknown;

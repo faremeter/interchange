@@ -194,8 +194,7 @@ describe("Control channel", () => {
       }
     })();
 
-    // The same `Mail` object is sent and asserted as received, so the
-    // round-trip equality holds on the decoded payload shape.
+    // The same `Mail` object is sent and asserted as received.
     const firedMail = textMail("test input");
     await sender.send({
       type: "ready",
@@ -285,8 +284,7 @@ describe("Control channel", () => {
   });
 
   test("round-trips a mailbox.notify for a message with no originator", async () => {
-    // A message can arrive carrying no From. The notify must still
-    // validate and reach the child watcher: rejecting the frame would
+    // A message can arrive carrying no From; rejecting the frame would
     // strand the watcher on a message whose sender is merely unknown.
     const kp = await generateKeyPair();
     const channelId = generateChannelId();
@@ -334,10 +332,8 @@ describe("Control channel", () => {
   });
 
   test("round-trips a mailbox.notify for a message with no date or id", async () => {
-    // A message can arrive carrying neither a Date nor a Message-ID. As
-    // with a missing From, the notify must still validate and reach the
-    // child watcher: rejecting the frame would strand the watcher on a
-    // message whose envelope is merely incomplete.
+    // A message can arrive with neither a Date nor a Message-ID; as with
+    // a missing From, the notify must still reach the child watcher.
     const kp = await generateKeyPair();
     const channelId = generateChannelId();
     const stream = createMemoryNdjsonStream();
@@ -399,11 +395,9 @@ describe("Control channel", () => {
       }
     })();
 
-    // Sign a structurally valid envelope whose payload is a mailbox.notify
-    // with a headers block missing the required `to` field, so the
-    // receiver's payload validation rejects it. `to` is the only required
-    // header: a message can arrive naming no originator, no date and no
-    // id, and the watcher must still be handed it.
+    // Sign a valid envelope whose mailbox.notify headers omit the required
+    // `to` field; `to` is the only required header -- a message can name no
+    // originator, date, or id and must still reach the watcher.
     const envelope: FrameEnvelope = {
       seq: 1,
       channelId,
@@ -458,12 +452,10 @@ describe("Control channel", () => {
     const first = sender.send({ type: "drain", data: { deadlineMs: 1 } });
     const second = sender.send({ type: "drain", data: { deadlineMs: 2 } });
 
-    // The lock is taken synchronously inside `send`, so the second send is
-    // parked before it assigns a seq. With the first write unresolved, a
-    // `seq` of 1 is the settled state: the second send has not entered the
-    // critical section, so it has neither signed nor written until the
-    // release below. A sender that assigned seq before taking the lock
-    // would read 2 here.
+    // The lock is taken synchronously inside `send`, so the second send
+    // parks before assigning a seq: with the first write unresolved, a
+    // seq of 1 is the settled state, and a sender that assigned seq
+    // before taking the lock would read 2 here.
     await waitUntil(() => writes.length >= 1);
     expect(sender.seq).toBe(1);
     expect(writes.length).toBe(1);
@@ -964,12 +956,10 @@ describe("Event channel", () => {
       data: { model: "y" },
     });
 
-    // The lock is taken synchronously inside `send`, so the second send is
-    // parked before it assigns a seq. With the first write unresolved, a
-    // `seq` of 1 is the settled state: the second send has not entered the
-    // critical section, so it has neither MACed nor written until the
-    // release below. A sender that assigned seq before taking the lock
-    // would read 2 here.
+    // The lock is taken synchronously inside `send`, so the second send
+    // parks before assigning a seq: with the first write unresolved, a
+    // seq of 1 is the settled state, and a sender that assigned seq
+    // before taking the lock would read 2 here.
     await waitUntil(() => writes.length >= 1);
     expect(sender.seq).toBe(1);
     expect(writes.length).toBe(1);
@@ -1194,11 +1184,11 @@ describe("Event channel", () => {
       await emitMacedFrame(i);
     }
 
-    // Own the consumer this test started on every exit, not only the
-    // passing one. The crash ends the iterator but cannot unpark a body
-    // suspended between yields, so the release below is the only thing that
-    // lets the loop and the consumer promise finish; a failing assertion
-    // inside the `try` would otherwise strand it.
+    // Own the consumer on every exit, not only the passing one: the crash
+    // ends the iterator but cannot unpark a body suspended between yields,
+    // so the release below is the only thing that lets the loop and the
+    // consumer promise finish; a failing assertion would otherwise strand
+    // it.
     try {
       // The overrun is the signal; wait for it rather than assuming a
       // fixed window was long enough for six frames to be read.
@@ -1215,9 +1205,9 @@ describe("Event channel", () => {
   });
 
   test("rejects a control-shaped payload over the event channel", async () => {
-    // The two channels carry disjoint payload unions. A "control"
-    // payload sneaked over the event wire fails event validation; no
-    // event-channel consumer can act on it.
+    // The two payload unions are disjoint: a "control" payload sneaked
+    // over the event wire fails event validation; no event-channel
+    // consumer can act on it.
     const key = generateHmacKey();
     const channelId = generateChannelId();
     const stream = createMemoryFrameStream();

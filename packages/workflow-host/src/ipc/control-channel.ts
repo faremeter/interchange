@@ -1,24 +1,19 @@
 // Control channel: NDJSON over stdio, Ed25519-signed per direction.
 //
-// Two Ed25519 keypairs flow per spawn:
-//   - Supervisor's keypair: holds the private half, signs every downstream
-//     (supervisor->child) frame; the public half rides spawn-time env
-//     (`HOST_PUBKEY`) and the child verifies against it. The private key
-//     never leaves the supervisor's address space.
-//   - Child's keypair: minted at startup, signs every upstream
-//     (child->supervisor) frame; the public half rides as `childPublicKey`
-//     on the upstream `ready` frame, which bootstraps the supervisor's
-//     receiver: the first frame's envelope is parsed structurally to
-//     extract the key, then the signature is verified against it and all
-//     subsequent frames verify against the same key. The private key never
-//     leaves the child's address space.
+// Keypair flow per spawn (see the threat model in `index.ts`): the
+// supervisor signs every downstream frame with its private half, the
+// child signs every upstream frame with its own keypair minted at
+// startup; each public half reaches the other side via spawn-time env
+// (`HOST_PUBKEY`) and the `ready` frame's `childPublicKey`, which
+// bootstraps the supervisor's receiver. Neither private key ever leaves
+// its owner's address space.
 //
 // Wire format: one signed envelope per line -- the JSON serialization of
 // `{ envelope: { seq, channelId, payload }, sig: <hex Ed25519> }`; the
 // signature covers the canonical envelope bytes (see `envelope.ts`). The
-// payload union's discriminated `type` lives in this module, which keeps
-// the mixing-the-two-channels failure mode (a "control" frame whose
-// payload is structurally an InferenceEvent) out at the type level.
+// payload union's discriminated `type` lives in this module, so a
+// "control" frame shaped like an InferenceEvent is rejected at the type
+// level, not at runtime.
 
 import { type } from "arktype";
 
