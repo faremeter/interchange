@@ -1,4 +1,4 @@
-// Sidecar workflow-probe handler: the airlocked one-shot probe child.
+// Host-side workflow-probe handler: spawns and supervises a one-shot probe child.
 //
 // A `workflow.probe.request` frame asks this sidecar to inspect a
 // code-sourced workflow WITHOUT deploying it. The inspection evaluates
@@ -26,40 +26,23 @@
 
 import { type } from "arktype";
 
-import type { DirectorRegistry, ToolDeclaration } from "@intx/agent";
 import { getLogger } from "@intx/log";
+import { hexDecode } from "@intx/types/hex";
 import {
-  GrantWalkSnapshot,
-  hexDecode,
-  hexEncode,
-  type GrantEffect,
-  type GrantRequirement,
-} from "@intx/types";
-import type { WorkflowProbeRequestFrame } from "@intx/types/sidecar";
-import { WorkflowProjectionDefinition } from "@intx/types/sidecar";
-import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
-import { collectDeclaredPluginNames, projectLiveToInert } from "@intx/workflow";
-import type { WorkflowDefinition } from "@intx/workflow/definition";
+  WorkflowProjectionDefinition,
+  type WorkflowProbeRequestFrame,
+} from "@intx/types/sidecar";
 
-import {
-  MacedEnvelope,
-  encodeEnvelope,
-  generateChannelId,
-  generateHmacKey,
-  signHmac,
-  verifyHmac,
-  type FrameEnvelope,
-} from "../ipc";
-import { DEFAULT_KILL_TIMEOUT_MS } from "../supervisor/index";
-import {
-  loadWorkflowDefinitionFromClosure,
-  loadWorkflowDirectorRegistryFromClosure,
-  loadWorkflowPluginToolDefinitionsFromClosure,
-} from "../workflow-definition-loader";
+import { MacedEnvelope, encodeEnvelope } from "../ipc/envelope";
+import { generateChannelId, generateHmacKey, verifyHmac } from "../ipc/crypto";
+import { DEFAULT_KILL_TIMEOUT_MS } from "../supervisor/child-termination";
+import { buildProbeChildEnv } from "./env";
+import { errorMessage } from "./errors";
+import { ProbeResultPayload, type WorkflowProbeResult } from "./protocol";
+
+export type { WorkflowProbeResult } from "./protocol";
 
 const logger = getLogger(["sidecar", "workflow-probe"]);
-
-const IPC_HMAC_KEY_BYTES = 32;
 
 /**
  * Self-owned upper bound on how long a single probe child may run before
@@ -76,76 +59,6 @@ export const DEFAULT_PROBE_CHILD_TIMEOUT_MS = 30_000;
  * child is.
  */
 export const DEFAULT_PROBE_CHILD_KILL_TIMEOUT_MS = DEFAULT_KILL_TIMEOUT_MS;
-
-// Env keys the host sets on the child's fresh spawn env. The child reads
-// exactly these plus PATH/HOME/TMPDIR (for exec + tmp); nothing else
-// crosses the airlock.
-const PROBE_CHANNEL_ID_ENV = "PROBE_IPC_CHANNEL_ID";
-const PROBE_HMAC_KEY_ENV = "PROBE_IPC_HMAC_KEY";
-const PROBE_PACKAGE_DIR_ENV = "PROBE_PACKAGE_DIR";
-
-/**
- * Capability walk the probe child runs over the evaluated definition.
- * The process that boots the probe passes the real walk. This module
- * does not import it.
- */
-export type WalkCapabilities = (
-  workflow: WorkflowDefinition,
-  registry: DirectorRegistry,
-  pluginDefs: ReadonlyMap<string, readonly ToolDeclaration[]>,
-) => {
-  readonly perStep: ReadonlyMap<
-    string,
-    {
-      readonly grants: readonly string[];
-      readonly grantEffects: ReadonlyMap<string, GrantEffect>;
-    }
-  >;
-  readonly unresolvedDirectors: readonly string[];
-};
-
-// ---------------------------------------------------------------------------
-// Result payload wire (child -> host)
-// ---------------------------------------------------------------------------
-
-/**
- * The child's single result payload, carried inside the HMAC-signed
- * envelope. `ok: true` ships the inert projection, the advisory grant
- * set, the un-flattened grant walk snapshot, and the wire hash; `ok:
- * false` ships the failure reason (eval throw, malformed code) so the
- * host can reject the probe with a meaningful message rather than a bare
- * "child exited" surface.
- */
-const ProbeResultPayload = type({
-  ok: "true",
-  projection: "unknown",
-  grants: "string[]",
-  grantWalkSnapshot: GrantWalkSnapshot,
-  wireHash: "string > 0",
-}).or({
-  ok: "false",
-  error: "string",
-});
-type ProbeResultPayload = typeof ProbeResultPayload.infer;
-
-/**
- * The inert answer a probe execution produces: the workflow's inert
- * needs-surface projection, the advisory grant set derived from it, the
- * un-flattened grant walk snapshot the set is derived from, and the
- * projection's content hash. Structurally the `WorkflowProbeResult` the
- * hub-agent probe seam consumes.
- *
- * `grantWalkSnapshot` carries the per-step grant declarations (grant
- * strings plus each step's tool-grant `grantEffects` map) and the
- * definition's full `grantRequirements` -- the grouping and effect data
- * the flattened `grants` union discards.
- */
-export interface WorkflowProbeResult {
-  readonly projection: WorkflowProjectionDefinition;
-  readonly grants: string[];
-  readonly grantWalkSnapshot: GrantWalkSnapshot;
-  readonly wireHash: string;
-}
 
 // ---------------------------------------------------------------------------
 // Closure materialization seam
@@ -338,29 +251,6 @@ async function runOneShotProbeChild(
   }
 }
 
-function buildProbeChildEnv(args: {
-  packageDir: string;
-  channelId: string;
-  hmacKey: Uint8Array;
-}): Record<string, string> {
-  // A fresh, minimal env: exactly the IPC anchors and the materialized
-  // package dir, plus the OS handles the shebang needs to exec `bun` and
-  // land temp files on the host's temp root. No `process.env` spread, so
-  // no sidecar secret or ambient input crosses the airlock.
-  const env: Record<string, string> = {
-    [PROBE_CHANNEL_ID_ENV]: args.channelId,
-    [PROBE_HMAC_KEY_ENV]: hexEncode(args.hmacKey),
-    [PROBE_PACKAGE_DIR_ENV]: args.packageDir,
-  };
-  const path = process.env["PATH"];
-  if (path !== undefined) env["PATH"] = path;
-  const home = process.env["HOME"];
-  if (home !== undefined) env["HOME"] = home;
-  const tmpdir = process.env["TMPDIR"];
-  if (tmpdir !== undefined) env["TMPDIR"] = tmpdir;
-  return env;
-}
-
 /**
  * Reap a probe child: SIGTERM, then SIGKILL if the exit does not land
  * within `killTimeoutMs`. SIGKILL is unignorable, so `exited` is
@@ -456,192 +346,6 @@ async function parseProbeResult(
 }
 
 // ---------------------------------------------------------------------------
-// Child side
-// ---------------------------------------------------------------------------
-
-/**
- * One line the child writes to a sink. Production wraps `process.stdout`;
- * tests inject a capture. The bytes are handed to the OS before the child
- * exits so the result is not truncated.
- */
-export type ProbeChildLineWriter = (line: string) => Promise<void>;
-
-export interface RunProbeChildOpts {
-  /** Raw env the child reads its anchors from (defaults to `process.env`). */
-  rawEnv?: Readonly<Record<string, string | undefined>>;
-  /** Result-line sink (defaults to a drained `process.stdout` write). */
-  writeLine?: ProbeChildLineWriter;
-}
-
-/**
- * The airlocked child's whole job: read the materialized package dir and
- * IPC anchors from its fresh env, load+evaluate the workflow entry, run
- * the capability walk plus the live->inert projector, and ship the inert
- * projection + advisory grant set + wire hash back inside one
- * HMAC-signed result frame.
- *
- * An evaluation failure (malformed code, an entry that throws, a package
- * with no `interchange.workflow`) is caught and shipped as an `ok: false`
- * frame so the host reaps cleanly and answers `workflow.probe.error`
- * with the reason -- rather than the child crashing and the host seeing a
- * bare "exited without result".
- */
-export async function runWorkflowProbeChildFromProcessEnv(
-  walkCapabilities: WalkCapabilities,
-  opts: RunProbeChildOpts = {},
-): Promise<void> {
-  const rawEnv = opts.rawEnv ?? process.env;
-  const writeLine = opts.writeLine ?? defaultStdoutWriteLine;
-  const { channelId, hmacKey, packageDir } = parseProbeChildEnv(rawEnv);
-
-  let payload: ProbeResultPayload;
-  try {
-    payload = await computeProbePayload(packageDir, walkCapabilities);
-  } catch (err) {
-    payload = { ok: false, error: enrichProbeError(err) };
-  }
-
-  const envelope: FrameEnvelope = { seq: 0, channelId, payload };
-  const envelopeBytes = encodeEnvelope(envelope);
-  const mac = hexEncode(await signHmac(envelopeBytes, hmacKey));
-  await writeLine(`${JSON.stringify({ envelope, mac })}\n`);
-}
-
-async function computeProbePayload(
-  packageDir: string,
-  walkCapabilities: WalkCapabilities,
-): Promise<ProbeResultPayload> {
-  const definition = await loadWorkflowDefinitionFromClosure({ packageDir });
-  const projection = projectLiveToInert(definition);
-  const wireHash = await computeWireDefinitionHash(projection);
-  // Compose the director registry from the SAME closure the run-child will,
-  // so the `director:<id>` grants advertised here match what the runtime
-  // resolves. Built-ins-only when the closure ships no `interchange.directors`.
-  const directors = await loadWorkflowDirectorRegistryFromClosure({
-    packageDir,
-  });
-  // Load the static tool `definitions` each declared plugin package
-  // contributes from the SAME closure, so the walk emits `tool:<name>`
-  // grants for plugin-contributed tools (Tier-2 governance). A plugin
-  // package reaches an agent only through `env.plugins`, so its tool grant
-  // surface is invisible to the walk otherwise -- the run-child would then
-  // load the plugin from the closure and the reactor would fail closed on
-  // an un-approved `tool:<name>`. Loading here (over the frozen closure the
-  // run-child also materializes from) keeps the approved snapshot and the
-  // runtime plugin in lockstep.
-  const pluginToolDefinitions =
-    await loadWorkflowPluginToolDefinitionsFromClosure({
-      packageDir,
-      plugins: collectDeclaredPluginNames(definition),
-    });
-  const walk = walkCapabilities(definition, directors, pluginToolDefinitions);
-  // Fail closed on an unresolved director: the runtime does not re-gate
-  // `director:<id>` against the approved grant set, so this advertisement is
-  // the only approval checkpoint for a director. Shipping an ok probe whose
-  // grant set silently omits a director the runtime would still try to
-  // resolve would let the operator approve an incomplete manifest. Mirrors
-  // the live-authored approval gate (`createApprovalSetGate`).
-  const [unresolved] = walk.unresolvedDirectors;
-  if (unresolved !== undefined) {
-    return { ok: false, error: `unresolvable director: ${unresolved}` };
-  }
-  return {
-    ok: true,
-    projection,
-    grants: collectDeploymentGrants(walk),
-    grantWalkSnapshot: buildGrantWalkSnapshot(
-      walk,
-      definition.grantRequirements,
-    ),
-    wireHash,
-  };
-}
-
-/**
- * Flatten the per-step walk output into the deployment-wide advisory
- * grant set: the deduplicated, sorted union of every step's grant
- * strings. Sorting makes the shipped set order-independent.
- */
-function collectDeploymentGrants(walk: ReturnType<WalkCapabilities>): string[] {
-  const grants = new Set<string>();
-  for (const declarations of walk.perStep.values()) {
-    for (const grant of declarations.grants) {
-      grants.add(grant);
-    }
-  }
-  return [...grants].sort();
-}
-
-/**
- * Serialize the un-flattened capability walk into a plain-data
- * `GrantWalkSnapshot`: the per-step grant declarations (each step's grant
- * strings plus its tool-grant `grantEffects` map, converted from the
- * walk's `Map` to a plain object) and the definition's full, unfiltered
- * `grantRequirements`. Unlike `collectDeploymentGrants`, this preserves
- * the per-step grouping and the effect data the flattened set discards.
- * A definition that declares no requirements snapshots an empty list.
- */
-function buildGrantWalkSnapshot(
-  walk: ReturnType<WalkCapabilities>,
-  grantRequirements: readonly GrantRequirement[] | undefined,
-): GrantWalkSnapshot {
-  const perStep = [...walk.perStep].map(([stepId, declarations]) => ({
-    stepId,
-    grants: [...declarations.grants],
-    grantEffects: Object.fromEntries(declarations.grantEffects),
-  }));
-  return {
-    perStep,
-    grantRequirements: [...(grantRequirements ?? [])],
-  };
-}
-
-interface ProbeChildEnv {
-  readonly channelId: string;
-  readonly hmacKey: Uint8Array;
-  readonly packageDir: string;
-}
-
-const NonEmptyString = type("string > 0");
-
-function parseProbeChildEnv(
-  rawEnv: Readonly<Record<string, string | undefined>>,
-): ProbeChildEnv {
-  const channelId = requireEnv(rawEnv, PROBE_CHANNEL_ID_ENV);
-  const packageDir = requireEnv(rawEnv, PROBE_PACKAGE_DIR_ENV);
-  const hmacKeyHex = requireEnv(rawEnv, PROBE_HMAC_KEY_ENV);
-  const hmacKey = hexDecode(hmacKeyHex);
-  if (hmacKey.length !== IPC_HMAC_KEY_BYTES) {
-    throw new Error(
-      `workflow probe child env: ${PROBE_HMAC_KEY_ENV} must decode to ${String(IPC_HMAC_KEY_BYTES)} bytes, got ${String(hmacKey.length)}`,
-    );
-  }
-  return { channelId, hmacKey, packageDir };
-}
-
-function requireEnv(
-  rawEnv: Readonly<Record<string, string | undefined>>,
-  key: string,
-): string {
-  const value = NonEmptyString(rawEnv[key]);
-  if (value instanceof type.errors) {
-    throw new Error(
-      `workflow probe child env: required key ${key} is unset or empty`,
-    );
-  }
-  return value;
-}
-
-function defaultStdoutWriteLine(line: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    process.stdout.write(line, (err) => {
-      if (err) reject(err);
-      else resolve();
-    });
-  });
-}
-
-// ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
 
@@ -690,34 +394,4 @@ function createDeadline(ms: number): {
       if (handle !== undefined) clearTimeout(handle);
     },
   };
-}
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
-// Node/Bun's module-not-found message shape. The specifier is the missing
-// package the workflow entry imported at evaluation time.
-const MISSING_MODULE_RE = /Cannot find (?:module|package) ['"]([^'"]+)['"]/;
-
-/**
- * Enrich a probe evaluation failure whose cause is a module that could not be
- * resolved from the workflow's dependency closure. The evaluator is the layer
- * that KNOWS what the workflow imports at run time (it actually ran the
- * import), so a missing specifier here means the closure did not carry it --
- * the common cause is a runtime import declared only under `devDependencies`
- * (which the closure does not materialize), whether a workspace-local member or
- * an external package. Rewrite the opaque "Cannot find module" into that
- * actionable diagnostic. A non-resolution failure passes through unchanged.
- */
-export function enrichProbeError(err: unknown): string {
-  const message = errorMessage(err);
-  const match = MISSING_MODULE_RE.exec(message);
-  const specifier = match?.[1];
-  if (specifier === undefined) return message;
-  return (
-    `workflow entry could not resolve ${JSON.stringify(specifier)} from its dependency closure; ` +
-    `if the workflow imports it at run time, declare it under "dependencies" rather than "devDependencies" ` +
-    `(a devDependencies-only import is not materialized into the closure). ${message}`
-  );
 }

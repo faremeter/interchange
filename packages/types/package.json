@@ -84,6 +84,16 @@
       "intx-src": "./src/format-safety-rating.ts",
       "types": "./dist/format-safety-rating.d.ts",
       "default": "./dist/format-safety-rating.js"
+    },
+    "./hex": {
+      "intx-src": "./src/hex.ts",
+      "types": "./dist/hex.d.ts",
+      "default": "./dist/hex.js"
+    },
+    "./grant-snapshot": {
+      "intx-src": "./src/grant-snapshot.ts",
+      "types": "./dist/grant-snapshot.d.ts",
+      "default": "./dist/grant-snapshot.js"
     }
   },
   "dependencies": {

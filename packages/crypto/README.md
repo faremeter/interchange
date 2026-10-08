@@ -4,6 +4,9 @@ Web Crypto-backed cryptographic provider. Ed25519 key generation,
 import, sign, and verify; canonicalisation of text and byte
 payloads; SSH and PGP detached signature formats; ASCII armoring.
 
+`@intx/crypto/keys` exposes Ed25519 key generation, import, public-key
+derivation, signing, and verification without loading the SSH or PGP modules.
+
 The exported `Ed25519Crypto` implements the `CryptoProvider` contract
 that the mail and storage layers depend on. Consumed by
 `@intx/mime` (detached PGP signatures on outbound mail),

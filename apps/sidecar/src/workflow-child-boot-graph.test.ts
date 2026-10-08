@@ -16,9 +16,10 @@ import { dirname, join } from "node:path";
 // is reachable. `Bun.build` erases `import type` and type-only specifiers
 // before resolution (the project's `verbatimModuleSyntax` + `isolatedModules`
 // guarantee every value-syntax import that survives is a real runtime import),
-// so the captured graph is exactly what the child evaluates at runtime.
-// Dynamic `import()` edges are included too, so even a lazy import of a
-// forbidden module is caught. npm and `node:` packages are recorded but not
+// so the captured graph contains the statically resolvable value imports
+// before tree shaking. Literal dynamic `import()` edges are included too;
+// workflow packages loaded from runtime paths are outside this boot graph.
+// npm and `node:` packages are recorded but not
 // traversed; workspace (`@intx/*`) packages are resolved to their real source
 // (honoring `exports` subpaths) and walked through.
 
@@ -39,8 +40,8 @@ const EXPECTED_CHILD_ROOTS = [
   "@intx/workflow-host",
 ];
 const EXPECTED_PROBE_ROOTS = [
-  "@intx/workflow-deploy",
-  "@intx/workflow-host/probe",
+  "@intx/workflow-deploy/capabilities",
+  "@intx/workflow-host/probe/child",
 ];
 
 // The module specifiers the binary VALUE-imports, in every runtime form
@@ -93,10 +94,11 @@ function forbiddenReason(spec: string): string | null {
 
 async function childValueImportGraph(entrypoints: string[]): Promise<{
   importers: Map<string, Set<string>>;
+  modules: Set<string>;
   resolveFailures: string[];
-  success: boolean;
 }> {
   const importers = new Map<string, Set<string>>();
+  const modules = new Set<string>();
   const resolveFailures: string[] = [];
   const relativize = (p: string) => p.replace(`${repoRoot}/`, "");
 
@@ -115,8 +117,15 @@ async function childValueImportGraph(entrypoints: string[]): Promise<{
             seenFrom.add(from);
             importers.set(spec, seenFrom);
 
-            // Relative imports: let Bun traverse natively.
-            if (spec.startsWith(".") || spec.startsWith("/")) return undefined;
+            if (spec.startsWith("/")) {
+              modules.add(relativize(spec));
+              return undefined;
+            }
+            if (spec.startsWith(".")) {
+              const path = Bun.resolveSync(spec, dirname(args.importer));
+              modules.add(relativize(path));
+              return { path };
+            }
             // Leaves we record but do not walk into.
             if (spec.startsWith("node:")) return { path: spec, external: true };
             if (!spec.startsWith("@intx/")) {
@@ -128,7 +137,9 @@ async function childValueImportGraph(entrypoints: string[]): Promise<{
             // it -- the test asserts there are none.
             const fromDir = args.importer ? dirname(args.importer) : repoRoot;
             try {
-              return { path: Bun.resolveSync(spec, fromDir) };
+              const path = Bun.resolveSync(spec, fromDir);
+              modules.add(relativize(path));
+              return { path };
             } catch {
               resolveFailures.push(`${spec} (from ${from})`);
               return { path: spec, external: true };
@@ -139,25 +150,26 @@ async function childValueImportGraph(entrypoints: string[]): Promise<{
     ],
   });
 
-  return { importers, resolveFailures, success: result.success };
+  if (!result.success) {
+    throw new AggregateError(result.logs, "Child import graph failed to build");
+  }
+  return { importers, modules, resolveFailures };
 }
 
 async function expectCleanBootGraph(binary: string): Promise<void> {
-  const { importers, resolveFailures, success } = await childValueImportGraph(
+  const { importers, resolveFailures } = await childValueImportGraph(
     binaryEntrypoints(binary),
   );
 
-  expect(success).toBe(true);
   // A workspace specifier that fails to resolve would drop its subtree from
   // the walk while the build still succeeds; surface it rather than silently
   // un-guarding that subtree.
   expect(resolveFailures).toEqual([]);
 
   const reached = new Set(importers.keys());
-  // Anti-vacuity: a workflow-child necessarily evaluates the workflow
-  // runtime, so a graph that did not reach it never walked the real child
-  // (e.g. empty entrypoints) and the forbidden check would pass over nothing.
-  expect(reached).toContain("@intx/workflow");
+  expect(reached).toContain(
+    binary === PROBE_BINARY ? "@intx/workflow/projection" : "@intx/workflow",
+  );
 
   const violations = [...reached]
     .map((spec) => ({ spec, reason: forbiddenReason(spec) }))
@@ -202,4 +214,50 @@ describe("workflow-probe-child boot graph", () => {
   test("never value-imports the control-plane database or the orchestrator", async () => {
     await expectCleanBootGraph(PROBE_BINARY);
   });
+});
+
+test("probe and authoring imports exclude unused host and execution schemas", async () => {
+  const { importers, modules, resolveFailures } = await childValueImportGraph([
+    ...binaryEntrypoints(PROBE_BINARY),
+    Bun.resolveSync("@intx/agent/authoring", repoRoot),
+    Bun.resolveSync("@intx/workflow/definition", repoRoot),
+  ]);
+  expect(resolveFailures).toEqual([]);
+  expect(modules).toContain("packages/workflow-host/src/probe/child.ts");
+  expect(modules).toContain("packages/types/src/workflow-definition.ts");
+
+  const forbiddenPackages = [
+    "@intx/hub-sessions",
+    "@intx/hub-agent",
+    "@intx/tool-packaging",
+    "isomorphic-git",
+    "npm-registry-fetch",
+    "tar",
+  ];
+  expect(
+    [...importers.keys()].filter((specifier) =>
+      forbiddenPackages.some(
+        (name) => specifier === name || specifier.startsWith(`${name}/`),
+      ),
+    ),
+  ).toEqual([]);
+
+  const forbiddenModules = [
+    "packages/agent/src/agent.ts",
+    "packages/inference/src/harness.ts",
+    "packages/types/src/index.ts",
+    "packages/types/src/runtime.ts",
+    "packages/types/src/sidecar.ts",
+    "packages/workflow/src/runtime/",
+    "packages/workflow-host/src/probe/index.ts",
+    "packages/workflow-host/src/probe/protocol.ts",
+    "packages/workflow-host/src/supervisor/",
+    "packages/workflow-host/src/ipc/control-channel.ts",
+    "packages/workflow-host/src/ipc/event-channel.ts",
+  ];
+  expect(
+    [...modules].filter((module) =>
+      forbiddenModules.some((path) => module.startsWith(path)),
+    ),
+  ).toEqual([]);
 });
