@@ -444,16 +444,13 @@ describe.skipIf(!harnessDbEnvAvailable())("drain round-trip", () => {
     // accumulator escalates with a signed CancelRequested. With
     // never-arrives the signal path can't fire. The supervisor's
     // drainTimeoutMs policy default is DEFAULT_DRAIN_TIMEOUT_MS
-    // (60_000ms); sleeping 2_500ms is well inside the wait window.
-    // A regression that aborted wait-mode on the drain signal flip
-    // (within hundreds of milliseconds, the cancel-mode shape)
-    // would commit StepFailed in this window and fail the
-    // assertion below. A subtler regression that aborted
-    // wait-mode anywhere between ~hundreds of ms and 2.5s would
-    // also fail; a regression that aborted somewhere between 2.5s
-    // and 60s would slip past this test -- the load-bearing
-    // assertion is the cancel-mode shape, not partial-window
-    // misbehaviour.
+    // (60_000ms); sleeping 2_500ms is well inside the wait window,
+    // so a regression that aborted wait-mode on the drain signal
+    // flip (the cancel-mode shape, sub-second) would commit
+    // StepFailed in this window and fail below. A regression that
+    // aborted somewhere between 2.5s and 60s would slip past -- the
+    // load-bearing assertion is the cancel-mode shape, not
+    // partial-window misbehaviour.
     //
     // The sleep cannot become a state-based wait: the property is the ABSENCE
     // of StepFailed, and a predicate for "still absent" holds the instant it

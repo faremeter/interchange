@@ -6,12 +6,11 @@
 // survives a sidecar PROCESS death and services the next event, exercising
 // the INPUT re-arm recovery path end-to-end on the real deploy stack.
 //
-// Shape: deploy BY SOURCE-REF (bundle a source entry module into a hub asset,
-// probe it, approve+freeze it against a real DB, deploy the source-ref frame) a
-// single-step workflow whose one step is an `onTrigger` section subscribed to
-// the deployment mail address, with a non-agent (sleep) body. The source-ref
-// deploy stages the inline body to its own workflow asset (`wf__section`) and
-// the runtime spawns each event's body as a child run by that ref.
+// Shape: deploy BY SOURCE-REF a single-step workflow whose one step is an
+// `onTrigger` section subscribed to the deployment mail address, with a
+// non-agent (sleep) body. The source-ref deploy stages the inline body to its
+// own workflow asset (`wf__section`) and the runtime spawns each event's body
+// as a child run by that ref.
 //
 //   1. Fire mail #1 -> the container run starts, spawns the body `section__0`
 //      with the mail body as its input, the body sleeps and completes, and the

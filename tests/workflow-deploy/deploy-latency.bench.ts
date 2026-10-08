@@ -6,8 +6,7 @@
 // entry module to a self-contained `.mjs`, seeds it as a `workflow`-kind
 // source asset, installs + probes + approves + freezes it against a real
 // database, emits the source-ref deploy frame, and writes the deployment's
-// anchor `workflow_run` row. The interval brackets ONLY that call --
-// nothing else in the iteration is timed.
+// anchor `workflow_run` row. The interval brackets ONLY that call.
 //
 // The stack is the real deploy stack stood up by `startDeployFlowEnv` (real
 // hub WebSocket server, real sidecar subprocess, mock echo inference so

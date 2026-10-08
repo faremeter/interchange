@@ -1,37 +1,36 @@
 // Single-step conversation-durability integration test (Phase 4.5).
 //
 // THE durability dividend: a warm single-step agent's multi-turn
-// conversation survives a child respawn. Today (4.4) the warm agent
-// holds conversation state in memory only; kill the child and the
-// conversation is lost. 4.5 makes that state durable in the workflow-run
-// substrate -- committed at the run boundary to a per-agent path
-// (`agent-state/<stepId>/`, a bucket-sharded WAL plus a periodic
-// checkpoint, sibling to the per-run event log under `runs/<runId>/...`)
-// -- and restored (checkpoint load + WAL replay) when the warm agent is
-// rebuilt lazily after respawn.
+// conversation survives a child respawn. Today (4.4) the warm agent holds
+// conversation state in memory only; kill the child and the conversation is
+// lost. 4.5 makes that state durable in the workflow-run substrate --
+// committed at the run boundary to a per-agent path (`agent-state/<stepId>/`,
+// a bucket-sharded WAL plus a periodic checkpoint, sibling to the per-run
+// event log under `runs/<runId>/...`) -- and restored (checkpoint load + WAL
+// replay) when the warm agent is rebuilt lazily after respawn.
 //
-// Harness choice (in-process run-loop, mirroring 4.4's warm round-trip
-// test). A respawn IS a second `runWorkflowChild` invocation against the
-// SAME on-disk substrate with a FRESH (empty) warm cache and a FRESH
-// durable-conversation registry. The in-process harness models exactly
-// that, deterministically, and exercises the REAL sidecar wiring
+// Harness choice (in-process run-loop, mirroring 4.4's warm round-trip test).
+// A respawn IS a second `runWorkflowChild` invocation against the SAME
+// on-disk substrate with a FRESH (empty) warm cache and a FRESH
+// durable-conversation registry. The in-process harness models exactly that,
+// deterministically, and exercises the REAL sidecar wiring
 // (`createSidecarStepBuildEnv` + `createDurableConversationRegistry`)
 // against a real `workflow-run` substrate -- the same production path a
-// spawned child takes, minus the OS process boundary whose kill timing
-// would only add nondeterminism to the durability assertion.
+// spawned child takes, minus the OS process boundary whose kill timing would
+// only add nondeterminism to the durability assertion.
 //
-// The spy agent is storage-aware: it loads its prior turns from
-// `env.storage` at build (exactly as a real reactor does via
-// `contextStore.load()`), appends each inbound message, and writes the
-// turns back through `env.storage`. The reply echoes the running
-// transcript, so a reply reflecting a PRIOR message is the load-bearing
-// proof of continuity. After respawn the rebuilt spy's prior turns come
-// only from the substrate restore -- there is no in-memory carry-over
-// across the two `runWorkflowChild` invocations.
+// The spy agent is storage-aware: it loads its prior turns from `env.storage`
+// at build (exactly as a real reactor does via `contextStore.load()`),
+// appends each inbound message, and writes the turns back through
+// `env.storage`. The reply echoes the running transcript, so a reply
+// reflecting a PRIOR message is the load-bearing proof of continuity. After
+// respawn the rebuilt spy's prior turns come only from the substrate restore
+// -- there is no in-memory carry-over across the two `runWorkflowChild`
+// invocations.
 //
 // Against the pre-4.5 behaviour (per-run/per-attempt isogit storage, no
-// substrate mirror, no restore) the post-respawn reply would reflect
-// ONLY the post-respawn message -- this test fails there.
+// substrate mirror, no restore) the post-respawn reply would reflect ONLY the
+// post-respawn message -- this test fails there.
 
 import { describe, test, expect } from "bun:test";
 import fs from "node:fs/promises";
@@ -144,12 +143,12 @@ const TurnShape = type({
 
 /**
  * Reconstruct the durable conversation from the two-tier substrate layout
- * (checkpoint + WAL) at the per-agent `agent-state/<stepId>/` dir and
- * return the user-turn texts. Goes through the production
+ * (checkpoint + WAL) at the per-agent `agent-state/<stepId>/` dir and return
+ * the user-turn texts. Goes through the production
  * `reconstructDurableConversation` so the test reads the conversation the
- * same way the warm agent's restore does -- not by re-deriving the WAL
- * fold independently. Validating each turn at the read boundary keeps the
- * test honest about the on-disk shape without an unchecked `as`.
+ * same way the warm agent's restore does -- not by re-deriving the WAL fold
+ * independently. Validating each turn at the read boundary keeps the test
+ * honest about the on-disk shape without an unchecked `as`.
  */
 async function readSnapshotUserTexts(
   agentStateDir: string,
@@ -315,8 +314,8 @@ function buildStorageAwareSpyAgentFactory(): {
     const turns: ConversationTurn[] = [...loaded.turns];
     const agent: Agent = {
       async send(content): Promise<SendResult> {
-        // A mail-derived input reaches `agent.send` as an `InboundMessage`; its
-        // `content` carries the conversation text (absent for an
+        // A mail-derived input reaches `agent.send` as an `InboundMessage`;
+        // its `content` carries the conversation text (absent for an
         // attachments-only message). A plain string arrives verbatim.
         const text =
           typeof content === "string" ? content : (content.content ?? "");
@@ -728,13 +727,13 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
     // THE durability dividend, now proven LOAD-BEARING: the post-respawn
     // transcript in the substrate reflects the PRE-respawn conversation
     // (alpha, bravo) plus the new message (charlie). The respawn's local
-    // store started EMPTY (fresh dir), so the rebuilt agent's only
-    // possible source for alpha+bravo is the substrate restore. If the
-    // substrate restore were broken, the rebuilt agent would have loaded
-    // zero prior turns, appended only charlie, and mirrored ["charlie"]
-    // back -- overwriting the prior snapshot -- and this would read just
-    // ["charlie"]. Reading the full transcript proves the substrate
-    // restore reconstructed the conversation with no local-store fallback.
+    // store started EMPTY (fresh dir), so the rebuilt agent's only possible
+    // source for alpha+bravo is the substrate restore. If the substrate
+    // restore were broken, the rebuilt agent would have loaded zero prior
+    // turns, appended only charlie, and mirrored ["charlie"] back --
+    // overwriting the prior snapshot -- and this would read just
+    // ["charlie"]. Reading the full transcript proves the substrate restore
+    // reconstructed the conversation with no local-store fallback.
     const afterRespawn = await readSnapshotUserTexts(agentStateDir, STEP_ID);
     expect(afterRespawn).toEqual(["alpha", "bravo", "charlie"]);
 

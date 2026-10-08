@@ -286,11 +286,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         expect(curr).toBeGreaterThanOrEqual(prev);
       }
 
-      // Inbox must be empty after every consumed/ entry lands.
-      // The consumed/ wait above already guarantees every
-      // dispatched run reached `markConsumed`, which removes the
-      // entry from `processing/` atomically with the consumed/
-      // write. The reads here are therefore one-shot.
+      // Inbox must be empty after every consumed/ entry lands: the
+      // consumed/ wait above already guarantees every dispatched run reached
+      // `markConsumed`, which removes the entry from `processing/` atomically
+      // with the consumed/ write. The reads here are therefore one-shot.
       const inboxEntries = await readClaimCheckDir(
         env,
         workflowRunRepoId,
@@ -309,11 +308,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
       expect(processingEntries).toEqual([]);
 
-      // Canonical event chain assertion for the one stable run:
-      // the multi-step workflow above is `step1 -> step2`, so the
-      // expected chain is `RunStarted -> StepStarted{step1} ->
-      // StepCompleted{step1} -> StepStarted{step2} ->
-      // StepCompleted{step2} -> RunCompleted`. No later mail may replace it.
+      // Canonical event chain for the one stable run: `step1 -> step2`,
+      // so the expected chain is RunStarted -> StepStarted{step1} ->
+      // StepCompleted{step1} -> StepStarted{step2} -> StepCompleted{step2} ->
+      // RunCompleted. No later mail may replace it.
       const currentEvents = await readWorkflowRunEvents(
         env,
         DEPLOYMENT_ID,

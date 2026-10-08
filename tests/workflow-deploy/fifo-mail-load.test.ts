@@ -168,13 +168,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     test(`${String(LOAD_MAIL_COUNT)} mails preserve terminal rejection order under load`, async () => {
-      // Coverage-gap follow-up to the 3-mail case in
-      // fifo-mail.test.ts. A single-step workflow still routes through
-      // the supervisor's FIFO inbox dispatch loop, so the load test
-      // uses one to keep commit pressure tractable in CI. The first mail
-      // exercises inbox -> processing -> trigger.fire -> wait for terminal ->
-      // markConsumed; the rest exercise FIFO dequeue and durable terminal
-      // rejection. The invariant under test does not depend on step count.
+      // Coverage-gap follow-up to the 3-mail case in fifo-mail.test.ts.
+      // A single-step workflow still routes through the supervisor's FIFO
+      // inbox dispatch loop, so the load test uses one to keep commit
+      // pressure tractable in CI. The first mail exercises inbox -> processing
+      // -> trigger.fire -> wait for terminal -> markConsumed; the rest
+      // exercise FIFO dequeue and durable terminal rejection. The invariant
+      // under test does not depend on step count.
       const deploymentMailAddress = deriveRunAddress({
         runId: DEPLOYMENT_ID_LOAD,
         domain: DEPLOYMENT_DOMAIN,

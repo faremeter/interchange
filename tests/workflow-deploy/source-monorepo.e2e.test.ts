@@ -458,10 +458,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         { diagnostics: env.sidecarDiagnostics },
       );
 
-      // 3) Fire the trigger and assert the run completes. This proves the monorepo
-      // closure resolved BOTH members, the sidecar checked both subtrees out of
-      // the delivered pack, and `@wf/app`'s entry resolved its `@wf/lib`
-      // workspace-local import at evaluation time.
+      // 3) Fire the trigger and assert the run completes. This proves the
+      // monorepo closure resolved BOTH members, the sidecar checked both
+      // subtrees out of the delivered pack, and `@wf/app`'s entry resolved its
+      // `@wf/lib` workspace-local import at evaluation time.
       await fireMailTrigger(env, deploymentMailAddress, {
         messageId: "<source-monorepo-e2e@integration.interchange>",
       });

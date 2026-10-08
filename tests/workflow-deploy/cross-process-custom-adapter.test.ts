@@ -8,10 +8,9 @@
 // child + the mock inference server exercise the exact production wiring;
 // nothing here is in-process or mocked at the resolution boundary.
 //
-// The workflow deploys BY SOURCE-REF (bundle a source entry module into a hub
-// asset, probe it, approve+freeze it against a real DB, deploy the source-ref
-// frame) through `deployWorkflowSourceForTest` -- the one code-sourced deploy
-// front -- rather than the retired live-authored orchestrator path.
+// The workflow deploys BY SOURCE-REF through `deployWorkflowSourceForTest` --
+// the one code-sourced deploy front -- rather than the retired live-authored
+// orchestrator path.
 //
 // POSITIVE: the manifest maps provider "custom-x" to an absolute-path .ts
 // fixture adapter (which delegates to the Anthropic adapter so it speaks the

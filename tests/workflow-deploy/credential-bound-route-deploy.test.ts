@@ -13,7 +13,7 @@
 // The tests exercise the same seeded ciphertext through the route:
 //   * Positive: the app holds the SAME key the secret was sealed under, so the
 //     binding resolves and decrypts -- 201. If the route dropped the cipher or
-//     the shared deploy stopped forwarding it, resolution fails closed on the
+//     the shared deploy stopped forwarding it, resolution fails closed and the
 //     deploy is 502; the positive assertion catches that.
 //   * Wrong key: the app holds a DIFFERENT key over the same ciphertext, so the
 //     AEAD decrypt refuses the key-id mismatch and the deploy fails closed

@@ -3,40 +3,38 @@
 // The recipient-side `mail.inbound` seam verifies every inbound frame's
 // signature against the key the hub co-delivered for its `authenticatedSender`,
 // reduces the verdict to an admission outcome, and consults the recipient
-// deployment's RESOLVED inbound-mail policy: it delivers an admitted outcome and
-// DROPS everything else. The per-workflow authored `inboundMailPolicy` is the
-// only switch on that decision -- there is no admit-all flag, and a deployment
-// that authored no policy rejects every non-`clean` outcome.
+// deployment's RESOLVED inbound-mail policy: it delivers an admitted outcome
+// and DROPS everything else. The per-workflow authored `inboundMailPolicy` is
+// the only switch on that decision -- there is no admit-all flag, and a
+// deployment that authored no policy rejects every non-`clean` outcome.
 //
-// This test pins that switch through the production seam with two real sidecar
-// deployments on one hub:
+// Two real sidecar deployments on one hub:
 //
 //   D1  authored NO policy (the secure default: reject-unless-verified).
 //   D2  authored `{ missing: "admit" }`.
 //
-// and drives three scenarios sequentially (one shared subprocess env means one
-// test):
+// Three scenarios sequentially (one shared subprocess env means one test):
 //
 //   (a) VALID  -> ADMITTED on D1. The production `POST /workflows/:id/mail`
 //       route signs the trigger with the caller's durable principal key and
 //       co-delivers that key on the run's grants barrier, so the recipient
-//       verifies the signature against a resolved key and the visible From binds
-//       to the caller: verdict `clean`, which every policy admits. The run
-//       reaches `RunCompleted` and the trigger's messageId is consumed.
+//       verifies against a resolved key and the visible From binds to the
+//       caller: verdict `clean`, which every policy admits. Run reaches
+//       `RunCompleted` and the messageId is consumed.
 //   (b) UNSIGNED -> DROPPED on D1. A plain text/plain message (no
-//       `multipart/signed` body) verifies `missing` ONCE a key is cached for the
-//       sender -- so the scenario co-delivers a key on the grants barrier the way
-//       the production dispatch does, making the outcome `missing` rather than the
-//       cache-miss `unknown`. D1's default policy rejects `missing`, so the seam
-//       drops it: the sidecar logs the reject, no `RunStarted` carries the
-//       message, and the message is never consumed.
-//   (c) SAME UNSIGNED shape -> ADMITTED on D2. Unsigned text/plain mail of the
-//       same shape (its own messageId) routed at D2, whose `{ missing: "admit" }`
-//       relaxes exactly that outcome. The seam admits it: the run starts carrying
-//       the messageId, is consumed, and reaches `RunCompleted`. The identical
-//       message D1 dropped, D2 admits -- the per-workflow policy is the switch.
+//       `multipart/signed` body) verifies `missing` ONCE a key is cached for
+//       the sender -- the scenario co-delivers a key on the grants barrier the
+//       way production dispatch does, making the outcome `missing` rather than
+//       the cache-miss `unknown`. D1's default policy rejects `missing`, so
+//       the seam drops it: reject logged, no `RunStarted` carries the message,
+//       never consumed.
+//   (c) SAME UNSIGNED shape -> ADMITTED on D2. Same-shape unsigned mail (its
+//       own messageId) routed at D2, whose `{ missing: "admit" }` relaxes
+//       exactly that outcome: run starts carrying the messageId, is consumed,
+//       reaches `RunCompleted`. The identical message D1 dropped, D2 admits --
+//       the per-workflow policy is the switch.
 //
-// Scenarios (b)/(c) inject at the hub router's `sendRunGrants` +/`routeMail`
+// Scenarios (b)/(c) inject at the hub router's `sendRunGrants` + `routeMail`
 // seam (the same surface `mail-edge-cases` uses) to hand the seam arbitrary raw
 // bytes with a chosen `authenticatedSender`; `buildMinimalMail` and
 // `waitForConsumedFilename` mirror that file's local helpers verbatim.
@@ -262,7 +260,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // Seed the tenancy both deployments resolve against: the tenant carries
       // the deploy domain so each derived address matches its sidecar
       // deployment, and the caller is an active user-principal holding a durable
-      // hub key (which production mints at principal creation; the direct row
+      // hub key (production mints it at principal creation; the direct row
       // insert bypasses that, so mint it here or the trigger route's sign()
       // throws) plus the `workflow-run:<D1>/manage` grant the `/mail` route
       // requires. The caller also creates each `workflow`-kind definition asset
@@ -308,9 +306,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
 
       // D1: no authored policy. Deploy D1 alone up front and run its
-      // push-producing scenarios (a)/(b) before D2 exists; D2 is deployed
-      // later, just before scenario (c). See the D2 deploy below for why the
-      // deploys cannot both happen up front.
+      // push-producing scenarios (a)/(b) before D2 exists; D2 is deployed later,
+      // just before scenario (c). See the D2 deploy below for why the deploys
+      // cannot both happen up front.
       const d1 = await deployEnforcementWorkflow({
         anchorRunId: D1_DEPLOYMENT_ID,
         definitionAssetId: D1_DEFINITION_ASSET_ID,
@@ -537,8 +535,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
 );
 
 /**
- * Construct a minimal RFC 2822-shaped, unsigned `text/plain` mail by hand. The
- * fixture's `fireMailTrigger` runs through `assembleMessage`, which would emit a
+ * Construct a minimal RFC 2822-shaped, unsigned `text/plain` mail by hand.
+ * `fireMailTrigger` goes through `assembleMessage`, which would emit a
  * `multipart/signed` body; this helper emits a plain unsigned message so the
  * recipient's signature verify returns `missing`. Mirrors the local helper in
  * `mail-edge-cases.test.ts`.
@@ -577,10 +575,10 @@ function buildMinimalMail(opts: {
  * consumed/ in one shot can race the supervisor's pack pipeline. Mirrors the
  * local helper in `mail-edge-cases.test.ts`.
  *
- * The awaited state is the dedup entry appearing, so the wait carries no
- * budget of its own: an entry that never lands is a hang, which the test's own
- * `bun test` budget fails. Runs through the harness `waitFor` so a hang here
- * reaches the env teardown's in-flight wait report.
+ * The awaited state is the dedup entry appearing, so the wait carries no budget
+ * of its own: an entry that never lands is a hang, which the test's own `bun
+ * test` budget fails. Runs through the harness `waitFor` so a hang here reaches
+ * the env teardown's in-flight wait report.
  */
 async function waitForConsumedFilename(
   env: DeployFlowEnv,
@@ -602,18 +600,19 @@ async function waitForConsumedFilename(
 }
 
 /**
- * Assert a filename never appears in the deployment's `consumed/` subtree over a
- * bounded settle window. A dropped inbound message is never dispatched, so it is
- * never consumed; this is the ABSENCE counterpart to `waitForConsumedFilename`.
+ * Assert a filename never appears in the deployment's `consumed/` subtree over
+ * a bounded settle window. A dropped inbound message is never dispatched, so it
+ * is never consumed; this is the ABSENCE counterpart to
+ * `waitForConsumedFilename`.
  *
  * `windowMs` is load-bearing: the assertion is an absence, so elapsed time is
- * the only thing that makes it meaningful, and a predicate over the same
+ * the only thing that makes it meaningful -- a predicate over the same
  * condition would hold on the first read and prove nothing. Callers scope the
  * window to the settle they want covered.
  *
- * The loop stays hand-rolled for that reason -- `waitFor` exits when its
- * predicate holds, which here is the failure -- and runs inside `env.retrying`
- * so the env teardown's in-flight wait report still covers it. The
+ * The loop stays hand-rolled for that reason (`waitFor` exits when its
+ * predicate holds, which here is the failure) and runs inside `env.retrying` so
+ * the env teardown's in-flight wait report still covers it. The
  * `checkTornDown` at the top of the loop is what lets that teardown's stop end
  * it: an absence observed against an env being dismantled proves nothing, so
  * the window must throw rather than run out.

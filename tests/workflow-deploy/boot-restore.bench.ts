@@ -8,8 +8,7 @@
 // per-deployment restore cost that serial spawn imposes.
 //
 // The measured operation is `SidecarDeployRouter.restoreWorkflowRuns()`
-// on the workflow host's deploy program. For each batch size N the
-// bench:
+// on the workflow host's deploy program. For each batch size N the bench:
 //
 //   1. SETUP (not timed): stands up N single-step deployments through a first
 //      router over a scratch data dir, so N `deployment.json` records plus
@@ -233,9 +232,9 @@ function createSpawnTestRepoStore(tempBase: string): RepoStore {
  * The injected closure materializer stub. Source-ref is the only deploy
  * lineage, so the router derives each deployment's definition through this
  * dependency on both the deploy and the restore path. Returns a valid
- * single-step `step-1` live definition (its step carries an agent so it survives
- * `projectLiveToInert`) keyed to the deployment id, so each of the N deployments
- * materializes a distinct, deterministic definition.
+ * single-step `step-1` live definition (its step carries an agent so it
+ * survives `projectLiveToInert`) keyed to the deployment id, so each of the N
+ * deployments materializes a distinct, deterministic definition.
  */
 const stubApplyFrozenWorkflowClosure: NonNullable<
   Parameters<typeof createSidecarDeployRouter>[0]["applyFrozenWorkflowClosure"]
@@ -360,11 +359,11 @@ async function buildRouter(args: {
     },
     // Source-ref is the only deploy lineage: the router derives each
     // deployment's runnable definition by materializing the pin's closure
-    // through this dependency, on both the deploy and the restore path. The stub
-    // returns a valid single-step `step-1` live definition (its step carries an
-    // agent so it survives `projectLiveToInert`) whose id is keyed to the
-    // deployment id, so each of the N deployments materializes a distinct,
-    // deterministic definition on both deploy and restore.
+    // through this dependency, on both the deploy and the restore path. The
+    // stub returns a valid single-step `step-1` live definition (its step
+    // carries an agent so it survives `projectLiveToInert`) whose id is keyed
+    // to the deployment id, so each of the N deployments materializes a
+    // distinct, deterministic definition on both deploy and restore.
     applyFrozenWorkflowClosure: stubApplyFrozenWorkflowClosure,
   });
 }

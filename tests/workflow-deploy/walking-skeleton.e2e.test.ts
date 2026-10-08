@@ -96,9 +96,10 @@ import {
 } from "../hub-agent/lib/deploy-flow-env";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
-// A run-first anchor id (run_<hex>): the live trigger->run path derives the run
-// id from the deployment address via parseRunAddress, which requires the run_
-// prefix, so a non-run_ literal would throw "Invalid run address" mid-test.
+// A run-first anchor id (run_<hex>): the live trigger->run path derives the
+// run id from the deployment address via parseRunAddress, which requires the
+// run_ prefix, so a non-run_ literal would throw "Invalid run address"
+// mid-test.
 const DEPLOYMENT_ID = generateId("workflowRun");
 const STEP_ID = "run";
 const WORKFLOW_RUN_REF = "refs/heads/main";
@@ -176,8 +177,8 @@ export const workflow = defineWorkflow({
 
 // The onTrigger-container entry the second fixture ships. A single section
 // subscribed to the deployment's mail address; its inline body is a one-step
-// tool-less agent, so a fired event spawns a body child that runs inference from
-// its env-delivered per-body sources.
+// tool-less agent, so a fired event spawns a body child that runs inference
+// from its env-delivered per-body sources.
 const bodyWorkflowEntrySource = `
 import { defineWorkflow, onTrigger, step } from "@intx/workflow/definition";
 import { defineAgent } from "@intx/agent";
@@ -381,9 +382,10 @@ describe.skipIf(!harnessDbEnvAvailable())("walking skeleton e2e", () => {
 
     // Seed the tenancy both tests' freezes anchor on:
     // installAndApproveWorkflowDefinition projects a first-class
-    // workflow_definition over each test's asset, so the shared tenant + creator
-    // principal must exist before either gate persists. Seeded once here so the
-    // two tests are independent of ordering (each still seeds its own asset).
+    // workflow_definition over each test's asset, so the shared tenant +
+    // creator principal must exist before either gate persists. Seeded once
+    // here so the two tests are independent of ordering (each still seeds its
+    // own asset).
     await h.db.insert(tenantTable).values({
       id: TENANT_ID,
       name: TENANT_ID,

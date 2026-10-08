@@ -15,10 +15,11 @@
 // pinned origin -- an in-process mock server that records the Authorization
 // header it sees.
 //
-// The consumer both ends key on is the probe factory's `id`: the source-ref arm
-// sets the synthetic `StepToolFactory.packageName` to the factory id, and the
-// author names `credentialBindings[].package` = that same id, so the delivered
-// descriptor's `consumer` and the source tool's runtime consumer match.
+// The consumer both ends key on is the probe factory's `id`: the source-ref
+// arm sets the synthetic `StepToolFactory.packageName` to the factory id, and
+// the author names `credentialBindings[].package` = that same id, so the
+// delivered descriptor's `consumer` and the source tool's runtime consumer
+// match.
 //
 // The proofs:
 //   * Positive: the exact source-resolved secret arrives at the pinned origin
@@ -30,8 +31,8 @@
 //     reaches the running child and the shaped handle reads it, proving the
 //     channel delivers to a source-workflow tool. (A binding-declaring deploy
 //     re-applies its frame material on every run's pre-trigger barrier, so a
-//     channel push would be clobbered; the channel-only shape is what proves the
-//     live channel.)
+//     channel push would be clobbered; the channel-only shape is what proves
+//     the live channel.)
 //   * Negative: a run whose grant does not authorize the consumer fails the
 //     resolve closed -- no request ever reaches the origin.
 

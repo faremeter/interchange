@@ -1,39 +1,34 @@
-// Phase 4.1 lock: a single-step agent routed through the
-// spawned workflow-process child resolves its GRANTS, preserves its
-// `run_<hex>` identity, and threads its inference events to the hub
-// timeline keyed to the deploy's session.
+// Phase 4.1 lock: a single-step agent routed through the spawned
+// workflow-process child resolves its GRANTS, preserves its `run_<hex>`
+// identity, and threads its inference events to the hub timeline keyed to the
+// deploy's session.
 //
 // This is the foundation sub-step every later Phase 4 step keys off: if
-// grants resolve EMPTY the child's authorize fails closed on every
-// resource and every tool-using agent silently stops working. The test
-// is therefore written to FAIL if the grants path is broken (the granted
-// tool's authorize would deny, the run would not complete, and the frozen
-// grant snapshot would carry no tool grant).
+// grants resolve EMPTY the child's authorize fails closed on every resource
+// and every tool-using agent silently stops working. The test is therefore
+// written to FAIL if the grants path is broken.
 //
 // The deploy is a one-step workflow deployed BY SOURCE-REF whose agent
-// carries the inline `mail_send` tool from the `mail-tool.ts` fixture. The
-// deploy mail address is the run's own top-level `run_<id>@<domain>`
-// address. On the source path, tool authorization rides the frozen grant
-// snapshot: the probe's capability walk reads the source agent's inline tool
-// and emits a `tool:<name>` grant that the operator approves and the approve
-// step freezes onto the definition version row; the run's per-run grants
-// (delivered on the trigger frame) authorize the tool call at run time.
+// carries the inline `mail_send` tool from the `mail-tool.ts` fixture. On the
+// source path, tool authorization rides the frozen grant snapshot: the probe's
+// capability walk emits a `tool:<name>` grant that the operator approves and
+// the approve step freezes onto the definition version row; the run's per-run
+// grants (delivered on the trigger frame) authorize the tool call at run time.
 //
 // Assertions:
-//   (a) identity: the deploy-ack persisted the public key for the run
-//       mail address, and `isRunAddress` recognizes it -- every routable
-//       address now names one self-anchored run.
+//   (a) identity: the deploy-ack persisted the public key for the run mail
+//       address, and `isRunAddress` recognizes it -- every routable address
+//       now names one self-anchored run.
 //   (b) grants resolve: the frozen grant snapshot (`loadFrozenGrantSnapshot`,
-//       the source-path grant store) carries the granted tool's
-//       `tool:<name>` grant. An empty snapshot here is the silent
-//       zero-grants failure this sub-step exists to prevent.
+//       the source-path grant store) carries the granted tool's `tool:<name>`
+//       grant. An empty snapshot here is the silent zero-grants failure this
+//       sub-step exists to prevent.
 //   (c) authorize round-trip: `evaluateGrants` (the exact evaluator the
-//       child's authorize adapter uses) ALLOWS the granted resource and
-//       FAILS CLOSED on an ungranted one, evaluated over the per-run grant
-//       the trigger delivers. The behavioral half drives a mail message
-//       whose model turn calls the granted tool: the tool's authorize
-//       succeeds in the child, the tool runs, and the run reaches
-//       `RunCompleted`.
+//       child's authorize adapter uses) ALLOWS the granted resource and FAILS
+//       CLOSED on an ungranted one, evaluated over the per-run grant the
+//       trigger delivers. The behavioral half drives a mail message whose
+//       model turn calls the granted tool: the tool's authorize succeeds in
+//       the child, the tool runs, and the run reaches `RunCompleted`.
 //   (d) events: an `inference.start` reaches the hub's `agent.event` sink
 //       carrying the deploy's sessionId.
 

@@ -89,8 +89,8 @@ function renderAgentStep(spec: AgentStepSpec): string {
     })${afterClause} }),\n`;
 }
 
-// Whether any step -- at the top level or nested in any child body -- carries an
-// inline tool, so the entry module imports the tool factory exactly when a
+// Whether any step -- at the top level or nested in any child body -- carries
+// an inline tool, so the entry module imports the tool factory exactly when a
 // rendered `mailSendTool(...)` reference needs it.
 function anyStepHasTool(
   steps: readonly AgentStepSpec[],

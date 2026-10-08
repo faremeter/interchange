@@ -11,20 +11,12 @@
 // stage-only path, no warm harness) and the `sendMultiStepDeploy` hand-off
 // is supplied against `env.hub.router.sendAgentDeploy` so the sidecar's
 // deploy router takes the workflow-process spawn path. The deployment
-// handle is registered
-// on the env via `registerDeployment` so the fixture's `injectSignal`,
-// `readWorkflowRunEvents`, and `waitForWorkflowRunComplete` helpers can
-// resolve it by id.
+// handle is registered on the env via `registerDeployment` so the fixture's
+// `injectSignal`, `readWorkflowRunEvents`, and `waitForWorkflowRunComplete`
+// helpers can resolve it by id.
 //
 // The pre-landed `deploy-flow-env` fixture supplies every other helper;
 // this file does not modify the fixture.
-//
-// Architectural-gap discipline: this test was previously authored
-// against an un-wired multi-step transport surface. The plumbing that
-// makes the deployment-level address routable, threads the workflow
-// definition to the sidecar, spawns the workflow-process subprocess,
-// and routes per-step pack pushes back to the hub now lands in the
-// upstream commits this file's verification depends on.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 

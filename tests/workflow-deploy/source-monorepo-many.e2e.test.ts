@@ -639,11 +639,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
         address: twoAddress,
       });
 
-      // Each child evaluated its OWN member's source: both members' system prompts
-      // reached inference, proving the two runs did not share one definition's
-      // code (and that each step's agent prompt overrode the deploy fallback). The
-      // anthropic provider serializes the system prompt as a `system` array of
-      // text blocks on the wire.
+      // Each child evaluated its OWN member's source: both members' system
+      // prompts reached inference, proving the two runs did not share one
+      // definition's code (and that each step's agent prompt overrode the deploy
+      // fallback). The anthropic provider serializes the system prompt as a
+      // `system` array of text blocks on the wire.
       const systemTexts = env.inference.requests.flatMap(systemBlockTexts);
       expect(systemTexts.some((t) => t.includes(ONE_SYSTEM_PROMPT))).toBe(true);
       expect(systemTexts.some((t) => t.includes(TWO_SYSTEM_PROMPT))).toBe(true);
@@ -659,10 +659,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         approvals: collapseApprovals,
       });
 
-      // (a) The collapse itself: identical needs-surfaces yield an equal wire hash
-      // and the (assetId, wireHash) key resolves both installs to the SAME
-      // definition row. These two equalities are what discriminate the collapse --
-      // they fail if the second install forks a second row.
+      // (a) The collapse itself: identical needs-surfaces yield an equal wire
+      // hash and the (assetId, wireHash) key resolves both installs to the SAME
+      // definition row. These two equalities are what discriminate the collapse
+      // -- they fail if the second install forks a second row.
       expect(a.projection.id).toBe(COLLAPSE_WORKFLOW_ID);
       expect(b.projection.id).toBe(COLLAPSE_WORKFLOW_ID);
       expect(b.approval.approvedWireHash).toBe(a.approval.approvedWireHash);

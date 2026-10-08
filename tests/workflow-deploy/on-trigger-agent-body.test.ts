@@ -2,14 +2,12 @@
 //
 // The proof that a deployed onTrigger section's body runs a REAL agent step.
 // An onTrigger body is a child run spawned per section event, run through the
-// cold, tool-less, body-only invoker. This drives that path end-to-end
-// on the real deploy stack: the workflow is deployed BY SOURCE-REF (bundle a
-// source entry module into a hub asset, probe it, approve+freeze it against a
-// real DB, deploy the source-ref frame) with a section subscribed to the
-// deployment mail address whose body is a single tool-less agent step. Firing
-// the trigger spawns the body child, whose agent step runs through the body
-// invoker against the mock inference fixture and commits the model's
-// deterministic reply as its output.
+// cold, tool-less, body-only invoker. This drives that path end-to-end on the
+// real deploy stack: the workflow is deployed BY SOURCE-REF with a section
+// subscribed to the deployment mail address whose body is a single tool-less
+// agent step. Firing the trigger spawns the body child, whose agent step runs
+// through the body invoker against the mock inference fixture and commits the
+// model's deterministic reply as its output.
 //
 // The mock inference server returns `I see these tools: <names>` from the tool
 // names it was handed; a tool-less agent yields the stable prefix `I see these
@@ -17,8 +15,8 @@
 // against (real inference in CI is impractical). The reachability assertion is
 // three-fold: the body child completes, its agent step's committed output is
 // the real reply (NOT the agent id -- the old stub value -- and NOT a
-// fabricated stub failure), and the mock provider actually
-// received an inference request, so the reply is real model output.
+// fabricated stub failure), and the mock provider actually received an
+// inference request, so the reply is real model output.
 //
 // Harness justification: SPAWN-REAL. Real hub, real sidecar subprocess, real
 // workflow-process child driving `runOnTrigger` with the production

@@ -1,55 +1,47 @@
 // Phase 4.7 LATENCY GATE benchmark (NOT a CI test).
 //
-// Measures the per-message round-trip latency of an interactive single
-// agent on two paths, with the inference TEST PROVIDER so inference cost
-// is fixed and near-zero -- the measured delta is the INFRASTRUCTURE the
-// unified host adds over the in-process runtime, not inference.
+// Measures per-message round-trip latency of an interactive single agent on
+// two paths, with the inference TEST PROVIDER so inference cost is fixed and
+// near-zero -- the measured delta is the infrastructure the unified host adds
+// over the in-process runtime, not inference.
 //
 //   BASELINE (in-process): a warm `@intx/agent` agent driven directly via
-//     `agent.send(text)` -- the in-process mail->reactor->reply turn. No
-//     IPC, no claim-check substrate, no dispatch loop. The same HTTP mock
-//     inference server the unified path uses, in echo mode, so the
-//     provider is byte-for-byte identical and inference is ~0.
+//     `agent.send(text)` -- the in-process mail->reactor->reply turn. No IPC,
+//     no claim-check substrate, no dispatch loop. Same HTTP mock inference
+//     server the unified path uses, in echo mode.
 //
-//   UNIFIED (child): the real 4.6 spawn-real path -- hub routeMail ->
-//     sidecar hub-link -> supervisor inbox claim-check write+read ->
-//     dispatch loop -> trigger.fire IPC -> child reads bytes from the
-//     processing entry -> WARM agent.send -> reply -> terminal.event IPC
-//     back to the supervisor. Timed inside the supervisor (which runs in
-//     the sidecar subprocess, so both ends of the IPC round-trip are
-//     visible in one process) via the `onDispatchTiming` observability
-//     hook, gated by `SIDECAR_LATENCY_BENCH_FILE`. The supervisor appends
-//     `<messageId> dispatch-start|reply-produced <perf.now ms>` lines that
-//     this harness reads after the run.
+//   UNIFIED (child): the real 4.6 spawn-real path -- hub routeMail -> sidecar
+//     hub-link -> supervisor inbox claim-check write+read -> dispatch loop ->
+//     trigger.fire IPC -> child reads bytes -> WARM agent.send -> reply ->
+//     terminal.event IPC back to the supervisor. Timed inside the supervisor
+//     (one process, both IPC ends visible) via the `onDispatchTiming` hook,
+//     gated by `SIDECAR_LATENCY_BENCH_FILE`, which appends
+//     `<messageId> dispatch-start|reply-produced <perf.now ms>` lines.
 //
 // Boundary equivalence (documented; kept equivalent across paths):
-//   - BASELINE measured interval: the wall-clock around one `agent.send`,
-//     from just before the call to its resolution (the reply is produced
-//     -- `agent.send` resolves on the director's `connector.reply`).
-//   - UNIFIED measured interval: `dispatch-start` (the inbox entry is
-//     dequeued for dispatch, claim-check read complete, `trigger.fire`
-//     about to forward) to `reply-produced` (the child's terminal-event
-//     frame for that run lands back at the supervisor). This brackets the
-//     SAME warm `agent.send` the baseline times, PLUS exactly the infra
-//     the unified path adds: claim-check read, IPC down, child bytes-read,
-//     warm-cache acquire + step env, agent.send, terminal IPC up + commit.
-//   So DELTA = UNIFIED - BASELINE isolates the unified infra tax.
+//   - BASELINE measured interval: wall-clock around one `agent.send`, from
+//     just before the call to its resolution (reply produced).
+//   - UNIFIED measured interval: `dispatch-start` (inbox entry dequeued,
+//     claim-check read complete, `trigger.fire` about to forward) to
+//     `reply-produced` (the child's terminal-event frame lands back at the
+//     supervisor). This brackets the SAME warm `agent.send` the baseline
+//     times, PLUS the infra the unified path adds (claim-check read, IPC
+//     down, child bytes-read, warm-cache acquire + step env, terminal IPC
+//     up + commit). DELTA = UNIFIED - BASELINE isolates the unified infra tax.
 //
-// Both paths measure the SUSTAINED interactive case: back-to-back
-// messages on ONE warm agent, message N+1 fired only after reply N (no
-// pipelining), and the FIRST (cold) message is discarded so the agent
-// build / tool materialization / LSP spawn cost is excluded -- the
-// steady-state per-message round-trip is what the gate is about.
+// Both paths measure the SUSTAINED interactive case: back-to-back messages on
+// ONE warm agent, message N+1 fired only after reply N (no pipelining), and
+// the first (cold) message discarded so agent build / tool materialization /
+// LSP spawn cost is excluded.
 //
 // Run:
 //   bun run tests/workflow-deploy/latency-gate.bench.ts \
 //     [--messages N] [--out <dir>]
 //
 // Writes <out>/raw-baseline.csv, <out>/raw-unified.csv, and
-// <out>/results.json. Prints the percentile table to stdout. Not matched
-// by `bun test` (it is a `.bench.ts`, not a `.test.ts`), so `make test`
-// never runs it; it is type-checked by `make build` via this directory's
-// tsconfig.
+// <out>/results.json, and prints the percentile table to stdout. Not matched
+// by `bun test` (a `.bench.ts`, not a `.test.ts`); type-checked by `make
+// build` via this directory's tsconfig.
 
 import fs from "node:fs";
 import os from "node:os";
@@ -94,16 +86,16 @@ const DEPLOYMENT_ID = "run_latency-gate-bench";
 const STEP_ID = "step1";
 
 // The definition's own tenant, the caller principal that creates the
-// deployment's definition asset, and that asset id. The install/approve freeze
-// and the anchor `workflow_run` insert write against these, so they must exist
-// in the real DB before the unified deploy runs.
+// definition asset, and that asset id. The install/approve freeze and the
+// anchor `workflow_run` insert write against these, so they must exist in the
+// real DB before the unified deploy runs.
 const TENANT_ID = "tnt_latency_gate_bench";
 const CALLER_PRINCIPAL_ID = "prn_latency_gate_bench";
 const DEFINITION_ASSET_ID = "ast_latency_gate_wf";
 
-// One steady-state message body. The echo provider reflects it; content
-// is irrelevant to the infra timing as long as it is a small, fixed
-// conversation body (so inference stays ~0 and constant across messages).
+// One steady-state message body. The echo provider reflects it; content is
+// irrelevant to the infra timing as long as it is small and fixed (so
+// inference stays ~0 and constant across messages).
 const BODY = "Latency-gate steady-state probe body 0xC0FFEE.";
 
 type BenchOpts = {
@@ -261,12 +253,11 @@ async function runBaseline(opts: {
     model: "mock-model",
   };
 
-  // A real isogit ContextStore (the same store kind the unified step
-  // agent uses for its conversation) so the baseline pays the same
-  // per-turn context-commit cost the in-process runtime pays today.
-  // Sign each commit's sshsig exactly as `agent-repo.ts` does for the
-  // unified path; without a signer the baseline would skip the
-  // per-commit signature and undercount its own floor.
+  // A real isogit ContextStore (the same store kind the unified step agent
+  // uses) so the baseline pays the same per-turn context-commit cost. Sign
+  // each commit's sshsig exactly as `agent-repo.ts` does for the unified
+  // path; without a signer the baseline would skip the per-commit signature
+  // and undercount its own floor.
   const signingKey = await generateKeyPair();
   const signer: CommitSigner = (payload) =>
     createSSHSignature(payload, signingKey.privateKey, signingKey.publicKey);
@@ -366,8 +357,8 @@ async function runUnified(opts: {
     });
 
     // Deploy the single warm agent BY SOURCE-REF, the same code-sourced front
-    // production drives. The helper registers the deployment on the env, so the
-    // fire loop resolves it by `anchorRunId` with no manual registration.
+    // production drives. The helper registers the deployment on the env, so
+    // the fire loop resolves it by `anchorRunId` with no manual registration.
     const handle = await deployWorkflowSourceForTest(env, {
       entryModule,
       db: opts.db,
@@ -384,20 +375,19 @@ async function runUnified(opts: {
       throw new Error("unified bench: deploy did not return a public key");
     }
 
-    // Confirm the deployment is routable before the first fire so a
-    // first-run failure is attributable to the fire, not a half-wired
-    // deploy.
+    // Confirm the deployment is routable before the first fire so a first-run
+    // failure is attributable to the fire, not a half-wired deploy.
     await waitForFirstRoutable(env, deploymentMailAddress);
 
-    // Fire messages+1 mails back-to-back; pace strictly on the
-    // supervisor's own `reply-produced` timing mark for the just-fired
-    // message (NOT the hub-side workflow-run event poll, whose pack-push
-    // pipeline lags as the repo grows and would conflate observation lag
-    // with the measured interval). Exactly one message is in flight at a
-    // time -- the sustained interactive case, no pipelining. The supervisor
-    // keys the timing file on the inbound mail's `Message-Id` verbatim, so
-    // the messageId we mint is the timing key. The first message's sample is
-    // the cold agent build, discarded below.
+    // Fire messages+1 mails back-to-back, pacing strictly on the supervisor's
+    // own `reply-produced` timing mark for the just-fired message (NOT the
+    // hub-side workflow-run event poll, whose pack-push pipeline lags as the
+    // repo grows and would conflate observation lag with the measured
+    // interval). Exactly one message in flight at a time -- the sustained
+    // interactive case, no pipelining. The supervisor keys the timing file on
+    // the inbound mail's `Message-Id` verbatim, so the messageId we mint is
+    // the timing key. The first message's sample is the cold agent build,
+    // discarded below.
     const orderedMessageIds: string[] = [];
     for (let i = 0; i < opts.messages + 1; i += 1) {
       const messageId = `<latency-${String(i)}@integration.interchange>`;
@@ -453,9 +443,9 @@ function parseTimingFile(file: string): Map<string, TimingPair> {
     const parts = trimmed.split(" ");
     // The supervisor's D2 attribution emits per-leg lines on this same
     // channel, shaped `<messageId> leg <leg> <phase> <atMs> [counters...]`.
-    // The 4.7 round-trip gate only consumes the `<messageId> <marker> <atMs>`
-    // round-trip lines, so any line whose second field is the `leg`
-    // discriminator is skipped here rather than treated as malformed.
+    // The 4.7 gate only consumes the `<messageId> <marker> <atMs>` round-trip
+    // lines, so any line whose second field is `leg` is skipped here rather
+    // than treated as malformed.
     if (parts[1] === "leg") continue;
     if (parts.length !== 3) {
       throw new Error(`malformed timing line: ${JSON.stringify(line)}`);
@@ -563,10 +553,10 @@ async function main(): Promise<void> {
   const loadBefore = os.loadavg();
 
   // Shared HTTP mock inference server (echo mode) for the BASELINE so the
-  // provider is identical to the unified path's in-fixture mock. The
-  // unified path starts its own mock inside the fixture; both are the
-  // same `startMockInference` echo server, so inference is the same ~0
-  // cost on both sides.
+  // provider is identical to the unified path's in-fixture mock. The unified
+  // path starts its own mock inside the fixture; both are the same
+  // `startMockInference` echo server, so inference is the same ~0 cost on
+  // both sides.
   const baselineInference: MockInference = startMockInference({
     echoUserMessage: true,
   });

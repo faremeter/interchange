@@ -10,11 +10,9 @@
 // The only other map test (`per-level-pipeline-real-agents.test.ts`) runs
 // the runtime in-memory with a test `buildEnv`, so it never drives the
 // sidecar's scoped-id lookup sites -- which is why the scoped-id bug was
-// invisible to CI. This test deploys a top-level map BY SOURCE-REF (bundle a
-// source entry module into a hub asset, probe it, approve+freeze it against a
-// real DB, deploy the source-ref frame) through the real hub + real sidecar
-// subprocess + mock inference fixture and asserts each iteration's committed
-// output is the agent's deterministic reply.
+// invisible to CI. This test deploys a top-level map BY SOURCE-REF through the
+// real hub + real sidecar subprocess + mock inference fixture and asserts each
+// iteration's committed output is the agent's deterministic reply.
 //
 // The workflow is deliberately multi-step (a leading `seed` step plus the
 // `fanout` map) so the deploy stages per-step assets at a per-step address. A

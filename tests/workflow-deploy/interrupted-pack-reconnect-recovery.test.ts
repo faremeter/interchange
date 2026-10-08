@@ -333,9 +333,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // A fresh trigger on the recovered link runs to completion. Retry the
       // trigger with a fresh message id per attempt: a trigger that lands while
       // a residual reconnect is in flight can be dropped before the supervisor
-      // enqueues it.
-      // Under the stable-runId model every trigger shares the same runId.
-      // Fire triggers until one lands in consumed/ (meaning the dispatch
+      // enqueues it. Under the stable-runId model every trigger shares the same
+      // runId. Fire triggers until one lands in consumed/ (meaning the dispatch
       // loop processed it and the run reached terminal).
       //
       // The per-attempt 10s below is the re-fire cadence, not a budget: a

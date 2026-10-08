@@ -5,12 +5,11 @@
 // reads the parent's `runs/<parentRunId>/grants.json` as the ceiling, re-walks
 // the child body, and writes only the parent grants the child declares to the
 // child's own `runs/<childRunId>/grants.json`. This test drives that
-// composition end to end -- a real parent workflow deployed BY SOURCE-REF
-// (bundle a source entry module into a hub asset, probe it, approve+freeze it
-// against a real DB, deploy the source-ref frame) whose spawn step fires a
-// child through the real sidecar subprocess -- and asserts BOTH files land on
-// the sidecar's on-disk workflow-run repo: the parent's carrying the grants the
-// trigger delivered verbatim, the child's carrying only the capped subset.
+// composition end to end -- a real parent workflow deployed BY SOURCE-REF whose
+// spawn step fires a child through the real sidecar subprocess -- and asserts
+// BOTH files land on the sidecar's on-disk workflow-run repo: the parent's
+// carrying the grants the trigger delivered verbatim, the child's carrying only
+// the capped subset.
 //
 // The trigger delivers two grants: one for a resource the child body declares
 // (its inference source) and one for a resource it does not (`effect:fs:write`).

@@ -1,29 +1,26 @@
 // Single-step INBOUND mail-loop integration test (INTR-480).
 //
-// The proof that the warm single-step agent's inbound mail surface is LIVE:
-// an arrived mail is visible to the agent's `mail_search` read tool WITHIN the
-// same turn, and the agent's reply drains back out as a signed outbound send.
-// Deploys a warm single-step agent (source-ref lineage) that PINS the real
-// `@intx/tools-mail` bundle -- so it carries `mail_search` / `mail_read` /
-// `mail_wait` -- against the real hub + real sidecar subprocess + a mock
-// inference fixture, fires a mail, and asserts the loop.
+// Proves the warm single-step agent's inbound mail surface is LIVE: an arrived
+// mail is visible to the agent's `mail_search` read tool WITHIN the same turn,
+// and the agent's reply drains back out as a signed outbound send. Deploys a
+// warm single-step agent (source-ref lineage) pinning the real `@intx/tools-mail`
+// bundle (so it carries `mail_search` / `mail_read` / `mail_wait`) against the
+// real hub + real sidecar subprocess + mock inference, fires a mail, and asserts
+// the loop.
 //
-// The mock inference server drives `mail_search` deterministically: the first
-// turn exposing the tool returns a `tool_use` calling `mail_search`; once the
-// child runs it and the tool_result lands, the mock replies with
-// `MAILSAW:<the tool_result content>`. Because the supervisor eager-commits an
-// arrived message into the deployment's substrate INBOX BEFORE it wakes the
-// dispatch that drives the turn (the mailbox commit is awaited ahead of
-// `wakeDispatch`), the agent's `mail_search` -- backed by the now-wired
-// supervisor transport inbound -- opens a committed snapshot that already
-// holds the message. The reply therefore echoes the fired mail's own identity
-// (its Message-Id and sender), the load-bearing proof that the delivered
-// inbound was visible to the read tool in the same turn.
+// The mock drives `mail_search` deterministically: the first turn exposing the
+// tool returns a `tool_use` calling `mail_search`; once the tool_result lands,
+// the mock replies with `MAILSAW:<the tool_result content>`. Because the
+// supervisor eager-commits an arrived message into the substrate INBOX BEFORE
+// `wakeDispatch` (the mailbox commit is awaited ahead of it), the agent's
+// `mail_search` opens a committed snapshot that already holds the message. The
+// reply therefore echoes the fired mail's own identity (Message-Id and sender) --
+// the load-bearing proof that the delivered inbound was visible to the read tool
+// in the same turn.
 //
 // Against the pre-activation behaviour (the transport's inbound throws "not
-// wired"), `mail_search` would reject rather than return the message, the tool
-// call would error, and the reply would not carry the fired mail's identity --
-// this test fails there.
+// wired"), `mail_search` would reject, the tool call would error, and the reply
+// would not carry the fired mail's identity -- this test fails there.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 

@@ -24,9 +24,9 @@
 //     the frozen grant snapshot the source-ref deploy's approve step wrote.
 //   - Deployment A (the SENDER) is on sidecar 1 and its agent carries the
 //     inline `mail_send` tool from the `mail-tool.ts` fixture in its transport
-//     variant; its mock inference calls it with `to: <B's address>`, so A's run
-//     forwards a real `mail.outbound` frame to the hub, which routes it through
-//     `handleMailOutbound -> deliverMailToRecipient(B)`.
+//     variant; its mock inference calls it with `to: <B's address>`, so A's
+//     run forwards a real `mail.outbound` frame to the hub, which routes it
+//     through `handleMailOutbound -> deliverMailToRecipient(B)`.
 //
 // The REAL `createMailTriggeredRunGrantsMaterializer` (backed by a migrated
 // schema) is wired into the fixture hub's sidecar router via the
@@ -99,11 +99,11 @@ const DEPLOYMENT_DOMAIN = "integration.interchange";
 // `run_` prefix is load-bearing and MUST NOT be dropped: the address SHAPE
 // selects the materialization path. deliverMailToRecipient only materializes a
 // run for a recipient whose address `isRunAddress` recognizes, and that
-// predicate keys on the `run_` prefix. A bare id (e.g. `fed-mail-receiver-1` ->
-// `fed-mail-receiver-1@...`) fails that predicate, so the mail is routed with
-// NO materialization -- and the test still goes GREEN while exercising nothing,
-// because the receiver never starts and the RunCompleted assertion is only ever
-// reached on the real path. Keep the `run_` prefix.
+// predicate keys on the `run_` prefix. A bare id (e.g. `fed-mail-receiver-1`
+// -> `fed-mail-receiver-1@...`) fails that predicate, so the mail is routed
+// with NO materialization -- and the test still goes GREEN while exercising
+// nothing, because the receiver never starts and the RunCompleted assertion is
+// only ever reached on the real path. Keep the `run_` prefix.
 const RECEIVER_ID = "run_fed-mail-receiver-1";
 const RECEIVER_TENANT_ID = "tnt_fed_mail_receiver";
 const RECEIVER_CREATOR_PRINCIPAL_ID = "prn_fed_mail_receiver_creator";

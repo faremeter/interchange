@@ -92,22 +92,21 @@ export async function readConsumedEntries(
 }
 
 /**
- * Poll `consumed/` for the deployment's mail address on the
- * workflow-run claim-check ref until every supplied messageId is
- * present, then return the consumed entries. The supervisor's
- * first dispatch writes `markConsumed` AFTER the stable run's terminal
- * event lands. Later queued messages are then consumed with terminal rejection
- * receipts. The pack-push wrapper awaits Hub acknowledgement on every write,
- * so the writes happen in order, but the last receipt still has to traverse
- * the dispatch loop's markConsumed -> pack-push pipeline before the test can
- * observe it.
+ * Poll `consumed/` for the deployment's mail address on the workflow-run
+ * claim-check ref until every supplied messageId is present, then return the
+ * consumed entries. The supervisor's first dispatch writes `markConsumed`
+ * AFTER the stable run's terminal event lands; later queued messages are then
+ * consumed with terminal rejection receipts. The pack-push wrapper awaits Hub
+ * acknowledgement on every write, so writes happen in order, but the last
+ * receipt still has to traverse the markConsumed -> pack-push pipeline before
+ * the test can observe it.
  *
  * The poll carries no deadline of its own: the test runner's budget is the
  * failsafe for a receipt that never lands, and the harness `waitFor` it runs
  * through is what puts the sidecar's output on the env teardown's report when
- * that happens. `diagnostics` renders when the `consumed/` read itself fails --
- * a malformed envelope is a real fault rather than a not-yet, and the sidecar's
- * output is the context that explains it.
+ * that happens. `diagnostics` renders when the `consumed/` read itself fails
+ * -- a malformed envelope is a real fault rather than a not-yet, and the
+ * sidecar's output is the context that explains it.
  */
 export async function waitForConsumedEntries(
   env: DeployFlowEnv,
