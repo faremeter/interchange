@@ -30,7 +30,7 @@ import type { FrameReader, NdjsonReader, NdjsonWriter } from "../ipc/index";
 /** Terminal run event union the drain accumulators settle on; consumers switch on kind without importing the workflow package. */
 export type TerminalRunEvent = RunCompleted | RunFailed | RunCancelled;
 
-/** Per-runId terminal-event source the drain accumulators and dispatch loop consume; each call returns an AsyncIterable scoped to one runId. The supervisor's per-cohort broadcaster implements it from the child's terminal.event frames. */
+/** Per-runId terminal-event source for the drain accumulators and dispatch loop; each call returns an AsyncIterable scoped to one runId. The per-cohort broadcaster implements it from the child's terminal.event frames. */
 export type TerminalEventSource = (
   runId: string,
 ) => AsyncIterable<TerminalRunEvent>;
@@ -148,12 +148,12 @@ export interface WorkflowSupervisorBindings {
   mailBus: MailBusBindings;
   /** Optional suspension sink, invoked by the park.notify arm and reEmitParkedCorrelations. Best-effort: a throwing sink is logged and both callers keep going. */
   onSuspensionRegister?: (registration: SuspensionRegistration) => void;
-  /** Self-termination sink, fired when the supervisor reaches a terminal phase on its own (crash-loop latch, channel crash while recycling, recycle failure) but not on host shutdown or a failed initial spawn; the sidecar reclaims the deployment address. MUST be idempotent and, unlike onSuspensionRegister, total: a missed reclaim strands the address until an operator undeploys. */
+  /** Self-termination sink, fired on a self-driven terminal phase (crash-loop latch, channel crash while recycling, recycle failure), not on host shutdown or a failed initial spawn; the sidecar reclaims the deployment address. MUST be idempotent and total (unlike onSuspensionRegister): a missed reclaim strands the address until an operator undeploys. */
   onSelfTerminate?: (info: {
     phase: "stopped" | "crash-looping";
     reason: string;
   }) => void;
-  /** Per-run grants source consulted before each trigger.fire. A request/response contract: the supervisor pushes the returned snapshot before the trigger, and a throwing sink fails the run (synthesized RunFailed) rather than firing against absent grants. When wired it is the SOLE grants push (spawn skips its snapshot). */
+  /** Per-run grants source consulted before each trigger.fire. Request/response: the supervisor pushes the returned snapshot before the trigger; a throwing sink fails the run (synthesized RunFailed) rather than firing against absent grants. When wired it is the SOLE grants push (spawn skips its snapshot). */
   onRunStart?: (args: {
     runId: string;
     anchorRunId: string;
@@ -240,11 +240,11 @@ export interface WorkflowSupervisorBindings {
   parkedQueryWatchdogMs?: number;
   /** Optional per-message dispatch-timing observer: dispatch-start on dequeue, reply-produced when the run's terminal frame lands, both on a monotonic clock so the per-message round-trip is computable. Pure observability, absent in production; a throwing observer is swallowed and logged. */
   onDispatchTiming?: (mark: DispatchTimingMark) => void;
-  /** D2 §10c forced-repack A/B toggle (measurement-only): force a repack every everyMessages-th message to discriminate pack growth from tree fan-out as the dominant per-message substrate cost. Absent in production. */
+  /** D2 §10c forced-repack A/B toggle (measurement-only): force a repack every everyMessages-th message to measure pack growth vs tree fan-out as the dominant per-message cost. Absent in production. */
   repackEveryMessages?: { everyMessages: number };
 }
 
-/** The five per-message substrate legs the D2 attribution splits the substrate tax across: enqueue (before dispatch), dequeue (the claim-check read), runevent (run-event commits, inside the window), markconsumed (after reply-produced), and wal (the D1 conversation WAL). */
+/** The five per-message substrate legs D2 attribution splits the substrate tax across: enqueue (before dispatch), dequeue (the claim-check read), runevent (run-event commits, inside the window), markconsumed (after reply-produced), and wal (the D1 conversation WAL). */
 export type DispatchSubstrateLeg =
   | "enqueue"
   | "dequeue"

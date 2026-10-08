@@ -63,7 +63,7 @@ import {
   generateChannelId,
 } from "../ipc/index";
 
-/** Frame types the supervisor writes to the child control stream, in write order; asserts the grants barrier orders grants-updated before trigger.fire. */
+/** Frame types the supervisor writes to the child control stream, in write order; asserts grants-updated precedes trigger.fire on the grants barrier. */
 function parseControlFrameTypes(lines: readonly string[]): string[] {
   const types: string[] = [];
   for (const line of lines) {
@@ -372,7 +372,7 @@ function parseCredentialsUpdatedFrames(lines: readonly string[]) {
   });
 }
 
-// Like `parseCredentialsUpdatedFrames` but returns the whole frame data (delivery plus the optional `revoke` list) so a test can assert removal.
+// Like `parseCredentialsUpdatedFrames` but returns the full frame data (delivery plus the optional `revoke` list) so a test can assert removal.
 function parseCredentialsUpdatedData(lines: readonly string[]) {
   return lines.flatMap((line) => {
     if (!line.includes("credentials-updated")) return [];
@@ -414,7 +414,7 @@ async function makeTempDir(prefix: string): Promise<string> {
   return dir;
 }
 
-// A mail bus exposing the delivery's durable settlement via `settle` (the handler's returned promise), so ack/withhold is asserted directly. settle reads a handlers map that nothing deletes from, so it still reaches the handler after shutdown -- unlike the inherited deliver, which reads the base subscribers both the disposer and unregisterAddress empty. Superset of createMockMailBus's shape.
+// A mail bus that settles on the handler's returned promise, so ack/withhold is asserted directly. settle reads a handlers map nothing deletes from, so it still reaches the handler after shutdown -- unlike the inherited deliver, which reads base subscribers emptied by the disposer and unregisterAddress. Superset of createMockMailBus's shape.
 function createSettleableMailBus(): MockMailBus & {
   settle(address: string, message: Uint8Array): Promise<void>;
 } {
@@ -482,7 +482,7 @@ function createStubRepoStore(opts: {
     preservePrefix: string;
     message: string;
   }) => void | Promise<void>;
-  /** Carry committed files across writes (keyed by repoId/ref/prefix) so a sequence of appends sees prior commits in the merge callback; off by default to keep per-call assertions from racing. */
+  /** Carry committed files across writes (keyed by repoId/ref/prefix) so a sequence of appends sees prior commits in the merge callback; off by default so per-call assertions do not race. */
   statefulWrites?: boolean;
 }): RepoStore {
   const committed = new Map<string, Map<string, Uint8Array>>();
@@ -539,7 +539,7 @@ function createStubRepoStore(opts: {
         }
         committed.set(key, next);
       }
-      // Track the tip for every write (even non-stateful) so the eager-mailbox path's post-flush `resolveRef` resolves and does not log a spurious fault in tests that do not opt into stateful reads.
+      // Track the tip for every write (even non-stateful) so the eager-mailbox path's post-flush `resolveRef` resolves and does not log a spurious fault when tests do not opt into stateful reads.
       refTipSeq += 1;
       refTip.set(
         repoRefKey(repoId, ref),
@@ -547,7 +547,7 @@ function createStubRepoStore(opts: {
       );
       return { commitSha: "deadbeefcafef00d", newlyTerminalRuns: [] };
     },
-    // The eager-mailbox flush commits a delta (index.json plus a <uid>.eml per appended message); model the same delta against the committed tree and capture the put set through onWrite.
+    // The eager-mailbox flush commits a delta (index.json plus a <uid>.eml per appended message); model that delta against the committed tree and capture the put set through onWrite.
     async writeTreeDelta(principal, repoId, ref, args) {
       const prefixes = [...(args.changedPathPrefixes ?? [])];
       const preservePrefix = prefixes.length === 1 ? (prefixes[0] ?? "") : "";
@@ -643,7 +643,7 @@ function createStubRepoStore(opts: {
       return refTip.get(repoRefKey(repoId, ref)) ?? null;
     },
   };
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; only the subset the supervisor invokes is implemented and a missing method throws via the proxy below
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; only the subset the supervisor invokes is implemented; a missing method throws via the proxy below
   return new Proxy(stub as RepoStore, {
     get(target, prop, receiver) {
       const value = Reflect.get(target, prop, receiver);
@@ -944,8 +944,7 @@ describe("createWorkflowSupervisor", () => {
     let killed = false;
 
     let observedEnv: Record<string, string> | undefined;
-    // Scoped here, not to the file: `first()` must resolve with THIS
-    // fixture's spawn, not whichever spawn happened earliest in the run.
+    // Scoped here, not to the file: `first()` must resolve with THIS fixture's spawn, not whichever spawn happened earliest in the run.
     const spawnObserver = createSpawnObserver();
     let observedBinary: string | undefined;
     const spawner: SubprocessSpawner = ({ binaryPath, env }) => {
@@ -1111,8 +1110,7 @@ describe("createWorkflowSupervisor", () => {
     });
 
     let observedEnv: Record<string, string> | undefined;
-    // Scoped here, not to the file: `first()` must resolve with THIS
-    // fixture's spawn, not whichever spawn happened earliest in the run.
+    // Scoped here, not to the file: `first()` must resolve with THIS fixture's spawn, not whichever spawn happened earliest in the run.
     const spawnObserver = createSpawnObserver();
     const spawner: SubprocessSpawner = ({ env }) => {
       observedEnv = env;
@@ -1249,7 +1247,7 @@ describe("createWorkflowSupervisor", () => {
     expect(arrival.messages).toHaveLength(1);
     expect(arrival.messages[0]?.uid).toBe(1);
     expect(arrival.messages[0]?.flags).toEqual([]);
-    // The `<uid>.eml` is put once, by the arrival flush that appended it; the later flag-mark flush is a delta that touches only `index.json`, so the blob is committed in the arrival write, not necessarily the last.
+    // The `<uid>.eml` is put once, by the arrival flush that appended it; the later flag-mark flush is a delta touching only `index.json`, so the blob is committed in the arrival write, not necessarily the last.
     const emlWrite = writes.find(
       (w) =>
         w.preservePrefix === "mailbox/INBOX/" &&
@@ -2885,8 +2883,7 @@ describe("createWorkflowSupervisor", () => {
       resolveExit = resolve;
     });
     let observedEnv: Record<string, string> | undefined;
-    // Scoped here, not to the file: `first()` must resolve with THIS
-    // fixture's spawn, not whichever spawn happened earliest in the run.
+    // Scoped here, not to the file: `first()` must resolve with THIS fixture's spawn, not whichever spawn happened earliest in the run.
     const spawnObserver = createSpawnObserver();
     const spawner: SubprocessSpawner = ({ env }) => {
       observedEnv = env;
@@ -3086,8 +3083,7 @@ describe("createWorkflowSupervisor", () => {
       resolveExit = resolve;
     });
     let observedEnv: Record<string, string> | undefined;
-    // Scoped here, not to the file: `first()` must resolve with THIS
-    // fixture's spawn, not whichever spawn happened earliest in the run.
+    // Scoped here, not to the file: `first()` must resolve with THIS fixture's spawn, not whichever spawn happened earliest in the run.
     const spawnObserver = createSpawnObserver();
     const spawner: SubprocessSpawner = ({ env }) => {
       observedEnv = env;
@@ -3372,8 +3368,7 @@ describe("createWorkflowSupervisor", () => {
       resolveExit = resolve;
     });
     let observedEnv: Record<string, string> | undefined;
-    // Scoped here, not to the file: `first()` must resolve with THIS
-    // fixture's spawn, not whichever spawn happened earliest in the run.
+    // Scoped here, not to the file: `first()` must resolve with THIS fixture's spawn, not whichever spawn happened earliest in the run.
     const spawnObserver = createSpawnObserver();
     const spawner: SubprocessSpawner = ({ env }) => {
       observedEnv = env;
@@ -3519,8 +3514,7 @@ describe("createWorkflowSupervisor", () => {
       resolveExit = resolve;
     });
     let observedEnv: Record<string, string> | undefined;
-    // Scoped here, not to the file: `first()` must resolve with THIS
-    // fixture's spawn, not whichever spawn happened earliest in the run.
+    // Scoped here, not to the file: `first()` must resolve with THIS fixture's spawn, not whichever spawn happened earliest in the run.
     const spawnObserver = createSpawnObserver();
     const spawner: SubprocessSpawner = ({ env }) => {
       observedEnv = env;
@@ -3767,8 +3761,7 @@ describe("createWorkflowSupervisor", () => {
     });
 
     let observedEnv: Record<string, string> | undefined;
-    // Scoped here, not to the file: `first()` must resolve with THIS
-    // fixture's spawn, not whichever spawn happened earliest in the run.
+    // Scoped here, not to the file: `first()` must resolve with THIS fixture's spawn, not whichever spawn happened earliest in the run.
     const spawnObserver = createSpawnObserver();
     const spawner: SubprocessSpawner = ({ env }) => {
       observedEnv = env;
@@ -3869,8 +3862,7 @@ describe("createWorkflowSupervisor", () => {
     });
 
     let observedEnv: Record<string, string> | undefined;
-    // Scoped here, not to the file: `first()` must resolve with THIS
-    // fixture's spawn, not whichever spawn happened earliest in the run.
+    // Scoped here, not to the file: `first()` must resolve with THIS fixture's spawn, not whichever spawn happened earliest in the run.
     const spawnObserver = createSpawnObserver();
     const spawner: SubprocessSpawner = ({ env }) => {
       observedEnv = env;
@@ -3993,8 +3985,7 @@ describe("createWorkflowSupervisor", () => {
     });
 
     let observedEnv: Record<string, string> | undefined;
-    // Scoped here, not to the file: `first()` must resolve with THIS
-    // fixture's spawn, not whichever spawn happened earliest in the run.
+    // Scoped here, not to the file: `first()` must resolve with THIS fixture's spawn, not whichever spawn happened earliest in the run.
     const spawnObserver = createSpawnObserver();
     const spawner: SubprocessSpawner = ({ env }) => {
       observedEnv = env;
@@ -4245,7 +4236,7 @@ describe("createWorkflowSupervisor", () => {
 
     // Wait for msg-2's signal.deliver (arming the durable-consume watcher); markConsumed holds until the run re-parks or terminates.
     await waitForUpstreamPayload(wired.supervisorToChild, "signal.deliver");
-    // The signal is written but not taken up, so msg-2's markConsumed is held; only msg-1 is consumed. The wait above is the positive barrier: a regressed markConsumed would have run by now, and nothing later signals the take-up. The forbidden event is a premature consume; a slow worker weakens the check but cannot invert it.
+    // The signal is written but not taken up, so msg-2's markConsumed is held; only msg-1 is consumed. The wait above is the positive barrier: a regressed markConsumed would have run by now, and nothing later signals the take-up. The forbidden event is a premature consume; a slow worker weakens but cannot invert it.
     await new Promise((r) => setTimeout(r, 25));
     expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
 
@@ -4341,7 +4332,7 @@ describe("createWorkflowSupervisor", () => {
     if (firstSignal === undefined) throw new Error("unreachable");
     expect(firstSignal.signalName).toBe(signalName("corr-input-1"));
 
-    // msg-1 is consumed off its park; msg-2's signal is not taken up, so its markConsumed is held. The wait above is the positive barrier: a regressed markConsumed would have run by now, and nothing later signals the take-up. The forbidden event is msg-2 consuming early; a slow worker weakens the check but cannot invert it.
+    // msg-1 is consumed off its park; msg-2's signal is not taken up, so its markConsumed is held. The wait above is the positive barrier: a regressed markConsumed would have run by now, and nothing later signals the take-up. The forbidden event is msg-2 consuming early; a slow worker weakens but cannot invert it.
     await new Promise((r) => setTimeout(r, 25));
     expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
 
@@ -5497,8 +5488,7 @@ describe("supervisor inbox FIFO dispatch loop", () => {
       resolveExit = resolve;
     });
     let observedEnv: Record<string, string> | undefined;
-    // Scoped here, not to the file: `first()` must resolve with THIS
-    // fixture's spawn, not whichever spawn happened earliest in the run.
+    // Scoped here, not to the file: `first()` must resolve with THIS fixture's spawn, not whichever spawn happened earliest in the run.
     const spawnObserver = createSpawnObserver();
     const spawner: SubprocessSpawner = ({ env }) => {
       observedEnv = env;
