@@ -1,6 +1,11 @@
 import { describe, test, expect } from "bun:test";
 
-import { scopedStepId, baseStepId, loopBodyRunId } from "./step-scope";
+import {
+  scopedStepId,
+  baseStepId,
+  loopBodyRunId,
+  sectionBodyRunId,
+} from "./step-scope";
 
 describe("step-scope", () => {
   test("scopedStepId encodes the base id and iteration index", () => {
@@ -38,27 +43,64 @@ describe("step-scope", () => {
     expect(loopBodyRunId("run-abc", "rework", 12)).toBe("run-abc__rework__12");
   });
 
-  test("loopBodyRunId is injective even when the run id contains __", () => {
-    // The store keys runs by this string, so two distinct
-    // (runId, loopId, index) triples must never render equal. Injectivity does
-    // not need a __-free run id: loopId carries no __ (definition-time invariant)
-    // and index is digits, so the final two __ are always the separators.
-    const runIds = ["a", "a__b", "a__0", "run-1_x__body__0", "x__y__z", "1"];
-    const loopIds = ["l", "y", "0", "inner", "b", "z"];
+  test("loopBodyRunId is unique for one fixed run id", () => {
+    // loopId carries no __ (definition-time invariant) and index is decimal
+    // digits, so pairs under one run id stay distinct even when that run id
+    // itself contains __.
+    const loopIds = ["l", "y", "0", "inner", "b", "z", "_b"];
     const indices = [0, 1, 12, 100];
-    const seen = new Map<string, string>();
-    for (const runId of runIds) {
+    for (const runId of ["run-abc", "a__b", "run-1_x__body__0"]) {
+      const seen = new Map<string, string>();
       for (const loopId of loopIds) {
         for (const index of indices) {
           const key = loopBodyRunId(runId, loopId, index);
-          const triple = JSON.stringify([runId, loopId, index]);
+          const pair = JSON.stringify([loopId, index]);
           const prior = seen.get(key);
-          expect(prior === undefined || prior === triple).toBe(true);
-          seen.set(key, triple);
+          expect(prior === undefined || prior === pair).toBe(true);
+          seen.set(key, pair);
         }
       }
+      expect(seen.size).toBe(loopIds.length * indices.length);
     }
-    expect(seen.size).toBe(runIds.length * loopIds.length * indices.length);
+  });
+
+  test("loopBodyRunId can alias across different run ids", () => {
+    expect(loopBodyRunId("a_", "_b", 0)).toBe("a____b__0");
+    expect(loopBodyRunId("a_", "_b", 0)).toBe(loopBodyRunId("a__", "b", 0));
+  });
+
+  test("sectionBodyRunId prefixes the parent run id", () => {
+    expect(sectionBodyRunId("run_abc", "section", 0)).toBe(
+      "run_abc__section__0",
+    );
+    expect(sectionBodyRunId("run_abc", "section", 12)).toBe(
+      "run_abc__section__12",
+    );
+  });
+
+  test("sectionBodyRunId is unique for one fixed parent run id", () => {
+    const sectionIds = ["section", "other", "0", "_sec"];
+    const indices = [0, 1, 12, 100];
+    for (const parentRunId of ["run_abc", "run_abc__body__0"]) {
+      const seen = new Map<string, string>();
+      for (const sectionId of sectionIds) {
+        for (const index of indices) {
+          const key = sectionBodyRunId(parentRunId, sectionId, index);
+          const pair = JSON.stringify([sectionId, index]);
+          const prior = seen.get(key);
+          expect(prior === undefined || prior === pair).toBe(true);
+          seen.set(key, pair);
+        }
+      }
+      expect(seen.size).toBe(sectionIds.length * indices.length);
+    }
+  });
+
+  test("sectionBodyRunId can alias across different parent run ids", () => {
+    expect(sectionBodyRunId("run_abc", "_sec", 0)).toBe("run_abc___sec__0");
+    expect(sectionBodyRunId("run_abc", "_sec", 0)).toBe(
+      sectionBodyRunId("run_abc_", "sec", 0),
+    );
   });
 
   test("loopBodyRunId re-roots per nesting level", () => {

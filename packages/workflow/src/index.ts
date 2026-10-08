@@ -51,6 +51,7 @@ export {
   scopedStepId,
   baseStepId,
   loopBodyRunId,
+  sectionBodyRunId,
   type ActionInvokeRequest,
   type ActionInvokeResult,
   type ActionInvoker,

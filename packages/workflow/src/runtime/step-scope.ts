@@ -13,9 +13,9 @@
 // owner rather than a hand-rolled template and several divergent strip
 // regexes scattered across the runtime and the sidecar.
 //
-// This module also owns the related loop-iteration body RUN id format
-// (`loopBodyRunId`): a cross-run store key rather than an in-run step id, so it
-// carries the container run id and is documented separately below.
+// This module also owns the related body RUN id formats (`loopBodyRunId`,
+// `sectionBodyRunId`): cross-run store keys rather than in-run step ids, so
+// each carries the container run id and is documented separately below.
 
 /**
  * Encode a fan-out iteration's scoped step id from its base step id and
@@ -45,14 +45,13 @@ export function baseStepId(stepId: string): string {
  * inner loop under two outer iterations gets distinct ids. Deterministic --
  * crash-resume re-derives the same string rather than reversing it.
  *
- * Injectivity does NOT require a `__`-free run id (a nested loop's own run id
- * contains `__`, and a caller-supplied top-level run id may too). It holds
- * because `loopId` contains no `__` (rejected at definition time in
- * `normalize`) and `index` is always digits: the final two `__` in the output
- * are therefore always the two separators, so the string decomposes to exactly
- * one (runId, loopId, index) regardless of what the run id contains. The run
- * id is separately constrained by `RUN_ID_PATTERN` for store-path and
- * mail-address safety, not for injectivity.
+ * Unique for one fixed run id. `loopId` contains no `__` (rejected at
+ * definition time in `normalize`) and `index` is decimal digits, so two
+ * different `(loopId, index)` pairs under that same run id cannot encode the
+ * same string. It is not a unique decoding of every string `RUN_ID_PATTERN`
+ * allows: `loopBodyRunId("a_", "_b", 0)` and `loopBodyRunId("a__", "b", 0)`
+ * are both `a____b__0`. `RUN_ID_PATTERN` constrains the run id for store-path
+ * and mail-address safety.
  */
 export function loopBodyRunId(
   runId: string,
@@ -60,4 +59,24 @@ export function loopBodyRunId(
   index: number,
 ): string {
   return `${runId}__${loopId}__${String(index)}`;
+}
+
+/**
+ * Encode an onTrigger section body's run id from the parent run id, the
+ * section step id, and the zero-based event index. The body run id is a
+ * cross-run store key, so it carries the parent:
+ * `<parentRunId>__<sectionId>__<index>`.
+ *
+ * Unique for one fixed parent run id. `sectionId` contains no `__` (rejected
+ * at definition time in `normalize`) and `index` is decimal digits, so two
+ * different `(sectionId, index)` pairs under that parent cannot encode the
+ * same string. It is not a unique decoding across every parent
+ * `RUN_ID_PATTERN` allows.
+ */
+export function sectionBodyRunId(
+  parentRunId: string,
+  sectionId: string,
+  eventIndex: number,
+): string {
+  return `${parentRunId}__${sectionId}__${String(eventIndex)}`;
 }
