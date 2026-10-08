@@ -20,14 +20,12 @@ export type SkillSidecarPrincipal = {
 export type SkillPrincipal = SkillHubPrincipal | SkillSidecarPrincipal;
 
 /**
- * arktype schema for the SKILL.md frontmatter. Required fields are
- * `name` and `description`; the Claude Code superset of optional fields
- * (`when_to_use`, `allowed-tools`, `paths`, `model`, ...) is accepted
- * via `onUndeclaredKey("ignore")` but not enforced.
+ * arktype schema for the SKILL.md frontmatter: `name` and `description`
+ * required; the Claude Code superset of optional fields is accepted via
+ * `onUndeclaredKey("ignore")` but not enforced.
  *
- * The forbidden-name narrow rejects `"anthropic"` and `"claude"`
- * because those values are reserved by the upstream agentskills.io
- * spec for vendor-owned skill packs.
+ * The narrow rejects `"anthropic"` and `"claude"`, reserved by the
+ * upstream agentskills.io spec for vendor-owned skill packs.
  */
 export const skillFrontmatterSchema = type({
   name: type(/^[a-z0-9]+(-[a-z0-9]+)*$/)
@@ -179,19 +177,14 @@ async function buildSkillIndex(
   const candidates = [...topLevelTreePaths].sort();
   for (const candidate of candidates) {
     // Skill subdirectories are arbitrarily named (`<skill-name>/`), so
-    // there is no enumerable allowlist of names the way the workflow,
-    // package-registry, and agent-state handlers use. The structural
+    // there is no enumerable allowlist of names. The structural
     // distinction is tree-vs-blob: a top-level tree entry is a skill
-    // subdir, a top-level blob (e.g. `.gitignore` seeded by the
-    // genesis init) is not.
+    // subdir, a top-level blob (e.g. `.gitignore`) is not.
     //
-    // Probe via `listDir`. The substrate's two implementations
-    // disagree on the not-a-tree signal — the receivePack closures
-    // throw, the writeTree closures return an empty array — so this
-    // probe accepts either signal as "not a directory" and skips the
-    // entry. Git does not store empty trees, so an empty `listDir`
-    // result is equivalent to "this name is not a directory in the
-    // prospective tree".
+    // Probe via `listDir`. The substrate's two implementations disagree
+    // on the not-a-tree signal (receivePack throws, writeTree returns an
+    // empty array), so the probe accepts either signal as "not a
+    // directory" and skips; Git does not store empty trees.
     let children: string[];
     try {
       children = await listDir(candidate);
@@ -220,10 +213,10 @@ export const skillKindHandler: KindHandler = {
   }): Promise<ValidatePushResult> {
     // Drop any staged entry from a previous attempt first. The
     // substrate calls validatePush before advancing the ref, so a prior
-    // validation that was accepted but never followed by onRefUpdated
-    // (e.g. the commit step threw after validation succeeded) would
-    // otherwise leave a stale entry that a later rejected attempt
-    // would silently inherit.
+    // validation accepted but never followed by onRefUpdated (e.g. the
+    // commit step threw after validation succeeded) would otherwise
+    // leave a stale entry that a later rejected attempt would silently
+    // inherit.
     const key = cacheKey(repoId.id, ref);
     pendingIndex.delete(key);
 

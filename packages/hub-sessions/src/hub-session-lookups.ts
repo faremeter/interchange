@@ -1,10 +1,6 @@
-// Lookups that the sidecar wire layer issues against host state. These
-// are queries (one answer per question) rather than events (broadcast
-// notifications), so they live separately from the event emitter.
-//
-// Each lookup is a stateless DB or repo call. They are gathered into a
-// single struct that the hub app passes to `createSidecarRouter` as
-// `lookups`.
+// Lookups the sidecar wire layer issues against host state: one answer per
+// question, gathered into the struct the hub app passes to
+// `createSidecarRouter` as `lookups`.
 
 import { eq, and, asc, inArray, isNotNull, isNull } from "drizzle-orm";
 import type { DB } from "@intx/db";
@@ -65,9 +61,8 @@ export function createHubSessionLookups(
 
   return {
     async lookupDeployRef() {
-      // A workflow run is a supervised workflow-process pinned forever like a
-      // native deployment: it keeps its deploy-time definition and never
-      // reconciles, so no address enrolls in the reconnect deploy-ref catch-up.
+      // A workflow run keeps its deploy-time definition and never reconciles,
+      // so no address enrolls in the reconnect deploy-ref catch-up.
       return null;
     },
 
@@ -76,10 +71,9 @@ export function createHubSessionLookups(
     },
 
     async persistMail({ senderAddress, recipients, raw }) {
-      // The sender and recipients are run addresses, each backed by its
-      // self-anchored workflow_run; resolve each through the resolver. A mail
-      // record's `runId` is always null for a run -- it keys on the run's
-      // session instead.
+      // Sender and recipients are run addresses backed by self-anchored
+      // workflow_runs. A mail record's `runId` is always null for a run -- it
+      // keys on the run's session instead.
       const sender = await resolveRoutableAddress(db, senderAddress);
       if (sender === undefined) {
         throw new Error(
@@ -177,36 +171,23 @@ export function createHubSessionLookups(
       kind,
       approvalSnapshot,
     }) {
-      // Resolve tenancy and co-write both rows in one transaction so a resolver
-      // never sees a correlation without its approval or vice versa. Both
-      // inserts are idempotent on their dedup key (the signal_correlation
-      // primary key and the approval's unique correlationId), so a redelivered
-      // frame -- sidecar reconnect, workflow-log replay, supervisor restart
-      // re-emitting -- is a no-op rather than a unique-violation. `timeoutAt` is
-      // null: an agent-step suspend holds indefinitely (`parkOnSignal` is called
-      // with no timeout), so no deadline reaches this co-write.
+      // Co-write both rows in one transaction so a resolver never sees a
+      // correlation without its approval. Both inserts are idempotent on their
+      // dedup key, so a redelivered frame (reconnect, log replay, restart) is a
+      // no-op. `timeoutAt` is null: an agent-step suspend holds indefinitely,
+      // so no deadline reaches this co-write.
       await db.transaction(async (tx) => {
         // Resolve tenancy and the run's definition from the deployment's anchor
-        // run -- the workflow_run whose id is the deployment id, which the
-        // address names. The anchor is the tenancy origin every approval needs
-        // (an approval has no agent_instance/agent/principal referent). The
-        // lookup keys off `address` (the field the wire layer's ownership gate
-        // authorized), not the frame's `anchorRunId`: that is the workflow-run
-        // repo slug the supervisor derives from the address
-        // (`deriveWorkflowRunRepoId`), cross-checked below against the slug
-        // re-derived from `agentAddress` rather than against the row id. A
-        // mismatch fails loud instead of silently writing an inconsistent pair.
-        // The FK columns take the anchor run's id (= the deployment id), which
-        // is what `signal_correlation.anchor_run_id` and `approval.anchor_run_id`
-        // reference.
+        // run (the workflow_run whose id is the deployment id). The lookup keys
+        // off `address` (what the wire layer's ownership gate authorized), not
+        // the frame's `anchorRunId`: that is the repo slug derived from the
+        // address, cross-checked below via `deriveWorkflowRunRepoId` so a
+        // mismatch fails loud instead of writing an inconsistent pair.
         //
-        // The resolution takes a `FOR UPDATE` row lock and runs inside the
-        // co-write transaction, gated on a live anchor run ("deployed" or
-        // "running"), so the liveness check and the inserts are atomic against a
-        // concurrent teardown that flips the anchor run terminal. The lock order
-        // is workflow_run before signal_correlation and approval; a teardown
-        // path must take the anchor-run lock before touching those rows to keep
-        // the ordering acyclic.
+        // Takes a `FOR UPDATE` row lock inside the co-write transaction, gated
+        // on a live anchor run, so the liveness check and the inserts are atomic
+        // against a concurrent teardown. Lock order is workflow_run before
+        // signal_correlation and approval; teardown must keep that order acyclic.
         const anchor = await tx
           .select({
             id: workflowRun.id,
@@ -237,14 +218,11 @@ export function createHubSessionLookups(
         const tenantId = anchor.tenantId;
         const definitionId = anchor.definitionId;
 
-        // Lazily anchor the run before its correlation and approval reference
-        // it. A workflow-spawned internal run never crosses the external
-        // trigger route that mints a run principal, so its run row would
-        // otherwise not exist; ensure it here so the co-written rows have a
-        // referent. The principal is null: an internal run inherits its
-        // deployment's grants and has no principal of its own. The insert is
-        // idempotent on the run id, so a redelivered register frame -- the same
-        // redelivery the co-writes below tolerate -- is a no-op.
+        // Ensure the run row exists before the co-written rows reference it: a
+        // workflow-spawned internal run never crosses the trigger route that
+        // mints a run principal. Principal is null (internal runs inherit their
+        // deployment's grants); the insert is idempotent on the run id, so a
+        // redelivered frame is a no-op.
         await workflowRunStore.createIfAbsent(
           {
             id: runId,
@@ -278,9 +256,8 @@ export function createHubSessionLookups(
             agentAddress,
             correlationId,
             status: "pending",
-            // The register frame guarantees the snapshot (the ask rail is its
-            // only producer), so the approver-facing columns are always
-            // populated -- never null on this path.
+            // The register frame (the ask rail's only producer) always carries
+            // the snapshot, so these columns are never null on this path.
             toolDefinition: {
               name: approvalSnapshot.name,
               description: approvalSnapshot.description,
@@ -316,17 +293,11 @@ export function createHubSessionLookups(
           logger.warn`State pack rejected for ${agentAddress}: ${msg}`;
           return { accepted: false, reason: "path_violation" as const };
         }
-        // Any other failure from the repo subsystem reaches the
-        // WebSocket handler as an unhandled rejection unless we catch
-        // it here. Transient failures during receivePack (the agent
-        // directory being torn down concurrently with an in-flight
-        // pack write, filesystem errors mid-rename, etc.) are
-        // recoverable from the sender's perspective — the sender can
-        // re-push. Surface every such failure as a structured pack
-        // rejection (`corrupt` is the closest existing reason — from
-        // the sender's perspective the pack failed to index) and log
-        // the underlying error so the cause stays traceable on the
-        // hub side.
+        // Catch-all: any failure from the repo subsystem would otherwise
+        // surface as an unhandled rejection on the WebSocket handler.
+        // Transient receive failures (concurrent teardown, filesystem errors)
+        // are recoverable -- the sender can re-push -- so surface them as a
+        // structured `corrupt` rejection and log the cause.
         logger.error`State pack receive failed for ${agentAddress}: ${msg}`;
         return { accepted: false, reason: "corrupt" as const };
       }
@@ -381,12 +352,11 @@ export function createHubSessionLookups(
         logger.error`Workflow-run pack receive failed for ${workflowRunRepoId}: cannot initialize repository: ${msg}`;
         return { accepted: false, reason: "corrupt" as const };
       }
-      // Recorded before Git can advance: Git acceptance and the run-status
-      // projection below are not atomic, and this row is the only durable
-      // trace of a projection that fails after the ref moves. It is removed
-      // here only when the receive provably left Git unchanged or every run
-      // reached a final decision; otherwise lifecycle recovery reconciles the
-      // deployment from Git and removes it.
+      // Recorded before Git can advance: Git acceptance and the status
+      // projection below are not atomic, and this row is the only durable trace
+      // of a projection that fails after the ref moves. It is removed only when
+      // the receive provably left Git unchanged or every run reached a final
+      // decision; otherwise lifecycle recovery reconciles the deployment.
       const pendingId = generateId("workflowPendingProjection");
       historyReceives.begin(pendingId);
       let newlyTerminalRuns;
@@ -472,26 +442,21 @@ export function createHubSessionLookups(
           logger.warn`Workflow-run pack rejected for ${workflowRunRepoId}: ${msg}`;
           return { accepted: false, reason: "path_violation" as const };
         }
-        // Mirror the agent-state branch's catch-all: any other failure from
-        // the fenced receive (transaction failures, filesystem races,
-        // kind-handler diagnostics surfaced as Error messages, etc.) becomes
-        // a structured `corrupt` rejection so the sender can re-push, and the
-        // underlying error is logged so the cause stays traceable on the hub
-        // side.
+        // Mirror the agent-state catch-all: any other failure from the fenced
+        // receive becomes a structured `corrupt` rejection so the sender can
+        // re-push, with the cause logged on the hub side.
         logger.error`Workflow-run pack receive failed for ${workflowRunRepoId}: ${msg}`;
         return { accepted: false, reason: "corrupt" as const };
       } finally {
         historyReceives.end(pendingId);
       }
 
-      // The substrate has already durably advanced the git ref by the time it
-      // returns, so the pack is accepted regardless of what happens below. The
-      // per-run status flip and principal deactivation are a downstream side
-      // effect of that durable advance, not part of accepting the pack, so the
-      // verdict stays accepted and the sidecar does not wedge re-pushing a pack
-      // that already landed. A redelivery of the same durable tip produces no
-      // newly-terminal signal, so a failed flip is not retried here; the
-      // pending row stays and lifecycle recovery projects the run from Git.
+      // The substrate already durably advanced the git ref, so the pack is
+      // accepted regardless of what happens below; the status flip is a
+      // downstream side effect, not part of acceptance, so the sidecar does not
+      // wedge re-pushing a pack that already landed. A redelivered tip produces
+      // no newly-terminal signal; a failed flip stays pending and lifecycle
+      // recovery projects the run from Git.
       const now = new Date();
       let decided = true;
       for (const { runId, status, terminalEventJson } of newlyTerminalRuns) {
@@ -540,10 +505,8 @@ export function createHubSessionLookups(
 }
 
 /**
- * Extract the run id from an `<runId>@<domain>` run address.
- * Throws on any input the `@intx/types`-owned `parseRunAddress`
- * rejects: missing or leading `@`, empty domain, or a run id
- * without the canonical `run_` prefix.
+ * Extract the run id from an `<runId>@<domain>` run address. Throws when
+ * `parseRunAddress` rejects the input.
  */
 export function parseAgentId(agentAddress: string): string {
   const parsed = parseRunAddress(agentAddress);
@@ -565,16 +528,13 @@ export interface RoutableEndpoint {
   /**
    * The endpoint's raw run status. Resolution is `endedAt`-filtered, so a
    * resolved endpoint is not necessarily live: a leaked run is deliberately
-   * kept routable (terminal status, null `endedAt`) to stay reachable, and the
-   * reconnect reaction reads this to keep such an endpoint routable without
-   * restoring a collector.
+   * kept routable (terminal status, null `endedAt`) to stay reachable.
    */
   readonly status: string;
   /**
-   * The live session backing this endpoint. A folded run has no session column,
-   * so this is the run's not-yet-ended `agent_session`, keyed by the run's
-   * principal. Transitional -- it retires when mail record-keeping moves off
-   * `agent_session`.
+   * The live session backing this endpoint: the run's not-yet-ended
+   * `agent_session`, keyed by the run's principal (a folded run has no session
+   * column).
    */
   readonly sessionId: string | null;
 }
@@ -582,8 +542,7 @@ export interface RoutableEndpoint {
 /**
  * Resolve a run address to the `workflow_run` endpoint backing it, keyed by
  * the run's `address`. Every routable address names one self-anchored run --
- * the deployment's anchor -- so this resolves the run's own address (the
- * source `persistMail` depends on to record a triggered deployment's mail).
+ * the deployment's anchor.
  */
 export async function resolveRoutableAddress(
   db: DB["db"],
@@ -618,11 +577,10 @@ export async function resolveRoutableAddress(
 
 /**
  * A folded run has no session column; its session is the `agent_session` keyed
- * by the run's principal. By default this is the live (not-yet-ended) session,
+ * by the run's principal. Defaults to the live (not-yet-ended) session,
  * matching routing semantics; `includeEnded` also resolves a stopped run's
  * ended session, which mail history needs. Returns null when the run has no
- * principal or no matching session. Transitional, alongside
- * `RoutableEndpoint.sessionId`.
+ * principal or no matching session.
  */
 export async function resolveRunSessionId(
   db: DB["db"],
@@ -632,10 +590,8 @@ export async function resolveRunSessionId(
   if (principalId === null) {
     return null;
   }
-  // One session per run principal (invariant), so limit(1) returns the whole
-  // history; order deterministically so a hypothetical second row cannot make
-  // the pick flap. If a run ever grows multiple sessions per principal this
-  // becomes a union and limit(1) silently truncates.
+  // One session per run principal (invariant); order deterministically so a
+  // hypothetical second row cannot make the pick flap.
   const conditions = [eq(agentSession.principalId, principalId)];
   if (opts.includeEnded !== true) {
     conditions.push(isNull(agentSession.endedAt));
@@ -652,25 +608,20 @@ export async function resolveRunSessionId(
 
 /**
  * The folded run that owns a session, or null when the session belongs to no
- * run. This is the inverse of `resolveRunSessionId`: a mail-read path holds a
- * `sessionMail.sessionId` and no address, so it recovers the owning run by
- * joining `workflow_run` to `agent_session` on their shared principal (a folded
- * run, its session, and its launch all key on the same `instancePrincipalId`).
- * Scoped to the tenant and routed through `workflow_run` so the returned id is
- * proven to name a real run of this tenant -- callers key an authorization
- * subject on it, so a session held by a non-run principal must fail closed to
- * null rather than resolve to a fabricated subject.
+ * run. Inverse of `resolveRunSessionId`: a mail-read path holds only a
+ * `sessionMail.sessionId`, so it recovers the owning run by joining
+ * `workflow_run` to `agent_session` on their shared principal. Scoped to the
+ * tenant and routed through `workflow_run` so the returned id names a real run
+ * of this tenant -- callers key an authorization subject on it.
  */
 export async function resolveRunIdForSession(
   db: DB["db"],
   sessionId: string,
   tenantId: string,
 ): Promise<string | null> {
-  // No `endedAt` filter: a stopped run's mail must stay fetchable, so the
-  // session resolves whether or not it has ended. The run principal is minted
-  // per launch and shared 1:1 by the run and its session, so at most one row
-  // matches; order deterministically anyway so a hypothetical second row cannot
-  // make the pick flap, mirroring `resolveRunSessionId`.
+  // No `endedAt` filter: a stopped run's mail must stay fetchable. The run
+  // principal is minted per launch and shared 1:1 by run and session, so at
+  // most one row matches; order deterministically anyway.
   const row = await db
     .select({ id: workflowRun.id })
     .from(workflowRun)
@@ -688,12 +639,11 @@ export async function resolveRunIdForSession(
 }
 
 /**
- * A folded run resolved BY ID for the instance read/interact surface, shaped
- * into one instance-shaped record. Unlike `resolveRoutableAddress` (keyed by
- * address, live-only), this is keyed by the path id and does NOT filter
- * terminated rows -- a stopped run's detail, mail history, and turns are still
- * served. Keep the two separate: routing must never reach a dead endpoint,
- * while the read surface must still render one.
+ * A folded run resolved BY ID for the instance read/interact surface. Unlike
+ * `resolveRoutableAddress` (keyed by address, live-only), this is keyed by the
+ * path id and does NOT filter terminated rows -- a stopped run's detail, mail
+ * history, and turns are still served. Keep the two separate: routing must
+ * never reach a dead endpoint, while the read surface must still render one.
  */
 export interface RoutableRecord {
   readonly id: string;
@@ -706,7 +656,7 @@ export interface RoutableRecord {
    * hub-api concern, done by the response shaper. */
   readonly status: string;
   readonly createdAt: Date;
-  /** A run has no `updatedAt` column, so it reports `endedAt ?? createdAt`. */
+  /** Runs have no `updatedAt` column; report `endedAt ?? createdAt`. */
   readonly updatedAt: Date;
   readonly endedAt: Date | null;
   /** The folded definition this run belongs to (`workflow_definition.id`). */
@@ -718,10 +668,8 @@ export interface RoutableRecord {
 
 /**
  * Shape a run row and its already-resolved routing address into the run
- * record. Callers decide whether the run resolves at all -- only a top-level
- * run (`isTopLevelRun`) does -- and pass the address they have narrowed; this
- * only maps the columns, including the run's `endedAt ?? createdAt` stand-in
- * for the absent `updatedAt`.
+ * record. Callers decide whether the run resolves at all and pass the address
+ * they have narrowed; this only maps the columns.
  */
 export function runRowToRoutableRecord(
   run: {
@@ -757,9 +705,8 @@ export function runRowToRoutableRecord(
 /**
  * A run is a top-level run -- the addressable head of a deployment -- when it
  * owns a routing address AND self-anchors (`anchorRunId === id`). A lazy child
- * park row anchors on its parent (`anchorRunId !== id`) and carries no address;
- * either condition excludes it. This is the single predicate the run read
- * surface classifies on, so the resolver and the run list cannot drift.
+ * park row anchors on its parent and carries no address; either condition
+ * excludes it. This is the single predicate the run read surface classifies on.
  */
 export function isTopLevelRun(row: {
   id: string;
@@ -771,8 +718,7 @@ export function isTopLevelRun(row: {
 
 /**
  * Resolve a run id to its record. A run resolves only when it is a top-level
- * run (`isTopLevelRun`): it owns a routing address and self-anchors. A child
- * park row (address-null, anchored on its parent) is not served here.
+ * run (`isTopLevelRun`); a child park row is not served here.
  */
 export async function findRoutableById(
   db: DB["db"],
@@ -799,9 +745,8 @@ export async function findRoutableById(
     .limit(1)
     .then((rows) => rows[0]);
 
-  // The `address === null` arm is redundant with `isTopLevelRun` (which already
-  // requires a non-null address) but narrows `address` from `string | null` to
-  // `string` for `runRowToRoutableRecord`, which `isTopLevelRun`'s boolean
+  // The `address === null` arm is redundant with `isTopLevelRun` but narrows
+  // `address` to `string` for `runRowToRoutableRecord`, which the boolean
   // return cannot do.
   if (
     runRow === undefined ||

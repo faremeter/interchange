@@ -131,9 +131,8 @@ describe("workflowDefinitionEnvelopeSchema", () => {
   // not field survival. `.onUndeclaredKey("ignore")` is passthrough, so an
   // undeclared field would survive the read regardless; only the declaration
   // makes a malformed requirement fail at the deploy boundary. These tests
-  // assert that validation property. The rejection test fails if the
-  // `grantRequirements?` line is removed from the schema; a survival test
-  // would pass either way and prove nothing.
+  // assert that property -- the rejection test fails if the `grantRequirements?`
+  // line is removed from the schema; a survival test would pass either way.
   test("rejects a declared grantRequirement carrying an unknown source", () => {
     const validated = workflowDefinitionEnvelopeSchema({
       id: "my-workflow",
@@ -221,10 +220,9 @@ describe("workflowDefinitionEnvelopeSchema", () => {
 
   // Same property for inboundMailPolicy: declaring it on the envelope makes a
   // malformed policy fail at the deploy boundary. The policy keys on exactly
-  // the four author-controllable outcomes, so an unknown outcome key (a typo or
-  // a non-controllable outcome such as `clean`) must be rejected here rather
-  // than ride through to later admission resolution. The rejection test fails
-  // if the `inboundMailPolicy?` line is removed from the schema.
+  // the four author-controllable outcomes, so an unknown outcome key (a typo
+  // or a non-controllable outcome such as `clean`) must be rejected here. The
+  // rejection test fails if the `inboundMailPolicy?` line is removed.
   test("rejects a declared inboundMailPolicy carrying an unknown outcome key", () => {
     const validated = workflowDefinitionEnvelopeSchema({
       id: "my-workflow",
@@ -515,10 +513,10 @@ describe("workflowAuthorize", () => {
 // invokes the kind handler's `validatePush` once per commit, so a tree
 // that fails the workflow codebase validation on an intermediate commit
 // must reject the pack even when the tip is valid. The workflow handler
-// does not consult prior closures — every commit's tree is judged on
-// its own top-level paths. This regression pins that behaviour: the
-// per-commit walk catches an intermediate-state violation at the
-// offending commit, not by accidentally being lenient at the tip.
+// does not consult prior closures -- every commit's tree is judged on its
+// own top-level paths. This regression pins that behaviour: the per-commit
+// walk catches an intermediate-state violation at the offending commit,
+// not by accidentally being lenient at the tip.
 describe("workflow per-commit pack walk", () => {
   const tempDirs: string[] = [];
   let signingKey: KeyPair;

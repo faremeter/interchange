@@ -33,23 +33,15 @@ export const REGISTRY_INDEX_PATH = "package-registry.json";
  * Canonical asset name for the workspace's bundled package-registry —
  * the in-tree `@intx/tools-*` packages live in an asset of this name
  * under the workspace's root tenant. The hub's scope-routing config
- * maps `@intx` to this registry, the seed script ensures the asset
- * row exists, and the publish-tool-packages CLI defaults its target
+ * maps `@intx` to this registry, the seed script ensures the asset row
+ * exists, and the publish-tool-packages CLI defaults its target
  * registry to this name. The constant lives at one site so a rename
  * does not have to chase three independent string literals.
  *
- * Callers:
- *   - `bin/dev.ts` — orchestrator default for the registry the dev
- *     stack publishes the built-ins into.
- *   - `bin/seed.ts` — seeder that pins the workspace-builtins into
- *     the registry asset at boot.
- *   - `bin/publish-tool-packages.ts` — CLI default for the
- *     `--registry` flag.
- *
- * No test asserts that the seed's pinned built-ins actually land
- * under this exact name; a mismatch between the constant and a
- * caller would surface at apply time as a `tarball.missing`
- * structured failure, not as a build error.
+ * No test asserts that the seed's pinned built-ins actually land under
+ * this exact name; a mismatch between the constant and a caller would
+ * surface at apply time as a `tarball.missing` structured failure, not
+ * as a build error.
  */
 export const WORKSPACE_BUILTINS_REGISTRY = "workspace-builtins";
 
@@ -106,13 +98,12 @@ export async function validateTarballPackageJSON(
   }
   if (outcome.kind === "multiple-entries") {
     // The hub validates the first top-level package.json the tar walk
-    // emits, but the sidecar's `tar.extract({ strip: 1 })` overwrites
-    // on every subsequent path with the same stripped name and ends up
-    // loading the LAST entry. A tarball carrying more than one
-    // `<seg>/package.json` therefore would have its hub-side validation
-    // and sidecar-side runtime read different descriptors — exactly
-    // the kind of TOCTOU gap a single signed integrity hash cannot
-    // close. Reject the upload at the validation boundary.
+    // emits, but the sidecar's `tar.extract({ strip: 1 })` overwrites on
+    // every subsequent path with the same stripped name and loads the
+    // LAST entry. A tarball with more than one `<seg>/package.json`
+    // would therefore have hub-side validation and sidecar-side runtime
+    // read different descriptors -- exactly the TOCTOU gap a single
+    // signed integrity hash cannot close. Reject at the boundary.
     return {
       ok: false,
       reason: `tarball ${filename} contains multiple top-level package.json entries (${outcome.paths
@@ -174,16 +165,13 @@ export const packageRegistryKindHandler: KindHandler = {
     // Enumerate every entry under `tarballs/`, validate the filename
     // shape, then open each tarball and validate its package.json.
     // Gate on `topLevelTreePaths` so a tree without a `tarballs/`
-    // subtree (the genesis commit, or any push that simply does not
-    // include tarballs yet) skips the enumeration: the substrate's
-    // `listDir` returns `[]` for an absent path, which is
-    // indistinguishable from a present-but-empty `tarballs/` subtree.
-    // "Is the subtree there at all" is therefore answered at the handler
-    // from the top-level enumeration the substrate already supplies, not
-    // from a probe call. With `tarballs` confirmed present, any throw
-    // from the `listDir` below is a real fault (EACCES, EIO, malformed
-    // tree, transient transport), so it is surfaced rather than treated
-    // as "no tarballs."
+    // subtree (the genesis commit, or any push that includes none yet)
+    // skips the enumeration: the substrate's `listDir` returns `[]` for
+    // an absent path, indistinguishable from a present-but-empty
+    // subtree. "Is the subtree there at all" is therefore answered
+    // from the top-level enumeration, not a probe call; with `tarballs`
+    // confirmed present, any throw from `listDir` below is a real
+    // fault and is surfaced.
     let tarballChildren: string[];
     if (!topLevelTreePaths.includes("tarballs")) {
       tarballChildren = [];
@@ -192,8 +180,7 @@ export const packageRegistryKindHandler: KindHandler = {
         tarballChildren = await listDir("tarballs");
       } catch (err) {
         // The top-level enumeration already told us `tarballs` is
-        // present, so any failure here is a real listDir fault
-        // (EACCES, EIO, malformed-tree, transient transport) — not
+        // present, so any failure here is a real listDir fault -- not
         // "the subtree is absent." Surface it as a push rejection
         // rather than collapsing it into "no tarballs to validate,"
         // which would silently let a push through whose tarballs
@@ -206,10 +193,10 @@ export const packageRegistryKindHandler: KindHandler = {
     }
 
     // Two tarballs publishing the same `${name}@${version}` make the
-    // resolver's AssetRegistrySource overwrite by fs.readdir order —
-    // an undefined-behaviour outcome across filesystems. Reject the
-    // collision at the substrate boundary so the registry asset's
-    // closure is unambiguous regardless of how the loader walks it.
+    // resolver's AssetRegistrySource overwrite by fs.readdir order --
+    // undefined behaviour across filesystems. Reject the collision at
+    // the substrate boundary so the registry asset's closure is
+    // unambiguous regardless of how the loader walks it.
     const publishedNameVersions = new Set<string>();
     for (const child of tarballChildren) {
       const repoPath = `${TARBALLS_PREFIX}${child}`;
@@ -287,12 +274,11 @@ export const packageRegistryAuthorize: AuthorizeFn = (
   // The smart-HTTP route layer treats package-registry repos as
   // user-write-denied by design: tarball writes are constrained to the
   // shape the kind handler validates (`tarballs/<filename>.tgz` plus a
-  // hub-authored index), and the REST PUT/DELETE endpoints on the
-  // asset routes (`PUT /api/tenants/:tid/assets/:assetId/tarballs/:filename`
-  // and the matching DELETE) are the supported path for users who
-  // need to publish a tarball. Smart-HTTP would let a user push
-  // arbitrary tree shapes that the kind handler would then have to
-  // reject after the fact; the REST surface validates ahead of write.
+  // hub-authored index), and the REST PUT/DELETE endpoints on the asset
+  // routes are the supported path for users who need to publish a
+  // tarball. Smart-HTTP would let a user push arbitrary tree shapes
+  // that the kind handler would then have to reject after the fact;
+  // the REST surface validates ahead of write.
   return {
     allowed: false,
     reason: `principal kind ${principal.kind} cannot push to package-registry over smart-HTTP; use the REST tarball endpoints (PUT/DELETE /api/tenants/:tid/assets/:assetId/tarballs/:filename)`,

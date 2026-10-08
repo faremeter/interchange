@@ -5,23 +5,19 @@
 // closure to concrete versions plus integrity SRIs, reusing the tool-packaging
 // closure resolver. This is the "what exactly would we install" step: packument
 // and package.json metadata reads only, no code execution. The returned
-// `ToolPackageManifest` is the frozen closure the deploy path later ships by
+// `ToolPackageManifest` is the frozen closure the deploy path ships by
 // source-ref.
 //
-// There are three arms, one per `(source.kind, package.format)`:
-//   - `registry` names an npm registry; its URL and credentials are supplied by
-//     the caller as a `RegistryConfig`, since the caller owns the registry
-//     configuration.
-//   - `asset` + `tarball` names a hub asset that publishes the definition
-//     package as a tarball; the caller supplies bound `readBlob`/`listBlobs`
-//     closures over that asset (the same shape `session-service` mints for
-//     `AssetRegistrySource`).
+// Three arms, one per `(source.kind, package.format)`:
+//   - `registry` names an npm registry; URL and credentials come from the
+//     caller's `RegistryConfig`.
+//   - `asset` + `tarball` names a hub asset publishing the definition package
+//     as a tarball; the caller supplies bound `readBlob`/`listBlobs` closures.
 //   - `asset` + `source` names a hub asset whose definition package lives as a
-//     git subtree at a pinned commit; the caller supplies a `SourceTreeReads`
-//     pinned to that commit plus a `RegistryConfig` for the external npm deps.
-//     This arm delegates to `resolveSourceWorkflowClosure`, which reads the
-//     tree directly and needs no `name@range` pin (it selects the member from
-//     the source's `packageName`).
+//     git subtree at a pinned commit; the caller supplies `SourceTreeReads`
+//     plus a `RegistryConfig`, and this arm delegates to
+//     `resolveSourceWorkflowClosure` (no `name@range` pin -- the member is
+//     selected from the source's `packageName`).
 // Every arm takes pre-bound read capabilities, keeping this module free of any
 // asset-service or repo-store dependency.
 
@@ -68,13 +64,12 @@ export type ResolveWorkflowClosureRegistryArgs = {
  * `package-registry` asset.
  *
  * The resolver is single-source by design: the asset is the sole and default
- * registry, so a self-contained definition (its `@intx/*` imports bundled at
- * author time) resolves to one `kind:"asset"` entry. A specifier the asset does
- * not publish fails loud from `AssetRegistrySource` -- there is no silent
- * fallback to npm. A definition that genuinely needs external npm dependencies
- * would resolve through the mixed `AssetRegistrySource` + `HttpRegistrySource`
- * map `session-service` already builds for tool packages; that path is not
- * threaded here.
+ * registry, so a self-contained definition resolves to one `kind:"asset"`
+ * entry. A specifier the asset does not publish fails loud from
+ * `AssetRegistrySource` -- there is no silent fallback to npm. A definition
+ * that needs external npm deps would resolve through the mixed
+ * `AssetRegistrySource` + `HttpRegistrySource` map `session-service` already
+ * builds for tool packages; that path is not threaded here.
  */
 export type ResolveWorkflowClosureAssetTarballArgs = {
   /** An asset source whose `package.format` is `"tarball"`. */
@@ -122,7 +117,7 @@ export type ResolveWorkflowClosureArgs =
 
 // Both asset arms carry an identical `source` field type, so narrow on the
 // source's own `package.format` discriminant rather than adding a redundant
-// discriminant to the args.
+// one to the args.
 function isAssetSourceArgs(
   args: ResolveWorkflowClosureArgs,
 ): args is ResolveWorkflowClosureAssetSourceArgs {
@@ -213,11 +208,11 @@ export type ResolveAssetAttachmentFn = (
 ) => Promise<{ pack: Uint8Array; ref: string; commitSha: string }>;
 
 /**
- * Build the inline asset mounts a source-ref frame delivers for an asset-sourced
- * closure: one per distinct asset the closure's `kind:"asset"` entries name (so
- * a multi-asset closure delivers every backing asset, not just the source), each
- * carrying the git pack the caller resolves for that asset. `mountPath` is
- * derived through the shared helper so probe and deploy agree on it.
+ * Build the inline asset mounts a source-ref frame delivers for an
+ * asset-sourced closure: one per distinct asset the closure's `kind:"asset"`
+ * entries name (so a multi-asset closure delivers every backing asset, not
+ * just the source), each carrying the git pack the caller resolves for that
+ * asset. `mountPath` comes from the shared helper so probe and deploy agree.
  */
 export async function buildSourceAssetMounts(
   closure: ToolPackageManifest,

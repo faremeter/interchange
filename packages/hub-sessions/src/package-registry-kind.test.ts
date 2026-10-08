@@ -187,14 +187,12 @@ describe("validateTarballPackageJSON", () => {
   });
 
   test("rejects a tarball that carries multiple top-level package.json entries", async () => {
-    // The hub-side validator captures the first `<seg>/package.json`
-    // the tar walk emits, but the sidecar's `tar.extract({ strip: 1 })`
-    // overwrites on every collision and loads the last entry. A
-    // tarball with two top-level package directories therefore would
-    // validate against one descriptor on the hub and execute against
-    // another on the sidecar — exactly the kind of TOCTOU gap a single
-    // signed integrity hash cannot close. Refuse the upload at the
-    // validation boundary.
+    // The hub-side validator captures the first `<seg>/package.json` the tar
+    // walk emits, but the sidecar's `tar.extract({ strip: 1 })` overwrites on
+    // every collision and loads the LAST entry. A tarball with two top-level
+    // package directories would therefore validate against one descriptor on
+    // the hub and execute against another on the sidecar -- a TOCTOU gap a
+    // single signed integrity hash cannot close. Refuse at the boundary.
     const bytes = await makeMultiPackageTarball([
       { dir: "package", pkg: { name: "first", version: "1.0.0" } },
       { dir: "evil", pkg: { name: "second", version: "2.0.0" } },
@@ -353,13 +351,12 @@ describe("packageRegistryKindHandler.validatePush", () => {
   });
 
   test("surfaces a non-ENOENT listDir failure as a rejection rather than treating tarballs/ as empty", async () => {
-    // A transient EACCES / EIO / malformed-tree error from listDir
-    // is NOT "the tarballs subtree is absent" — collapsing both into
-    // `tarballChildren = []` would let a push that legitimately
-    // includes tarballs through validation without examining any of
-    // them. Only the not-found case should fall through to "no
-    // tarballs to validate"; every other listDir error must surface
-    // so the operator sees the failure rather than a silent accept.
+    // A transient EACCES / EIO / malformed-tree error from listDir is NOT
+    // "the tarballs subtree is absent" -- collapsing both into
+    // `tarballChildren = []` would let a push that legitimately includes
+    // tarballs through validation without examining any of them. Only the
+    // not-found case falls through to "no tarballs to validate"; every other
+    // listDir error must surface so the operator sees the failure.
     const bytes = await makeTarball({ name: "tool-a", version: "1.0.0" });
     const files: FileMap = {
       "tarballs/tool-a-1.0.0.tgz": bytes,

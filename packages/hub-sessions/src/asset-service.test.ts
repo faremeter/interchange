@@ -28,15 +28,13 @@ import { workflowKindHandler, workflowAuthorize } from "./workflow-kind";
 // exercise the AssetService's translation of duplicates into typed domain
 // errors.
 //
-// Drizzle does not surface the driver error directly: it wraps the
-// postgres-js error (which carries `code`) as the `cause` of a
-// DrizzleQueryError, so the SQLSTATE sits on `.cause`, not on the
-// top-level error. The violation fixtures mirror that wrapping so the
-// stub reproduces the shape the service must walk to find the code.
+// Drizzle wraps the postgres-js driver error (which carries `code`) as the
+// `cause` of a DrizzleQueryError, so the SQLSTATE sits on `.cause`, not the
+// top-level error; the violation fixture mirrors that wrapping.
 //
-// The where-clauses passed by drizzle's `eq` are opaque values; rather
-// than inspect them, the stub exposes a `nextFindFirstAssetId` setter
-// that the tests use to tell the stub which id the next query targets.
+// The where-clauses passed by drizzle's `eq` are opaque values; rather than
+// inspect them, the stub exposes a `nextFindFirstAssetId` setter the tests
+// use to tell the stub which id the next query targets.
 // ---------------------------------------------------------------------------
 
 type AssetRow = {
@@ -328,15 +326,14 @@ describe("AssetService", () => {
     });
 
     test("rejects a package-registry asset whose name shadows a configured HTTP registry", async () => {
-      // The session service builds the per-launch tool-package
-      // registry map by iterating package-registry assets first and
-      // HTTP registries second, with an asset-wins-on-name-collision
-      // rule. Without the reserved-name gate, a `package-registry`
-      // asset named `npmjs` on any tenant would silently shadow the
-      // public npm registry for every session resolving through that
-      // tenant — an opaque reroute the operator did not request. Pin
+      // The session service builds the per-launch tool-package registry
+      // map by iterating package-registry assets first and HTTP
+      // registries second, with an asset-wins-on-name-collision rule.
+      // Without the reserved-name gate, a `package-registry` asset named
+      // `npmjs` on any tenant would silently shadow the public npm
+      // registry for every session resolving through that tenant. Pin
       // the rejection at the asset-creation boundary so the collision
-      // surfaces at intent time, not as a debugging exercise later.
+      // surfaces at intent time.
       const reservedService = createAssetService({
         db: dbFixture.db,
         repoStore,

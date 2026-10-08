@@ -99,14 +99,13 @@ async function pushSourceUpdatesToTenants(
   if (tenantIds.length === 0) return;
 
   // Callers fire this without awaiting, so it must never reject: a failure to
-  // enumerate or push is logged and dropped, not propagated as an unhandled
-  // rejection. The push is best effort — the next mutation or a sidecar
-  // reconnect re-resolves sources.
+  // enumerate or push is logged and dropped. Best effort -- the next mutation
+  // or a sidecar reconnect re-resolves sources.
   try {
-    // The instance-shaped runs: running, addressable, and not anchored on a
+    // The instance-shaped runs: running, addressable, not anchored on a
     // deployment. `anchorRunId IS NULL` excludes the deployment-anchor runs
-    // (which set it to their own id), so no deployment-anchor run address can
-    // reach the address-targeted push below. Mirrors the /me/workflows/runs and
+    // (which set it to their own id), so no deployment-anchor address reaches
+    // the address-targeted push below. Mirrors the /me/workflows/runs and
     // tenant run-list predicate.
     const instances = await db.query.workflowRun.findMany({
       where: and(
@@ -123,8 +122,8 @@ async function pushSourceUpdatesToTenants(
       instances.map(async (instance) => {
         // The isNotNull(address) filter guarantees a value; a null here is a
         // broken invariant. The callback is async, so this throw becomes a
-        // rejected promise captured per-instance by allSettled and logged
-        // below -- one bad row is surfaced, not fatal to the whole batch.
+        // rejected promise per-instance by allSettled -- one bad row is
+        // surfaced, not fatal to the batch.
         if (instance.address === null) {
           throw new Error(
             `running run ${instance.id} matched the non-null-address filter but has a null address`,
@@ -216,10 +215,9 @@ export async function pushSourceUpdatesSubtree(
  * safe to broadcast, this needs no per-instance ledger of what was delivered.
  *
  * Callers fire this without awaiting, so it must never reject: a failure to
- * enumerate or push is logged and dropped. This closes the ONLINE revocation
- * window (a running deployment stops holding the credential now); the offline
- * window -- a run whose sidecar was disconnected when the revoke fired -- is
- * closed by the reconnect resync, not here.
+ * enumerate or push is logged and dropped. Closes the ONLINE revocation window;
+ * the offline window (a run whose sidecar was disconnected when the revoke
+ * fired) is closed by the reconnect resync, not here.
  */
 export async function pushCredentialRevoke(
   db: DB["db"],
@@ -237,10 +235,9 @@ export async function pushCredentialRevoke(
 
   try {
     // Every running, addressable run in the subtree. Unlike the source-update
-    // push this does NOT exclude deployment-anchor runs (`anchorRunId IS NULL`):
-    // a deployed workflow is the primary credential consumer, and a flat revoke
-    // is safe to deliver to any address -- a run that never held the credential
-    // no-ops on it.
+    // push this does NOT exclude deployment-anchor runs: a deployed workflow
+    // is the primary credential consumer, and a flat revoke is safe to deliver
+    // to any address -- a run that never held the credential no-ops on it.
     const runs = await db.query.workflowRun.findMany({
       where: and(
         inArray(workflowRun.tenantId, tenants),
@@ -282,31 +279,26 @@ export async function pushCredentialRevoke(
 }
 
 /**
- * Reconcile a reconnecting deployment's credentials against its deploy-time set.
- * Re-resolve the CURRENT material for every credentialId the deployment
- * persisted at deploy (`workflow_run.credentialRefs`), then push a MERGE that
- * upserts the survivors (picking up a same-id secret rotation) and REVOKES the
- * deploy-time ids that no longer resolve (deleted or revoked while the sidecar
- * was disconnected). Closes the OFFLINE revocation window (the online window is
- * closed by `pushCredentialRevoke`).
+ * Reconcile a reconnecting deployment's credentials against its deploy-time
+ * set. Re-resolve the CURRENT material for every credentialId persisted at
+ * deploy (`workflow_run.credentialRefs`), then push a MERGE that upserts the
+ * survivors (picking up a same-id rotation) and REVOKES the ids that no
+ * longer resolve (deleted or revoked while disconnected). Closes the OFFLINE
+ * revocation window.
  *
- * Merge, not wholesale-replace: `credentialRefs` is only the deploy-time id set,
- * not the child's complete live set (a catalog re-point can deliver a new
- * credential online), so a replace would evict online-added credentials. The
- * merge upserts survivors and names the dead ids in `revoke`, leaving online
- * credentials untouched. It does NOT handle an id-CHANGING rotation of a
- * deploy-time source (the new id is not in `credentialRefs`); a later source
- * push delivers that.
+ * Merge, not wholesale-replace: `credentialRefs` is only the deploy-time id
+ * set, not the child's complete live set (a catalog re-point can deliver a
+ * new credential online), so a replace would evict online-added credentials.
+ * Does not handle an id-CHANGING rotation (the new id is not in
+ * `credentialRefs`); a later source push delivers that.
  *
- * No-op when the run persisted no credential refs (a folded run, or a
- * deployment with no credentials). Fire-and-forget from the reconnect handler:
- * it never rejects. A live-but-unresolvable credential (its provider vanished
- * or has no API base URL) makes `reresolveCurrentMaterials` throw, which aborts
- * the WHOLE reconcile (logged, not sent) so a partial set with a spurious
- * revoke never lands. This is deliberately all-or-nothing: one misconfigured
- * credential blocks this reconnect's revocation of the others too, trading
- * revocation timeliness for never falsely evicting a live credential. The next
- * reconnect (or an online revoke) retries.
+ * No-op when the run persisted no credential refs. Fire-and-forget from the
+ * reconnect handler: it never rejects. A live-but-unresolvable credential
+ * makes `reresolveCurrentMaterials` throw, aborting the WHOLE reconcile
+ * (logged, not sent) so a partial set with a spurious revoke never lands --
+ * deliberately all-or-nothing, trading revocation timeliness for never
+ * falsely evicting a live credential. The next reconnect (or online revoke)
+ * retries.
  */
 export async function pushCredentialReconcile(
   db: DB["db"],

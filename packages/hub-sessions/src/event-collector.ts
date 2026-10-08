@@ -1,8 +1,8 @@
 // Persists assistant inference turns from the InferenceEvent stream.
 //
-// One collector per active session. Events are written eagerly to the DB
-// so data survives crashes. The collector does not block the websocket
-// message loop — callers should fire-and-forget and log errors.
+// One collector per active session. Events are written eagerly to the DB so
+// data survives crashes. The collector does not block the websocket message
+// loop -- callers fire-and-forget and log errors.
 
 import { eq } from "drizzle-orm";
 
@@ -73,46 +73,44 @@ export function createEventCollector(
 ): EventCollector {
   const { db, sessionId, runId, tenantId, onTurnFinalized, onUsage } = config;
 
-  // Current inference turn being accumulated. A new turn is created on each
-  // inference.start. Finalized on connector.reply, reactor.done,
+  // Current inference turn being accumulated; a new one starts on each
+  // inference.start and finalizes on connector.reply, reactor.done,
   // reactor.error (fatal), or abandon. Null when no turn is active.
   let currentTurnId: string | null = null;
   // Most recent turn ID, set in beginTurn. Unlike currentTurnId this is NOT
-  // cleared on finalization — the SSE replay endpoint needs the turn ID
-  // after the turn commits but before the collector is removed.
+  // cleared on finalization: the SSE replay endpoint needs the turn ID after
+  // the turn commits but before the collector is removed.
   let lastTurnId: string | null = null;
   let ordinal = 0;
   // Prevents double-finalization when reactor.done and abandon() race.
   let finalized = false;
   // Set when inference.error fires so connector.reply knows to persist its
-  // content (on normal turns, inference.done already persisted the text).
+  // content (on normal turns inference.done already persisted the text).
   let pendingError = false;
-  // Accumulated visible text content for the current turn. Only text blocks
-  // from inference.done (not thinking/reasoning) are included. Reset on each
-  // new turn.
+  // Accumulated visible text for the current turn; only text blocks from
+  // inference.done (not thinking/reasoning) are included. Reset per turn.
   let accumulatedText = "";
-  // In-progress text from inference.text.delta events during the current
-  // inference step. Reset on inference.done (when accumulatedText takes over).
+  // In-progress text from inference.text.delta events. Reset on
+  // inference.done (when accumulatedText takes over).
   let streamingText = "";
   // Set when inference.error fires. Unlike pendingError (which resets on
-  // connector.reply), this persists until finalization so the callback can
+  // connector.reply) this persists until finalization so the callback can
   // report whether an inference error occurred during the turn.
   let turnHadError = false;
-  // Structured error details accumulated during the turn for inclusion in
-  // TurnFinalized. Reset on each new turn.
+  // Structured error details accumulated for TurnFinalized. Reset per turn.
   let accumulatedErrors: { category: string; message: string }[] = [];
-  // Maps tool call IDs to tool names for correlating tool results with their
-  // originating calls. Populated from inference.done tool_call blocks.
+  // Maps tool call IDs to tool names/arguments for correlating tool results
+  // with their originating calls. Populated from inference.done tool_call
+  // blocks.
   const callNames = new Map<string, string>();
   const callArgs = new Map<string, Record<string, unknown>>();
-  // Tool calls accumulated for TurnFinalized.
+  // Tool calls and error results accumulated for TurnFinalized.
   let accumulatedToolCalls: TurnToolCall[] = [];
-  // Tool results that reported isError, accumulated for TurnFinalized.
   let accumulatedToolErrors: { name: string; content: string }[] = [];
-  // Final cumulative token usage for the current turn. `inference.usage` events
-  // carry a running cumulative total and fire multiple times per step, so these
-  // are OVERWRITTEN (not summed); the last value before finalize is the
-  // authoritative per-turn total. Both reset on each new turn.
+  // Final cumulative token usage for the current turn. `inference.usage`
+  // events carry a running cumulative total and fire multiple times per step,
+  // so these are OVERWRITTEN (not summed); the last value before finalize is
+  // the authoritative per-turn total. Both reset per turn.
   let turnUsage: TokenUsage | null = null;
   let turnSource: LastCycleSource | null = null;
 
@@ -184,9 +182,9 @@ export function createEventCollector(
         break;
       case "reactor.error":
         if (event.data.fatal && !finalized) {
-          // The reactor failed before any inference started (e.g., context
-          // store load failure), but the user needs to see why their agent
-          // failed, and without a turn there is no container for the error.
+          // The reactor failed before any inference started (e.g. context
+          // store load failure), but the user needs to see why; without a
+          // turn there is no container for the error.
           if (currentTurnId === null) {
             await beginTurn("unknown");
           }
@@ -279,21 +277,18 @@ export function createEventCollector(
           // own the round-trip.
           break;
         case "refusal":
-          // Refusal blocks carry human-readable text the model
-          // emitted when it declined a structured-output request.
-          // A dedicated `refusal` part kind keeps the signal
-          // distinct from ordinary `text` (the model produced
-          // schema-conformant content) and from `error` (the HTTP
-          // call failed or the protocol mismatched). Session
-          // readers can branch on the part type to render policy
-          // declines differently from regular assistant output.
+          // Human-readable text the model emitted when it declined a
+          // structured-output request. A dedicated `refusal` part kind keeps
+          // the signal distinct from ordinary `text` (schema-conformant
+          // content) and from `error` (the HTTP call failed or the protocol
+          // mismatched), so session readers can render policy declines
+          // differently from regular assistant output.
           await insertPart("refusal", block.reason, null);
           break;
         case "safety_rating":
-          // Structured safety signals (e.g. Gemini
-          // promptFeedback.blockReason). Persist the reason under a
-          // dedicated part kind so a blocked turn is not empty in
-          // the audit trail. Content is the provider-native reason
+          // Structured safety signals (e.g. Gemini promptFeedback.blockReason).
+          // Persist the reason under a dedicated part kind so a blocked turn is
+          // not empty in the audit trail. Content is the provider-native reason
           // string (observed: PROHIBITED_CONTENT).
           await insertPart("safety_rating", block.blockReason, null);
           break;
@@ -329,10 +324,10 @@ export function createEventCollector(
         case "audio":
         case "video":
         case "document": {
-          // All media block variants persist into the generic "file"
-          // part bucket. The block's own `type` distinguishes the
-          // semantic role; `mimeType` distinguishes the encoding; the
-          // MediaSource discriminant distinguishes inline vs reference.
+          // All media block variants persist into the generic "file" part
+          // bucket; the block's `type` distinguishes the semantic role,
+          // `mimeType` the encoding, and the MediaSource discriminant inline
+          // vs reference.
           const source = block.source;
           if (source.kind === "base64") {
             await insertPart("file", null, {
@@ -347,18 +342,12 @@ export function createEventCollector(
               reference: source.reference,
             });
           } else if (source.kind === "url") {
-            // The `url` MediaSource variant carries a self-contained
-            // dereferenceable HTTP(S) URL (Gemini accepts these in
-            // `fileData/fileUri`; other adapters route similarly).
-            // The session record keeps the URL on a distinct `url`
-            // field rather than reusing the `reference` slot that
-            // `file-reference` uses: a session reader that filters
-            // or joins on `metadata->>'reference'` should see
-            // provider-opaque file ids only, with public URLs
-            // surfaced under their own field. The discriminant
-            // `kind` is the structural source of truth, and the
-            // field-per-variant shape keeps naive substring queries
-            // honest.
+            // A self-contained dereferenceable HTTP(S) URL (Gemini accepts
+            // these in `fileData/fileUri`). Kept on a distinct `url` field
+            // rather than the `reference` slot `file-reference` uses: a
+            // session reader filtering or joining on
+            // `metadata->>'reference'` should see provider-opaque file ids
+            // only, with public URLs surfaced under their own field.
             await insertPart("file", null, {
               kind: "url",
               mimeType: source.mimeType,

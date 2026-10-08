@@ -38,25 +38,22 @@ export async function projectTerminalRun(
   const { anchor, runId, status, terminalEvent, now } = args;
   // Lazily anchor the run before settling it. An internal run that parks only
   // on a plain signal gate never reaches `registerSignalCorrelation`, the sole
-  // other path that mints an internal run row, so its terminal event can be the
-  // first the hub sees of the run. A never-minted row is ordinary bookkeeping,
-  // not a deployment-boundary violation, so mint it here against this
-  // deployment's anchor rather than letting the ownership guard below mistake
-  // absence for foreignness. The insert no-ops when any row already exists,
-  // which keeps that guard authoritative for a row that exists and anchors
-  // elsewhere. The principal is null: an internal run inherits its
-  // deployment's grants and has none of its own.
+  // other path that mints an internal run row, so its terminal event can be
+  // the first the hub sees of the run. A never-minted row is ordinary
+  // bookkeeping, not a deployment-boundary violation, so mint it here against
+  // this deployment's anchor rather than letting the ownership guard below
+  // mistake absence for foreignness. The insert no-ops when any row already
+  // exists, which keeps that guard authoritative for a row that anchors
+  // elsewhere. Principal is null: internal runs inherit their deployment's
+  // grants.
   //
   // The mint necessarily precedes the ownership guard, so an id the hub has
   // never seen is claimed under THIS anchor before anything establishes it
-  // belongs here. That ordering is required -- the guard reads the row the mint
-  // may have to create -- and it is bounded rather than unbounded: internal run
-  // ids are supplied by the sidecar and accepted verbatim, so the value is
-  // caller-influenced, but it is a different population from the anchor ids
-  // the hub mints itself, and nothing resolves an internal id without also
-  // constraining the anchor or the tenant. The insert cannot take a row away
-  // from another deployment; the worst it does is create one for an id that
-  // deployment would otherwise have created later.
+  // belongs here. That ordering is required (the guard reads the row the mint
+  // may have to create) and bounded: internal run ids come from the sidecar
+  // and are accepted verbatim, but nothing resolves an internal id without
+  // also constraining the anchor or tenant, and the insert cannot take a row
+  // away from another deployment.
   //
   // A row minted here may be written long after the run ended, so it starts
   // at the terminal event's time rather than now; otherwise the end time

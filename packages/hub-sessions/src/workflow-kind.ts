@@ -2,18 +2,18 @@
 //
 // A workflow asset is a codebase: a top-level `package.json` declaring an
 // `interchange.workflow` entry module plus arbitrary source files. The sidecar
-// materializes the codebase into a closure and evaluates the pinned entry to the
-// definition. `validatePush` requires the `package.json`; a tree that lacks one
-// is rejected. The legacy `workflow.json` envelope form is no longer accepted at
-// the push boundary.
+// materializes the codebase into a closure and evaluates the pinned entry to
+// the definition. `validatePush` requires the `package.json`; a tree that
+// lacks one is rejected. The legacy `workflow.json` envelope form is no longer
+// accepted at the push boundary.
 //
 // Source files are unconstrained, but the push validates the manifest's shape
-// and the entry-path's containment, and refuses an envelope-only
+// and the entry-path containment, and refuses an envelope-only
 // `capability-declarations.json`, a committed `node_modules`, and an ambiguous
-// tree that also carries an envelope-valid `workflow.json`, so one asset resolves
-// to exactly one definition. The codebase shape accepts both a single package and
-// a `workspaces` monorepo; for a monorepo the push validates only the root's
-// well-formedness and leaves per-member validation to the resolver.
+// tree that also carries an envelope-valid `workflow.json`, so one asset
+// resolves to exactly one definition. The codebase shape accepts both a single
+// package and a `workspaces` monorepo; for a monorepo the push validates only
+// the root's well-formedness and leaves per-member validation to the resolver.
 //
 // Authz:
 //   - hub principal: full access.
@@ -90,26 +90,25 @@ export const workflowDefinitionEnvelopeSchema = type({
   stepOrder: "string[]",
   "state?": StateObject,
   // `grantRequirements` passes through the envelope whether or not it is
-  // declared here: arktype's `.onUndeclaredKey("ignore")` below is
-  // passthrough, not stripping (only `"delete"` strips), so the hydrate read
-  // sees the field either way. Declaring it here VALIDATES declared
-  // requirements at the deploy boundary — a malformed `source` is rejected
-  // rather than passed through unchecked — as defense in depth alongside the
-  // trigger route's own `GrantRequirements` re-validation. Compose the
-  // exported `GrantRequirement` arktype rather than restating its shape so the
-  // envelope and the definition stay in lockstep.
+  // declared here: arktype's `.onUndeclaredKey("ignore")` below is passthrough,
+  // not stripping (only `"delete"` strips), so the hydrate read sees the field
+  // either way. Declaring it VALIDATES declared requirements at the deploy
+  // boundary -- a malformed `source` is rejected rather than passed through
+  // unchecked -- as defense in depth alongside the trigger route's own
+  // `GrantRequirements` re-validation. Compose the exported `GrantRequirement`
+  // arktype rather than restating its shape so the envelope and the definition
+  // stay in lockstep.
   "grantRequirements?": GrantRequirement.array(),
   // `credentialBindings` is validated here too -- same defense-in-depth
-  // rationale as grantRequirements above: a malformed binding (bad locator,
-  // authority, or handle) is rejected at the deploy boundary rather than
-  // passed through to launch-time resolution unchecked.
+  // rationale: a malformed binding (bad locator, authority, or handle) is
+  // rejected at the deploy boundary rather than passed through to launch-time
+  // resolution unchecked.
   "credentialBindings?": CredentialBinding.array(),
   "sidecarPlacement?": SidecarCapabilityPolicy,
   // `inboundMailPolicy` is validated here too -- same defense-in-depth
-  // rationale as credentialBindings above: a malformed policy (an unknown
-  // outcome key or a value that is not reject/admit) is rejected at the deploy
-  // boundary rather than passed through to later admission resolution
-  // unchecked.
+  // rationale: a malformed policy (an unknown outcome key or a value that is
+  // not reject/admit) is rejected at the deploy boundary rather than passed
+  // through to later admission resolution unchecked.
   "inboundMailPolicy?": InboundMailPolicy,
 }).onUndeclaredKey("ignore");
 
@@ -199,8 +198,8 @@ async function validateWorkflowCodebasePush(
   }
 
   // A `workflow.json` that also parses as a valid envelope makes the asset
-  // advertise two definitions; reject that. A `workflow.json` present but not a
-  // valid envelope is an ordinary source file and is allowed.
+  // advertise two definitions; reject that. A `workflow.json` present but not
+  // a valid envelope is an ordinary source file and is allowed.
   if (topLevelTreePaths.includes(WORKFLOW_JSON_PATH)) {
     const envelopeOutcome = await readJSONBlob(WORKFLOW_JSON_PATH, readBlob);
     if (
@@ -247,9 +246,9 @@ async function validateWorkflowCodebasePush(
 
   // A pnpm monorepo declares its members in `pnpm-workspace.yaml`, not the
   // package.json `workspaces` field, so a pnpm root has no `workspaces` and
-  // would fall through to the single-package check below. Reject that layout at
-  // the boundary with a clear message rather than letting it fail obscurely at
-  // resolve time (full pnpm support is tracked in INTR-461).
+  // would fall through to the single-package check below. Reject that layout
+  // with a clear message rather than letting it fail obscurely at resolve time
+  // (full pnpm support is tracked in INTR-461).
   if (topLevelTreePaths.includes(PNPM_WORKSPACE_PATH)) {
     return rejectPush(
       repoId,

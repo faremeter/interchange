@@ -125,7 +125,8 @@ function makeAssetReaders(tarballs: Record<string, Uint8Array>): {
 // A `SourceTreeReads` fake over `package.json` blobs keyed by packageDir and a
 // tree oid per packageDir, the source-arm analog of `makeAssetReaders`. The
 // git-tree resolver's own logic is unit-covered in
-// `workflow-source-closure.test.ts`; this drives it through `resolveWorkflowClosure`.
+// `workflow-source-closure.test.ts`; this drives it through
+// `resolveWorkflowClosure`.
 function makeSourceTreeReads(
   packages: Record<string, { json: unknown; treeOid: string }>,
 ): SourceTreeReads {
