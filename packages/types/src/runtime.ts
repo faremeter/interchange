@@ -27,11 +27,8 @@ export type KeyPair = {
 };
 
 /**
- * A key-bound cryptographic provider. Each instance is constructed with a
- * specific agent's Ed25519 key pair and holds the private key internally.
- *
- * `sign` uses the instance's own private key; `verify` accepts a public key
- * parameter so the holder can verify messages from arbitrary senders.
+ * A key-bound cryptographic provider: constructed with a specific agent's
+ * Ed25519 key pair, holding the private key internally.
  *
  * Key formats (IMPLEMENTATION.md):
  * - Ed25519 in SSH format — control plane interactions
@@ -47,8 +44,7 @@ export interface CryptoProvider {
 
   /**
    * Sign `payload` with the SSH signature envelope (sshsig), returning an
-   * ASCII-armored SSH SIGNATURE block for `gpgsig`-style consumers. Framing
-   * differs from `sign`'s raw output; pick the matching method per format.
+   * ASCII-armored SSH SIGNATURE block for `gpgsig`-style consumers.
    */
   signSSH(payload: string): Promise<string>;
 
@@ -65,10 +61,7 @@ export interface CryptoProvider {
   getPublicKey(): Uint8Array;
 }
 
-/**
- * Generate a fresh Ed25519 key pair. The returned pair is used to construct
- * a CryptoProvider instance.
- */
+/** Generate a fresh Ed25519 key pair. */
 export type GenerateKeyPair = () => Promise<KeyPair>;
 
 // ---------------------------------------------------------------------------
@@ -164,9 +157,8 @@ export type OutboundMessage = {
   inReplyTo?: string;
 
   /**
-   * RFC 5322 References chain for a threaded reply: the parent's References
-   * plus its Message-ID, in order. When present the transport ships it
-   * verbatim (appending `inReplyTo` if not already the tail).
+   * RFC 5322 References chain; shipped verbatim, appending `inReplyTo` when
+   * not already the tail.
    */
   references?: string[];
 
@@ -191,9 +183,8 @@ export type SendReceipt = {
 };
 
 /**
- * Parsed headers from an inbound message. Field names follow RFC 5322 and
- * the header conventions from MESSAGE.md § Headers. `from` is optional: a
- * message can arrive carrying no originator.
+ * Parsed inbound headers (RFC 5322 + MESSAGE.md § Headers). `from` is
+ * optional: a message can arrive carrying no originator.
  */
 export type MessageHeaders = {
   from?: string;
@@ -251,8 +242,7 @@ export type InboundMailOutcome = typeof InboundMailOutcome.infer;
 
 /**
  * The subset of {@link InboundMailOutcome} a workflow author may relax to
- * admit a message that would otherwise be rejected. Omits `clean` (always
- * admitted) and `error` (pinned to reject).
+ * admit a message that would otherwise be rejected.
  */
 export const AuthorControllableOutcome = type.enumerated(
   "untrustedFrom",
@@ -267,9 +257,7 @@ export type AuthorControllableOutcome = typeof AuthorControllableOutcome.infer;
 /**
  * A per-workflow inbound-mail admission policy: for each
  * {@link AuthorControllableOutcome}, whether a message raising that outcome
- * is `reject`ed or `admit`ted. Sparse and undeclared-key-rejecting: omitted
- * keys are not defaults, and sparse keys keep the content hash covering only
- * what the author declared.
+ * is `reject`ed or `admit`ted. Sparse: omitted keys are not defaults.
  */
 export const InboundMailPolicy = type({
   "untrustedFrom?": "'reject' | 'admit'",
@@ -308,10 +296,7 @@ export type MessagePart = {
   content: Uint8Array;
   filename?: string;
   disposition?: "inline" | "attachment";
-  /**
-   * The declared Content-Transfer-Encoding. Not set for a decoded part --
-   * `content` is already decoded, so the wire encoding is spent metadata.
-   */
+  /** Declared Content-Transfer-Encoding; absent on a decoded part. */
   encoding?: string;
 };
 
@@ -708,8 +693,7 @@ export type ControlParkKind = typeof ControlParkKind.infer;
 
 /**
  * Maximum serialized size, in UTF-8 bytes, of an {@link ApprovalSnapshot}
- * crossing a trust boundary. A snapshot approaching this bound is malformed
- * or hostile and is rejected at the parse boundary.
+ * crossing a trust boundary.
  */
 export const APPROVAL_SNAPSHOT_MAX_BYTES = 131072;
 
@@ -733,9 +717,8 @@ export type BoundedApprovalSnapshot = typeof BoundedApprovalSnapshot.infer;
 
 /**
  * Result of a tool execution. `content` is what the model sees; `detail` is
- * harness-only. `isError` surfaces an error to the model; `pendingMarker`
- * marks an async tool whose correlation ID awaits a matching inbound
- * message.
+ * harness-only. `pendingMarker` marks an async tool whose correlation ID
+ * awaits a matching inbound message.
  *
  * (INFERENCE.md § Tool Execution Semantics)
  */
@@ -980,10 +963,9 @@ export const CitationBlock = type({
 export type CitationBlock = typeof CitationBlock.infer;
 
 /**
- * A structured safety signal on model output or request filtering. The
- * payload mirrors the first real Gemini capture (2026-07-28), which was
- * prompt-level only: `promptFeedback: { blockReason: "PROHIBITED_CONTENT" }`,
- * no candidates, no per-category ratings. Carries `blockReason` only.
+ * A structured safety signal on model output or request filtering. Mirrors
+ * the first real Gemini capture (2026-07-28), prompt-level only
+ * (`promptFeedback: { blockReason: "PROHIBITED_CONTENT" }`, no candidates).
  *
  * Deliberately excluded from ToolResultBlock.content — safety signals
  * annotate model/request filtering, not tool output.
@@ -1533,10 +1515,8 @@ export type InferenceEvent =
     }
   | {
       /**
-       * Emitted when the per-call retry policy decides to retry. `attempt`
-       * is the 1-indexed attempt that just failed; `delayMs` is the delay
-       * before the next attempt; `previousError` is what triggered the
-       * retry. Not emitted when the policy aborts.
+       * Emitted when the per-call retry policy decides to retry; not emitted
+       * when it aborts.
        */
       type: "inference.retry";
       seq: number;
@@ -1811,8 +1791,7 @@ export type ReactorAction =
   | { type: "done" };
 
 /**
- * The capabilities object passed to the director. Mirrors the `ReactorAction`
- * union — provides a type-safe way for the director to construct actions.
+ * Type-safe helpers for the director to construct `ReactorAction`s.
  *
  * (INFERENCE.md § Agent Reactor › Director Decision Function)
  */
@@ -2275,8 +2254,7 @@ export type InferenceOptions = {
   /**
    * Modalities the caller wants the model to emit; adapters translate to the
    * provider-native shape (e.g. Gemini `generationConfig.responseModalities`
-   * accepts uppercase `"TEXT"` / `"IMAGE"`). Providers without a switch
-   * ignore it; omitted means the provider default.
+   * accepts uppercase `"TEXT"` / `"IMAGE"`); omitted means the provider default.
    */
   responseModalities?: ("text" | "image" | "audio")[];
   /**
@@ -2336,8 +2314,7 @@ export type ContextCommit = {
  * State of an active connector thread (one durable thread per agent,
  * persisted across sidecar restarts). `replyTo` is the most recent speaker,
  * the primary recipient on the next outbound reply; `cc` is every other
- * participant who has spoken, deduplicated in arrival order. An arktype so
- * the wire layer can validate snapshots.
+ * participant who has spoken, deduplicated in arrival order.
  */
 export const ConnectorThreadState = type({
   "threadRoot?": "string",
