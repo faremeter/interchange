@@ -137,8 +137,8 @@ export interface StepInvokeRequest {
  * suspension on a tool/authz gate, handing back the `correlationId` the
  * runtime parks the step on until the correlated decision arrives. The
  * suspend carries an explicit `kind: "approval"` and a REQUIRED snapshot
- * (the sidecar->hub co-write treats it as mandatory), so a snapshot-less
- * approval is unrepresentable here.
+ * (see {@link WorkflowPark.approvalSnapshot}); a snapshot-less approval is
+ * unrepresentable here.
  *
  * An invoker can ONLY suspend as an approval. The `"input"` control-plane
  * park is minted exclusively by the runtime's trigger-budget re-arm, never
@@ -189,8 +189,7 @@ export interface ActionInvokeResult {
  * event log: recording must not enter the run-log commit chain or trigger a
  * segment flush, so a dropped run-log buffer never takes the ledger with it.
  * `record` must be durable on return and must not share a batch with
- * `StepCompleted` -- the crash-dedup contract depends on the ledger surviving
- * a dropped run-log buffer.
+ * `StepCompleted` -- the crash-dedup contract depends on that survival.
  */
 export interface EffectLedger {
   /** Return the recorded output for a key, or `undefined` on a miss. */
@@ -305,10 +304,9 @@ export type SuspendableChildHandle = {
 
 /**
  * Spawn a body sub-DAG as a child run that MAY suspend on an approval park.
- * Unlike `spawnChild` (terminal-only), this returns a live handle the caller
- * drives across parks: approval parks surface via `handle.next()` so the
- * caller proxies them up its own park machinery, and `handle.resume` relays
- * the granted decision back into the child.
+ * Unlike `spawnChild` (terminal-only), this returns a live
+ * {@link SuspendableChildHandle} the caller drives across parks (see that
+ * type for the park/resume/signal-park protocol).
  *
  * `resumeFromEvents` re-adopts a body child that was mid-flight at a crash:
  * the seam drives `runtimeRun` from the durable log, and a step parked on an
@@ -368,7 +366,7 @@ export type WorkflowPark = {
    * approval park: the sidecar->hub co-write treats it as mandatory (the
    * register frame requires it and the approval columns are NOT NULL), so
    * the runtime throws rather than fire a snapshot-less one. Absent for
-   * input parks. A resume-from-park does not re-fire the notify.
+   * input parks.
    */
   approvalSnapshot?: ApprovalSnapshot;
 };
@@ -460,10 +458,9 @@ export interface WorkflowRuntimeEnv {
    * Spawn one loop iteration as a suspendable child, under the same
    * {@link SpawnSuspendableChild} contract as `spawnSuspendableChild` but
    * with the parent run's INHERITED env -- a loop is the parent's own
-   * bounded rework, not a fresh capped section body. `runLoop` drives it
-   * across the body's parks exactly as `runOnTrigger` drives a section body.
-   * Optional: a host that does not wire it does not support `loop`, and
-   * `runLoop` fails loudly. runLocal wires it.
+   * bounded rework, not a fresh capped section body. Optional: a host that
+   * does not wire it does not support `loop`, and `runLoop` fails loudly.
+   * runLocal wires it.
    */
   spawnLoopIteration?: SpawnSuspendableChild;
   /**
@@ -488,12 +485,11 @@ export interface WorkflowRuntimeEnv {
   drain: DrainController;
   /**
    * Whether a park in this run tree has anything upstream that could resolve
-   * it. An untimed park waits on a signal from outside the run; that only
-   * happens when the run is reachable from the control plane (the
-   * deployment's addressable run, or a suspendable child whose container
-   * relays a decision down). A terminal `childWorkflow` child is neither, so
-   * a park there can never be answered. The spawning seam states the fact
-   * here; the runtime enforces it at the park.
+   * it (the untimed-gate reachability rule stated at
+   * `definition/primitives.ts`). A terminal `childWorkflow` child is not
+   * reachable from the control plane, so a park there can never be answered.
+   * The spawning seam states the fact here; the runtime enforces it at the
+   * park.
    *
    * Required, not optional: an absent flag would mean permissive, and a host
    * that forgot to set it would silently inherit the unanswerable park this
@@ -501,38 +497,30 @@ export interface WorkflowRuntimeEnv {
    */
   hasUpstreamSignalResolver: boolean;
   /**
-   * Optional suspension-notify sink. Fired once when a step commits a
-   * `SignalAwaited` on a reserved `signalName(correlationId)` channel, so
-   * the host can register the correlation out-of-band (the sidecar sends a
-   * `signal.correlation.register` frame; the hub co-writes routing + approval
-   * rows). Fires on the initial park only; a re-park resume does not re-fire,
-   * and a registration lost across a crash is recovered from durable state on
-   * a later re-establishment (the hub write is idempotent on the
-   * correlationId). runLocal leaves it unset.
+   * Optional suspension-notify sink for {@link WorkflowPark}s (see that type
+   * for the reserved-channel and co-write rationale). Fires on the initial
+   * park only; a re-park resume does not re-fire, and a registration lost
+   * across a crash is recovered from durable state on a later
+   * re-establishment (the hub write is idempotent on the correlationId).
+   * runLocal leaves it unset.
    */
   onPark?: (park: WorkflowPark) => void;
   /**
-   * Optional author-signal park sink, the non-reserved-channel sibling of
-   * `onPark`. Fired once per park on an author `awaitSignal` gate (a plain,
-   * author-chosen `name`, not a reserved `signalName(correlationId)`
-   * channel) that must surface for a container to relay; a re-park resume
-   * does not re-fire (as `onPark`). Two sites fire it: a body's leaf
-   * `awaitSignal` gate, and a container's own signal-relay await when that
-   * container is itself a suspendable child, so the park composes up one
-   * layer at a time. The suspendable-child seam wires it on every body env;
-   * a TOP-LEVEL container run and runLocal leave it unset.
+   * Optional author-signal park sink, the non-reserved sibling of `onPark`
+   * (see {@link WorkflowSignalPark} for the relay rationale). Fires once per
+   * park; a re-park resume does not re-fire (as `onPark`). Two sites fire it:
+   * a body's leaf `awaitSignal` gate, and a container's own signal-relay
+   * await when that container is itself a suspendable child, so the park
+   * composes up one layer at a time. The suspendable-child seam wires it on
+   * every body env; a top-level container run and runLocal leave it unset.
    */
   onSignalPark?: (park: WorkflowSignalPark) => void;
   /**
    * Optional read-only recovery hook: enumerate the durable pending approval
-   * operations a step left behind, keyed by `{ runId, stepId, attempt }`. The
-   * resume classifier consults it to distinguish a step that crashed AFTER
-   * the reactor durably recorded an approval suspension but BEFORE the
-   * `SignalAwaited` flushed -- resumable, by reconstructing the missing
-   * `SignalAwaited` and re-parking -- from a genuine crash mid-agent-turn,
-   * which stays a terminal failure. Production wires it to the sidecar's
-   * durable step store; runLocal leaves every crashed invocation a terminal
-   * failure.
+   * operations a step left behind, keyed by `{ runId, stepId, attempt }`
+   * (see {@link ParkedApprovalOp} for the crash-recovery contract).
+   * Production wires it to the sidecar's durable step store; runLocal leaves
+   * every crashed invocation a terminal failure.
    */
   readParkedApprovalOps?: ReadParkedApprovalOps;
 }
