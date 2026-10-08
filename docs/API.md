@@ -323,6 +323,7 @@ Removes a principal from the tenant.
 
 204: (no content) -- Principal removed
 403: ErrorResponse -- Insufficient grants
+409: ErrorResponse -- Principal is still referenced
 
 ### POST /api/tenants/:tenantId/members/invite
 Invite a user to the tenant
