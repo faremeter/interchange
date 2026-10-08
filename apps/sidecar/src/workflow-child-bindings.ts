@@ -2,13 +2,13 @@
 //
 // Closes the child factory over the sidecar's tool materializer and the
 // grant cap, and re-exports the substrate-config key list the binary
-// forwards. The binary imports this module and the workflow-host barrel.
+// forwards. The binary imports this module and the workflow-host child entry.
 
 import {
   collectDeclaredCredentialConsumers,
   collectDeclaredResources,
   filterGrantsToDeclaredResources,
-} from "@intx/workflow-deploy";
+} from "@intx/workflow-deploy/child-grants";
 import {
   SIDECAR_SUBSTRATE_CONFIG_KEYS,
   createSidecarSubstrateFactory,

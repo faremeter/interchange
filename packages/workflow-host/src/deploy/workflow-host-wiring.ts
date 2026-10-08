@@ -44,12 +44,12 @@ import {
   WorkflowProjectionDefinition,
   type AgentDeployFrame,
   type AgentUndeployFrame,
-  type CredentialDelivery,
   type SourceRefPin,
   type WorkflowControlFrame,
   type WorkflowRunRefTips,
   type WorkflowSourceAssetMount,
 } from "@intx/types/sidecar";
+import type { CredentialDelivery } from "@intx/types/credential-delivery";
 import {
   STEP_ID_PATTERN,
   projectLiveToInert,

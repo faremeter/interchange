@@ -1,8 +1,8 @@
-// @intx/workflow-host/child -- the sidecar child factory.
+// @intx/workflow-host/child -- the child process entry and substrate factory.
 //
-// Builds the workflow-process substrate the sidecar's workflow child runs.
-// The process that boots the child supplies tool materialization and the
-// child-grant cap. The package barrel does not load this entry.
+// Boots the workflow child from its process environment and builds its substrate.
+// The host supplies tool materialization and the child-grant cap.
+// The package barrel does not load this entry.
 
 export {
   SIDECAR_SUBSTRATE_CONFIG_KEYS,
@@ -12,3 +12,5 @@ export type {
   StepToolCacheConfig,
   StepToolMaterialization,
 } from "./step-tools";
+
+export { runWorkflowChildFromProcessEnv } from "./from-process-env";

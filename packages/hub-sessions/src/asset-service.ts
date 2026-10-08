@@ -20,7 +20,7 @@ import { type DB, pgErrorCode, PG_UNIQUE_VIOLATION } from "@intx/db";
 import { asset as assetTable } from "@intx/db/schema";
 import { generateId } from "@intx/hub-common";
 import { getLogger } from "@intx/log";
-import type { RepoKind } from "@intx/types/sidecar";
+import type { RepoKind } from "@intx/types/repo";
 
 import type {
   InitRepoOpts,

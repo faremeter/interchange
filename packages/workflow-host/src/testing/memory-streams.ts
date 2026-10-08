@@ -37,7 +37,8 @@
 // usually written to examine.
 
 import type { NdjsonReader, NdjsonWriter } from "../ipc/control-channel";
-import type { FrameReader, FrameWriter } from "../ipc/event-channel";
+import type { FrameReader } from "../ipc/event-channel";
+import type { FrameWriter } from "../ipc/event-sender";
 
 /**
  * Observers of the buffer growing, distinct from the reader's own waiter: a

@@ -22,7 +22,7 @@ import {
 } from "@intx/db";
 import type { DB } from "@intx/db";
 import type { CredentialCipher } from "@intx/types";
-import type { CredentialDelivery } from "@intx/types/sidecar";
+import type { CredentialDelivery } from "@intx/types/credential-delivery";
 
 import type { SidecarRouter } from "./ws/sidecar-handler";
 

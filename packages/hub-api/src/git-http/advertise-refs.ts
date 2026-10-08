@@ -27,7 +27,7 @@
  * that stock `git clone` and `git ls-remote` accept the response.
  */
 
-import type { RepoId } from "@intx/types/sidecar";
+import type { RepoId } from "@intx/types/repo";
 import { glob } from "@intx/hub-common";
 
 import { writePktLine, writeFlush } from "./pkt-line";

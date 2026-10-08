@@ -3,7 +3,7 @@
 // sidecar spawns this child by path (`Bun.spawn([binaryPath])`) and
 // `--conditions` is not inherited, so it is set on the shebang. The dev
 // loop builds no dist; a bundled deployment does not run this file.
-import { runWorkflowChildFromProcessEnv } from "@intx/workflow-host";
+import { runWorkflowChildFromProcessEnv } from "@intx/workflow-host/child";
 import {
   SIDECAR_SUBSTRATE_CONFIG_KEYS,
   createSubstrate,

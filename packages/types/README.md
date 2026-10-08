@@ -43,6 +43,10 @@ pull in the shapes they need:
   contract harness extensions resolve against (e.g. mail transport,
   blob reader).
 - `@intx/types/sidecar` — hub-sidecar WebSocket wire frames.
+- `@intx/types/credential-delivery` — credential material and binding
+  descriptors delivered to running workflow children.
+- `@intx/types/repo` — `RepoKind`, `RepoAction`, and `RepoId` without the
+  sidecar frame schemas.
 - `@intx/types/workflow-definition` — `workflowDefinitionEnvelopeSchema`,
   the structural workflow envelope validator used by definition loaders
   and the repository substrate.

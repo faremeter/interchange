@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 
 import { chunkPack } from "@intx/pack-transport";
+import type { RepoId } from "@intx/types/repo";
 import {
-  type RepoId,
   WORKFLOW_CONTROL_INITIALIZING_ERROR,
   WorkflowControlFrame,
   type WorkflowRunRefTips,

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { RepoAction } from "@intx/types/sidecar";
+import { RepoAction } from "@intx/types/repo";
 
 import {
   GitTokenKindValidator,

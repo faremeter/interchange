@@ -2,7 +2,7 @@ import { describe, test, expect } from "bun:test";
 
 import { createNoopCredentialCipher } from "@intx/crypto";
 import type { DB } from "@intx/db";
-import type { CredentialDelivery } from "@intx/types/sidecar";
+import type { CredentialDelivery } from "@intx/types/credential-delivery";
 
 import {
   pushCredentialRevoke,

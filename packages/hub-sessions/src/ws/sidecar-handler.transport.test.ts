@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { chunkPack } from "@intx/pack-transport";
-import type { RepoId } from "@intx/types/sidecar";
+import type { RepoId } from "@intx/types/repo";
 import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 
 import {

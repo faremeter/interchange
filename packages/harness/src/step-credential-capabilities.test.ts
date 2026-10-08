@@ -1,7 +1,7 @@
 import { describe, test, expect } from "bun:test";
 import { toolConsumer, type GrantRule } from "@intx/authz";
 import type { CredentialProvider, CredentialShapeContext } from "@intx/types";
-import type { CredentialDelivery } from "@intx/types/sidecar";
+import type { CredentialDelivery } from "@intx/types/credential-delivery";
 import type { ToolCredentialDeclaration } from "@intx/types/package-json";
 
 import { createCredentialProviderRegistry } from "./credential-providers";

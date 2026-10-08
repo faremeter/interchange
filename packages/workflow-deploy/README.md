@@ -3,6 +3,10 @@
 Use `@intx/workflow-deploy/capabilities` to import `walkCapabilities`
 without loading deployment orchestration or package materialization.
 
+Use `@intx/workflow-deploy/addresses` for run and step address derivation,
+and `@intx/workflow-deploy/child-grants` for collecting a child workflow's
+declared resources and credential consumers and filtering its inherited grants.
+
 Deploy-time validation, capability walk, operator-approval gating,
 address derivation, and per-step source pinning for the code-sourced
 deploy.

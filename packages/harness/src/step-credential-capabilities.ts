@@ -30,7 +30,7 @@ import type {
 } from "@intx/types";
 import type { GrantRule } from "@intx/types/authz";
 import type { ToolCredentialDeclaration } from "@intx/types/package-json";
-import type { CredentialDelivery } from "@intx/types/sidecar";
+import type { CredentialDelivery } from "@intx/types/credential-delivery";
 
 import {
   createCredentialCapability,

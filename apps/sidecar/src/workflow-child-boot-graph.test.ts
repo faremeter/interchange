@@ -37,7 +37,7 @@ const PROBE_BINARY = "apps/sidecar/bin/workflow-probe-child";
 // are its own list.
 const EXPECTED_CHILD_ROOTS = [
   "../src/workflow-child-bindings",
-  "@intx/workflow-host",
+  "@intx/workflow-host/child",
 ];
 const EXPECTED_PROBE_ROOTS = [
   "@intx/workflow-deploy/capabilities",
@@ -201,6 +201,31 @@ describe("workflow-child boot graph", () => {
 
   test("never value-imports the control-plane database or the orchestrator", async () => {
     await expectCleanBootGraph(CHILD_BINARY);
+  });
+
+  test("excludes supervisor orchestration and parent-only wire schemas", async () => {
+    const { modules } = await childValueImportGraph(
+      binaryEntrypoints(CHILD_BINARY),
+    );
+    const forbiddenModules = [
+      "packages/types/src/sidecar.ts",
+      "packages/workflow-deploy/src/index.ts",
+      "packages/workflow-host/src/index.ts",
+      "packages/workflow-host/src/ipc/index.ts",
+      "packages/workflow-host/src/ipc/event-channel.ts",
+    ];
+    expect(forbiddenModules.filter((module) => modules.has(module))).toEqual(
+      [],
+    );
+    // The child reads credential snapshots; all other supervisor modules
+    // belong to the parent process.
+    expect(
+      [...modules].filter(
+        (module) =>
+          module.startsWith("packages/workflow-host/src/supervisor/") &&
+          module !== "packages/workflow-host/src/supervisor/credentials.ts",
+      ),
+    ).toEqual([]);
   });
 });
 

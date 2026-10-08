@@ -37,7 +37,7 @@ import { workflowRun } from "@intx/db/schema";
 import type { DB } from "@intx/db";
 import { getLogger } from "@intx/log";
 import type { RepoId, RepoStore, UserPrincipal } from "@intx/hub-sessions";
-import type { RepoAction } from "@intx/types/sidecar";
+import type { RepoAction } from "@intx/types/repo";
 import type { ConditionRegistry, GrantStore } from "@intx/types/authz";
 
 import type {

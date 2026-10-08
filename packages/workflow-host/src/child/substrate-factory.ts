@@ -127,7 +127,7 @@ import {
   hashGrants,
   isErrnoNotFound,
   type CredentialsSnapshot,
-} from "../supervisor/index";
+} from "../supervisor/credentials";
 import {
   loadWorkflowActionHandlersFromClosure,
   loadWorkflowLoopFnsFromClosure,

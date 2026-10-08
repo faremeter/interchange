@@ -45,10 +45,10 @@ import {
 } from "./mailbox-call-bridge";
 import {
   createControlChannelSender,
-  type FrameWriter,
   type NdjsonReader,
   type NdjsonWriter,
-} from "../ipc/index";
+} from "../ipc/control-channel";
+import type { FrameWriter } from "../ipc/event-sender";
 
 /**
  * File descriptor the supervisor's `Bun.spawn` wires the

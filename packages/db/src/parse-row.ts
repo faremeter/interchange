@@ -18,7 +18,8 @@ import {
   workflowDefinitionVersionStatuses,
 } from "@intx/types";
 import { WireGrantRule } from "@intx/types/grant-wire";
-import { FrozenApprovalBundle, RepoAction } from "@intx/types/sidecar";
+import { FrozenApprovalBundle } from "@intx/types/sidecar";
+import { RepoAction } from "@intx/types/repo";
 import { ToolPackagePinArray } from "@intx/types/tool-packages";
 import { workflowRunDispatchStatuses } from "./schema/workflow-run-dispatch";
 

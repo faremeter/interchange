@@ -24,9 +24,9 @@ import type {
   AgentDeployFrame,
   AgentErrorFrame,
   PackRejectFrame,
-  RepoId,
   SessionErrorFrame,
 } from "@intx/types/sidecar";
+import type { RepoId } from "@intx/types/repo";
 
 type TestSendPackOptions = { mountPath?: string; repoId?: RepoId };
 import type { AgentKeyStore } from "../agent-key-store";

@@ -56,12 +56,14 @@ export {
   buildInertProjectionStepSources,
   buildInertBodyStepSources,
   buildSingleStepAgentDefinition,
+  WorkflowDefinitionInvalidError,
+  type DeployContent,
+} from "./orchestrator";
+export {
   deriveRunAddress,
   deriveRunAgentId,
   deriveStepAddress,
   resolveStepAddress,
   deriveStepAgentId,
   deriveWorkflowRunRepoId,
-  WorkflowDefinitionInvalidError,
-  type DeployContent,
-} from "./orchestrator";
+} from "./addresses";

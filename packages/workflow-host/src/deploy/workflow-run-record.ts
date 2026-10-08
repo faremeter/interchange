@@ -25,7 +25,8 @@ import { type } from "arktype";
 import { getLogger } from "@intx/log";
 import { credentialAad, type CredentialCipher } from "@intx/types";
 import { InferenceSource } from "@intx/types/runtime";
-import { CredentialDelivery, SourceRefPin } from "@intx/types/sidecar";
+import { CredentialDelivery } from "@intx/types/credential-delivery";
+import { SourceRefPin } from "@intx/types/sidecar";
 
 import { writeFileAtomicDurable } from "./atomic-write";
 

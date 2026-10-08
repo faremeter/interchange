@@ -13,7 +13,7 @@ import type {
   ProviderPreference,
 } from "@intx/types";
 import type { InferenceSource } from "@intx/types/runtime";
-import type { CredentialMaterialEntry } from "@intx/types/sidecar";
+import type { CredentialMaterialEntry } from "@intx/types/credential-delivery";
 
 export type DefinitionSourceResolution =
   | {

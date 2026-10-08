@@ -94,6 +94,16 @@
       "intx-src": "./src/grant-snapshot.ts",
       "types": "./dist/grant-snapshot.d.ts",
       "default": "./dist/grant-snapshot.js"
+    },
+    "./credential-delivery": {
+      "intx-src": "./src/credential-delivery.ts",
+      "types": "./dist/credential-delivery.d.ts",
+      "default": "./dist/credential-delivery.js"
+    },
+    "./repo": {
+      "intx-src": "./src/repo.ts",
+      "types": "./dist/repo.d.ts",
+      "default": "./dist/repo.js"
     }
   },
   "dependencies": {

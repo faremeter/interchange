@@ -4,7 +4,7 @@ import type {
   CredentialBindingDescriptor,
   CredentialDelivery,
   CredentialMaterialEntry,
-} from "@intx/types/sidecar";
+} from "@intx/types/credential-delivery";
 
 import { mergeCredentialDelivery } from "./credential-cell";
 

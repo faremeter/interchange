@@ -12,8 +12,8 @@ import type {
   PackDoneFrame,
   PackPushFrame,
   PackRejectFrame,
-  RepoId,
 } from "@intx/types/sidecar";
+import type { RepoId } from "@intx/types/repo";
 
 import { chunkPack } from "./chunker";
 

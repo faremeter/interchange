@@ -339,11 +339,14 @@ The contract is intentionally narrow:
    host's binary decides the exit semantics (the convention is
    `process.exit(1)` with a stderr message on rejection).
 
+Use the `/child` entry to keep supervisor orchestration and parent wire
+validators out of the child.
+
 Example host binary (`apps/<host>/bin/workflow-child`):
 
 ```ts
 #!/usr/bin/env bun
-import { runWorkflowChildFromProcessEnv } from "@intx/workflow-host";
+import { runWorkflowChildFromProcessEnv } from "@intx/workflow-host/child";
 import { createSubstrate } from "../src/workflow-child-bindings";
 
 await runWorkflowChildFromProcessEnv(createSubstrate, {
