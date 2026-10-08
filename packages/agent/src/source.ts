@@ -18,7 +18,7 @@ import {
   InferenceSource as InferenceSourceValidator,
   applyInferenceSourceFields,
   type InferenceSource,
-} from "@intx/types/runtime";
+} from "@intx/types/runtime-core";
 
 export class InvalidInferenceSourceError extends Error {
   constructor(message: string) {

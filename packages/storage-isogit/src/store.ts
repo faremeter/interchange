@@ -13,7 +13,7 @@ import {
   type ConversationTurn,
   type ConnectorThreadState,
   type PendingOperation,
-} from "@intx/types/runtime";
+} from "@intx/types/runtime-core";
 import { type } from "arktype";
 import {
   AuditRecord,

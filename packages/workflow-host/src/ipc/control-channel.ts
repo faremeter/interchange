@@ -44,7 +44,7 @@ import {
   InterchangeType,
   MessageTransportCondition,
   SignatureStatus,
-} from "@intx/types/runtime";
+} from "@intx/types/runtime-core";
 import { CredentialDelivery } from "@intx/types/credential-delivery";
 
 import {

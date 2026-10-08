@@ -22,12 +22,12 @@ import type {
   MessageHeaders,
   MessageRef,
   OutboundMessage,
-} from "@intx/types/runtime";
+} from "@intx/types/runtime-core";
 import {
   InterchangeType,
   SignatureStatus,
   isConversationType,
-} from "@intx/types/runtime";
+} from "@intx/types/runtime-core";
 import { generateMessageId } from "./mime";
 
 /**

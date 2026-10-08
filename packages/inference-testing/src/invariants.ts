@@ -370,7 +370,7 @@ const recognizedContentBlocks: Invariant = {
   name: "recognized_content_blocks",
   check(events) {
     // Known ContentBlock type discriminants. Keep this list in sync with
-    // ContentBlock's union in `packages/types/src/runtime.ts`.
+    // ContentBlock's union in `packages/types/src/runtime-core.ts`.
     const known = new Set([
       "text",
       "thinking",

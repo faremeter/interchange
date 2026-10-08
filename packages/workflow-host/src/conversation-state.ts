@@ -147,7 +147,7 @@ import {
   type InboundMessage,
   type PendingOperation,
   type SendReceipt,
-} from "@intx/types/runtime";
+} from "@intx/types/runtime-core";
 
 import { isErrnoNotFound } from "./supervisor/credentials";
 

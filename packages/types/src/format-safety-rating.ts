@@ -1,4 +1,4 @@
-import type { SafetyRatingBlock } from "./runtime";
+import type { SafetyRatingBlock } from "./runtime-core";
 
 /**
  * Human-readable rendering of a SafetyRatingBlock for reply text,

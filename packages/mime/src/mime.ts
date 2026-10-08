@@ -25,8 +25,8 @@ import type {
   MessageAttachment,
   MessageHeaders as ParsedMessageHeaders,
   MessagePart,
-} from "@intx/types/runtime";
-import { InterchangeType } from "@intx/types/runtime";
+} from "@intx/types/runtime-core";
+import { InterchangeType } from "@intx/types/runtime-core";
 
 // ---------------------------------------------------------------------------
 // Types
