@@ -56,7 +56,12 @@ export {
 
 export { nextSchedulable, isRunDone, hasFailedStep } from "./dag";
 
-export { scopedStepId, baseStepId, loopBodyRunId } from "./step-scope";
+export {
+  scopedStepId,
+  baseStepId,
+  loopBodyRunId,
+  sectionBodyRunId,
+} from "./step-scope";
 
 export {
   evaluate as evaluateSelector,
