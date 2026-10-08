@@ -100,11 +100,9 @@ export const TOKEN = "test-token";
 // `@intx/hub-agent`'s hub-link). A test that needs the real delayed-reconnect
 // cycle pins it via
 // `sidecarEnv: { SIDECAR_RECONNECT_DELAY_MS: PRODUCTION_RECONNECT_DELAY_MS }`.
-// The pin is only load-bearing where the drop interrupts a mid-flight pack
-// push: the recovery (push cancel -> reconnect -> re-drive) assumes the
-// disconnect is fully processed before the reconnect opens, so a faster
-// reconnect could reopen the link while the interrupted push is still being
-// torn down.
+// Load-bearing only where the drop interrupts a mid-flight pack push: the
+// recovery assumes the disconnect is fully processed before the reconnect
+// opens, so a faster reconnect could reopen the link mid-teardown.
 export const PRODUCTION_RECONNECT_DELAY_MS = "3000";
 
 // Default reconnect backoff for spawned sidecars: short enough that the
@@ -135,10 +133,9 @@ export const PRIMARY_ALLOCATION_TARGET = {
 //
 // An outstanding wait at teardown IS a wedge: when the runner's per-test
 // budget lapses, bun abandons the test body's promise but nothing aborts the
-// poll loop it was suspended in. Left running, the loop polls into an env
-// teardown has dismantled, and the fault it hits then names an innocent test
-// or no test at all. `stopOutstandingWaits` ends such a loop at its next
-// iteration instead, with an error that says what actually happened.
+// poll loop it was suspended in; left running, the loop polls into an env
+// teardown has dismantled. `stopOutstandingWaits` ends such a loop at its
+// next iteration instead.
 //
 // The registry is module-scoped because `waitFor` takes no env; `--no-isolate`
 // shares one registry per worker across files, so `currentWaitMark` fences an
@@ -173,8 +170,7 @@ function deregisterWait(record: InFlightWait): void {
  * Throw when the env a wait belongs to was torn down while the wait was in
  * flight. Every poll loop calls this at the top of each iteration so a stopped
  * loop neither reads dismantled state nor returns a result the dismantling
- * produced -- a quiescence wait, for one, goes quiet because teardown killed
- * the sidecar.
+ * produced.
  */
 function throwIfEnvTornDown(record: InFlightWait): void {
   if (!record.envTornDown) return;
@@ -218,11 +214,8 @@ export function renderOutstandingWaitReport(mark: number): string | null {
 /**
  * Stop every wait registered at or after `mark`: each poll loop throws at its
  * next iteration instead of polling on into a dismantled env. Returns the
- * report for the same mark, taken before the stop, so the caller reports the
- * wedge it is about to end.
- *
- * A wait that returned or threw deregistered on its way out, so only
- * abandoned waits remain -- stopping them cannot disturb a passed test.
+ * report for the same mark, taken before the stop. A wait that returned or
+ * threw already deregistered, so only abandoned waits remain.
  */
 export function stopOutstandingWaits(mark: number): string | null {
   const report = renderOutstandingWaitReport(mark);
@@ -235,14 +228,10 @@ export function stopOutstandingWaits(mark: number): string | null {
 /**
  * Run `fn` under the in-flight registry, for retry loops `waitFor` cannot
  * express: one that performs an action per iteration, or one whose exit is an
- * elapsed window rather than a state.
- *
- * `fn` is opaque to the registry. A loop that polls through one of the helpers
- * here is stopped through that helper; a loop that polls on its own calls
- * `checkTornDown` at the top of each iteration, which throws once the env is
- * being torn down. A loop that does neither is not interrupted, but `fn`
- * completing after teardown throws instead of returning a value read out of a
- * dismantled env.
+ * elapsed window rather than a state. A loop that polls through one of the
+ * helpers here is stopped through that helper; one that polls on its own
+ * calls `checkTornDown` at the top of each iteration, which throws once
+ * teardown starts.
  */
 export async function retrying<T>(
   label: string,
@@ -264,8 +253,7 @@ export async function retrying<T>(
 /**
  * Poll `predicate` until it is true. No deadline unless the caller supplies
  * `timeoutMs`, so a slow machine makes the wait slower and never fails it; a
- * hang is failed by the lane budget. Pass `timeoutMs` only where expiry is the
- * behavior under test.
+ * hang is failed by the lane budget.
  */
 export async function waitFor(
   predicate: () => boolean | Promise<boolean>,
@@ -326,8 +314,7 @@ export type MockInference = {
 /**
  * Opt-in tool-call behavior for the mock inference server: the first request
  * whose `tools` carries `toolName` yields a `tool_use` turn; later requests
- * (carrying the tool_result) get the ordinary text turn. Drives a real
- * tool execution through the spawned child.
+ * (carrying the tool_result) get the ordinary text turn.
  */
 export type MockToolCall = {
   toolName: string;
@@ -356,13 +343,9 @@ export type StartMockInferenceOpts = {
    * Persistent tool-call behavior for the approval capstone: re-issue the
    * `tool_use` on every request whose history lacks a `tool_result` answering
    * the named tool, and only reply once the result lands (the reply being
-   * `${resultPrefix}<result>`).
-   *
-   * This distinguishes the fixed re-dispatch rail from the broken one: on the
-   * broken rail the approval decision arrives as a bare user turn (no
-   * tool_result), so re-inference re-issues the call and loops forever; on the
-   * fixed rail the approved call runs, appending a real tool_result, and the
-   * mock replies.
+   * `${resultPrefix}<result>`). On the broken resume rail no result ever
+   * arrives and this loops; on the fixed rail the approved call runs, its
+   * result lands, and this reply completes the run.
    */
   approvalToolCall?: {
     toolName: string;
@@ -371,10 +354,9 @@ export type StartMockInferenceOpts = {
   };
   /**
    * A fixed, ordered script of assistant turns, dispatched by how many tool
-   * results the request's history carries: turn N is returned once N results
-   * are present. Drives a deterministic multi-tool conversation through the
-   * spawned child; once the script is exhausted the mock falls back to the
-   * ordinary text turn. Mutually exclusive with `toolCall`/`approvalToolCall`.
+   * results the request's history carries: turn N returns once N results are
+   * present. Exhausted scripts fall back to the ordinary text turn. Mutually
+   * exclusive with `toolCall`/`approvalToolCall`.
    */
   scriptedTurns?: ScriptedTurn[];
 };
@@ -403,9 +385,7 @@ function lastUserText(req: InferenceRequest): string {
 
 /**
  * Text of the first `tool_result` block in the request's history, or `null`
- * when none is present. The adapter serializes a result as a user-turn
- * `{ type: "tool_result", ... }` block; its presence tells the mock the tool
- * has run and it may reply.
+ * when none is present. Its presence tells the mock the tool has run.
  */
 function firstToolResultText(req: InferenceRequest): string | null {
   for (const message of req.messages ?? []) {
@@ -446,8 +426,7 @@ function countToolResults(req: InferenceRequest): number {
 // Mock inference server: returns a canned Anthropic-style SSE response naming
 // the tools it was given, so tests can assert the harness passed the
 // deploy-tree tools through to inference. With `opts.toolCall`, the first
-// request exposing the named tool returns a `tool_use` turn so the agent
-// executes the tool and loops back with a tool_result.
+// request exposing the named tool returns a `tool_use` turn.
 export function startMockInference(
   opts: StartMockInferenceOpts = {},
 ): MockInference {
@@ -680,9 +659,8 @@ export type HubEnv = {
   statePackReceiveFailures: { agentAddress: string; error: string }[];
   /**
    * Every delivered `mail.outbound` frame the sidecar forwarded, keyed by the
-   * signing sender. `raw` is the full signed MIME as delivered on the wire, so
-   * a test can read the real headers (`In-Reply-To`, `Message-ID`, ...) via
-   * `parseHeaderSection`; the hub mints no durable mail row here.
+   * signing sender. `raw` is the full signed MIME as delivered, so a test can
+   * read the real headers via `parseHeaderSection`; no durable row is minted.
    */
   outboundMail: {
     senderAddress: string;
@@ -697,18 +675,16 @@ export type HubEnv = {
    */
   liveHandles: Set<WsHandle>;
   /**
-   * Monotonic count of workflow-run packs the hub accepted, in a mutable box
-   * shared by the router callback and the settle helpers (which watch it for a
-   * quiet window so no pack push is mid-flight when the link drops).
+   * Monotonic count of workflow-run packs the hub accepted, shared by the
+   * router callback and the settle helpers (which watch for a quiet window so
+   * no pack push is mid-flight when the link drops).
    */
   workflowRunPackReceipts: { count: number };
   /**
-   * Opt-in, arm-once mid-pack interrupt for the workflow-run push. When a test
-   * sets `armed = true`, the first `refs/heads/main` pack the hub receives is
-   * applied durably, then every live link is dropped BEFORE the ack; the
-   * sidecar's pending transfer rejects and latches "Connection lost" -- the
-   * deterministic interrupted-pack failure mode. Recorded fields let a test
-   * observe that the interrupt fired and on which ref/commit.
+   * Opt-in, arm-once mid-pack interrupt for the workflow-run push: the first
+   * `refs/heads/main` pack is applied durably, then every live link is dropped
+   * BEFORE the ack, so the sidecar's pending transfer rejects and latches
+   * "Connection lost". Recorded fields let a test observe that it fired.
    */
   interrupt: {
     armed: boolean;
@@ -930,8 +906,7 @@ export async function startHub(
 
   // DB stub for the narrow surface the deploy tests exercise: a tenant lookup
   // and the session_asset audit writes. Other members throw so the test fails
-  // loudly if production drifts into a dependency the stub does not cover. No
-  // tool-package registry is wired: deploy tests carry their tools inline.
+  // loudly if production drifts into a dependency the stub does not cover.
   const fakeDb = {
     query: {
       tenant: {
@@ -1165,12 +1140,8 @@ export async function startSidecarSubprocess(opts: {
  * A caller that passes `sidecarEnv` claims the subprocess runs with those
  * variables; nothing downstream re-states the claim, so a break in the
  * `sidecarEnv` -> `extraEnv` -> spawned-env chain leaves the subprocess on a
- * fixture default that looks deliberate. A reconnect test pinning
- * `SIDECAR_RECONNECT_DELAY_MS` to the production delay would otherwise run at
- * the short test delay with assertions that hold at either, so nothing would
- * fail.
- *
- * Keyed off the caller's own variables, so it covers a pin of any variable; a
+ * fixture default that looks deliberate -- e.g. a reconnect pin could silently
+ * run at the short test delay. Keyed off the caller's own variables, so a
  * caller that passes no `sidecarEnv` has no keys and cannot fire it.
  */
 export function assertPinnedSidecarEnvReached(
@@ -1241,16 +1212,12 @@ function listProcessSubtree(rootPid: number): number[] {
  *
  * The sidecar installs no SIGTERM handler, so under contention a plain SIGTERM
  * can leave `proc.exited` unresolved; the bound keeps that from wedging
- * `afterAll`. The caller removes the data directory after this returns, so the
- * exit must complete first -- an rm racing a subprocess that still holds file
- * handles surfaces EBUSY/EACCES on slow hosts.
- *
- * The subtree reap closes the leak from orphaned workflow-process children:
- * they normally notice the dead host through their broken IPC channel, but
- * under load that has taken tens of seconds, and each straggler holds ~300MB
- * of RSS into the next test file. Descendants are snapshotted BEFORE the kill;
- * once the sidecar exits, the kernel re-parents them to init and they can no
- * longer be attributed to it.
+ * `afterAll`, and the exit must complete before the caller removes the data
+ * directory (an rm racing a subprocess that still holds file handles surfaces
+ * EBUSY/EACCES). Descendants are snapshotted BEFORE the kill: once the sidecar
+ * exits, the kernel re-parents them to init and they can no longer be
+ * attributed to it, so orphaned workflow-process children (~300MB each) would
+ * leak into the next test file.
  *
  * Safe to call twice on the same handle: `proc.kill()` is a no-op and
  * `proc.exited` is resolved on a finished subprocess.
@@ -1314,8 +1281,7 @@ export type DeployFlowEnv = {
   sidecar: SidecarHandle;
   /**
    * Sidecar stderr plus hub state-pack receive failures, rendered for a
-   * failing wait. Reports every registered sidecar, so a restart test's
-   * replacement process is covered too.
+   * failing wait. Covers every registered sidecar.
    */
   sidecarDiagnostics: () => string;
   /** Per-deployment handles populated by `deployWorkflowSourceForTest`. */
@@ -1327,9 +1293,9 @@ export type DeployFlowEnv = {
    */
   registerDeployment(handle: DeploymentHandle): void;
   /**
-   * Register a sidecar the test spawned itself so `sidecarDiagnostics` reports
-   * its output. Covers diagnostics only: `teardown()` terminates the primary
-   * sidecar and no other.
+   * Register a sidecar the test spawned itself so `sidecarDiagnostics`
+   * reports its output. Diagnostics only: `teardown()` terminates the
+   * primary sidecar and no other.
    */
   registerSidecar(handle: SidecarHandle): void;
   /** Run a retry loop under the in-flight wait registry. See `retrying`. */
@@ -1341,8 +1307,8 @@ export type StartDeployFlowEnvOpts = {
   /**
    * Extra env vars written last into the sidecar env; wins over every
    * fixture-owned key. Each variable named here is verified against the
-   * spawned env, so a value that does not arrive throws rather than letting
-   * the test run on a fixture default. See `assertPinnedSidecarEnvReached`.
+   * spawned env, so a value that does not arrive throws. See
+   * `assertPinnedSidecarEnvReached`.
    */
   sidecarEnv?: Record<string, string>;
   /** Tool-call behavior for the mock inference server. See `MockToolCall`. */
@@ -1498,8 +1464,6 @@ export async function startDeployFlowEnv(
     // this hook (run by `afterAll`) is the remaining place to report what the
     // sidecar said. The registry is the gate: a wedged test leaves its helper
     // registered, a clean test leaves nothing, so a clean run prints nothing.
-    // Reporting and stopping are one call, so the waits the rest of this hook
-    // dismantles the env under are exactly the ones the report named.
     const outstanding = stopOutstandingWaits(waitMark);
     if (outstanding !== null) {
       const diagnostics = sidecarDiagnostics();
@@ -1620,8 +1584,8 @@ export type DeployWorkflowSourceForTestOpts = {
 
 /**
  * Handle returned by `deployWorkflowSourceForTest`. Carries the same fields as
- * `DeployWorkflowHandle` (so per-test assertion helpers are unchanged) plus the
- * frozen approve result and the deploy's public key.
+ * `DeployWorkflowHandle` plus the frozen approve result and the deploy's
+ * public key.
  */
 export type DeployWorkflowSourceForTestHandle = DeployWorkflowHandle & {
   approved: InstallAndApproveResult;
@@ -1633,10 +1597,9 @@ export type DeployWorkflowSourceForTestHandle = DeployWorkflowHandle & {
  * seed it as a `workflow`-kind source asset, install + probe + gate + freeze
  * against the real DB, then emit the source-ref deploy frame and write the
  * anchor `workflow_run` row. Registers the handle so the Phase I helpers
- * resolve it by `anchorRunId`.
- *
- * The caller owns the DB lifecycle (`createTestDb`) and seeds the
- * tenant/principal/definition asset in its own `beforeAll`.
+ * resolve it by `anchorRunId`. The caller owns the DB lifecycle
+ * (`createTestDb`) and seeds the tenant/principal/definition asset in its own
+ * `beforeAll`.
  */
 // `credential.providerId` needs a real provider row, so seed one per tenant.
 const TEST_INFERENCE_PROVIDER_PREFIX = "prov-test-inference-";
@@ -1644,10 +1607,10 @@ const TEST_INFERENCE_PROVIDER_PREFIX = "prov-test-inference-";
 /**
  * Seed a tenant-owned credential for each inference-source `credentialId` the
  * deploy references (top-level `sources` and the `config` pool). The
- * pre-register deploy resolves each id to material through the credential
- * table, so an unseeded id fails the deploy closed. The mock ignores the
- * secret, so a stable placeholder suffices; `onConflictDoNothing` keeps
- * repeated deploys idempotent.
+ * pre-register deploy resolves each id through the credential table, so an
+ * unseeded id fails the deploy closed. The mock ignores the secret, so a
+ * stable placeholder suffices; `onConflictDoNothing` keeps repeated deploys
+ * idempotent.
  */
 export async function seedInferenceCredentials(
   db: TestDb["db"],
@@ -1918,10 +1881,9 @@ export type { WorkflowRunEvent };
 // is provably done (each test deploys its own workflow and no test re-triggers
 // a completed one), so the fixture reaps it through the production
 // `agent.undeploy` wire path, fire-and-forget so the next deploy is never
-// delayed. A failed undeploy leaves the child parked until teardown, so the
-// reap is strictly best-effort. Terminal marking happens only in the read
-// helpers below; an externally-registered handle that is never read is never
-// reaped.
+// delayed; a failed undeploy leaves the child parked until teardown. Terminal
+// marking happens only in the read helpers below, so an externally-registered
+// handle that is never read is never reaped.
 const terminalDeployments = new WeakMap<DeploymentHandle, boolean>();
 const reapedDeployments = new WeakSet<DeploymentHandle>();
 
@@ -2003,7 +1965,7 @@ export interface WorkflowRunCompleteTimeout extends Error {
  * True only for that timeout. A caller that retries the wait must tell "no
  * terminal event yet, read again" apart from a real fault, so it surfaces the
  * fault instead of retrying through it. Discriminate on this, never on the
- * error's message (which carries interpolated diagnostics for a human).
+ * error's message.
  */
 export function isWorkflowRunCompleteTimeout(
   err: unknown,
@@ -2076,17 +2038,15 @@ export type FireMailTriggerOpts = {
   /**
    * Per-run grants delivered ahead of the trigger mail, mirroring the
    * production route: the `run.grants` frame lands before dispatch. Defaults
-   * to an empty set, which still materializes `grants.json` -- every mail-born
-   * run carries one, so the supervisor's `onRunStart` barrier resolves it
-   * rather than failing closed.
+   * to an empty set, which still materializes `grants.json` so the
+   * supervisor's `onRunStart` barrier resolves it rather than failing closed.
    */
   grants?: WireGrantRule[];
   /** Attachments MIME-encoded into the signed message, as the production route does. */
   attachments?: MessageAttachment[];
   /**
-   * RFC 2822 `In-Reply-To` header. Set it to a prior message's `Message-Id` to
-   * thread this inbound onto an existing connector conversation. Omitted by
-   * default, which starts a fresh thread.
+   * RFC 2822 `In-Reply-To` header, set to a prior message's `Message-Id` to
+   * thread this inbound onto an existing conversation. Omitted by default.
    */
   inReplyTo?: string;
   /**
@@ -2097,10 +2057,9 @@ export type FireMailTriggerOpts = {
 };
 
 /**
- * `code` marker on the errors `fireMailTrigger` throws when the hub declines
- * to route a frame at the target address -- `sendRunGrants` or `routeMail`
- * returned false, meaning the address had neither a live connection nor a
- * disconnect queue to ride.
+ * `code` marker on the errors `fireMailTrigger` throws when `sendRunGrants`
+ * or `routeMail` returned false -- the address had neither a live connection
+ * nor a disconnect queue to ride.
  */
 export const MAIL_TRIGGER_UNROUTABLE_CODE = "mail_trigger_unroutable";
 
@@ -2113,7 +2072,7 @@ export interface MailTriggerUnroutableError extends Error {
  * True only for that failure. A caller that re-fires across a reconnect must
  * tell "not routable yet, fire again" apart from a real fault, so it surfaces
  * the fault instead of re-firing through it. Discriminate on this, never on
- * the error's message (which interpolates the address for a human).
+ * the error's message.
  */
 export function isMailTriggerUnroutableError(
   err: unknown,
@@ -2221,9 +2180,7 @@ export async function fireMailTrigger(
  * supervisor → workflow-process child pipeline. The child commits the
  * resulting `SignalReceived` event through its own substrate -- the single
  * writer of the workflow-run repo on the sidecar side -- so the pack-push
- * pipeline never sees a concurrent writer at the workflow-run ref. The
- * host-side substrate write the previous implementation performed is the race
- * this wire path eliminates by construction.
+ * pipeline never sees a concurrent writer at the workflow-run ref.
  *
  * The returned `signalId` is the value the producer minted; the state
  * machine's `observedSignalIds` dedup key matches against it.
@@ -2281,8 +2238,8 @@ export function initiateDrain(
  * workflow-run repo, composing `enqueueInbox` + `dequeueToProcessing` -- the
  * same primitives the supervisor uses on a mail trigger -- so the state is
  * bit-identical to a supervisor crash after the dequeue commit but before
- * `markConsumed`. A direct write would be rejected: `validatePush` requires
- * the inbox→processing transition to be backed by a prior inbox entry.
+ * `markConsumed`. A direct write would be rejected by `validatePush`, which
+ * requires the transition to be backed by a prior inbox entry.
  */
 export async function simulateProcessingCrash(
   env: DeployFlowEnv,
@@ -2427,18 +2384,14 @@ export async function waitForFirstRunId(
 // so a survival test can assert a deployed workflow keeps running across it.
 // The in-process hub is normally lossless; `startHub` captures every live
 // server-side `WsHandle` (`env.hub.liveHandles`) for the helpers to close.
-// The reconnect revalidates the sidecar's allocation identity and generation
-// before restoring its route.
 
 /**
  * Force-close every live server-side hub WebSocket, severing the sidecar's
  * link and starting its reconnect cycle. Throws if no handle is live, so a
- * test that expected an established link fails loudly rather than dropping
- * nothing.
- *
- * This is the raw drop: it may sever the link while a workflow-run pack push
- * is mid-flight, which the interrupted-pack regression test wants. Survival
- * tests that must not race an in-flight push should use `settleThenDrop`.
+ * test that expected an established link fails loudly. This is the raw drop:
+ * it may sever the link mid-pack-push, which the interrupted-pack regression
+ * test wants; survival tests that must not race an in-flight push should use
+ * `settleThenDrop`.
  */
 export function dropHubLink(env: DeployFlowEnv): void {
   const handles = [...env.hub.liveHandles];
@@ -2506,9 +2459,8 @@ export type SettleThenDropOpts = {
  * link. "Quiet" is `quietMs` with no newly-accepted pack
  * (`env.hub.workflowRunPackReceipts`), the hub-side proxy for the sidecar's
  * pipeline having drained (its `flushWorkflowRunPushes` cannot be awaited
- * cross-process). This is the default survival-test drop: no pack push is
- * mid-flight when the link severs. Use the raw `dropHubLink` when an
- * interrupted push is the thing under test.
+ * cross-process). This is the default survival-test drop; use `dropHubLink`
+ * when an interrupted push is the thing under test.
  *
  * `address` is accepted for symmetry; the quiescence signal is hub-wide, which
  * equals per-deployment for the single-link survival tests.
@@ -2589,9 +2541,9 @@ export async function settleWorkflowRunPacks(
 /**
  * Live workflow-process child pids under the sidecar subprocess, identified by
  * the `bin/workflow-child` path in their argv and found by a transitive walk of
- * the sidecar's process tree. *
- * Non-throwing by design: returns `[]` when no child is up, which is
- * legitimate during the respawn backoff gap.
+ * the sidecar's process tree.
+ * Returns `[]` when no child is up, which is legitimate during the respawn
+ * backoff gap.
  */
 export function listWorkflowHostChildren(env: DeployFlowEnv): number[] {
   const sidecarPid = env.sidecar.proc.pid;
@@ -2643,8 +2595,7 @@ export function listWorkflowHostChildren(env: DeployFlowEnv): number[] {
  * SIGKILL every live workflow-process child under the sidecar and return the
  * killed pids. Throws if none is found: the caller kills a running child on
  * purpose, so a mis-discovery must fail loudly. Only the child dies, so the
- * in-process supervisor's respawn (not a sidecar restart) recovers the
- * deployment.
+ * in-process supervisor's respawn recovers the deployment.
  */
 export function killWorkflowHostChild(env: DeployFlowEnv): number[] {
   const pids = listWorkflowHostChildren(env);
