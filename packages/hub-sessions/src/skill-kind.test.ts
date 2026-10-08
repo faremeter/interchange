@@ -262,10 +262,9 @@ describe("skillKindHandler.validatePush", () => {
 
   test("rejects when SKILL.md is missing from a skill subdirectory", async () => {
     const repoId = uniqueRepoId("missing");
-    // The subdir must be a real directory in the tree (`listDir` does
-    // not throw on it) for the handler to treat it as a skill
-    // candidate. Seed an unrelated file so `greet/` is a tree, not a
-    // blob, but still lacks the required `greet/SKILL.md`.
+    // The subdir must be a real tree entry (`listDir` does not throw on it)
+    // for the handler to treat it as a skill candidate; seed an unrelated
+    // file so `greet/` is a tree, not a blob, lacking `greet/SKILL.md`.
     const files = {
       "greet/README.md": "no SKILL.md here",
     };
@@ -755,14 +754,10 @@ describe("skillAuthorize", () => {
 });
 
 // The substrate's `receivePack` walks every new commit in the pack and
-// invokes the kind handler's `validatePush` once per commit, so a tree
-// that violates the skill envelope (e.g. missing SKILL.md, malformed
-// frontmatter) on an intermediate commit must reject the pack even
-// when the tip is valid. The skill handler does not consult prior
-// closures — each commit's tree is judged on its own per-subdir
-// SKILL.md content. This regression pins that behaviour: the
-// per-commit walk catches an intermediate-state violation at the
-// offending commit, not by accidentally being lenient at the tip.
+// invokes the kind handler's `validatePush` once per commit, so a tree that
+// violates the skill envelope (missing SKILL.md, malformed frontmatter) on an
+// intermediate commit rejects the pack even when the tip is valid: each
+// commit's tree is judged on its own per-subdir SKILL.md content.
 describe("skill per-commit pack walk", () => {
   const tempDirs: string[] = [];
   let signingKey: KeyPair;

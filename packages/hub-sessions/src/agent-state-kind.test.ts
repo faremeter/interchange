@@ -259,15 +259,11 @@ describe("agentStateAuthorize", () => {
   });
 });
 
-// The substrate's `receivePack` walks every new commit in the pack and
-// invokes the kind handler's `validatePush` once per commit, so a tree
-// that violates the kind's allowlist on an intermediate commit must
-// reject the pack even when the tip's tree happens to be valid. The
-// agent-state handler does not consult prior closures — every commit's
-// tree is judged on its own top-level paths. This regression pins that
-// behaviour: the per-commit walk catches an intermediate-state
-// violation at the offending commit, not by accidentally being lenient
-// at the tip.
+// The substrate's `receivePack` walks every new commit in the pack and invokes
+// the kind handler's `validatePush` once per commit, so a tree that violates
+// the allowlist on an intermediate commit rejects the pack even when the tip is
+// valid. This pins that behaviour: the violation is caught at the offending
+// commit, not accidentally waived at the tip.
 describe("agent-state per-commit pack walk", () => {
   const tempDirs: string[] = [];
   let signingKey: KeyPair;
@@ -374,8 +370,8 @@ describe("agent-state per-commit pack walk", () => {
       /path_violation:.*tree contains disallowed top-level path: forbidden\.txt/,
     );
 
-    // The rejected pack must leave the ref unset; a future legitimate
-    // push must not observe a half-applied state.
+    // The rejected pack must leave the ref unset, so a later legitimate
+    // push does not observe a half-applied state.
     const resolvedAfter = await targetStore.resolveRef(
       PRINCIPAL,
       repoId,
@@ -385,11 +381,9 @@ describe("agent-state per-commit pack walk", () => {
   });
 
   test("the same violation at the tip of a single-commit pack also rejects", async () => {
-    // Sanity check: the per-commit walk catches the same kind-handler
-    // verdict the tip-only walk would have caught when the violation
-    // lives at the tip. Without this the multi-commit test above
-    // could in principle pass via some pack-walk-specific path that
-    // never reached the kind handler at all.
+    // Sanity check that the kind-handler verdict is what rejects, so the
+    // multi-commit test above cannot pass via a pack-walk path that never
+    // reached the handler.
     const sourceDataDir = await makeTempDir("agent-state-tiponly-src-");
     const sourceStore = createRepoStore({
       dataDir: sourceDataDir,

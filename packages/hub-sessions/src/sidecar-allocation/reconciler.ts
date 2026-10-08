@@ -400,8 +400,8 @@ export function createSidecarAllocationReconciler({
     leaseId: string,
   ): Promise<void> {
     // A publication or unsent rollback may have committed since the claim.
-    // Retry the ordinary callback, including initialization and dispatch requeue.
-    // If ownership was lost instead, this lease-guarded update changes nothing.
+    // Retry the ordinary callback; if ownership was lost, this lease-guarded
+    // update changes nothing.
     await finishReconciliation(allocation.id, () =>
       allocationStore.scheduleRetry({
         allocationId: allocation.id,
@@ -456,9 +456,9 @@ export function createSidecarAllocationReconciler({
       }
     } catch (error) {
       // Let the router report connection expiry. Our outer deadline can expire
-      // during lease or identity validation without establishing worker loss.
-      // A failed identity lookup is likewise inconclusive: the worker may be
-      // healthy behind it, so retry instead of releasing the generation.
+      // during lease or identity validation without establishing worker loss, and
+      // a failed identity lookup is inconclusive too: the worker may be healthy
+      // behind it, so retry instead of releasing the generation.
       if (
         error instanceof ReconciliationLeaseLostError ||
         error instanceof SidecarOperationTimeoutError ||
@@ -526,11 +526,9 @@ export function createSidecarAllocationReconciler({
     }
 
     // A connect that lands during initialization schedules an immediate
-    // follow-up even on success: the new socket may be a restarted worker
-    // with an empty inventory (takeover suppresses the disconnect event), in
-    // which case the follow-up redeploys and restores it. When the worker is
-    // unchanged the follow-up is a no-op: deployReadyAllocation returns early
-    // once the workflow is active and its key is recorded.
+    // follow-up even on success: the socket may be a restarted worker with an
+    // empty inventory (takeover suppresses the disconnect event), which the
+    // follow-up redeploys and restores; an unchanged worker makes it a no-op.
     await finishReconciliation(allocation.id, (pendingConnect) =>
       pendingConnect
         ? allocationStore.scheduleRetry({
@@ -635,9 +633,9 @@ export function createSidecarAllocationReconciler({
         return;
       }
       // Provisioning acceptance and websocket readiness are separate durable
-      // transitions. Do not hold the single reconciliation loop for the full
-      // connection timeout: park this lease at its persisted deadline and let
-      // sidecar.allocated.connected wake it immediately when the worker arrives.
+      // transitions, so do not hold the single reconciliation loop for the full
+      // connection timeout: park the lease at its persisted deadline and let
+      // the connect event wake it immediately.
       await finishReconciliation(allocated.id, (pendingConnect) =>
         pendingConnect
           ? allocationStore.scheduleRetry({

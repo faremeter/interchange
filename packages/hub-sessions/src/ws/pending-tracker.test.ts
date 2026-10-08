@@ -7,9 +7,9 @@ import {
 } from "./pending-tracker";
 
 /**
- * A timer the test drives. Every arming is recorded with its delay and left
- * for the test to fire or to assert was disarmed, so a timeout is exercised
- * by firing it rather than by waiting out its delay.
+ * A timer the test drives: every arming is recorded with its delay for the
+ * test to fire or assert was disarmed, so a timeout is exercised by firing
+ * it rather than waiting out its delay.
  */
 function createManualTimer(): {
   schedule: ScheduleTimeout;
@@ -74,10 +74,8 @@ describe("PendingTracker", () => {
     // Settling again is a no-op.
     expect(tracker.resolve("k1", 43)).toBe(false);
     expect(state.settled).toBe(42);
-    // The timeout is disarmed, which is the property the test name claims.
-    // Waiting could not establish it: the timeout is ten seconds out, so the
-    // fifteen-millisecond pause this replaces would have observed an intact
-    // timer exactly as it observed a cancelled one.
+    // The timeout is disarmed, which is what the test name claims; waiting
+    // could not establish it, since the timeout is ten seconds out.
     expect(onlyArmed(timer.armed).disarmed).toBe(true);
   });
 
@@ -243,18 +241,17 @@ describe("PendingTracker", () => {
     expect(tracker.resolve("k1", 1)).toBe(true);
     expect(settlements).toEqual(["first resolved"]);
 
-    // Keys are reused by design: `pendingDeploys` and `pendingUndeploys` are
+    // Keys are reused by design: `pendingDeploys`/`pendingUndeploys` are
     // keyed by agent address, so a second round-trip to the same agent
-    // registers under the key the settled first one used.
+    // registers under the settled first one's key.
     register("second");
 
     const [stale, ...rest] = timer.armed;
     if (stale === undefined) throw new Error("no timeout was armed");
     expect(rest).toHaveLength(1);
-    // The first entry's timeout was disarmed, and this fires it anyway. The
-    // manual timer's canceller only records the disarm, which is what a
-    // `ScheduleTimeout` whose cancellation does not take effect looks like --
-    // the case the entry-identity check in the handler exists for.
+    // The first entry's timeout was disarmed, and this fires it anyway -- the
+    // canceller only records the disarm, the case the entry-identity check in
+    // the handler exists for.
     expect(stale.disarmed).toBe(true);
     stale.fire();
 

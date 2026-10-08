@@ -215,12 +215,10 @@ describe("resolveSourceWorkflowClosure", () => {
   });
 });
 
-// A richer tree fixture for monorepos: `package.json` blobs keyed by dir plus a
-// derived directory listing, so `listDir(base)` returns the member subtrees the
-// producer's glob expansion walks. Each dir gets a tree oid keyed by its path.
-// `extraFiles` registers arbitrary blobs (e.g. a non-package directory a glob
-// matches), so their parent directories surface in `listDir` without a
-// package.json.
+// A richer tree fixture for monorepos: `package.json` blobs keyed by dir plus
+// a derived directory listing, so `listDir(base)` returns the member subtrees
+// a glob expansion walks. `extraFiles` registers arbitrary blobs so their
+// parent directories surface without a package.json.
 function monorepoReads(
   packages: Record<string, { json: unknown; treeOid?: string }>,
   extraFiles: Record<string, string> = {},

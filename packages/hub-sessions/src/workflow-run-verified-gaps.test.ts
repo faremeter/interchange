@@ -1,8 +1,7 @@
-// Regression suite covering the substrate-cluster fixes: sequence
-// contiguity, principal-vs-path scoping, claim-check inbox-deletion,
-// and workflow-definition steps-as-array rejection. Each test pins the
-// post-fix contract; a regression that loosens any of these checks
-// surfaces here.
+// Regression suite for the substrate-cluster fixes: sequence contiguity,
+// principal-vs-path scoping, claim-check inbox-deletion, and workflow-
+// definition steps-as-array rejection. Each test pins the post-fix contract;
+// a regression that loosens any of these checks surfaces here.
 
 import { describe, test, expect } from "bun:test";
 import { type } from "arktype";
@@ -253,12 +252,10 @@ describe("workflow-run inbox deletion is rejected (regression)", () => {
 });
 
 // The static workflow.json envelope push path is retired: a workflow asset is
-// now a codebase, and a bare envelope tree is rejected at the push boundary
-// before any steps/state shape check runs. The structural guard that a
-// definition's `steps` and `state` are JSON objects (not arrays) now lives in
-// `workflowDefinitionEnvelopeSchema`, which the codebase ambiguity check and the
-// hydrate-time definition loaders both reuse. These regressions pin that guard
-// at the schema so a loosened narrow surfaces here.
+// now a codebase, and a bare envelope tree is rejected at the push boundary.
+// The guard that `steps`/`state` are JSON objects (not arrays) lives in
+// `workflowDefinitionEnvelopeSchema`, reused by the codebase ambiguity check
+// and the hydrate-time loaders; these regressions pin it at the schema.
 describe("workflow-definition steps/state-as-array rejection (regression)", () => {
   test("rejects a definition whose steps field is a JSON array", () => {
     const result = workflowDefinitionEnvelopeSchema({

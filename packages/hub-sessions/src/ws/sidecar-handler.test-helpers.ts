@@ -52,11 +52,9 @@ export function createMockWs(): WsHandle & {
   closed: boolean;
   /**
    * Resolve once `predicate` holds over the frames sent so far, re-checking
-   * on each send.
-   *
-   * Several of the router's paths write to the socket from a fire-and-forget
-   * continuation -- the mail redelivery retry is one -- so a test that
-   * triggers one has no return value to await. The send is the event.
+   * on each send. Router paths that write from a fire-and-forget continuation
+   * (the mail redelivery retry) give a test no return value to await, so the
+   * send is the event.
    */
   awaitSent(predicate: (sent: readonly string[]) => boolean): Promise<void>;
 } {
@@ -144,12 +142,9 @@ export function tick(): Promise<void> {
 }
 
 /**
- * The redelivery retry timer, driven by the test.
- *
- * The retry interval was already injectable, but arming was not, so a test
- * wanting N redeliveries had to shorten the interval and sleep long enough
- * for N of them to fit -- making the assertion a bet on how much the machine
- * got through. Firing the retries explicitly makes the count exact.
+ * The redelivery retry timer, driven by the test. Arming was not injectable,
+ * so a test wanting N redeliveries had to shorten the interval and sleep long
+ * enough for N to fit; firing the retries explicitly makes the count exact.
  */
 export function createManualRetries(retryIntervalMs: number): {
   scheduleTimeout: (handler: () => void, ms: number) => () => void;

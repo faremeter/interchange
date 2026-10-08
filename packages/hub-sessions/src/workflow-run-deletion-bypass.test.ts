@@ -1,12 +1,8 @@
 // Regression suite for the workflow-run kind handler's append-only,
-// immutability, and atomicity invariants when the prospective tree
-// DROPS entries the prior tree carried.
-//
-// Each invariant the kind handler enforces by iterating the
-// prospective tree is also a deletion-bypass surface unless the
-// handler walks the prior tree and rejects any prior entry under the
-// protected prefixes that the prospective tree omits. These tests pin
-// that every such omission rejects at push.
+// immutability, and atomicity invariants when the prospective tree DROPS
+// entries the prior tree carried: every invariant enforced by iterating the
+// prospective tree is a deletion-bypass surface unless the handler walks the
+// prior tree and rejects any omitted prior entry under a protected prefix.
 
 import { describe, test, expect } from "bun:test";
 import { workflowRunKindHandler } from "./workflow-run-kind";
