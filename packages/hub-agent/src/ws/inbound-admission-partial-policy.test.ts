@@ -1,26 +1,18 @@
 // Relaxing ONE key must relax exactly that one condition.
 //
 // A verdict can raise a finding on each axis at once, and each axis carries its
-// own author judgement. Where a message raises two findings, relaxing one of
-// them must leave the other enforced, and the message must be rejected BY the
-// one the author did not relax. That is the property `decideInboundAdmission`
-// exists for, and the rule docs/INBOUND_MAIL_POLICY.md states.
-//
-// Nine reachable (signature, binding) pairs raise a finding on both axes, so
-// the property has eighteen (pair, relaxed-axis) directions. Ten are covered
-// by inbound-signature.test.ts; this file covers all eighteen, so it adds
-// breadth rather than unique detection: a decision keyed on the single reduced
-// `outcomeForVerdict` headline instead of on the finding set fails those ten
-// cases too.
-//
-// The ground that is only here:
-//   - the eight (pair, relaxed-axis) directions that suite does not reach.
-//   - admission when exactly the two raised keys are relaxed, for the six pairs
-//     over an absent or unparseable originator.
-//   - the ordered two-element finding set for invalid + absent and for
-//     missing + absent.
-//   - a valid signature over an unparseable originator under
-//     `{absentFrom: "admit"}`.
+// own author judgement: where a message raises two findings, relaxing one must
+// leave the other enforced, and the message must be rejected BY the one the
+// author did not relax. Nine reachable (signature, binding) pairs raise a
+// finding on both axes, so the property has eighteen (pair, relaxed-axis)
+// directions. Ten are covered by inbound-signature.test.ts; this file covers
+// all eighteen, so a decision keyed on the single reduced `outcomeForVerdict`
+// headline instead of the finding set fails those ten cases too. The ground
+// only here: the eight directions that suite does not reach; admission when
+// exactly the two raised keys are relaxed (six pairs over an absent or
+// unparseable originator); the ordered two-element finding set for
+// invalid/missing + absent; and a valid signature over an unparseable
+// originator under `{absentFrom: "admit"}`.
 
 import { describe, expect, test } from "bun:test";
 import type { AuthorControllableOutcome } from "@intx/types/runtime";

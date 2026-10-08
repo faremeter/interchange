@@ -810,7 +810,6 @@ describe("hub-link mail.inbound signature enforcement", () => {
 
   test("relaxing untrustedFrom does not switch off the signature check", async () => {
     // The bypass this seam exists to stop, driven end to end. The author
-    // The bypass this seam exists to stop, driven end to end. The author
     // relaxed `untrustedFrom` to tolerate an external correspondent's odd
     // headers -- a judgement about HEADERS. The message's signature does not
     // verify against the cached key AND its From cannot be reduced to one

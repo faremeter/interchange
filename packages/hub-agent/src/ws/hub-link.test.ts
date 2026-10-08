@@ -1400,11 +1400,10 @@ describe("sidecar↔hub integration", () => {
   test("mailInboundRouter claims an address and skips the legacy fallback", async () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
-    // The deployment address is what the hub routes mail to. The sidecar puts
-    // it on the register frame's `agentAddresses` so the hub-side router
-    // accepts it as routable. Routing a mail.inbound for it must consult
-    // mailInboundRouter first and, on a non-null return, skip the legacy
-    // transport.deliver / sessions.commitInboundMail path.
+    // The deployment address is what the hub routes mail to, so the sidecar
+    // puts it on the register frame's `agentAddresses`. Routing a mail.inbound
+    // for it must consult mailInboundRouter first and, on a non-null return,
+    // skip the legacy transport.deliver / sessions.commitInboundMail path.
     const deploymentAddress = "run_mail1@integration.interchange";
 
     const routed: { address: string; bytes: Uint8Array }[] = [];

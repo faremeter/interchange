@@ -251,14 +251,10 @@ describe("verifyInboundSignature", () => {
     // No key is cached for the stamped sender, so the signature axis is
     // `unknown`; the visible From names somebody else entirely. Nothing
     // downstream reads the stamp, so admitting this would deliver a message
-    // every consumer attributes to the address in its From.
-    //
-    // Relaxing `unknown` does not make this admissible: the axes are
-    // separately keyed, and relaxing `unknown` cannot buy back verified
-    // identity -- a sender who sets the stamp and the From to the same forged
-    // address is internally consistent and gets in (companion test below).
-    // The separation removes the inversion: a self-contradictory message no
-    // longer gets in where one that honestly names nobody is refused.
+    // every consumer attributes to the address in its From. Relaxing `unknown`
+    // does not make it admissible: the axes are separately keyed, and
+    // relaxing `unknown` cannot buy back verified identity (the companion
+    // test below shows the internally-consistent forged pair getting in).
     const stamp = "attacker@remote.example";
     const forgedFrom = "ceo@victim.example";
     const crypto = await makeCrypto();

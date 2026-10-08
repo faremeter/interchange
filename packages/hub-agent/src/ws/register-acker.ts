@@ -54,9 +54,8 @@ export interface RegisterAcker {
   /**
    * Send a register frame and track it until acked or abandoned. A second
    * send for a pending correlationId refreshes the frame and resets the
-   * watchdog rather than arming a second one: initial park, re-emit, and
-   * retry all carry the same correlationId, so one pending entry per
-   * correlation is correct.
+   * watchdog: initial park, re-emit, and retry share the correlationId, so
+   * one pending entry per correlation is correct.
    */
   send(frame: SignalCorrelationRegisterFrame): void;
   /** Settle the pending retry for this correlationId; false if none was pending. */

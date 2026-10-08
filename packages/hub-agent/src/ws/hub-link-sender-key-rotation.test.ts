@@ -1,17 +1,13 @@
 // End-to-end proof that a user-principal sender key that rotates while a
-// sidecar is disconnected is reconciled into the sidecar's SenderKeyCache when
-// it reconnects, against real components (a real HubLink, a real
-// SenderKeyCache, and a real hub-side createSidecarRouter):
-//
-//   1. The sidecar reports its cached rotatable senders on the reconnect frame.
-//   2. The hub re-resolves each reported sender's CURRENT key (a per-call DB
-//      lookup, so it sees the rotation) and pushes a sender.key.refresh.
-//   3. The sidecar applies the pushed key to its cache.
-//
-// The reconnecting sidecar loads its cache cold from the same data dir the
-// first connection persisted to, and the reconnect carries a restored
-// workflow address so it emits a genuine `reconnect` frame (not `register`),
-// pinning both hub handshake paths to this behavior.
+// sidecar is disconnected is reconciled into the sidecar's SenderKeyCache on
+// reconnect, against real components (a real HubLink, a real SenderKeyCache,
+// and a real hub-side createSidecarRouter): the sidecar reports its cached
+// rotatable senders on the reconnect frame, the hub re-resolves each sender's
+// CURRENT key (a per-call DB lookup, so it sees the rotation) and pushes a
+// sender.key.refresh, and the sidecar applies it. The reconnecting sidecar
+// loads its cache cold from the same data dir the first connection persisted
+// to, and the reconnect carries a restored workflow address so it emits a
+// genuine `reconnect` frame (not `register`), pinning both handshake paths.
 
 import { describe, test, expect, afterEach } from "bun:test";
 import fs from "node:fs/promises";

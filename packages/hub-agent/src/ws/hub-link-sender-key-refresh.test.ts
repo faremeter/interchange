@@ -1,18 +1,12 @@
 // Exercises both halves of the sender-key refresh feature's hub-link surface:
-//
-//   1. REPORT (on connect): the link announces the sidecar's cached rotatable
-//      senders on its register/reconnect frame, read from the
-//      `getCachedSenderAddresses` callback. Reported on BOTH frame types and
-//      omitted when empty.
-//   2. RECEIVE (`sender.key.refresh` arm in `handleMessage`): a hub-pushed
-//      key-only refresh drives the source-opaque `cacheSenderKey` write peer
-//      and touches nothing else. A cache-write fault is logged at ERROR and
-//      swallowed, never wedging the per-connection message chain and never
-//      poisoning a run -- there is no run to poison on this address-keyed path.
-//
-// The receive path is driven through the REAL edge composition the sidecar
-// wires in `index.ts` against a real `SenderKeyCache`, so the hex-decode and
-// 32-byte-length boundaries are exercised end to end rather than mocked.
+// REPORT (on connect: the link announces cached rotatable senders on both
+// frame types, omitted when empty) and RECEIVE (the `sender.key.refresh` arm
+// drives the source-opaque `cacheSenderKey` write and touches nothing else; a
+// cache-write fault is logged at ERROR and swallowed, never wedging the
+// message chain and never poisoning a run -- there is no run on this
+// address-keyed path). The receive path is driven through the REAL edge
+// composition the sidecar wires in `index.ts` against a real `SenderKeyCache`,
+// so the hex-decode and 32-byte-length boundaries are exercised end to end.
 
 import {
   describe,

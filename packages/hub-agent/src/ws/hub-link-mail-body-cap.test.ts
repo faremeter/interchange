@@ -3,12 +3,10 @@
 // throws (it is awaited through the transport, so the producing agent gets a
 // real error), while the post-delivery audit handler logs and skips (a throw
 // there is swallowed by the transport's Promise.allSettled). The hub
-// re-enforces the cap on receive -- the authoritative DoS backstop, covered in
-// the hub-sessions suite; these send-side checks are the producer-facing
-// complement.
-//
-// The two handlers are captured through a fake transport and invoked directly,
-// so the test needs no live socket.
+// re-enforces the cap on receive -- the authoritative DoS backstop; these
+// send-side checks are the producer-facing complement. The two handlers are
+// captured through a fake transport and invoked directly, so no live socket is
+// needed.
 
 import {
   describe,

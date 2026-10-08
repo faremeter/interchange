@@ -70,12 +70,10 @@ export type ResolvedInboundMailPolicy = Record<
  * Resolve the SPARSE authored {@link InboundMailPolicy} into a TOTAL
  * {@link ResolvedInboundMailPolicy}, applying every default here; the
  * per-mail delivery path looks up the resolved map directly and never
- * re-derives a default of its own.
- *
- * `clean` and `error` are pinned whatever the author declared: nothing about
- * a clean message is suspect, and a fault stopped the check from running.
- * Every author-controllable outcome defaults to `reject`, so a policy that
- * omits one fails closed rather than open.
+ * re-derives a default of its own. `clean` and `error` are pinned whatever
+ * the author declared: nothing about a clean message is suspect, and a fault
+ * stopped the check from running. Every author-controllable outcome defaults
+ * to `reject`, so a policy that omits one fails closed rather than open.
  */
 export function resolveInboundMailPolicy(
   authored: InboundMailPolicy | undefined,

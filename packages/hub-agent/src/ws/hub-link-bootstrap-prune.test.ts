@@ -3,19 +3,9 @@
 // link's lifetime, and a future workflow-run repo reset for the same
 // `(kind, id, ref)` triple races the stale bootstrap flag -- the first push
 // after the reset skips the bootstrap-retry arm and fails with
-// `non_fast_forward`.
-//
-// The contract is asserted behaviorally through the wire surface:
-//   1. Deploy agent A. Push a workflow-run pack; the hub rejects the first
-//      attempt with `corrupt` and accepts the retry. The link marks the key
-//      as bootstrapped.
-//   2. Undeploy agent A. The fix prunes the bootstrap entry whose sender
-//      ownership was recorded under that run address.
-//   3. Re-deploy agent A. Push another workflow-run pack to the same
-//      `(repoId, ref)`; the hub rejects the first attempt again.
-//   4. The push only succeeds because the bootstrap-retry arm runs a second
-//      time -- the prune in (2) reset the flag. Without the fix the link
-//      skips the retry and surfaces the rejection to the caller.
+// `non_fast_forward`. The contract is asserted behaviorally through the wire
+// surface: deploy, push, undeploy, re-deploy, push again, and the second
+// push's retry arm must run because the undeploy pruned the flag.
 
 import { describe, test, expect, afterAll } from "bun:test";
 import { Hono } from "hono";
