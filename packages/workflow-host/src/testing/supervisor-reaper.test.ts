@@ -19,9 +19,8 @@ describe("createSupervisorReaper", () => {
     await reaper.reap();
     expect(shutdowns).toEqual(["a", "b"]);
 
-    // A second reap must not shut the same pair down again: the hook runs
-    // after every test, and a registry that kept its entries would re-reap
-    // supervisors belonging to tests that had already finished.
+    // The hook runs after every test, so a second reap must not re-shut the
+    // same pair down: reaping forgets the entries.
     await reaper.reap();
     expect(shutdowns).toEqual(["a", "b"]);
   });
@@ -46,8 +45,8 @@ describe("createSupervisorReaper", () => {
   test("a shutdown that never settles does not strand the rest", async () => {
     const reaper = createSupervisorReaper();
     const shutdowns: string[] = [];
-    // Never settles, and holds no timer or handle, so abandoning it at the end
-    // of the test leaks nothing: only `reap`'s own resolution waits on it.
+    // Never settles and holds no timer or handle, so only `reap`'s own
+    // resolution waits on it.
     reaper.track({ shutdown: () => new Promise<void>(() => undefined) });
     let reportRan = (): void => undefined;
     const ran = new Promise<void>((resolve) => {
@@ -60,13 +59,10 @@ describe("createSupervisorReaper", () => {
       },
     });
 
-    // Racing the reap against the second teardown's own signal, rather than
-    // awaiting the reap: `allSettled` waits for the wedged shutdown too, so
-    // the reap never settles here. Folding both of its outcomes to values
-    // keeps the test owning it -- a rejection cannot escape as an unhandled
-    // one charged to whichever test is running when it lands. A reap that
-    // awaited each shutdown in turn would never call the second one, so
-    // neither arm would settle and the lane timeout would fail this test.
+    // `allSettled` waits for the wedged shutdown too, so the reap never
+    // settles here; race it against the second teardown's own signal instead.
+    // A reap that awaited each shutdown in turn would never call the second
+    // one and the lane timeout would fail the test.
     const won = await Promise.race([
       ran.then(() => "teardown-behind-the-wedged-one-ran"),
       reaper.reap().then(
@@ -87,9 +83,9 @@ describe("createSupervisorReaper", () => {
         shutdowns.push("first");
       },
     });
-    // The registry is per-call rather than module-level. One shared array
-    // would let two test files reap each other's supervisors, since the unit
-    // pass gives a worker one module registry for every file it runs.
+    // The registry is per-call: one shared array would let two test files
+    // reap each other's supervisors (the unit pass shares one module registry
+    // per worker).
     await second.reap();
     expect(shutdowns).toEqual([]);
     await first.reap();

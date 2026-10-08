@@ -1,11 +1,7 @@
-// @intx/workflow-host/testing -- in-memory doubles for the IPC transports.
-//
-// These exist so a test can drive a supervisor or a workflow-process child
-// over the real channel code without spawning a process. They hold their
-// frames in an array and have no durability, no backpressure, and no
-// framing beyond the newline terminator the event channel expects, so a
-// production caller reaching for this subpath is almost certainly looking
-// for the real transports in the package root instead.
+// @intx/workflow-host/testing -- in-memory doubles for the IPC transports,
+// so a test can drive a supervisor or a workflow-process child over the real
+// channel code without spawning a process. No durability or backpressure; a
+// production caller should use the package root's real transports.
 export {
   createMemoryFrameStream,
   createMemoryNdjsonStream,
