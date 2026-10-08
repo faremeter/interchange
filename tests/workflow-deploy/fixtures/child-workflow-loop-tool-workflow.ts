@@ -76,7 +76,7 @@ export function childWorkflowLoopToolEntry(
 })`;
   return `
 import { childWorkflow, defineWorkflow, loop, step } from "@intx/workflow/definition";
-import { defineAgent } from "@intx/agent";
+import { defineAgent } from "@intx/agent/authoring";
 import { mailSendTool } from ${JSON.stringify(MAIL_TOOL_MODULE)};
 
 const loopBody = defineWorkflow({

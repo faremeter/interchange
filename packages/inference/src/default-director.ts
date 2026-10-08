@@ -21,17 +21,17 @@
 // reply so the problem is visible, and the agent remains alive for retries.
 
 import { getLogger } from "@intx/log";
-import {
-  formatSafetyRatingText,
-  type ReactorDirector,
-  type ReactorInboundEvent,
-  type ReactorState,
-  type ReactorCapabilities,
-  type ReactorAction,
-  type AssistantTurn,
-  type ToolCall,
-  type ToolDefinition,
+import type {
+  ReactorDirector,
+  ReactorInboundEvent,
+  ReactorState,
+  ReactorCapabilities,
+  ReactorAction,
+  AssistantTurn,
+  ToolCall,
+  ToolDefinition,
 } from "@intx/types/runtime";
+import { formatSafetyRatingText } from "@intx/types/format-safety-rating";
 
 const logger = getLogger(["interchange", "inference", "default-director"]);
 

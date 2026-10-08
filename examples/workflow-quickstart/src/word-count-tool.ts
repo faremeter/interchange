@@ -11,7 +11,7 @@
 // agent, so they are two callers of one function rather than two
 // implementations of one rule.
 
-import { defineTool, type BaseEnv } from "@intx/agent";
+import { defineTool, type BaseEnv } from "@intx/agent/authoring";
 
 /** Bundle id for the example's tools. `defineTool` requires a namespaced id. */
 export const TOOL_BUNDLE_ID = "@intx/example-workflow-quickstart/tools";

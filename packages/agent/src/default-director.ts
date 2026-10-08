@@ -18,7 +18,7 @@ import { type } from "arktype";
 import {
   createDefaultDirector,
   type DefaultDirectorPolicy,
-} from "@intx/inference";
+} from "@intx/inference/default-director";
 
 import { defineDirector } from "./director";
 

@@ -7,7 +7,7 @@
 // from its record key and applies the default-input convention so the
 // runtime sees a fully-specified definition with no implicit shape.
 
-import { canonicalizeForHash } from "@intx/agent";
+import { canonicalizeForHash } from "@intx/agent/canonicalize";
 import type { AgentDefinition, BaseEnv } from "@intx/agent";
 import type {
   CredentialBinding,

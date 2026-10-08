@@ -6,10 +6,8 @@ import {
   listMail,
   type MailDirection,
 } from "@intx/storage-isogit/node";
-import {
-  formatSafetyRatingText,
-  type ConversationTurn,
-} from "@intx/types/runtime";
+import type { ConversationTurn } from "@intx/types/runtime";
+import { formatSafetyRatingText } from "@intx/types/format-safety-rating";
 import {
   ErrorRecord,
   type ErrorRecord as ErrorRecordType,

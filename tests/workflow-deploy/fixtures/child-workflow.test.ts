@@ -113,7 +113,7 @@ test("a toolless build keeps its exact byte shape (no stray tool import)", () =>
   });
   expect(
     out.includes(
-      'import { defineAgent } from "@intx/agent";\n\nexport const workflow',
+      'import { defineAgent } from "@intx/agent/authoring";\n\nexport const workflow',
     ),
   ).toBe(true);
 });

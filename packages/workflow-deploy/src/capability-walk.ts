@@ -60,7 +60,7 @@ import {
   effectiveDirectorRef,
   toolApprovalEffect,
   UnknownDirectorIdError,
-} from "@intx/agent";
+} from "@intx/agent/authoring";
 import { toolConsumer } from "@intx/authz";
 import type { GrantEffect } from "@intx/types";
 import {

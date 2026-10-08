@@ -14,6 +14,16 @@
       "intx-src": "./src/testing/index.ts",
       "types": "./dist/testing/index.d.ts",
       "default": "./dist/testing/index.js"
+    },
+    "./authoring": {
+      "intx-src": "./src/authoring.ts",
+      "types": "./dist/authoring.d.ts",
+      "default": "./dist/authoring.js"
+    },
+    "./canonicalize": {
+      "intx-src": "./src/canonicalize.ts",
+      "types": "./dist/canonicalize.d.ts",
+      "default": "./dist/canonicalize.js"
     }
   },
   "dependencies": {
