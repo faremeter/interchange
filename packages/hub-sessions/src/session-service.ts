@@ -162,10 +162,8 @@ export type InstallAndApproveWorkflowSourceParams = {
 
 /**
  * Inputs to deploy a previously-frozen code-sourced approval bundle to a
- * dedicated allocation. Mirrors `DeployPreparedWorkflowDefinitionParams` for the
- * source-ref lineage: the anchor `workflow_run` row already exists from prepare
- * time, so the deploy UPDATES it under the allocation-ownership lock rather than
- * inserting a fresh one.
+ * dedicated allocation; the deploy UPDATES the prepared anchor `workflow_run`
+ * row under the allocation-ownership lock rather than inserting.
  */
 export type DeployPreparedCodeSourcedWorkflowParams = {
   /** Owning tenant; the definition's own tenant for credential resolution. */
@@ -217,39 +215,27 @@ export type SessionServiceDeps = {
   sidecarAllocationRouter?: SidecarAllocationRouter;
   agentRepoStore: AgentRepoStore;
   /**
-   * Optional asset attachment integration. When set, the deploy flow
-   * fans out per-attachment packs after the deploy pack lands and
-   * inserts a `session_asset` row per attachment. When unset, only
-   * the deploy pack is sent — the single-pack path is preserved
-   * bit-for-bit.
+   * Optional asset attachment integration: fans out per-attachment packs after
+   * the deploy pack and inserts a `session_asset` row per attachment. When
+   * unset, only the deploy pack is sent.
    */
   assetService?: AssetService;
   /** DB handle used for `session_asset` manifest inserts. Required
    * iff `assetService` is set. */
   db?: DB["db"];
   /**
-   * Tool-package registry configuration. Required iff any agent the
-   * service launches has non-empty `toolPackagePins`. When set, the
-   * service builds a per-agent `ClosureResolver` at launch time: the
-   * registry map combines (a) every `package-registry` asset visible
-   * to the agent's tenant via the INTR-178 walker — keyed by
-   * `asset.name` — and (b) the statically-configured HTTP registries
-   * in `httpRegistries`.
+   * Tool-package registry configuration. Required iff any launched agent has
+   * non-empty `toolPackagePins`; the service then builds a per-agent
+   * `ClosureResolver` at launch time from every `package-registry` asset
+   * visible to the agent's tenant (keyed by `asset.name`) plus the HTTP
+   * registries below.
    *
-   * **Name-collision policy.** When an asset and an HTTP registry
-   * both claim the same registry name, the asset wins. This mirrors
-   * the inner-shadows-outer rule the tenancy walker already applies
-   * to asset resolution and gives operators a single mental model:
-   * closer-scope shadows wider-scope. The rule is a contract this
-   * service guarantees, not an iteration-order accident — consumers
-   * may rely on it to override a wider-scope HTTP registry by
-   * publishing an asset at a closer tenancy.
+   * Name-collision policy (a contract, not iteration order): an asset beats
+   * an HTTP registry of the same name — closer scope shadows wider scope.
    *
-   * `defaultRegistry` names the entry the resolver consults for any
-   * package whose scope does not match `scopeRouting`. The name must
-   * resolve in the combined map for the given agent — if no asset and
-   * no HTTP entry carries that name, launch fails at the
-   * registry-resolution step.
+   * `defaultRegistry` names the entry consulted for any package whose scope
+   * does not match `scopeRouting`; it must resolve in the combined map or
+   * launch fails at the registry-resolution step.
    */
   toolPackageRegistries?: {
     /**
@@ -353,12 +339,9 @@ type DeployFrameCommonArgs = {
 
 /**
  * For a code-sourced (npm) deploy the hub never holds the live
- * `WorkflowDefinition` -- it lives only in the airlocked child. The frame
- * carries the gate-frozen hash and the source-ref pin; the sidecar
- * re-materializes and evaluates the pinned code from the pin, so no inline
- * definition rides the frame, and the hash is never recomputed here (a
- * recompute over a live wire lineage would diverge from the inert projection
- * the child re-verifies against).
+ * `WorkflowDefinition` — it lives only in the airlocked child. The frame
+ * carries the gate-frozen hash and the source-ref pin, never an inline
+ * definition; the sidecar re-materializes the pinned code from the pin.
  */
 export type SourceRefDeployFrameArgs = DeployFrameCommonArgs & {
   lineage: "source-ref";
@@ -401,18 +384,11 @@ export type SourceRefDeployFrameArgs = DeployFrameCommonArgs & {
 export type SendMultiStepDeployFrameArgs = SourceRefDeployFrameArgs;
 
 /**
- * Emit the source-ref deploy frame onto `SidecarRouter.sendAgentDeploy`. The
- * router accepts an optional `workflow` projection on the deploy frame; the
- * sidecar's deploy router uses field presence to route the frame to the
- * workflow deploy path, returning the supervisor public key on the
- * `agent.deploy.ack`. The frozen hash and inert projection ride the frame
- * verbatim -- nothing here recomputes the content hash (a recompute over a
- * live wire lineage would diverge from the projection the child re-verifies
- * against).
- *
- * Exported so the co-located caller-site test can assert the constructed
- * closure reaches the wire via `sendAgentDeploy` with a `workflow` field
- * structurally matching the `AgentDeployFrame.workflow` schema.
+ * Emit the source-ref deploy frame onto `SidecarRouter.sendAgentDeploy`:
+ * field presence routes the frame to the workflow deploy path, and the ack
+ * returns the supervisor public key. Exported so the caller-site test can
+ * assert the constructed closure reaches the wire structurally matching
+ * `AgentDeployFrame.workflow`.
  */
 export async function sendMultiStepDeployFrame(
   args: SendMultiStepDeployFrameArgs,
@@ -421,9 +397,7 @@ export async function sendMultiStepDeployFrame(
 ): Promise<{ publicKey: string }> {
   signal?.throwIfAborted();
   const workflow = {
-    // The deploy frame carries no inline definition: the sidecar evaluates the
-    // pinned code closure from `sourceRef` and re-verifies it against
-    // `approvedWireHash`. Only the gate-frozen hash and the pin ride the frame.
+    // No inline definition: only the gate-frozen hash and the pin ride.
     sources: args.sources,
     approvedWireHash: args.approvedWireHash,
     sourceRef: args.sourceRef,
@@ -450,26 +424,23 @@ export async function sendMultiStepDeployFrame(
 
 /**
  * Arguments for `deployCodeSourcedWorkflow`. The `approved` bundle is the
- * `installAndApproveWorkflowDefinition` output verbatim -- the frozen hash,
- * inert projection, and closure travel together so no caller can pair a hash
- * with a mismatched projection or closure. The remaining fields are the
- * operator/asset config the approve step never sees: per-step inference
- * `sources`, deploy `config`, target `agentAddress`, and the `source` ref
- * naming where the definition's bytes are published.
+ * `installAndApproveWorkflowDefinition` output verbatim — frozen hash, inert
+ * projection, and closure travel together so no caller can pair a hash with a
+ * mismatched projection or closure. The remaining fields are the
+ * operator/asset config the approve step never sees (`sources`, `config`,
+ * `agentAddress`, `source`).
  */
 type DeployCodeSourcedCommonArgs = DeployFrameCommonArgs & {
   approved: InstallAndApproveResult;
   /**
-   * The hub DB handle, the definition's OWN tenant, the deployment's anchor run
-   * id, and the mail domain its run address lives under. REQUIRED: this writes
-   * the anchor `workflow_run` row, and run-grant materialization keys off it.
-   * `tenantId` is the definition's own tenant (tenant-owned credential
-   * resolution walks up from it), not a request/config tenant that may differ.
-   * `anchorRunId` is caller-supplied: the deployment mail address is frozen
-   * into the approved package bytes at authoring time, so the run id it derives
-   * from is fixed before this runs. `deploymentDomain` pairs with
-   * `anchorRunId` to re-derive the run address and assert it matches
-   * `agentAddress`, failing closed on an incoherent pair.
+   * The hub DB handle plus the definition's OWN tenant, anchor run id, and
+   * mail domain. REQUIRED: the anchor `workflow_run` row write and run-grant
+   * materialization key off these. `tenantId` is the definition's own tenant
+   * (credential resolution walks up from it), not a request/config tenant.
+   * `anchorRunId` is caller-supplied and fixed at authoring time (the mail
+   * address is frozen into the approved package bytes); `deploymentDomain`
+   * re-derives the run address with it and asserts coherence with
+   * `agentAddress`.
    */
   db: DB["db"];
   tenantId: string;
@@ -508,34 +479,20 @@ function isAssetDeployArgs(
 }
 
 /**
- * The single public composition entrypoint for a code-sourced (npm) deploy.
- * Consumes the approve output and builds the source-ref deploy frame
- * internally, so the security-load-bearing hand-off -- frozen wire hash, inert
- * projection, frozen closure -- is assembled in one place from one cohesive
- * object. The hash and projection ride the frame verbatim: nothing here
- * recomputes the hash or re-resolves the closure, so the child re-verify over
- * the inert projection matches the gate's freeze.
+ * The single public composition entrypoint for a code-sourced (npm) deploy:
+ * consumes the approve output and builds the source-ref deploy frame
+ * internally, so the security-load-bearing hand-off — frozen wire hash, inert
+ * projection, frozen closure — is assembled in one place from one cohesive
+ * object.
  *
- * Credential MATERIAL rides ONE `CredentialDelivery` on the frame, unioned
- * from three rails and deduped by credentialId: tool bindings
- * (grant-scoped, via `buildCredentialDelivery`), every top-level inference
- * source, and every inline body step's inference source -- the latter two
- * resolved HERE from the DB under the tenant-ownership authority, so the
- * deploy is self-contained. The merge is a post-authz union of already-cleared
- * material, never a shared authz check. Credential GRANT enforcement is a
- * separate layer: the `credential:{id}` / `use` grant the runtime gate checks
- * is minted per-run by run-grant materialization into
- * `runs/<runId>/grants.json`, not carried on this frame.
- *
- * An unapproved `approval` fails closed here rather than shipping an unfrozen
- * definition. This does the READ-ONLY preparation ONLY: guards, credential
- * material, pinned body sources, asset mounts -- then returns the frozen
- * definition id and assembled send args, emitting NO frame and writing NO row,
- * so it has no side effect to unwind. The ordinary path
- * (`deployCodeSourcedWorkflow`) sequences prepare -> INSERT anchor -> emit so
- * the anchor is visible before the frame spawns the child;
- * `emitSourceRefDeployFrame` composes prepare -> emit for the prepared
- * provisioned path, whose anchor row already exists from prepare time.
+ * Credential MATERIAL rides ONE `CredentialDelivery`, unioned and deduped by
+ * credentialId from the tool bindings (grant-scoped) and every inference
+ * source (top-level and inline body, resolved here from the DB under tenant
+ * ownership); the merge is a post-authz union of already-cleared material,
+ * never a shared authz check. The `credential:{id}`/`use` grant the runtime
+ * gate checks is minted per-run by run-grant materialization, not carried on
+ * this frame. Unapproved bundles fail closed. Read-only: emits no frame and
+ * writes no row.
  */
 async function prepareSourceRefDeploy(
   args: DeployCodeSourcedWorkflowArgs,
@@ -547,12 +504,9 @@ async function prepareSourceRefDeploy(
     );
   }
 
-  // Fail-closed persisted-definition guard. The anchor row carries an FK to
-  // `workflow_definition`, so a phantom `definitionId` (a mis-wired caller or a
-  // test double that skipped the approve step's DB writer) would fail the
-  // INSERT with a raw constraint violation; verify the row exists and fail with
-  // a domain error before deploying, rather than landing in a
-  // deployed-but-unanchored state.
+  // Fail-closed persisted-definition guard: a phantom `definitionId` (a
+  // mis-wired caller or a test double that skipped the approve writer) would
+  // surface as a raw FK violation on INSERT; fail with a domain error instead.
   const persistedDefinition = await args.db.query.workflowDefinition.findFirst({
     where: eq(workflowDefinitionTable.id, approval.definitionId),
     columns: { id: true },
@@ -563,14 +517,9 @@ async function prepareSourceRefDeploy(
     );
   }
 
-  // Coherence guard, run BEFORE the deploy frame: the anchor row's id and its
-  // routing address must name the same run. The deployment mail address is
-  // frozen into the approved package bytes at authoring time, so its run id is
-  // fixed before this runs and the caller owns `anchorRunId`. A mismatched pair
-  // would let run-grant materialization find the anchor by `address` while
-  // `deriveRunAddress` from `anchorRunId` names a different run -- a silent
-  // grant-identity split. Fail closed before the frame is sent or any row is
-  // persisted.
+  // Coherence guard before the frame: `anchorRunId` and `agentAddress` must
+  // derive the same run, or run-grant materialization (keyed by address) and
+  // the derived run id split — a silent grant-identity split.
   const derivedAddress = deriveRunAddress({
     runId: args.anchorRunId,
     domain: args.deploymentDomain,
@@ -581,11 +530,9 @@ async function prepareSourceRefDeploy(
     );
   }
 
-  // Resolve the operator-approved credential bindings into delivered material.
-  // Tenant-owned resolution keys off the definition's tenant and walks up the
-  // hierarchy; it does not consult creator/invoker (the only locator today is
-  // `tenant`). A code-sourced deployment has no single authenticated invoker,
-  // so invoker is null. A resolution failure is fail-closed.
+  // Resolve the approved credential bindings into delivered material under
+  // tenant ownership (no invoker: a code-sourced deploy has no single
+  // authenticated caller). Fail-closed.
   const bindings = projection.credentialBindings ?? [];
   let credentials: CredentialDelivery | undefined;
   if (bindings.length > 0) {
@@ -611,46 +558,35 @@ async function prepareSourceRefDeploy(
     credentials = delivery.delivery;
   }
 
-  // Pin per-step inference sources for the projection's inline trigger bodies
-  // -- onTrigger sections and childWorkflow children, enumerated transitively.
-  // The hub holds only the frozen inert projection, so it enumerates the inline
-  // bodies from the wire form and resolves each body step's source through the
-  // same resolver + operator-approval gate the top-level steps use
-  // (`pickStepInferenceSource` against `approval.approvedSurface`). Each body's
-  // wire hash is recomputed from the inert body verbatim, so a body child's
-  // re-verify clears the same barrier a top-level re-verify does. The pinned
-  // sources ride OUTSIDE the hash; their trust comes from being resolved here
-  // under the approval gate, which is why the pin stays hub-side and is never
-  // caller-supplied.
+  // Pin per-step inference sources for the inline trigger bodies (onTrigger
+  // sections and childWorkflow children, enumerated transitively), resolved
+  // through the same operator-approval gate as top-level steps. Each body's
+  // wire hash is recomputed from the inert body verbatim; the pinned sources
+  // ride OUTSIDE the hash, their trust from being resolved here under the
+  // approval gate — never caller-supplied.
   //
-  // These entries ride the `referencedDefinitions` wire field. Each entry's
-  // `definition` is the approved inert body def from the frozen, hash-covered
-  // projection (id set to the ref); the sidecar reads that id to key the
-  // per-body approved hash and to stage the body's `sources.json`. The body
-  // child resolves the body DEFINITION itself in-memory from the re-verified
-  // closure and hard-fails rather than reading it off disk, so no body
-  // workflow.json is staged (see the staging loop in workflow-host-wiring.ts
-  // and the anti-fallback guard in workflow-host run-child.ts).
+  // These entries ride `referencedDefinitions`: the sidecar keys the per-body
+  // approved hash and stages `sources.json` from each entry's id. The body
+  // child resolves its DEFINITION in-memory from the re-verified closure and
+  // hard-fails rather than reading it off disk, so no body workflow.json is
+  // staged (see the staging loop in workflow-host-wiring.ts and the
+  // anti-fallback guard in workflow-host run-child.ts).
   const referencedDefinitions = await buildReferencedWorkflowSourcePins({
     projection,
     config: args.config,
     operatorApprovals: approval.approvedSurface,
   });
 
-  // Assemble the ONE credential delivery, deduped by credentialId across three
+  // Assemble the ONE credential delivery, deduped by credentialId across
   // rails, each authorized upstream on its own terms: tool bindings
-  // (grant-scoped via `buildCredentialDelivery` above), and the inference
-  // source pinned to each agent-bearing top-level or inline body step
-  // (tenant-owned). Which steps those are is read from the hash-covered
-  // projection, never from the pinned map: every step carries a pin because
-  // the wire shape demands one, but a step that cannot issue a request has no
-  // use for a secret. The inference rails are resolved HERE from the DB under
-  // the tenant-ownership authority, so the deploy is self-contained: a direct
-  // deploy that seeds credentials in the DB still fills the cell, and a
-  // spawned body finds its secret rather than failing closed at resolve time.
-  // Precedence on a shared credentialId is tool material first (grant-scoped),
-  // then inference material (tenant-ownership-scoped). Inference sources carry
-  // NO binding descriptor -- they reference their credential by id directly.
+  // (grant-scoped, via `buildCredentialDelivery` above) and the inference
+  // source pinned to each agent-bearing step (tenant-owned, resolved here from
+  // the DB). Which steps carry pins is read from the hash-covered projection,
+  // never the pinned map: every step carries a pin because the wire shape
+  // demands one, but a step that cannot issue a request has no use for a
+  // secret. Precedence on a shared credentialId is tool material first, then
+  // inference material; inference sources carry NO binding descriptor — they
+  // reference their credential by id directly.
   const materials = new Map<string, CredentialMaterialEntry>();
   for (const material of credentials?.materials ?? []) {
     materials.set(material.credentialId, material);
@@ -704,10 +640,8 @@ async function prepareSourceRefDeploy(
       }
     }
   }
-  // A delivery with tool bindings always carries their material, so an empty map
-  // means no rail contributed anything -- send no delivery. (Tool bindings never
-  // produce a descriptor without a material, so bindings-without-materials cannot
-  // occur.)
+  // A delivery with tool bindings always carries their material, so an empty
+  // map means no rail contributed anything — send no delivery.
   const credentialDelivery: CredentialDelivery | undefined =
     materials.size > 0
       ? {
@@ -716,10 +650,8 @@ async function prepareSourceRefDeploy(
         }
       : undefined;
 
-  // An asset-sourced pin's `kind:"asset"` closure entries read from source
-  // assets the sidecar cannot fetch itself; deliver them inline on the frame so
-  // the sidecar checks them out into its durable per-deployment source store. A
-  // registry pin fetches its tarballs over HTTP and delivers none.
+  // Asset-sourced pins deliver their closure's source assets inline (see
+  // `assets`); a registry pin fetches its tarballs over HTTP and delivers none.
   const assets: WorkflowSourceAssetMount[] = isAssetDeployArgs(args)
     ? await buildSourceAssetMounts(closure, args.resolveAttachment)
     : [];
@@ -744,16 +676,12 @@ async function prepareSourceRefDeploy(
 }
 
 /**
- * Prepare then emit the source-ref deploy frame, for the prepared provisioned
- * path whose anchor `workflow_run` row already exists (inserted at prepare
- * time). It emits the frame but does NOT touch the anchor row: the caller
- * (`deployPreparedCodeSourcedWorkflow`) stamps the acked key under the
- * allocation-ownership lock. A tagged `DeployFrameFailure` is converted to the
- * `SessionLaunchError` disposition the allocation reconciler consumes, while
- * untagged preparation errors remain safe same-generation retries. The ordinary
- * path does NOT use this wrapper -- it must interleave the anchor INSERT between
- * prepare and emit, so it drives `prepareSourceRefDeploy` and
- * `sendMultiStepDeployFrame` directly.
+ * Prepare then emit the source-ref deploy frame for the prepared provisioned
+ * path, whose anchor `workflow_run` row already exists from prepare time. It
+ * emits but does NOT touch the anchor row: the caller stamps the acked key
+ * under the allocation-ownership lock. A tagged `DeployFrameFailure` becomes
+ * the `SessionLaunchError` disposition the allocation reconciler consumes;
+ * untagged preparation errors remain safe same-generation retries.
  */
 // The non-secret projection of a delivery, persisted on the anchor run so the
 // reconnect resync can re-resolve current materials. Secrets never land here.
@@ -837,36 +765,26 @@ async function emitSourceRefDeployFrame(
 /**
  * A direct allocation-bound composition entrypoint for tests and low-level
  * callers: prepare, INSERT the deployment's anchor `workflow_run` row, THEN
- * emit the source-ref frame. The anchor row is the deployment's first-class
- * record owning its routing address and public key; run-grant materialization
- * keys off it (address + live status), so without it no per-run grants ever
- * materialize for a source-ref deployment. Born "deployed" (live but
- * pre-trigger) with a null public key: the first trigger's materialization
- * flips it to "running" via `anchorWithPrincipal`'s guarded update, which a
- * row born "running" would skip. Its `anchorRunId` equals its own id.
+ * emit the source-ref frame. Born "deployed" (live, null public key): the
+ * first trigger's materialization flips it to "running" via
+ * `anchorWithPrincipal`'s guarded update, which a row born "running" would
+ * skip.
  *
  * ORDERING IS LOAD-BEARING. The anchor row must be committed and visible to
  * the pack-receipt connection BEFORE the frame reaches the wire: the frame
  * spawns the child, whose first events pack races the ack back, and
- * `receiveWorkflowRunPack` fails closed on a missing live anchor. Emitting
- * first rejected that first pack and never bootstrapped the log. This works
+ * `receiveWorkflowRunPack` fails closed on a missing live anchor. This works
  * because `args.db` is the autocommit handle (`DB["db"]`, which the type
  * forbids being a transaction) and the INSERT is not wrapped in a transaction
- * with the emit -- the row is durably visible the instant the INSERT returns.
+ * with the emit — the row is durably visible the instant the INSERT returns.
  * Do NOT relax `db` to a transaction executor or wrap anchor+emit in one
  * transaction: that reopens the race.
  *
  * On emit failure the anchor is rolled back or fenced by the `frameSent`
- * evidence from the transport. `leakedAgent: false` (safe to fully roll back)
- * is the STRONG claim, made only on positive proof the frame never reached
- * the wire (`isDeployFrameFailure && frameSent === false`); every other
- * failure -- a sent-but-unacked frame or any untagged error -- is treated as
- * possibly-live: the anchor is fenced `deployed` -> `failed` and the error is
- * `leakedAgent: true`.
- *
- * The prepared provisioned path does NOT use this composition: its anchor row
- * already exists from prepare time, so it drives `emitSourceRefDeployFrame`
- * and an UPDATE-under-allocation-lock instead.
+ * evidence: `leakedAgent: false` is the STRONG claim, made only on positive
+ * proof the frame never reached the wire (`isDeployFrameFailure &&
+ * frameSent === false`); every other failure is possibly-live — fence
+ * `deployed` -> `failed`, `leakedAgent: true`.
  */
 export async function deployCodeSourcedWorkflow(
   args: DeployCodeSourcedWorkflowArgs,
@@ -885,8 +803,8 @@ export async function deployCodeSourcedWorkflow(
       publicKey: null,
       status: "deployed",
       createdAt: new Date(),
-      // Persist the non-secret shape of the delivery so the reconnect resync
-      // can re-resolve current materials for these ids. Secrets never land here.
+      // Non-secret delivery shape (see `credentialRefsFromDelivery`); secrets
+      // never land in the anchor row.
       ...(sendArgs.credentials !== undefined
         ? { credentialRefs: credentialRefsFromDelivery(sendArgs.credentials) }
         : {}),
@@ -954,10 +872,9 @@ export async function deployCodeSourcedWorkflow(
     throw new SessionLaunchError("start", cause, true);
   }
 
-  // Emit succeeded: stamp the acked key. No status guard -- the key is a fact
-  // whether or not the pack-ack race already flipped the row to "running", and
-  // skipping the stamp would strand a live run with a null key. A 0-row update
-  // is an anomaly, but the deploy succeeded, so log it rather than fail.
+  // Emit succeeded: stamp the acked key with no status guard — the key is a
+  // fact even if the pack-ack race already flipped the row to "running". A
+  // 0-row update is an anomaly; log it rather than fail.
   const stamped = await args.db
     .update(workflowRunTable)
     .set({ publicKey })
@@ -985,14 +902,12 @@ export async function recoverSenderDeploy(args: {
 }): Promise<void> {
   const { allocation, reconciliation } = args;
   reconciliation.signal.throwIfAborted();
-  // A proven-unsent clear may still restore the previous key after this claim.
-  // Do not fail its mail using the claim's stale marker. Cleanup rechecks under
-  // the allocation lock; an advanced fence settles failure, while a rolled-back
-  // attempt is resolved by its caller or the next claim's completed key.
+  // A proven-unsent clear may still restore the previous key after this claim;
+  // do not fail its mail on the stale marker. Cleanup rechecks under the
+  // allocation lock.
   if (allocation.initializationLeaseId !== undefined) return;
-  // Claiming the lease prevents the previous attempt from publishing. Its
-  // marker and key now distinguish a committed initialization from failure,
-  // even before the worker reconnects or the old response arrives.
+  // Claiming the lease stops the previous attempt from publishing; its marker
+  // and key now distinguish a committed initialization from failure.
   const anchor = await args.db.query.workflowRun.findFirst({
     where: eq(workflowRunTable.id, allocation.anchorRunId),
     columns: { publicKey: true },
@@ -1040,10 +955,8 @@ export function createSessionService(
    * Stage one per-step deploy on the sidecar: resolve assets and tool
    * packages, write the deploy tree, provision the step, and deliver the
    * deploy + asset packs (Phases 0-2b). A stage-only step binds a transient
-   * route for the step address, fires a no-spawn provision frame (init repo +
-   * record hub key), and unbinds the route once the packs land -- no warm
-   * harness and no child. The deployment-level workflow frame, sent once after
-   * every step is staged, spawns the child.
+   * route for the step address and unbinds it once the packs land — no warm
+   * harness, no child.
    */
   async function executeLaunchPhases(params: {
     agentAddress: string;
@@ -1053,8 +966,8 @@ export function createSessionService(
     deployContent: DeployContent;
     toolPackagePins?: readonly ToolPackagePin[];
     /**
-     * Per-step stage: bind a transient route, fire a no-spawn provision
-     * frame, deliver the deploy + asset packs, then unbind the route.
+     * Per-step stage: bind a transient route, fire a no-spawn provision frame,
+     * deliver the deploy + asset packs, then unbind the route.
      */
     stageOnly?: boolean;
     allocationTarget: AllocatedSidecarTarget;
@@ -1065,13 +978,10 @@ export function createSessionService(
 
     let effectiveDeployContent: DeployContent = deployContent;
 
-    // Phase 0a-bis: Resolve the agent's tool-package pins into a full
-    // closure manifest. Empty pins skip the resolver entirely; a
-    // ManifestInvalidError (e.g. unsatisfied peer dependency) is a
-    // launch-time failure -- the deploy never ships and the sidecar is not
-    // touched. The resolver runs once per launch with no cross-launch
-    // caching; acceptable at the current N (handful of agents, small pin
-    // sets per agent).
+    // Phase 0a-bis: Resolve the agent's tool-package pins into a full closure
+    // manifest. Empty pins skip the resolver entirely; a `ManifestInvalidError`
+    // (e.g. unsatisfied peer dependency) fails the launch before the sidecar
+    // is touched.
     const manifestAssetAttachments: ResolvedAttachment[] = [];
     if (toolPackagePins.length > 0) {
       if (toolPackageRegistries === undefined) {
@@ -1172,11 +1082,9 @@ export function createSessionService(
       }
     }
     try {
-      // Phase 1: Provision on sidecar. A stage-only per-step deploy sends a
-      // no-spawn provision frame: the sidecar inits the step's agent-state
-      // repo and records the hub key, but spawns nothing. Firing the frame
-      // before the Phase 2 pack is the ordering barrier -- the repo must
-      // exist before the pack applies.
+      // Phase 1: Provision on sidecar. A stage-only step sends a no-spawn
+      // provision frame (init repo + record hub key) before the Phase 2 pack —
+      // the ordering barrier: the repo must exist before the pack applies.
       try {
         if (stageOnly) {
           await requireAllocationRouter().sendProvisionStepToAllocation(
@@ -1213,11 +1121,10 @@ export function createSessionService(
         throw new SessionLaunchError("pack", err, !stageOnly);
       }
 
-      // Phase 2b: Asset-pack fan-out. For each attached asset, build a pack,
-      // reserve the manifest row, then send it. The reservation MUST precede
-      // the send: an ack with no row is materialization without a recorded
+      // Phase 2b: Asset-pack fan-out. Reserve the manifest row BEFORE each
+      // send: an ack with no row is materialization without a recorded
       // manifest. An allocated replacement may reuse its predecessor's exact
-      // row; if reservation fails, no pack is sent.
+      // row.
       const fanOut: ResolvedAttachment[] = manifestAssetAttachments;
       if (assetService !== undefined && fanOut.length > 0) {
         for (const att of fanOut) {
@@ -1244,14 +1151,8 @@ export function createSessionService(
   }
 
   /**
-   * Stage one step of a multi-step workflow deploy: bind a transient route
-   * for the step address, fire a no-spawn provision frame (the sidecar inits
-   * the step's agent-state repo and records the hub key), deliver the deploy
-   * and asset packs, and unbind the route -- no warm harness. The multi-step
-   * branch stages every step this way, then fires ONE deployment-level
-   * workflow frame that writes the step grants and spawns the supervised
-   * workflow-process child; the child reads each step's staged deploy tree
-   * from disk and runs the step itself.
+   * Stage one step of a multi-step workflow deploy via `executeLaunchPhases`
+   * with `stageOnly`; see the session-service type doc for the flow.
    */
   async function stageWorkflowStep(params: {
     agentAddress: string;
@@ -1277,9 +1178,8 @@ export function createSessionService(
   }
 
   // Resolve the npm registry config a code-sourced install resolves external
-  // deps against, by the registry name. A code-sourced deploy needs the
-  // registry map configured; a hub that mounts the deploy surface without it is
-  // mis-wired, so this fails loud rather than defaulting a registry URL.
+  // deps against. A hub without the registry map is mis-wired; fail loud
+  // rather than defaulting a registry URL.
   function requireRegistryConfig(registryName: string): RegistryConfig {
     if (toolPackageRegistries === undefined) {
       throw new Error(
@@ -1295,10 +1195,10 @@ export function createSessionService(
     return config;
   }
 
-  // Build the git-pack resolver a source/tarball asset arm delivers inline. The
-  // pin names one backing asset, so the resolver binds that asset's repo (its
-  // kind fixed by the arm) and its default ref; a request for any OTHER asset id
-  // is a closure that reaches beyond its single backing asset and fails loud.
+  // Build the git-pack resolver an asset arm delivers inline. The pin names
+  // one backing asset, so the resolver binds that asset's repo (its kind
+  // fixed by the arm) and its default ref; any OTHER asset id reaches beyond
+  // the single backing asset and fails loud.
   function bindAssetAttachmentResolver(
     assetId: string,
     repoKind: RepoKind,
@@ -1329,12 +1229,11 @@ export function createSessionService(
     };
   }
 
-  // Assemble the install args for the concrete source arm. Mirrors the
-  // `isAssetSourceInstallArgs`/`isAssetTarballInstallArgs` guards the probe gate
-  // narrows on: an asset-`source` arm binds committed reads at the pinned commit
-  // plus the npm registry for external deps; an asset-`tarball` arm binds the
-  // asset's blob reads and a pin; a `registry` arm carries only its registry
-  // config and a pin. A `pin` missing where the arm requires it fails closed.
+  // Assemble the install args for the concrete source arm: an asset-`source`
+  // arm binds committed reads at the pinned commit plus the npm registry for
+  // external deps; an asset-`tarball` arm binds the asset's blob reads and a
+  // pin; a `registry` arm carries its registry config and a pin. A `pin`
+  // missing where the arm requires it fails closed.
   async function buildInstallArgs(
     params: InstallAndApproveWorkflowSourceParams,
     resolveAttachment: ResolveAssetAttachmentFn | null,
@@ -1437,11 +1336,10 @@ export function createSessionService(
     return toolPackageRegistries.defaultRegistry;
   }
 
-  // Bind the pack resolver an asset arm delivers inline. An asset arm delivers
-  // its backing repo (its kind fixed by `package.format`); a registry arm
-  // fetches its tarballs over HTTP and delivers no asset, so it binds nothing.
-  // Both the install (probe) and the deploy rebind the SAME resolver from the
-  // source, so a prepared deploy reconstructs it from the frozen `source`.
+  // Bind the pack resolver an asset arm delivers inline; a registry arm
+  // fetches its tarballs over HTTP and delivers no asset. The install and the
+  // deploy rebind the SAME resolver from the source, so a prepared deploy
+  // reconstructs it from the frozen `source`.
   function bindSourceAttachmentResolver(
     source: WorkflowDefinitionSource,
   ): ResolveAssetAttachmentFn | null {
@@ -1453,11 +1351,10 @@ export function createSessionService(
       : null;
   }
 
-  // Install + probe + gate + freeze a code-sourced definition, returning the
-  // frozen bundle and the (asset-only) attachment resolver. The gate outcome is
-  // NOT asserted here: `deployWorkflowFromSource` and `installAndApproveWorkflowSource`
-  // each surface a non-approval as their own domain error. This is the common
-  // freeze used by direct tests and provisioned prepare runs.
+  // Install + probe + gate + freeze a code-sourced definition; the gate
+  // outcome is NOT asserted here — `installAndApproveWorkflowSource` surfaces
+  // a non-approval as its own domain error. Shared by direct tests and
+  // provisioned prepare runs.
   async function prepareCodeSourcedApproval(
     params: InstallAndApproveWorkflowSourceParams,
   ): Promise<{
@@ -1470,10 +1367,9 @@ export function createSessionService(
     return { approved, resolveAttachment };
   }
 
-  // Freeze a code-sourced approval WITHOUT deploying it. The provisioned
-  // prepare path persists the returned bundle and deploys it to an allocation
-  // later. A non-approval fails closed as an invalid
-  // definition.
+  // Freeze a code-sourced approval WITHOUT deploying it (the provisioned
+  // prepare path persists the bundle for later deployment). A non-approval
+  // fails closed as an invalid definition.
   async function installAndApproveWorkflowSource(
     params: InstallAndApproveWorkflowSourceParams,
   ): Promise<InstallAndApproveResult> {
@@ -1488,13 +1384,11 @@ export function createSessionService(
   }
 
   /**
-   * Update a prepared anchor run's `publicKey` under the allocation-ownership
-   * lock. The anchor row was inserted at prepare time; this stamps the
-   * supervisor key from the deploy ack, but only while the allocation still
-   * names this exact accepted generation and unexpired reconciliation lease
-   * for this anchor. Lost ownership or cancellation fails closed as a
-   * leaked-agent `SessionLaunchError` -- the deploy already reached the
-   * sidecar, so the caller must treat the agent as possibly live.
+   * Stamp a prepared anchor run's `publicKey` under the allocation-ownership
+   * lock: only while the allocation still names this exact accepted generation
+   * and unexpired reconciliation lease for this anchor. Lost ownership or
+   * cancellation fails closed as a leaked-agent `SessionLaunchError` — the
+   * deploy already reached the sidecar.
    */
   async function updateAnchorPublicKeyUnderAllocationLock(args: {
     tenantId: string;
@@ -1537,13 +1431,11 @@ export function createSessionService(
 
   /**
    * Deploy a previously-frozen code-sourced approval bundle to a dedicated
-   * allocation. The anchor `workflow_run` row already exists from prepare time
-   * (with its `definitionId` set), so this UPDATES it under the
+   * allocation, UPDATING the prepared anchor `workflow_run` row under the
    * allocation-ownership lock rather than inserting. No re-probe: the frozen
-   * projection/hash/closure ride verbatim from `params.approved`, and the
-   * per-step inference sources are re-pinned from the re-resolved chain
-   * (deliberately NOT frozen, since a resolved source carries a credential
-   * secret).
+   * projection/hash/closure ride verbatim from `params.approved`; the per-step
+   * inference sources are re-pinned from the re-resolved chain (deliberately
+   * NOT frozen — a resolved source carries a credential secret).
    */
   async function deployPreparedCodeSourcedWorkflow(
     params: DeployPreparedCodeSourcedWorkflowParams,
@@ -1566,8 +1458,8 @@ export function createSessionService(
     const source = params.source;
     const resolveAttachment = bindSourceAttachmentResolver(source);
 
-    // Re-pin every top-level step's inference source from the re-resolved chain
-    // under the frozen approval -- the same pin the source-ref deploy computes.
+    // Re-pin every top-level step's inference source from the re-resolved
+    // chain under the frozen approval.
     const sources = buildInertProjectionStepSources({
       projection: params.approved.projection,
       config: params.config,
@@ -1619,10 +1511,11 @@ export function createSessionService(
     signal.throwIfAborted();
     sidecarRouter.noteSenderDeployStarted(params.agentAddress, senderAttempt);
     try {
-      // Bracket the allocated pre-ack window: mark the sender's key-record as
+      // Bracket the allocated pre-ack window: mark the sender's key-record
       // mid-flight before the deploy emit so a run that sends mail before its
-      // anchor key is committed parks rather than delivering keyless. The settle
-      // follows durable completion; cancellation leaves the outcome to recovery.
+      // anchor key is committed parks rather than delivering keyless. The
+      // settle follows durable completion; cancellation leaves the outcome to
+      // recovery.
       if (source.kind === "asset") {
         if (resolveAttachment === null) {
           throw new Error(
@@ -1651,12 +1544,11 @@ export function createSessionService(
           : {}),
       });
 
-      // The anchor's public key is now durable. Wake any mail the run parked
-      // while pre-ack so it delivers with the sender key co-delivered. The write
-      // above happens-before this settle, so a re-drive resolves the recorded
-      // key. `params.agentAddress` is the run's deploy address, byte-identical
-      // to the sender address its mail was sent under (asserted against the
-      // anchor at deploy time), so a settle matches the parked entries.
+      // The anchor's public key is now durable. Wake mail the run parked while
+      // pre-ack, co-delivering the sender key (this write happens-before the
+      // settle, so a re-drive resolves the recorded key). `agentAddress` is
+      // byte-identical to the sender address the mail used (asserted at deploy
+      // time), so the settle matches the parked entries.
       sidecarRouter.noteSenderDeploySettled(senderAttempt, {
         recorded: result.publicKey,
       });
@@ -1756,12 +1648,10 @@ export function createSessionService(
 
   /**
    * Build a per-agent `ClosureResolver` from the tenant's visible
-   * package-registry assets plus the statically-configured HTTP
-   * registries, then run the closure resolution against `pins`.
-   *
-   * Returns the resolved manifest and an asset-id-keyed index of the
-   * package-registry assets the resolver knew about, so the caller can
-   * derive mount paths from the asset name without a second DB hit.
+   * package-registry assets plus the configured HTTP registries, then resolve
+   * `pins`. Returns the manifest plus an asset-id-keyed index of the assets
+   * the resolver knew about, so the caller derives mount paths without a
+   * second DB hit.
    */
   async function buildAndResolve(args: {
     agentId: string;
@@ -1783,14 +1673,11 @@ export function createSessionService(
       "package-registry",
     );
     const registryMap = new Map<string, RegistrySource>();
-    // `assetIndex` carries only the assets the resolver might have
-    // read from -- i.e. one row per registry name, the one that won
-    // its `(kind, name)` slot. Shadowed assets that lost the
-    // collision are deliberately excluded: the resolver can never
-    // reach them, so the fan-out path must never see them in the
-    // index either. The walker walks leaf-to-root inside
-    // `listAssetsForTenant`, so the first occurrence of any
-    // `(kind, name)` wins -- we replay the same shadowing here.
+    // `assetIndex` carries one row per registry name — the one that won its
+    // `(kind, name)` slot. Shadowed losers are excluded: the resolver can
+    // never reach them, so the fan-out must never see them either. The walker
+    // walks leaf-to-root, so the first occurrence of a `(kind, name)` wins;
+    // we replay that here.
     const assetIndex = new Map<string, Asset>();
     for (const row of visibleAssets) {
       if (registryMap.has(row.name)) continue;
@@ -1824,9 +1711,6 @@ export function createSessionService(
       );
     }
     for (const [name, cfg] of args.registries.httpRegistries) {
-      // Asset wins on collision with an HTTP registry of the same
-      // name; symmetric with the inner-shadows-outer rule that
-      // governs the tenant walker.
       if (registryMap.has(name)) continue;
       registryMap.set(name, new HttpRegistrySource({ name, config: cfg }));
     }

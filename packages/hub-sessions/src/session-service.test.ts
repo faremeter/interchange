@@ -1213,9 +1213,9 @@ describe("sendMultiStepDeployFrame", () => {
     // The gate-frozen hash rides the frame VERBATIM -- the source-ref arm never
     // recomputes it, so the child's re-verify over the closure matches.
     expect(sent.approvedWireHash).toBe(frozenWireHash);
-    // The frame carries no inline definition -- the wire type has no
+    // The frame carries no inline definition — the wire type has no
     // `definition` field; the sidecar derives it from the closure the pin
-    // materializes. The source-ref pin rides the frame as one co-required object.
+    // materializes.
     expect(sent.sourceRef).toEqual({ source, closure });
   });
 });
@@ -2158,10 +2158,9 @@ describe("deployCodeSourcedWorkflow", () => {
 
     const sent = sentWorkflows[0];
     if (sent === undefined) throw new Error("missing workflow projection");
-    // Frame hash == gate frozen hash: the composed entrypoint neither recomputes
-    // the hash nor re-resolves the closure, so a downstream child re-verify over
-    // the materialized closure would pass. The frame carries no inline
-    // definition; the sidecar derives it from the closure the pin materializes.
+    // Frame hash == gate frozen hash: the entrypoint neither recomputes the
+    // hash nor re-resolves the closure. No inline definition; the sidecar
+    // derives it from the closure the pin materializes.
     expect(sent.approvedWireHash).toBe(wireHash);
     // The composed entrypoint assembles the pin from its `source` arg and the
     // approve output's frozen closure into the frame's one co-required object.
