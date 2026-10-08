@@ -10,17 +10,9 @@ export type {
 } from "./send";
 
 /**
- * Create a fresh in-memory transport instance.
- *
- * The returned transport is shared across all addresses in a single
- * process. Register addresses before sending messages:
- *
- *   const transport = createInMemoryTransport();
- *   transport.register("alpha@local.interchange", cryptoProviderA);
- *   transport.register("beta@local.interchange", cryptoProviderB);
- *
- *   const alphaTransport = transport.getTransportFor("alpha@local.interchange");
- *   await alphaTransport.send({ to: "beta@local.interchange", ... });
+ * Create a fresh in-memory transport instance. The returned transport is
+ * shared across all addresses in a single process; register addresses
+ * before sending messages.
  */
 import { InMemoryTransport } from "./transport";
 

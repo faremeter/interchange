@@ -9,8 +9,8 @@ import type { AddressEntry } from "./mailbox";
 
 /**
  * Callback for delivering messages to recipients not registered on this
- * transport. The federation layer provides this to forward messages and the
- * transport-validated sender address to the hub for remote routing.
+ * transport. The federation layer provides this to forward messages and
+ * the transport-validated sender address to the hub.
  */
 export type RemoteSendHandler = (
   rawMessage: Uint8Array,
@@ -40,21 +40,13 @@ export type MessageSentContext = {
  * Callback fired after a message is fully assembled and delivered. The
  * send is already complete when this fires — a handler rejection does
  * not mean the message was not delivered.
- *
- * Used by the sidecar to commit outbound wire messages to the git audit
- * trail and forward metadata to the hub.
  */
 export type MessageSentHandler = (ctx: MessageSentContext) => Promise<void>;
 
 /**
- * Execute the send() flow:
- * 1. Validate sender registration
- * 2. Compose the signed message
- * 3. Split recipients into local and remote
- * 4. Append to each local recipient's INBOX and the sender's Sent mailbox
- * 5. Forward to remote recipients via onRemoteSend
- * 6. Schedule watch callbacks asynchronously via queueMicrotask
- * 7. Fire onMessageSent callback (fire-and-forget)
+ * Run the send() flow: compose the signed message, deliver to local
+ * recipients, forward to remote recipients via onRemoteSend, and fire
+ * watch and onMessageSent callbacks.
  *
  * If onRemoteSend is not provided and there are remote recipients, send()
  * throws. If onRemoteSend rejects, the error propagates — local delivery
@@ -115,10 +107,10 @@ export async function executeSend(
   sentStore.append(rawBytes, envelope, ["\\Seen"]);
 
   // Fire local recipient watch callbacks ASYNCHRONOUSLY (per MESSAGE.md
-  // requirement). queueMicrotask ensures callbacks never run synchronously
-  // on the sender's call stack, preserving real IMAP IDLE async delivery
-  // semantics. Scheduled before the remote send so local delivery
-  // notifications are not delayed by network latency.
+  // requirement). queueMicrotask keeps callbacks off the sender's call
+  // stack, preserving real IMAP IDLE async delivery semantics. Scheduled
+  // before the remote send so local notifications are not delayed by
+  // network latency.
   const { headers: parsedHeaders } = parseHeaderSection(rawBytes);
   const msgHeaders = buildMessageHeaders(parsedHeaders);
 

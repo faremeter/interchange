@@ -39,12 +39,9 @@ import {
 } from "./send";
 
 /**
- * The hub-side surface a transport must expose to coordinate per-agent
- * registration, mail routing, and outbound-audit hooks. SessionManager
- * and HubLink in `@intx/hub-agent` depend on this interface rather
- * than on `InMemoryTransport` directly so custom hosts can supply
- * their own backend (e.g. an SMTP/IMAP relay) without touching the
- * package's seams.
+ * Hub-side surface for per-agent registration, mail routing, and
+ * outbound-audit hooks. Used by SessionManager and HubLink in
+ * `@intx/hub-agent`; custom hosts can supply their own backend.
  */
 export interface HubTransport {
   register(address: string, crypto: CryptoProvider): void;
@@ -52,21 +49,15 @@ export interface HubTransport {
   getTransportFor(address: string): MessageTransport;
   setRemoteSendHandler(handler: RemoteSendHandler): void;
   addMessageSentHandler(handler: MessageSentHandler): void;
-  /**
-   * Drop a hub-routed RFC 2822 message directly into an address's
-   * inbox. Used by the wire layer (HubLink) for inbound mail frames.
-   */
+  /** Store a hub-routed RFC 2822 message in an address's inbox. */
   deliver(address: string, message: Uint8Array): void;
 }
 
 /**
- * In-memory MessageTransport implementing full IMAP semantics within a
- * single process. Messages are stored as real RFC 2822 MIME byte buffers.
- *
- * Every outbound message is PGP/MIME signed with the sender's CryptoProvider.
- * Signature verification runs on fetchFull().
- *
- * Addresses must be registered before sending or receiving messages.
+ * In-memory MessageTransport with full IMAP semantics in one process.
+ * Messages are stored as RFC 2822 MIME bytes. Every outbound message is
+ * PGP/MIME signed with the sender's CryptoProvider; verification runs on
+ * fetchFull(). Addresses must be registered before use.
  */
 export class InMemoryTransport implements MessageTransport, HubTransport {
   readonly #entries = new Map<string, AddressEntry>();
@@ -74,30 +65,25 @@ export class InMemoryTransport implements MessageTransport, HubTransport {
   readonly #messageSentHandlers = new Set<MessageSentHandler>();
 
   /**
-   * Set a handler for delivering messages to recipients not registered on
-   * this transport. The federation layer calls this to wire up the websocket
-   * connection to the hub. When set, send() forwards unregistered recipients
-   * to this handler instead of throwing.
+   * Set a handler for recipients not registered on this transport. When
+   * set, send() forwards unregistered recipients to it instead of throwing.
    */
   setRemoteSendHandler(handler: RemoteSendHandler): void {
     this.#remoteSendHandler = handler;
   }
 
   /**
-   * Register a handler that fires after every successful send(). Multiple
-   * handlers may be registered. The message is already delivered when
-   * handlers fire — a handler rejection does not mean the message was not
-   * delivered.
+   * Register a handler that fires after every successful send(). The
+   * message is already delivered when handlers fire — a rejection does
+   * not mean it was not delivered.
    */
   addMessageSentHandler(handler: MessageSentHandler): void {
     this.#messageSentHandlers.add(handler);
   }
 
   /**
-   * Register an address with its CryptoProvider. Creates the default set
-   * of mailboxes (INBOX, Sent, Drafts, Archive, Trash).
-   *
-   * Throws if the address is already registered.
+   * Register an address with its CryptoProvider, creating the default
+   * mailboxes. Throws if the address is already registered.
    */
   register(address: string, crypto: CryptoProvider): void {
     if (this.#entries.has(address)) {
@@ -107,16 +93,14 @@ export class InMemoryTransport implements MessageTransport, HubTransport {
   }
 
   /**
-   * Remove an address's mailboxes and crypto provider. Called when a
-   * session is destroyed so the address can be re-registered later.
+   * Remove an address's mailboxes and crypto provider, so the address
+   * can be re-registered later.
    */
   unregister(address: string): void {
     this.#entries.delete(address);
   }
 
-  // ---------------------------------------------------------------------------
   // Outbound
-  // ---------------------------------------------------------------------------
 
   async send(
     _message: OutboundMessage,
@@ -138,9 +122,7 @@ export class InMemoryTransport implements MessageTransport, HubTransport {
     );
   }
 
-  // ---------------------------------------------------------------------------
   // Mailbox management (per-address — use getTransportFor)
-  // ---------------------------------------------------------------------------
 
   async listMailboxes(_signal?: AbortSignal): Promise<Mailbox[]> {
     throw new Error("Use getTransportFor(address) for per-address operations");
@@ -307,18 +289,12 @@ export class InMemoryTransport implements MessageTransport, HubTransport {
     );
   }
 
-  // ---------------------------------------------------------------------------
   // Inbound delivery from federation
-  // ---------------------------------------------------------------------------
 
   /**
-   * Deliver a signed MIME message to an address's INBOX. Used by the
-   * federation layer when a message arrives from the hub over the
-   * websocket — the message is already assembled and signed by the
-   * originating sender, so no further processing is needed beyond
-   * envelope parsing and storage.
-   *
-   * Throws if the address is not registered.
+   * Store a hub-delivered message in an address's INBOX. The message is
+   * already assembled and signed by the sender, so only envelope parsing
+   * and storage happen here. Throws if the address is not registered.
    */
   deliver(address: string, message: Uint8Array): void {
     const entry = this.#entries.get(address);
@@ -333,11 +309,10 @@ export class InMemoryTransport implements MessageTransport, HubTransport {
     }
 
     const { headers } = parseHeaderSection(message);
-    // The stored envelope and the `exists` event below are built from one
-    // reading of these bytes, so the two cannot disagree about which headers
-    // the message carried. `buildMessageHeaders` is that reading: it applies
-    // the RFC rule that a present-but-blank `Date`, `Message-ID`, `From` or
-    // `In-Reply-To` names nothing, so a blank one arrives here as an absence.
+    // The stored envelope and the `exists` event below come from one
+    // reading of these bytes, so they cannot disagree about the headers.
+    // buildMessageHeaders applies the RFC rule that a present-but-blank
+    // Date, Message-ID, From, or In-Reply-To names nothing.
     const msgHeaders = buildMessageHeaders(headers);
 
     const dateRaw = msgHeaders.date;
@@ -359,10 +334,8 @@ export class InMemoryTransport implements MessageTransport, HubTransport {
       date: new Date(dateRaw),
       inReplyTo: msgHeaders.inReplyTo,
       references: msgHeaders.references ?? [],
-      // Read off the raw map rather than `msgHeaders`, which keeps this field
-      // only when it names a declared `InterchangeType`. The envelope mirrors
-      // what the message carried, so an unrecognized type is stored verbatim
-      // instead of being erased from the index.
+      // Read from the raw map, not msgHeaders, so an unrecognized type is
+      // stored verbatim instead of being erased from the index.
       interchangeType: headers.get("interchange-type"),
       interchangeCorrelationId: msgHeaders.interchangeCorrelationId,
     };
@@ -382,14 +355,9 @@ export class InMemoryTransport implements MessageTransport, HubTransport {
     }
   }
 
-  // ---------------------------------------------------------------------------
   // Internal: per-address view
-  // ---------------------------------------------------------------------------
 
-  /**
-   * Returns a MessageTransport scoped to the given address. Callers use
-   * this to send and read mail as that address.
-   */
+  /** Return a MessageTransport scoped to the given address. */
   getTransportFor(address: string): MessageTransport {
     if (!this.#entries.has(address)) {
       throw new Error(
@@ -407,7 +375,7 @@ export class InMemoryTransport implements MessageTransport, HubTransport {
 
 /**
  * MessageTransport scoped to a single address. All operations target that
- * address's mailboxes. Constructed via InMemoryTransport.getTransportFor().
+ * address's mailboxes.
  */
 class ScopedMessageTransport implements MessageTransport {
   readonly #address: string;
@@ -430,12 +398,9 @@ class ScopedMessageTransport implements MessageTransport {
   get #entry(): AddressEntry {
     const e = this.#entries.get(this.#address);
     if (e === undefined) {
-      // `CANNOT` rather than a bare rejection: a rejection naming no condition
-      // leaves the outcome unknown, and an unknown outcome reads as worth
-      // retrying, which no retry through this handle clears. The lookup is
-      // against the live map, so registering the address again does revive the
-      // handle against the new entry -- but registration belongs to whoever
-      // owns the transport, not to the holder of a scoped handle.
+      // `CANNOT` rather than a bare rejection: a rejection naming no
+      // condition leaves the outcome unknown and reads as worth retrying,
+      // which no retry through this handle clears.
       throw new MessageTransportError(
         "CANNOT",
         `Address "${this.#address}" has been deregistered`,
@@ -459,9 +424,7 @@ class ScopedMessageTransport implements MessageTransport {
     message: OutboundMessage,
     _signal?: AbortSignal,
   ): Promise<SendReceipt> {
-    // Trip the deregistered guard so callers using a stale scoped handle
-    // see a precise error rather than the generic "sender is not
-    // registered" thrown by executeSend.
+    // Trip the deregistered guard so a stale scoped handle errors precisely.
     void this.#entry;
 
     const handlers = this.#getMessageSentHandlers();
@@ -781,15 +744,14 @@ class ScopedMessageTransport implements MessageTransport {
 /**
  * The bytes and envelope an `append` stores for an inbound message.
  *
- * `append` takes an `InboundMessage` and the mailbox stores RFC 2822 bytes, so
- * this builds a minimal text/plain message from the headers plus `content` (or
- * `JSON.stringify(payload)` when there is no content). Attachments are not
- * copied into those bytes. The stored envelope keys the mailbox index on the
- * id and serializes the date, so neither can be absent: both are refused
- * before anything is encoded, on the same grounds `deliver` refuses them.
- * A date string that does not parse is refused too. The index writes it with
- * `toISOString`, and an Invalid Date would stay in the mirror after flush
- * throws.
+ * The mailbox stores RFC 2822 bytes, so this builds a minimal text/plain
+ * message from the headers plus `content` (or `JSON.stringify(payload)` when
+ * there is no content). Attachments are not copied into those bytes. The
+ * stored envelope keys the mailbox index on the id and serializes the date,
+ * so neither can be absent: both are refused before anything is encoded, on
+ * the same grounds `deliver` refuses them. An unparseable date is refused
+ * too, since the index writes it with `toISOString` and an Invalid Date
+ * would survive a flush that throws.
  */
 export function inboundMessageToRaw(message: {
   headers: MessageHeaders;
@@ -816,9 +778,9 @@ export function inboundMessageToRaw(message: {
   const enc = new TextEncoder();
   const CRLF = "\r\n";
   let headers = "";
-  // A message with no originator gets no From line. Interpolating the absence
-  // would write the literal `From: undefined` into the RFC 2822 bytes, which
-  // reads back as an originator named "undefined".
+  // A message with no originator gets no From line: interpolating the
+  // absence would write the literal `From: undefined` into the RFC 2822
+  // bytes, which reads back as an originator named "undefined".
   if (message.headers.from !== undefined) {
     headers += `From: ${message.headers.from}${CRLF}`;
   }
@@ -826,10 +788,8 @@ export function inboundMessageToRaw(message: {
   if (message.headers.cc && message.headers.cc.length > 0) {
     headers += `Cc: ${message.headers.cc.join(", ")}${CRLF}`;
   }
-  // Omitted for the same reason as From above: interpolating an absent value
-  // writes the literal `Date: undefined` into the RFC 2822 bytes, which reads
-  // back as a real header. An omitted line is the honest encoding of a header
-  // the message never carried.
+  // Omitted for the same reason as From above: interpolating an absent
+  // value writes the literal `Date: undefined` into the RFC 2822 bytes.
   if (message.headers.date !== undefined) {
     headers += `Date: ${message.headers.date}${CRLF}`;
   }

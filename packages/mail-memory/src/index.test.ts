@@ -41,9 +41,7 @@ function conversationHeaders(): MessageHeaders {
   };
 }
 
-// ---------------------------------------------------------------------------
 // Test fixtures
-// ---------------------------------------------------------------------------
 
 async function createTestTransport() {
   const transport = createInMemoryTransport();
@@ -62,9 +60,7 @@ async function createTestTransport() {
   return { transport, alphaTransport, betaTransport, cryptoA, cryptoB };
 }
 
-// ---------------------------------------------------------------------------
 // Test 1: send + watch — verify async delivery
-// ---------------------------------------------------------------------------
 
 describe("send and watch", () => {
   test("watch callback fires asynchronously after send returns", async () => {
@@ -86,8 +82,8 @@ describe("send and watch", () => {
     });
 
     // executeSend schedules each local recipient's watch callbacks with
-    // queueMicrotask, so the callback runs after send() returns rather than on
-    // its call stack. Wait for it to have run.
+    // queueMicrotask, so the callback runs after send() returns rather than
+    // on its call stack. Wait for it to have run.
     await waitUntil(() => callbackFired);
 
     expect(callbackFired).toBe(true);
@@ -121,10 +117,9 @@ describe("send and watch", () => {
     unwatch();
 
     // A watcher registered now joins the same per-mailbox callback set, after
-    // the unwatched one. executeSend dispatches that set in insertion order
-    // via queueMicrotask, so this probe firing is ordered strictly after a
-    // still-registered stale callback would have fired -- if unwatch() had not
-    // removed it, `count` would already be 2 by the time the probe runs.
+    // the unwatched one. executeSend dispatches the set in insertion order, so
+    // this probe fires after a still-registered stale callback would have — if
+    // unwatch() had not removed it, `count` would already be 2 here.
     let probeFired = false;
     const unwatchProbe = await betaTransport.watch("INBOX", () => {
       probeFired = true;
@@ -165,9 +160,7 @@ describe("send and watch", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // Test 2: search by Interchange-Type header
-// ---------------------------------------------------------------------------
 
 describe("search", () => {
   test("search by Interchange-Type header finds message", async () => {
@@ -301,9 +294,7 @@ describe("search", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // Test 3: fetchFull — verify signatureStatus is "valid"
-// ---------------------------------------------------------------------------
 
 describe("fetchFull", () => {
   test("fetchFull returns signatureStatus valid for signed message", async () => {
@@ -508,9 +499,7 @@ describe("fetchFull", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // Test 5: Threading — REFERENCES algorithm tree structure
-// ---------------------------------------------------------------------------
 
 describe("thread", () => {
   test("3 messages in a thread produce correct tree structure", async () => {
@@ -558,9 +547,7 @@ describe("thread", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // Test 6: UID monotonicity
-// ---------------------------------------------------------------------------
 
 describe("UID ordering", () => {
   test("UIDs are monotonically increasing (1, 2, 3)", async () => {
@@ -584,9 +571,7 @@ describe("UID ordering", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // Test 7: MODSEQ increments on flag change
-// ---------------------------------------------------------------------------
 
 describe("MODSEQ", () => {
   test("MODSEQ increments when flags change", async () => {
@@ -609,9 +594,7 @@ describe("MODSEQ", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // Test 8: Sending to unknown address throws
-// ---------------------------------------------------------------------------
 
 describe("error handling", () => {
   test("send to unknown address throws", async () => {
@@ -627,11 +610,11 @@ describe("error handling", () => {
   });
 
   test("send rejects a body that contradicts the declared type", async () => {
-    // The transport owns this invariant for its own callers -- the reply drain,
-    // the connector bridges, the examples -- not only for the mail tools, which
+    // The transport owns this invariant for its own callers — the reply drain,
+    // the connector bridges, the examples — not only for the mail tools, which
     // refuse the same pair at their argument boundary. Both directions are
-    // asserted because the split they test is one predicate over the type
-    // union, so a mistake in it inverts both.
+    // asserted because the split is one predicate over the type union, so a
+    // mistake in it inverts both.
     const { alphaTransport } = await createTestTransport();
 
     await expect(
@@ -654,8 +637,8 @@ describe("error handling", () => {
   test("send rejects a blank inReplyTo rather than emitting an empty one", async () => {
     // RFC 5322 defines `In-Reply-To` as `1*msg-id`, so a blank value names no
     // parent. Accepting it would put an empty id on the `In-Reply-To` line, in
-    // the `References` chain and in the stored envelope, where it is an id
-    // every caller that did the same would share.
+    // the `References` chain, and in the stored envelope, where every caller
+    // that did the same would share it.
     const { alphaTransport } = await createTestTransport();
 
     await expect(
@@ -694,9 +677,7 @@ describe("error handling", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // Registration lifecycle — guards the single-entry-map invariant.
-// ---------------------------------------------------------------------------
 
 describe("registration lifecycle", () => {
   test("unregister then re-register works (entry is fully removed)", async () => {
@@ -726,8 +707,8 @@ describe("registration lifecycle", () => {
 
   test("a deregistered scoped handle names a condition no retry can clear", async () => {
     // No retry through the handle brings the entry back, so the rejection has
-    // to say so. Naming `CANNOT` is what separates it from a rejection carrying
-    // no condition, which leaves the outcome unknown and so reads as retriable.
+    // to say so. Naming `CANNOT` separates it from a rejection carrying no
+    // condition, which leaves the outcome unknown and reads as retriable.
     const { transport, alphaTransport } = await createTestTransport();
     transport.unregister("alpha@test.interchange");
 
@@ -765,9 +746,9 @@ describe("registration lifecycle", () => {
 
   test("an unimplemented method names the same condition as a dead handle", async () => {
     // Nothing a caller changes about the call makes an unimplemented method
-    // arrive, which is the same thing `CANNOT` says about a handle whose
-    // registration is gone. No mail tool reaches these methods, so the
-    // condition is asserted here rather than through a tool.
+    // arrive, the same thing `CANNOT` says about a handle whose registration
+    // is gone. No mail tool reaches these methods, so the condition is
+    // asserted here rather than through a tool.
     const { alphaTransport } = await createTestTransport();
 
     const operations: [label: string, run: () => Promise<unknown>][] = [
@@ -815,7 +796,7 @@ describe("registration lifecycle", () => {
     });
 
     // Local delivery appends to the recipient's INBOX inside executeSend, so
-    // the message is searchable once send() resolves; only the watch-callback
+    // the message is searchable once send() resolves; only watch-callback
     // dispatch is deferred, and this test does not use it.
     const refs = await betaTransport.search("INBOX", {});
     expect(refs.length).toBe(1);
@@ -827,9 +808,7 @@ describe("registration lifecycle", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // Additional: mailbox management
-// ---------------------------------------------------------------------------
 
 describe("mailbox management", () => {
   test("listMailboxes returns default mailboxes", async () => {
@@ -897,9 +876,7 @@ describe("mailbox management", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // Signature round-trip
-// ---------------------------------------------------------------------------
 
 describe("signature round-trip", () => {
   test("signature is valid even with structured message", async () => {
@@ -918,9 +895,7 @@ describe("signature round-trip", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // deliver() — federation inbound delivery
-// ---------------------------------------------------------------------------
 
 describe("deliver", () => {
   const VALID_MESSAGE = new TextEncoder().encode(
@@ -950,11 +925,10 @@ describe("deliver", () => {
   });
 
   test("a blank In-Reply-To threads nothing together", async () => {
-    // Two unrelated federated messages, each carrying an `In-Reply-To` its
-    // sender left blank. The header names no parent, so the threading
-    // algorithm links neither to the other. An empty id read as a value is one
-    // every such message shares, and sharing it gathers strangers into a
-    // single thread whose reply address is whichever of them spoke last.
+    // Two federated messages, each carrying an `In-Reply-To` its sender left
+    // blank. The header names no parent, so the threading algorithm links
+    // neither to the other. An empty id read as a value is one every such
+    // message shares, and sharing it gathers strangers into a single thread.
     const { transport } = await createTestTransport();
     const alphaTransport = transport.getTransportFor("alpha@test.interchange");
 
@@ -990,10 +964,10 @@ describe("deliver", () => {
   });
 
   test("does NOT dedup by Message-ID: redelivery appends a second copy", async () => {
-    // The federation inbound path performs NO Message-ID dedup:
-    // the mailbox store appends unconditionally, so delivering the same
-    // Message-ID twice yields two INBOX messages. This pins the baseline
-    // the supervisor FIFO + markConsumed dedup improves on.
+    // The federation inbound path performs NO Message-ID dedup: the mailbox
+    // store appends unconditionally, so delivering the same Message-ID twice
+    // yields two INBOX messages. This pins the baseline the supervisor FIFO +
+    // markConsumed dedup improves on.
     const { transport } = await createTestTransport();
     const alphaTransport = transport.getTransportFor("alpha@test.interchange");
 
@@ -1057,9 +1031,9 @@ describe("deliver", () => {
   });
 
   test("throws for a blank From header", async () => {
-    // The header parser trims, so a present-but-blank From arrives as an
-    // empty string. Accepting it would store an empty sender, while the same
-    // bytes read through buildMessageHeaders report no originator at all.
+    // The header parser trims, so a present-but-blank From arrives as an empty
+    // string. Accepting it would store an empty sender, while the same bytes
+    // read through buildMessageHeaders report no originator at all.
     const { transport } = await createTestTransport();
     const msg = new TextEncoder().encode(
       [
@@ -1091,8 +1065,8 @@ describe("deliver", () => {
 describe("append", () => {
   test("writes no From line for a message with no originator", async () => {
     // The round trip goes through the RFC 2822 serializer: interpolating the
-    // absence would write `From: undefined`, which reads back as an originator
-    // literally named "undefined".
+    // absence would write `From: undefined`, which reads back as an
+    // originator literally named "undefined".
     const { alphaTransport } = await createTestTransport();
     const ref = await alphaTransport.append(
       "INBOX",
@@ -1132,9 +1106,7 @@ describe("append", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// References chain on send (INTR-480)
-// ---------------------------------------------------------------------------
+// References chain on send
 
 describe("References chain on send", () => {
   test("ships the full References chain a reply carries", async () => {
