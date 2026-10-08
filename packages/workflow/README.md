@@ -234,13 +234,11 @@ address: the deployment's own run, whether directly or in a `loop` body or
 `onTrigger` section body of it, whose container relays the decision down. What
 no container can do is reach across the `childWorkflow` boundary.
 
-Of those homes the `onTrigger` section body carries a caveat the relay does not
-cause. A section body's run id omits the enclosing run, so a second top-level
-run of the same deployment finds the first run's body log already terminal and
-short-circuits it: the body never executes, nobody is asked, and the run still
-reports a clean terminal status (tracked as INTR-552). A gate a repeating
-deployment depends on belongs in the deployment's own run or in a `loop` body,
-whose iteration run ids re-root per run.
+Of those homes the `onTrigger` section body carries the same relay. Its run id
+is `<parentRunId>__<sectionId>__<eventIndex>` (`sectionBodyRunId`), so two runs
+do not share a body log. A body already recorded as `<sectionId>__<eventIndex>`
+stays on that id. A `workflow_run` row already written under the old id still
+collides at the hub until that row is gone.
 
 A loop body may contain a nested `loop`. An inner loop resolves its body ref
 from the same top-level bodies map (a loop iteration inherits its parent's env),

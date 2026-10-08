@@ -23,6 +23,8 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
+import { sectionBodyRunId } from "@intx/workflow";
+
 import type { HarnessConfig } from "@intx/types/runtime";
 import { deriveRunAddress } from "@intx/workflow-deploy";
 import { tenant as tenantTable } from "@intx/db/schema";
@@ -53,7 +55,6 @@ import { onTriggerLoopBodyEntry } from "./fixtures/on-trigger-loop-body";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const SECTION_ID = "section";
-const BODY_CHILD_RUN_ID = `${SECTION_ID}__0`;
 
 const TENANT_ID = "tnt_on_trigger_loop_body";
 const CALLER_PRINCIPAL_ID = "prn_on_trigger_loop_body";
@@ -98,7 +99,7 @@ afterAll(async () => {
 
 /**
  * The container run is the single run under the deployment's workflow-run repo
- * that is NOT a body child (body children are `${SECTION_ID}__<n>`).
+ * whose id sorts ahead of a minted section body (it is a proper prefix).
  */
 async function findContainerRunId(
   workflowRunRepoId: RepoId,
@@ -208,7 +209,10 @@ async function deployAndAssertBodyCompletes(opts: {
         opts.deploymentId,
         containerRunId,
       );
-      return hasChildCompleted(events, BODY_CHILD_RUN_ID);
+      return hasChildCompleted(
+        events,
+        sectionBodyRunId(containerRunId, SECTION_ID, 0),
+      );
     },
     { diagnostics: env.sidecarDiagnostics },
   );

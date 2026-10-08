@@ -298,24 +298,24 @@ separate, unconstrained string.
 Where it lives today: `validateNamespacedId`,
 `packages/agent/src/namespace.ts`
 
-**25.** KNOWN LIMITATION. An `onTrigger` section body can silently NOT RUN
-when a second top-level run of the same deployment reaches it. The body's run
-id is derived as `<sectionStepId>__<eventIndex>`, with no parent-run prefix, so
-it is the same string for every run of that deployment. A run whose body log is
-already terminal short-circuits and returns the earlier result: the body never
-executes, and the run still reports a clean terminal status.
+**25.** An `onTrigger` section body run id is
+`<parentRunId>__<sectionId>__<eventIndex>`, from `sectionBodyRunId`. A body
+already recorded as `<sectionId>__<eventIndex>` stays on that recorded id.
+The next event of that parent, which has no recorded child yet, gets the
+prefixed id. A new run uses only prefixed ids.
 
-Contrast the loop path, which derives `<runId>__<loopId>__<index>` through
-`loopBodyRunId` and therefore re-roots per run. The asymmetry is the defect.
+A `workflow_run` row already written under `section__<index>` keeps that
+primary key. Completion does not delete the row, and this change does not
+rewrite it. Two deployments that already share the key keep colliding until
+the row is gone: the second terminal takes the foreign return and is
+dropped. A section body's approval park is registered on the parent run,
+not on the body id.
 
-This predates tool-bearing section bodies, but it costs more now than it did:
-what a skipped body skips is real tool work rather than only non-inference
-primitives. Tracked as INTR-552, which must resolve how already-running bodies
-keyed under the current derivation are handled before the derivation changes.
-
-Where it lives today: the `onTrigger` section path in `runOnTrigger`,
-`packages/workflow/src/runtime/run.ts`, against `loopBodyRunId`,
-`packages/workflow/src/runtime/step-scope.ts`
+Where it lives today: `sectionBodyRunId`,
+`packages/workflow/src/runtime/step-scope.ts`; the recorded-id lookup in
+`runOnTrigger` and `planOnTriggerResume`,
+`packages/workflow/src/runtime/run.ts`; `workflow_run.id`,
+`packages/db/src/schema/workflow-run.ts`
 
 **26.** An untimed park is REFUSED wherever nothing upstream could answer it:
 beneath a `childWorkflow` child, at any depth. A park is not only an

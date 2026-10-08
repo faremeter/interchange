@@ -10,6 +10,8 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
+import { sectionBodyRunId } from "@intx/workflow";
+
 import { toolConsumer } from "@intx/authz";
 import { createNoopCredentialCipher } from "@intx/crypto";
 import { loadFrozenGrantSnapshot } from "@intx/db";
@@ -58,7 +60,6 @@ const DEPLOYMENT_ID = "run_on-trigger-credential-tool-1";
 const SECTION_ID = "section";
 const BODY_STEP_ID = "work";
 const BODY_AGENT_ID = "agent-on-trigger-credential-body";
-const BODY_CHILD_RUN_ID = `${SECTION_ID}__0`;
 
 const TENANT_ID = "tnt_on_trigger_credential_tool";
 const CALLER_PRINCIPAL_ID = "prn_on_trigger_credential_tool";
@@ -277,7 +278,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
           return events.some(
             (event) =>
               event.type === "ChildCompleted" &&
-              event.body["childRunId"] === BODY_CHILD_RUN_ID,
+              event.body["childRunId"] ===
+                sectionBodyRunId(containerRunId, SECTION_ID, 0),
           );
         },
         { diagnostics: env.sidecarDiagnostics },
@@ -289,7 +291,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         const bodyEvents = await readWorkflowRunEvents(
           env,
           DEPLOYMENT_ID,
-          BODY_CHILD_RUN_ID,
+          sectionBodyRunId(containerRunId, SECTION_ID, 0),
         );
         throw new Error(
           `origin did not record the bearer: ${JSON.stringify(fresh)}; body events: ${JSON.stringify(bodyEvents.map((event) => event.type))}\n${env.sidecarDiagnostics()}`,

@@ -12,10 +12,10 @@
 // parked in `awaiting-timer` at kill time; the container is a live in-flight
 // resident awaiting the body terminal, with no container park.
 //
-//   1. Fire mail #1 -> the container run starts, spawns the body `section__0`,
-//      the body sleeps. Wait until `section__0`'s durable log carries the sleep
+//   1. Fire mail #1 -> the container run starts, spawns event 0's body,
+//      the body sleeps. Wait until that body's durable log carries the sleep
 //      step's `TimerSet` with no `StepCompleted` (parked mid-sleep) and the
-//      container has `ChildSpawned(section__0)` with no `ChildCompleted`.
+//      container has `ChildSpawned` for that body with no `ChildCompleted`.
 //   2. Quiesce, then KILL the sidecar subprocess while the body sleeps.
 //   3. Start a fresh sidecar against the crashed process's SIDECAR_DATA_DIR.
 //      Boot-time restore re-arms the body's unfired timer and re-includes the
@@ -23,11 +23,11 @@
 //      (`planOnTriggerResume` -> `readopt-in-flight-body`), re-spawns it from its
 //      log, and the body re-adopts its own sleep timer (`isResumableSleepStep`).
 //   4. The re-armed timer fires; the body's sleep completes and the container
-//      records `ChildCompleted(section__0)` -- only AFTER the restart.
+//      records `ChildCompleted` for that body -- only AFTER the restart.
 //
 // Load-bearing assertions: exactly one `RunStarted` on the container; exactly one
 // `TimerSet` and one `TimerFired` on the body child (no double-count on resume);
-// `ChildSpawned` + `ChildCompleted` for `section__0`; the container never reaches
+// `ChildSpawned` + `ChildCompleted` for event 0's body; the container never reaches
 // a terminal event.
 //
 // Harness justification: SPAWN-REAL. Real hub, real sidecar subprocess, real
@@ -38,6 +38,8 @@
 import fs from "node:fs";
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+
+import { sectionBodyRunId } from "@intx/workflow";
 
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
 import {
@@ -145,7 +147,7 @@ afterAll(async () => {
 });
 
 // The container run is the single run under the deployment's workflow-run repo
-// that is NOT a body child. Body children are `${SECTION_ID}__<n>`.
+// whose id sorts ahead of a minted section body (it is a proper prefix).
 async function findContainerRunId(
   target: DeployFlowEnv,
   workflowRunRepoId: RepoId,
@@ -160,7 +162,10 @@ async function findBodyChildRunId(
   workflowRunRepoId: RepoId,
 ): Promise<string | undefined> {
   const ids = await listRunIds(target, workflowRunRepoId);
-  return ids.find((id) => id === `${SECTION_ID}__0`);
+  const containerRunId = ids.find((id) => !id.startsWith(`${SECTION_ID}__`));
+  if (containerRunId === undefined) return undefined;
+  const bodyRunId = sectionBodyRunId(containerRunId, SECTION_ID, 0);
+  return ids.includes(bodyRunId) ? bodyRunId : undefined;
 }
 
 const hasChildCompleted = (

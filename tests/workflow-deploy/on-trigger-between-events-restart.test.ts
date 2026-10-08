@@ -13,7 +13,7 @@
 // deploy stages the inline body to its own workflow asset (`wf__section`) and
 // the runtime spawns each event's body as a child run by that ref.
 //
-//   1. Fire mail #1 -> the container run starts, spawns the body `section__0`
+//   1. Fire mail #1 -> the container run starts, spawns event 0's body
 //      with the mail body as its input, the body sleeps and completes, and the
 //      container re-arms on a snapshot-less `input` park -- parked between
 //      events (no RunCompleted; a long-lived section never self-completes).
@@ -22,17 +22,17 @@
 //   3. Start a fresh sidecar against the crashed process's SIDECAR_DATA_DIR.
 //      Boot-time restore re-spawns the deployment; self-discovery re-includes
 //      the CONTAINER run (it is the parent -- its log carries `ChildSpawned`
-//      for `section__0`, so it is never itself a child) while EXCLUDING the
-//      body child `section__0`. The restored container re-adopts its durable
+//      for event 0's body, so it is never itself a child) while EXCLUDING that
+//      body child. The restored container re-adopts its durable
 //      input park (`planOnTriggerResume` -> reawait-input) and re-parks.
 //   4. Fire mail #2 -> the supervisor's unified dispatch, finding the run
 //      live but its input channel not yet re-armed, waits for the re-armed
 //      input park and then delivers the mail as a `signal.deliver` (event 1,
-//      NOT a spurious fresh trigger). The container spawns `section__1` with
+//      NOT a spurious fresh trigger). The container spawns event 1's body with
 //      mail #2's body, which completes.
 //
 // Load-bearing assertions: exactly one `RunStarted`; `ChildSpawned` +
-// `ChildCompleted` for BOTH `section__0` and `section__1`; and the container
+// `ChildCompleted` for both event bodies; and the container
 // never reaches a terminal event.
 //
 // Harness justification: SPAWN-REAL. Real hub, real sidecar subprocess, real
@@ -46,6 +46,8 @@
 import fs from "node:fs";
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+
+import { sectionBodyRunId } from "@intx/workflow";
 
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
 import {
@@ -147,8 +149,8 @@ afterAll(async () => {
 
 /**
  * The container run is the single run under the deployment's workflow-run
- * repo that is NOT a body child. Body children are `${SECTION_ID}__<n>`; the
- * container carries their `ChildSpawned`/`ChildCompleted` records in its own
+ * repo whose id sorts ahead of a minted section body. The
+ * container carries the bodies' `ChildSpawned`/`ChildCompleted` records in its own
  * log. Returns `undefined` until the container's `runs/` entry exists.
  */
 async function findContainerRunId(
@@ -157,15 +159,6 @@ async function findContainerRunId(
 ): Promise<string | undefined> {
   const ids = await listRunIds(target, workflowRunRepoId);
   return ids.find((id) => !id.startsWith(`${SECTION_ID}__`));
-}
-
-async function readContainerEvents(
-  target: DeployFlowEnv,
-  workflowRunRepoId: RepoId,
-): Promise<{ type: string; body: Record<string, unknown> }[]> {
-  const containerRunId = await findContainerRunId(target, workflowRunRepoId);
-  if (containerRunId === undefined) return [];
-  return readWorkflowRunEvents(target, DEPLOYMENT_ID, containerRunId);
 }
 
 const hasChildCompleted = (
@@ -259,9 +252,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       await waitFor(
         async () => {
-          const events = await readContainerEvents(env, workflowRunRepoId);
+          const id = await findContainerRunId(env, workflowRunRepoId);
+          if (id === undefined) return false;
+          const events = await readWorkflowRunEvents(env, DEPLOYMENT_ID, id);
           return (
-            hasChildCompleted(events, `${SECTION_ID}__0`) &&
+            hasChildCompleted(events, sectionBodyRunId(id, SECTION_ID, 0)) &&
             events.some(
               (e) =>
                 e.type === "SignalAwaited" && e.body["parkKind"] === "input",
@@ -275,6 +270,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       if (containerRunId === undefined) {
         throw new Error("no container run under the workflow-run repo");
       }
+      const event0 = sectionBodyRunId(containerRunId, SECTION_ID, 0);
+      const event1 = sectionBodyRunId(containerRunId, SECTION_ID, 1);
 
       // Parked between events: body 0 done, section re-armed on input, and the
       // long-lived container has NOT reached a terminal event.
@@ -287,12 +284,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(parkedTypes.filter((t) => t === "RunStarted").length).toBe(1);
       expect(
         parked.some(
-          (e) =>
-            e.type === "ChildSpawned" &&
-            e.body["childRunId"] === `${SECTION_ID}__0`,
+          (e) => e.type === "ChildSpawned" && e.body["childRunId"] === event0,
         ),
       ).toBe(true);
-      expect(hasChildCompleted(parked, `${SECTION_ID}__0`)).toBe(true);
+      expect(hasChildCompleted(parked, event0)).toBe(true);
       expect(parkedTypes).not.toContain("RunCompleted");
       expect(parkedTypes).not.toContain("RunFailed");
       expect(parkedTypes).not.toContain("RunCancelled");
@@ -339,7 +334,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // Settle the restore pack pipeline first, then fire -- retrying on the SAME
       // messageId, which the run dedups by signalId, so a retried delivery is
       // idempotent and never spawns a second event (the
-      // [section__0, section__1] assertion below stays exact).
+      // spawned-id assertion below stays exact).
       await settleWorkflowRunPacks(env);
 
       // The 12s inner window is the re-fire cadence, not a budget for the
@@ -363,7 +358,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const secondMessageId =
         "<on-trigger-between-events-2@integration.interchange>";
       await env.retrying(
-        `re-fire the event-1 mail until ${SECTION_ID}__1 completes`,
+        `re-fire the event-1 mail until ${event1} completes`,
         async (checkTornDown) => {
           for (;;) {
             checkTornDown();
@@ -388,7 +383,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
                 DEPLOYMENT_ID,
                 containerRunId,
               );
-              if (hasChildCompleted(events, `${SECTION_ID}__1`)) return;
+              if (hasChildCompleted(events, event1)) return;
               await new Promise((r) => setTimeout(r, 200));
             }
           }
@@ -411,24 +406,22 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const spawnedChildren = finalEvents.flatMap((e) =>
         e.type === "ChildSpawned" ? [e.body["childRunId"]] : [],
       );
-      expect(spawnedChildren).toEqual([`${SECTION_ID}__0`, `${SECTION_ID}__1`]);
-      expect(hasChildCompleted(finalEvents, `${SECTION_ID}__0`)).toBe(true);
-      expect(hasChildCompleted(finalEvents, `${SECTION_ID}__1`)).toBe(true);
+      expect(spawnedChildren).toEqual([event0, event1]);
+      expect(hasChildCompleted(finalEvents, event0)).toBe(true);
+      expect(hasChildCompleted(finalEvents, event1)).toBe(true);
 
       // The long-lived section never self-completes.
       expect(finalTypes).not.toContain("RunCompleted");
       expect(finalTypes).not.toContain("RunFailed");
       expect(finalTypes).not.toContain("RunCancelled");
 
-      // Load-bearing for the between-events recovery: section__1 exists only
+      // Load-bearing for the between-events recovery: event 1's body exists only
       // because the restored container re-adopted its input park and the supervisor
       // routed mail #2 onto it as event 1 (not a spurious fresh trigger). Its
       // ChildSpawned lands AFTER the restart, so the crash-recovered section
       // serviced a genuinely new event.
       const secondSpawnIndex = finalEvents.findIndex(
-        (e) =>
-          e.type === "ChildSpawned" &&
-          e.body["childRunId"] === `${SECTION_ID}__1`,
+        (e) => e.type === "ChildSpawned" && e.body["childRunId"] === event1,
       );
       expect(secondSpawnIndex).toBeGreaterThanOrEqual(0);
     }, 180_000);

@@ -28,6 +28,7 @@ import {
   createNoopDrainController,
   defineWorkflow,
   runtimeRun,
+  sectionBodyRunId,
   type Primitive,
   type RepoStore,
   type SignalChannel,
@@ -149,6 +150,7 @@ describe("tolerate section on a parent-abort local teardown", () => {
 
   test("crash-resume of an abort-teardown tolerate section stays ended, does not resurrect", async () => {
     const runId = "sec-tol-abort-resume";
+    const bodyRunId = sectionBodyRunId(runId, "section", 0);
     // The crash window: the abort-teardown body settled `failed` with
     // `abortedTeardown` durably recorded, but the container had not yet
     // committed its own StepFailed. Absent the durable teardown cause, the
@@ -177,14 +179,14 @@ describe("tolerate section on a parent-abort local teardown", () => {
         seq: 3,
         at,
         stepId: "section",
-        childRunId: "section__0",
+        childRunId: bodyRunId,
         childDefinitionRef: "body-ref",
       },
       {
         kind: "ChildCompleted",
         seq: 4,
         at,
-        childRunId: "section__0",
+        childRunId: bodyRunId,
         terminalStatus: "failed",
         abortedTeardown: true,
       },
