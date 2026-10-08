@@ -1,6 +1,6 @@
 // The single runtime body, invoked by `runLocal` and the future child-process
-// entry point. It switches on env keys, never on host process (`run.test.ts`
-// enforces that), so env implementations swap without re-validating the body.
+// entry point. Switches on env keys, never on host process (`run.test.ts`
+// enforces that), so env implementations swap without re-validating.
 
 import { correlationIdFromSignalName, signalName } from "@intx/types";
 import type { ApprovalSnapshot, ControlParkKind } from "@intx/types/runtime";
@@ -78,14 +78,13 @@ export interface RuntimeRunOptions {
   consumedMessageId?: string;
   runId?: string;
   /**
-   * Pre-existing event log to resume from. The runtime re-applies it via
-   * `resumeFromLog`. Supported seeds: complete-or-cancelled logs,
-   * step-boundary-aligned logs, and the resumable carve-outs; an
+   * Pre-existing event log to resume from. Accepted: complete-or-cancelled,
+   * step-boundary-aligned, and resumable carve-out logs; an
    * invocation-boundary step (`step`/`action`) left `in-flight` settles
    * `StepFailed` (at-most-once), other residuals surface
-   * `RuntimeResumeUnsupportedError`. Omitted: the durable log for `runId` is
-   * reduced -- empty starts fresh, non-terminal is adopted, terminal is
-   * returned as-is.
+   * `RuntimeResumeUnsupportedError`. When omitted, the durable log for
+   * `runId` is reduced: empty starts fresh, non-terminal is adopted,
+   * terminal is returned as-is.
    */
   resumeFromEvents?: readonly WorkflowEvent[];
   /**
@@ -94,10 +93,9 @@ export interface RuntimeRunOptions {
    */
   depth?: number;
   /**
-   * Ceiling on child spawn depth for this run tree, resolved once at the
-   * `runtimeRun` edge. An injected value can only lower it below
-   * `MAX_CHILD_SPAWN_DEPTH`, never raise it. Threaded to every spawned child.
-   * Default `MAX_CHILD_SPAWN_DEPTH`.
+   * Ceiling on child spawn depth for this run tree. An injected value can
+   * only lower it below `MAX_CHILD_SPAWN_DEPTH`, never raise it. Threaded to
+   * every spawned child. Default `MAX_CHILD_SPAWN_DEPTH`.
    */
   maxChildSpawnDepth?: number;
   /**
@@ -105,9 +103,8 @@ export interface RuntimeRunOptions {
    * run's own cancel controller, so an in-flight or parked step settles
    * `StepFailed` and the run settles `RunFailed`. Unlike `WorkflowRun.cancel`,
    * it writes no durable `CancelRequested` and never enters `cancelling`.
-   * Teardown for an in-process suspendable child (loop iteration, onTrigger
-   * body) whose `workflow-process` principal cannot sign the control-plane
-   * cancel a cascade would require.
+   * Used for an in-process suspendable child (loop iteration, onTrigger body)
+   * whose principal cannot sign a control-plane cancel.
    */
   localAbort?: AbortSignal;
 }
@@ -116,14 +113,13 @@ export interface RuntimeRunOptions {
  * Run a workflow against a `WorkflowRuntimeEnv` -- the single runtime body
  * invoked by `runLocal` and the (future) child-process entry point.
  *
- * Recovery runs against canonical state, whether seeded via
- * `options.resumeFromEvents` or adopted from the durable log. A seed must
- * satisfy two constraints: (1) its blob: refs resolve via the same
+ * Recovery runs against canonical state, seeded via `options.resumeFromEvents`
+ * or adopted from the durable log. A seed must resolve its blob: refs via the
  * `BlobSubstrate` that minted them (the runLocal in-memory substrate is
- * ephemeral and fails fast), and (2) it is complete-or-cancelled,
- * step-boundary-aligned, or in a resumable carve-out. An invocation-boundary
- * step left `in-flight` settles `StepFailed`; other residuals surface
- * `RuntimeResumeUnsupportedError`, and the host owns recovery.
+ * ephemeral) and be complete-or-cancelled, step-boundary-aligned, or a
+ * resumable carve-out; an invocation-boundary step left `in-flight` settles
+ * `StepFailed`, other residuals surface `RuntimeResumeUnsupportedError`, and
+ * the host owns recovery.
  */
 export function runtimeRun(
   definition: WorkflowDefinition,
@@ -158,8 +154,7 @@ export function runtimeRun(
     complete: completePromise,
     async cancel(origin, reason) {
       // Route through `commit` so a cancel racing in-flight primitive commits
-      // cannot collide on seq numbers; the catch absorbs the narrow
-      // terminate-between-read-and-commit race as a no-op.
+      // cannot collide on seq numbers; the catch absorbs the narrow race.
       const live = await reloadState(env, runId);
       if (isTerminalRunPhase(live.phase)) return;
       const event: WorkflowEvent = {
@@ -249,11 +244,10 @@ function commit(
 // Segment-boundary commit: buffers the event, then flushes the whole pending
 // buffer (this event last) in one durable `appendBatch`. Used for terminal
 // events (on disk the moment the commit resolves), the control-plane `cancel`,
-// and the agent-invoke barrier in `runStep` (the step's `StepStarted` is
-// durable before `env.invokeStep` runs, so a crash mid-invocation leaves a
-// marker recovery settles as terminal failure rather than re-invoking). The
-// terminal event as the last blob keeps the workflow-run kind handler's
-// terminal-lock satisfied.
+// and the agent-invoke barrier in `runStep` (`StepStarted` durable before
+// `env.invokeStep`, so a crash mid-invocation settles terminal failure rather
+// than re-invoking). The terminal event as the last blob keeps the
+// workflow-run kind handler's terminal-lock satisfied.
 function commitDurable(
   env: WorkflowRuntimeEnv,
   runId: string,
@@ -295,11 +289,10 @@ async function executeRunBody(
   );
 
   // Restore prior events to the repo store on resume so a downstream read
-  // sees the historical log alongside newly-appended events. Seeds carry their
-  // original seqs and are written verbatim -- the commit-lock path reassigns
-  // seq, which would corrupt the replay invariant -- so resume is a
-  // single-owner operation. A same-seq seed is idempotent only when
-  // structurally identical; a divergent one throws.
+  // sees the historical log alongside newly-appended events. Seeds carry
+  // their original seqs and are written verbatim (the commit-lock path would
+  // reassign seq and corrupt the replay invariant). A same-seq seed is
+  // idempotent only when structurally identical; a divergent one throws.
   const existing = await env.repoStore.read(runId);
   const existingBySeq = new Map(existing.map((e) => [e.seq, e]));
   for (const event of initialEvents) {
@@ -319,11 +312,11 @@ async function executeRunBody(
 
   // Seed-contract guard, before any blob resolution: a seeded resume whose
   // `resumeFromEvents` carries blob: refs needs the BlobSubstrate that
-  // recorded them, and the runLocal in-memory substrate is ephemeral. Fail
-  // with a targeted error rather than a deep `resolveRef` miss. Runs BEFORE
-  // the terminal short-circuit and the hydration below, which both call
-  // `resolveRef`; keyed on `initialEvents` so it fires for a seeded resume
-  // whether terminal or not, and is a no-op for a seedless recovery.
+  // recorded them; the runLocal in-memory substrate is ephemeral, so fail
+  // with a targeted error rather than a deep `resolveRef` miss. Runs before
+  // the terminal short-circuit and the hydration below (both call
+  // `resolveRef`); keyed on `initialEvents` so it fires for any seeded
+  // resume and is a no-op for a seedless one.
   const seedBlobRefs = initialEvents.filter(
     (e): e is typeof e & { kind: "StepCompleted" } =>
       e.kind === "StepCompleted" && e.output.ref.startsWith("blob:"),
@@ -335,9 +328,8 @@ async function executeRunBody(
   }
 
   // Establish canonical state from the durable log, not the seed array -- a
-  // seed reaches this process either as `resumeFromEvents` or adopted from
-  // disk. Reducing the log answers "is there residual work?" identically for
-  // both, so every decision below keys on canonical state.
+  // seed reaches this process as `resumeFromEvents` or adopted from disk, so
+  // every decision below keys on the reduced log.
   let state = await reloadState(env, runId);
 
   // Terminal short-circuit: a recovery call against an already-terminal log
@@ -352,12 +344,12 @@ async function executeRunBody(
   // in `state.steps`, so such a step would stall the main loop. Cancellation
   // paths are exempt -- the cleanup branch owns `cancelling` steps.
   //
-  // A residual `in-flight` step at an invocation boundary (`step`/`action`) is
-  // a crash mid-invocation: its `StepStarted` is durable, no `StepCompleted`
-  // landed, and the invoked primitive is non-deterministic, so it cannot be
-  // replayed exactly-once. Settle it as a terminal `StepFailed` rather than
-  // re-invoke. Every other non-terminal residual (a mid-`map`/`childWorkflow`
-  // container, an `awaiting-signal`/`awaiting-timer` step) surfaces
+  // A residual `in-flight` step at an invocation boundary (`step`/`action`)
+  // is a crash mid-invocation: its `StepStarted` is durable, no
+  // `StepCompleted` landed, and the invoked primitive is non-deterministic, so
+  // it cannot be replayed exactly-once; settle it as a terminal `StepFailed`.
+  // Every other non-terminal residual (a mid-`map`/`childWorkflow` container,
+  // an `awaiting-signal`/`awaiting-timer` step) surfaces
   // `RuntimeResumeUnsupportedError` -- the host owns re-arming those.
   const crashedInFlight: { stepId: string; attempt: number }[] = [];
   const recoverableParks: {
@@ -389,13 +381,12 @@ async function executeRunBody(
       }
       // A crashed-mid-invocation step (agent step or action). Before settling
       // it terminal, check the crash-mid-park window: the reactor durably
-      // recorded an approval suspension whose `SignalAwaited` was buffered but
-      // never flushed, so the reduced phase is `in-flight`, not
-      // `awaiting-signal`. That step is recoverable -- the loop below
-      // re-commits the missing `SignalAwaited` from the pending-operation
-      // store -- otherwise it is a genuine crash mid-agent-turn and settles
-      // terminal. Both settlings happen AFTER this loop; committing inline
-      // would leave `state` stale.
+      // recorded an approval suspension whose `SignalAwaited` was buffered
+      // but never flushed, so the reduced phase is `in-flight`, not
+      // `awaiting-signal`. Recoverable -- the loop below re-commits the
+      // missing `SignalAwaited` from the pending-op store -- otherwise it is
+      // a genuine crash mid-agent-turn and settles terminal. Both settlings
+      // happen AFTER this loop; committing inline would leave `state` stale.
       if (isCrashedInvocationStep(definition, stepId, stepState.phase)) {
         const parkedOps =
           env.readParkedApprovalOps !== undefined
@@ -449,11 +440,11 @@ async function executeRunBody(
   // the crash prevented from flushing, from the reactor's durable pending op.
   // This advances the step to `awaiting-signal`, the ordinary crash-after-park
   // case: `nextSchedulable` re-offers it, `runStep` re-parks on the recovered
-  // channel reusing the original correlationId, and -- already
-  // `awaiting-signal` -- it does not re-fire `onPark`, so the correlation
-  // registers exactly once and the agent turn is never re-invoked (at-most-
-  // once). The reactor stores `timeoutAt` as epoch ms; `SignalAwaited` carries
-  // ISO, so convert, and omit the field for the indefinite-hold norm.
+  // channel with the original correlationId and, already `awaiting-signal`,
+  // does not re-fire `onPark`, so the correlation registers exactly once and
+  // the agent turn is never re-invoked (at-most-once). The reactor stores
+  // `timeoutAt` as epoch ms; `SignalAwaited` carries ISO, so convert, and
+  // omit the field for the indefinite-hold norm.
   //
   // APPROVAL-only: an "input" park has no durable pending-op, so a crash in
   // its pre-flush window settles as a terminal StepFailed below.
@@ -476,8 +467,8 @@ async function executeRunBody(
   // `nextSchedulable` will not re-schedule it and the agent is never
   // re-invoked. A unit carrying `onFailure` routes rather than going fatal:
   // the resume reconciliation below observes the `routed` phase, prunes its
-  // normal dependents, and reconstructs its sentinel. A unit without one stays
-  // a bare fatal `StepFailed`; the post-loop `hasFailedStep` path commits
+  // normal dependents, and reconstructs its sentinel; without one it stays a
+  // bare fatal `StepFailed` and the post-loop `hasFailedStep` path commits
   // `RunFailed`. (`isCrashedInvocationStep` matches only `step`/`action`; a
   // crashed `childWorkflow` is host-owned.)
   for (const { stepId, attempt } of crashedInFlight) {
@@ -520,8 +511,8 @@ async function executeRunBody(
       state = await commit(env, runId, event);
     } catch (cause) {
       // Reached only when canonical state was `pending`, so seedless recovery
-      // -- whose canonical log already carries `RunStarted` -- never lands
-      // here. The one race that still rejects with `code: "phase"` is a
+      // (whose canonical log already carries `RunStarted`) never lands here.
+      // The one race that still rejects with `code: "phase"` is a
       // `cancel("self", ...)` beating this first `RunStarted` commit:
       // `CancelRequested` is legal from `pending`, so the chain reloads, sees
       // phase=cancelling, and rejects. Reload and continue -- proceeding
@@ -540,10 +531,9 @@ async function executeRunBody(
   // Hydrate stepOutputs from the canonical log's StepCompleted events so
   // downstream steps can resolve `{ from: "steps.<id>.output" }` selectors
   // against work that completed before this process took over (seed or
-  // adopted log). Without it, any selector referencing a previously-completed
-  // step's output throws, landing as a spurious StepFailed. The
-  // ephemeral-substrate seed-contract guard protects these `resolveRef` calls
-  // up front.
+  // adopted log); without it, any such selector throws, landing as a spurious
+  // StepFailed. The ephemeral-substrate seed-contract guard protects these
+  // `resolveRef` calls up front.
   const canonicalLog = await env.repoStore.read(runId);
   for (const event of canonicalLog) {
     if (event.kind !== "StepCompleted") continue;
@@ -610,8 +600,8 @@ async function executeRunBody(
   // Per-step local abort controllers. Each scheduled primitive gets one; the
   // controller fires when the outer cancelController aborts, or when
   // drain.signal aborts AND the step's behavior is `"cancel"`. The main loop
-  // reads this map to abort in-flight cancel-mode steps when drain fires after
-  // the step was already scheduled.
+  // reads this map to abort in-flight cancel-mode steps when drain fires
+  // after the step was already scheduled.
   const stepAborts = new Map<string, AbortController>();
 
   // Tick loop: schedule everything ready, await any in-flight to settle,
@@ -626,8 +616,8 @@ async function executeRunBody(
     // every in-flight step whose declared behavior is `"cancel"`. The
     // supervisor's drainTimeout accumulator on the host side ticks against
     // these aborts; on expiry it commits a signed
-    // `CancelRequested{origin: "supervisor-drain"}` the runtime body picks up
-    // via the existing cancel cascade.
+    // `CancelRequested{origin: "supervisor-drain"}` the body picks up via the
+    // existing cancel cascade.
     if (env.drain.signal.aborted) {
       for (const stepId of inFlight) {
         if (shouldAbortForDrain(env.drain, stepId)) {
@@ -734,8 +724,7 @@ async function executeRunBody(
   // If we exited the loop without a terminal phase, settle it. The
   // `cancelling` branch also lands here when the cancel-vs-completion race
   // makes `isRunDone` return true via the all-steps-terminal path before the
-  // cancellation block ran. Every run must reach a terminal event; the
-  // runtime body owns emitting one.
+  // cancellation block ran. Every run must reach a terminal event.
   if (state.phase === "cancelling") {
     state = await settleCancelling(env, runId);
   } else if (state.phase === "running") {
@@ -789,9 +778,9 @@ async function executeRunBody(
  * already terminal, without re-driving it. Used by the terminal
  * short-circuit: a recovery call against an already-terminal durable log
  * must return the existing result rather than emit a fresh `RunStarted`
- * (which would throw `terminal-phase`). Shape matches the live terminal path:
- * `terminalStatus` from the terminal phase, `events` from the durable log,
- * `outputs` hydrated from its `StepCompleted` refs.
+ * (which would throw `terminal-phase`). Shape matches the live terminal
+ * path: `terminalStatus` from the terminal phase, `events` from the durable
+ * log, `outputs` hydrated from its `StepCompleted` refs.
  */
 async function buildResultFromLog(
   env: WorkflowRuntimeEnv,
@@ -809,7 +798,7 @@ async function buildResultFromLog(
 }
 
 /**
- * Structural equality for two events at the same seq. The events are plain
+ * Structural equality for two events at the same seq. Events are plain
  * JSON-serializable objects by the state-machine contract; a canonical-JSON
  * comparison ignores key order and absent-vs-undefined field differences.
  */
@@ -831,10 +820,10 @@ function canonicalEventJSON(value: unknown): string {
 }
 
 /**
- * Run the post-loop cancellation cleanup: reload, cascade `ChildCancelRequested`
- * to any live children, and commit `RunCancelled`. Shared between the natural
- * cancelling exit and the post-loop catch that absorbs a phase rejection on the
- * terminal commit when a concurrent cancel won the chain race.
+ * Post-loop cancellation cleanup: reload, cascade `ChildCancelRequested` to
+ * any live children, and commit `RunCancelled`. Shared between the natural
+ * cancelling exit and the post-loop catch that absorbs a phase rejection on
+ * the terminal commit when a concurrent cancel won the chain race.
  */
 async function settleCancelling(
   env: WorkflowRuntimeEnv,
@@ -853,9 +842,9 @@ async function settleCancelling(
 /**
  * Emit `ChildCancelRequested` for every tracked child whose cancellation has
  * not been issued and which has not already reached a terminal status. The
- * state machine's resume invariant documents the runtime's responsibility for
- * this cascade: without it, a resuming process cannot rebuild the cancel chain
- * from the log alone.
+ * state machine's resume invariant documents the runtime's responsibility
+ * for this cascade: without it, a resuming process cannot rebuild the cancel
+ * chain from the log alone.
  */
 async function emitChildCancelCascade(
   env: WorkflowRuntimeEnv,
@@ -898,9 +887,9 @@ function bytesToHex(bytes: Uint8Array): string {
 
 /**
  * Build the per-step local AbortController used as the `abort` argument to
- * `runPrimitiveSafe`. Aborts when the outer cancelController.signal aborts, or
- * when drain.signal aborts and the step's declared drainBehavior is
- * `"cancel"`. A `"wait"`-behavior step ignores drain entirely.
+ * `runPrimitiveSafe`. Aborts when the outer cancelController.signal aborts,
+ * or when drain.signal aborts and the step's drainBehavior is `"cancel"`;
+ * a `"wait"`-behavior step ignores drain entirely.
  */
 function createStepAbort(
   stepId: string,
@@ -995,10 +984,10 @@ async function runPrimitive(
 
 /**
  * Wrap the per-primitive runner so an uncaught throw always lands a terminal
- * step-phase event in the log. Each runner already commits its own normal-path
- * completion and most failure paths; this is the safety net that catches
- * awaited promises rejecting outside the runner's own try/finally (e.g. signal
- * abort during awaitSignal).
+ * step-phase event in the log. Each runner already commits its own normal
+ * completion and most failure paths; this is the safety net for awaited
+ * promises rejecting outside the runner's own try/finally (e.g. signal abort
+ * during awaitSignal).
  */
 async function runPrimitiveSafe(
   definition: WorkflowDefinition,
@@ -1028,8 +1017,8 @@ async function runPrimitiveSafe(
       // The step never reached `StepStarted`. If the run is being cancelled
       // (or already terminal), the body's cleanup path owns the terminal
       // events; emitting synthetic step events here would be rejected because
-      // `StepStarted` requires `running`. Surface the original cause and leave
-      // the log untouched.
+      // `StepStarted` requires `running`. Surface the original cause and
+      // leave the log untouched.
       if (state.phase === "cancelling" || isTerminalRunPhase(state.phase)) {
         throw cause;
       }
@@ -1065,9 +1054,10 @@ async function runPrimitiveSafe(
       stepState.phase === "awaiting-timer";
     if (stillRunning) {
       // If the run is being cancelled, propagate cancellation directly rather
-      // than landing StepFailed -- a step mid-flight when cancellation reached
-      // it should end up `cancelled`, not `failed`. "Cancellation wins over
-      // failure" at the run level; the step-level guarantee lives here.
+      // than landing StepFailed -- a step mid-flight when cancellation
+      // reached it should end up `cancelled`, not `failed`. "Cancellation
+      // wins over failure" at the run level; the step-level guarantee lives
+      // here.
       if (state.phase === "cancelling") {
         const propagated: WorkflowEvent = {
           kind: "CancelPropagated",
@@ -1163,15 +1153,11 @@ async function runPrimitiveSafe(
  * Run an agent step (the agent path; `runAction` is the separate action
  * path).
  *
- * Agent-invoke durability barrier: the step's `StepStarted` is flushed durably
- * via `commitDurable` BEFORE `env.invokeStep` is called. The agent invocation
- * is a non-deterministic, potentially non-idempotent side effect the runtime
- * cannot record exactly-once; flushing the marker first means a crash
- * mid-invocation leaves a durable `StepStarted` with no `StepCompleted`, which
- * recovery settles as a terminal failure rather than re-invoking the agent
- * (at-most-once). `StepStarted` is emitted exactly once per step (the
- * `stepStartedEmitted` guard), so retry attempts re-enter without a second
- * flush.
+ * Agent-invoke durability barrier: the step's `StepStarted` is flushed
+ * durably via `commitDurable` BEFORE `env.invokeStep` is called, so a crash
+ * mid-invocation leaves a durable `StepStarted` with no `StepCompleted`,
+ * which recovery settles as a terminal failure rather than re-invoking the
+ * agent (at-most-once).
  */
 async function runStep(
   definition: WorkflowDefinition,
@@ -1181,9 +1167,9 @@ async function runStep(
   selectorCtx: SelectorContext,
   abort: AbortSignal,
 ): Promise<unknown> {
-  // Re-apply the retry/budget cross-field guard here as a defensive re-check,
-  // at the runtime's single read point for both fields, rather than trust that
-  // every definition reached it through `step()`.
+  // Re-apply the retry/budget cross-field guard here as a defensive re-check
+  // at the runtime's single read point for both fields, rather than trust
+  // that every definition reached it through `step()`.
   validateRetryTriggerCombination(step);
   let attempt = 1;
   const maxAttempts = step.retry?.maxAttempts ?? 1;
@@ -1198,13 +1184,13 @@ async function runStep(
   // durable, no `StepCompleted`) via `isResumableAwaitingSignalStep`. The
   // agent already parked on a reactor gate before the crash; re-invoking it
   // with the original input would start a NEW turn and silently re-run the
-  // suspended work. Instead recover the channel it parked on from the reduced
-  // state (the runtime-minted `signalName(correlationId)` lives only on the
-  // durable `SignalAwaited`, not in the definition), RE-PARK on it --
-  // `parkOnSignal`'s guard skips re-emitting `SignalAwaited` since the step
-  // is already `awaiting-signal` -- and, once the signal arrives, seed the
-  // suspend/resume bridge with the recovered `resume` so the first
-  // `invokeStep` re-invokes the agent against the delivered decision.
+  // suspended work. Instead recover the channel from the reduced state (the
+  // runtime-minted `signalName(correlationId)` lives only on the durable
+  // `SignalAwaited`), RE-PARK on it -- `parkOnSignal` skips re-emitting
+  // `SignalAwaited` since the step is already `awaiting-signal` -- and once
+  // the signal arrives, seed the suspend/resume bridge with the recovered
+  // `resume` so the first `invokeStep` re-invokes the agent against the
+  // delivered decision.
   const entryState = await reloadState(env, runId);
   const entryStepState = entryState.steps.get(step.id);
   let resumeFromPark:
@@ -1224,9 +1210,9 @@ async function runStep(
       );
     }
     // Recover the park kind from the durable reduced state so the resume
-    // synthesizes the right inbound after a respawn. The awaiting-signal phase
-    // guarantees `awaitingSignal` is set; `controlParkKindOf` is the single
-    // point that maps its optional kind to a definite one.
+    // synthesizes the right inbound after a respawn. The awaiting-signal
+    // phase guarantees `awaitingSignal` is set; `controlParkKindOf` is the
+    // single point that maps its optional kind to a definite one.
     const awaited = entryStepState.awaitingSignal;
     if (awaited === undefined) {
       throw new Error(
@@ -1238,14 +1224,12 @@ async function runStep(
       correlationId,
       parkKind: controlParkKindOf(awaited),
     };
-    // Recover the attempt the step suspended on. The suspend committed its
-    // pending-op + turns under the cold-path ContextStore keyed by this attempt
-    // (`stepStorageRoot({runId, stepId, attempt})`); the resume re-invoke must
-    // reopen that SAME `attempt-N` store so `rehydrateGates` finds the
-    // pending-op and the delivered decision correlates. A step that RETRIED
-    // before suspending reduces to currentAttempt >= 2; leaving `attempt` at 1
-    // would reopen the wrong store and hang. Recovering it also continues the
-    // retry lineage: a resumed step that later fails schedules attempt N+1.
+    // Recover the attempt the step suspended on: the suspend committed its
+    // pending-op + turns under the cold-path ContextStore keyed by this
+    // attempt (`stepStorageRoot({runId, stepId, attempt})`), so the resume
+    // re-invoke must reopen that SAME `attempt-N` store. A step that RETRIED
+    // before suspending reduces to currentAttempt >= 2; leaving `attempt` at
+    // 1 would reopen the wrong store and hang.
     attempt = entryStepState.currentAttempt;
     // The durable log already carries this step's StepStarted, so the
     // fresh-attempt emit below must be skipped: re-emitting throws.
@@ -1301,27 +1285,26 @@ async function runStep(
     }
 
     try {
-      // Suspend/resume bridge. The first invocation drives a plain agent send;
-      // if the reactor parks on a gate, `invokeStep` returns
+      // Suspend/resume bridge. The first invocation drives a plain agent
+      // send; if the reactor parks on a gate, `invokeStep` returns
       // `{ suspend: { correlationId } }` instead of an output. The step then
       // becomes a durable `awaiting-signal` step parked under the reserved
       // `signalName(correlationId)` channel via `parkOnSignal` (which emits
       // SignalAwaited + parks and returns the delivered decision). When the
-      // decision arrives, the step is re-invoked with `resume`, so the invoker
-      // re-dispatches the tool and drives the reactor to a real reply -- that
-      // reply, not the raw signal payload, is the step output. A resume that
-      // parks again re-parks, mirroring runAwaitSignal's re-park.
+      // decision arrives, the step is re-invoked with `resume`, so the
+      // invoker re-dispatches the tool and drives the reactor to a real
+      // reply -- that reply, not the raw signal payload, is the step output.
+      // A resume that parks again re-parks like runAwaitSignal's re-park.
       let output: unknown;
       let resume:
         | { correlationId: string; decision: unknown; kind: ControlParkKind }
         | undefined;
       // A crash-resume re-entry re-parks on the recovered channel FIRST,
       // before any `invokeStep`, so the agent is never re-sent the original
-      // input. The delivered decision seeds `resume` so the bridge loop's
-      // first `invokeStep` re-invokes the agent against it, exactly as a
-      // same-process resume would. `resumeFromPark` is consumed once per
-      // step; a resume that suspends AGAIN re-parks through the normal
-      // `{ suspend }` arm below.
+      // input; the delivered decision seeds `resume` for the first
+      // `invokeStep`, exactly as a same-process resume would. `resumeFromPark`
+      // is consumed once per step; a resume that suspends AGAIN re-parks
+      // through the normal `{ suspend }` arm below.
       if (resumeFromPark !== undefined) {
         const parkState = await reloadState(env, runId);
         const decision = await parkOnSignal(
@@ -1345,11 +1328,10 @@ async function runStep(
       // completes (`stepTriggerBudget` owns the absent-means-1 default). A
       // batch step (1) completes on its first output; an `"unbounded"` step
       // re-arms after every output and never self-completes. For a finite
-      // budget > 1 the count of serviced triggers must survive a respawn, so
-      // it is seeded from the durable log -- the number of input-park
-      // `SignalAwaited`s the step emitted equals the turns it has serviced,
-      // because the re-arm below is the ONLY minter of input parks and emits
-      // exactly one per completed turn. Budgets of 1 and "unbounded" never
+      // budget > 1 the serviced count must survive a respawn, so it is seeded
+      // from the durable log -- the number of input-park `SignalAwaited`s the
+      // step emitted equals its serviced turns, since the re-arm below is the
+      // ONLY minter of input parks. Budgets of 1 and "unbounded" never
       // re-arm, so both skip the log read.
       const triggerBudget = stepTriggerBudget(step);
       let servicedTriggers = 0;
@@ -1408,11 +1390,11 @@ async function runStep(
           };
           continue;
         }
-        // The reactor parked. Park the step on the reserved signal channel for
-        // this correlation. Unlike runAwaitSignal, the agent step already
-        // emitted its own `StepStarted` on runStep entry, so the reduced state
-        // reads the step as `in-flight`, and the re-park guard emits a fresh
-        // `SignalAwaited` rather than treating this as a re-park of an
+        // The reactor parked. Park the step on the reserved signal channel
+        // for this correlation. Unlike runAwaitSignal, the agent step already
+        // emitted its own `StepStarted` on runStep entry, so the reduced
+        // state reads the step as `in-flight`, and the re-park guard emits a
+        // fresh `SignalAwaited` rather than treating this as a re-park of an
         // already-awaiting gate.
         const parkState = await reloadState(env, runId);
         const decision = await parkOnSignal(
@@ -1422,8 +1404,8 @@ async function runStep(
             stepId: step.id,
             signalName: signalName(result.suspend.correlationId),
             // An invoker can only suspend as an approval (the input park is
-            // minted by the trigger-budget re-arm above, never by an invoker),
-            // and the approval arm carries a mandatory snapshot.
+            // minted by the trigger-budget re-arm above, never by an
+            // invoker), and the approval arm carries a mandatory snapshot.
             parkKind: result.suspend.kind,
             approvalSnapshot: result.suspend.approvalSnapshot,
           },
@@ -1482,10 +1464,10 @@ async function runStep(
       let after = await reloadState(env, runId);
       // Cancellation wins over step-level failure: if the run is cancelling,
       // the catch landed because the step's abort fired, and the audit log
-      // should record this as a step cancellation rather than a
-      // runtime-attributed failure. CancelPropagated moves the step to
-      // `cancelled` so the main loop sees it terminal and the post-loop
-      // cancellation branch settles the run.
+      // should record a step cancellation rather than a runtime-attributed
+      // failure. CancelPropagated moves the step to `cancelled` so the main
+      // loop sees it terminal and the post-loop cancellation branch settles
+      // the run.
       if (after.phase === "cancelling") {
         const propagated: WorkflowEvent = {
           kind: "CancelPropagated",
@@ -1615,9 +1597,9 @@ async function runStep(
       // Drain observation point #2: retry-between-attempts in runStep. If
       // drain has fired and the step's behavior is `"cancel"`, abort before
       // launching the next attempt. The outer `abort` was wired through
-      // `createStepAbort` to fire on drain already; this guard is the explicit
-      // second site so a drain that lands between waitForTimer settling and
-      // the next invokeStep does not stall behind a live invokeStep the
+      // `createStepAbort` to fire on drain already; this is the explicit
+      // second site so a drain landing between waitForTimer settling and the
+      // next invokeStep does not stall behind a live invokeStep the
       // supervisor is waiting on to wind down.
       if (shouldAbortForDrain(env.drain, step.id)) {
         throw new Error("aborted: drain requested");
@@ -1641,9 +1623,8 @@ async function runStep(
  * `StepFailed` through `runPrimitiveSafe` like every other non-step runner.
  *
  * Cancellation: the invoker refuses a pre-aborted signal at entry, so a
- * handler is never STARTED for a run already known to be cancelled. Stopping
- * once started is the author's half -- the handler is handed the signal, and
- * the runtime cannot make a side effect already in flight transactional.
+ * handler is never STARTED for a run already known to be cancelled; once
+ * started, stopping is the handler's half.
  */
 async function runAction(
   definition: WorkflowDefinition,
@@ -1666,8 +1647,8 @@ async function runAction(
   const input = rawInput === undefined ? null : rawInput;
   // Action-invoke durability barrier: flush `StepStarted` durably before
   // `invokeAction` runs, inline like `runStep` rather than through the
-  // buffered `emitStepStartedWithValue` the coordination runners share. An
-  // action is single-attempt, so `attempt` is 1.
+  // buffered `emitStepStartedWithValue` the coordination runners share.
+  // An action is single-attempt, so `attempt` is 1.
   const { ref: inputRef } = await env.blobs.recordOutput(
     `${primitive.id}.input`,
     1,
@@ -1687,9 +1668,8 @@ async function runAction(
 
   // As in `runStep`: the durable commit above is an await, so check the outer
   // signal's level before subscribing to its edge, or an abort raised during
-  // the commit never becomes observable to the handler. Observable is the
-  // whole of what this bridge promises; whether the handler stops once it sees
-  // the abort is the handler's choice.
+  // the commit never becomes observable to the handler. Whether the handler
+  // stops once it sees the abort is the handler's choice.
   const actionAbort = new AbortController();
   const onOuter = (): void => {
     actionAbort.abort();
@@ -1740,13 +1720,13 @@ async function runAction(
  * Bounded rework loop. Each iteration is a separate child run of the body
  * against the shared store (via `env.spawnLoopIteration`), scoped
  * `<loopId>[<index>]` at the step level (mirroring `runMap`) with a path-safe
- * child run id `<runId>__<loopId>__<index>` (`loopBodyRunId`). The registered
- * `while` predicate decides whether to continue on each iteration's output;
- * the registered `carry` threads the next iteration's input. On convergence
- * (`while` false) the loop routes to its normal `after`-dependents; on hitting
- * `maxIterations` with `while` still true it routes to `onExhausted` -- a
- * gate-style mutually-exclusive branch, so the not-taken side is pruned with
- * skip sentinels before the loop's own StepCompleted lands.
+ * child run id `<runId>__<loopId>__<index>` (`loopBodyRunId`). The `while`
+ * predicate decides whether to continue on each iteration's output; `carry`
+ * threads the next iteration's input. On convergence (`while` false) the loop
+ * routes to its normal `after`-dependents; on hitting `maxIterations` with
+ * `while` still true it routes to `onExhausted` -- a gate-style
+ * mutually-exclusive branch, so the not-taken side is pruned with skip
+ * sentinels before the loop's own StepCompleted lands.
  */
 async function runLoop(
   definition: WorkflowDefinition,
@@ -1800,11 +1780,11 @@ async function runLoop(
   let iteration = 0;
   let terminated = false;
   let outcome: "converged" | "exhausted" = "exhausted";
-  // The output of the most recent iteration, boxed so a legitimately
-  // `undefined` iteration output stays distinguishable from "no iteration has
-  // run yet". The settle path needs it: the loop breaks the moment `while`
-  // goes false, BEFORE `carry` runs, so `currentInput` is the converging
-  // iteration's input and this is its output.
+  // The most recent iteration's output, boxed so a legitimately `undefined`
+  // output stays distinguishable from "no iteration has run yet". The settle
+  // path needs it: the loop breaks the moment `while` goes false, BEFORE
+  // `carry` runs, so `currentInput` is the converging iteration's input and
+  // this is its output.
   let lastIteration: { output: unknown } | undefined;
   while (isIterationDone(state, runId, primitive.id, iteration)) {
     const doneStepId = scopedStepId(primitive.id, iteration);
@@ -1839,9 +1819,9 @@ async function runLoop(
 
   // A crash-recovered iteration whose body was parked or mid-relay needs an
   // active re-link on its FIRST drive below. `planLoopResume` yields that
-  // token (or undefined when the forward drive can re-adopt the iteration from
-  // the child's own durable log). Cleared after the recovered iteration is
-  // driven so every later iteration spawns fresh.
+  // token (or undefined when the forward drive can re-adopt the iteration
+  // from the child's own durable log). Cleared after the recovered iteration
+  // is driven so every later iteration spawns fresh.
   let occurrenceResume = terminated
     ? undefined
     : await planLoopResume(env, primitive, runId, state, log, iteration);
@@ -1861,9 +1841,9 @@ async function runLoop(
     // the inherited-env executor, proxies any body park up on the container,
     // and commits ChildCompleted. A non-suspending body drives straight to
     // terminal; a body that parks in-process is serviced by the park proxy
-    // without reaching a terminal. `occurrenceResume` is non-undefined only on
-    // the recovered iteration of a crash resume, where it re-links a body
-    // parked or mid-relay at the crash; it is cleared after this drive.
+    // without reaching a terminal. `occurrenceResume` is non-undefined only
+    // on the recovered iteration of a crash resume, where it re-links a body
+    // parked or mid-relay at the crash; cleared after this drive.
     const { terminalStatus } = await driveSuspendableOccurrence(
       env,
       runId,
@@ -1940,8 +1920,8 @@ async function runLoop(
 /**
  * Re-link state for a crash-recovered occurrence whose body is parked. The
  * resume planner yields at most one of these -- an approval park or a
- * signal-relay park, never both -- so a single discriminated union encodes the
- * mutual exclusion the two former locals maintained by discipline.
+ * signal-relay park, never both -- so a single discriminated union encodes
+ * the mutual exclusion the two former locals maintained by discipline.
  */
 type SuspendableOccurrenceResume =
   | { kind: "approval"; corr: string; relay: boolean; decision?: unknown }
@@ -1952,10 +1932,11 @@ type SuspendableOccurrenceResume =
       payload: unknown;
       signalId: string;
     }
-  // The body is parked on an author `awaitSignal` gate but the container never
-  // emitted its relay await before the crash (in-flight, no durable relay). The
-  // re-adopted body re-parks silently, so drive the container relay FRESH over
-  // the recovered name instead of re-establishing an await that does not exist.
+  // The body is parked on an author `awaitSignal` gate but the container
+  // never emitted its relay await before the crash (in-flight, no durable
+  // relay). The re-adopted body re-parks silently, so drive the container
+  // relay FRESH over the recovered name instead of re-establishing an await
+  // that does not exist.
   | { kind: "signal-relay-drive-fresh"; name: string };
 
 /**
@@ -2082,9 +2063,9 @@ async function driveSuspendableOccurrence(
   } else if (resume?.kind === "signal-relay-drive-fresh") {
     // The container never emitted its relay await before the crash, so there
     // is nothing to reestablish and the re-adopted body re-parks silently (no
-    // onSignalPark). Drive the container relay FRESH over the recovered name --
-    // emit the relay await and race -- so the container ends up awaiting the
-    // signal that will arrive.
+    // onSignalPark). Drive the container relay FRESH over the recovered name
+    // -- emit the relay await and race -- so the container ends up awaiting
+    // the signal that will arrive.
     pending = await driveContainerSignalRelay(
       env,
       runId,
@@ -2151,10 +2132,11 @@ async function driveSuspendableOccurrence(
       childRunId,
       terminalStatus,
       // Durably record whether a `failed` terminal is a parent-cascade abort
-      // teardown (an in-process body cannot self-cancel, so it settles `failed`
-      // locally when the container aborts) rather than a genuine body failure.
-      // `planOnTriggerResume` keys the section's end-vs-re-arm decision on
-      // this, the resume analog of the live `abort.aborted` guard below.
+      // teardown (an in-process body cannot self-cancel, so it settles
+      // `failed` locally when the container aborts) rather than a genuine body
+      // failure. `planOnTriggerResume` keys the section's end-vs-re-arm
+      // decision on this, the resume analog of the live `abort.aborted` guard
+      // below.
       ...(terminalStatus === "failed" && abort.aborted
         ? { abortedTeardown: true }
         : {}),
@@ -2182,10 +2164,10 @@ async function driveSuspendableOccurrence(
  * event kinds, so the state machine is untouched. A body that suspends on an
  * approval park is serviced by proxying the park up on the shared correlation
  * via this run's own park machinery. On crash-recovery the driver
- * reconstructs its position from the container's reduced state and durable
- * log -- which event is current, whether its body is parked mid-approval (and
- * whether the grant already landed), or whether the section is idle between
- * events -- and re-links the parked body rather than re-running from event 0.
+ * reconstructs its position from the reduced state and durable log -- which
+ * event is current, whether its body is parked mid-approval (and whether the
+ * grant already landed), or idle between events -- and re-links the parked
+ * body rather than re-running from event 0.
  */
 async function runOnTrigger(
   env: WorkflowRuntimeEnv,
@@ -2290,11 +2272,11 @@ async function runOnTrigger(
         };
         break;
       case "advance-with-input":
-        // The next event's trigger already arrived durably on the input channel
-        // -- its SignalReceived consumed the re-arm, moving the container off
-        // `awaiting-signal` -- but the body spawn had not yet committed. Advance
-        // to that event with the delivered input WITHOUT re-parking, so the
-        // trigger is not dropped.
+        // The next event's trigger already arrived durably on the input
+        // channel -- its SignalReceived consumed the re-arm, moving the
+        // container off `awaiting-signal` -- but the body spawn had not yet
+        // committed. Advance to that event with the delivered input WITHOUT
+        // re-parking, so the trigger is not dropped.
         currentInput = plan.input;
         eventIndex = plan.eventIndex + 1;
         break;
@@ -2303,8 +2285,8 @@ async function runOnTrigger(
         // parked entirely inside the child). Re-adopt this SAME event: re-spawn
         // the body from its own durable log and await its terminal.
         // `currentInput` is unused on a re-adopt (the body has a durable
-        // RunStarted), and `resume` stays `undefined`, the sentinel for
-        // "re-adopt from the child log" the loop body path also uses.
+        // RunStarted), and `resume` stays `undefined` -- the "re-adopt from
+        // the child log" sentinel the loop body path also uses.
         eventIndex = plan.eventIndex;
         currentInput = undefined;
         break;
@@ -2378,17 +2360,16 @@ async function runOnTrigger(
       },
     );
 
-    // Terminal-is-final unless the section tolerates a body failure. Two cases
-    // always end the section, `tolerate` or not: a `cancelled` body, and ANY
-    // body terminal reached while the container itself is aborting (`abort` --
-    // a drain or operator cancel tearing the section down). An in-process
-    // body's parent-abort teardown surfaces as a `failed` terminal, not
-    // `cancelled`, so the abort check is what makes a torn-down `tolerate`
-    // section end rather than re-arm into a park whose already-aborted signal
-    // never resolves. A `failed` body absent that abort ends the section only
-    // under the default `end` policy; under `tolerate` it falls through to the
-    // re-arm below, and the ChildCompleted{failed} committed above still
-    // records the occurrence.
+    // Terminal-is-final unless the section tolerates a body failure. Two
+    // cases always end the section, `tolerate` or not: a `cancelled` body,
+    // and ANY body terminal reached while the container itself is aborting
+    // (`abort` -- a drain or operator cancel tearing the section down). An
+    // in-process body's parent-abort teardown surfaces as a `failed`
+    // terminal, not `cancelled`, so the abort check is what makes a torn-down
+    // `tolerate` section end rather than re-arm into a park whose
+    // already-aborted signal never resolves. A `failed` body absent that
+    // abort ends the section only under the default `end` policy; a
+    // tolerated failure falls through to the re-arm below.
     if (
       terminalStatus === "cancelled" ||
       (terminalStatus === "failed" &&
@@ -2432,11 +2413,11 @@ async function runOnTrigger(
  * the container's `SignalAwaited` runs the reducer's FIFO pairing: (a) the
  * emit pre-consumes a signal queued before it (container reduces to in-flight)
  * -- bind it from the log's pairing and relay, no await; or (b) the container
- * is left awaiting -- race the signal's arrival against the body producing its
- * next event (a gate the body timed out itself) and against abort. Signal-first
- * relays it directly; body-first retires the now-stale relay await
- * (`SignalAwaitAbandoned`) unless a signal landed and was consumed during the
- * race, in which case it is relayed idempotently.
+ * is left awaiting -- race the signal's arrival against the body producing
+ * its next event (a gate the body timed out itself) and against abort.
+ * Signal-first relays it directly; body-first retires the now-stale relay
+ * await (`SignalAwaitAbandoned`) unless a signal landed and was consumed
+ * during the race, in which case it is relayed idempotently.
  */
 async function driveContainerSignalRelay(
   env: WorkflowRuntimeEnv,
@@ -2448,17 +2429,16 @@ async function driveContainerSignalRelay(
 ): Promise<Awaited<ReturnType<SuspendableChildHandle["next"]>>> {
   const state = await reloadState(env, runId);
 
-  // Fail-loud guard on the one residual divergence from the reducer's pairing:
-  // `boundSignalForContainerAwait` is container-scoped and faithful ONLY while
-  // THIS container is the sole step awaiting `name`. If ANY other step is
-  // already awaiting the same author name -- another section's signal-relay
-  // proxy OR a plain author `awaitSignal` gate (which reduces with no
-  // parkKind) -- the reducer consumes a delivery by `state.steps`
+  // Fail-loud guard on the one residual divergence from the reducer's
+  // pairing: `boundSignalForContainerAwait` is container-scoped and faithful
+  // ONLY while THIS container is the sole step awaiting `name`. If ANY other
+  // step is already awaiting the same author name -- another section's
+  // signal-relay proxy OR a plain author `awaitSignal` gate (which reduces
+  // with no parkKind) -- the reducer consumes a delivery by `state.steps`
   // Map-insertion order across ALL steps, not this container's seq order, so
-  // the helper could mis-bind and relay a payload the reducer delivered to the
-  // other awaiter. Refuse the topology loudly. The parkKind is NOT filtered
-  // here: a plain-gate sibling reduces to `"approval"` and would slip a
-  // signal-relay-only check (parity with the resume guard's
+  // the helper could mis-bind a payload. Refuse the topology loudly. The
+  // parkKind is NOT filtered: a plain-gate sibling reduces to `"approval"`
+  // and would slip a signal-relay-only check (parity with the resume guard's
   // `hasForeignSameNameAwaiter`).
   for (const [otherStepId, otherStep] of state.steps) {
     if (
@@ -2518,11 +2498,11 @@ async function driveContainerSignalRelay(
   // Nesting composes one layer at a time until the run whose channel has a
   // real upstream. An unset sink means this run owns the outermost channel:
   // true of an addressable top-level run (caller delivers) and of a terminal
-  // `childWorkflow` child (nothing can address it). Only the first has an
-  // upstream; the second never reaches here, because `parkOnSignalResult`
-  // refuses the body's untimed gate at the park. Fired on the fresh drive only;
-  // the reestablish path re-drives `raceContainerSignalRelay` directly from
-  // its own durable await, so it needs no re-fire.
+  // `childWorkflow` child (nothing can address it); only the first has an
+  // upstream, the second never reaches here because `parkOnSignalResult`
+  // refuses the body's untimed gate at the park. Fired on the fresh drive
+  // only; the reestablish path re-drives `raceContainerSignalRelay` from its
+  // own durable await, so it needs no re-fire.
   if (env.onSignalPark !== undefined) {
     env.onSignalPark({ runId, name });
   }
@@ -2546,9 +2526,9 @@ async function driveContainerSignalRelay(
  * producing its next event (a gate the body timed out itself) and against
  * abort, then relay or retire. Shared by the fresh drive
  * ({@link driveContainerSignalRelay}, which just emitted the await) and by
- * crash-recovery (`reestablish-signal-relay`, whose re-spawned body re-parks on
- * `name` silently, so the await is re-driven from its durable seq without a
- * re-emit). Returns the body's NEXT event for the caller's loop.
+ * crash-recovery (`reestablish-signal-relay`, whose re-spawned body re-parks
+ * on `name` silently, so the await is re-driven from its durable seq without
+ * a re-emit). Returns the body's NEXT event for the caller's loop.
  */
 async function raceContainerSignalRelay(
   env: WorkflowRuntimeEnv,
@@ -2605,9 +2585,9 @@ async function raceContainerSignalRelay(
     return (await pNext).ev;
   }
 
-  // The body produced its next event before the signal arrived: its gate timed
-  // out and it moved on, so the container's relay await is stale. Stop the
-  // outstanding awaitNext, then disambiguate whether a signal landed and was
+  // The body produced its next event before the signal arrived: its gate
+  // timed out and it moved on, so the container's relay await is stale. Stop
+  // the outstanding awaitNext, then check whether a signal landed and was
   // consumed during the race.
   raceAbort.abort();
   await pSignal.catch(() => undefined);
@@ -2693,15 +2673,14 @@ function bodyFailurePolicyOf(primitive: OnTriggerPrimitive): BodyFailurePolicy {
 }
 
 /**
- * The `awaitSignal` gate names a body child is parked on in its reduced state,
- * split by channel: `author` names are author-chosen
- * (`correlationIdFromSignalName` undefined); `controlPlane` names are reserved
- * approval/relay channels. Both signal a crash window where the body's leaf
- * `SignalAwaited` flushed but the container's proxy await did not, so a naive
- * re-adopt re-parks the body on a signal the container never relays. The loop
- * planner keys its author-gate drive-fresh on `author`; the onTrigger planner
- * refuses on either, since it has no fresh-relay drive for a body still
- * awaiting a signal.
+ * The `awaitSignal` gate names a body child is parked on in its reduced
+ * state, split by channel: `author` names are author-chosen
+ * (`correlationIdFromSignalName` undefined); `controlPlane` names are
+ * reserved approval/relay channels. Both signal a crash window where the
+ * body's leaf `SignalAwaited` flushed but the container's proxy await did
+ * not, so a naive re-adopt re-parks the body on a signal the container never
+ * relays. The loop planner keys its author-gate drive-fresh on `author`; the
+ * onTrigger planner refuses on either (no fresh-relay drive exists).
  */
 function bodyParkedSignals(childState: RunState): {
   author: string[];
@@ -2749,20 +2728,20 @@ async function planOnTriggerResume(
   }
   // ORDERING IS LOAD-BEARING: the body-TERMINAL checks (terminal-is-final for
   // failed/cancelled, reawait-input for completed) MUST precede the
-  // container-in-flight throw below. This is what lets the signal-relay abandon
-  // path own no distinct resume arm: after a body's timed gate abandons, the
-  // container drops to the ordinary in-flight driving state, and a body that
-  // then completed is caught HERE (reawait-input), not by the in-flight throw.
+  // container-in-flight throw below. This is what lets the signal-relay
+  // abandon path own no distinct resume arm: after a body's timed gate
+  // abandons, the container drops to the ordinary in-flight driving state,
+  // and a body that then completed is caught HERE (reawait-input), not by
+  // the in-flight throw.
   //
   // Terminal-is-final unless the section tolerates a GENUINE body failure. A
   // cancelled body always ends; so does an abort-teardown `failed` body
-  // (`abortedTeardown`, the durable record of the live `abort.aborted` guard in
-  // the drive loop) -- the container was being torn down, so a torn-down
+  // (`abortedTeardown`, the durable record of the live `abort.aborted` guard
+  // in the drive loop) -- the container was being torn down, so a torn-down
   // `tolerate` section stays ended rather than resurrecting to await the next
   // event. A failed body absent that abort ends only under the default `end`
   // policy; a tolerated genuine failure falls through to the completed block
-  // below, which re-adopts the SAME input park a completed body does -- never
-  // a bare new arm (which would wedge the section).
+  // below, which re-adopts the SAME input park a completed body does.
   if (
     child.terminalStatus === "cancelled" ||
     (child.terminalStatus === "failed" &&
@@ -2881,26 +2860,25 @@ async function planOnTriggerResume(
       signalId: relaySignal.signalId,
     };
   }
-  // The body is in flight with nothing delivered to the container. Inspect the
-  // body's OWN reduced state. A bare `sleep` parks entirely inside the child
-  // and surfaces no container park, so re-adopt the in-flight body and await
-  // its terminal: the re-spawned body re-drives its own durable log and
+  // The body is in flight with nothing delivered to the container. Inspect
+  // the body's OWN reduced state. A bare `sleep` parks entirely inside the
+  // child and surfaces no container park, so re-adopt the in-flight body and
+  // await its terminal: the re-spawned body re-drives its own durable log and
   // re-adopts its sleep timer via `isResumableSleepStep`. `resume` stays
-  // `undefined` in the dispatch below -- the sentinel a loop body already uses
-  // for this re-adopt.
+  // `undefined` in the dispatch below -- the sentinel a loop body already
+  // uses for this re-adopt.
   //
   // The shape we must NOT re-adopt is a body still parked on a signal the
   // container has not proxied -- author `awaitSignal` OR a reserved
-  // approval/relay channel -- because its leaf `SignalAwaited` flushed but the
-  // container's proxy await did not: re-adopting re-parks the body silently
-  // (no `onPark`) on a signal the container never relays, hanging both sides.
-  // onTrigger has no fresh-relay drive, so keep failing loud. Any body NOT
-  // awaiting a signal re-adopts and its OWN resume classifier decides its
-  // terminal: a `sleep` resumes; a mid-flight `childWorkflow`/`map` REJECTS
-  // (loud section failure); a crashed agent step SETTLES a terminal
-  // `StepFailed` -- under `tolerate` the section absorbs the crashed body and
-  // re-arms, the intended reading of `tolerate`: a real body failure it is
-  // meant to swallow, not a hang or a lost run.
+  // approval/relay channel -- because its leaf `SignalAwaited` flushed but
+  // the container's proxy await did not: re-adopting re-parks the body
+  // silently (no `onPark`) on a signal the container never relays, hanging
+  // both sides. onTrigger has no fresh-relay drive, so keep failing loud.
+  // Any body NOT awaiting a signal re-adopts and its OWN resume classifier
+  // decides its terminal: a `sleep` resumes; a mid-flight
+  // `childWorkflow`/`map` REJECTS (loud section failure); a crashed agent
+  // step SETTLES a terminal `StepFailed` -- under `tolerate` the section
+  // absorbs the crashed body and re-arms.
   const childState = await reloadState(env, childRunId);
   const { author, controlPlane } = bodyParkedSignals(childState);
   const parkedSignals = [...author, ...controlPlane];
@@ -2915,20 +2893,18 @@ async function planOnTriggerResume(
 }
 
 /**
- * The resume token for a crash-recovered loop iteration whose body was parked
- * or mid-relay at the crash, derived purely from the container's reduced
- * `state` plus its durable `log` for the given `iteration`. It yields ONLY the
- * active re-link the body needs on its next drive: re-establish the container's
- * signal-relay race, relay a grant/signal delivered but not relayed before the
- * crash, or re-adopt an approval park.
+ * The resume token for a crash-recovered loop iteration whose body was
+ * parked or mid-relay at the crash, derived purely from the container's
+ * reduced `state` plus its durable `log` for the given `iteration`. It
+ * yields ONLY the active re-link the body needs on its next drive:
+ * re-establish the container's signal-relay race, relay a grant/signal
+ * delivered but not relayed before the crash, or re-adopt an approval park.
  *
- * `undefined` means "nothing to re-link", and `runLoop`'s forward drive
- * re-adopts the iteration from the child's own durable log. This is where the
- * planner diverges from `planOnTriggerResume`, which throws in the same spot:
- * `runLoop` owns the iteration cursor (it passes `iteration` in) rather than
- * an event cursor it would have to reset, so there is no `fresh` or
- * `terminal-is-final` arm -- the `isIterationDone` replay and the forward
- * drive already own the terminal and re-adopt cases.
+ * `undefined` means "nothing to re-link"; `runLoop`'s forward drive re-adopts
+ * the iteration from the child's own durable log. Unlike `planOnTriggerResume`
+ * (which throws in the same spot), `runLoop` owns the iteration cursor, so
+ * there is no `fresh` or `terminal-is-final` arm -- the `isIterationDone`
+ * replay and the forward drive already own the terminal and re-adopt cases.
  */
 async function planLoopResume(
   env: WorkflowRuntimeEnv,
@@ -2987,8 +2963,8 @@ async function planLoopResume(
   // The container is not parked but the body is still in flight: a grant or
   // signal was DELIVERED (its SignalReceived moved the container to in-flight)
   // but not relayed into the body before the crash. Relay it into the
-  // re-adopted body, else the body's silently re-parked gate would wait forever
-  // for a signal already consumed.
+  // re-adopted body, else the body's silently re-parked gate would wait
+  // forever for a signal already consumed.
   const grant = recoverDeliveredApprovalGrant(primitive.id, log);
   if (grant !== undefined) {
     return {
@@ -3015,8 +2991,7 @@ async function planLoopResume(
   // the forward drive would never surface the gate and the container would
   // block forever. Recover the parked author name from the body's reduced
   // state and drive the container relay FRESH. (On an inconsistent store the
-  // child log is gone, so no gate is found and the forward drive re-runs the
-  // iteration -- the existing inconsistent-store behavior.)
+  // child log is gone, so the forward drive re-runs the iteration.)
   const childState = await reloadState(env, childRunId);
   const { author: authorAwaits } = bodyParkedSignals(childState);
   if (authorAwaits.length > 1) {
@@ -3034,10 +3009,10 @@ async function planLoopResume(
 }
 
 /**
- * Recover the correlation and delivered decision of the container's most recent
- * approval park from the durable log. Used only for the narrow crash window
- * where the grant's `SignalReceived` landed before the driver relayed it into
- * the body -- the container step reduces to `in-flight` with its
+ * Recover the correlation and delivered decision of the container's most
+ * recent approval park from the durable log. Used only for the narrow crash
+ * window where the grant's `SignalReceived` landed before the driver relayed
+ * it into the body -- the container step reduces to `in-flight` with its
  * `awaitingSignal` stripped, so the correlation lives only in the log.
  */
 function recoverDeliveredApprovalGrant(
@@ -3070,16 +3045,16 @@ function recoverDeliveredApprovalGrant(
 }
 
 /**
- * Recover an input re-arm whose next trigger was delivered but whose body spawn
- * had not yet committed at the crash -- the input sibling of
+ * Recover an input re-arm whose next trigger was delivered but whose body
+ * spawn had not yet committed at the crash -- the input sibling of
  * `recoverDeliveredApprovalGrant`. The delivery's `SignalReceived` moved the
- * container to `in-flight` and stripped its `awaitingSignal`, so the delivered
- * trigger survives only in the log. Return its payload so the resume advances
- * to the next event instead of re-parking and dropping it.
+ * container to `in-flight` and stripped its `awaitingSignal`, so the
+ * delivered trigger survives only in the log. Return its payload so the
+ * resume advances to the next event instead of re-parking and dropping it.
  *
- * The seq DISCRIMINATOR is load-bearing: the input re-arm await must be NEWER
- * than the highest `ChildSpawned` for this container. An input await OLDER than
- * that belongs to an already-spawned event, and advancing on its
+ * The seq DISCRIMINATOR is load-bearing: the input re-arm await must be
+ * NEWER than the highest `ChildSpawned` for this container. An input await
+ * OLDER than that belongs to an already-spawned event, and advancing on its
  * already-consumed trigger would double-spawn the next event.
  */
 function recoverDeliveredInput(
@@ -3149,13 +3124,13 @@ function lastSignalRelayAwait(
 }
 
 /**
- * Recover a signal delivered to the container's last signal-relay await but not
- * yet relayed into the body -- the signal-relay sibling of
- * `recoverDeliveredApprovalGrant`. The delivery's `SignalReceived` consumed the
- * container's await (moving it to `in-flight`), so the payload lives only in
- * the log; bind it by replaying the reducer's FIFO pairing. Returns undefined
- * when the container has no signal-relay await, or its last one carries no
- * paired signal (an await that was abandoned rather than consumed).
+ * Recover a signal delivered to the container's last signal-relay await but
+ * not yet relayed into the body -- the signal-relay sibling of
+ * `recoverDeliveredApprovalGrant`. The delivery's `SignalReceived` consumed
+ * the container's await (moving it to `in-flight`), so the payload lives only
+ * in the log; bind it by replaying the reducer's FIFO pairing. Returns
+ * undefined when the container has no signal-relay await, or its last one
+ * carries no paired signal (an await that was abandoned rather than consumed).
  */
 function recoverDeliveredSignalRelay(
   containerStepId: string,
@@ -3192,18 +3167,13 @@ function recoverDeliveredSignalRelay(
  * PRECONDITION: `log` is the COMPLETE parent-run log from seq 1; a windowed
  * suffix would start mid-stream and mis-pair, so a non-full log fails loud.
  *
- * ASSUMPTION: a UNIQUE container awaiter per name in the parent run -- the
- * pairing is container-scoped, which matches the reducer ONLY while this
- * container is the sole step awaiting the name. Two sections concurrently
- * awaiting the same name would let the reducer consume by `state.steps`
- * Map-insertion order; `driveContainerSignalRelay` refuses that topology at
- * the proxy-park, so this helper never sees it.
+ * ASSUMPTION: a UNIQUE container awaiter per name in the parent run, enforced
+ * by `driveContainerSignalRelay`, which refuses a two-step topology.
  */
 // Exported for direct unit tests: the reducer-FIFO-replay binding is the
-// correctness crux of the signal-relay pass, and its correction cases (dedup,
-// FIFO-oldest, abandon-retire) are only reachable on the pre-consume/race-landed
-// log-read paths, so they are proven against constructed logs rather than only
-// through the runtime driver.
+// correctness crux of the signal-relay pass; its correction cases (dedup,
+// FIFO-oldest, abandon-retire) are reachable only on the pre-consume/race-
+// landed log-read paths, so they are proven against constructed logs.
 export function boundSignalForContainerAwait(
   log: readonly WorkflowEvent[],
   name: string,
@@ -3306,10 +3276,9 @@ async function resolveIterationOutput(
 
 /**
  * Resolve every `StepCompleted` output in a loop iteration's child log to a
- * value, keyed by the body step id. The suspendable-child drive returns only a
- * terminal status, so the loop reads the iteration's own (durable) child run to
- * rebuild the step-output record its scoped `StepCompleted` records and its
- * `while`/`carry` functions consume.
+ * value, keyed by the body step id. The suspendable-child drive returns only
+ * a terminal status, so the loop rebuilds the iteration's step outputs from
+ * its own durable child log (the scoped records `while`/`carry` consume).
  */
 async function hydrateChildOutputs(
   env: WorkflowRuntimeEnv,
@@ -3327,11 +3296,11 @@ async function hydrateChildOutputs(
 
 /**
  * Prune the not-taken branch of a completed loop with skip sentinels, BEFORE
- * the loop's own StepCompleted lands, so the scheduler only ever hands back the
- * live side. Converged -> the normal `after`-dependents run and `onExhausted`
- * is pruned; exhausted -> `onExhausted` runs and the normal dependents are
- * pruned. `onExhausted` names the loop in its own `after` (enforced at
- * definition time), so it is excluded from the normal-dependent set here.
+ * the loop's own StepCompleted lands, so the scheduler only ever hands back
+ * the live side. Converged -> the normal `after`-dependents run and
+ * `onExhausted` is pruned; exhausted -> the reverse. `onExhausted` names the
+ * loop in its own `after` (enforced at definition time), so it is excluded
+ * from the normal-dependent set here.
  */
 async function routeLoopOutcome(
   definition: WorkflowDefinition,
@@ -3361,13 +3330,11 @@ async function routeLoopOutcome(
  * Prune around an onFailure route, the mirror of `routeLoopOutcome`. A unit
  * carrying `onFailure` settles on both outcomes, so both prune the not-taken
  * side: a routed failure prunes the unit's normal after-dependents and spares
- * the handler branch; a success prunes the handler branch and spares the
- * normal dependents. A diamond-join reachable from the spared side stays live
- * (the `collectBranchClosure` guard). The caller runs this BEFORE it commits
- * the unit's terminal event, so the unit is still in-flight while the skips
- * land -- the scheduler offers none of the unit's direct dependents until it
- * is terminal, and `emitSkipClosure`'s leaf-first order covers the deeper
- * members.
+ * the handler branch; a success does the reverse. A diamond-join reachable
+ * from the spared side stays live (the `collectBranchClosure` guard). The
+ * caller runs this BEFORE it commits the unit's terminal event, so the unit
+ * is still in-flight while the skips land -- the scheduler offers none of its
+ * direct dependents until it is terminal.
  */
 async function pruneAroundRoute(
   definition: WorkflowDefinition,
@@ -3392,20 +3359,19 @@ async function pruneAroundRoute(
 }
 
 /**
- * Event-sourced timer wait.
+ * Event-sourced timer wait: tells the scheduler to commit
+ * `TimerFired{timerId}` at `fireAt`, then subscribes to the run's log tail
+ * and resolves on the matching `TimerFired`.
  *
- * Tells the scheduler to commit `TimerFired{timerId}` at `fireAt`, then
- * subscribes to the run's log tail and resolves on the matching `TimerFired`.
  * The scheduler is the single writer of `TimerFired`; the runtime body never
  * commits it itself. Disposing the scheduler entry on abort cancels the
- * pending `TimerFired` commit so a stale TimerFired does not land in the log
- * after the awaiter has already settled on a sibling event.
+ * pending `TimerFired` commit so a stale one does not land after the awaiter
+ * has settled on a sibling event.
  *
  * The replay base is `state.lastSeq + 1`: the scheduler may commit
  * `TimerFired` before the subscriber's `for await` reaches the first
- * iteration, so the subscription must start from the seq immediately after
- * the caller's last-observed event rather than from `"head"`, which would
- * miss a TimerFired that landed during the `subscribe` setup.
+ * iteration, so the subscription starts from the seq immediately after the
+ * caller's last-observed event rather than from `"head"`.
  */
 async function waitForTimer(
   env: WorkflowRuntimeEnv,
@@ -3419,8 +3385,8 @@ async function waitForTimer(
   // Segment boundary: the run parks here, tailing the durable log for the
   // scheduler-committed `TimerFired`. Flush the buffered segment (the
   // `TimerSet` -- and, on the retry path, the preceding
-  // `StepFailed`/`AttemptScheduled`) to durable storage BEFORE subscribing, so
-  // the out-of-process scheduler can tail the durable `TimerSet` and a
+  // `StepFailed`/`AttemptScheduled`) to durable storage BEFORE subscribing,
+  // so the out-of-process scheduler can tail the durable `TimerSet` and a
   // crash-while-waiting leaves a resumable pre-suspension log.
   await flush(env, runId);
   const subscribeFromSeq = (await reloadState(env, runId)).lastSeq + 1;
@@ -3553,8 +3519,8 @@ async function runGate(
   });
   // Mark every step in the not-selected branch's transitive downstream
   // closure as skipped before the gate's own StepCompleted lands, so the DAG
-  // scheduler treats them as resolved without ever invoking their bodies. The
-  // selected branch's closure is left untouched and proceeds through the
+  // scheduler treats them as resolved without ever invoking their bodies.
+  // The selected branch's closure is left untouched and proceeds through the
   // normal schedule path. The skipped step's output is a structured sentinel
   // naming the gate and the not-selected branch head, so a diamond-join
   // reading both branches sees a well-defined value and can branch on
@@ -3568,18 +3534,14 @@ async function runGate(
 }
 
 /**
- * Compute the set of steps to skip when the `notSelected` branch roots are
- * suppressed in favor of the `selected` roots.
- *
- * The skip set is the transitive downstream closure of the not-selected roots,
- * MINUS any step also reachable from the selected roots. A diamond-join step
- * that lists both a selected and a not-selected root in its `after` is
- * reachable from the selected side and must stay live. Both sides are sets: a
- * `gate` calls this with singleton roots (`then`/`else`), while a `loop` calls
- * it with `onExhausted` against the set of the loop's normal dependents.
- * Computing `reachableFromSelected` as one union closure over all selected
- * roots keeps the diamond guard a plain set-membership test regardless of how
- * many roots each side has.
+ * Compute the steps to skip when the `notSelected` branch roots are
+ * suppressed in favor of the `selected` roots: the transitive downstream
+ * closure of the not-selected roots, MINUS any step also reachable from the
+ * selected roots. A diamond-join step listing both a selected and a
+ * not-selected root in its `after` stays live. Both sides are sets: a `gate`
+ * calls this with singleton roots (`then`/`else`), a `loop` with
+ * `onExhausted` against the loop's normal dependents. One union closure over
+ * all selected roots keeps the diamond guard a plain set-membership test.
  */
 function collectBranchClosure(
   definition: WorkflowDefinition,
@@ -3642,8 +3604,8 @@ function leafFirstOrder(
 }
 
 /**
- * Emit the skip sentinels for a branch-prune closure, the shared body of every
- * route-to-handler prune (gate, loop, onFailure). Completes the closure
+ * Emit the skip sentinels for a branch-prune closure, the shared body of
+ * every route-to-handler prune (gate, loop, onFailure). Completes the closure
  * LEAF-FIRST: a skipped step is completed only after every skipped step that
  * depends on it. This closes a scheduling race -- while the container/unit is
  * in-flight the scheduler offers none of its direct dependents, but a skipped
@@ -3654,14 +3616,13 @@ function leafFirstOrder(
  * in-flight its dependencies are not yet terminal, so `areDepsResolved` never
  * offers it.
  *
- * A step already in the log is not re-started (idempotent replay); a step left
- * in-flight by a crash mid-prune is re-completed. The prune bails only for a
- * run that is no longer `running` (a cancelling/terminal run, whose cancel
- * sweep settles the closure via CancelPropagated); it MUST complete for a
- * drained-but-still-running run, since the caller commits the unit's terminal
- * right after and a half-pruned branch would leave the not-taken side live. A
- * cancel that lands mid-prune makes the next StepStarted throw and propagate;
- * a step already started still completes, so no step is left half-emitted.
+ * A step already in the log is not re-started (idempotent replay); a step
+ * left in-flight by a crash mid-prune is re-completed. The prune bails only
+ * for a run that is no longer `running` (a cancelling/terminal run, whose
+ * cancel sweep settles the closure via CancelPropagated); it MUST complete
+ * for a drained-but-still-running run, since the caller commits the unit's
+ * terminal right after and a half-pruned branch would leave the not-taken
+ * side live.
  */
 async function emitSkipClosure(
   env: WorkflowRuntimeEnv,
@@ -3752,7 +3713,7 @@ async function emitStepCompleted(
  * materialized (`runMap`, `runGate`, `runChildWorkflow`, `runAwaitSignal`,
  * `runEscalation`). Routing through `env.blobs.recordOutput` lets resume
  * rehydrate the output via the standard substrate path -- without this,
- * downstream selectors that target a non-`step` primitive's output crash on
+ * downstream selectors targeting a non-`step` primitive's output crash on
  * resume because the hydration loop only resolves substrate-readable refs.
  */
 async function emitStepCompletedWithValue(
@@ -3770,26 +3731,25 @@ type GateOutcome =
   | { timedOut: true };
 
 /**
- * Reconstruct how a single admitted `awaitSignal` gate left `awaiting-signal`,
- * by replaying the reducer's signal FIFO over the full run log and folding the
- * gate's own `TimerFired` as a competing mover. Returns whether a delivered
- * signal moved the gate (with the bound payload and its `signalId`) or the
- * gate's timer fired first, or `undefined` when the log shows nothing moved it
- * (a corrupt in-flight residual the caller surfaces loudly).
+ * Reconstruct how a single admitted `awaitSignal` gate left
+ * `awaiting-signal`, by replaying the reducer's signal FIFO over the full run
+ * log and folding the gate's own `TimerFired` as a competing mover. Returns
+ * whether a delivered signal moved the gate (with the bound payload and its
+ * `signalId`), the gate's timer fired first, or `undefined` when the log
+ * shows nothing moved it (a corrupt in-flight residual surfaced loudly).
  *
  * The caller guarantees, via {@link hasForeignSameNameAwaiter}, that
  * `selfStepId` is the SOLE awaiter of `signalName`, so the reducer's global
- * "first awaiting step for this name" scan can only ever resolve to this gate;
- * a per-gate replay therefore reproduces the reduction faithfully. It mirrors
- * the two reducer rules that decide the binding: a delivery arriving with no
- * awaiter present queues, and the gate's `SignalAwaited` drains the queue HEAD
- * (oldest-first), while a redelivered `signalId` is a dedup no-op. When
- * `selfTimerId` is given, a `TimerFired` for it moves the gate off
+ * "first awaiting step for this name" scan can only ever resolve to this
+ * gate; a per-gate replay therefore reproduces the reduction faithfully. It
+ * mirrors the two reducer rules that decide the binding: a delivery arriving
+ * with no awaiter present queues, and the gate's `SignalAwaited` drains the
+ * queue HEAD (oldest-first), while a redelivered `signalId` is a dedup no-op.
+ * When `selfTimerId` is given, a `TimerFired` for it moves the gate off
  * `awaiting-signal` exactly as `handleTimerFired` does, so whichever of the
  * delivered signal or the fired timer moves the gate first wins the race.
  *
- * Deliberately NOT merged with {@link boundSignalForContainerAwait}: that
- * binder is byte-frozen (the container-relay correctness crux), pairs a
+ * NOT merged with {@link boundSignalForContainerAwait}: that binder pairs a
  * container awaiting single-file by `SignalAwaited` seq, honors
  * `SignalAwaitAbandoned`, and returns a bound `signalId`; this one folds a
  * timer mover and returns a timeout-vs-payload discriminant for a plain gate.
@@ -3862,15 +3822,15 @@ function gateTimerId(
 
 /**
  * Whether any `awaitSignal` gate OTHER than `selfStepId` awaited `signalName`
- * anywhere in the run. `reconstructGateOutcome` replays the reducer FIFO scoped
- * to a SINGLE awaiter of the name, so a second same-name awaiter -- even one
- * that already COMPLETED -- breaks that assumption: the log can no longer say
- * which gate consumed which delivery. The in-flight short-circuit refuses that
- * topology rather than risk binding a payload to the wrong gate; only a run
- * where `selfStepId` is the sole awaiter of the name is provably unambiguous.
- * A completed same-name sibling is the case a phase-scoped in-flight count
- * would miss, so the predicate keys on the durable `SignalAwaited` marker,
- * which outlives the sibling's completion.
+ * anywhere in the run. `reconstructGateOutcome` replays the reducer FIFO
+ * scoped to a SINGLE awaiter of the name, so a second same-name awaiter --
+ * even one that already COMPLETED -- breaks that assumption: the log can no
+ * longer say which gate consumed which delivery. The in-flight short-circuit
+ * refuses that topology rather than risk binding a payload to the wrong gate;
+ * only a run where `selfStepId` is the sole awaiter of the name is provably
+ * unambiguous. A completed same-name sibling is the case a phase-scoped
+ * in-flight count would miss, so the predicate keys on the durable
+ * `SignalAwaited` marker, which outlives the sibling's completion.
  */
 function hasForeignSameNameAwaiter(
   log: readonly WorkflowEvent[],
@@ -3938,22 +3898,16 @@ function findAwaitedSignalNameForStep(
  * gate with the raw payload, whereas the `runStep` step-suspend arm re-invokes
  * the agent against the payload and completes with the reply.
  *
- * The helper owns only the park/flush/awaitNext/resolve block. The two pieces
- * of resume idempotency ABOVE it stay with the caller, because the
- * `step`-origin caller diverges there: the in-flight-with-logged-
+ * The two resume-idempotency pieces ABOVE this call stay with the caller,
+ * because the `step`-origin caller diverges there: the in-flight-with-logged-
  * `SignalReceived` short-circuit recovers a payload bound to an `awaitSignal`
  * gate by name (not how a step-suspend caller would recover), and the
- * `StepStarted` emit is owned by the caller (`runAwaitSignal` owns its gate's;
- * an agent step emits its own via the normal `runStep` entry).
+ * `StepStarted` emit is owned by the caller (`runAwaitSignal` owns its
+ * gate's; an agent step emits its own via the normal `runStep` entry).
  *
- * `state` is the reduced state as of the `SignalAwaited` decision point; the
- * caller has already emitted `StepStarted` (and reloaded) when starting fresh.
- *
- * Returns a discriminated result rather than throwing on timeout: a park with
- * a `timeout` may resolve either with the delivered signal (`timedOut: false`)
- * or because its timer fired (`timedOut: true`), and only the caller knows
- * whether a fired timer routes onward (`awaitSignal.onTimeout`) or fails the
- * step. A park with no `timeout` never yields `timedOut: true`.
+ * Returns a discriminated result rather than throwing on timeout: only the
+ * caller knows whether a fired timer routes onward (`awaitSignal.onTimeout`)
+ * or fails the step. A park with no `timeout` never yields `timedOut: true`.
  */
 type ParkResult = { timedOut: false; payload: unknown } | { timedOut: true };
 
@@ -3995,13 +3949,13 @@ async function parkOnSignalResult(
   abort: AbortSignal,
 ): Promise<ParkResult> {
   // An untimed park waits for a signal from outside this run, so it can only
-  // be answered where something upstream can deliver one. A terminal child has
-  // no address of its own and no container relaying decisions down to it, so
-  // the wait would never end and an approval nobody can see holds the whole
-  // tree (a nested body inherits the same answer). Refuse before anything
-  // durable is written, so the run fails at the step that asked for the
-  // impossible and no suspension is recorded. A timed gate is exempt -- its
-  // own timer resolves it in process.
+  // be answered where something upstream can deliver one. A terminal child
+  // has no address of its own and no container relaying decisions down to it,
+  // so the wait would never end and an approval nobody can see holds the
+  // whole tree (a nested body inherits the same answer). Refuse before
+  // anything durable is written, so the run fails at the step that asked for
+  // the impossible and no suspension is recorded. A timed gate is exempt --
+  // its own timer resolves it in process.
   if (!env.hasUpstreamSignalResolver && opts.timeout === undefined) {
     throw new Error(
       `step ${opts.stepId} waits on ${opts.signalName} with no timeout, but ` +
@@ -4017,17 +3971,17 @@ async function parkOnSignalResult(
   // signal channel for a signal that has not yet arrived.
   //
   // A fresh control-plane suspension also notifies the host so the hub can
-  // co-write the approval/correlation rows, but that notify is DEFERRED to
-  // after the durable flush below: the correlationId must be recorded in the
-  // workflow log before it is transmitted to the hub, or a crash between the
-  // notify and the flush would strand a hub row for a correlation the log
-  // cannot reconstruct on resume. Captured only on the fresh-emit branch, so a
-  // re-park resume (which skips the re-emit) does not re-notify on every
-  // scheduler pass.
+  // co-write the approval/correlation rows, but the notify is DEFERRED to
+  // after the durable flush: the correlationId must be recorded in the log
+  // before it is transmitted, or a crash between the notify and the flush
+  // would strand a hub row the log cannot reconstruct on resume. Captured
+  // only on the fresh-emit branch, so a re-park resume does not re-notify on
+  // every scheduler pass.
   let parkToNotify: WorkflowPark | undefined;
   // Author `awaitSignal` gate (non-reserved name) captured on the fresh park
   // so the suspendable-child seam's `onSignalPark` sink fires after the flush,
-  // mirroring the `parkToNotify` deferral below. Set only on the author branch.
+  // mirroring the `parkToNotify` deferral below. Set only on the author
+  // branch.
   let signalParkToNotify: string | undefined;
   if (state.steps.get(opts.stepId)?.phase !== "awaiting-signal") {
     const awaited: WorkflowEvent = {
@@ -4043,8 +3997,8 @@ async function parkOnSignalResult(
             ).toISOString(),
           }
         : {}),
-      // Record the park kind so recovery can distinguish an input park from an
-      // approval one after a crash/reconnect (see parked-correlations).
+      // Record the park kind so recovery can distinguish an input park from
+      // an approval one after a crash/reconnect (see parked-correlations).
       ...(opts.parkKind !== undefined ? { parkKind: opts.parkKind } : {}),
     };
     state = await commit(env, runId, awaited);
@@ -4096,13 +4050,12 @@ async function parkOnSignalResult(
       signalParkToNotify = opts.signalName;
     }
   }
-  // The per-step timeout commits TimerSet before asking the scheduler to fire,
-  // so the pairing with the scheduler-committed `TimerFired` is explicit in
-  // the log. Without TimerSet, a production scheduler that reads logs at
-  // startup to re-arm unfired timers cannot see signal-await timeouts -- the
-  // deadline would be silently lost across a crash. The scheduler is the
-  // single writer of TimerFired; the runtime body only commits TimerSet here
-  // and then tails the log for TimerFired via `repoStore.subscribe`.
+  // The per-step timeout commits TimerSet before asking the scheduler to
+  // fire, so the pairing with the scheduler-committed `TimerFired` is
+  // explicit in the log. Without TimerSet, a production scheduler reading
+  // logs at startup to re-arm unfired timers cannot see signal-await
+  // timeouts -- the deadline would be silently lost across a crash. The
+  // scheduler is the single writer of TimerFired.
   let timerId: string | undefined;
   let fireAtDate: Date | undefined;
   let subscribeFromSeq: number | undefined;
@@ -4112,7 +4065,8 @@ async function parkOnSignalResult(
     // with its original id in `pendingTimers` (unfired -- a fired timeout
     // would have moved the step to `in-flight` and been refused). Re-adopt
     // that timer rather than minting a second one: a duplicate TimerSet would
-    // double-count the deadline and leave two scheduler entries racing to fire.
+    // double-count the deadline and leave two scheduler entries racing to
+    // fire.
     const existing = findUnfiredTimerForStep(beforeTimer, opts.stepId);
     if (existing !== undefined) {
       timerId = existing.timerId;
@@ -4140,11 +4094,11 @@ async function parkOnSignalResult(
   // `TimerFired`). Flush the buffered `SignalAwaited` (+ `TimerSet`) to
   // durable storage BEFORE parking so (a) the out-of-process scheduler can
   // tail the durable `TimerSet` and arm the timeout, (b) a
-  // crash-while-suspended leaves a complete pre-suspension log resume
-  // reconstructs the awaiting-signal state from, and (c) the control-plane
-  // suspension is durable before the host is notified below. `subscribeFromSeq`
-  // was computed from the in-memory tip; the flush makes the durable tip match,
-  // so the timer-watch subscription starts exactly past the flushed markers.
+  // crash-while-suspended leaves a complete pre-suspension log, and (c) the
+  // control-plane suspension is durable before the host is notified below.
+  // `subscribeFromSeq` was computed from the in-memory tip; the flush makes
+  // the durable tip match, so the timer-watch subscription starts exactly
+  // past the flushed markers.
   await flush(env, runId);
 
   // Notify the host of the fresh control-plane suspension only now that it is
@@ -4157,8 +4111,9 @@ async function parkOnSignalResult(
     env.onPark?.(parkToNotify);
   }
   // The author-signal sibling notify: a suspendable-child body's `awaitSignal`
-  // gate is surfaced up so the section can proxy it. Fired after the flush like
-  // `onPark` so the `SignalAwaited` is durable before the section observes it.
+  // gate is surfaced up so the section can proxy it. Fired after the flush
+  // like `onPark` so the `SignalAwaited` is durable before the section
+  // observes it.
   if (signalParkToNotify !== undefined) {
     env.onSignalPark?.({ runId, name: signalParkToNotify });
   }
@@ -4239,14 +4194,13 @@ async function parkOnSignalResult(
     void next;
     return { timedOut: false, payload: received.payload };
   } catch (cause) {
-    // Distinguish timeout from outer cancellation: the safe-runner's catch
-    // treats `cancelling` phase specially, but a timeout that fires while the
-    // run is still `running` is not a failure here -- it is a routing decision
-    // the caller owns (route onward via onTimeout, or fail the step). Return
-    // the discriminated timeout rather than throwing. The scheduler has
-    // already committed TimerFired by the time the watch loop set
-    // `timerFired = true`; the runtime body MUST NOT commit a second
-    // TimerFired here -- single-writer is the invariant.
+    // Distinguish timeout from outer cancellation: a timeout that fires while
+    // the run is still `running` is not a failure here -- it is a routing
+    // decision the caller owns (route onward via onTimeout, or fail the
+    // step), so return the discriminated timeout rather than throwing. The
+    // scheduler already committed TimerFired when `timerFired` was set; the
+    // runtime body MUST NOT commit a second -- single-writer is the
+    // invariant.
     if (timerFired) {
       return { timedOut: true };
     }
@@ -4297,21 +4251,21 @@ async function runAwaitSignal(
   let state = await reloadState(env, runId);
   const resumed = state.steps.has(primitive.id);
 
-  // Short-circuit resume: an `awaitSignal` step found `in-flight` means a mover
-  // already took it off `awaiting-signal` -- a `SignalReceived` (or a
-  // pre-await queued signal consumed by `SignalAwaited`), or, for a timed gate,
-  // a `TimerFired`. The step only lacks its `StepCompleted` (or, on timeout,
-  // its routing/failure) -- the crash-after-move-before-StepCompleted window
-  // (`isResumableReceivedAwaitSignalStep`). The reduced `StepState` records
-  // neither which mover won nor the payload, so reconstruct both from the
-  // durable log and complete without parking.
+  // Short-circuit resume: an `awaitSignal` step found `in-flight` means a
+  // mover already took it off `awaiting-signal` -- a `SignalReceived` (or a
+  // pre-await queued signal consumed by `SignalAwaited`), or, for a timed
+  // gate, a `TimerFired`. The step only lacks its `StepCompleted` (or, on
+  // timeout, its routing/failure) -- the crash-after-move-before-StepCompleted
+  // window (`isResumableReceivedAwaitSignalStep`). The reduced `StepState`
+  // records neither which mover won nor the payload, so reconstruct both from
+  // the durable log and complete without parking.
   if (resumed && state.steps.get(primitive.id)?.phase === "in-flight") {
     const log = await env.repoStore.read(runId);
     // The in-flight gate's payload survives only on the log; the replay below
     // binds it by signal name, which is faithful only while this gate is the
     // sole awaiter of the name. Another step awaiting the same name -- even a
-    // sibling that already completed -- makes the binding ambiguous, so refuse
-    // rather than risk recovering a wrong payload.
+    // sibling that already completed -- makes the binding ambiguous, so
+    // refuse rather than risk recovering a wrong payload.
     if (hasForeignSameNameAwaiter(log, primitive.name, primitive.id)) {
       throw new RuntimeResumeUnsupportedError(
         primitive.id,
@@ -4421,10 +4375,11 @@ async function completeAwaitSignalOutcome(
 
   // onTimeout set: route conditionally via the gate mechanism (prune the
   // not-taken branch with skip-sentinels, complete the gate, let the taken
-  // branch schedule off its `after`), exactly as `routeLoopOutcome` does for a
-  // loop's onExhausted. A fired timer routes to the onTimeout target and prunes
-  // the normal successors; a delivered signal takes the normal successors and
-  // prunes the onTimeout branch. The gate completes either way.
+  // branch schedule off its `after`), exactly as `routeLoopOutcome` does for
+  // a loop's onExhausted. A fired timer routes to the onTimeout target and
+  // prunes the normal successors; a delivered signal takes the normal
+  // successors and prunes the onTimeout branch. The gate completes either
+  // way.
   const onTimeoutTarget = primitive.onTimeout;
   const normalDependents = Object.entries(definition.steps)
     .filter(
@@ -4475,8 +4430,9 @@ async function runSleep(
   // in-flight sleep always carries a fired timer. Complete with `null`
   // without re-parking.
   if (resumed && state.steps.get(primitive.id)?.phase === "in-flight") {
-    // handleTimerFired clears the fired timer from `pendingTimers`; a lingering
-    // pending timer on an in-flight sleep would mean the reducer contract broke.
+    // handleTimerFired clears the fired timer from `pendingTimers`; a
+    // lingering pending timer on an in-flight sleep would mean the reducer
+    // contract broke.
     if (findUnfiredTimerForStep(state, primitive.id) !== undefined) {
       throw new Error(
         `runSleep resume: step ${primitive.id} is in-flight but still has a pending timer; a fired sleep timer must be cleared from pendingTimers`,
@@ -4489,13 +4445,13 @@ async function runSleep(
   let timerId: string;
   let fireAtDate: Date;
   if (resumed) {
-    // Re-park resume (phase `awaiting-timer`): the durable log already carries
-    // this sleep's unfired `TimerSet` in `pendingTimers` (a fired timer would
-    // have moved the step to `in-flight`, handled above). Re-adopt it rather
-    // than minting a second one: a duplicate `TimerSet` would double-count the
-    // deadline and leave two scheduler entries racing to fire, and re-minting
-    // from a recomputed delay would restart the clock and discard the sleep
-    // already elapsed before the crash.
+    // Re-park resume (phase `awaiting-timer`): the durable log already
+    // carries this sleep's unfired `TimerSet` in `pendingTimers` (a fired
+    // timer would have moved the step to `in-flight`, handled above). Re-adopt
+    // it rather than minting a second one: a duplicate `TimerSet` would
+    // double-count the deadline and leave two scheduler entries racing to
+    // fire, and re-minting from a recomputed delay would restart the clock and
+    // discard the sleep already elapsed before the crash.
     const existing = findUnfiredTimerForStep(state, primitive.id);
     if (existing === undefined) {
       throw new Error(
@@ -4571,11 +4527,11 @@ async function runChildWorkflow(
   // one rung deeper; the ceiling is tree-wide (threaded from this run).
   const childDepth = depth + 1;
   assertSpawnDepthWithinLimit(childDepth, primitive.id, maxChildSpawnDepth);
-  // Post-extraction the child definition is the internal `{ ref }` handle: the
-  // deploy step lifts the authored inline child to a standalone definition and
-  // the host resolves it from an in-memory closure map keyed by this ref. An
-  // inline child reaching the runtime is a deploy-step bug -- the same
-  // contract `runOnTrigger` enforces on its body.
+  // Post-extraction the child definition is the internal `{ ref }` handle:
+  // the deploy step lifts the authored inline child to a standalone
+  // definition and the host resolves it from an in-memory closure map keyed
+  // by this ref. An inline child reaching the runtime is a deploy-step bug --
+  // the same contract `runOnTrigger` enforces on its body.
   if (!("ref" in primitive.definition)) {
     throw new Error(
       `childWorkflow ${primitive.id} reached the runtime with an inline ` +
@@ -4613,20 +4569,17 @@ async function runChildWorkflow(
   };
   state = await commit(env, parentRunId, spawned);
   // Segment boundary: the parent is about to hand off to and AWAIT a sub-run
-  // (which commits its own events -- including its terminal -- to the same
-  // workflow-run repo while this await blocks). Flush the parent's buffered
-  // pre-spawn events (RunStarted .. ChildSpawned) BEFORE the child runs, so
-  // the parent's audit log records the spawn ahead of any child-side work and
-  // a concurrent cancel sweep finds the child to cascade against -- the same
-  // invariant the ChildSpawned-before-spawn ordering above upholds. Without
-  // this flush the parent's subtree would materialize AFTER its children's.
+  // (which commits its own events to the same workflow-run repo while this
+  // await blocks). Flush the parent's buffered pre-spawn events BEFORE the
+  // child runs, so the audit log records the spawn ahead of any child-side
+  // work and a concurrent cancel sweep finds the child to cascade against --
+  // the same invariant the ChildSpawned-before-spawn ordering upholds.
   await flush(env, parentRunId);
   // Wrap the spawn callback so a throw still lands a closing ChildCompleted
-  // event for the orphan: without it, ChildSpawned would persist with
+  // "failed" for the orphan: without it, ChildSpawned would persist with
   // `terminalStatus: undefined` and a future resume would treat the child as
-  // live to cascade cancellation to. The catch commits ChildCompleted
-  // "failed" so state.children stays coherent, then rethrows so
-  // runPrimitiveSafe lands StepFailed on the parent's spawn step.
+  // live to cascade cancellation to. Rethrows so runPrimitiveSafe lands
+  // StepFailed on the parent's spawn step.
   let child: { terminalStatus: "completed" | "failed" | "cancelled" };
   try {
     child = await env.spawnChild({
@@ -4667,8 +4620,8 @@ async function runChildWorkflow(
     // step as a failure. The runtime is the layer with enough information to
     // know the child did not succeed; pushing the decision to a downstream
     // gate makes the gating mandatory and silent-if-forgotten.
-    // runPrimitiveSafe's catch lands the StepFailed when the throw bubbles out
-    // of this runner.
+    // runPrimitiveSafe's catch lands the StepFailed when the throw bubbles
+    // out of this runner.
     throw new ChildWorkflowFailedError(
       `child run ${childRunId} (${definitionRef}) ended ${child.terminalStatus}`,
       child.terminalStatus,
@@ -4721,8 +4674,8 @@ class ChildWorkflowFailedError extends Error {
 // branch or committing StepCompleted -- threw (e.g. a transient durable-store
 // failure). Distinct from an invocation failure so the runner catches land a
 // bare failure rather than routing to the onFailure handler or retrying: the
-// work is already done, so a route would invert a success into a fired handler
-// and a retry would re-invoke it.
+// work is already done, so a route would invert a success into a fired
+// handler and a retry would re-invoke it.
 class SuccessTerminalizationError extends Error {
   constructor(cause: unknown) {
     super(cause instanceof Error ? cause.message : String(cause), { cause });
