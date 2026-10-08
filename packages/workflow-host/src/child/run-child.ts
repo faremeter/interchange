@@ -116,12 +116,12 @@ import {
 } from "../adapters/spawn-child";
 import {
   createControlChannelSender,
-  receiveControlChannel,
   type ControlChannelSender,
-  type ControlPayload,
   type NdjsonReader,
   type NdjsonWriter,
-} from "../ipc/control-channel";
+} from "../ipc/control-sender";
+import { receiveControlChannel } from "../ipc/control-receiver";
+import type { ControlPayload } from "../ipc/control-payloads";
 import {
   createEventChannelSender,
   type FrameWriter,
