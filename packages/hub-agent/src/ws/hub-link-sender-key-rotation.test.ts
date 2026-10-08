@@ -1,9 +1,7 @@
 // End-to-end proof that a user-principal sender key that rotates while a
 // sidecar is disconnected is reconciled into the sidecar's SenderKeyCache when
-// it reconnects. This exercises the whole loop against real components -- a
-// real HubLink, a real SenderKeyCache, and a real hub-side createSidecarRouter
-// -- so the pieces the per-commit unit tests cover in isolation are proven to
-// compose:
+// it reconnects, against real components (a real HubLink, a real
+// SenderKeyCache, and a real hub-side createSidecarRouter):
 //
 //   1. The sidecar reports its cached rotatable senders on the reconnect frame.
 //   2. The hub re-resolves each reported sender's CURRENT key (a per-call DB
@@ -11,10 +9,9 @@
 //   3. The sidecar applies the pushed key to its cache.
 //
 // The reconnecting sidecar loads its cache cold from the same data dir the
-// first connection persisted to, modelling a real drop-and-reconnect where the
-// cache survives on disk. The reconnect carries a restored workflow address so
-// it emits a genuine `reconnect` frame (not `register`), pinning both hub
-// handshake paths to this behavior.
+// first connection persisted to, and the reconnect carries a restored
+// workflow address so it emits a genuine `reconnect` frame (not `register`),
+// pinning both hub handshake paths to this behavior.
 
 import { describe, test, expect, afterEach } from "bun:test";
 import fs from "node:fs/promises";

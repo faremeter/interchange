@@ -1,8 +1,8 @@
 // Pins the contract for the `mail.inbound` arm in `handleMessage`: a throwing
 // `mailInboundRouter.tryRoute` must not wedge the per-connection
-// `messageQueue` chain. The arm wraps the router call in try/catch (mirroring
-// `signal.deliver` and `drain.deliver`), so subsequent frames -- including the
-// heartbeat `pong` -- continue to dispatch through the same chain.
+// `messageQueue` chain. The arm wraps the router call in try/catch, so
+// subsequent frames -- including the heartbeat `pong` -- continue to dispatch
+// through the same chain.
 //
 // The shape of the underlying bug: an unguarded `tryRoute` call rejects the
 // chained promise; subsequent `.then(...)` calls against the rejected chain
@@ -342,9 +342,8 @@ describe("hub-link mail.inbound throwing router", () => {
 
       const encoded = base64Encode(VALID_MESSAGE);
 
-      // First mail.inbound: the router throws. With the C4 fix in
-      // place, the link's switch arm catches the throw and logs it
-      // without rejecting the messageQueue chain.
+      // First mail.inbound: the router throws. The link's switch arm catches
+      // the throw and logs it without rejecting the messageQueue chain.
       expect(
         await env.router.routeMail(
           deploymentAddress,
@@ -353,10 +352,9 @@ describe("hub-link mail.inbound throwing router", () => {
         ),
       ).toBe(true);
 
-      // Second mail.inbound: the router accepts. With the fix in
-      // place this frame still flows through; without the fix the
-      // chain has been wedged by the prior rejection and the router
-      // is never consulted.
+      // Second mail.inbound: the router accepts. This frame still flows
+      // through; without the fix the chain has been wedged by the prior
+      // rejection and the router is never consulted.
       expect(
         await env.router.routeMail(
           deploymentAddress,

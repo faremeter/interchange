@@ -25,14 +25,14 @@ type PendingRegister = {
 
 export type RegisterAckerConfig = {
   /**
-   * Put a register frame on the wire, for the initial send and each retry; the
-   * acker never touches the socket itself, so the link's normal
-   * `send` (queue-on-disconnect) semantics are preserved.
+   * Put a register frame on the wire for the initial send and each retry.
+   * The acker never touches the socket, so the link's normal `send`
+   * (queue-on-disconnect) semantics are preserved.
    */
   sendFrame: (frame: SignalCorrelationRegisterFrame) => void;
   /**
    * True only when the link is OPEN. The acker abandons a pending retry the
-   * moment the link is not open: re-sending onto a fresh, not-yet-registered
+   * moment the link is not open: a resend onto a fresh, not-yet-registered
    * socket would land "unrouted", and the reconnect re-emit re-registers the
    * parked set anyway.
    */
@@ -42,29 +42,29 @@ export type RegisterAckerConfig = {
 };
 
 /**
- * Reliable-resend helper for `signal.correlation.register` frames, modelled on
- * the pack sender's pending-ack machine. A register is fire-and-forget on the
- * wire and can be lost on an open socket or evicted from the link's bounded
- * send queue; without an ack the parked run is never registered and cannot be
- * approved. This tracks each register until the hub's
- * `signal.correlation.register.ack` lands, re-sending on a tight watchdog, and
- * gives up on disconnect (leaving recovery to the next re-establishment).
+ * Reliable-resend helper for `signal.correlation.register` frames, modelled
+ * on the pack sender's pending-ack machine. A register is fire-and-forget on
+ * the wire and can be lost on an open socket or evicted from the link's
+ * bounded send queue; without an ack the parked run is never registered.
+ * Tracks each register until the hub's `signal.correlation.register.ack`
+ * lands, re-sending on a tight watchdog, and gives up on disconnect (leaving
+ * recovery to the next re-establishment).
  */
 export interface RegisterAcker {
   /**
-   * Send a register frame and track it until acked or abandoned. A second send
-   * for a correlationId already pending refreshes the frame and resets the
-   * watchdog rather than arming a second one -- the initial park, a re-emit,
-   * and a retry all carry the same correlationId and drive the same idempotent
-   * co-write, so one pending entry per correlation is correct.
+   * Send a register frame and track it until acked or abandoned. A second
+   * send for a pending correlationId refreshes the frame and resets the
+   * watchdog rather than arming a second one: initial park, re-emit, and
+   * retry all carry the same correlationId, so one pending entry per
+   * correlation is correct.
    */
   send(frame: SignalCorrelationRegisterFrame): void;
   /** Settle the pending retry for this correlationId; false if none was pending. */
   handleAck(correlationId: string): boolean;
   /**
-   * Abandon every pending retry without re-sending or re-acking. Called on link
-   * close and on the reconnect open edge, so no timer leaks and no retry fires
-   * onto a dead or not-yet-registered socket.
+   * Abandon every pending retry without re-sending or re-acking. Called on
+   * link close and on the reconnect open edge, so no timer leaks and no retry
+   * fires onto a dead or not-yet-registered socket.
    */
   cancelAll(): void;
 }

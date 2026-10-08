@@ -339,11 +339,10 @@ describe("hub-link workflow-run pack bootstrap prune", () => {
         env.router.getRoutableAddresses().includes(agentAddress),
       );
 
-      // Epoch 2: the hub rejects the first push of the new epoch with
-      // `corrupt` again. Without the prune, the link skips the
-      // bootstrap-retry arm (the flag from epoch 1 is still set) and
-      // surfaces the rejection. With the prune, the retry runs once more
-      // and the push succeeds.
+      // Epoch 2: the hub rejects the first push again. Without the prune the
+      // link skips the retry arm (the epoch-1 flag is still set) and surfaces
+      // the rejection; with it, the retry runs once more and the push
+      // succeeds.
       env.rejectFirstOfEvery.value = 2;
       await client.pushWorkflowRunPack({
         agentAddress,

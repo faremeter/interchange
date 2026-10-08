@@ -7,12 +7,11 @@
 // exists for, and the rule docs/INBOUND_MAIL_POLICY.md states.
 //
 // Nine reachable (signature, binding) pairs raise a finding on both axes, so
-// the property has eighteen (pair, relaxed-axis) directions. Ten of them are
-// covered by inbound-signature.test.ts; this file covers all eighteen, so what
-// it adds is breadth rather than unique detection: a decision keyed on the
-// single reduced `outcomeForVerdict` headline instead of on the finding set
-// fails those ten cases too. Neither file is the only thing standing between
-// that regression and a green build.
+// the property has eighteen (pair, relaxed-axis) directions. Ten are covered
+// by inbound-signature.test.ts; this file covers all eighteen, so it adds
+// breadth rather than unique detection: a decision keyed on the single reduced
+// `outcomeForVerdict` headline instead of on the finding set fails those ten
+// cases too.
 //
 // The ground that is only here:
 //   - the eight (pair, relaxed-axis) directions that suite does not reach.

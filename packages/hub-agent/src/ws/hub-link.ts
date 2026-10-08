@@ -1,8 +1,6 @@
-// HubLink: the sidecar-side WebSocket protocol.
-//
-// Connects to the hub, sends the register frame, forwards outbound mail and
-// inference events, and handles inbound agent lifecycle commands. Key material
-// lives on AgentKeyStore; the wire layer never touches raw key bytes.
+// HubLink: the sidecar-side WebSocket protocol. Connects to the hub, sends
+// the register frame, forwards outbound mail and inference events, and
+// handles inbound agent lifecycle commands.
 
 import { getLogger } from "@intx/log";
 import type { HubTransport } from "@intx/mail-memory";
@@ -61,10 +59,7 @@ import type {
 import type { AgentKeyStore } from "../agent-key-store";
 import type { SessionManager } from "../session-manager";
 
-/**
- * Sink the link exposes for forwarding a spawned child's verified
- * InferenceEvents to the hub timeline, keyed by the deploy's session id.
- */
+/** Forwards a spawned child's verified InferenceEvents to the hub timeline. */
 export type SessionEventSink = (
   agentAddress: string,
   sessionId: string,
@@ -114,15 +109,6 @@ const PACK_REJECT_REQUEST_TYPES: ReadonlySet<string> = new Set([
   "repo.pack.done",
 ]);
 
-/**
- * Answer a malformed inbound request/ack frame so the hub's request does not
- * hang. Three families answer through their correlation key: `requestId`
- * frames (`sources.update`) reply `session.error`; `agentAddress` frames
- * (`agent.deploy`, `agent.undeploy`) reply `agent.error`; `transferId` pack
- * frames reply `repo.pack.reject` when their address and repoId survive.
- * Fire-and-forget frames and frames with no recoverable key are logged and
- * dropped. Returns whether an answer was sent.
- */
 /**
  * Classify an `applyAssetPack` failure message into a `repo.pack.reject`
  * reason. A structural rejection (symlink, submodule, escaping mountPath) is
@@ -204,7 +190,7 @@ const DEFAULT_PING_INTERVAL_MS = 30_000;
 const DEFAULT_RECONNECT_DELAY_MS = 3_000;
 
 /**
- * The reason `packSender.cancelAll` rejects an in-flight transfer with on a
+ * The reason `packSender.cancelAll` rejects an in-flight transfer on a
  * reconnect. A push failing with this is a dropped connection, not a
  * receiver-side rejection, so `runWithBootstrap` must not fast-retry it.
  */
@@ -239,19 +225,10 @@ export type DeployRouterResult = {
   publicKey: string;
 };
 
-/**
- * Single-ingress deploy contract the link routes every `agent.deploy` frame
- * through. The production router stages each deploy through the workflow-run
- * substrate; the shape lives on hub-agent so the package boundary stays
- * one-way.
- */
+/** Routes every inbound `agent.deploy` frame through the workflow-run substrate. */
 export interface DeployRouter {
   deploy(frame: AgentDeployFrame): Promise<DeployRouterResult>;
-  /**
-   * Symmetric teardown for `deploy`: release the per-deployment
-   * registrations the deploy path installed. Optional so test routers can
-   * omit it.
-   */
+  /** Release the per-deployment registrations the deploy path installed. Optional for test routers. */
   undeploy?: (frame: AgentUndeployFrame) => Promise<void>;
   /** Cancel a workflow or stop its process while retaining local inspection state. */
   control?: (frame: WorkflowControlFrame) => Promise<WorkflowControlOutcome>;
@@ -265,99 +242,68 @@ export type WorkflowControlOutcome = {
 
 /**
  * Per-address mail handler registry the link consults on every
- * `mail.inbound` frame. A supervised deployment's supervisor receives the
- * bytes through its mail-bus subscription; mail for an address with no
- * registered handler is dropped.
+ * `mail.inbound` frame. Mail for an address with no handler is dropped.
  */
 export interface MailInboundRouter {
   /**
-   * Dispatch `message` to the handler registered against `agentAddress`, or
-   * return `null` when none is (the mail is dropped). Otherwise returns the
-   * durable settlement: resolve once durably accepted, reject when not. The
-   * link acks only on resolution.
+   * Dispatch `message` to the handler for `agentAddress`, or return `null`
+   * when none is (the mail is dropped). Returns the durable settlement;
+   * the link acks only on resolution.
    */
   tryRoute(agentAddress: string, message: Uint8Array): Promise<void> | null;
 }
 
 /**
  * Per-deployment-address signal handler registry the link consults on every
- * inbound `signal.deliver` frame. A frame with no registered handler is
- * logged and dropped, so a misrouted delivery is observable, not silent.
+ * inbound `signal.deliver` frame. Unhandled frames are logged and dropped.
  */
 export interface SignalInboundRouter {
-  /**
-   * Dispatch `frame` to the handler registered against `frame.agentAddress`.
-   * Resolves `true` when a handler accepted it, `false` when none is
-   * registered; rejects when the handler throws. A rejection is surfaced as
-   * a logged warning -- no failure-reply frame exists for signals.
-   */
+  /** Dispatch `frame`; true when a handler accepted it, false when none is registered. */
   tryRoute(frame: SignalDeliverFrame): Promise<boolean>;
 }
 
 /**
  * Per-deployment-address drain handler registry the link consults on every
- * inbound `drain.deliver` frame. A frame with no registered handler is
- * logged and dropped, so a misrouted delivery is observable, not silent.
+ * inbound `drain.deliver` frame. Unhandled frames are logged and dropped.
  */
 export interface DrainInboundRouter {
-  /**
-   * Dispatch `frame` to the handler registered against `frame.agentAddress`.
-   * Resolves `true` when a handler accepted it, `false` when none is
-   * registered; rejects when the handler throws. A rejection is surfaced as
-   * a logged warning -- no failure-reply frame exists for drain.
-   */
+  /** Dispatch `frame`; true when a handler accepted it, false when none is registered. */
   tryRoute(frame: DrainDeliverFrame): Promise<boolean>;
 }
 
 /**
  * Per-deployment-address grants registry the link consults on every inbound
- * `run.grants` frame. A frame with no registered handler is logged and
- * dropped, so a misrouted delivery is observable, not silent.
+ * `run.grants` frame. Unhandled frames are logged and dropped.
  */
 export interface GrantsInboundRouter {
-  /**
-   * Dispatch `frame` to the handler registered against `frame.agentAddress`.
-   * Resolves `true` when a handler accepted it, `false` when none is
-   * registered; rejects when the handler throws. A rejection is surfaced as
-   * a logged warning -- no failure-reply frame exists for run grants.
-   */
+  /** Dispatch `frame`; true when a handler accepted it, false when none is registered. */
   tryRoute(frame: RunGrantsFrame): Promise<boolean>;
 }
 
 /**
  * Per-deployment-address sources-rotation registry the link consults on every
- * inbound `sources.update` frame. It is a request/ack frame, so the link
- * answers `session.ack` / `session.error` -- a missing answer hangs the hub.
+ * inbound `sources.update` frame. Request/ack: the link answers
+ * `session.ack` / `session.error`, so the hub never hangs.
  */
 export interface SourcesInboundRouter {
-  /**
-   * Dispatch `frame` to the handler registered against `frame.agentAddress`.
-   * Resolves `true` when a handler accepted the rotation, `false` when none
-   * is registered. Rejects when the rotation is invalid or delivery throws;
-   * the link turns a rejection into a `session.error` carrying the reason.
-   */
+  /** Dispatch `frame`; true when accepted, false when none registered. Rejection becomes `session.error`. */
   tryRoute(frame: SourcesUpdateFrame): Promise<boolean>;
 }
 
 /**
  * Per-deployment-address credential-delivery registry the link consults on
- * every inbound `credentials.update` frame. It is a request/ack frame, so the
- * link answers `session.ack` / `session.error` -- a missing answer hangs the hub.
+ * every inbound `credentials.update` frame. Request/ack: the link answers
+ * `session.ack` / `session.error`, so the hub never hangs.
  */
 export interface CredentialsInboundRouter {
-  /**
-   * Dispatch `frame` to the handler registered against `frame.agentAddress`.
-   * Resolves `true` when a handler accepted the delivery, `false` when none
-   * is registered. Rejects when the delivery is invalid or delivery throws;
-   * the link turns a rejection into a `session.error` carrying the reason.
-   */
+  /** Dispatch `frame`; true when accepted, false when none registered. Rejection becomes `session.error`. */
   tryRoute(frame: CredentialsUpdateFrame): Promise<boolean>;
 }
 
 /**
- * Applies one Hub-authoritative workflow-run ref before a replacement
- * supervisor is allowed to spawn. The host owns the workflow substrate, so
- * the websocket layer delegates the actual ref update through this boundary.
+ * Applies a Hub-authoritative workflow-run ref before a replacement
+ * supervisor is allowed to spawn. The websocket layer delegates the update
+ * through this boundary.
  */
 export type WorkflowRunPackApplier = (args: {
   agentAddress: string;
@@ -369,9 +315,8 @@ export type WorkflowRunPackApplier = (args: {
 
 /**
  * The inert answer a probe execution produces, lifted off the
- * `workflow.probe.result` frame: the needs-surface projection, the inert
- * grant set derived from it, the grant-walk snapshot it is derived from, and
- * the projection's content hash.
+ * `workflow.probe.result` frame: the projection, its derived grant set, the
+ * grant-walk snapshot, and the projection's content hash.
  */
 export type WorkflowProbeResult = Pick<
   WorkflowProbeResultFrame,
@@ -380,19 +325,15 @@ export type WorkflowProbeResult = Pick<
 
 /**
  * Seam the link routes every inbound `workflow.probe.request` through.
- * Production wiring evaluates the frame's frozen dependency closure to a live
- * `WorkflowDefinition` in a one-shot child, projects it to its inert needs
- * surface, and returns that plus the derived grant set and content hash. A
- * throw becomes a `workflow.probe.error` reply so the hub's probe never hangs.
+ * Production evaluates the frozen closure in a one-shot child and returns the
+ * inert needs surface plus the derived grant set and content hash. A throw
+ * becomes a `workflow.probe.error` reply so the hub's probe never hangs.
  */
 export interface WorkflowProbeExecutor {
   probe(frame: WorkflowProbeRequestFrame): Promise<WorkflowProbeResult>;
 }
 
-/**
- * Placeholder probe executor wired when no real one is supplied. It rejects so
- * the link answers `workflow.probe.error` -- never a silent drop.
- */
+/** Placeholder probe executor wired when no real one is supplied; rejects so a probe is answered. */
 const defaultWorkflowProbeExecutor: WorkflowProbeExecutor = {
   probe() {
     return Promise.reject(
@@ -409,15 +350,12 @@ export type HubLinkConfig = {
   sessions: SessionManager;
   /**
    * Key custody and per-frame crypto: deploy-commit verification, hub-key
-   * recording, and per-agent forgetting. The link keeps no copy of those
-   * tables itself.
+   * recording, and per-agent forgetting.
    */
   keyStore: AgentKeyStore;
   /**
    * Resolves a sender address to the crypto whose public key verifies that
-   * sender's inbound mail, or `undefined` when no key is known. Source-opaque:
-   * the link never learns whether the key came from a local cache or a
-   * relayed foreign key.
+   * sender's inbound mail, or `undefined` when no key is known.
    */
   resolveSenderCrypto: (address: string) => CryptoProvider | undefined;
   /**
@@ -429,23 +367,16 @@ export type HubLinkConfig = {
   lookupInboundMailPolicy: (address: string) => ResolvedInboundMailPolicy;
   /**
    * Persists the hub-vouched public key for a sender address, overwriting any
-   * previously cached key. Required, not optional, because its read peer is
-   * required and every composition that runs the link already holds the same
-   * cache.
+   * previously cached key.
    */
   cacheSenderKey: (address: string, publicKey: string) => Promise<void>;
   /**
    * Durably removes the cached key for a sender address, on an inbound
    * `sender.key.evict` frame (the hub re-resolved a reported cached sender to
-   * no durable key). Required for the same reason as `cacheSenderKey`: every
-   * composition that can cache a key must be able to evict one.
+   * no durable key).
    */
   evictSenderKey: (address: string) => Promise<void>;
-  /**
-   * Routes every inbound `agent.deploy` frame. Production wiring stages each
-   * deploy through the workflow-run substrate; the router owns the routing
-   * decision, the link does not re-decide.
-   */
+  /** Routes every inbound `agent.deploy` frame. */
   deployRouter: DeployRouter;
   /**
    * Optional inbound mail dispatcher. When present, the link consults it on
@@ -453,41 +384,24 @@ export type HubLinkConfig = {
    * means no handler claims the mail, so the link logs and drops it.
    */
   mailInboundRouter?: MailInboundRouter;
-  /**
-   * Optional inbound signal dispatcher. When present, the link routes every
-   * inbound `signal.deliver` frame through it. Absent (or a `false` return)
-   * means the frame is logged and dropped, so a misrouted delivery is
-   * observable rather than silent.
-   */
+  /** Optional inbound signal dispatcher; absent or false means log-and-drop. */
   signalInboundRouter?: SignalInboundRouter;
-  /**
-   * Optional inbound drain dispatcher. When present, the link routes every
-   * inbound `drain.deliver` frame through it. Absent (or a `false` return)
-   * means the frame is logged and dropped, so a misrouted delivery is
-   * observable rather than silent.
-   */
+  /** Optional inbound drain dispatcher; absent or false means log-and-drop. */
   drainInboundRouter?: DrainInboundRouter;
-  /**
-   * Optional inbound grants dispatcher. When present, the link routes every
-   * inbound `run.grants` frame through it. Absent (or a `false` return)
-   * means the frame is logged and dropped, so a misrouted delivery is
-   * observable rather than silent.
-   */
+  /** Optional inbound grants dispatcher; absent or false means log-and-drop. */
   grantsInboundRouter?: GrantsInboundRouter;
   /**
    * Optional inbound sources-rotation dispatcher. When present, the link
    * routes every inbound `sources.update` frame through it and answers
    * `session.ack` on acceptance, `session.error` otherwise. Absent means
-   * `session.error` for every rotation -- a request/ack frame with no reply
-   * hangs the hub.
+   * `session.error` for every rotation.
    */
   sourcesInboundRouter?: SourcesInboundRouter;
   /**
    * Optional inbound credential-delivery dispatcher. When present, the link
    * routes every inbound `credentials.update` frame through it and answers
    * `session.ack` on acceptance, `session.error` otherwise. Absent means
-   * `session.error` for every delivery -- a request/ack frame with no reply
-   * hangs the hub.
+   * `session.error` for every delivery.
    */
   credentialsInboundRouter?: CredentialsInboundRouter;
   /**
@@ -501,7 +415,7 @@ export type HubLinkConfig = {
    * inbound `workflow.probe.request` frame through it and answers
    * `workflow.probe.result` on success, `workflow.probe.error` when it
    * throws. Absent, a placeholder executor always throws, so a probe still
-   * gets answered -- a request/response frame with no reply hangs the hub.
+   * gets answered.
    */
   workflowProbeExecutor?: WorkflowProbeExecutor;
   /**
@@ -514,24 +428,21 @@ export type HubLinkConfig = {
   getWorkflowAddresses?: () => string[];
   /**
    * Returns the rotatable (non-run) sender addresses this sidecar holds cached
-   * keys for. Read at each (re)connect and reported on the register/reconnect
-   * frame so the Hub re-resolves and re-pushes each key, catching a rotation
-   * that landed while the sidecar was disconnected. Optional with an empty
-   * default: an empty report is a legitimate steady state, unlike the required
-   * `cacheSenderKey` on the receive path.
+   * keys for. Reported on each (re)connect frame so the Hub re-resolves and
+   * re-pushes each key, catching a rotation that landed while the sidecar was
+   * disconnected.
    */
   getCachedSenderAddresses?: () => string[];
   /**
    * Invoked after the allocation-authenticated reconnect frame is written, so
-   * the workflow-run pack pusher can safely re-drive a cancelled push without
-   * overtaking route restoration.
+   * the workflow-run pack pusher can safely re-drive a cancelled push.
    */
   onWorkflowAddressesRoutable?: (addresses: string[]) => void;
   /**
    * Invoked on WS disconnect with the workflow-substrate addresses this link
    * hosts. Their Hub route is gone until the next reconnect, so the
    * workflow-run pack pusher blocks their pushes in the interim. Paired with
-   * `onWorkflowAddressesRoutable`, which lifts the block after re-announcement.
+   * `onWorkflowAddressesRoutable`.
    */
   onWorkflowAddressesUnroutable?: (addresses: string[]) => void;
   pingIntervalMs?: number;
@@ -549,12 +460,9 @@ export type HubLink = {
   close(): void;
   sendEvent: SessionEventSink;
   /**
-   * Register a control-plane suspension with the hub. Sends a
+   * Register a control-plane suspension with the hub: sends a
    * `signal.correlation.register` frame so the hub co-writes the parked run's
-   * routing + approval rows. Fired when a workflow agent step parks on a
-   * reserved correlation channel; the fields converge at this seam. Mirrors
-   * `sendEvent`: a fire-and-forget hub-bound send that queues while
-   * disconnected.
+   * routing + approval rows. Fire-and-forget; queues while disconnected.
    */
   sendSignalCorrelationRegister: (registration: {
     correlationId: string;
@@ -568,8 +476,6 @@ export type HubLink = {
    * Ship a workflow-run pack to the hub. Streams the pack as `repo.pack.push`
    * chunks followed by a `repo.pack.done`, then resolves on the matching
    * `repo.pack.ack` (rejects on `repo.pack.reject` with the carried reason).
-   * The hub routes it to its `workflow-run` receiver because `repoId.kind` is
-   * `"workflow-run"`.
    */
   pushWorkflowRunPack: (opts: {
     agentAddress: string;
@@ -588,10 +494,9 @@ const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
  * to a non-loopback host those secrets cross the network unencrypted.
  *
  * Returns the warning message when `hubURL` is cleartext `ws:` against a
- * non-loopback host, or `null` otherwise. A malformed `hubURL` throws from
- * `new URL` rather than being reported as no-warning. Other `127.0.0.0/8`
- * addresses fall through to the warning; over-warning on a local address is
- * safe, whereas missing a remote one is not.
+ * non-loopback host, or `null` otherwise. Other `127.0.0.0/8` addresses fall
+ * through to the warning: over-warning on a local address is safe, whereas
+ * missing a remote one is not.
  */
 export function cleartextTransportWarning(hubURL: string): string | null {
   const { protocol, hostname } = new URL(hubURL);
@@ -650,7 +555,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
   const packReceiver = createPackReceiver();
   // One sender owns both push paths (agent-state and workflow-run), with
   // transferIds in disjoint namespaces, so a single pending-id map is
-  // unambiguous; the protocol logic lives once in `@intx/pack-transport`.
+  // unambiguous.
   const packSender = createPackSender({ sendFrame: (frame) => send(frame) });
 
   // Retry `signal.correlation.register` until the hub acks it. A register is
@@ -746,9 +651,8 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       // allocates the ~59MB base64 string a 44MB body would produce.
       const bodyBytes = Math.ceil(rawMessage.byteLength / 3) * 4;
       // Fail loud at the source: a throw surfaces to the producing agent as a
-      // real error rather than the silent hub-side drop it would otherwise
-      // get. The hub re-enforces the cap on receive -- the authoritative DoS
-      // backstop; this is the producer-facing error.
+      // real error rather than a silent hub-side drop. The hub re-enforces
+      // the cap on receive -- the authoritative backstop.
       if (bodyBytes > MAX_MAIL_OUTBOUND_BODY_BYTES) {
         throw new Error(
           `refusing to send mail.outbound from ${senderAddress}: rawMessage of ${String(bodyBytes)} bytes exceeds the ${String(MAX_MAIL_OUTBOUND_BODY_BYTES)}-byte cap`,
@@ -772,8 +676,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     const bodyBytes = Math.ceil(ctx.rawMessage.byteLength / 3) * 4;
     // Post-delivery audit/projection forward: the mail already went out
     // locally, so there is nothing left to fail. A throw here is swallowed by
-    // the transport's allSettled, so an over-cap frame is logged and skipped
-    // rather than thrown -- the hub would drop it on receive regardless.
+    // the transport's allSettled, so an over-cap frame is logged and skipped.
     if (bodyBytes > MAX_MAIL_OUTBOUND_BODY_BYTES) {
       logger.error`Skipping delivered mail.outbound audit frame from ${ctx.senderAddress}: rawMessage of ${String(bodyBytes)} bytes exceeds the ${String(MAX_MAIL_OUTBOUND_BODY_BYTES)}-byte cap`;
       return;
@@ -795,9 +698,8 @@ export function createHubLink(config: HubLinkConfig): HubLink {
 
   async function handleAgentDeploy(frame: AgentDeployFrame): Promise<void> {
     try {
-      // The deploy router stages the deploy through the substrate and returns
-      // the public key the link folds into the outbound ack. The link does not
-      // re-decide; routing lives on the router side of the seam.
+      // The deploy router stages the deploy and returns the public key the
+      // link folds into the outbound ack; the link does not re-decide.
       const result = await deployRouter.deploy(frame);
       send({
         type: "agent.deploy.ack",
@@ -1121,13 +1023,12 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     // swallow it after logging at ERROR -- there is no reply channel and the
     // link must never wedge. A malformed key is simply dropped. A transient
     // cache-write fault leaves the STALE key cached until the next reconnect
-    // re-pushes, so this push is best-effort, not delivery-guaranteed.
+    // re-pushes, so this push is best-effort.
     //
     // Awaited inline on the message chain, NOT detached the way the
     // `mail.inbound` durable write is: the co-resident `run.grants` handler
     // also caches sender keys on this same chain, so serializing the refresh
-    // keeps last-write-wins deterministic against a concurrent grants write
-    // for the same address.
+    // keeps last-write-wins deterministic against a concurrent grants write.
     try {
       await cacheSenderKey(frame.address, frame.publicKey);
     } catch (err) {
@@ -1141,9 +1042,8 @@ export function createHubLink(config: HubLinkConfig): HubLink {
   ): Promise<void> {
     // Mirror of `handleSenderKeyRefresh` for the evict direction: address-keyed,
     // no reply channel, awaited inline so it serializes against a concurrent
-    // refresh/grants write. A fault swallowed after logging at ERROR keeps the
-    // STALE key cached until the next reconnect re-evicts -- best-effort, not
-    // delivery-guaranteed, exactly like the refresh it complements.
+    // refresh/grants write. A fault is swallowed after logging at ERROR, leaving
+    // the STALE key cached until the next reconnect re-evicts -- best-effort.
     try {
       await evictSenderKey(frame.address);
     } catch (err) {
@@ -1179,7 +1079,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     } catch (err) {
       // A registered address whose rotation was rejected: an invalid list or
       // the supervisor's `deliverSources` throwing (e.g. a recycling phase).
-      // The reason rides back verbatim so the hub sees why the rotation failed.
+      // The reason rides back verbatim so the hub sees why it failed.
       const msg = err instanceof Error ? err.message : String(err);
       send({
         type: "session.error",
@@ -1217,8 +1117,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     } catch (err) {
       // A registered address whose delivery was rejected: an invalid delivery
       // or the supervisor's `deliverCredentials` throwing (e.g. a recycling
-      // phase). The reason rides back verbatim so the hub sees why the
-      // delivery failed.
+      // phase). The reason rides back verbatim so the hub sees why it failed.
       const msg = err instanceof Error ? err.message : String(err);
       send({
         type: "session.error",
@@ -1286,12 +1185,11 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         await sendOnce();
       } catch (first) {
         // A disconnect that cancelled the transfer is NOT the initRepo
-        // bootstrap race: the link just cycled, and re-sending on the fresh,
-        // not-yet-registered connection would ship to a hub that has dropped
-        // this address's route. Reconnect recovery is owned by the pushing
-        // store's post-reconnect re-drive, so re-throw. Only the genuine
-        // bootstrap race -- a receiver reject against an uninitialised hub
-        // repo -- retries here.
+        // bootstrap race: re-sending on a fresh, not-yet-registered
+        // connection would ship to a hub that dropped this address's route.
+        // Reconnect recovery is owned by the pushing store's post-reconnect
+        // re-drive, so re-throw. Only the genuine bootstrap race -- a
+        // receiver reject against an uninitialised hub repo -- retries here.
         if (isConnectionLost(first)) {
           throw first;
         }
@@ -1373,10 +1271,9 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     }
     const validated = HubFrame(raw);
     if (validated instanceof type.errors) {
-      // A malformed request/ack frame must still be answered, or the hub's
+      // A malformed request/ack frame must still be answered or the hub's
       // request hangs to its timeout: reply with the matching error frame
-      // when a correlation key survives; fire-and-forget frames and frames
-      // with no recoverable key are only logged and dropped.
+      // when a correlation key survives; otherwise log and drop.
       answerMalformedRequestFrame(raw, validated.summary, send);
       logger.warn`Invalid hub frame: ${validated.summary}`;
       return;
@@ -1386,13 +1283,11 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     switch (frame.type) {
       case "mail.inbound": {
         const rawBytes = base64Decode(frame.rawMessage);
-        // The inbound-signature verify gates delivery here: this ingress is
-        // where raw inbound bytes meet the hub-verified sender identity. It is
-        // awaited INLINE on the messageQueue chain because the verdict decides
-        // admission. It is CPU-bound (cache read, Ed25519 verify, MIME
-        // re-parse; no I/O, no lock) so it cannot hang and never throws: a
-        // fault degrades to an `error` verdict. The in-process mail-memory
-        // transport does not deliver through this seam.
+        // The inbound-signature verify gates delivery here, awaited INLINE on
+        // the messageQueue chain because the verdict decides admission. It is
+        // CPU-bound (cache read, Ed25519 verify, MIME re-parse; no I/O, no
+        // lock) so it cannot hang and never throws: a fault degrades to an
+        // `error` verdict.
         const verdict = await verifyInboundSignature(
           {
             raw: rawBytes,
@@ -1419,18 +1314,15 @@ export function createHubLink(config: HubLinkConfig): HubLink {
               messageId: frame.messageId ?? null,
             },
           );
-          // A rejected mail is simply not delivered -- the same drop as the
-          // no-handler path: no ack, no reply frame, no dispatch-fail. The
-          // hub's redelivery and expiry machinery handles the rest.
+          // A rejected mail is simply not delivered -- same drop as the
+          // no-handler path: no ack, no reply frame. The hub's redelivery
+          // machinery handles the rest.
           break;
         }
-        // Admitted: deliver as an admitted frame always has. Supervised
-        // deployments register the deployment-level mail address on
-        // `mailInboundRouter` once their supervisor spawns; that handler
-        // delivers the bytes to the supervisor's mail-bus subscription, which
-        // is what the workflow-host's `awaitSignal` listens on. Mail for an
-        // address with no registered handler has no receiver, so it is logged
-        // and dropped.
+        // Admitted: the supervisor's handler delivers the bytes to its
+        // mail-bus subscription, which the workflow-host's `awaitSignal`
+        // listens on. Mail for an address with no registered handler is
+        // logged and dropped.
         //
         // Guard the router call with try/catch so a synchronous throw does not
         // reject this `handleMessage` promise and wedge the per-connection
@@ -1579,23 +1471,19 @@ export function createHubLink(config: HubLinkConfig): HubLink {
 
       packReceiver.reset();
       packSender.cancelAll(CONNECTION_LOST_REASON);
-      // Abandon register retries armed against the prior connection. Any
+      // Abandon register retries armed against the prior connection: any
       // still-parked correlation is re-registered by the reconnect re-emit
-      // once the handshake below re-routes the addresses; a stale retry
-      // firing onto this fresh, not-yet-registered socket would only land
-      // unrouted.
+      // once the handshake re-routes the addresses, and a stale retry onto
+      // this fresh socket would land unrouted.
       registerAcker.cancelAll();
 
-      // The first handshake is the sidecar's complete hosted-address
-      // announcement. A fresh sidecar sends register; one that restored a
-      // deployment sends reconnect instead. Sending an empty register before
-      // reconnect would expose a false empty inventory and let allocation
-      // reconciliation restore Hub state over the live workflow.
+      // A fresh sidecar sends register; one that restored a deployment sends
+      // reconnect instead. Sending an empty register before reconnect would
+      // expose a false empty inventory and let allocation reconciliation
+      // restore Hub state over the live workflow.
       const restoredAddresses = getWorkflowAddresses();
-      // Report the sidecar's cached rotatable senders on both frames: the
-      // register-vs-reconnect choice turns on workflow-address presence, so a
-      // sidecar with cached senders but no restored workflow substrate still
-      // announces them on a register frame. Omit the field when empty to
+      // Report cached rotatable senders on both frames (register-vs-reconnect
+      // turns on workflow-address presence). Omit the field when empty to
       // honor its additive-optional wire shape.
       const cachedSenderAddresses = getCachedSenderAddresses();
       const senderReport =
@@ -1625,16 +1513,14 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         // throw inside `handleMessage` surfaces as a logged warning rather
         // than rejecting the shared `messageQueue` chain, which would wedge
         // every subsequent frame -- including the heartbeat `pong` -- and
-        // silently stall the link. Per-arm guards are the primary defence;
-        // this catch is the guarantee that no future unguarded arm can wedge
-        // the link.
+        // silently stall the link.
         //
         // Ordinary frame handlers run to completion before the next begins;
         // workflow.control starts here but owns its asynchronous completion.
-        // A downstream invariant depends on that ordering -- the workflow
+        // A downstream invariant depends on that ordering: the workflow
         // source-rotation persist rolls back on failure assuming no second
         // rotation is in flight, which holds only because sources.update
-        // frames are processed one at a time here.
+        // frames are processed one at a time.
         const data = event.data;
         messageQueue = messageQueue.then(() =>
           handleMessage(data, connection).catch((err: unknown) => {
@@ -1658,15 +1544,13 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         pingTimer = null;
       }
       // Abandon in-flight register retries: the link is down, so recovery
-      // belongs to the reconnect re-emit, and a lingering watchdog would only
-      // fire onto a closed socket.
+      // belongs to the reconnect re-emit.
       registerAcker.cancelAll();
-      // The hub dropped every route this link held. Block workflow-run pushes
-      // for the deployments it hosts until the authenticated reconnect
-      // re-routes them, so the coalescing pusher does not re-ship onto the
-      // fresh, not-yet-registered connection (which the hub drops as
-      // "unrouted"). `onWorkflowAddressesRoutable`, fired after the reconnect
-      // frame is sent, lifts the block and re-drives.
+      // The hub dropped every route this link held. Block workflow-run
+      // pushes for the hosted deployments until the authenticated reconnect
+      // re-routes them, so the pusher does not re-ship onto a fresh,
+      // not-yet-registered connection. `onWorkflowAddressesRoutable` lifts
+      // the block and re-drives.
       if (onWorkflowAddressesUnroutable !== undefined) {
         const hosted = getWorkflowAddresses();
         if (hosted.length > 0) {
@@ -1718,9 +1602,9 @@ export function createHubLink(config: HubLinkConfig): HubLink {
 
   const sendSignalCorrelationRegister: HubLink["sendSignalCorrelationRegister"] =
     (registration) => {
-      // The ask rail is the only producer of this frame, and every ask-rail
-      // suspension carries a snapshot; one without it is a wiring defect, so
-      // fail loud rather than send a frame the receiver would reject.
+      // Every ask-rail suspension carries a snapshot; one without it is a
+      // wiring defect, so fail loud rather than send a frame the receiver
+      // would reject.
       if (registration.approvalSnapshot === undefined) {
         throw new Error(
           `signal.correlation.register built with no approval snapshot for ${registration.correlationId}; ask-rail suspensions always carry one`,

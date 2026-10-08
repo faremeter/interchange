@@ -132,12 +132,9 @@ function parseHandshake(raw: unknown): HandshakeFrame | null {
 type Connection = { frame: HandshakeFrame; send: ServerSend };
 
 // Connections are addressed by the `sidecarId` their handshake carries, which
-// every test here sets to a distinct value. The previous shape kept one
-// mutable slot for whichever connection was current and treated "the slot is
-// populated" as readiness, which could not tell this test's link from the
-// previous test's not-yet-closed one. Registering at the handshake is also
-// the stronger signal: the handshake proves that link's message chain is
-// live, where an open socket only proves it exists.
+// every test here sets to a distinct value. Registering at the handshake is
+// the stronger signal than a socket's open: the handshake proves that link's
+// message chain is live, where an open socket only proves it exists.
 function startTestServer(): {
   server: ReturnType<typeof Bun.serve>;
   awaitConnection: (sidecarId: string) => Promise<Connection>;
