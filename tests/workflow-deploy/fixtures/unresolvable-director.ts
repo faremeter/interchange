@@ -1,17 +1,10 @@
 // Source-entry builder for the unresolvable-director workflow fixture (F11):
 // one mail-triggered `step({ agent })` whose agent declares a `director` ref
 // that neither the sidecar's built-in registry nor any closure package can
-// resolve. The returned string is a `@intx/*`-importing entry module;
-// `bundleWorkflowEntry` inlines it to a self-contained `.mjs` the sidecar
-// evaluates in-child.
-//
-// The install/approve probe walks the definition's capabilities in the sidecar
-// and fails closed on the unresolved director, so a deploy of this fixture is
-// expected to REJECT with an `unresolvable director: <id>` error before any
-// definition is frozen or deployed.
-//
-// Parameterised by the mail trigger address, the step id, and the bogus
-// director ref so a caller pins the run's address and the ref it asserts on.
+// resolve. The install/approve probe walks the definition's capabilities in the
+// sidecar and fails closed on the unresolved director, so a deploy of this
+// fixture is expected to REJECT with an `unresolvable director: <id>` error
+// before any definition is frozen or deployed.
 
 export type UnresolvableDirectorFixtureParams = {
   /** The mail trigger's `to` address the deployment routes on. */

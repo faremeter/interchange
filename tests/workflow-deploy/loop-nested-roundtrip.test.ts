@@ -6,7 +6,7 @@
 // Both loops converge after exactly three iterations (see
 // loop-nested-workflow.ts), so the top-level run carries three `ChildSpawned`
 // under the outer loop, and the outer loop's first iteration body run carries
-// three `ChildSpawned` under the inner loop. Those counts prove the nested loop
+// three `ChildSpawned` under the inner loop -- the counts prove the nested loop
 // actually iterated on the deployed path.
 //
 // Harness justification: SPAWN-REAL. A real hub server, a real sidecar

@@ -1,32 +1,27 @@
-// Single-step warm-agent INTERACTIVE multi-turn conversation (INTR-480).
-//
-// Proves the interactive conversational mail path for a warm single-step agent
-// whose step declares `triggers: "unbounded"`. Unlike the two-turn-thread
-// sibling -- which holds the conversation open WITHIN one turn via `mail_wait`
-// -- this agent replies to each inbound and RETURNS. The runtime re-arms the
-// step on a snapshot-less `input` park after every turn, so the SECOND inbound
-// mail is dispatched as turn 2 via `signal.deliver` on the SAME stable run
-// (its runId is the deployment address's local part; see `deriveWorkflowRunId`
-// -- "a property of the deployment, not of the trigger occurrence"), rather
-// than opening a new run or being rejected as terminal.
+// Single-step warm-agent INTERACTIVE multi-turn conversation (INTR-480):
+// the interactive conversational mail path for a warm single-step agent whose
+// step declares `triggers: "unbounded"`. Unlike the two-turn-thread sibling
+// (which holds the conversation open WITHIN one turn via `mail_wait`), this
+// agent replies to each inbound and RETURNS. The runtime re-arms the step on a
+// snapshot-less `input` park after every turn, so the SECOND inbound mail is
+// dispatched as turn 2 via `signal.deliver` on the SAME stable run (its runId
+// is the deployment address's local part; see `deriveWorkflowRunId` -- "a
+// property of the deployment, not of the trigger occurrence"), rather than
+// opening a new run or being rejected as terminal.
 //
 // Run model. A batch step (`triggers` absent / `1`) completes on its first
 // output, so a second inbound would hit a terminal run and be refused. With
-// `triggers: "unbounded"` the step never self-completes: it re-arms on an input
-// park (`run.ts` re-arm), and the supervisor's dispatch loop routes the next
-// inbound onto that park as `signal.deliver` (turn 2) instead of `trigger.fire`
-// (a fresh run). Turn 2's mail flows through the step-invoker's
+// `triggers: "unbounded"` the step never self-completes: it re-arms on an
+// input park, and the supervisor's dispatch loop routes the next inbound onto
+// that park as `signal.deliver` (turn 2) instead of `trigger.fire` (a fresh
+// run). Turn 2's mail flows through the step-invoker's
 // `buildInboundMessageFromMail` -> `seedInbound` connector hook exactly like
 // turn 1, so the connector thread continues across the two dispatched turns and
-// turn 2's reply threads onto turn-2's mail.
-//
-// The scripted mock drives that loop deterministically: on each turn it returns
-// a plain text reply (no tool call, so the step produces an OUTPUT and the
-// runtime re-arms; NO `mail_wait`, so the run does not stay inside one turn).
-// Each reply is drained through the warm agent's connector reply path, which
-// composes the outbound `In-Reply-To`/`To`/`Cc` from the durable connector
-// thread the `seedInbound` hook advanced -- so the delivered wire headers are a
-// faithful proof of which mail each turn's reply threaded onto.
+// turn 2's reply threads onto turn-2's mail. The scripted mock returns a plain
+// text reply per turn (no tool call, so the step produces an OUTPUT and
+// re-arms; NO `mail_wait`, so the run does not stay inside one turn), and each
+// reply's wire headers are composed from the durable connector thread the
+// `seedInbound` hook advanced.
 //
 // Assertions, read off the delivered `mail.outbound` bytes (via `persistMail`'s
 // retained `raw`, parsed with `parseHeaderSection`) and the run event log:
@@ -284,11 +279,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         throw new Error("R1 carried no Message-Id");
       }
 
-      // The step produced its turn-1 output and the unbounded runtime re-armed
-      // on a fresh input park. Wait for that re-arm before firing mail 2 so the
-      // second mail lands on the signal.deliver rail (turn 2), not a race with
-      // an in-flight turn. A still-open run here also proves turn 1 did NOT go
-      // terminal -- a batch step would have completed and refused mail 2.
+      // Wait for that re-arm before firing mail 2 so the second mail lands on
+      // the signal.deliver rail (turn 2), not a race with an in-flight turn. A
+      // still-open run here also proves turn 1 did NOT go terminal -- a batch
+      // step would have completed and refused mail 2.
       await waitFor(
         async () =>
           inputRearmCount(
@@ -339,9 +333,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       ]);
 
       // R1 answered the thread opener, which carried no References of its own,
-      // so its ancestry is the single opener Message-Id. Confirms the
-      // full-chain path degrades to one element for a first reply rather than
-      // emitting an empty or malformed References header.
+      // so its ancestry is the single opener Message-Id -- the full-chain path
+      // degrades to one element for a first reply.
       const r1References = (r1Headers.get("references") ?? "")
         .split(/\s+/)
         .filter((id) => id.length > 0);
@@ -359,9 +352,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const events = await readWorkflowRunEvents(env, DEPLOYMENT_ID, runId);
 
-      // Both turns ran under ONE run. A single RunStarted consumed mail 1; mail
-      // 2 opened no run of its own -- it was routed onto the input park as turn
-      // 2, not dispatched as a fresh run.
+      // Both turns ran under ONE run: a single RunStarted consumed mail 1;
+      // mail 2 opened no run of its own -- it was routed onto the input park as
+      // turn 2, not dispatched as a fresh run.
       const started = events.filter((e) => e.type === "RunStarted");
       expect(started).toHaveLength(1);
       expect(started[0]?.body["consumedMessageId"]).toBe(MAIL1_MESSAGE_ID);

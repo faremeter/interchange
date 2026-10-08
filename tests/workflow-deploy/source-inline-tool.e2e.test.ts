@@ -1,11 +1,10 @@
-// A code-sourced workflow runs its OWN inline tool in-child.
-//
-// This is the proof that a source-ref-deployed workflow runs the tools
-// declared in its own source, rather than tool-less. It deploys a one-step
-// workflow BY SOURCE-REF whose agent carries the inline `mail_send` tool from
-// the `mail-tool.ts` fixture (a real `defineTool` module bundled into the
-// workflow's source closure), fires the deployment's mail trigger, and drives
-// the mock inference server to call the inline tool.
+// A code-sourced workflow runs its OWN inline tool in-child: the proof that a
+// source-ref-deployed workflow runs the tools declared in its own source,
+// rather than tool-less. It deploys a one-step workflow BY SOURCE-REF whose
+// agent carries the inline `mail_send` tool from the `mail-tool.ts` fixture (a
+// real `defineTool` module bundled into the workflow's source closure), fires
+// the deployment's mail trigger, and drives the mock inference server to call
+// the inline tool.
 //
 // The evaluated closure carries the step agent's live `AnnotatedToolFactory`s
 // on `req.agent.toolFactories`; the source-ref arm of the sidecar step
@@ -123,11 +122,9 @@ const AGENT_ID = "source-inline-tool-agent";
 const SENTINEL_FILENAME = "source-inline-tool-ran.txt";
 const SENTINEL_CONTENT = "executed-in-child-from-source";
 
-// The definition's own tenant, the caller principal that creates the
-// definition asset, and the `workflow`-kind asset the frozen definition
-// projects over. The install/approve freeze and the anchor `workflow_run`
-// insert both write against these, so they must exist in the real DB before
-// the deploy runs.
+// The tenant, caller principal, and `workflow`-kind definition asset the
+// install/approve freeze and anchor `workflow_run` insert write against; they
+// must exist in the real DB before the deploy runs.
 const TENANT_ID = "tnt_source_inline_tool";
 const CALLER_PRINCIPAL_ID = "prn_source_inline_tool";
 const DEFINITION_ASSET_ID = "ast_source_inline_tool_wf";
@@ -277,9 +274,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // hand-authored constant.
       const runGrants = deriveWireRunGrants(snapshot);
 
-      // The source-ref frame round-trips through the real sidecar subprocess
-      // (index the pack, check out the pinned subtree, register the address),
-      // so routability is asynchronous. Wait for it before firing the trigger.
+      // The source-ref frame round-trips through the real sidecar subprocess (index
+      // the pack, check out the pinned subtree, register the address); routability is async, so wait before firing the trigger.
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),

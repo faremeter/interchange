@@ -1,24 +1,15 @@
 // Source-entry builder for the onTrigger section workflow fixture (F7):
 // a single top-level `onTrigger` section subscribed to the deployment mail
-// address, whose inline body is one of three shapes. The returned string is a
-// `@intx/*`-importing entry module; `bundleWorkflowEntry` inlines it to a
-// self-contained `.mjs` the sidecar evaluates in-child.
-//
-// The section spawns its body as a child run per event; the body variant
-// selects what that child does:
-//   - "agent":       a single tool-less agent step, exercising the body-agent
-//                    invoker (the model reply commits as the step output).
-//   - "awaitSignal": a single `awaitSignal` gate, exercising the signal-relay
-//                    capability. An optional `timeout` adds an `onTimeout`
-//                    route to a completing `sleep` step.
+// address, whose inline body is one of three shapes. The section spawns its
+// body as a child run per event; the body variant selects what that child does:
+//   - "agent":       a single tool-less agent step (the model reply commits as
+//                    the step output).
+//   - "awaitSignal": a single `awaitSignal` gate. An optional `timeout` adds an
+//                    `onTimeout` route to a completing `sleep` step.
 //   - "sleep":       a single `sleep` step. A short duration completes on its
 //                    own so the section re-arms for the next event (the
 //                    between-events recovery shape); a long duration holds the
-//                    body mid-step (the container awaits the body terminal), the
-//                    drain-teardown shape.
-//
-// Parameterised by the mail trigger address, the section id, and the body
-// variant so a caller pins the run's address and selects the body it exercises.
+//                    body mid-step (the drain-teardown shape).
 
 export type OnTriggerAgentBody = {
   variant: "agent";

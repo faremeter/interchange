@@ -1,23 +1,19 @@
-// Single-step message-input round-trip integration test (Phase 4.2).
+// Single-step message-input round-trip integration test (Phase 4.2): the proof
+// that the inbound mail's BODY reaches the warm agent's `agent.send` as the
+// step input -- not an empty or placeholder input. Deploys a one-step workflow
+// through the workflow-deploy orchestrator's multi-step branch (which spawns
+// the workflow-process subprocess) against the real hub + real sidecar
+// subprocess + an echo inference fixture, fires a mail with a KNOWN body, and
+// asserts the step's committed reply echoes that body.
 //
-// The proof that the inbound mail's BODY reaches the warm agent's
-// `agent.send` as the step input -- not an empty or placeholder input.
-// Deploys a one-step workflow through the workflow-deploy orchestrator's
-// multi-step branch (which spawns the workflow-process subprocess)
-// against the real hub + real sidecar subprocess + an echo inference
-// fixture, fires a mail with a KNOWN body, and asserts the step's
-// committed reply echoes that body.
-//
-// The mock inference server runs in echo mode: it reflects the last
-// user message's text back as `echo:<text>`. The agent delivers the
-// inbound conversation content as the user turn, so the echoed reply is
-// the load-bearing proof that the mail body traversed
-// trigger.payload -> step input -> synthesizeInputContent -> agent.send.
-//
-// Against the pre-4.2 behaviour (trigger.fire carries no bytes; the
-// child threads no triggerPayload, so the first step's
-// `{ from: "trigger.payload" }` input resolves to null/empty), the
-// echoed reply would be `echo:` with no body -- this test fails there.
+// The mock inference server runs in echo mode: it reflects the last user
+// message's text back as `echo:<text>`. The agent delivers the inbound
+// conversation content as the user turn, so the echoed reply is the load-
+// bearing proof that the mail body traversed trigger.payload -> step input ->
+// synthesizeInputContent -> agent.send. Against the pre-4.2 behaviour
+// (trigger.fire carries no bytes; the child threads no triggerPayload, so the
+// first step's `{ from: "trigger.payload" }` input resolves to null/empty),
+// the echoed reply would be `echo:` with no body -- this test fails there.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { type } from "arktype";
@@ -73,11 +69,9 @@ const FIRST_BODY = "First inbound body alpha-7391.";
 const ATTACHMENT_NAME = "photo.png";
 const ATTACHMENT_BYTES = new TextEncoder().encode("fake-png-bytes-4821");
 
-// The definition's own tenant, the caller principal that creates the
-// definition asset, and the `workflow`-kind asset the frozen definition
-// projects over. The install/approve freeze and the anchor `workflow_run`
-// insert both write against these, so they must exist in the real DB before
-// the deploy runs.
+// The tenant, caller principal, and `workflow`-kind definition asset the
+// install/approve freeze and anchor `workflow_run` insert write against; they
+// must exist in the real DB before the deploy runs.
 const TENANT_ID = "tnt_single_step_message_input";
 const CALLER_PRINCIPAL_ID = "prn_single_step_message_input";
 const DEFINITION_ASSET_ID = "ast_single_step_message_input_wf";
@@ -193,9 +187,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const workflowRunRepoId = handle.workflowRunRepoId;
 
-      // The source-ref frame round-trips through the real sidecar subprocess
-      // (index the pack, check out the pinned subtree, register the address),
-      // so routability is asynchronous. Wait for it before firing the trigger.
+      // The source-ref frame round-trips through the real sidecar subprocess (index
+      // the pack, check out the pinned subtree, register the address); routability is async, so wait before firing the trigger.
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),

@@ -3,7 +3,7 @@
 // module, the handler throws, and the runtime routes the permanent failure to
 // the named handler action instead of failing the run. RunCompleted (not
 // RunFailed) plus the unit's routed StepFailed prove onFailure survives the
-// deploy path -- projection, wire, and the deployed runtime -- and routes.
+// deploy path -- projection, wire, and the deployed runtime.
 //
 // Harness justification: SPAWN-REAL. A real hub server, a real sidecar
 // subprocess, and a real workflow-process child evaluating the deployed source.

@@ -1,8 +1,7 @@
-// Deployed loop-body -> childWorkflow real-execution round-trip.
-//
-// The deployed counterpart to the runLocal test
+// Deployed loop-body -> childWorkflow real-execution round-trip: the deployed
+// counterpart to the runLocal test
 // (packages/workflow/src/runtime/loop-child-workflow.test.ts) and the deploy
-// unit tests (inert-ontrigger-bodies.test.ts): those prove a loop body's
+// unit tests (inert-ontrigger-bodies.test.ts). Those prove a loop body's
 // childWorkflow is LIFTED and RESOLVED; this proves the nested grandchild
 // EXECUTES for real on the deployed path, and that its per-step inference source
 // was staged under the transitive `<workflowId>__<loopStepId>__<spawnStepId>`
@@ -13,9 +12,8 @@
 // inference. The loop body's only step is a `childWorkflow` spawn of a trivial
 // one-agent grandchild. Firing the mail trigger runs iteration 0 under the
 // inherited env; the body's `childWorkflow` step spawns the grandchild, whose
-// agent runs a REAL agent through the sidecar. The terminal assertion is that
-// the grandchild reaches the runtime and produces a real `{ reply, turn }`
-// output, and its completion propagates up the spawn chain.
+// agent runs a REAL agent through the sidecar and produces a real `{ reply,
+// turn }` output, and its completion propagates up the spawn chain.
 //
 // Harness justification: SPAWN-REAL. Mirrors on-trigger-childworkflow-roundtrip
 // with a loop container instead of an onTrigger section.
@@ -121,9 +119,8 @@ let env: DeployFlowEnv;
 let h: TestDb;
 
 beforeAll(async () => {
-  // A file-scope beforeAll fires even when describe.skipIf skips the
-  // suite bodies, so it needs its own guard or a missing DB env throws
-  // here. See the two-shape rule in tests/lib/db-harness.ts.
+  // A file-scope beforeAll fires even when describe.skipIf skips the suite
+  // bodies, so it needs its own guard or a missing DB env throws here.
   if (!harnessDbEnvAvailable()) return;
   h = await createTestDb();
   await h.db.insert(tenantTable).values({

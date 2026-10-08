@@ -91,11 +91,9 @@ const READ_TOOL_GRANTS: WireGrantRule[] = READ_TOOL_NAMES.map((name) => ({
   principalId: null,
 }));
 
-// The definition's own tenant, the caller principal that creates the
-// definition asset, and the `workflow`-kind asset the frozen definition
-// projects over. The install/approve freeze and the anchor `workflow_run`
-// insert both write against these, so they must exist in the real DB before
-// the deploy runs.
+// The tenant, caller principal, and `workflow`-kind definition asset the
+// install/approve freeze and anchor `workflow_run` insert write against; they
+// must exist in the real DB before the deploy runs.
 const TENANT_ID = "tnt_single_step_mail_loop";
 const CALLER_PRINCIPAL_ID = "prn_single_step_mail_loop";
 const DEFINITION_ASSET_ID = "ast_single_step_mail_loop_wf";
@@ -205,9 +203,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const workflowRunRepoId = handle.workflowRunRepoId;
 
-      // The source-ref frame round-trips through the real sidecar subprocess
-      // (index the pack, check out the pinned subtree, register the address),
-      // so routability is asynchronous. Wait for it before firing the trigger.
+      // The source-ref frame round-trips through the real sidecar subprocess (index
+      // the pack, check out the pinned subtree, register the address); routability is async, so wait before firing the trigger.
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),

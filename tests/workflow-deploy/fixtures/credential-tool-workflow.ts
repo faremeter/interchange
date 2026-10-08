@@ -1,19 +1,18 @@
 // Source-entry builder for the credential-consuming single-step workflow: one
 // mail-triggered `step({ agent })` whose agent carries the inline credential
-// probe tool from the sibling `credential-tool-bundle.ts` module, plus a
-// `credentialBindings` entry that binds the probe's declared handle to a
-// tenant-owned credential. The returned string is a `@intx/*`-importing entry
-// module that also imports the tool by absolute path; `bundleWorkflowEntry`
-// inlines both into a self-contained `.mjs` the sidecar evaluates in-child, so
-// the probe runs from the workflow's own source closure rather than a pinned
+// probe tool from the sibling `credential-tool-bundle.ts`, plus a
+// `credentialBindings` entry binding the probe's declared handle to a
+// tenant-owned credential. `bundleWorkflowEntry` inlines the entry and the
+// tool into a self-contained `.mjs` the sidecar evaluates in-child, so the
+// probe runs from the workflow's own source closure rather than a pinned
 // tarball.
 //
-// The binding's `package` is the probe factory's `id` (`BUNDLE_ID`). The
+// The binding's `package` must be the probe factory's `id` (`BUNDLE_ID`): the
 // source-ref arm keys a source tool's synthetic `StepToolFactory.packageName`
-// to the factory `id`, and a credential is keyed to its consuming tool by
+// to the factory id, and a credential is keyed to its consuming tool by
 // `toolConsumer(packageName)` on both the delivery descriptor and the Gate-2
-// grant. So the author names `credentialBindings[].package` = the factory id,
-// and the delivered credential's consumer matches the source tool at run time.
+// grant. A mismatch would deliver the credential to a consumer the source
+// tool does not key on.
 
 import path from "node:path";
 

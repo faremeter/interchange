@@ -1,20 +1,15 @@
 // Source-entry builder for a top-level `childWorkflow` whose child holds a
-// gate nothing can answer.
+// gate nothing can answer. The child is terminal (no address of its own; the
+// spawner awaits its terminal), so an untimed `awaitSignal` there waits on a
+// signal that can never arrive: the deployment must fail the run at the gate
+// instead, and no approval may reach the tenant.
 //
-// The child is a terminal child: it carries no address of its own, and the
-// spawner awaits its terminal rather than driving it across parks. An untimed
-// `awaitSignal` there therefore waits on a signal that can never arrive. The
-// deployment must fail the run at the gate instead, and no approval may reach
-// the tenant.
-//
-// `timedGate` renders the same shape with a deadline, which is answerable in
-// process and must still run: it is the boundary the refusal must not cross.
-//
-// `askTool` renders the shape the issue actually reports: instead of an author
-// gate, the child's step carries a tool marked for approval, so the park is a
-// control-plane suspension rather than a named signal. That is the only shape
-// that would register a correlation with the hub if it were allowed to park,
-// which is what makes "no approval reached an operator" checkable.
+// `timedGate` renders the same shape with a deadline, answerable in process
+// and must still run: the boundary the refusal must not cross. `askTool`
+// renders the shape the issue reports -- the child's step carries a tool
+// marked for approval, so the park is a control-plane suspension rather than
+// a named signal; only that shape registers a correlation with the hub if
+// allowed to park, which makes "no approval reached an operator" checkable.
 
 import path from "node:path";
 
@@ -33,8 +28,8 @@ export type ChildWorkflowUnanswerableGateParams = {
   signalName: string;
   /**
    * Give the child's gate a deadline, routing to the child's trailing step on
-   * expiry. The gate then resolves on its own timer with no upstream
-   * involvement, so the run must complete rather than being refused.
+   * expiry; the gate then resolves on its own timer, so the run completes
+   * rather than being refused.
    */
   timedGate?: boolean;
   /**

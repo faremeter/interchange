@@ -7,10 +7,10 @@
 // The tests drive a REAL `createRepoStore` workflow-run substrate and a REAL
 // isogit local store (the production path), so the connector-state flush, the
 // change-driven + run-boundary mirrors, and the working-tree reconstruction
-// are exercised end to end -- not mocked. This mirrors the harness in
-// conversation-state-wal.test.ts; the substrate dependency is why these live
-// under tests/ rather than co-located in apps/sidecar/src (co-location would
-// force a workflow-run-substrate dependency cycle).
+// are exercised end to end -- not mocked, mirroring
+// conversation-state-wal.test.ts. The substrate dependency is why these live
+// under tests/ rather than co-located in apps/sidecar/src, which would force
+// a workflow-run-substrate dependency cycle.
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import fs from "node:fs";

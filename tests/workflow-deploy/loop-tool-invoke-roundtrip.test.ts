@@ -4,23 +4,18 @@
 // The sibling `loop-roundtrip.test.ts` proves a deployed loop runs its body end
 // to end, but its body agent declares `tools: []` -- as does every other
 // deployed loop fixture -- so the body never reaches the tool-invocation
-// authorize seam. This proves the stronger property, the one
-// `child-workflow-tool-invoke-roundtrip.test.ts` already proves for a spawned
-// child: the body's real agent CALLS the tool and feeds the result back into a
-// follow-up turn -- the real `tool_use` -> execute -> `tool_result` -> reply
-// round-trip. The mock provider is configured to drive a `tool_use` on the
-// first request of every run that exposes the tool, so the body runs the inline
-// `mail_send` tool for real and re-inferences with its result.
+// authorize seam. This proves the stronger property: the body's real agent
+// CALLS the tool and feeds the result back into a follow-up turn, the real
+// `tool_use` -> execute -> `tool_result` -> reply round-trip. The mock provider
+// drives a `tool_use` on the first request of every run that exposes the tool.
 //
-// The assertion reads the tool_result's TEXT, not merely its presence. A tool
-// call the authorize seam blocks still appends a tool_result -- an error one,
-// carrying the throw's message -- and the agent then replies normally, so the
-// run completes and a presence-only check passes while nothing ever ran. Only
-// the tool's own return value (`wrote <filename>`) proves the body executed it.
-//
-// The env runs exactly one workflow, and only the loop body's step carries a
-// tool. The two top-level agent steps can produce no tool_result at all, so a
-// tool_result in ANY captured request can only have originated in the loop body.
+// The assertion reads the tool_result's TEXT, not merely its presence: a tool
+// call the authorize seam blocks still appends an error tool_result and the
+// agent then replies normally, so a presence-only check passes while nothing
+// ever ran. Only the tool's own return value (`wrote <filename>`) proves the
+// body executed it. The env runs exactly one workflow, and only the loop body's
+// step carries a tool, so a tool_result in ANY captured request can only have
+// originated in the loop body.
 //
 // Harness justification: SPAWN-REAL. A real hub server, a real sidecar
 // subprocess, and a real workflow-process child evaluating the deployed source.
@@ -195,8 +190,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           address: deploymentMailAddress,
           workflowId: WORKFLOW_ID,
         }),
-        // The entry module exports both `workflow` and the loop fns, so point
-        // interchange.loops at the same bundled entry.
+        // The entry exports `workflow` and the loop fns; point interchange.loops at the same bundled entry.
         loops: "./workflow.mjs",
         db: h.db,
         tenantId: TENANT_ID,

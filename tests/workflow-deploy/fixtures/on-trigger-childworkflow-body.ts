@@ -1,9 +1,7 @@
 // Source-entry builder for the onTrigger-body -> childWorkflow fixture:
 // a single top-level `onTrigger` section subscribed to the deployment mail
 // address, whose inline body is a `defineWorkflow` whose only step is a
-// `childWorkflow` spawn of a trivial one-agent child. The returned string is a
-// `@intx/*`-importing entry module; `bundleWorkflowEntry` inlines it to a
-// self-contained `.mjs` the sidecar evaluates in-child.
+// `childWorkflow` spawn of a trivial one-agent child.
 //
 // This is the runtime counterpart to the capability-walk grant coverage for the
 // same nesting (walk test "collects a childWorkflow's grants nested inside an
@@ -12,10 +10,6 @@
 // per-step agent runs through the sidecar's `childInvokeStep` -- deliberately
 // unbuilt (INTR-310) -- so the nested child fails loud rather than fabricating a
 // completed run.
-//
-// Parameterised by the mail trigger address plus the section, body, spawn, and
-// nested-child ids so a caller can pin the addresses and assert against the
-// refs and step ids the deploy assigns.
 
 export type OnTriggerChildWorkflowFixtureParams = {
   /** The mail trigger's `to` address the deployment routes on. */

@@ -1,8 +1,7 @@
-// Single-step warm-agent two-turn threaded conversation (INTR-480).
-//
-// Proves that a warm single-step agent conducts a two-exchange conversation
-// inside ONE run and threads each reply onto the message it answers --
-// observed on the delivered wire bytes.
+// Single-step warm-agent two-turn threaded conversation (INTR-480): a warm
+// single-step agent conducts a two-exchange conversation inside ONE run and
+// threads each reply onto the message it answers -- observed on the delivered
+// wire bytes.
 //
 // Run model. A workflow deployment has exactly ONE addressable top-level run
 // (its runId is the deployment's mail-address local part; see

@@ -58,11 +58,9 @@ import { signalGateEntry } from "./fixtures/signal-gate";
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const DEPLOYMENT_ID = "run_multistep-signal-1";
 
-// The definition's own tenant, the caller principal that creates the
-// definition asset, and the `workflow`-kind asset the frozen definition
-// projects over. The install/approve freeze and the anchor `workflow_run`
-// insert both write against these, so they must exist in the real DB before
-// the deploy runs.
+// The tenant, caller principal, and `workflow`-kind definition asset the
+// install/approve freeze and anchor `workflow_run` insert write against; they
+// must exist in the real DB before the deploy runs.
 const TENANT_ID = "tnt_multistep_signal";
 const CALLER_PRINCIPAL_ID = "prn_multistep_signal";
 const DEFINITION_ASSET_ID = "ast_multistep_signal_wf";
@@ -181,9 +179,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const workflowRunRepoId = handle.workflowRunRepoId;
 
-      // The source-ref frame round-trips through the real sidecar subprocess
-      // (index the pack, check out the pinned subtree, register the address),
-      // so routability is asynchronous. Wait for it before firing the trigger.
+      // The source-ref frame round-trips through the real sidecar subprocess (index
+      // the pack, check out the pinned subtree, register the address); routability is async, so wait before firing the trigger.
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),

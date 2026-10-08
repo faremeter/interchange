@@ -1,16 +1,14 @@
 // Source-entry builder for a loop-with-action-body workflow: a mail-triggered
 // `loop` whose body is a single `action`, with agent-step dependents at the top
-// level. The action body exercises the action runtime (invokeAction resolving a
-// handler from interchange.actions and running it against the effect ledger) on
-// the already-proven loop container; the agent dependents give the deploy an
-// operator-approved inference source, which the non-agent steps (the loop
-// container and the loop-body action) pin as their inert default placeholder.
-//
-// The entry module exports `workflow`, the loop while/carry functions, and the
-// action handler; the deployment points interchange.loops AND interchange.actions
-// at the same bundled entry. The loop converges after three iterations, each
-// running the action body; on convergence the normal dependent (settle) runs and
-// the onExhausted target (escalate) is pruned.
+// level. The action body exercises the action runtime (resolve a handler from
+// interchange.actions, run it against the effect ledger) on the already-proven
+// loop container; the agent dependents give the deploy an operator-approved
+// inference source for the non-agent steps to pin. The entry exports
+// `workflow`, the loop while/carry functions, and the action handler, so the
+// deployment points interchange.loops AND interchange.actions at the same
+// bundled entry. The loop converges after three iterations; on convergence the
+// normal dependent (settle) runs and the onExhausted target (escalate) is
+// pruned.
 
 export type LoopActionWorkflowFixtureParams = {
   /** The mail trigger's `to` address the deployment routes on. */

@@ -1,14 +1,8 @@
 // Source-entry builder for the plain two-step workflow fixture (F3):
 // `step1 -> step2` with no gate between them, each step's agent carrying no
-// tools. The returned string is a `@intx/*`-importing entry module;
-// `bundleWorkflowEntry` inlines it to a self-contained `.mjs` the sidecar
-// evaluates in-child.
-//
-// Parameterised by the mail trigger address, the step ids, and the per-step
-// system prompts so a caller pins each agent's inference request to the
-// deployment it exercises. The second step declares `after: [step1Id]`, so the
-// runtime serialises the two steps and the FIFO mail-dispatch invariant the
-// multi-step path pins is exercised end to end.
+// tools. The second step declares `after: [step1Id]`, so the runtime
+// serialises the two steps and the FIFO mail-dispatch invariant the multi-step
+// path pins is exercised end to end.
 
 export type TwoStepFixtureParams = {
   /** The mail trigger's `to` address the deployment routes on. */

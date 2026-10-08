@@ -8,17 +8,16 @@
 // the child re-enters the child's env, so the body step's tool call authorizes
 // against the child's snapshot under the body step's own id. A snapshot minted
 // over the child's `stepOrder` alone therefore leaves every loop nested in a
-// spawned body unable to call a tool, even once the top-level case works. This
+// spawned body unable to call a tool, even once the top-level case works; this
 // is the case that pins the spawned-body mint.
 //
-// The assertion reads the tool_result's TEXT, not merely its presence. A tool
-// call the authorize seam blocks still appends a tool_result -- an error one,
-// carrying the throw's message -- and the agent then replies normally, so the
-// run completes and a presence-only check passes while nothing ever ran. Only
-// the tool's own return value (`wrote <filename>`) proves the body executed it.
-//
-// Every step outside the loop body is toolless, so a tool_result in ANY
-// captured inference request can only have originated in the loop body.
+// The assertion reads the tool_result's TEXT, not merely its presence: a tool
+// call the authorize seam blocks still appends an error tool_result and the
+// agent then replies normally, so a presence-only check passes while nothing
+// ever ran. Only the tool's own return value (`wrote <filename>`) proves the
+// body executed it. Every step outside the loop body is toolless, so a
+// tool_result in ANY captured inference request can only have originated in
+// the loop body.
 //
 // Harness justification: SPAWN-REAL. A real hub server, a real sidecar
 // subprocess, and a real workflow-process child evaluating the deployed source.
@@ -192,8 +191,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           workflowId: WORKFLOW_ID,
           childWorkflowId: CHILD_WORKFLOW_ID,
         }),
-        // The entry module exports both `workflow` and the loop fns, so point
-        // interchange.loops at the same bundled entry.
+        // The entry exports `workflow` and the loop fns; point interchange.loops at the same bundled entry.
         loops: "./workflow.mjs",
         db: h.db,
         tenantId: TENANT_ID,

@@ -245,9 +245,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // positive signal ordered after "the run would have wrongly terminated"
       // to await instead, and the supervisor's clock lives in the sidecar
       // subprocess, so no clock seam is reachable from here. The duration
-      // therefore sets how wide a regression window this test can see: a
-      // mail_wait that terminated the run within 1s of arming fails here, one
-      // that terminated later would slip past.
+      // therefore sets how wide a regression window this test can see.
       //
       // The loop stays hand-rolled for that reason -- `waitFor` exits when its
       // predicate holds, which here is the failure -- and runs inside

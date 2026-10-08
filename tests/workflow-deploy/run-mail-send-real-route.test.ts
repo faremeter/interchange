@@ -1,5 +1,4 @@
-// Run-surface mail send routes through the workflow-native Trigger path.
-//
+// Run-surface mail send routes through the workflow-native Trigger path:
 // `POST /workflows/runs/:runId/mail` on the run surface fires the run through
 // the SAME shared trigger the deployment Trigger route (`POST /workflows/:runId/
 // mail`) uses. This test drives the PRODUCTION run-surface route against a real
@@ -16,8 +15,7 @@
 // The deployment is stood up BY SOURCE-REF through `deployWorkflowSourceForTest`
 // (bundle a source entry module into a hub asset, probe + approve + freeze it
 // against the real DB, deploy the source-ref frame, insert the anchor
-// `workflow_run` row). That is the single code-sourced deploy front; the run
-// surface then triggers the resulting anchor run.
+// `workflow_run` row); the run surface then triggers the resulting anchor run.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { type } from "arktype";
@@ -256,8 +254,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(handle.publicKey).toBeTruthy();
 
       // The source-ref frame round-trips through the real sidecar subprocess
-      // (index the pack, check out the pinned subtree, register the address),
-      // so routability is asynchronous. Wait for it before the run-surface send.
+      // (index the pack, check out the pinned subtree, register the address);
+      // routability is asynchronous. Wait for it before the run-surface send.
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),

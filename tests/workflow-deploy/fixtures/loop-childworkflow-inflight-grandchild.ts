@@ -4,16 +4,14 @@
 // body local teardown: on the drain cascade the grandchild -- running
 // in-process under the workflow-process principal, which cannot sign a
 // supervisor `CancelRequested` -- must tear down LOCALLY (its step fails to
-// `RunFailed`), not wedge on a rejected control-plane cancel. A wedged
+// `RunFailed`), not wedge on a rejected control-plane cancel; a wedged
 // grandchild would leave the loop body's spawn step awaiting a terminal that
 // never comes and hang the whole run.
 //
-// A parked grandchild is not offered. A terminal child cannot hold an untimed
-// park, because nothing upstream could answer one, so a long sleep is the way
-// to hold a grandchild in flight.
-//
-// `keepGoing` converges after the first iteration, so the loop spawns the
-// grandchild exactly once.
+// A parked grandchild is not offered: a terminal child cannot hold an untimed
+// park because nothing upstream could answer one, so a long sleep is the way
+// to hold a grandchild in flight. `keepGoing` converges after the first
+// iteration, so the loop spawns the grandchild exactly once.
 
 export type LoopChildWorkflowInFlightFixtureParams = {
   /** The mail trigger's `to` address the deployment routes on. */

@@ -8,9 +8,8 @@
 // deployCodeSourcedWorkflow) but sources the definition's bytes from a hub asset
 // instead of an npm registry, so the hub delivers the asset inline on the probe
 // and deploy frames and the sidecar checks it out into its durable
-// per-deployment source store rather than fetching tarballs over HTTP. The
-// durable store's restore-from-disk path (re-materializing the closure on a
-// sidecar restart from the pin alone) is unit-covered by
+// per-deployment source store rather than fetching tarballs over HTTP; the
+// durable store's restore-from-disk path is unit-covered by
 // `packages/workflow-host/src/deploy/workflow-host-wiring-source-assets.test.ts`.
 
 import { promises as fs } from "node:fs";

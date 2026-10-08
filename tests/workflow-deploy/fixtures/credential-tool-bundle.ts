@@ -1,5 +1,5 @@
 // A real, type-checked credential-consuming tool bundle for the single-step
-// credential-tool e2e. `credential-tool-workflow.ts` inlines THIS module into
+// credential-tool e2e; `credential-tool-workflow.ts` inlines this module into
 // the workflow's source closure via `bundleWorkflowEntry`, so the e2e drives
 // the production tool loader against a genuine bundle rather than a
 // hand-written string blob.
@@ -7,10 +7,10 @@
 // The tool declares one credential handle and, at run, resolves it from the
 // host-assembled `credentials` capability into an http mediated credential,
 // then fetches a caller-chosen path on the credential's pinned origin. The
-// bearer the origin records is the e2e's end-to-end proof that the delivery
-// rail carried the secret to the tool -- through the deploy frame (or a live
-// rotation push) into the child's cell, past Gate 2, and out as an authed
-// request -- without ever exposing the secret on the tool's own API surface.
+// bearer the origin records is the e2e's proof that the delivery rail carried
+// the secret to the tool -- through the deploy frame (or a live rotation
+// push) into the child's cell, past Gate 2, and out as an authed request --
+// without ever exposing the secret on the tool's own API surface.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -97,8 +97,7 @@ export const credentialProbe = defineTool<CredentialToolEnv>({
 
       // Resolve the mediated credential by the declared handle. Gate 2 runs
       // here (inside `resolve`): an unauthorized consumer throws before any
-      // request is shaped, which is exactly the fail-closed the negative case
-      // asserts.
+      // request is shaped -- the fail-closed the negative case asserts.
       const credentials = env.capabilities.resolve("credentials");
       const mediated = await credentials.resolve(CREDENTIAL_HANDLE);
       if (mediated.kind !== "http") {

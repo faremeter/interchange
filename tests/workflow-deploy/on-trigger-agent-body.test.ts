@@ -68,11 +68,9 @@ const BODY_CHILD_RUN_ID = `${SECTION_ID}__0`;
 // The mock inference server's reply for a tool-less agent (no tool names).
 const EXPECTED_REPLY = "I see these tools:";
 
-// The definition's own tenant, the caller principal that creates the
-// definition asset, and the `workflow`-kind asset the frozen definition
-// projects over. The install/approve freeze and the anchor `workflow_run`
-// insert both write against these, so they must exist in the real DB before
-// the deploy runs.
+// The tenant, caller principal, and `workflow`-kind definition asset the
+// install/approve freeze and anchor `workflow_run` insert write against; they
+// must exist in the real DB before the deploy runs.
 const TENANT_ID = "tnt_on_trigger_agent_body";
 const CALLER_PRINCIPAL_ID = "prn_on_trigger_agent_body";
 const DEFINITION_ASSET_ID = "ast_on_trigger_agent_body_wf";

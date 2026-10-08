@@ -3,8 +3,8 @@
 // INTR-339's headline: when a workflow run is triggered, the run's
 // authorization grants are DERIVED from the deployment's definition and
 // committed to Postgres before the run dispatches. This test drives that
-// derivation through the PRODUCTION `POST /workflows/:runId/mail`
-// route against a real migrated schema and a real sidecar subprocess:
+// derivation through the PRODUCTION `POST /workflows/:runId/mail` route
+// against a real migrated schema and a real sidecar subprocess:
 //
 //   - The workflow's single ACTION step declares `effect:{requires:
 //     ["fs:write"]}`. The deploy-time capability walk lifts that into a
@@ -12,14 +12,11 @@
 //     approval; the trigger route materializes it onto a fresh run principal
 //     and commits the principal + run + grant rows in one transaction
 //     (`commitRunGrants`). The route declares NO `grants` inline -- the
-//     `effect:fs:write` row exists only because the WALK derived it, which is
-//     the property under test.
+//     `effect:fs:write` row exists only because the WALK derived it.
 //   - The workflow is deployed BY SOURCE-REF (bundle a source entry module
 //     into a hub asset, probe it, approve+freeze it against a real DB, deploy
-//     the source-ref frame). The freeze writes the deployment's
-//     `workflow_definition` + frozen version (with the grant-walk snapshot) and
-//     the anchor `workflow_run` row, so the trigger route reads a genuinely
-//     approved deployment rather than a hand-seeded one.
+//     the source-ref frame), so the trigger route reads a genuinely approved
+//     deployment rather than a hand-seeded one.
 //   - `createApp` is wired with the real `h.db`, a real `assetService` +
 //     `repoStore` (so the `/workflows` routes mount), a real DB-backed grant
 //     store, and the fixture's real `env.hub.router`. The route's

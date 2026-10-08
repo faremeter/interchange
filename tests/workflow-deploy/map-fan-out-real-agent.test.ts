@@ -280,8 +280,7 @@ async function deployAndRunMap(opts: {
 
   const workflowRunRepoId: RepoId = handle.workflowRunRepoId;
 
-  // The source-ref frame round-trips through the real sidecar subprocess, so
-  // routability is asynchronous. Wait for it before firing the trigger.
+  // The source-ref frame round-trips through the real sidecar subprocess; routability is async, so wait before firing the trigger.
   await waitFor(
     () => env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
     { diagnostics: env.sidecarDiagnostics },

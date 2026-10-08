@@ -1,12 +1,10 @@
-// Unresolvable-director deploy-rejection integration test.
-//
-// Deploys BY SOURCE-REF a workflow whose step's agent declares a `director`
-// ref neither the sidecar's built-in registry nor any closure package can
-// resolve, and asserts the install/approve probe REJECTS the deploy. The
-// sidecar probe walks the definition's capabilities and fails closed on the
-// unresolved director, so `deployWorkflowSourceForTest` rejects with an
-// `unresolvable director: <id>` error before any definition is frozen or
-// deployed.
+// Unresolvable-director deploy-rejection integration test: deploys BY SOURCE-REF
+// a workflow whose step's agent declares a `director` ref neither the sidecar's
+// built-in registry nor any closure package can resolve, and asserts the
+// install/approve probe REJECTS the deploy. The sidecar probe walks the
+// definition's capabilities and fails closed on the unresolved director, so
+// `deployWorkflowSourceForTest` rejects with an `unresolvable director: <id>`
+// error before any definition is frozen or deployed.
 //
 // This is the defensive case of the capability walk: the probe surfaces the
 // unresolved director and refuses to ship an ok probe, so the gate never

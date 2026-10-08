@@ -15,12 +15,10 @@
 //     body terminal, so the failed teardown reaches runOnTrigger's terminal
 //     policy (not the relay abort path above). A cancel-mode drain sheds this
 //     mid-step `tolerate` section to RunFailed -- a deployed smoke test that it
-//     settles, not hangs/completes/stays alive. (This does NOT isolate the live
-//     `abort.aborted` terminal-policy disjunct: under a cancel-mode drain
-//     `parkOnSignalResult`'s own `shouldAbortForDrain` guard would end a
-//     pre-fix re-arm too. The live disjunct is proven directly by the in-memory
-//     on-trigger-tolerate-abort test, whose operator cancel with a `wait`
-//     section reaches the re-arm without that guard.)
+//     settles, not hangs/completes/stays alive. The live `abort.aborted`
+//     terminal-policy disjunct is proven by the in-memory on-trigger-tolerate-
+//     abort test, whose operator cancel with a `wait` section reaches the
+//     re-arm without the `shouldAbortForDrain` guard this drain path adds.
 //
 // Harness justification: SPAWN-REAL.
 

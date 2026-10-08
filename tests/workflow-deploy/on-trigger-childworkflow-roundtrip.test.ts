@@ -3,7 +3,7 @@
 // The runtime counterpart to the capability-walk grant coverage for the same
 // nesting (walk test "collects a childWorkflow's grants nested inside an
 // onTrigger body"): the walk proves the operator APPROVES the nested child's
-// grants; this proves the nested child EXECUTES for real. It covers the exact
+// grants; this proves the nested child EXECUTES for real, covering the exact
 // cross-type shape -- a childWorkflow spawn buried inside an onTrigger section
 // body -- whose per-step assets the deploy layer must stage transitively.
 //
@@ -14,14 +14,14 @@
 // body is a `defineWorkflow` whose only step is a `childWorkflow` spawn of a
 // trivial one-agent child. Firing the section's mail trigger spawns the body as
 // a suspendable child; the body's `childWorkflow` step spawns a nested child
-// whose per-step agent runs a REAL agent through the sidecar's `childInvokeStep`.
-// The terminal assertion is that the nested child reaches the runtime and
-// produces a real `{ reply, turn }` output, distinct from the agent id.
+// whose per-step agent runs a REAL agent through the sidecar's `childInvokeStep`
+// and produces a real `{ reply, turn }` output, distinct from the agent id.
 //
-// This proves the full chain deploys and runs: the onTrigger-body -> childWorkflow
-// shape freezes, the walk approves it, the section spawns the body, the body
-// spawns the nested child, and the nested child's step runs a real agent whose
-// inference source was staged under the transitive `<bodyRef>__<spawnStep>` ref.
+// This proves the full chain deploys and runs: the onTrigger-body ->
+// childWorkflow shape freezes, the walk approves it, the section spawns the
+// body, the body spawns the nested child, and the nested child's step runs a
+// real agent whose inference source was staged under the transitive
+// `<bodyRef>__<spawnStep>` ref.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 

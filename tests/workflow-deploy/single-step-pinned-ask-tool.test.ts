@@ -67,11 +67,9 @@ const AGENT_ID = "agent-step1";
 const SENTINEL_FILENAME = "ask-tool-ran.txt";
 const SENTINEL_CONTENT = "should-not-run-until-approved";
 
-// The definition's own tenant, the caller principal that creates the
-// definition asset, and the `workflow`-kind asset the frozen definition
-// projects over. The install/approve freeze and the anchor `workflow_run`
-// insert both write against these, so they must exist in the real DB before
-// the deploy runs.
+// The tenant, caller principal, and `workflow`-kind definition asset the
+// install/approve freeze and anchor `workflow_run` insert write against; they
+// must exist in the real DB before the deploy runs.
 const TENANT_ID = "tnt_single_step_pinned_ask_tool";
 const CALLER_PRINCIPAL_ID = "prn_single_step_pinned_ask_tool";
 const DEFINITION_ASSET_ID = "ast_single_step_pinned_ask_tool_wf";
@@ -218,8 +216,7 @@ describe.skipIf(!harnessDbEnvAvailable())("single-step ask-marked tool", () => {
       principalId: null,
     };
 
-    // The source-ref frame round-trips through the real sidecar subprocess,
-    // so routability is asynchronous. Wait for it before firing the trigger.
+    // The source-ref frame round-trips through the real sidecar subprocess; routability is async, so wait before firing the trigger.
     await waitFor(
       () =>
         env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),

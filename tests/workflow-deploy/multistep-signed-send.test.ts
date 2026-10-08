@@ -1,12 +1,10 @@
-// Multi-step signed outbound send regression test.
-//
-// A genuine multi-step (2+ step) workflow deployment must register a
-// signing identity for its deployment mail address on the host transport,
-// exactly as a single-step deployment does. Every step of a multi-step
-// deployment signs its outbound mail as the ONE deployment-wide address
-// (`<anchorRunId>@<domain>`), so if that address is not registered a
-// step's `env.transport.send` rejects with "not registered", the step
-// fails, and the run fails.
+// Multi-step signed outbound send regression test: a genuine multi-step (2+
+// step) workflow deployment must register a signing identity for its
+// deployment mail address on the host transport, exactly as a single-step
+// deployment does. Every step of a multi-step deployment signs its outbound
+// mail as the ONE deployment-wide address (`<anchorRunId>@<domain>`), so if
+// that address is not registered a step's `env.transport.send` rejects with
+// "not registered", the step fails, and the run fails.
 //
 // This deploys a two-step workflow BY SOURCE-REF whose sending step's agent
 // carries the inline `mail_send` tool from the `mail-tool.ts` fixture in its
@@ -14,12 +12,11 @@
 // request that exposes it). The tool routes through the real outbound chain --
 // supervisor-backed transport -> outbound bridge -> `outbound.message` IPC ->
 // supervisor `sendOutbound` -> host transport SIGNED send -- so the send
-// reaches the host transport as the deployment address. The sidecar forwards
-// the delivered `mail.outbound` frame to the hub for persistence, where the
-// fixture captures its signing sender. A captured frame whose sender is the
-// deployment address is a load-bearing proof that the address held a
-// registered signing identity; a registration gap would reject the send inside
-// the step and forward no frame.
+// reaches the host transport as the deployment address, and the hub persists
+// the delivered `mail.outbound` frame whose signing sender the fixture
+// captures. A captured frame whose sender is the deployment address is
+// load-bearing proof that the address held a registered signing identity; a
+// registration gap would reject the send inside the step and forward no frame.
 //
 // The sender is a step of a multi-step deployment (not a single-step head),
 // so this covers the deployment-scoped registration the single-step path
@@ -84,11 +81,9 @@ const GRANTED_RULE: WireGrantRule = {
   principalId: null,
 };
 
-// The definition's own tenant, the caller principal that creates the
-// definition asset, and the `workflow`-kind asset the frozen definition
-// projects over. The install/approve freeze and the anchor `workflow_run`
-// insert both write against these, so they must exist in the real DB before
-// the deploy runs.
+// The tenant, caller principal, and `workflow`-kind definition asset the
+// install/approve freeze and anchor `workflow_run` insert write against; they
+// must exist in the real DB before the deploy runs.
 const TENANT_ID = "tnt_multistep_signed_send";
 const CALLER_PRINCIPAL_ID = "prn_multistep_signed_send";
 const DEFINITION_ASSET_ID = "ast_multistep_signed_send_wf";
@@ -209,8 +204,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const workflowRunRepoId = handle.workflowRunRepoId;
 
-      // The source-ref frame round-trips through the real sidecar subprocess,
-      // so routability is asynchronous. Wait for it before firing the trigger.
+      // The source-ref frame round-trips through the real sidecar subprocess; routability is async, so wait before firing the trigger.
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),

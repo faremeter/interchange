@@ -9,12 +9,10 @@
 // without that guard the body child crashed at the first iteration -- first with
 // no source pinned, then with "this host does not support loops". Firing the
 // trigger spawns the body child, whose loop drives its agent body against the
-// mock inference fixture and converges, so the body child completes.
-//
-// The second case adds a `childWorkflow` grandchild to the loop body, exercising
-// the spawned-body env wiring that merges a loop body's childWorkflow
-// grandchildren into the body's spawn map and caps the grandchild's grants per
-// iteration.
+// mock inference fixture and converges, so the body child completes. The second
+// case adds a `childWorkflow` grandchild to the loop body, exercising the
+// spawned-body env wiring that merges a loop body's childWorkflow grandchildren
+// into the body's spawn map and caps the grandchild's grants per iteration.
 //
 // Harness justification: SPAWN-REAL. Real hub, real sidecar subprocess, and a
 // real workflow-process child running the onTrigger body child, whose loop

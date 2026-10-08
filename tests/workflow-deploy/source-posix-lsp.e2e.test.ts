@@ -6,8 +6,8 @@
 // carries it on `req.agent.toolFactories` for free -- a plugin package
 // contributes NO agent-visible factory: its factory reaches the agent only
 // through `env.plugins`. The workflow therefore declares it with a per-agent
-// `plugins: ["@intx/tools-lsp"]` list, and three separate mechanisms must
-// cooperate for the plugin's `lsp` tool to run and authorize:
+// `plugins: ["@intx/tools-lsp"]` list, and three mechanisms cooperate for the
+// plugin's `lsp` tool to run and authorize:
 //
 //   1. The deploy-time probe loads the declared plugin's STATIC tool
 //      `definitions` from the frozen closure and surfaces a `tool:lsp` grant
@@ -644,7 +644,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // Proof (2): the plugin LOADED and posix consumed it. The `lsp` tool only
       // reaches the model if the plugin factory was materialized from the
       // closure, instantiated onto `env.plugins`, and registered by posix's
-      // bundle. A run that failed to wire the plugin would offer posix's six
+      // bundle; a run that failed to wire the plugin would offer posix's six
       // tools without `lsp`.
       const firstReq = env.inference.requests[0];
       if (firstReq === undefined) {

@@ -1,9 +1,8 @@
-// CP-tools verify artifact for a source-closure tool + whole-workflow failover.
-//
-// Proves a source-ref single-step workflow whose step agent carries its own
-// inline `mail_send` tool (from the `mail-tool.ts` fixture, bundled into the
-// workflow's source closure) materializes and runs that tool in the spawned
-// child, and preserves whole-workflow failover.
+// CP-tools verify artifact for a source-closure tool + whole-workflow failover:
+// a source-ref single-step workflow whose step agent carries its own inline
+// `mail_send` tool (from the `mail-tool.ts` fixture, bundled into the workflow's
+// source closure) materializes and runs that tool in the spawned child, and
+// preserves whole-workflow failover.
 //
 // It folds in the failover check: the deploy's per-step source chain is a dead
 // head (HTTP 500) followed by the healthy mock, both operator-approved. The
@@ -74,11 +73,9 @@ const RUN_TOOL_GRANT: WireGrantRule = {
   principalId: null,
 };
 
-// The definition's own tenant, the caller principal that creates the
-// definition asset, and the `workflow`-kind asset the frozen definition
-// projects over. The install/approve freeze and the anchor `workflow_run`
-// insert both write against these, so they must exist in the real DB before
-// the deploy runs.
+// The tenant, caller principal, and `workflow`-kind definition asset the
+// install/approve freeze and anchor `workflow_run` insert write against; they
+// must exist in the real DB before the deploy runs.
 const TENANT_ID = "tnt_folded_tools_failover";
 const CALLER_PRINCIPAL_ID = "prn_folded_tools_failover";
 const DEFINITION_ASSET_ID = "ast_folded_tools_failover_wf";
@@ -231,8 +228,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const workflowRunRepoId = handle.workflowRunRepoId;
 
-      // The source-ref frame round-trips through the real sidecar subprocess,
-      // so routability is asynchronous. Wait for it before firing the trigger.
+      // The source-ref frame round-trips through the real sidecar subprocess; routability is async, so wait before firing the trigger.
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),

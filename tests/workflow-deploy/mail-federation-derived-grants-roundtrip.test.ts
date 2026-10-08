@@ -5,18 +5,16 @@
 // workflow ASSET's creator, not the triggerer. The run gets the grant only
 // if the creator actually holds it; otherwise the trigger is rejected
 // fail-closed. This test drives that resolution through the production
-// `POST /workflows/:runId/mail` route against a real migrated schema
-// and a real DB-backed grant store:
+// `POST /workflows/:runId/mail` route against a real migrated schema and a
+// real DB-backed grant store:
 //
 //   - POSITIVE: the workflow declares `grantRequirements: [{ source:
-//     "creator", resource: "secret:vault", action: "use" }]`. The asset's
-//     creator holds a backing `secret:vault`/`use` grant, so
-//     `resolveGrantMaterialization` resolves it and commits a run grant row
-//     with `origin="creator"`. The run principal, run row, and the
-//     creator-materialized grant all land in Postgres.
+//     "creator", resource: "secret:vault", action: "use" }]`; the asset's
+//     creator holds a backing grant, so `resolveGrantMaterialization`
+//     resolves it and commits a run grant row with `origin="creator"`.
 //   - NEGATIVE: the same requirement, but the creator holds NO backing
 //     grant. The route rejects `403 insufficient_grants` and commits
-//     nothing -- no run principal, no run row, no grant rows. This is the
+//     nothing -- no run principal, no run row, no grant rows. The
 //     discriminator: the creator gate actually gates.
 //
 // FALLBACK (stated honestly). GAP-3 was scoped as an A-mails-B federation:
@@ -24,15 +22,13 @@
 // path. That is NOT reproducible in this harness: the deploy-flow fixture's
 // inbound-mail path runs against a `fakeDb` and injects grants directly
 // (`fireMailTrigger` -> `sendRunGrants`), and never wires the real
-// `createMailTriggeredRunGrantsMaterializer`, so B's run would never
-// materialize through the real creator-resolution path. Additionally, A's
-// workflow could only mail B from an action step, which this host does not
-// execute. So this test collapses "A mails B" into driving B's `/mail`
-// route directly through the real `createApp` seam with a creator-declared
-// requirement -- which exercises the SAME `resolveGrantMaterialization`
-// against B's asset creator that a federated trigger would. The A->B mail
-// hop is not exercised; the creator-derived materialization it would feed
-// is.
+// `createMailTriggeredRunGrantsMaterializer`; additionally, A's workflow
+// could only mail B from an action step, which this host does not execute.
+// So this test collapses "A mails B" into driving B's `/mail` route
+// directly through the real `createApp` seam with a creator-declared
+// requirement -- the SAME `resolveGrantMaterialization` against B's asset
+// creator that a federated trigger would. The A->B mail hop is not
+// exercised; the creator-derived materialization it would feed is.
 //
 // SCOPE. As with the other reachable-half tests, the run's CONSUME side is
 // not exercised: this host does not execute the run's steps, so the

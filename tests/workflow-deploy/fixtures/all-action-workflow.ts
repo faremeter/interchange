@@ -1,13 +1,8 @@
 // Source-entry builder for a workflow made only of deterministic primitives:
-// a mail trigger and two dependent `action` steps. It carries no agent
-// anywhere, which is the point.
-//
-// Every other deploy fixture in this suite includes at least one agent step,
-// several of them explicitly so the deploy acquires an operator-approved
-// inference source for its non-agent steps to pin. A definition with no agent
-// advertises no `inference.source:` grant at all, so under `approve-probed`
-// there is nothing that could approve the default source. That is the shape
-// this fixture exists to deploy.
+// a mail trigger and two dependent `action` steps, no agents anywhere.
+// A definition with no agent advertises no `inference.source:` grant, so under
+// `approve-probed` there is nothing that could approve the default source --
+// the shape this fixture exists to deploy.
 
 export type AllActionWorkflowFixtureParams = {
   /** The mail trigger's `to` address the deployment routes on. */

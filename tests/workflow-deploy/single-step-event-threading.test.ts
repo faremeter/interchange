@@ -18,12 +18,9 @@
 // fires `inference.start` (per turn), the tool-call inference events, the
 // `tool.start` / `tool.done` execution events, and `inference.done` (the
 // assistant turn) -- every InferenceEvent member except the intentionally
-// excluded `message.received`.
-//
-// Against the pre-Phase-3 behaviour the wrapper `void onEvent`d and the
-// adapter never subscribed the agent's stream, so the recorder would stay
-// empty. This test therefore FAILS against the old wiring and proves the
-// events actually flow up.
+// excluded `message.received`. Against the pre-Phase-3 behaviour the
+// wrapper `void onEvent`d and the adapter never subscribed the agent's
+// stream, so the recorder would stay empty -- this test fails there.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, existsSync } from "node:fs";

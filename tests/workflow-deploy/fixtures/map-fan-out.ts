@@ -1,16 +1,10 @@
 // Source-entry builder for the map fan-out workflow fixture (F6):
 // `seed -> fanout = map({ over: literal, step })`. A leading tool-less agent
 // step runs first; the map fans out over a literal item list, running a
-// per-item agent step under a scoped id `<mapStepId>[<index>]`. The returned
-// string is a `@intx/*`-importing entry module; `bundleWorkflowEntry` inlines
-// it to a self-contained `.mjs` the sidecar evaluates in-child.
-//
-// Parameterised by the mail trigger address, the step ids, the per-step system
-// prompts, the item count, and whether the per-item agent carries the inline
-// `mail_send` tool. When `withTool` is set the item agent lists
-// `mailSendTool("fs")` from the sibling `mail-tool.ts` module, so the mock
-// inference reply lists the tool name -- the proof that a map iteration
-// resolves its base step's staged tool tree.
+// per-item agent step under a scoped id `<mapStepId>[<index>]`. When `withTool`
+// is set the item agent lists `mailSendTool("fs")` from the sibling
+// `mail-tool.ts` module, so the mock inference reply lists the tool name -- the
+// proof that a map iteration resolves its base step's staged tool tree.
 
 import path from "node:path";
 

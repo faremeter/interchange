@@ -5,19 +5,14 @@
 // iteration sheds on drain under the loop's default cancel behavior" -> the
 // container's cancel-mode step aborts and the run settles failed). What that
 // layer explicitly does NOT exercise is the supervisor's drain landing on a
-// parked loop container through the real wire pipeline. This test pins that:
-// hub `sendDrain` -> sidecar hub-link -> supervisor `drain` -> workflow-process
-// child `DrainController`, with the drain landing on a loop step parked as
+// parked loop container through the real wire pipeline: hub `sendDrain` ->
+// sidecar hub-link -> supervisor `drain` -> workflow-process child
+// `DrainController`, with the drain landing on a loop step parked as
 // `awaiting-signal` (the body's awaitSignal proxied up onto the container).
-//
-// A loop whose body parks on an `awaitSignal` is deployed by source-ref against
-// the real hub + sidecar subprocess + mock inference. Firing the trigger drives
-// iteration 0 to its park (the container relay awaits the author signal); no
-// signal is ever delivered. Initiating drain flips the child's DrainController;
-// the loop container defaults to `drainBehavior: "cancel"`, so the parked step
-// aborts, commits StepFailed, and the run terminates RunFailed. The default is
-// the loop's, not the body awaitSignal's -- a top-level awaitSignal author would
-// have to opt into cancel, but a loop sheds by default.
+// The loop container defaults to `drainBehavior: "cancel"` (a top-level
+// awaitSignal author would have to opt into cancel, but a loop sheds by
+// default), so the parked step aborts, commits StepFailed, and the run
+// terminates RunFailed.
 //
 // Regression guard for the loop iteration's LOCAL teardown: the container abort
 // tears the in-process iteration down through its own cancel controller (no

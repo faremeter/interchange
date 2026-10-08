@@ -91,11 +91,9 @@ const SECTION_ID = "section";
 const FIRST_BODY = "First event body alpha-7391.";
 const SECOND_BODY = "Second event body bravo-5520.";
 
-// The definition's own tenant, the caller principal that creates the
-// definition asset, and the `workflow`-kind asset the frozen definition
-// projects over. The install/approve freeze and the anchor `workflow_run`
-// insert both write against these, so they must exist in the real DB before
-// the deploy runs.
+// The tenant, caller principal, and `workflow`-kind definition asset the
+// install/approve freeze and anchor `workflow_run` insert write against; they
+// must exist in the real DB before the deploy runs.
 const TENANT_ID = "tnt_on_trigger_between_events";
 const CALLER_PRINCIPAL_ID = "prn_on_trigger_between_events";
 const DEFINITION_ASSET_ID = "ast_on_trigger_between_events_wf";

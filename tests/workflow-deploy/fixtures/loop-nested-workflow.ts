@@ -4,14 +4,12 @@
 // loop end to end on the deployed path: the child host lifts the outer AND inner
 // loop bodies, resolves each loop's body ref from the shared bodies map, and the
 // deploy-time source pin recurses through both loop bodies to pin the inner
-// agent step's inference source. The entry module exports `workflow` and the
-// loop `while`/`carry` functions, resolved by export name via interchange.loops
-// (both loops reuse the same pure counter functions).
+// agent step's inference source.
 //
-// Each loop converges after exactly three iterations (`input` seeds 0;
-// `keepGoing` stays true for 0 and 1 and turns false at 2). So the outer loop
-// spawns three iteration child runs, and each outer iteration's body run spawns
-// three inner iteration child runs -- the count the roundtrip test asserts.
+// Each loop converges after exactly three iterations (`keepGoing` turns false
+// at 2), so the outer loop spawns three iteration child runs and each outer
+// iteration's body run spawns three inner iteration child runs -- the count the
+// roundtrip test asserts.
 
 export type LoopNestedWorkflowFixtureParams = {
   /** The mail trigger's `to` address the deployment routes on. */

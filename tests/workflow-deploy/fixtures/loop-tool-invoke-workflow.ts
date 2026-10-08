@@ -4,29 +4,21 @@
 // loop's converged and exhausted arms.
 //
 // Every other deployed loop fixture declares `tools: []` on its body agent, so
-// no deployed loop body has ever reached the tool-invocation authorize seam.
-// This fixture is the first that does. The two top-level steps stay toolless on
+// no deployed loop body has reached the tool-invocation authorize seam before;
+// this is the first that does. The two top-level steps stay toolless on
 // purpose: they can produce no `tool_result`, so a `tool_result` anywhere in the
-// captured inference traffic can only have originated in the loop body.
-//
-// The entry module exports BOTH `workflow` and the loop `while`/`carry`
-// functions, so the deployment points `interchange.loops` at the same bundled
-// entry and the loop fns resolve by export name.
-//
-// The loop converges after exactly two iterations: `input` seeds
-// `currentInput = 0`; `keepGoing(output, currentInput)` stays true at 0 and
-// turns false at 1; `nextCount` increments. while/carry read only the carry
-// state, so convergence is deterministic regardless of the body agent's output.
+// captured inference traffic can only have originated in the loop body. The
+// loop converges after exactly two iterations (`keepGoing` turns false at 1;
+// the while/carry functions read only the carry state).
 //
 // STEP ID DISTINCTNESS. `LOOP_BODY_STEP_ID` must differ from every entry in
-// `TOP_LEVEL_STEP_IDS`, and anyone changing these ids must keep them disjoint.
-// The per-step tables a body step resolves against -- the credentials snapshot,
-// the pinned inference-source map, and the deploy-tree address resolver -- are
-// keyed by `baseStepId(stepId)` in ONE flat namespace shared between the top
-// level and the loop body. A body step id equal to a top-level step id
-// therefore resolves to the TOP-LEVEL step's entry, and a test asserting that
-// the body step resolves its own grants would pass against the wrong step's
-// entry and prove nothing.
+// `TOP_LEVEL_STEP_IDS`. The per-step tables a body step resolves against -- the
+// credentials snapshot, the pinned inference-source map, the deploy-tree
+// address resolver -- are keyed by `baseStepId(stepId)` in ONE flat namespace
+// shared between the top level and the loop body; a body step id equal to a
+// top-level step id resolves to the TOP-LEVEL step's entry, and a test
+// asserting the body step resolves its own grants would pass against the wrong
+// step's entry.
 
 import path from "node:path";
 

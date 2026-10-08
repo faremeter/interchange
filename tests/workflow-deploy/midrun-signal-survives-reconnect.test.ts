@@ -1,29 +1,25 @@
-// Mid-run reconnect-survival integration test.
-//
-// Proves the acceptance requirement: a multi-step workflow interrupted
-// mid-run by a dropped hub link resumes after reconnect and completes,
-// with effects applied exactly once.
+// Mid-run reconnect-survival integration test: a multi-step workflow
+// interrupted mid-run by a dropped hub link resumes after reconnect and
+// completes, with effects applied exactly once.
 //
 // Shape: deploy a `step1 -> awaitSignal{name: "go"} -> step2` workflow
 // through the workflow-deploy orchestrator's multi-step branch (the same
 // wiring `multistep-signal.test.ts` uses), fire the deployment's mail
-// trigger, and drive the run to the mid-run `SignalAwaited` pause. With
-// the run parked at the signal gate, settle the workflow-run pack-push
-// pipeline and drop the hub link (`settleThenDrop`), wait for the sidecar
-// to re-establish the link and the deployment address to become routable
-// again (`waitForReconnect`), then inject the awaited signal. The run must
-// resume through `step2` to `RunCompleted`, and the run-event log must show
-// each lifecycle effect exactly once -- no duplicate `SignalReceived`, no
-// re-run of `step1`, no doubled `RunStarted`/`RunCompleted`. A run that
-// resumes only because the sidecar reconnected, applying its effects once,
-// is the guarantee under test.
+// trigger, and drive the run to the mid-run `SignalAwaited` pause. With the
+// run parked at the signal gate, settle the workflow-run pack-push pipeline
+// and drop the hub link (`settleThenDrop`), wait for the sidecar to
+// re-establish the link and the deployment address to become routable again
+// (`waitForReconnect`), then inject the awaited signal. The run must resume
+// through `step2` to `RunCompleted`, and the run-event log must show each
+// lifecycle effect exactly once -- no duplicate `SignalReceived`, no re-run
+// of `step1`, no doubled `RunStarted`/`RunCompleted`.
 //
 // Harness justification: SPAWN-REAL. A real hub server, a real sidecar
-// subprocess, a real workflow-process child, and a test inference
-// provider. The interruption is a genuine server-side WebSocket close
-// while the run is parked at `SignalAwaited`; the resume rides the
-// sidecar's real allocation-authenticated `hub-link` reconnect path, after
-// which the injected signal reaches the still-parked run.
+// subprocess, a real workflow-process child, and a test inference provider.
+// The interruption is a genuine server-side WebSocket close while the run is
+// parked at `SignalAwaited`; the resume rides the sidecar's real
+// allocation-authenticated `hub-link` reconnect path, after which the
+// injected signal reaches the still-parked run.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
@@ -67,11 +63,9 @@ import { signalGateEntry } from "./fixtures/signal-gate";
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const DEPLOYMENT_ID = "run_midrun-signal-reconnect-1";
 
-// The definition's own tenant, the caller principal that creates the
-// definition asset, and the `workflow`-kind asset the frozen definition
-// projects over. The install/approve freeze and the anchor `workflow_run`
-// insert both write against these, so they must exist in the real DB before
-// the deploy runs.
+// The tenant, caller principal, and `workflow`-kind definition asset the
+// install/approve freeze and anchor `workflow_run` insert write against; they
+// must exist in the real DB before the deploy runs.
 const TENANT_ID = "tnt_midrun_signal_reconnect";
 const CALLER_PRINCIPAL_ID = "prn_midrun_signal_reconnect";
 const DEFINITION_ASSET_ID = "ast_midrun_signal_reconnect_wf";
@@ -188,9 +182,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const workflowRunRepoId = handle.workflowRunRepoId;
 
-      // The source-ref frame round-trips through the real sidecar subprocess
-      // (index the pack, check out the pinned subtree, register the address),
-      // so routability is asynchronous. Wait for it before firing the trigger.
+      // The source-ref frame round-trips through the real sidecar subprocess (index
+      // the pack, check out the pinned subtree, register the address); routability is async, so wait before firing the trigger.
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),

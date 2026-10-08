@@ -4,11 +4,9 @@
 // `<workflowId>__<loopStepId>__<spawnStepId>` (the deploy enumerator recurses
 // into the loop body), and the grandchild's per-step agent runs a REAL agent
 // through the sidecar. The entry exports `workflow` plus the loop `while`/`carry`
-// functions, so the deployment points `interchange.loops` at the same bundled
-// entry.
-//
-// `keepGoing` converges after the first iteration, so the loop spawns the
-// grandchild exactly once and converges (`settle` runs, `escalate` is pruned).
+// functions so the deployment points `interchange.loops` at the same bundled
+// entry. `keepGoing` converges after the first iteration, so the loop spawns
+// the grandchild exactly once (`settle` runs, `escalate` is pruned).
 
 export type LoopChildWorkflowFixtureParams = {
   /** The mail trigger's `to` address the deployment routes on. */

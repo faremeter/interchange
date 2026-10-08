@@ -78,11 +78,9 @@ const DEPLOYMENT_DOMAIN = "integration.interchange";
 const DEPLOYMENT_ID = "run_multistep_reroute_1";
 const STEP_IDS = ["step1", "step2"] as const;
 
-// The definition's own tenant, the caller principal that creates the
-// definition asset, and the `workflow`-kind asset the frozen definition
-// projects over. The install/approve freeze and the anchor `workflow_run`
-// insert both write against these, so they must exist in the real DB before
-// the deploy runs.
+// The tenant, caller principal, and `workflow`-kind definition asset the
+// install/approve freeze and anchor `workflow_run` insert write against; they
+// must exist in the real DB before the deploy runs.
 const TENANT_ID = "tnt_multistep_reroute";
 const CALLER_PRINCIPAL_ID = "prn_multistep_reroute";
 const DEFINITION_ASSET_ID = "ast_multistep_reroute_wf";

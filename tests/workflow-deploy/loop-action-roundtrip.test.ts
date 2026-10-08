@@ -1,13 +1,9 @@
 // A deployed workflow whose loop body is an `action` runs it end to end: the
 // child host resolves the action handler from the closure's interchange.actions
 // module, invokes it against the per-run effect ledger each iteration, and the
-// loop converges. This exercises the action runtime (invokeAction + effects) on
-// the already-proven loop container.
-//
-// The loop converges after three iterations (see loop-action-workflow.ts), so
-// the top-level run log carries three ChildSpawned records under the loop step;
-// RunCompleted double-checks the action body ran each iteration and the hub
-// accepted the per-iteration child-run terminal events.
+// loop converges after three iterations -- the top-level run log carries three
+// ChildSpawned records under the loop step. This exercises the action runtime
+// (invokeAction + effects) on the already-proven loop container.
 //
 // Harness justification: SPAWN-REAL. A real hub server, a real sidecar
 // subprocess, and a real workflow-process child evaluating the deployed source.

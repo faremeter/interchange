@@ -6,10 +6,10 @@
 // binding resolved and was delivered.
 //
 // The credential rail (a tool consuming the handle, Gate 2 authorization, the
-// mediated-http origin) is proven on the live path by
-// single-step-credential-tool. This test proves the SOURCE-path composition:
-// that a source workflow's operator-approved credential bindings resolve and
-// deliver through the code-sourced deploy, which no other source e2e exercises.
+// mediated-http origin) is proven on the live path by single-step-credential-tool;
+// this test proves the SOURCE-path composition -- that a source workflow's
+// operator-approved credential bindings resolve and deliver through the
+// code-sourced deploy, which no other source e2e exercises.
 
 import { promises as fs } from "node:fs";
 import os from "node:os";

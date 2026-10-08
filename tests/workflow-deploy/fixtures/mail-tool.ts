@@ -1,19 +1,18 @@
-// The `mail_send` tool as a real, type-checked `defineTool` source module.
-//
-// Provides the three variants of the `@intx/tools-mail` bundle as a real
+// The `mail_send` tool as a real, type-checked `defineTool` source module,
+// providing the three variants of the `@intx/tools-mail` bundle as a real
 // module so a code-sourced workflow carries the tool in its own source
 // closure. A fixture entry module imports `mailSendTool(variant)` and lists it
 // in a step agent's `tools`; `bundleWorkflowEntry` inlines this module into the
 // workflow bundle, so the tool evaluates in-child with a filesystem /
 // transport side effect.
 //
-// Three variants, selected by the `variant` parameter:
+// Variants, selected by the `variant` parameter:
 //   - "fs":        writes the `body` arg as a filename under `env.workdir`
 //                  with the `to` arg as content. Declares no transport
 //                  requirement, so a run that never drives the model to call
 //                  the tool leaves the write inert.
-//   - "transport": calls `env.transport.send(...)` -- the supervisor-backed
-//                  transport the unified child wires for a step agent -- and
+//   - "transport": calls `env.transport.send(...)` (the supervisor-backed
+//                  transport the unified child wires for a step agent) and
 //                  writes the sentinel only after a successful receipt, so the
 //                  sentinel is a load-bearing proof of the signed-outbound
 //                  composition. Declares `requires: ["transport", "address"]`.
