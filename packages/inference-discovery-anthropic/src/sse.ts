@@ -1,11 +1,7 @@
-// Anthropic streams /v1/messages as Server-Sent Events whose payloads
-// arrive as named events: message_start, content_block_start,
-// content_block_delta, content_block_stop, message_delta, message_stop,
-// ping. To build a turn-2 multi-turn body for a streaming capability we
-// need the assistant's content blocks reconstructed from those events.
-// This module parses the event stream, applies the per-block deltas
-// (text_delta, input_json_delta, thinking_delta, signature_delta), and
-// returns the resolved content blocks in their original index order.
+// Parses Anthropic's /v1/messages SSE stream: applies the per-block
+// deltas (text_delta, input_json_delta, thinking_delta,
+// signature_delta) to the named events and returns the assistant's
+// content blocks in their original index order.
 
 interface BlockAccumulatorBase {
   type: string;
@@ -51,11 +47,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-// These guards omit the offending value from the thrown message: SSE
-// payloads can carry large opaque blobs (e.g. a redacted_thinking
-// `data` field, a multi-KB signature) and stringifying them into an
-// error message produces unreadable output. The typeof + the call-site
-// in the stack trace are enough to localise the bad field.
+// Omit the offending value from the thrown message: SSE payloads carry
+// large opaque blobs (redacted_thinking `data`, multi-KB signatures)
+// that would make the error unreadable.
 
 function asString(value: unknown): string {
   if (typeof value !== "string") {
@@ -168,20 +162,11 @@ function applyDelta(acc: BlockAcc, delta: unknown): BlockAcc {
       signature: (acc.signature ?? "") + asString(delta.signature),
     };
   }
-  // Anthropic's server-side tool blocks (server_tool_use,
-  // web_search_tool_result, code_execution_tool_use) DO arrive with
-  // partial deltas in real streams — the grounding-streaming and
-  // code-execution-streaming fixtures in this repo carry
-  // input_json_delta events building up the tool input field. This
-  // parser does not yet implement delta application for those block
-  // types; the streaming-multi-turn capabilities currently in scope
-  // (function-calling-multi-turn-streaming,
-  // function-calling-with-thinking-streaming, redacted-thinking-
-  // streaming) do not pair with server-side tools, so the parser is
-  // not invoked on those fixtures today. Fail loud here so that any
-  // future expansion that does invoke the parser on a server-side
-  // tool stream surfaces the gap at parse time rather than silently
-  // dropping the delta payloads.
+  // Server-side tool blocks (server_tool_use, web_search_tool_result,
+  // code_execution_tool_use) arrive with partial deltas (input_json_delta
+  // building up the `input` field), but delta application for them is not
+  // implemented. Fail loud so a future caller on such a stream surfaces
+  // the gap at parse time instead of silently dropping the payloads.
   if (acc.type === "unknown") {
     throw new Error(
       `anthropic SSE: received ${String(dtype)} for a non-enumerated block type at index ${String(acc.index)}; partial-delta streaming for server-side tool blocks is not implemented`,
@@ -215,11 +200,9 @@ function finalize(acc: BlockAcc): Record<string, unknown> {
   return acc.contentBlock;
 }
 
-// Parses Anthropic's named-event SSE stream and reconstructs the
-// assistant's content blocks in their original index order. Used by
-// the streaming multi-turn iterators to build turn-2 bodies that echo
-// the assistant content blocks verbatim — without a turn-1 JSON body to
-// read from, this is the only path to those blocks.
+// Entry point for the streaming multi-turn iterators: reconstructs the
+// turn-1 content blocks from SSE bytes for the turn-2 echo body. With
+// no turn-1 JSON body to read from, this is the only path to them.
 export function extractContentBlocksFromSSE(
   bytes: Uint8Array,
 ): Record<string, unknown>[] {

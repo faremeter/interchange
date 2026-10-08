@@ -65,13 +65,12 @@ export interface AnthropicRedactedThinkingBlock {
   signature?: string;
 }
 
-// Blocks this plug-in constructs for outgoing request bodies. Also the
-// type assistant-echo paths produce: blocks Anthropic returns that
-// aren't enumerated here (server_tool_use, web_search_tool_result,
-// code_execution_tool_use, citation blocks inside text, …) are
-// forwarded verbatim because the wire round-trip is what matters; the
-// runtime values just don't match the static union. The single
-// quarantined cast lives in extractAssistantContentBlocks.
+// Blocks the plug-in constructs for outgoing bodies, and the type
+// assistant-echo paths produce. Blocks Anthropic returns that are not
+// enumerated here (server_tool_use, web_search_tool_result,
+// code_execution_tool_use, citation blocks) are forwarded verbatim —
+// the wire round-trip is what matters. The single quarantined cast
+// lives in extractAssistantContentBlocks.
 export type AnthropicContentBlock =
   | AnthropicTextBlock
   | AnthropicImageBlock
@@ -119,14 +118,12 @@ export interface AnthropicRequestBody {
   stream?: true;
 }
 
-// claude-sonnet-5 rejects the classic thinking:{type:"enabled",budget_tokens}
-// shape with invalid_request_error and requires thinking:{type:"adaptive"}
-// paired with output_config.effort. This is the only model-keyed branch in
-// this file: the adaptive requirement can be selected only by model identity,
-// because the API surfaces it solely as a runtime 400 with no build-time
-// signal. Add a model here when its API rejects the classic shape. This set
-// must match the runtime adapter's ADAPTIVE_THINKING_MODELS, or a captured
-// fixture would stop proving the production wire; a guard test pins them equal.
+// These models reject the classic thinking:{type:"enabled",budget_tokens}
+// shape (invalid_request_error) and require thinking:{type:"adaptive"} with
+// output_config.effort; the API gives no build-time signal, so the branch
+// is model-keyed. Add a model when its API rejects the classic shape. Must
+// match the runtime adapter's ADAPTIVE_THINKING_MODELS — a guard test pins
+// them equal, so a captured fixture keeps proving the production wire.
 export const ADAPTIVE_THINKING_MODELS: ReadonlySet<string> = new Set([
   "claude-sonnet-5",
   "claude-opus-5",
@@ -137,25 +134,21 @@ export const ADAPTIVE_THINKING_MODELS: ReadonlySet<string> = new Set([
   "claude-sonnet-4-6",
 ]);
 
-// The effort the capture rig sends on the adaptive-thinking wire. Adaptive
-// thinking is the model's own per-request choice, and empirically only effort
-// "max" reliably elicits a thinking block to capture (low/medium/high/xhigh
-// are non-deterministic). Production sends a lower effort (the API default; see
-// ADAPTIVE_THINKING_EFFORT in the runtime adapter), so capturing at "max" is a
-// deliberate capture-time choice: the two efforts are an intentional pair, not
-// drift. A guard test in this package checks both effort values.
+// The capture rig's effort on the adaptive-thinking wire. Empirically only
+// "max" reliably elicits a thinking block to capture; production sends the
+// API default (ADAPTIVE_THINKING_EFFORT in the runtime adapter), so the two
+// efforts are an intentional pair, not drift. A guard test checks both.
 export const ADAPTIVE_THINKING_CAPTURE_EFFORT: AnthropicEffort = "max";
 
-// The adaptive path carries no budget_tokens, so it cannot reuse the
-// budget-derived THINKING_MAX_TOKENS. A flat ceiling sized to let effort:max
-// emit a capturable thinking block; the exact value is not load-bearing, and
-// truncation (stop_reason max_tokens) is acceptable for a capability probe.
+// The adaptive path carries no budget_tokens, so it cannot reuse
+// THINKING_MAX_TOKENS. A flat ceiling sized for effort:max; the exact value
+// is not load-bearing and truncation is acceptable for a probe.
 const ADAPTIVE_THINKING_MAX_TOKENS = 4096;
 
-// Sets the model-appropriate extended-thinking request shape in place: adaptive
-// models get thinking:{type:"adaptive"} + output_config.effort; all others get
-// the classic thinking:{type:"enabled",budget_tokens}. Owns max_tokens for the
-// thinking path because the two shapes size it differently.
+// Picks the thinking request shape by model: adaptive models get
+// thinking:{type:"adaptive"} + output_config.effort; all others get the
+// classic thinking:{type:"enabled",budget_tokens}. Also sizes max_tokens,
+// which the two shapes set differently.
 function applyThinking(body: AnthropicRequestBody, model: string): void {
   if (ADAPTIVE_THINKING_MODELS.has(model)) {
     body.thinking = { type: "adaptive" };
@@ -504,7 +497,7 @@ function extractAssistantContentBlocks(
       );
     }
   }
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- Anthropic may return assistant content blocks (server_tool_use, web_search_tool_result, code_execution_tool_use, citation blocks) that this plug-in does not enumerate. The wire round-trip is what matters; we forward verbatim. The runtime guard above only verifies each entry is an object with a string type field.
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- non-enumerated assistant blocks are forwarded verbatim (see AnthropicContentBlock)
   return content as AnthropicContentBlock[];
 }
 
@@ -547,11 +540,9 @@ function partitionFollowUps(intent: CapabilityIntent): {
   return out;
 }
 
-// When an intent has no tool-role followUp (true for
-// function-calling-with-thinking, whose INTENTS record declares only a
-// prompt and a tool decl), fall back to the tool name from intent.tools
-// with an empty JSON object payload. Matches the deriveToolFollowUp
-// fallback in @intx/inference-discovery-google-genai.
+// No tool-role followUp (function-calling-with-thinking declares only a
+// prompt and a tool decl): fall back to intent.tools with an empty JSON
+// payload, matching the google-genai deriveToolFollowUp fallback.
 function deriveToolFollowUp(intent: CapabilityIntent): ToolFollowUp {
   const followUps = partitionFollowUps(intent);
   if (followUps.tool !== undefined) return followUps.tool;
@@ -664,9 +655,8 @@ export function buildFilesApiGenerateBody(opts: {
   return body;
 }
 
-// Capability-keyed model-supports check. The four current Anthropic
-// discovery models (Fable, Opus, Sonnet, Haiku) share this surface; if
-// that stops being true, this gate is where to encode the divergence.
+// The four discovery models share this capability surface; if that stops
+// being true, encode the divergence here.
 const SUPPORTED_CAPABILITIES: ReadonlySet<Capability> = new Set<Capability>([
   "plain-text",
   "plain-text-streaming",

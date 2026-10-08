@@ -39,9 +39,8 @@ const MODELS = [
 const REDACT_REQUEST_HEADERS = ["x-api-key"] as const;
 const REDACT_RESPONSE_HEADERS: readonly string[] = [];
 
-// Beta-flag header markers Anthropic requires for opt-in features.
-// These live on per-step headers (not in buildAuthHeaders) because they
-// apply per-request, not per-plug-in; auth headers are plug-in-wide.
+// Anthropic beta-flag markers for opt-in features. Per-step headers, not
+// buildAuthHeaders: they apply per-request, auth headers are plug-in-wide.
 const FILES_API_BETA = "files-api-2025-04-14";
 const CODE_EXECUTION_BETA = "code-execution-2025-05-22";
 
@@ -109,11 +108,8 @@ function buildMultipartUpload(opts: {
   contentType: string;
   bytes: Uint8Array;
 }): MultipartUpload {
-  // Boundary is regenerated on every call, which means a captured
-  // request-headers.json carries a run-specific Content-Type header.
-  // Byte-diffing regenerated fixtures against committed ones will
-  // always differ on the boundary; structural comparison is the right
-  // tool for files-api fixture equivalence.
+  // A fresh boundary per call makes the captured Content-Type
+  // run-specific; compare files-api fixtures structurally, not byte-wise.
   const boundary = `----intx-anthropic-${crypto.randomUUID().replace(/-/g, "")}`;
   const encoder = new TextEncoder();
   const preamble = encoder.encode(
@@ -196,11 +192,9 @@ function makeJsonStep(opts: {
   });
 }
 
-// Reconstructs the assistant response from turn-1's SSE bytes into the shape
-// buildFunctionCallingTurn2Body and buildRedactedThinkingTurn2Body expect:
-// the content blocks wrapped as { content: blocks }. The parsed/bytes/throw
-// dispatch lives in the shared resolveTurn1Response; this callback owns only
-// Anthropic's wire shape.
+// Wraps the SSE-reconstructed blocks as { content: blocks }, the shape the
+// turn-2 builders expect. The parsed/bytes/throw dispatch lives in the
+// shared resolveTurn1Response; this callback owns Anthropic's wire shape.
 const reconstructTurn1Blocks: Turn1Reconstructor = (bytes) => ({
   content: extractContentBlocksFromSSE(bytes),
 });
@@ -251,11 +245,10 @@ export function* iterateCaptureSteps(
   }
 
   if (REDACTED_THINKING_CAPABILITIES.has(capability)) {
-    // Turn-1 carries the canary prompt and thinking enabled; Anthropic
-    // returns either thinking or redacted_thinking blocks depending on
-    // whether the safety classifier fires. Turn-2 echoes the assistant
-    // content blocks verbatim and prompts a brief follow-up so the
-    // round-trip is exercised on the wire.
+    // Turn-1 enables thinking with the canary prompt; Anthropic returns
+    // thinking or redacted_thinking blocks depending on the safety
+    // classifier. Turn-2 echoes those blocks verbatim with a brief
+    // follow-up.
     const turn1Body = buildRequestBody({ model, capability, intent });
     const turn1Response = yield makeJsonStep({
       capability,
