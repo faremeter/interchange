@@ -1,12 +1,10 @@
 import { test, expect, type Page } from "@playwright/test";
 
-// A live, un-stubbed deploy. Unlike `workflow-deploy-picker.spec.ts`, which
-// intercepts the workflow-detail data plane, this spec drives the real SPA
-// against a real hub AND a real sidecar (both brought up by the harness), and
-// deploys a real, seeded workflow-source asset through the source picker. No
-// `/api` route is stubbed: the deploy round-trips through the hub's deploy
-// route and the connected sidecar, proving the operator's picker deploy reaches
-// the source-ref deploy end to end.
+// A live, un-stubbed deploy: unlike `workflow-deploy-picker.spec.ts`, no
+// `/api` route is intercepted. The real SPA drives a real hub and sidecar
+// (both brought up by the harness) and deploys a real, seeded
+// workflow-source asset through the picker, round-tripping through the
+// hub's deploy route to the connected sidecar.
 //
 // The harness publishes the concrete, hub-minted inputs after seeding:
 const BASE_URL = process.env["E2E_BASE_URL"];
@@ -31,9 +29,8 @@ async function selectInferenceOffering(page: Page): Promise<void> {
     .click();
 }
 
-// Read the tenant's deployments straight from the real hub (through the
-// same-origin preview proxy, carrying the browser session cookie). Nothing is
-// stubbed, so this is the hub's own view of what the deploy persisted.
+// Read the tenant's deployments from the real hub through the same-origin
+// preview proxy, carrying the browser session cookie.
 async function readDeployments(
   page: Page,
   baseURL: string,
@@ -82,7 +79,7 @@ test("deploys a seeded workflow source through the picker to a real sidecar", as
   const email = required("E2E_LOGIN_EMAIL", LOGIN_EMAIL);
   const password = required("E2E_LOGIN_PASSWORD", LOGIN_PASSWORD);
 
-  // Log in as the seeded operator (the default form mode is sign-in).
+  // Sign in as the seeded operator (the default form mode is sign-in).
   await page.goto(baseURL);
   await expect(page).toHaveURL(`${baseURL}/login`);
   await page.getByLabel("Email").fill(email);
@@ -95,15 +92,14 @@ test("deploys a seeded workflow source through the picker to a real sidecar", as
   // The seeded workflow has no deployments yet.
   expect(await readDeployments(page, baseURL, tenantId)).toHaveLength(0);
 
-  // Navigate to the seeded workflow's detail page and drive the real picker.
+  // Drive the real picker on the workflow's detail page.
   await page.goto(`${baseURL}/tenants/${tenantId}/workflows/${assetId}`);
   await expect(
     page.getByRole("heading", { name: "Launch Workflow" }),
   ).toBeVisible();
 
-  // Asset source tree is the default kind; the asset id prefills with the
-  // workflow's own id. Fill the commit and interchange.workflow entry, select
-  // a resolved catalog offering, then launch.
+  // Asset source is the default kind and the asset id prefills with the
+  // workflow's own id; fill the commit, entry, and a catalog offering.
   await expect(page.locator("#definition-asset-id")).toHaveValue(assetId);
   await page.locator("#definition-entry").fill(entry);
   await page.locator("#definition-commit").fill(commitSha);
@@ -112,8 +108,7 @@ test("deploys a seeded workflow source through the picker to a real sidecar", as
   await page.getByRole("button", { name: "Launch Workflow" }).click();
 
   // The deploy round-trips through the real hub and sidecar, so it is not
-  // instant. The Deployments table renders a row whose status badge reads
-  // "deployed" once the deploy returns — the source-ref deploy completed.
+  // instant; the status badge reads "deployed" once it completes.
   const deploymentsTable = page
     .getByRole("heading", { name: "Deployments" })
     .locator("xpath=following-sibling::*[1]");
@@ -121,9 +116,8 @@ test("deploys a seeded workflow source through the picker to a real sidecar", as
     timeout: 60_000,
   });
 
-  // Cross-check against the hub's own view: a single deployment for this
-  // definition, in the deployed state. This is the real persisted row, not a
-  // stub — proof the picker deploy reached the hub route and the sidecar.
+  // Cross-check against the hub's own view: a single deployed row for this
+  // definition, as persisted by the real hub route and sidecar.
   const deployments = await readDeployments(page, baseURL, tenantId);
   const own = deployments.filter((d) => d.definitionAssetId === assetId);
   expect(own).toHaveLength(1);

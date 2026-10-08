@@ -74,9 +74,9 @@ async function signUp(page: Page, email: string): Promise<void> {
 }
 
 // Stub the workflow-detail data plane so the deploy form renders and the
-// submit's POST body is captured. The admin-ui e2e harness starts no sidecar
-// and the database is fresh, so a real deploy cannot complete; intercepting
-// here drives the real SPA, router, and picker while asserting the exact
+// submit's POST body is captured. The harness starts no sidecar and the
+// database is fresh, so a real deploy cannot complete; intercepting here
+// drives the real SPA, router, and picker while asserting the exact
 // request the picker builds and rendering the resulting success state.
 async function stubWorkflowDetail(
   page: Page,
@@ -180,10 +180,9 @@ test("deploys through the asset source picker without a pin", async ({
     page.getByRole("heading", { name: "Launch Workflow" }),
   ).toBeVisible();
 
-  // Asset source tree is the default kind, and the Asset ID prefills with the
-  // workflow's own id, so only the commit, entry, and inference source need
-  // filling. This variant selects its member by package name, so it sends no
-  // pin.
+  // Asset source is the default kind and the asset id prefills with the
+  // workflow's own id, so only commit, entry, and inference source need
+  // filling. Selecting by package name sends no pin.
   await page.locator("#definition-entry").fill("./workflow.mjs");
   await page.locator("#definition-commit").fill("abc123");
   await selectInferenceOffering(page);
@@ -220,8 +219,8 @@ test("deploys through the asset tarball source picker with a pin", async ({
   await page.locator("#definition-kind").click();
   await page.getByRole("option", { name: "Asset tarball" }).click();
 
-  // The tarball variant names a hub asset and selects the definition package
-  // inside it by the install pin, so it sends an asset source with a `tarball`
+  // The tarball variant names a hub asset and selects the definition
+  // package inside it by the install pin: an asset source with a `tarball`
   // format plus a pin.
   await page.locator("#definition-entry").fill("./workflow.mjs");
   await page.locator("#definition-asset-id").fill("ast_flow_tarball");
