@@ -110,16 +110,11 @@ export interface RuntimeRunOptions {
 }
 
 /**
- * Run a workflow against a `WorkflowRuntimeEnv` -- the single runtime body
- * invoked by `runLocal` and the (future) child-process entry point.
- *
- * Recovery runs against canonical state, seeded via `options.resumeFromEvents`
- * or adopted from the durable log. A seed must resolve its blob: refs via the
- * `BlobSubstrate` that minted them (the runLocal in-memory substrate is
- * ephemeral) and be complete-or-cancelled, step-boundary-aligned, or a
- * resumable carve-out; an invocation-boundary step left `in-flight` settles
- * `StepFailed`, other residuals surface `RuntimeResumeUnsupportedError`, and
- * the host owns recovery.
+ * Run a workflow against a `WorkflowRuntimeEnv`. Recovery runs against
+ * canonical state seeded via `options.resumeFromEvents` or adopted from the
+ * durable log; see `resumeFromEvents` for the accepted log shapes. A seed's
+ * blob: refs must resolve via the `BlobSubstrate` that minted them (the
+ * seed-contract guard in the body enforces this).
  */
 export function runtimeRun(
   definition: WorkflowDefinition,
@@ -289,10 +284,9 @@ async function executeRunBody(
   );
 
   // Restore prior events to the repo store on resume so a downstream read
-  // sees the historical log alongside newly-appended events. Seeds carry
-  // their original seqs and are written verbatim (the commit-lock path would
-  // reassign seq and corrupt the replay invariant). A same-seq seed is
-  // idempotent only when structurally identical; a divergent one throws.
+  // sees the historical log alongside newly-appended events. Seeds are
+  // written verbatim with their original seqs (the commit-lock path would
+  // reassign seq and corrupt the replay invariant).
   const existing = await env.repoStore.read(runId);
   const existingBySeq = new Map(existing.map((e) => [e.seq, e]));
   for (const event of initialEvents) {
@@ -494,7 +488,6 @@ async function executeRunBody(
     state = await commitDurable(env, runId, failed);
   }
 
-  // Issue RunStarted only if the state machine has not seen it.
   if (state.phase === "pending") {
     const event: WorkflowEvent = {
       kind: "RunStarted",
@@ -775,12 +768,10 @@ async function executeRunBody(
 
 /**
  * Reconstruct the terminal `RunResult` for a run whose canonical log is
- * already terminal, without re-driving it. Used by the terminal
- * short-circuit: a recovery call against an already-terminal durable log
- * must return the existing result rather than emit a fresh `RunStarted`
- * (which would throw `terminal-phase`). Shape matches the live terminal
- * path: `terminalStatus` from the terminal phase, `events` from the durable
- * log, `outputs` hydrated from its `StepCompleted` refs.
+ * already terminal, without re-driving it (the terminal short-circuit).
+ * Shape matches the live terminal path: `terminalStatus` from the terminal
+ * phase, `events` from the durable log, `outputs` hydrated from its
+ * `StepCompleted` refs.
  */
 async function buildResultFromLog(
   env: WorkflowRuntimeEnv,
@@ -1024,7 +1015,7 @@ async function runPrimitiveSafe(
       }
       // No StepStarted was committed (e.g. the input selector threw before
       // runStep emitted it). Emit a synthetic StepStarted + StepFailed so the
-      // scheduler sees the step as terminal and does not busy-loop on it.
+      // scheduler sees the step as terminal.
       const message = cause instanceof Error ? cause.message : String(cause);
       const syntheticStarted: WorkflowEvent = {
         kind: "StepStarted",
@@ -1614,17 +1605,13 @@ async function runStep(
 
 /**
  * Execute a deterministic effect node -- the action invocation boundary. Like
- * `runStep`, the action's `StepStarted` is flushed durably via `commitDurable`
- * BEFORE `env.invokeAction` runs, so a crash mid-invocation leaves a durable
- * `StepStarted` with no `StepCompleted`, settled as a terminal failure rather
- * than re-invoking the handler (at-most-once).
- *
- * No retry loop: an action is single-attempt, so a thrown effect lands
- * `StepFailed` through `runPrimitiveSafe` like every other non-step runner.
- *
- * Cancellation: the invoker refuses a pre-aborted signal at entry, so a
- * handler is never STARTED for a run already known to be cancelled; once
- * started, stopping is the handler's half.
+ * `runStep`, the `StepStarted` is flushed durably before `env.invokeAction`
+ * runs (at-most-once on a crash mid-invocation; inline note below). No retry
+ * loop: an action is single-attempt, so a thrown effect lands `StepFailed`
+ * through `runPrimitiveSafe` like every other non-step runner. Cancellation:
+ * the invoker refuses a pre-aborted signal at entry, so a handler is never
+ * STARTED for a run already known to be cancelled; once started, stopping is
+ * the handler's half.
  */
 async function runAction(
   definition: WorkflowDefinition,
@@ -3892,18 +3879,9 @@ function findAwaitedSignalNameForStep(
  * marker (unless the step is already `awaiting-signal` on a re-park resume),
  * arms the optional timeout timer, flushes the segment, parks on the signal
  * channel via `awaitNext`, and on a received signal commits `SignalReceived`
- * and returns the payload WITHOUT completing the step.
- *
- * The completion seam stays with the caller: `runAwaitSignal` completes the
- * gate with the raw payload, whereas the `runStep` step-suspend arm re-invokes
- * the agent against the payload and completes with the reply.
- *
- * The two resume-idempotency pieces ABOVE this call stay with the caller,
- * because the `step`-origin caller diverges there: the in-flight-with-logged-
- * `SignalReceived` short-circuit recovers a payload bound to an `awaitSignal`
- * gate by name (not how a step-suspend caller would recover), and the
- * `StepStarted` emit is owned by the caller (`runAwaitSignal` owns its
- * gate's; an agent step emits its own via the normal `runStep` entry).
+ * and returns the payload WITHOUT completing the step. The completion seam
+ * and the resume-idempotency pieces above the call stay with the caller
+ * (see `runAwaitSignal` for the split).
  *
  * Returns a discriminated result rather than throwing on timeout: only the
  * caller knows whether a fired timer routes onward (`awaitSignal.onTimeout`)
