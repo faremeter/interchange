@@ -2,14 +2,13 @@
 //
 // `sidecar-handler.ts` runs five request/response round-trips over the same
 // websocket (session requests, agent deploys, pack transfers, undeploys,
-// workflow probes). Each used to hand-roll the same lifecycle: register an
-// entry in a Map keyed by request/transfer/address, arm a timeout that
-// settles the entry, settle it early when the matching reply frame arrives,
-// and sweep every entry owned by a connection when that connection drops.
-// The sites differ only in the key, the resolved value, and the per-site
-// cleanup their resolve/reject closures capture. `PendingTracker` owns the
-// map + timer lifecycle so timeouts and disconnect sweeps behave uniformly
-// and a fix to either lands in one place.
+// workflow probes), each hand-rolling the same lifecycle: register a Map
+// entry keyed by request/transfer/address, arm a timeout that settles it,
+// settle it early when the matching reply arrives, and sweep every entry
+// owned by a connection when it drops. The sites differ only in the key, the
+// resolved value, and the per-site cleanup their resolve/reject closures
+// capture. `PendingTracker` owns the map + timer lifecycle so timeouts and
+// disconnect sweeps behave uniformly.
 
 // Minimal handle so the router doesn't depend on a specific WebSocket impl.
 export type WsHandle = {
@@ -18,17 +17,11 @@ export type WsHandle = {
 };
 
 /**
- * Arms a one-shot timeout and returns the canceller for it.
- *
- * The tracker's timeouts are the only thing about it that depends on time
- * passing, and a caller that wants them settled on demand rather than by
- * waiting has nowhere to reach in: the global timer is not addressable from
- * outside. Injecting the arming function makes the timeout observable and
- * cancellable by whoever owns the tracker, so a test can fire a timeout, or
- * assert one was disarmed, without a real duration elapsing.
- *
- * Returning the canceller rather than a handle keeps the timer's identity
- * private to whichever implementation armed it.
+ * Arms a one-shot timeout and returns the canceller for it. Injectable so a
+ * caller can fire or disarm a timeout on demand instead of waiting out a real
+ * duration -- the global timer is not addressable from outside the tracker.
+ * Returning the canceller keeps the timer's identity private to whichever
+ * implementation armed it.
  */
 export type ScheduleTimeout = (handler: () => void, ms: number) => () => void;
 
@@ -52,12 +45,9 @@ export type PendingEntry<Key, Value, Meta> = {
   resolve(value: Value): void;
   reject(error: string): void;
   /**
-   * Disarms this entry's timeout.
-   *
-   * Runs at most once per entry: each of the settle paths cancels and drops
-   * the entry from the map in one synchronous block, and a timeout that
-   * fires drops the entry itself, so nothing can reach the entry to cancel
-   * it a second time.
+   * Disarms this entry's timeout. Runs at most once per entry: every settle
+   * path cancels and drops the entry in one synchronous block, and a firing
+   * timeout drops the entry itself.
    */
   cancelTimeout(): void;
 };
@@ -87,10 +77,9 @@ export class PendingTracker<Key, Value = void, Meta = undefined> {
   /**
    * Register a pending round-trip and arm its timeout. The entry is stored
    * before the caller sends its frame, so a synchronous reply (loopback
-   * transports, tests) settles it. When `timeoutMs` elapses the entry is
-   * dropped and `reject` is invoked with `timeoutMessage` — the same
-   * rejection path an error reply frame uses, so per-site cleanup runs
-   * exactly once either way.
+   * transports, tests) settles it. On `timeoutMs` the entry is dropped and
+   * `reject` runs with `timeoutMessage` -- the same path an error reply uses,
+   * so per-site cleanup runs exactly once either way.
    */
   register(
     key: Key,
@@ -170,10 +159,9 @@ export class PendingTracker<Key, Value = void, Meta = undefined> {
 
   /**
    * Drop a pending entry without settling it. The caller rejects its own
-   * promise directly — used when a frame provably never reached the wire, so
-   * the failure must not take the normal rejection path (the deploy
-   * "failed to send" path, which must report `frameSent: false` and must not
-   * let the armed timer fire later and double-reject).
+   * promise directly -- used when a frame provably never reached the wire, so
+   * the failure bypasses the normal rejection path (which must report
+   * `frameSent: false` and must not let the armed timer double-reject).
    */
   delete(key: Key): void {
     const entry = this.entries.get(key);

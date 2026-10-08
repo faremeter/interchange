@@ -1,22 +1,19 @@
 // Gate tests for grant-record totality over a deployment's executable closure.
 //
 // A probe answer arrives in two independently produced halves: the inert
-// projection, built by the hub's live->inert projector, and the grant-walk
-// snapshot, built by the sidecar's capability walk over the live definition.
-// Until the gate compared them, nothing did. A step the walk skipped still
-// projects, still deploys, and is still scheduled -- and then every tool call
-// from it is refused for lack of any grant, which the tool runner turns into an
-// error tool result rather than a failure. The run completes having done none
-// of the work.
+// projection (hub's live->inert projector) and the grant-walk snapshot
+// (sidecar's capability walk). Until the gate compared them, nothing did: a
+// step the walk skipped still projects, deploys, and is scheduled, and its
+// tool calls are refused for lack of any grant -- surfacing as error tool
+// results, so the run completes having done none of the work.
 //
-// The walk folds a nested body's grants into the record of the top-level step
-// that carries the body, so the gate looks for one record per top-level step
-// an executable step descends from. It checks PRESENCE of that record, never
-// its contents, so these tests bound the same thing: a snapshot missing a
-// record is refused and names the affected steps, while tool-bearing loop and
-// onTrigger bodies still pass when every top-level step is recorded. A record
-// present but under-filled is outside what either the gate or these tests
-// detect.
+// The walk folds a nested body's grants into its top-level step's record, so
+// the gate looks for one record per top-level step an executable step
+// descends from. It checks PRESENCE of that record, never its contents; these
+// tests bound the same thing: a snapshot missing a record is refused and names
+// the affected steps, while tool-bearing loop and onTrigger bodies still pass
+// when every top-level step is recorded. A present-but-under-filled record is
+// outside what either the gate or these tests detect.
 
 import { describe, test, expect } from "bun:test";
 

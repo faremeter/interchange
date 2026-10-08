@@ -706,12 +706,13 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
   }
 
   test("delivers once, promptly, with the sender key when the key is recorded mid-resolve", async () => {
-    // The highest-risk failure is a LOST WAKEUP: the key is recorded DURING the
-    // resolveSenderKey await, so if the entry were parked AFTER the resolve, only
-    // the TTL would free it. Force the settle to land WHILE handleMailOutbound is
-    // mid-resolve: the stub, on its FIRST call, fires the settle before returning
-    // null (as if the read observed the pre-ack state). The register-before-read
-    // parking must already hold an entry for the settle to find.
+    // The highest-risk failure is a LOST WAKEUP: the key is recorded DURING
+    // the resolveSenderKey await, so if the entry were parked AFTER the
+    // resolve, only the TTL would free it. Force the settle to land WHILE
+    // handleMailOutbound is mid-resolve: the stub, on its FIRST call, fires
+    // the settle before returning null (as if the read observed the pre-ack
+    // state). The register-before-read parking must already hold an entry for
+    // the settle to find.
     let resolveCalls = 0;
     const router = createInterlockRouter(async (address) => {
       expect(address).toBe(SENDER);
@@ -975,9 +976,9 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
     // address does NOT wake this sender's parked mail; only the exact address
     // does.
     //
-    // `recordedKey` models the durable public-key write the settle reports: null
-    // while the run is pre-ack (mail parks), then the key once recorded, so the
-    // settle-driven re-drive resolves it exactly as production does.
+    // `recordedKey` models the durable public-key write the settle reports:
+    // null while the run is pre-ack (mail parks), then the key once recorded,
+    // so the settle-driven re-drive resolves it exactly as production does.
     let recordedKey: string | null = null;
     const router = createInterlockRouter(async () => recordedKey);
     const senderWs = await connectAs(router, "sc-sender", SENDER);

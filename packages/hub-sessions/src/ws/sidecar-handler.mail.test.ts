@@ -73,9 +73,7 @@ describe("SidecarRouter allocation mail durability", () => {
     ).toBe(true);
     // One redelivery, fired rather than waited for, then awaited on the
     // socket: the retry hands off to a fire-and-forget continuation, so the
-    // send is the event. The initial delivery plus this retry is exactly two,
-    // where the pause this replaces asserted "at least two" because it could
-    // not know how many had fit.
+    // send is the event. The initial delivery plus this retry is exactly two.
     retries.fireNext();
     await ws.awaitSent(
       (sent) =>
@@ -221,10 +219,7 @@ describe("SidecarRouter allocation mail durability", () => {
     );
     // Two fires fit inside the 2-retry budget: each redelivers and re-arms,
     // so waiting for the re-arm is what says the redelivery completed. The
-    // third fire finds the budget spent and surfaces the mail instead. Firing
-    // the retries makes the attempt count exact, where the pause this
-    // replaces made it a function of how many intervals the machine got
-    // through in 80ms.
+    // third fire finds the budget spent and surfaces the mail instead.
     for (let redelivery = 0; redelivery < 2; redelivery += 1) {
       retries.fireNext();
       await waitUntil(() => retries.armedCount() === 1);
@@ -297,8 +292,7 @@ describe("SidecarRouter allocation mail durability", () => {
     // The retention timer surfaces every entry it drops as
     // `mail.outbound.undelivered`, and it drops the whole pending set before
     // emitting. That event is therefore the expiry's own report: awaiting it
-    // says the drop has happened, where the pause it replaces only said 50ms
-    // of a 20ms TTL had elapsed on an unloaded machine.
+    // says the drop has happened.
     let reportExpired!: () => void;
     const expired = new Promise<void>((resolve) => {
       reportExpired = resolve;
@@ -628,13 +622,13 @@ describe("SidecarRouter allocation mail durability", () => {
   });
 
   test("a run-sender replay acked mid-resolve is not redelivered or re-armed", async () => {
-    // The connected-window retry runs as an independent setTimeout macrotask, so
-    // while its keyless run-sender replay awaits resolveSenderKey a queued
-    // mail.inbound.ack can advance on the owning ws and run resolvePendingMail
-    // (delete + clearTimeout). The post-await guard in replaySendPendingMail
-    // must observe the entry is gone and skip the send. Drive that race
-    // deterministically by parking resolveSenderKey on a deferred, acking while
-    // it is parked, then releasing it.
+    // The connected-window retry runs as an independent setTimeout macrotask,
+    // so while its keyless run-sender replay awaits resolveSenderKey a queued
+    // mail.inbound.ack can advance on the owning ws and settle the entry. The
+    // post-await guard in replaySendPendingMail must observe the entry is
+    // gone and skip the send. Drive that race deterministically by parking
+    // resolveSenderKey on a deferred, acking while it is parked, then
+    // releasing it.
     const runSender = "run_peer@tenant.example";
     const hexKey = "44".repeat(32);
     let releaseKey!: (key: string) => void;

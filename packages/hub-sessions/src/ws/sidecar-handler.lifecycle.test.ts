@@ -15,9 +15,9 @@ import {
 } from "./sidecar-handler";
 
 /**
- * The router's timers, driven by the test. The intervals were already
- * injectable; arming was not, so a test had to sleep past an interval to
- * observe what it triggered.
+ * The router's timers, driven by the test: intervals were already injectable
+ * but arming was not, so a test had to sleep past an interval to observe what
+ * it triggered.
  */
 function createManualTimers(): {
   scheduleTimeout: (handler: () => void, ms: number) => () => void;

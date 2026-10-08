@@ -1,16 +1,16 @@
 // The approval gate's coverage of DECLARED GRANT REQUIREMENTS.
 //
-// A definition's declared requirements ride `grantWalkSnapshot.grantRequirements`,
-// a sibling of `projection` on the probe frame. They are not in
-// `probeResult.grants`: the capability walk never reads them, and they are
-// outside the wire-hash preimage (the hash covers `projection` alone), so
-// tamper-evidence says nothing about them. The operator's decision is the only
-// thing standing between a declared requirement and the freeze.
+// Declared requirements ride `grantWalkSnapshot.grantRequirements`, a sibling
+// of `projection` on the probe frame. They are not in `probeResult.grants`:
+// the capability walk never reads them, and they sit outside the wire-hash
+// preimage (the hash covers `projection` alone), so tamper-evidence says
+// nothing about them -- the operator's decision is the only thing standing
+// between a declared requirement and the freeze.
 //
 // A frozen requirement is not an inert record: both run-time materialization
-// sites (the external trigger route and the mail-triggered run path) read the
-// frozen list back and mint real grant rows onto the run principal, which ship
-// to the child as the run's `stepGrants`.
+// sites (external trigger route, mail-triggered run path) read the frozen list
+// back and mint real grant rows onto the run principal, shipped to the child
+// as the run's `stepGrants`.
 //
 // These cases assert the fail-closed property: an unapproved requirement is
 // named in the rejection and freezes nothing, an approved one passes, and an

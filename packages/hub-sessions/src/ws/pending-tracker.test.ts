@@ -7,9 +7,8 @@ import {
 } from "./pending-tracker";
 
 /**
- * A timer the test drives: every arming is recorded with its delay for the
- * test to fire or assert was disarmed, so a timeout is exercised by firing
- * it rather than waiting out its delay.
+ * A timer the test drives: every arming is recorded with its delay so a
+ * timeout is exercised by firing it rather than waiting out its delay.
  */
 function createManualTimer(): {
   schedule: ScheduleTimeout;

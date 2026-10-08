@@ -142,9 +142,8 @@ export function tick(): Promise<void> {
 }
 
 /**
- * The redelivery retry timer, driven by the test. Arming was not injectable,
- * so a test wanting N redeliveries had to shorten the interval and sleep long
- * enough for N to fit; firing the retries explicitly makes the count exact.
+ * The redelivery retry timer, driven by the test: arming was not injectable,
+ * so firing the retries explicitly is what makes the count exact.
  */
 export function createManualRetries(retryIntervalMs: number): {
   scheduleTimeout: (handler: () => void, ms: number) => () => void;
