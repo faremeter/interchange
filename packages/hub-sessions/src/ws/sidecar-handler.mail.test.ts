@@ -73,7 +73,7 @@ describe("SidecarRouter allocation mail durability", () => {
     ).toBe(true);
     // One redelivery, fired rather than waited for, then awaited on the
     // socket: the retry hands off to a fire-and-forget continuation, so the
-    // send is the event. The initial delivery plus this retry is exactly two.
+    // initial delivery plus this retry is exactly two.
     retries.fireNext();
     await ws.awaitSent(
       (sent) =>
@@ -118,9 +118,7 @@ describe("SidecarRouter allocation mail durability", () => {
       }),
     );
     // Connected-window redelivery only ever runs off an armed retry, so the
-    // retry being gone is what "stops redelivery" means -- a stronger
-    // statement than the pause this replaces, which could only observe that
-    // no redelivery had arrived yet.
+    // retry being gone is what "stops redelivery" means.
     await waitUntil(() => retries.armedCount() === 0);
 
     expect(inboundCount(ws, "mid-acked")).toBe(1);
@@ -255,7 +253,7 @@ describe("SidecarRouter allocation mail durability", () => {
 
     // Tracking a mail is what arms its redelivery retry, so no armed retry is
     // the untracked state itself -- there is nothing left that could redeliver
-    // later. The pause this replaces could only report that none had yet.
+    // later.
     expect(retries.armedCount()).toBe(0);
     expect(framesOfType(ws, "mail.inbound")).toHaveLength(1);
   });
@@ -291,8 +289,7 @@ describe("SidecarRouter allocation mail durability", () => {
   test("drops retained mail after the disconnect retention TTL", async () => {
     // The retention timer surfaces every entry it drops as
     // `mail.outbound.undelivered`, and it drops the whole pending set before
-    // emitting. That event is therefore the expiry's own report: awaiting it
-    // says the drop has happened.
+    // emitting; awaiting that event says the drop has happened.
     let reportExpired!: () => void;
     const expired = new Promise<void>((resolve) => {
       reportExpired = resolve;
@@ -624,11 +621,10 @@ describe("SidecarRouter allocation mail durability", () => {
   test("a run-sender replay acked mid-resolve is not redelivered or re-armed", async () => {
     // The connected-window retry runs as an independent setTimeout macrotask,
     // so while its keyless run-sender replay awaits resolveSenderKey a queued
-    // mail.inbound.ack can advance on the owning ws and settle the entry. The
+    // mail.inbound.ack can advance on the owning ws and settle the entry; the
     // post-await guard in replaySendPendingMail must observe the entry is
-    // gone and skip the send. Drive that race deterministically by parking
-    // resolveSenderKey on a deferred, acking while it is parked, then
-    // releasing it.
+    // gone and skip the send. Drive that race deterministically: park
+    // resolveSenderKey on a deferred, ack while it is parked, then release.
     const runSender = "run_peer@tenant.example";
     const hexKey = "44".repeat(32);
     let releaseKey!: (key: string) => void;
@@ -671,7 +667,7 @@ describe("SidecarRouter allocation mail durability", () => {
     expect(resolveCalls).toBe(1);
 
     // Ack while the replay is parked: resolvePendingMail deletes the entry and
-    // clears its timer. Drain the ack's message-chain microtask before release.
+    // clears its timer; drain the ack's message-chain microtask before release.
     router.handleMessage(
       ws,
       JSON.stringify({
@@ -683,16 +679,14 @@ describe("SidecarRouter allocation mail durability", () => {
     await tick();
 
     // Release the resolve; the guard must see the entry is gone and skip.
-    // Everything between the release and the guard is microtask work -- the
-    // parked promise, the async frames around it -- so the macrotask `tick`
-    // resumes only once the guard has run.
+    // Everything between the release and the guard is microtask work, so the
+    // macrotask `tick` resumes only once the guard has run.
     releaseKey(hexKey);
     await tick();
 
     // No redelivery: still exactly the one initial mail.inbound, no
-    // sender.key.refresh pushed for the aborted replay, and no re-armed retry
-    // (re-arming is the last statement of the redelivery path, so the fired
-    // retry staying the only one says the path exited at the guard).
+    // sender.key.refresh for the aborted replay, and no re-armed retry (the
+    // fired retry staying the only one says the path exited at the guard).
     expect(retries.armedCount()).toBe(0);
     expect(inboundCount(ws, "mid-ack-race")).toBe(1);
     expect(framesOfType(ws, "sender.key.refresh")).toHaveLength(0);
@@ -938,9 +932,8 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
   test("holds a run sender's mail while its key is unresolvable", async () => {
     // A run-address sender whose key does not resolve is treated as pre-ack: it
     // minted its keypair locally and may have sent before the hub recorded its
-    // public key. The mail is HELD (not delivered keyless) until the key lands,
-    // so no run.grants and no mail.inbound reach the recipient here. A later
-    // deploy settle wakes it, or the TTL surfaces it as undelivered.
+    // public key. The mail is HELD (not delivered keyless) until the key lands.
+    // A later deploy settle wakes it, or the TTL surfaces it as undelivered.
     const router = createAllocatedRouter({
       lookups: {
         async materializeMailTriggeredRunGrants() {
@@ -955,9 +948,8 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
       TEST_IDENTITY.workflowRunAddress,
     ]);
 
-    // The mail is held only while a key-record settle is guaranteed to arrive.
-    // Mark the sender's deploy in flight so an unresolvable key parks rather than
-    // delivering keyless.
+    // The mail is held only while a key-record settle is guaranteed to arrive;
+    // mark the sender's deploy in flight so an unresolvable key parks.
     router.noteSenderDeployStarted(TEST_IDENTITY.workflowRunAddress, {
       ...TEST_TARGET,
       leaseId: "sender-deploy",
@@ -1104,8 +1096,7 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
 
     // The connection is gated on `senderAddress` by connOwnsAddress before the
     // relay runs; the delivered frame must carry that hub-verified address as
-    // authenticatedSender, independent of whatever MIME From the opaque
-    // rawMessage bytes contain.
+    // authenticatedSender, not whatever MIME From the rawMessage bytes contain.
     router.handleMessage(
       ws,
       JSON.stringify({
@@ -1122,9 +1113,8 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
     expect(inbound[0]?.["authenticatedSender"]).toBe(
       TEST_IDENTITY.workflowRunAddress,
     );
-    // And explicitly NOT the spoofable MIME From carried in rawMessage
-    // (`From: sender@example.test`) -- value-level independence, not just
-    // equality to the gate value.
+    // And explicitly NOT the spoofable MIME From (`From: sender@example.test`)
+    // carried in rawMessage.
     expect(inbound[0]?.["authenticatedSender"]).not.toBe("sender@example.test");
   });
 
@@ -1134,8 +1124,8 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
       TEST_IDENTITY.workflowRunAddress,
     ]);
 
-    // The ownership gate landed by outcome #1 must still hold: a sidecar
-    // cannot relay mail as an address it does not own, so nothing is routed.
+    // A sidecar cannot relay mail as an address it does not own, so nothing is
+    // routed.
     router.handleMessage(
       ws,
       JSON.stringify({
@@ -1217,10 +1207,9 @@ describe("SidecarRouter mail.outbound body cap", () => {
       TEST_IDENTITY.workflowRunAddress,
     ]);
 
-    // The array-length ceiling admits this frame (one recipient) and the
-    // schema puts no length bound on rawMessage, so it passes the union parse
-    // and reaches dispatch -- where the app-layer byte cap drops it. The
-    // materializer/mail-inbound fan-out never runs, so no frame is emitted.
+    // The schema puts no length bound on rawMessage, so the frame passes the
+    // union parse and reaches dispatch, where the app-layer byte cap drops it.
+    // The materializer/mail-inbound fan-out never runs, so no frame is emitted.
     const oversized = "A".repeat(MAX_MAIL_OUTBOUND_BODY_BYTES + 4);
     router.handleMessage(
       ws,

@@ -709,10 +709,9 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
     // The highest-risk failure is a LOST WAKEUP: the key is recorded DURING
     // the resolveSenderKey await, so if the entry were parked AFTER the
     // resolve, only the TTL would free it. Force the settle to land WHILE
-    // handleMailOutbound is mid-resolve: the stub, on its FIRST call, fires
-    // the settle before returning null (as if the read observed the pre-ack
-    // state). The register-before-read parking must already hold an entry for
-    // the settle to find.
+    // handleMailOutbound is mid-resolve: on its FIRST call the stub fires the
+    // settle before returning null. The register-before-read parking must
+    // already hold an entry for the settle to find.
     let resolveCalls = 0;
     const router = createInterlockRouter(async (address) => {
       expect(address).toBe(SENDER);
@@ -727,9 +726,7 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
     const senderWs = await connectAs(router, "sc-sender", SENDER);
     const recipientWs = await connectAs(router, "sc-recipient", RECIPIENT);
 
-    // Establish the in-flight-deploy precondition the narrowed park gate requires:
-    // mark the allocated key-record mid-flight so a null resolve parks rather than
-    // delivering keyless.
+    // Establish the in-flight-deploy precondition the narrowed park gate requires.
     router.noteSenderDeployStarted(SENDER, ATTEMPT);
     sendMail(router, senderWs);
     const inbound = await waitForFrame(
@@ -737,8 +734,8 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
       (f) => f.type === "mail.inbound" && f.authenticatedSender === SENDER,
     );
 
-    // 1. The recipient never sees the sender as `unknown`: the sender key IS
-    //    co-delivered on the run.grants barrier that precedes the mail.
+    // 1. Key co-delivered on the grants barrier, so the recipient never sees
+    //    the sender as `unknown`.
     const grants = framesOfType(recipientWs, "run.grants");
     expect(grants).toHaveLength(1);
     expect(grants[0]?.senderIdentities).toEqual([
@@ -746,16 +743,16 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
     ]);
     expect(inbound.authenticatedSender).toBe(SENDER);
 
-    // 2. Delivered EXACTLY ONCE at the wire -- the idempotent claim-by-key keeps
-    //    the settle's re-drive and the inline branch from both delivering.
+    // 2. Delivered exactly once: the claim-by-key keeps the settle re-drive and
+    //    the inline branch from double-delivering.
     expect(
       framesOfType(recipientWs, "mail.inbound").filter(
         (f) => f.authenticatedSender === SENDER,
       ),
     ).toHaveLength(1);
 
-    // 3. Delivered PROMPTLY: the wide TTL never fired, so the delivery came from
-    //    the settle-driven re-drive, not the backstop.
+    // 3. Delivered promptly: the wide TTL never fired, so the settle drove it,
+    //    not the backstop.
   });
 
   test("surfaces a pre-ack sender's parked mail as undelivered when its deploy fails", async () => {
@@ -769,9 +766,7 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
     const senderWs = await connectAs(router, "sc-sender", SENDER);
     const recipientWs = await connectAs(router, "sc-recipient", RECIPIENT);
 
-    // Establish the in-flight-deploy precondition the narrowed park gate requires:
-    // mark the allocated key-record mid-flight so a null resolve parks rather than
-    // delivering keyless.
+    // Establish the in-flight-deploy precondition the narrowed park gate requires.
     router.noteSenderDeployStarted(SENDER, ATTEMPT);
     sendMail(router, senderWs);
     await tick();
@@ -970,23 +965,19 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
   });
 
   test("a settle only wakes mail parked under a byte-identical sender address", async () => {
-    // The allocated path passes its deploy address as the settle key, and that
-    // address is byte-identical to the sender address the run's mail was sent
-    // under. Prove the interlock is key-sensitive: a settle for any other
-    // address does NOT wake this sender's parked mail; only the exact address
-    // does.
+    // The allocated path passes its deploy address as the settle key, byte-
+    // identical to the sender address the run's mail was sent under. Prove the
+    // interlock is key-sensitive: a settle for any other address does NOT wake
+    // this sender's parked mail.
     //
     // `recordedKey` models the durable public-key write the settle reports:
-    // null while the run is pre-ack (mail parks), then the key once recorded,
-    // so the settle-driven re-drive resolves it exactly as production does.
+    // null while the run is pre-ack (mail parks), then the key once recorded.
     let recordedKey: string | null = null;
     const router = createInterlockRouter(async () => recordedKey);
     const senderWs = await connectAs(router, "sc-sender", SENDER);
     const recipientWs = await connectAs(router, "sc-recipient", RECIPIENT);
 
-    // Establish the in-flight-deploy precondition the narrowed park gate requires:
-    // mark the allocated key-record mid-flight so a null resolve parks rather than
-    // delivering keyless.
+    // Establish the in-flight-deploy precondition the narrowed park gate requires.
     router.noteSenderDeployStarted(SENDER, ATTEMPT);
     sendMail(router, senderWs);
     await tick();
@@ -1017,8 +1008,7 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
     // A run sender whose deploy already acked (or never had one) has NO settle
     // coming: parking a null resolve would strand the mail to the TTL. With no
     // in-flight deploy the narrowed gate resolves inline and delivers keyless,
-    // co-delivering no sender identity, rather than parking. This is the
-    // already-settled-run / transient-fault case that must NOT be held.
+    // co-delivering no sender identity, rather than parking.
     const undelivered: { rawMessage: string; recipients: string[] }[] = [];
     const router = createInterlockRouter(async () => null);
     router.events.on("mail.outbound.undelivered", (payload) => {
