@@ -6,11 +6,10 @@
 // bytes on demand.
 //
 // The CLI sends a single prompt that asks the model to call the
-// `fetch_full_logs` tool, watches the cycle complete, then walks
-// `history()` to find the spill URI and reads the blob back via the
-// agent's BlobReader. The output reports the in-history marker, the
-// resolved blob length, and the first few lines of the blob so the
-// reader can confirm the round-trip succeeded.
+// `fetch_full_logs` tool, then walks `history()` to find the spill
+// URI and reads the blob back via the agent's BlobReader, reporting
+// the in-history marker, the resolved blob length, and the first few
+// lines of the blob so the reader can confirm the round-trip.
 
 import {
   openExampleAgent,

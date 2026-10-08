@@ -4,12 +4,11 @@
 //
 // The two-step shape (copy the working tree, then move HEAD) is the
 // closest isomorphic-git analogue of `git clone <local> <local> &&
-// git -C <copy> reset --hard <hash>`. isomorphic-git's `clone` is
-// designed for HTTP-fetched remotes and would require shimming the
-// http transport for local-path sources; recursive `fs.cp` plus
-// `git.checkout({ ref, force: true })` gets the same observable
-// result with no extra moving parts. The function is exported so
-// tests can exercise it independently of the CLI.
+// git -C <copy> reset --hard <hash>`: isomorphic-git's `clone` is
+// designed for HTTP-fetched remotes, so `fs.cp` plus
+// `git.checkout({ ref, force: true })` gets the same result without
+// shimming the http transport. Exported so tests can exercise it
+// independently of the CLI.
 
 import * as fs from "node:fs";
 import { cp, mkdir, rm } from "node:fs/promises";
@@ -34,9 +33,9 @@ export type CloneAndRewindOpts = {
  */
 export async function cloneAndRewind(opts: CloneAndRewindOpts): Promise<void> {
   await mkdir(dirname(opts.destDir), { recursive: true });
-  // `errorOnExist: true` paired with `force: false` makes the helper
-  // refuse to overwrite a populated destination. The caller decides
-  // when a stale rewound copy gets removed.
+  // `errorOnExist: true` paired with `force: false` refuses to
+  // overwrite a populated destination; the caller decides when a
+  // stale rewound copy gets removed.
   await cp(opts.sourceDir, opts.destDir, {
     recursive: true,
     force: false,

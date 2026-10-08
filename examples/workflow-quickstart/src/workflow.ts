@@ -1,16 +1,16 @@
 // The `interchange.workflow` entry point: the module a host imports and
 // evaluates to obtain this package's `WorkflowDefinition`.
 //
-// The host takes the module's exports and looks for values that validate
-// as a `WorkflowDefinition`. It requires EXACTLY ONE. That is why
-// `revisionPass` below -- itself a full `defineWorkflow` result, because a
-// loop body is a whole workflow -- is a module-private const. Exporting it
-// would make this entry ambiguous and the deployment would be refused.
+// The host looks for values that validate as a `WorkflowDefinition` and
+// requires EXACTLY ONE. That is why `revisionPass` below -- itself a
+// full `defineWorkflow` result, because a loop body is a whole workflow
+// -- is a module-private const. Exporting it would make this entry
+// ambiguous and the deployment would be refused.
 //
-// The definition is data, not code. `loop.while`, `loop.carry` and
-// `action.handler` are strings; the agent's tools are declarations. That
-// is what lets the deploy substrate hash the definition, show an operator
-// the grants it implies, and freeze the approved shape.
+// The definition is data, not code: `loop.while`, `loop.carry` and
+// `action.handler` are strings and the agent's tools are declarations.
+// That is what lets the deploy substrate hash the definition, show an
+// operator the grants it implies, and freeze the approved shape.
 
 import { defineAgent } from "@intx/agent";
 import { action, defineWorkflow, escalation, loop, step } from "@intx/workflow";
@@ -22,13 +22,12 @@ export const MAX_PASSES = 4;
 
 /**
  * The loop body. A loop iteration is a separate child run of this
- * workflow: its own run id, its own event log, its own step outputs. The
- * iteration's input arrives as the body's `trigger.payload`.
+ * workflow: its own run id, its own event log, its own step outputs.
+ * The iteration's input arrives as the body's `trigger.payload`.
  *
  * `shorten` is the body's first step, so the default-input convention
- * already gives it `{ from: "trigger.payload" }`; it is spelled out here
- * because a reader should not have to know the convention to follow the
- * data.
+ * already gives it `{ from: "trigger.payload" }`; it is spelled out
+ * here because a reader should not have to know the convention.
  */
 const revisionPass = defineWorkflow({
   id: "tagline-revision-pass",
@@ -79,10 +78,9 @@ export const workflow = defineWorkflow({
     publish: action({
       handler: "publishTagline",
       // The loop's step output is `{ outcome, iterations, carry, final }`:
-      // `final` is the converging pass's output, and `carry` is the state
+      // `final` is the converging pass's output and `carry` is the state
       // that pass started from. The accepted tagline comes from the first
-      // and the destination from the second, so the input is assembled
-      // from both.
+      // and the destination from the second, so the input merges both.
       input: {
         merge: [
           {

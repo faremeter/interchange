@@ -2,14 +2,13 @@
 // agent at an older commit so its `history()` only sees the turns
 // that existed at that point in time.
 //
-// The CLI takes two prompts. It sends both against a primary
-// `contextDir`, walks `checkpoints()` to find the commit that lands
-// at the end of the first send (one before the most-recent
-// checkpoint), clones the directory into a sibling path, rewinds
-// the clone's HEAD to that older commit, and opens a new agent on
-// the clone. The new agent sees only the first prompt's turns —
-// proof that the rewind is rooted at the older state rather than
-// merely reading historical commits.
+// The CLI takes two prompts, sends both against a primary
+// `contextDir`, walks `checkpoints()` to find the commit at the end
+// of the first send, clones the directory into a sibling path,
+// rewinds the clone's HEAD to that older commit, and opens a new
+// agent on the clone. The new agent sees only the first prompt's
+// turns -- proof that the rewind is rooted at the older state rather
+// than merely reading historical commits.
 
 import {
   defaultContextDir,
@@ -74,7 +73,7 @@ export async function main(
     await agent.send(second);
 
     // checkpoints() returns commits newest-first. After two sends the
-    // log contains [post-second, post-first]. The "rewind target" is
+    // log contains [post-second, post-first]; the "rewind target" is
     // the commit at the end of the first send, so index 1.
     const checkpoints = await agent.checkpoints(10);
     const latest = checkpoints[0];
@@ -90,8 +89,8 @@ export async function main(
   } finally {
     // Must close before copying the directory: the original agent
     // still holds the singleton-per-contextDir lock and the isogit
-    // store may have an open packfile reader. Letting close() drain
-    // ensures the copy below sees a quiesced repository.
+    // store may have an open packfile reader. Closing first ensures
+    // the copy sees a quiesced repository.
     await agent.close();
   }
 

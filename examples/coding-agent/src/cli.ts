@@ -9,8 +9,8 @@
 // conversation.
 //
 // The reply is written to stdout. Reactor events (inference deltas,
-// tool calls, checkpoints) are streamed to stderr as they happen so the
-// example exercises `agent.stream()` alongside `agent.send()`.
+// tool calls, checkpoints) are streamed to stderr as they happen, so
+// the example exercises `agent.stream()` alongside `agent.send()`.
 
 import { parseArgs } from "node:util";
 

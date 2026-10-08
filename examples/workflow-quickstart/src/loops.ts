@@ -1,19 +1,18 @@
 // The `interchange.loops` entry point.
 //
 // A `loop` primitive names its `while` and `carry` as STRINGS, not
-// functions, because a `WorkflowDefinition` has to stay hashable data the
-// deploy substrate can ship and an operator can approve. The host resolves
-// each string against the exports of the module named by
-// `interchange.loops` in this package's `package.json`, BY EXPORT NAME. So
-// `while: "stillTooLong"` binds to the `stillTooLong` export below, and
-// renaming the export -- without renaming the ref -- breaks the deployment
-// at establish time, not at authoring time.
+// functions, because a `WorkflowDefinition` has to stay hashable data
+// the deploy substrate can ship and an operator can approve. The host
+// resolves each string against the exports of the module named by
+// `interchange.loops` in this package's `package.json`, BY EXPORT NAME,
+// so `while: "stillTooLong"` binds to the `stillTooLong` export below.
 //
 // Both functions must be PURE. The runtime re-runs them on every forward
 // pass and again on every crash resume, replaying them over the recorded
 // inputs and outputs to re-derive where the loop got to. Their type
-// (`LoopFn`) receives only data: no effect context, no authorize, no abort
-// signal. There is nowhere to put a side effect, which is the point.
+// (`LoopFn`) receives only data: no effect context, no authorize, no
+// abort signal. There is nowhere to put a side effect, which is the
+// point.
 
 import type { LoopFn } from "@intx/workflow";
 

@@ -173,10 +173,10 @@ const [storageAlpha, storageBeta] = await Promise.all([
 // Tools
 // ---------------------------------------------------------------------------
 
-// Keep per-package references so the shutdown path can dispose each mail
-// runner. Each per-agent createMailTools() is constructed against that
-// agent's transport; the harness wraps it as a defineTool bundle factory
-// via defineMailTools().
+// Keep per-package references so the shutdown path can dispose each
+// mail runner. Each per-agent createMailTools() is constructed against
+// that agent's transport; the harness wraps it as a defineTool bundle
+// factory via defineMailTools().
 const toolsAlphaMail = createMailTools({
   capabilities: createHarnessRuntimeCapabilities({
     transport: transportAlpha,

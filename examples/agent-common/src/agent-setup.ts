@@ -10,7 +10,6 @@
 // `agent-quickstart` deliberately keeps the surface inline as the
 // canonical "here is the full shape" reference; every other example
 // uses these helpers.
-
 import { mkdirSync } from "node:fs";
 
 import {
@@ -87,18 +86,12 @@ export type OpenExampleAgentSpec = {
 
 /**
  * Construct an `@intx/agent` Agent from the example's `MainOptions`
- * and a per-example spec. The helper builds:
- *
- *   - An `AgentDefinition` whose `toolFactories` carry one bundle
- *     factory wrapping the example's `AgentTool[]`.
- *   - An `AgentEnv` carrying the active source (the entry whose `id`
- *     matches `defaultSource`), an isogit-backed `ContextStore` at the
- *     example's context dir that also serves as the audit store, and a
- *     permissive authorize (per `@intx/agent/testing`).
- *
- * `opts.deps` (test fetch-stub) threads onto env.deps so harness-driven
- * tests can swap inference dependencies without dragging the spread
- * idiom into every example call site.
+ * and a per-example spec: one bundle factory wrapping the example's
+ * `AgentTool[]`, an isogit-backed `ContextStore` at the example's
+ * context dir (also serving as the audit store), and a permissive
+ * authorize. `opts.deps` (test fetch-stub) threads onto env.deps so
+ * harness-driven tests can swap inference dependencies without
+ * dragging the spread idiom into every example call site.
  *
  * Multi-source examples (`agent-multi-provider`) pass both providers
  * via `sources`; the example rotates to the other entry via

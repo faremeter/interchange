@@ -10,9 +10,7 @@
 //
 // The example uses `createInboundMessage` from @intx/mime to
 // synthesise the approval message because that is the same builder
-// any production approver service would use. The agent's surface
-// for this flow is two methods: `deliver(message)` to ingest the
-// approval, and `stream()` to observe the correlation event.
+// any production approver service would use.
 
 import { type } from "arktype";
 
@@ -206,11 +204,9 @@ async function waitForCorrelation(
   });
   // The IIFE keeps running in the background when `timeout` wins
   // the race; `.catch` swallows any rejection from the stream
-  // consumer's `close()` path so it does not surface as an unhandled
-  // promise rejection after the timeout has already been reported.
-  // The example deliberately does not depend on the precise
-  // termination shape of `agent.stream()` — graceful end or thrown
-  // error both produce `undefined` here.
+  // consumer's `close()` path. The example does not depend on the
+  // precise termination shape of `agent.stream()` — graceful end
+  // or thrown error both produce `undefined` here.
   const found = (async (): Promise<ReactorEmittedEvent | undefined> => {
     for await (const event of events) {
       if (event.type === "message.correlated") return event;

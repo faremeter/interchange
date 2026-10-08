@@ -6,11 +6,9 @@
 //
 //   ...optional("foo", opts.foo)
 //
-// The verbose inline form is otherwise required at every call
-// because the repo's `exactOptionalPropertyTypes` setting rejects
-// `{ foo: undefined }` for a `foo?: T` field. The helper exists so
-// the examples can demonstrate the agent surface without dragging
-// that idiom into every line that hands a value to `createAgent`.
+// The verbose inline form is otherwise required at every call because
+// the repo's `exactOptionalPropertyTypes` setting rejects
+// `{ foo: undefined }` for a `foo?: T` field.
 
 /**
  * Returns `{ [key]: value }` when `value` is defined, or `{}`
@@ -23,11 +21,9 @@ export function optional<K extends string, V>(
 ): Partial<Record<K, V>> {
   if (value === undefined) return {};
   // TypeScript widens the inferred type of `{ [key]: value }` to
-  // `{ [k: string]: V }` when K is a generic string literal because
-  // computed-property keys cannot be tracked back to the literal
-  // type parameter. The assertion narrows the inferred dynamic-key
-  // shape to the declared `Partial<Record<K, V>>` — the runtime
-  // object is exactly that shape by construction.
+  // `{ [k: string]: V }` for a generic key because computed-property
+  // keys cannot be tracked back to the literal type parameter; the
+  // assertion narrows it to the declared `Partial<Record<K, V>>`.
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- generic-key computed-property limitation; runtime shape matches by construction
   return { [key]: value } as Partial<Record<K, V>>;
 }

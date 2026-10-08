@@ -65,8 +65,7 @@ async function readManifestStrategies(
   // Narrow the try/catch to git.readBlob — that is the only call
   // whose absence we want to translate into "no strategies". A bad
   // manifest.jsonl (parse failure, schema drift) is a real audit
-  // corruption signal and must surface, not get swallowed alongside
-  // the missing-file case.
+  // corruption signal and must surface.
   let blob: Uint8Array;
   try {
     const result = await git.readBlob({
@@ -92,8 +91,7 @@ async function readManifestStrategies(
     if (line.length === 0) continue;
     // The manifest is structured audit data; treat malformed lines as
     // corruption rather than silently dropping them. The error names
-    // the file, commit, line number, and the offending content so an
-    // operator can locate it without grepping the repo.
+    // the file, commit, line number, and offending content.
     const raw: unknown = JSON.parse(line);
     const validated = ManifestRecord(raw);
     if (validated instanceof type.errors) {

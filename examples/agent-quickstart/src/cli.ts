@@ -11,14 +11,12 @@
 //
 // The env below sets only the required `BaseEnv` keys (`sources`,
 // `defaultSource`, `storage`, `workdir`, `audit`, `authorize`,
-// `directors`). The
-// optional tuning knobs documented on `BaseEnv` -- `closeTimeoutMs`,
-// `sendQueueMax`, `streamBufferMax`, `sizeCapMaxChars`, `sessionId`,
-// `deps` -- are intentionally omitted from this example to keep the
-// minimum-shape surface obvious. Each optional field has its own
-// demonstrating example in the agent-* set; see
-// `examples/agent-blob-spill` for `sizeCapMaxChars` and the agent-*
-// READMEs for the others.
+// `directors`). The optional tuning knobs documented on `BaseEnv` --
+// `closeTimeoutMs`, `sendQueueMax`, `streamBufferMax`, `sizeCapMaxChars`,
+// `sessionId`, `deps` -- are intentionally omitted to keep the
+// minimum-shape surface obvious; each has its own demonstrating example
+// in the agent-* set (see `examples/agent-blob-spill` for
+// `sizeCapMaxChars`).
 
 import { mkdirSync } from "node:fs";
 

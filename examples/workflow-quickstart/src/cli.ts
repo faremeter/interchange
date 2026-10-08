@@ -60,8 +60,8 @@ const allowAll: WorkflowAuthorizeFn = async () => ({
 // `interchange.loops` and `interchange.actions` modules and looking up the
 // ref as an export name. In-process there is no module to import, so the
 // mapping is written out. Both fail loudly on an unknown ref, exactly as
-// the loaders do -- a silently-missing loop predicate would run the loop
-// to its cap and report exhaustion.
+// the loaders do: a silently-missing loop predicate would run the loop to
+// its cap and report exhaustion.
 const loopFns: LoopFnRegistry = (ref: string): LoopFn => {
   if (ref === "stillTooLong") return stillTooLong;
   if (ref === "nextPass") return nextPass;

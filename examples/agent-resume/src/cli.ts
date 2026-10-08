@@ -4,7 +4,7 @@
 // The CLI opens an agent against a fixed `contextDir`, prints whatever
 // turns the store already contains, sends one new prompt, prints the
 // reply, and exits. Run the script twice with the same `contextDir`
-// and the second run sees the first run's turns — no checkpoint
+// and the second run sees the first run's turns -- no checkpoint
 // management, no explicit serialisation, no fork-handling needed. The
 // agent committed each cycle to the isogit-backed context store on
 // exit; reopening the store on the same directory replays the

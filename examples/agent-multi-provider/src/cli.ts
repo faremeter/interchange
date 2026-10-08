@@ -1,18 +1,14 @@
 // agent-multi-provider: combine three flavors of routing policy on
 // top of @intx/agent's `sources` + `setSource` surface:
-//
-//   * model-per-task — route each prompt to a "cheap" or "smart"
-//     model based on a per-prompt heuristic before each send.
-//   * failover       — if the primary source's call rejects, swap
-//                      to a fallback source and retry once.
-//   * cost-routing   — the model-per-task heuristic doubles as a
-//                      cost-routing knob; longer prompts go to the
-//                      smarter (more expensive) model, shorter ones
-//                      go to the cheap one.
+// model-per-task (route each prompt to a "cheap" or "smart" model by
+// a per-prompt heuristic), failover (retry once on a fallback source
+// when the primary rejects), and cost-routing (the heuristic doubles
+// as a cost knob -- longer prompts go to the smarter, more expensive
+// model).
 //
 // The agent package owns the `sources` registry and exposes
-// `setSource` to rotate the active source in place. Everything in
-// this file lives in user-land: the agent surface stays uncluttered.
+// `setSource` to rotate the active source in place; everything in
+// this file lives in user-land.
 
 import {
   openExampleAgent,
@@ -45,10 +41,9 @@ export type MainOptions = CommonMainOptions & {
 };
 
 /**
- * Resolve one of the two sources this example wires. Each call
- * routes through the same `resolveSource` helper as the other
- * examples but with its own label and override so the help text
- * names the right role when configuration is missing.
+ * Resolve one of the two sources this example wires, through the
+ * same `resolveSource` helper as the other examples but with its
+ * own label and override so the help text names the right role.
  */
 function resolveRole(
   env: NodeJS.ProcessEnv,
@@ -148,10 +143,10 @@ export async function main(
 
       // Apply the routed model on top of the primary source's
       // credentials, then run the send with failover. The fallback
-      // entry's source is left as-is from resolveSource (it
-      // already carries its own model). Production callers would
-      // typically overlay the same model on both for parity, but
-      // the example leaves the choice to the caller.
+      // entry's source is left as-is from resolveSource (it already
+      // carries its own model); production callers would typically
+      // overlay the same model on both for parity, but the example
+      // leaves the choice to the caller.
       const primaryWithModel: SourceEntry = {
         name: primaryEntry.name,
         source: routed.source,

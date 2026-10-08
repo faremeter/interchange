@@ -6,10 +6,8 @@
 // inside a workflow -- or inside a loop body -- changes the shape.
 //
 // `countWords` is exported alongside the factory because the loop's
-// `while` predicate measures the same thing the model measures. The
-// predicate runs in the workflow runtime and the tool runs in the
-// agent, so they are two callers of one function rather than two
-// implementations of one rule.
+// `while` predicate measures the same thing the model measures: two
+// callers of one function rather than two implementations of one rule.
 
 import { defineTool, type BaseEnv } from "@intx/agent";
 

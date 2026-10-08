@@ -4,7 +4,6 @@
 // transform's threshold, causing the reactor to spill the payload to
 // the context store and rewrite the in-history block to a
 // `tool-output:///{callId}` URI.
-
 import { stringTool, type AgentTool } from "@intx/agent";
 
 /**
@@ -37,8 +36,8 @@ export function createNoisyTool(
 
 function buildPayload(chars: number): string {
   // A repeating banner-and-line shape so a human inspecting the
-  // spill file under `tool-output/<callId>.txt` sees something
-  // human-readable rather than a sea of identical characters.
+  // spill file sees something readable rather than a sea of
+  // identical characters.
   const banner = "----- noisy tool emission -----\n";
   const lineTemplate = "log entry %i: nothing of consequence happened\n";
   const out: string[] = [banner];
