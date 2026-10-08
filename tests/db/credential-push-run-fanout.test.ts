@@ -47,14 +47,14 @@ import {
 type Pushed = { address: string; sources: InferenceSource[]; default: string };
 
 // A SidecarRouter that records the source pushes it receives. The push path
-// exercises sendCredentialsUpdate (material) then sendSourcesUpdate; the rest of
-// the surface is unused.
+// exercises sendCredentialsUpdate (material) then sendSourcesUpdate; the rest
+// of the surface is unused.
 function recordingRouter(pushed: Pushed[]): SidecarRouter {
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- only the credentials + sources push methods are exercised by the push path
   return {
     // The push delivers the credential material before the source list, so the
-    // recorder must accept the credentials frame; this suite only asserts on the
-    // source push, so the credentials handler is a no-op.
+    // recorder must accept the credentials frame; this suite only asserts on
+    // the source push, so the credentials handler is a no-op.
     sendCredentialsUpdate: () => Promise.resolve(),
     sendSourcesUpdate: (
       address: string,
@@ -105,17 +105,17 @@ describe.skipIf(!harnessDbEnvAvailable())(
     beforeEach(async () => {
       await h.reset();
       // A single credential-backed offering for model "opus", plus a folded
-      // definition (id wfd_1) whose creator is authorized to use every
-      // credential. A run anchored on wfd_1 resolves to one launchable source
-      // (mof_a / sk-anthropic).
+      // definition (wfd_1) whose creator is authorized to use every credential.
+      // A run anchored on wfd_1 resolves to one launchable source (mof_a /
+      // sk-anthropic).
       await seedTenants(h.db, [{ id: "tnt_root" }]);
       await seedProvider(h.db, {
         id: "prv_x",
         tenantId: "tnt_root",
         name: "prv-x",
-        // The reconcile re-resolves a credential's origin from its own provider,
-        // so the provider needs an API base URL. Harmless to the source-push
-        // tests, which resolve origin via the model offering.
+        // The reconcile re-resolves a credential's origin from its own
+        // provider, so the provider needs an API base URL. Harmless to the
+        // source-push tests, which resolve origin via the model offering.
         apiBaseUrl: "https://api.anthropic.com",
       });
       await seedCredential(h.db, {
@@ -202,7 +202,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         status: "running",
       });
       // Deployment-anchor run: owns a deployment id (self) and a
-      // workflow-derived address, so it must never be pushed at here.
+      // workflow-derived address, so it must never be pushed at.
       await seedWorkflowRun(h.db, {
         id: "run_anchor",
         tenantId: "tnt_root",

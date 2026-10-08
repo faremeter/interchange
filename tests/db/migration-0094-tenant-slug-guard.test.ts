@@ -5,10 +5,10 @@
 // once, on a database nobody can re-run against, so the message is driven here.
 //
 // The sibling `tenant-slug-constraint.test.ts` covers the constraint once it is
-// in place. This file covers the path where it cannot be added, and the claim
-// the guard rests that path on: that its predicate is the constraint predicate
-// under NOT and nothing else. The file itself enforces nothing about that, so
-// the cases below read both predicates out of it and answer for them.
+// in place. This file covers the path where it cannot be added: the claim the
+// guard rests that path on is that its predicate is the constraint predicate
+// under NOT and nothing else, and the cases below read both predicates out of
+// the migration rather than copying them.
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -39,14 +39,13 @@ const MIGRATION_SQL = readFileSync(MIGRATION_PATH, "utf8");
 const CONSTRAINT = "tenant_slug_dns_label_check";
 const GUARD_MARKER = "hold a slug that is not a single DNS label";
 
-// Migration 0094 states the slug grammar twice: once as the guard's `WHERE`, and
-// once as the constraint's `CHECK`. Both predicates are read out of the file
-// rather than copied here, so an edit to either one moves what the cases below
-// assert. A copy would agree with itself forever and prove nothing.
-//
-// The guard marker carries `NOT` so it is unique in the file -- `WHERE` alone
-// also appears in the sample's `FILTER` clause -- while the expression is read
-// from just after the keyword, so the `NOT` is part of what is compared.
+// Migration 0094 states the slug grammar twice: once as the guard's `WHERE`,
+// once as the constraint's `CHECK`. Both are read out of the file rather than
+// copied, so an edit to either one moves what the cases below assert; a copy
+// would agree with itself forever and prove nothing. The guard marker carries
+// `NOT` so it is unique in the file (`WHERE` alone also appears in the sample's
+// `FILTER` clause), and the expression is read from just after the keyword, so
+// the `NOT` is part of what is compared.
 const GUARD_WHERE_KEYWORD = "WHERE ";
 const GUARD_PREDICATE_MARKER = `${GUARD_WHERE_KEYWORD}NOT `;
 const CONSTRAINT_CHECK_KEYWORD = "CHECK ";
@@ -69,11 +68,10 @@ function soleIndexOf(text: string, marker: string): number {
 
 // One SQL expression, verbatim, from `start`. A single-quoted literal is stepped
 // over rather than scanned, because the grammar's regex carries parentheses of
-// its own, and a doubled quote inside a literal is an escaped quote rather than
-// the end of it. An expression that opens with `(` ends at the parenthesis
-// closing that group; any other ends where a parenthesis closes a group it did
-// not open, or at a semicolon -- the subquery's `)` for the guard's `WHERE`, the
-// statement's `;` for a predicate that runs to the end of one.
+// its own and a doubled quote inside a literal is an escaped quote. An
+// expression that opens with `(` ends at the parenthesis closing that group;
+// any other ends where a parenthesis closes a group it did not open, or at a
+// semicolon.
 function readExpression(text: string, start: number): string {
   let depth = 0;
   let inLiteral = false;
@@ -128,10 +126,10 @@ const CONSTRAINT_CHECK = readExpression(
 // length bound, the conjunction. `refused` is what the constraint answers, and
 // therefore also what the guard counts.
 //
-// The null case is the one the column's NOT NULL forbids. The migration's
-// comment claims the two agree there as well -- a check admits a row whose
-// predicate is null, and a WHERE does not select one -- and nothing else reads
-// that claim.
+// The null case is the one the column's NOT NULL forbids; the migration's
+// comment claims the two predicates agree there as well -- a check admits a row
+// whose predicate is null, and a WHERE does not select one -- and nothing else
+// reads that claim.
 const PREDICATE_PROBES: {
   label: string;
   slug: string | null;
@@ -166,15 +164,14 @@ const PROBE_ROWS = sql.join(
 );
 
 // A mutation of the constraint predicate, standing for one drift an edit could
-// introduce. The probes above have to separate every one of them from the
-// predicate itself; a probe set that does not separate a mutation is a probe set
-// that would let that same drift pass the agreement case below.
+// introduce. The probes have to separate every one of them from the predicate
+// itself; a probe set that does not separate a mutation is one that would let
+// that drift pass the agreement case below.
 //
 // `octet_length` for `length` is absent on purpose, because no probe can
-// separate it. The two count differently only for a multi-byte character, and
+// separate it: the two count differently only for a multi-byte character, and
 // the pattern refuses every string holding one, so the conjunction is false
-// either way. That masking is the pattern's rather than the probe table's, and
-// it lifts the day the pattern admits a character outside ASCII.
+// either way.
 const PREDICATE_MUTATIONS: {
   label: string;
   mutate: (predicate: string) => string;
@@ -206,19 +203,14 @@ const PREDICATE_MUTATIONS: {
 
 // The harness migrates a fresh schema by applying every file in order, so 0094
 // always runs against an empty `tenant` and its guard branch never executes.
-// `runMigrations` takes no "stop before file N" argument, so the pre-0094 state
-// of this column is reconstructed instead: drop the constraint 0094 added, plant
-// the rows, then replay 0094 itself. This is the shape the 0068 guard test next
-// door uses, and it drives the migration's own statements rather than a copy.
-//
-// `IF EXISTS` keeps the drop idempotent across cases, but postgres emits a
-// "does not exist, skipping" NOTICE whenever it skips, and the harness client
-// forwards notices to stdout -- `createMigrationClient` in `@intx/db` sets
-// `onnotice: () => undefined` for exactly this reason, and the harness client
-// does not. Raising `client_min_messages` with SET LOCAL stops the server
-// sending them, and scopes that to this transaction, so it reverts at commit
-// and no other test's connection is affected. The drop has to commit before
-// the replay runs, so it gets a transaction of its own rather than joining it.
+// `runMigrations` takes no "stop before file N" argument, so the pre-0094
+// state of this column is reconstructed instead: drop the constraint 0094
+// added, plant the rows, then replay 0094 itself. `IF EXISTS` keeps the drop
+// idempotent, but postgres emits a "does not exist, skipping" NOTICE whenever
+// it skips and the harness client forwards notices to stdout; `SET LOCAL
+// client_min_messages = warning` stops the server sending them and scopes that
+// to this transaction. The drop has to commit before the replay runs, so it
+// gets a transaction of its own rather than joining it.
 async function dropConstraint(h: TestDb): Promise<void> {
   await h.db.transaction(async (tx) => {
     await tx.execute(sql.raw(`SET LOCAL client_min_messages = warning`));
@@ -270,10 +262,10 @@ function errorChain(err: unknown): string[] {
 }
 
 // The guard's message, picked out of the chain. The deepest match is the one
-// wanted, not the first. Drizzle's outer message is `Failed query: <the whole
-// statement>`, and the statement embeds the RAISE format string, so the outer
-// message contains the marker as well -- and it spans lines, which would make
-// the single-line assertion below pass on the wrong string. Only the innermost
+// wanted, not the first: Drizzle's outer message is `Failed query: <the whole
+// statement>` and the statement embeds the RAISE format string, so the outer
+// message contains the marker as well and spans lines, which would make the
+// single-line assertion below pass on the wrong string. Only the innermost
 // message is what a log pipeline receives.
 function guardMessage(err: unknown): string {
   const chain = errorChain(err);
@@ -377,9 +369,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     // The guard's claim, read end to end: the value it refuses is the value the
-    // constraint refuses. The two cases above cover the halves separately -- the
-    // guard stops the migration, and a clean table lets it through -- and this
-    // one joins them, so a guard that refused a value the constraint then
+    // constraint refuses. The two cases above cover the halves separately --
+    // the guard stops the migration, and a clean table lets it through -- and
+    // this one joins them, so a guard that refused a value the constraint then
     // accepted would fail here rather than pass both halves.
     test("leaves behind a constraint that refuses the slug the guard refused", async () => {
       await dropConstraint(h);
@@ -427,10 +419,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     // Reads one boolean SQL expression against every probe and returns the
-    // labels where it answered the asked-for value. `IS TRUE` and `IS FALSE`
-    // rather than the value itself, because a null predicate has to land in
-    // neither set: the guard's WHERE does not select such a row, and the
-    // constraint admits it.
+    // labels where it answered the asked-for value. `IS TRUE`/`IS FALSE` rather
+    // than the value itself, because a null predicate has to land in neither
+    // set: the guard's WHERE does not select such a row, and the constraint
+    // admits it.
     async function probeLabelsWhere(
       expr: string,
       answer: "IS TRUE" | "IS FALSE",
@@ -456,9 +448,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
     }
 
     // The two predicates answering the same slugs in the same database, one read
-    // as the guard reads it and one as the constraint reads it. The expected set
-    // is stated rather than derived from either predicate, so an edit that moved
-    // both of them together fails here as well.
+    // as the guard reads it and one as the constraint reads it. The expected
+    // set is stated rather than derived from either predicate, so an edit that
+    // moved both together fails here as well.
     test("counts through the guard exactly what the constraint refuses", async () => {
       const expected = PREDICATE_PROBES.filter(({ refused }) => refused)
         .map(({ label }) => label)
@@ -494,11 +486,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
   },
 );
 
-// Outside the database gate on purpose. This reads the migration file and no
+// Outside the database gate on purpose: this reads the migration file and no
 // `TestDb`, so gating it on Postgres would only stop the drift it names from
-// being caught on a machine without one -- and that is the reading where it
-// matters most, since a drift found there is found before CI runs the database
-// half.
+// being caught on a machine without one -- and that is where it matters most,
+// since a drift found there is found before CI runs the database half.
 //
 // A textual comparison, which the behavioural cases inside the gate are not: it
 // catches a divergence on any input rather than on a probe, and in exchange it

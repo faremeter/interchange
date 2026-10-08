@@ -95,10 +95,9 @@ describe.skipIf(!harnessDbEnvAvailable())("tenant-hierarchy (real DB)", () => {
     test("terminates and dedups under a cyclic hierarchy", async () => {
       // A two-node cycle (a -> b -> a) cannot exist under the immediate,
       // non-deferrable self-FK: neither row can be inserted first. A
-      // single-node self-cycle is constructible (insert with a null
-      // parent, then point the row at itself) and still drives the
-      // `visited` set's termination and dedup guard, which is the
-      // behaviour under test.
+      // single-node self-cycle is constructible (insert with a null parent,
+      // then point the row at itself) and still drives the `visited` set's
+      // termination and dedup guard, which is the behaviour under test.
       await seedTenants(h.db, [{ id: "a" }]);
       await h.db
         .update(tenant)

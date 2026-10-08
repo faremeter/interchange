@@ -4,17 +4,16 @@
 // row -- committed on the autocommit handle, so visible to a separate
 // connection -- BEFORE it emits the deploy frame. The frame spawns the child,
 // whose first events pack races the ack back to the hub; `receiveWorkflowRunPack`
-// fails closed with `path_violation` on a missing live anchor. Emit-then-insert
-// (the previous order) rejected that first pack and never bootstrapped the log.
+// fails closed with `path_violation` on a missing live anchor, so the old
+// emit-then-insert order rejected that first pack and never bootstrapped the
+// log.
 //
-// The tripwire probes INSIDE the send: the fake `sendAgentDeployToAllocation`, at the moment
-// it is called (standing in for the child's first pack arriving while the frame
-// is on the wire), runs the REAL `receiveWorkflowRunPack` for the deployment
-// address and records whether it was accepted. A post-hoc assertion cannot tell
-// the two orderings apart -- the anchor exists under both once deploy returns --
-// so only an in-send probe distinguishes fail-before from pass-after. Under the
-// fixed insert-then-emit order the committed anchor is visible and the pack is
-// accepted; under the old order the probe sees no anchor and this test fails.
+// The tripwire probes INSIDE the send: the fake `sendAgentDeployToAllocation`,
+// at the moment it is called (standing in for the child's first pack arriving
+// while the frame is on the wire), runs the REAL `receiveWorkflowRunPack` and
+// records whether it was accepted. A post-hoc assertion cannot tell the two
+// orderings apart -- the anchor exists under both once deploy returns -- so
+// only an in-send probe distinguishes fail-before from pass-after.
 
 import {
   afterAll,
@@ -131,10 +130,11 @@ const CONFIG: HarnessConfig = {
   defaultSource: "src-only",
 };
 
-// Reproduce the approve output the allocation-routed entrypoint consumes, by hand: the
-// gate's ok-arm is a plain object, so a real gate/freeze run is unnecessary to
-// exercise the deploy ORDERING under test. Project a trivial single-step
-// definition to inert wire form, hash it, and pair it with an empty closure.
+// Reproduce the approve output the allocation-routed entrypoint consumes, by
+// hand: the gate's ok-arm is a plain object, so a real gate/freeze run is
+// unnecessary to exercise the deploy ordering under test. Project a trivial
+// single-step definition to inert wire form, hash it, and pair it with an
+// empty closure.
 async function makeApproveBundle(): Promise<{
   approval: {
     ok: true;
@@ -220,7 +220,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     // A real hub-session lookups over the real DB, with only the inner repo
     // write stubbed: the anchor gate (status + self-anchor + address) runs for
-    // real; the pack bytes are never actually applied.
+    // real; the pack bytes are never applied.
     async function makeLookups() {
       const dataDir = await fs.promises.mkdtemp(
         path.join(os.tmpdir(), "anchor-before-frame-"),
@@ -866,8 +866,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     test("an anchor insert collision fails closed before the frame with no leak", async () => {
-      // A row already owns this anchor id, so the pre-emit INSERT collides. The
-      // frame never goes out; the pre-existing row must be left untouched.
+      // A row already owns this anchor id, so the pre-emit INSERT collides and
+      // the frame never goes out; the pre-existing row must be left untouched.
       await seedWorkflowRun(h.db, {
         id: ANCHOR_RUN_ID,
         anchorRunId: ANCHOR_RUN_ID,
@@ -918,10 +918,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     test("receiveWorkflowRunPack accepts a deployed anchor whose public key is still null", async () => {
-      // Pins the gate's publicKey-agnosticism: the anchor-before-frame window is
-      // a live "deployed" row with a null key, and the gate must accept a pack
-      // against it. A future "require publicKey on the anchor" change turns this
-      // red rather than silently re-breaking deploy bootstrap.
+      // Pins the gate's publicKey-agnosticism: the anchor-before-frame window
+      // is a live "deployed" row with a null key, and the gate must accept a
+      // pack against it. A future "require publicKey on the anchor" change
+      // turns this red rather than silently re-breaking deploy bootstrap.
       await seedWorkflowRun(h.db, {
         id: ANCHOR_RUN_ID,
         anchorRunId: ANCHOR_RUN_ID,

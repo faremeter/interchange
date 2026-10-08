@@ -81,9 +81,8 @@ const acceptAnySidecar: SidecarAuthenticator = async ({ sidecarId }) => ({
   generation: 1,
 });
 
-// The backend pid of a handle's single connection. Only meaningful for a
-// `max: 1` handle, where every query reuses the one physical connection, so the
-// pid stays stable for later `pg_blocking_pids` checks.
+// Backend pid of a handle's single connection; stable only for a `max: 1`
+// handle, where every query reuses the one physical connection.
 async function backendPid(
   handle: ReturnType<typeof createDB>,
 ): Promise<number> {
@@ -97,22 +96,19 @@ async function backendPid(
 
 const TENANT = "t1";
 const ASSET = "asset1";
-// The raw `run_...` id a deploy stamps onto the deployment's anchor run --
-// NOT the workflow-run repo slug. The
-// `signal_correlation.deployment_id` and `approval.deployment_id` FKs both
-// reference `workflow_run.id`, so this raw id is what the co-write writes into
-// those columns.
+// Raw `run_...` id a deploy stamps onto the deployment's anchor run, NOT the
+// workflow-run repo slug. The `signal_correlation.deployment_id` and
+// `approval.deployment_id` FKs reference `workflow_run.id`, so this raw id is
+// what the co-write writes into those columns.
 const DEPLOYMENT = "run_abc123";
 const WF_ADDR = "run_abc@wf.example";
 // The workflow-run repo slug the supervisor derives from the address and stamps
-// onto the register frame's `anchorRunId` (address with every `@`/`.`
-// substituted). This is what the co-write's cross-check compares against, and
-// it is distinct from the raw deployment id above.
+// onto the frame's `anchorRunId` (every `@`/`.` substituted); what the
+// co-write's cross-check compares against. Distinct from the raw id above.
 const DEPLOYMENT_SLUG = deriveWorkflowRunRepoId(WF_ADDR);
 
-// The register frame requires an approver-facing snapshot: the ask rail is its
-// only producer and always carries one. Frames built without it fail the union
-// parse at the receiver, so every frame these tests send carries this snapshot.
+// The register frame requires an approver-facing snapshot; frames built
+// without one fail the union parse at the receiver.
 const SNAPSHOT = {
   name: "charge_card",
   description: "Charge the customer's card",
@@ -120,8 +116,8 @@ const SNAPSHOT = {
   arguments: { amount: 100 },
 };
 
-// A second live deployment on the same tenant, so a connection can own an
-// address OTHER than WF_ADDR for the ownership-gate rejection case.
+// A second live deployment so a connection can own an address other than
+// WF_ADDR (ownership-gate rejection case).
 const DEPLOYMENT_2 = "run_xyz456";
 const WF_ADDR_2 = "run_xyz@wf.example";
 const DEPLOYMENT_2_SLUG = deriveWorkflowRunRepoId(WF_ADDR_2);
@@ -143,8 +139,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await h.reset();
     });
 
-    // Seed the deployment's anchor run, which the signal-correlation co-write
-    // resolves by deployment address as its tenancy and definition origin.
+    // Seed the deployment's anchor run, which the co-write resolves by address
+    // as its tenancy and definition origin.
     async function seedAnchorRun(
       id: string,
       address: string,
@@ -173,8 +169,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
     }
 
     // Bring WF_ADDR up as an owned workflow address on `ws` through the real
-    // allocation-authenticated reconnect path, so the register handler's
-    // ownership gate lets the frame through.
+    // allocation-authenticated reconnect path, so the ownership gate lets the
+    // frame through.
     async function reconnectAndVerify(
       router: ReturnType<typeof createSidecarRouter>,
       ws: ReturnType<typeof createMockWs>,
@@ -197,9 +193,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
     }
 
     // Bring an arbitrary workflow address up as an owned route on `ws` through
-    // the same allocation-authenticated reconnect path `reconnectAndVerify`
-    // uses, so a negative-path case can own a DIFFERENT address than the frame
-    // it delivers.
+    // the same reconnect path `reconnectAndVerify` uses, so a negative-path
+    // case can own a different address than the frame it delivers.
     async function reconnectAddress(
       router: ReturnType<typeof createSidecarRouter>,
       ws: ReturnType<typeof createMockWs>,
@@ -252,21 +247,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
     }
 
     // Wait for the router's per-ws message chain to drain, since the register
-    // frame is dispatched asynchronously through it.
-    //
-    // The chain serializes every non-bypass frame in arrival order, and both
-    // `reconnect` and `signal.correlation.register` are non-bypass frames. So
-    // queueing a reconnect that claims a fresh address and waiting for that
-    // address to appear in the routing index proves the register frame queued
-    // ahead of it has already run to completion. That is the only evidence
-    // available for a register whose handler REJECTED the frame: it writes no
-    // row, so no database state can report that it finished.
-    //
-    // Each barrier claims a distinct address, because a reconnect re-claiming
-    // an already-routed one leaves the index unchanged and the wait would see
-    // its own precondition and return without the chain having advanced. The
-    // address is deliberately not a run address, so the handler's credential
-    // resync skips it and the barrier touches no table the tests assert on.
+    // frame is dispatched asynchronously through it. The chain serializes every
+    // non-bypass frame in arrival order and both `reconnect` and
+    // `signal.correlation.register` are non-bypass, so queueing a reconnect
+    // that claims a fresh address and waiting for it to appear in the routing
+    // index proves the register queued ahead of it finished -- the only
+    // evidence for a rejected register, which writes no row. Each barrier
+    // claims a distinct, non-run address: a re-claim leaves the index
+    // unchanged, and a run address would trip the handler's credential resync.
     let barrierCount = 0;
     async function drain(
       router: ReturnType<typeof createSidecarRouter>,
@@ -305,8 +293,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const corr = correlations[0];
       expect(corr?.correlationId).toBe("corr-1");
       expect(corr?.tenantId).toBe(TENANT);
-      // The FK column carries the raw deployment id the row is keyed by, not the
-      // workflow-run repo slug the frame's `anchorRunId` is stamped with.
+      // The FK column carries the raw deployment id, not the frame's slug.
       expect(corr?.anchorRunId).toBe(DEPLOYMENT);
       expect(corr?.anchorRunId).not.toBe(DEPLOYMENT_SLUG);
       expect(corr?.agentAddress).toBe(WF_ADDR);
@@ -327,8 +314,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(appr?.runId).toBe("run-1");
       expect(appr?.agentAddress).toBe(WF_ADDR);
       expect(appr?.status).toBe("pending");
-      // The register frame's snapshot is co-written verbatim: the tool
-      // definition (name/description/inputSchema) and the live arguments.
+      // The frame's snapshot is co-written verbatim: the tool definition and
+      // the live arguments.
       expect(appr?.toolDefinition).toEqual({
         name: SNAPSHOT.name,
         description: SNAPSHOT.description,
@@ -341,10 +328,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(appr?.resolvedAt).toBeNull();
 
       // The co-write lazily anchored the run: a workflow_run row keyed on the
-      // frame's runId, on the same deployment and tenant. Its principal is null
-      // -- an internal, workflow-spawned run inherits the deployment's grants
-      // and has no principal of its own. Exclude the deployment's anchor run
-      // (id == DEPLOYMENT) to isolate the lazily-anchored child.
+      // frame's runId, same deployment and tenant, principal null (an internal
+      // workflow-spawned run inherits the deployment's grants). Exclude the
+      // anchor run (id == DEPLOYMENT) to isolate the child.
       const runs = await h.db
         .select()
         .from(workflowRun)
@@ -356,8 +342,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(run?.tenantId).toBe(TENANT);
       expect(run?.principalId).toBeNull();
       expect(run?.status).toBe("running");
-      // The lazily-anchored child inherits its deployment anchor run's
-      // definition, so it carries the anchor's definition_id.
+      // The child inherits its anchor run's definition_id.
       const [anchor] = await h.db
         .select()
         .from(workflowRun)
@@ -398,14 +383,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     test("writes both rows for a real raw-id deployment addressed by a slug frame", async () => {
-      // Regression: a real deployment's anchor-run id is the raw
-      // `run_...` id a deploy stamps, while the frame's
-      // `anchorRunId` is the workflow-run repo slug the supervisor derives from
-      // the address. seedDeployment seeds exactly that shape (raw id
-      // DEPLOYMENT, address WF_ADDR), and the frame carries DEPLOYMENT_SLUG.
-      // Before the co-write's slug cross-check and raw-id FK writes, this path
-      // threw (raw id never equals the slug) and no approval row was ever
-      // written; here it must co-write both rows keyed by the raw id.
+      // Regression: a real deployment's anchor-run id is the raw `run_...` id,
+      // while the frame's `anchorRunId` is the repo slug derived from the
+      // address. Before the co-write's slug cross-check and raw-id FK writes
+      // this path threw (raw id never equals the slug) and wrote no approval
+      // row; here it must co-write both rows keyed by the raw id.
       const kp = await generateKeyPair();
       await seedDeployment(hexEncode(kp.publicKey));
       expect(DEPLOYMENT).not.toBe(DEPLOYMENT_SLUG);
@@ -416,11 +398,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
         historyReceives: createWorkflowHistoryReceiveTracker(),
       });
 
-      // Call the co-write directly with the real-shaped frame: the raw-id
-      // deployment resolved by address, the slug on the frame's anchorRunId.
-      // The direct call bypasses the router's error-swallowing handler, so a
-      // regression would surface here as a rejected promise rather than a
-      // silently-dropped frame.
+      // Call the co-write directly so a regression surfaces as a rejected
+      // promise, not a silently-dropped frame (the router's handler swallows
+      // throws).
       await lookups.registerSignalCorrelation({
         correlationId: "corr-1",
         runId: "run-1",
@@ -490,8 +470,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         .where(ne(workflowRun.id, DEPLOYMENT));
       expect(secondCorr).toHaveLength(1);
       expect(secondAppr).toHaveLength(1);
-      // The lazy run-row ensure is redelivery-safe: the run row is not
-      // re-inserted, so exactly one survives and its timestamp is untouched.
+      // The lazy run-row ensure is redelivery-safe: no re-insert, so exactly
+      // one survives and its timestamp is untouched.
       expect(secondRun).toHaveLength(1);
       // The original rows are untouched -- no second insert, no id churn.
       expect(secondAppr[0]?.id).toBe(approvalId);
@@ -500,14 +480,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     test("rejects a frame for an address the connection does not own", async () => {
-      // The connection owns WF_ADDR_2, not WF_ADDR. The delivered frame targets
-      // WF_ADDR -- an address that IS seeded as a live deployment, so the only
-      // thing standing between the spoofed frame and a co-write is the handler's
-      // ownership gate. Removing that gate would let this frame write rows.
+      // The connection owns WF_ADDR_2 but the frame targets WF_ADDR, which is
+      // seeded as a live deployment; only the handler's ownership gate stands
+      // between the spoofed frame and a co-write.
       const kp = await generateKeyPair();
       await seedDeployment(hexEncode(kp.publicKey));
-      // seedDeployment already seeded the tenant and asset; add a second
-      // anchor run on them so the connection can own WF_ADDR_2.
+      // seedDeployment seeded the tenant and asset; add a second anchor run so
+      // the connection can own WF_ADDR_2.
       const kp2 = await generateKeyPair();
       await seedAnchorRun(DEPLOYMENT_2, WF_ADDR_2, hexEncode(kp2.publicKey));
 
@@ -535,11 +514,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     test("rejects a frame whose anchorRunId does not match the address", async () => {
-      // WF_ADDR is owned and derives DEPLOYMENT_SLUG, but the frame claims
-      // DEPLOYMENT_2_SLUG (the other deployment's workflow-run repo slug).
-      // registerSignalCorrelation cross-checks the frame's anchorRunId against
-      // the slug re-derived from the address and throws on a mismatch; the
-      // handler swallows the throw, so no rows are written.
+      // WF_ADDR derives DEPLOYMENT_SLUG but the frame claims DEPLOYMENT_2_SLUG.
+      // The co-write cross-checks the frame's anchorRunId against the slug
+      // re-derived from the address and throws on mismatch; the handler
+      // swallows the throw, so no rows are written.
       const kp = await generateKeyPair();
       await seedDeployment(hexEncode(kp.publicKey));
       await seedAnchorRun(DEPLOYMENT_2, WF_ADDR_2, null);
@@ -558,8 +536,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
           anchorRunId: DEPLOYMENT_2_SLUG,
           agentAddress: WF_ADDR,
           kind: "approval",
-          // Carry a snapshot so this frame passes the parse and the test
-          // exercises tenancy rejection, not accidental parse-drop.
+          // Carry a snapshot so the frame passes the parse and the test
+          // exercises the slug mismatch, not a parse drop.
           snapshot: SNAPSHOT,
         }),
       );
@@ -572,11 +550,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     test("rejects a frame whose anchor run is no longer running", async () => {
-      // Bring WF_ADDR up while its anchor run is live, then flip the anchor run
-      // terminal with the connection still owning the address.
-      // registerSignalCorrelation gates on a running anchor run, so the
-      // now-terminal address resolves no row and it throws; the handler
-      // swallows the throw and writes nothing.
+      // registerSignalCorrelation gates on a running anchor run; flipping the
+      // run terminal resolves no row, the co-write throws, and the handler
+      // swallows it.
       const kp = await generateKeyPair();
       await seedDeployment(hexEncode(kp.publicKey));
 
@@ -602,19 +578,16 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     test("a teardown interleaved mid-register never orphans a correlation pair", async () => {
-      // The window the row lock closes: an anchor-run teardown that flips the
-      // run off "running" while a register is in flight. The register resolves
-      // the anchor run and co-writes both rows in one transaction, taking a
-      // `SELECT ... FOR UPDATE` on the anchor run row; a concurrent teardown
-      // that has locked the same row makes the register block, and once the
-      // teardown commits the register's in-transaction re-check finds no
-      // running row and throws -- so the pair is never written against a
-      // torn-down deployment.
-      //
-      // Two dedicated single-connection handles drive the interleave
-      // deterministically: one holds an uncommitted teardown UPDATE (the row's
-      // FOR NO KEY UPDATE lock), the other runs the register whose FOR UPDATE
-      // must wait on it. `h.db` stays free to observe the block.
+      // The window the row lock closes: a teardown flips the anchor run off
+      // "running" while a register is in flight. The register co-writes both
+      // rows in one transaction that takes a `SELECT ... FOR UPDATE` on the
+      // anchor run row, so a concurrent teardown holding the same lock makes it
+      // block; when the teardown commits, the in-transaction re-check finds no
+      // running row and throws, so the pair is never written against a
+      // torn-down deployment. Two dedicated single-connection handles drive the
+      // interleave: one holds an uncommitted teardown UPDATE, the other runs
+      // the register whose FOR UPDATE must wait on it. `h.db` stays free to
+      // observe the block.
       const kp = await generateKeyPair();
       await seedDeployment(hexEncode(kp.publicKey));
 
@@ -637,16 +610,16 @@ describe.skipIf(!harnessDbEnvAvailable())(
         let registerPromise: Promise<unknown> = Promise.resolve();
 
         await teardownHandle.transaction(async (txT) => {
-          // Lock the anchor run row and flip it terminal, held uncommitted for
-          // the duration of the register attempt.
+          // Lock the anchor run row and flip it terminal, held uncommitted
+          // during the register attempt.
           await txT
             .update(workflowRun)
             .set({ status: "cancelled" })
             .where(eq(workflowRun.id, DEPLOYMENT));
 
-          // Fire the register on its own backend without awaiting: it blocks on
-          // the row lock, and awaiting it here would deadlock against the
-          // teardown transaction that must commit to release the lock.
+          // Fire the register on its own backend without awaiting: awaiting
+          // here would deadlock against the teardown transaction that must
+          // commit to release the lock.
           registerPromise = lookups
             .registerSignalCorrelation({
               correlationId: "corr-1",
@@ -664,16 +637,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
               return res;
             });
 
-          // Wait until the register backend is blocked specifically by the
-          // teardown backend, or has already settled without blocking (the
-          // pre-lock behavior, which writes the orphan). The lock state lives
-          // in PostgreSQL and a query is the only way to read it, while
-          // `settled` reports the alternative from in-process. The 12ms is the
-          // interval between reads and decides nothing -- the block persists
-          // until this transaction commits, so a slow poll cannot sample past
-          // it. A register blocked by some THIRD backend would loop here
-          // rather than fail, which the lane timeout catches; nothing else in
-          // this per-file schema holds a lock on the anchor run row.
+          // Wait until the register backend is blocked by the teardown backend,
+          // or has already settled without blocking (the pre-lock behavior,
+          // which writes the orphan). 12ms is just the poll interval; the block
+          // persists until this transaction commits. A register blocked by some
+          // other backend would loop here rather than fail, which the lane
+          // timeout catches.
           for (;;) {
             const blocked = await h.db.execute(
               sql`SELECT pg_blocking_pids(${registerPid}) @> ARRAY[${teardownPid}]::int[] AS blocked`,
@@ -685,15 +654,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
             if (settled) break;
             await new Promise((res) => setTimeout(res, 12));
           }
-          // Returning commits the teardown (status = "cancelled") and releases
-          // the lock; a blocked register then re-checks and finds no running
-          // row.
+          // Returning commits the teardown and releases the lock; a blocked
+          // register then re-checks and finds no running row.
         });
 
         await registerPromise;
 
         // The register waited on the teardown rather than racing past it, then
-        // threw once the anchor run was no longer live.
+        // threw once the run was no longer live.
         expect(sawBlock).toBe(true);
         expect(outcome).toBeInstanceOf(Error);
         if (outcome instanceof Error) {
@@ -720,12 +688,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     test("store inserts are idempotent: second call returns null, not a throw", async () => {
-      // Direct store test, bypassing the error-swallowing handler. The
+      // Direct store test: the handler swallows throws either way, so the
       // handler-level idempotency test cannot tell a clean onConflictDoNothing
-      // no-op apart from a throw-and-rollback, because the handler swallows
-      // throws either way. This pins the onConflictDoNothing contract: the first
-      // insert returns the parsed row, the second is a no-op that returns null
-      // WITHOUT throwing.
+      // no-op from a throw-and-rollback. Here the first insert returns the
+      // row, the second no-ops and returns null without throwing.
       await seedTenants(h.db, [{ id: TENANT }]);
       await seedAsset(h.db, {
         id: ASSET,
@@ -734,9 +700,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         name: "wf",
       });
       await seedAnchorRun(DEPLOYMENT, WF_ADDR, null);
-      // The direct store inserts carry a runId; anchor its run row so the FK
-      // to workflow_run resolves. The co-write path seeds this itself, but this
-      // test bypasses it to exercise the stores directly.
+      // Anchor the run row so the FK to workflow_run resolves; the co-write
+      // path seeds this itself but this test bypasses it.
       await seedWorkflowRun(h.db, {
         id: "run-1",
         anchorRunId: DEPLOYMENT,
@@ -787,8 +752,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(firstAppr).not.toBeNull();
       expect(firstAppr?.correlationId).toBe("corr-1");
 
-      // A fresh id on the redelivered row: the dedup key is correlationId, not
-      // the primary key, so a distinct id must still conflict-and-no-op.
+      // Fresh id on the redelivered row: the dedup key is correlationId, not
+      // the primary key.
       const secondAppr = await approvalStore.createIfAbsent({
         ...approvalRow,
         id: generateId("approval"),
