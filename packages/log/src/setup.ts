@@ -8,9 +8,8 @@ import {
 
 export type SetupOptions = {
   /**
-   * Override the default log level for specific categories.
-   * Keys are dot-separated category paths (e.g., "hub.requests").
-   * Default level is "info" for production, "debug" for development.
+   * Override the log level for specific categories, keyed by dot-separated
+   * path (e.g. "hub.requests").
    */
   levels?: Record<string, LogLevel>;
 
@@ -32,18 +31,13 @@ type LoggerConfigEntry = {
 };
 
 /**
- * Configures LogTape with sensible defaults for the Interchange project.
+ * Configures LogTape for the project: ANSI-colored console output at
+ * debug level in development, JSON Lines at info level in production.
+ * Call once at application startup.
  *
- * - Development: Pretty ANSI-colored console output, debug level
- * - Production: JSON Lines console output, info level
- *
- * Call this once at application startup (app entry point, CLI script).
- *
- * `setup()` passes `reset: true` to LogTape's `configure()`, so each call
- * unconditionally replaces the current configuration — including the
- * module-load default console sink and any prior `setup()` call. A second
- * invocation with different options silently wins rather than erroring;
- * callers that need to detect double-configuration must guard externally.
+ * Each call passes `reset: true` to LogTape's `configure()`, so it
+ * replaces the current configuration — including the module-load default
+ * sink and any prior `setup()` call. A second invocation silently wins.
  */
 export async function setup(options: SetupOptions = {}): Promise<void> {
   const isDev =

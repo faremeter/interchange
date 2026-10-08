@@ -28,13 +28,9 @@ describe("default console sink", () => {
   /* eslint-enable no-console */
 
   test("importing the package installs a config with the default sink", async () => {
-    // Asserted in a child process. In-process this contract is unobservable:
-    // the installer returns early when a config exists, and every package
-    // imports this one, so by the time any test here runs the install has
-    // already happened somewhere else and the reading is of that file's
-    // leftovers. This assertion passed before the probe existed even though
-    // it observed nothing -- the config it found happened to name its sink
-    // "default" too.
+    // Asserted in a child process: in-process the contract is unobservable,
+    // because the installer returns early when a config exists and some
+    // other import has usually installed one already.
     const proc = Bun.spawn(["bun", "run", "--conditions=intx-src", PROBE], {
       cwd: REPO_ROOT,
       stdout: "pipe",
