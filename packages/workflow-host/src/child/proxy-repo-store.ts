@@ -1,27 +1,24 @@
 // Child-side proxy `RepoStore` for the workflow-run repo.
 //
-// Wraps a bare read-only substrate handle (for `getRepoDir` + other
-// read paths) and intercepts `writeTreePreservingPrefix` so the write
-// is proxied over the control IPC into the supervisor's substrate. The
-// supervisor is the sole writer of the workflow-run repo's ref; the
-// child has no write authority and would race the supervisor's
-// claim-check writes if it opened its own.
+// Wraps a bare read-only substrate handle (for `getRepoDir` + other read
+// paths) and intercepts `writeTreePreservingPrefix` so the write is proxied
+// over the control IPC into the supervisor's substrate. The supervisor is
+// the sole writer of the workflow-run repo's ref; the child has no write
+// authority and would race the supervisor's claim-check writes if it opened
+// its own.
 //
-// Subscription fan-out: the bare store's `subscribe` only fires when a
-// write lands on THAT substrate instance, so the supervisor's writes
-// never reach the child's bare-store subscribers. The proxy therefore
-// keeps its own per-ref subscriber list and synthesizes a
-// `ref.updated` event to every subscriber after each successful
-// proxied write -- the on-disk repo already carries the new commit
-// (the supervisor commits before responding to the IPC), so
-// subscribers that follow up with a tree read see the prospective
+// Subscription fan-out: the bare store's `subscribe` only fires when a write
+// lands on THAT substrate instance, so the supervisor's writes never reach
+// the child's bare-store subscribers. The proxy therefore keeps its own
+// per-ref subscriber list and synthesizes a `ref.updated` event to every
+// subscriber after each successful proxied write -- the on-disk repo already
+// carries the new commit (the supervisor commits before responding to the
+// IPC), so subscribers that follow up with a tree read see the prospective
 // tree's bytes.
 //
-// Methods that mutate state via paths other than
-// `writeTreePreservingPrefix` (`initRepo`, `writeTree`, `receivePack`)
-// throw on call; a future caller that tries surfaces a structured
-// failure rather than a silent disk write that would corrupt the
-// single-writer invariant.
+// Other write paths (`initRepo`, `writeTree`, `receivePack`) throw on call:
+// a future caller that tries surfaces a structured failure rather than a
+// silent disk write that would corrupt the single-writer invariant.
 
 import type {
   InitRepoOpts,
@@ -44,14 +41,11 @@ type SubscribeOpts = Parameters<RepoStore["subscribe"]>[3];
 
 export interface CreateProxyWorkflowRunRepoStoreOpts {
   /**
-   * Bare substrate handle the child opens against the shared on-disk
-   * data dir. Used for the read-only methods that consult the
-   * substrate's local state -- `getRepoDir` (path computation, no
-   * I/O), `resolveRef`, `listRefs`, `resolveHead`, `openCommittedReads`,
-   * `openCommittedReadsAtCommit`, `createPack`. The bare store is never
-   * used as a writer here; its
-   * `writeTreePreservingPrefix` / `writeTree` / `receivePack` are not
-   * reachable through this proxy.
+   * Bare substrate handle the child opens against the shared on-disk data
+   * dir, used for the read-only methods that consult local state
+   * (`getRepoDir`, `resolveRef`, `listRefs`, `resolveHead`,
+   * `openCommittedReads*`, `createPack`). Never used as a writer here; its
+   * write paths are not reachable through this proxy.
    */
   bareStore: RepoStore;
   /**
@@ -60,10 +54,9 @@ export interface CreateProxyWorkflowRunRepoStoreOpts {
    */
   bridge: ChildSubstrateWriteBridge;
   /**
-   * Workflow-run repo id this proxy services. Used as a guard: writes
-   * targeting any other repo id surface a structured failure so a
-   * stray call against a non-workflow-run repo does not silently land
-   * in the wrong substrate.
+   * Workflow-run repo id this proxy services, used as a guard: writes
+   * targeting any other repo id surface a structured failure so a stray
+   * call does not silently land in the wrong substrate.
    */
   workflowRunRepoId: RepoId;
 }
@@ -112,11 +105,10 @@ export function createProxyWorkflowRunRepoStore(
       oldSha,
       newSha,
     };
-    // The substrate derives the canonical seq from the ref's history;
-    // the proxy cannot know it. `subscribeKind` does not consult the
-    // value (it walks the commit tree from `oldSha` to `newSha`), so
-    // any monotonic value preserves the downstream contract. Use a
-    // per-ref counter.
+    // The substrate derives the canonical seq from the ref's history; the
+    // proxy cannot know it. `subscribeKind` does not consult the value (it
+    // walks the commit tree from `oldSha` to `newSha`), so any monotonic
+    // value preserves the downstream contract -- use a per-ref counter.
     const seq = (lastRefSeq.get(key) ?? 0) + 1;
     lastRefSeq.set(key, seq);
     for (const sub of set) {
@@ -219,18 +211,17 @@ export function createProxyWorkflowRunRepoStore(
       ref: string,
       subOpts: SubscribeOpts,
     ): AsyncIterableIterator<{ seq: number; event: unknown }> {
-      // The bare store's `subscribe` would only fire from its own
-      // writes, but the writes for this ref happen in the supervisor's
-      // address space. Subscribers here receive events whenever the
-      // proxy's `writeTreePreservingPrefix` returns successfully.
+      // The bare store's `subscribe` only fires from its own writes, but the
+      // writes for this ref happen in the supervisor's address space;
+      // subscribers here receive events when the proxy's
+      // `writeTreePreservingPrefix` returns successfully.
       //
-      // `from: { seq }` replay against historical commits is not
-      // emitted here today: the runtime body's signal-channel and
-      // similar consumers attach with `from: "head"` so only events
-      // committed after subscription fire. A `from: { seq }` caller
-      // would miss historical commits -- the bare store's `subscribe`
-      // supports replay today, and resume code can call it directly
-      // if needed.
+      // `from: { seq }` replay against historical commits is not emitted
+      // here today: the runtime's signal-channel and similar consumers attach
+      // with `from: "head"`, so only events committed after subscription
+      // fire. A `from: { seq }` caller would miss historical commits -- the
+      // bare store's `subscribe` supports replay today, and resume code can
+      // call it directly if needed.
       const key = refKey(repoId, ref);
       let set = subscribers.get(key);
       if (set === undefined) {

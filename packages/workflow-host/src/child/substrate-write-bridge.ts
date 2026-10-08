@@ -145,9 +145,8 @@ export function createChildSubstrateWriteBridge(
       const entry = pending.get(data.requestId);
       if (entry === undefined) {
         logger.warn`substrate.merge.request landed with no pending entry; requestId=${data.requestId} dropped`;
-        // Reply with a structured failure so the supervisor's merge
-        // callback can short-circuit rather than wedge on a response
-        // that will never come.
+        // Reply with a structured failure so the supervisor's merge callback
+        // can short-circuit rather than wedge on a response that never comes.
         void opts.upstreamSender
           .send({
             type: "substrate.merge.response",

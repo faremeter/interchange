@@ -1,28 +1,22 @@
 // `runWorkflowChild` -- the workflow-process child's runtime body. The
-// sidecar binary at `apps/sidecar/bin/workflow-child` parses `process.env`,
-// opens the IPC streams, builds the substrate, and invokes this function;
-// tests call it directly with mock streams and an in-memory substrate. Every
-// I/O and substrate handle arrives as an injected dependency -- nothing in
-// this function reads `process.env` or reaches into a singleton.
+// sidecar binary parses `process.env`, opens the IPC streams, builds the
+// substrate, and invokes this function; tests call it directly with mock
+// streams and an in-memory substrate. Every I/O and substrate handle is an
+// injected dependency -- nothing here reads `process.env` or reaches into a
+// singleton.
 //
-// Lifecycle:
-//   1. Open the control and event channels.
-//   2. Construct the `WorkflowRuntimeEnv` from the production adapters.
-//   3. Resume any in-flight runs via `runtimeRun` with `resumeFromEvents`.
-//   4. Emit `ready` on the control channel.
-//   5. Loop on control-channel frames: `trigger.fired` starts the top-level
-//      run, `grants-updated` swaps the credentials snapshot, `drain`
-//      forwards to the drain controller, `shutdown` exits the loop.
+// Lifecycle: open the control and event channels; construct the
+// `WorkflowRuntimeEnv`; resume any in-flight runs; emit `ready`; loop on
+// control frames (`trigger.fired` starts the top-level run, `grants-updated`
+// swaps the credentials snapshot, `drain` forwards to the drain controller,
+// `shutdown` exits).
 //
-// The `WorkflowAuthorize` closure evaluates grants against the active
-// `credentialsSnapshot`, whose initial value arrives either in the
-// spawn-time env bootstrap or via the first `grants-updated` frame; the
-// closure re-reads the snapshot on every invocation so a live update
-// applies without reconstructing the env.
-//
-// The drain controller flips a signal the runtime body observes at its
-// four observation points; the supervisor's recycle policy is OS-driven
-// (drain, SIGTERM, SIGKILL, respawn) and needs no child-side frame.
+// `authorize` evaluates grants against the active `credentialsSnapshot`
+// (seeded at spawn or by the first `grants-updated` frame), re-reading the
+// snapshot per invocation so a live update applies without rebuilding the
+// env. The drain controller flips a signal the runtime body observes at its
+// observation points; the supervisor's recycle policy is OS-driven and needs
+// no child-side frame.
 
 import { getLogger } from "@intx/log";
 import { generateKeyPair } from "@intx/crypto";
@@ -137,24 +131,22 @@ export type CredentialsSnapshotRef = {
 };
 
 /**
- * Mutable reference to the deployment's decrypted credential material.
- * A `credentials-updated` frame merges into it (materials by
- * credentialId, bindings by (consumer, handle); a `revoke` list drops
- * entries) rather than replacing it, because the cell has several
- * independently-scoped producers. The secret lives only here, read at
- * tool-invoke time through the gated capability, and is never copied
- * into a snapshot, event, or state.
+ * Mutable reference to the deployment's decrypted credential material. A
+ * `credentials-updated` frame MERGES into it (by credentialId / consumer
+ * handle; a `revoke` list drops entries) rather than replacing it: the cell
+ * has several independently-scoped producers. The secret lives only here,
+ * read at tool-invoke time through the gated capability, never copied into a
+ * snapshot, event, or state.
  */
 export type CredentialMaterialRef = {
   current: CredentialDelivery | null;
 };
 
 /**
- * Mutable per-step inference-source table the build path reads. Each
- * value is the step's ordered failover chain (element 0 the active
- * source). The build reads `current` at build time, so a rotation that
- * lands before the first build is reflected; a warm agent that is
- * already built never re-reads this ref.
+ * Mutable per-step inference-source table the build path reads (each value
+ * is the step's ordered failover chain, element 0 active). A rotation that
+ * lands before the first build is reflected; an already-built warm agent
+ * never re-reads this ref.
  */
 export type SourcesSnapshotRef = {
   current: Record<string, InferenceSource[]>;
@@ -219,27 +211,22 @@ export function createCredentialsBackedAuthorize(
 export type DrainController = WorkflowHostDrainController;
 
 /**
- * Step-invoker shape the child binds. Widens the workflow-runtime
- * `StepInvoker` with an `onEvent` callback the harness fires for every
- * `InferenceEvent`, plus the child's credentials-backed `authorize` so
- * the step agent's tool gate evaluates the per-step grants the
- * supervisor pushed. `buildRuntimeEnv` wraps this binding back into a
- * narrow `StepInvoker` so the workflow-runtime never sees the
- * host-specific surface.
+ * Step-invoker shape the child binds: the runtime `StepInvoker` widened with
+ * an `onEvent` callback the harness fires per `InferenceEvent` and the
+ * child's credentials-backed `authorize` (per-step grants the supervisor
+ * pushed). `buildRuntimeEnv` wraps it back into a narrow `StepInvoker`.
  *
- * `warmCache` (design §3b) is the run-loop's per-deployment warm-agent
- * cache, present only for a warm single-step deployment; the binding
- * only reads it through to the step-invoker adapter.
+ * `warmCache` (§3b) is the run-loop's per-deployment warm-agent cache,
+ * present only for a warm single-step deployment; the binding only reads it
+ * through to the step-invoker adapter.
  */
 /**
  * Per-run credential inputs the top-level step invoker carries to the
- * substrate: the live material cell the control channel writes each
- * delivery into, and a step-grants resolver the substrate gates
- * credential use against. Grants are typed `readonly unknown[]` here;
- * this package owns no grant grammar, so the substrate casts to its
- * `GrantRule` shape at its own boundary, as the grant evaluator does.
- * The cell is read live per use, so a rotation reaches an
- * already-shaped handle without a rebuild.
+ * substrate: the live material cell and a step-grants resolver. Grants are
+ * typed `readonly unknown[]` here (this package owns no grant grammar); the
+ * substrate casts to its `GrantRule` shape at its own boundary. The cell is
+ * read live per use, so a rotation reaches an already-shaped handle without
+ * a rebuild.
  */
 export interface CredentialWiring {
   readonly materialRef: CredentialMaterialRef;
@@ -257,10 +244,9 @@ export type ChildStepInvoker = (
 ) => Promise<StepInvokeResult>;
 
 /**
- * Bindings the binary owns: per-deployment substrate identity,
- * principal credentials, the runtime-supplied callbacks the
- * adapter-layer cannot construct from `process.env` alone. Tests
- * supply a fully in-memory bindings object so `runWorkflowChild` runs
+ * Per-deployment bindings the binary owns (substrate identity, principal,
+ * runtime callbacks the adapter layer cannot construct from `process.env`
+ * alone). Tests supply a fully in-memory object so `runWorkflowChild` runs
  * without touching disk.
  */
 export interface RunWorkflowChildBindings {
@@ -271,54 +257,50 @@ export interface RunWorkflowChildBindings {
   /** Workflow-run repo ref the child reads/writes. */
   workflowRunRef: string;
   /**
-   * Substrate-shaped principal the child presents on every workflow-run
-   * read/write. Per the IPC threat model the child holds no private
-   * key of its own; the principal here is a substrate-level identity
-   * the host's substrate accepts for `runs/<runId>/` writes.
+   * Substrate-shaped principal for every workflow-run read/write. Per the IPC
+   * threat model the child holds no private key; this is the substrate-level
+   * identity the host accepts for `runs/<runId>/` writes.
    */
   principal: Principal;
   /**
-   * Step-invoker callback the runtime body invokes per step. The
-   * shape is the workflow-runtime `StepInvoker` widened with an
-   * `onEvent` slot so the harness can emit `InferenceEvent` frames
-   * up through the event channel for every step invocation. The
-   * production binary wires this against `createWorkflowStepInvoker`
-   * with the host's per-step env builder; tests inject a stub.
+   * Step-invoker callback the runtime body invokes per step (the runtime
+   * `StepInvoker` widened with `onEvent` so the harness emits
+   * `InferenceEvent` frames up the event channel). Production wires it
+   * against `createWorkflowStepInvoker` with the host's env builder; tests
+   * inject a stub.
    */
   invokeStep: ChildStepInvoker;
   /**
-   * Terminal child-spawn callback used only when the deployment embeds
-   * no inline childWorkflow import (the lifted-body map is empty). In
-   * practice a test seam: production routes through the in-memory
-   * resolver built from `runChild` below. A workflow that reaches a
-   * childWorkflow with neither wired fails loud at spawn.
+   * Terminal child-spawn callback used only when the deployment embeds no
+   * inline childWorkflow (the lifted-body map is empty). In practice a test
+   * seam: production routes through the in-memory resolver built from
+   * `runChild`. A workflow reaching a childWorkflow with neither wired fails
+   * loud at spawn.
    */
   spawnChild?: SpawnChildWorkflow;
   /**
-   * Raw in-process terminal child executor. `run-child` builds the
-   * in-memory childWorkflow resolver from this plus the lifted-body map
-   * it extracts after loading the definition, so an inline child
-   * resolves with no on-disk read. Optional: a child with no
+   * Raw in-process terminal child executor; `run-child` builds the in-memory
+   * childWorkflow resolver from this plus the lifted-body map, so an inline
+   * child resolves with no on-disk read. Optional: a child with no
    * childWorkflow import omits it.
    */
   runChild?: RunChildWorkflow;
   /**
-   * Raw in-process suspendable-child executor. `run-child` builds the
-   * onTrigger-body resolver from this after re-evaluating the closure
-   * (the bodies map does not exist pre-eval). Optional: a child that
-   * runs no onTrigger section omits it.
+   * Raw in-process suspendable-child executor; `run-child` builds the
+   * onTrigger-body resolver from this after re-evaluating the closure (the
+   * bodies map does not exist pre-eval). Optional: a child with no onTrigger
+   * section omits it.
    */
   runSuspendableChild?: RunSuspendableChild;
   /**
-   * Materialize a loop iteration's own `runs/<childRunId>/grants.json`,
-   * the parent run's grants capped to the loop body's declared
-   * resources. A loop iteration runs through the inherited env, not
-   * `buildChildRunEnv`, so it is the one body birth path that writes no
-   * grants file of its own -- without it the body's childWorkflow
-   * grandchild spawn is refused as under-authorized. Optional so a host
-   * that never spawns a grandchild from a loop body omits it.
-   * `definition` must be the PRE-rewrite loop body (grandchild still
-   * inline) so the cap keeps the grandchild's declared resources.
+   * Materialize a loop iteration's own grants file (the parent run's grants
+   * capped to the loop body's declared resources). A loop iteration runs
+   * through the inherited env, not `buildChildRunEnv`, so it is the one birth
+   * path that writes no grants file of its own -- without it the body's
+   * childWorkflow grandchild spawn is refused as under-authorized. Optional
+   * for a host that never spawns a grandchild from a loop body. `definition`
+   * must be the PRE-rewrite loop body (grandchild still inline) so the cap
+   * keeps the grandchild's resources.
    */
   materializeLoopIterationGrants?: (args: {
     parentRunId: string;
@@ -330,82 +312,63 @@ export interface RunWorkflowChildBindings {
   /** Grant evaluator wired against the host's grant-rule grammar. */
   evaluateGrants: GrantEvaluator;
   /**
-   * Reclaim a run's local-disk scratch once it reaches terminal. Fired
-   * only on the cold path: a warm agent reuses one stable workspace
-   * across runs, so per-run deletion would wipe a live conversation's
-   * files mid-stream. Best-effort -- a failure is logged and swallowed,
-   * never a gate on the run's terminal status. Optional so tests and
-   * the recursive child-workflow adapter can omit it.
+   * Reclaim a run's local-disk scratch once it reaches terminal, cold path
+   * only (a warm agent reuses one workspace across runs; per-run deletion
+   * would wipe a live conversation's files). Best-effort: a failure is
+   * logged and swallowed, never a gate on the run's terminal status.
    */
   cleanupRunStorage?: (runId: string) => Promise<void>;
   /**
-   * Recover the durable approval snapshot for a parked control-plane
-   * correlation, answering the supervisor's `parked-correlations.request`
-   * after a re-establishment. The child enumerates, but the snapshot
-   * lives in per-step durable storage whose on-disk layout (cold vs
-   * warm) the host owns, so the read is a host binding. Optional so
-   * tests inject a stub; a production child that enumerates a parked
-   * step with no binding throws rather than silently dropping the
-   * correlation the hub is waiting to register.
+   * Recover the durable approval snapshot for a parked correlation, answering
+   * the supervisor's `parked-correlations.request`. The snapshot lives in
+   * per-step durable storage whose layout (cold vs warm) the host owns, so
+   * the read is a host binding. Optional so tests inject a stub; a production
+   * child enumerating a parked step with no binding throws rather than
+   * silently dropping the correlation the hub is waiting to register.
    */
   loadParkedApproval?: LoadParkedApproval;
   /**
-   * Enumerate the durable pending approval operations a crashed step
-   * left behind, so the resume classifier can recover a crash across
-   * the park boundary as `awaiting-signal` rather than failing the run.
-   * Reads the same per-step durable storage as `loadParkedApproval`,
-   * so it is a host binding for the same reason. Optional so tests
-   * inject a stub; absent, a crashed step settles as a terminal
-   * failure, the pre-recovery behavior.
+   * Enumerate the durable pending approval operations a crashed step left
+   * behind, so the resume classifier can recover a crash across the park
+   * boundary as `awaiting-signal`. Reads the same per-step storage as
+   * `loadParkedApproval`, so it is a host binding for the same reason. Absent,
+   * a crashed step settles as a terminal failure (pre-recovery behavior).
    */
   readParkedApprovalOps?: ReadParkedApprovalOps;
   /**
    * Mailbox watch registry backing the warm agent's `mail_wait` (INBOUND
-   * half of mailbox ownership, §3b). The substrate factory builds one
-   * instance at child boot, shares it with the step agent's
-   * supervisor-backed transport, and exposes it here so the control
-   * loop routes each `mailbox.notify` frame to the same instance.
-   * Optional: a deploy with no mail surface omits it and inbound
-   * notifications are logged and dropped. A test may inject a registry
-   * directly through `RunWorkflowChildOpts.mailboxWatchRegistry`, which
-   * takes precedence.
+   * half of mailbox ownership, §3b): built at child boot, shared with the
+   * transport, and exposed so the control loop routes each `mailbox.notify`
+   * frame to the same instance. Absent, inbound notifications are logged and
+   * dropped. `RunWorkflowChildOpts.mailboxWatchRegistry` takes precedence.
    */
   mailboxWatchRegistry?: MailboxWatchRegistry;
   /** Optional clock override; production wires `() => new Date()`. */
   clock?: () => Date;
   /** Optional id generator override; production wires a monotonic one. */
   newId?: (prefix: string) => string;
-  /**
-   * Optional bootstrap credentialsSnapshot. The host's production
-   * wiring supplies this for multi-step deploys whose snapshot is
-   * baked at spawn time; tests can pre-seed it directly. Absent
-   * value defers to the first `grants-updated` control frame.
-   */
+  /** Bootstrap credentialsSnapshot (multi-step deploys bake it at spawn); absent defers to the first `grants-updated` frame. */
   initialCredentialsSnapshot?: CredentialsSnapshot;
   /**
-   * Bootstrap per-step inference-source table (keyed by stepId), parsed
-   * from the spawn env by the host's substrate factory. Seeds the
-   * mutable `sourcesRef` the build path reads. Absent value defers to an
-   * empty table, so a step with no pinned source fails loudly at build
-   * rather than resolving a default.
+   * Bootstrap per-step inference-source table, parsed from the spawn env.
+   * Seeds the mutable `sourcesRef` the build path reads; absent defers to an
+   * empty table, so a step with no pinned source fails loudly at build.
    */
   initialSources?: Record<string, InferenceSource[]>;
   /**
    * Bootstrap credential material for the deployment's tools, decrypted
    * hub-side and delivered on the deploy frame so it is resident before any
-   * step runs. Seeds the mutable `credentialMaterialRef` the gated capability
-   * reads. Absent when the deployment binds no credentials; a later
-   * `credentials-updated` control frame refreshes it on rotation.
+   * step runs. Seeds the mutable `credentialMaterialRef`. Absent when the
+   * deployment binds no credentials; a later `credentials-updated` frame
+   * refreshes it on rotation.
    */
   initialCredentialMaterial?: CredentialDelivery;
   /**
-   * Optional override for the child's Ed25519 keypair factory. The
-   * child mints a fresh keypair at startup, holds the private half
-   * in its own address space, signs every upstream control frame
-   * with it, and publishes the public half in the `ready` frame so
-   * the supervisor can verify subsequent frames. Tests inject a
-   * deterministic factory to assert on the published key. The
-   * supervisor's private key is never threaded into the child.
+   * Override for the child's Ed25519 keypair factory. The child mints a
+   * fresh keypair at startup, keeps the private half in its own address
+   * space, signs every upstream frame with it, and publishes the public half
+   * in `ready` so the supervisor can verify subsequent frames. Tests inject a
+   * deterministic factory to assert on the published key.
    */
   ipcChildKeyPairFactory?: () => Promise<{
     privateKey: Uint8Array;
@@ -419,84 +382,64 @@ export interface RunWorkflowChildOpts {
   /** Control-channel reader (supervisor -> child). */
   controlReader: NdjsonReader;
   /**
-   * Control-channel writer back to the supervisor. The only upstream
-   * control frame today, `ready`, is unsigned (the supervisor receives
-   * it on its trusted side); the slot exists so the boundary is
-   * symmetric in shape.
+   * Control-channel writer back to the supervisor. The only upstream frame
+   * today, `ready`, is unsigned; the slot keeps the boundary symmetric.
    */
   controlWriter: NdjsonWriter;
-  /**
-   * Event-channel writer (child -> supervisor). The child publishes
-   * verified `InferenceEvent` frames through here; production wires
-   * the inherited socketpair fd into a `FrameWriter`.
-   */
+  /** Event-channel writer (child -> supervisor) for verified `InferenceEvent` frames; production wires the inherited socketpair fd. */
   eventWriter: FrameWriter;
   /** Bindings the binary or test harness owns. */
   bindings: RunWorkflowChildBindings;
   /**
-   * Optional pre-built upstream control sender for `ready` and (today)
-   * `pack.push.request` frames. Defaults to a sender minted against
-   * the child's own Ed25519 keypair. The process-shaped wrapper
-   * supplies a pre-built sender so the same signed surface is shared
-   * with the pack-push bridge it constructs against the substrate
-   * factory.
+   * Pre-built upstream control sender for `ready` and `pack.push.request`
+   * frames; defaults to a sender minted against the child's own keypair. The
+   * process-shaped wrapper supplies one so the signed surface is shared with
+   * its pack-push bridge.
    */
   upstreamSender?: ControlChannelSender;
   /**
-   * Optional substrate-write bridge whose `handleMergeRequest` and
-   * `handleWriteResponse` the control loop invokes on the matching
-   * downstream frames. When omitted, those frames are logged and
-   * dropped -- nobody on the child side asked for them. The
-   * process-shaped wrapper supplies a bridge so the substrate
-   * factory's proxy `RepoStore` can resolve writes against it.
+   * Substrate-write bridge the control loop invokes on the matching
+   * downstream frames; omitted, they are logged and dropped. The
+   * process-shaped wrapper supplies one so the proxy `RepoStore` can resolve
+   * writes against it.
    */
   substrateWriteBridge?: SubstrateWriteResponseSink;
   /**
-   * Optional outbound-mail bridge (OUTBOUND half of mailbox ownership,
-   * §3a). The step agent's transport `send` routes through it: an
-   * `outbound.message` frame goes upstream and the agent's send
-   * resolves when the supervisor's `outbound.result` lands. The
-   * control loop routes that frame to `handleResult` and invokes
-   * `cancelAll` on any exit path so a pending send does not leak an
-   * awaiter after the IPC is torn down. When omitted, `outbound.result`
-   * frames are logged and dropped.
+   * Outbound-mail bridge (OUTBOUND half of mailbox ownership, §3a). The
+   * transport's `send` routes through it: an `outbound.message` frame goes
+   * upstream and the send resolves when `outbound.result` lands. The control
+   * loop routes that frame to `handleResult` and calls `cancelAll` on exit so
+   * a pending send does not leak an awaiter. Omitted, `outbound.result` frames
+   * are logged and dropped.
    */
   outboundMailBridge?: ChildOutboundMailBridge;
   /**
-   * Optional mailbox-mutation bridge (INBOUND half of mailbox ownership,
-   * §3b). The step agent's flag writes and `expunge` route through it:
-   * a `mailbox.mutate.request` frame goes upstream and the mutation
-   * resolves when the supervisor's `mailbox.mutate.response` lands. The
-   * control loop routes that frame to `handleResult` and invokes
-   * `cancelAll` on any exit path so a pending mutation does not leak an
-   * awaiter. When omitted, `mailbox.mutate.response` frames are logged
-   * and dropped.
+   * Mailbox-mutation bridge (INBOUND half of mailbox ownership, §3b). The
+   * step agent's flag writes and `expunge` route through it; the control loop
+   * routes `mailbox.mutate.response` to `handleResult` and calls `cancelAll`
+   * on exit. Omitted, those frames are logged and dropped.
    */
   mailboxMutationBridge?: ChildMailboxMutationBridge;
   /**
-   * Optional mailbox-call bridge. The step agent's transport forwards
-   * every mailbox method that is not `send` and not a flag/expunge
-   * mutation through it. The control loop routes `mailbox.call.response`
-   * to `handleResult` and cancels it on exit. When omitted, a response
-   * is logged and dropped.
+   * Mailbox-call bridge for every mailbox method that is not `send` and not a
+   * flag/expunge mutation. The control loop routes `mailbox.call.response` to
+   * `handleResult` and cancels it on exit; omitted, a response is logged and
+   * dropped.
    */
   mailboxCallBridge?: ChildMailboxCallBridge;
   /**
-   * Optional mailbox watch registry (INBOUND half of mailbox ownership,
-   * §3b). The supervisor fires a `mailbox.notify` control frame per
-   * arrived message; the control loop routes it to this registry's
-   * `fire`, which delivers an `exists` event to the callbacks the step
-   * agent's transport registered through `watch` (backing `mail_wait`).
-   * When omitted, notifications are logged and dropped.
+   * Mailbox watch registry (INBOUND half of mailbox ownership, §3b). The
+   * control loop routes each `mailbox.notify` frame to this registry's `fire`,
+   * which delivers `exists` events to the `watch` callbacks backing
+   * `mail_wait`. Omitted, notifications are logged and dropped.
    */
   mailboxWatchRegistry?: MailboxWatchRegistry;
 }
 
 /**
- * Interface the control loop calls when downstream substrate-write
- * frames arrive, plus the `cancelAll` shutdown surface it invokes on
- * any exit path. Decouples the loop from the bridge's `submit` side
- * so a test can drop in a recording sink.
+ * Downstream substrate-write frame surface the control loop calls, plus the
+ * `cancelAll` shutdown arm for any exit path. Decouples the loop from the
+ * bridge's `submit` side so a test can drop in a recording sink.
  */
 export interface SubstrateWriteResponseSink {
   handleMergeRequest(
@@ -538,10 +481,10 @@ export async function runWorkflowChild(
   const credentialMaterialRef: CredentialMaterialRef = {
     current: opts.bindings.initialCredentialMaterial ?? null,
   };
-  // The per-run credential wiring the top-level step invoker carries to the
-  // substrate: the live material cell and a step-grants resolver from the
-  // same snapshot `authorize` reads. Built once over the two refs; every
-  // step build reads them live, so a rotation is reflected without rebuilding.
+  // Per-run credential wiring for the top-level step invoker: the live
+  // material cell and a step-grants resolver from the same snapshot
+  // `authorize` reads. Built once; every step build reads the refs live, so
+  // a rotation is reflected without rebuilding.
   const credentialWiring: CredentialWiring = {
     materialRef: credentialMaterialRef,
     resolveStepGrants: (stepId) => {
@@ -585,19 +528,18 @@ export async function runWorkflowChild(
     writer: opts.eventWriter,
   });
 
-  // Re-verify barrier at the load boundary. The child evaluates the pinned
-  // code closure to a live definition and re-verifies by projecting it back
-  // to inert and hashing (`computeLiveDefinitionHash`) against
+  // Re-verify barrier at the load boundary: evaluate the pinned closure to a
+  // live definition, project back to inert, and hash against
   // `opts.env.definitionHash`; a divergent closure fails closed. Runs once
   // before both the resume and trigger loops, so one verified definition
-  // serves every trigger and every resume.
+  // serves every trigger and resume.
   //
   // Post-verify structural rewrite: lift each inline onTrigger body to a
-  // `{ ref }` so the runtime dispatches to the body child, and keep the
-  // extracted bodies in an in-memory map. The suspendable-child resolver runs
-  // each body from this map -- the parent's already-re-verified closure -- with
-  // no disk read and no per-body re-verify. The rewrite must follow the
-  // re-verify: rewriting first would diverge from the frozen inline-body hash.
+  // `{ ref }` and keep the extracted bodies in an in-memory map, so the
+  // suspendable-child resolver runs each body from the parent's
+  // already-re-verified closure with no disk read and no per-body re-verify.
+  // The rewrite must follow the re-verify: rewriting first would diverge from
+  // the frozen inline-body hash.
   const verifiedDefinition = await loadVerifiedWorkflowDefinitionFromClosure({
     packageDir: opts.env.closurePackageDir,
     approvedHash: opts.env.definitionHash,
@@ -608,30 +550,27 @@ export async function runWorkflowChild(
     bodies.map((b) => [b.ref, b.definition]),
   );
 
-  // An inline `childWorkflow` import is folded into the parent's hash, so it
-  // is already covered by the re-verify above. Lift each inline child to an
-  // internal `{ ref }` and keep the lifted definitions in an in-memory map;
-  // the terminal childWorkflow resolver below runs each child from this map
-  // with no on-disk read.
+  // An inline `childWorkflow` is folded into the parent's hash, so the
+  // re-verify above already covers it. Lift each to an internal `{ ref }` and
+  // keep the lifted definitions in an in-memory map for the terminal resolver.
   const childRewrite = rewriteInlineChildWorkflowBodies(definition);
   definition = childRewrite.workflow;
   const childBodiesMap = new Map(
     childRewrite.bodies.map((b) => [b.ref, b.definition]),
   );
 
-  // A loop iteration runs its body as a suspendable child through the same seam
-  // an onTrigger body uses, so register each top-level loop body in `bodiesMap`
-  // under its `<workflowId>__<stepId>` ref. A loop keeps its body INLINE on the
-  // primitive (both hash layers project it inline), so `enumerateInlineLoopBodies`
-  // mints a ref-keyed copy and leaves the primitive untouched.
+  // A loop iteration runs its body as a suspendable child through the same
+  // seam an onTrigger body uses, so register each top-level loop body in
+  // `bodiesMap` under its `<workflowId>__<stepId>` ref. A loop keeps its body
+  // INLINE on the primitive, so `enumerateInlineLoopBodies` mints a ref-keyed
+  // copy and leaves the primitive untouched.
   //
   // A loop body may itself contain a `childWorkflow` grandchild: rewrite the
   // copy's inline children to `{ ref }` and fold the extracted grandchildren
-  // into `childBodiesMap` HERE, before the eager resolution and terminal-host
-  // selection below read it. Keep each loop body's PRE-rewrite form keyed by
-  // ref: the iteration grants cap re-walks it, and capping the rewritten
-  // `{ ref }` form would skip -- and so under-authorize -- the grandchild's
-  // declared resources.
+  // into `childBodiesMap` here, before the eager resolution and terminal-host
+  // selection below read it. Keep each body's PRE-rewrite form keyed by ref:
+  // the iteration grants cap re-walks it, and capping the rewritten `{ ref }`
+  // form would skip -- and so under-authorize -- the grandchild's resources.
   const loopBodyPreRewrite = new Map<string, WorkflowDefinition>();
   for (const loopBody of enumerateInlineLoopBodies(definition)) {
     loopBodyPreRewrite.set(loopBody.ref, loopBody.definition);
@@ -643,18 +582,16 @@ export async function runWorkflowChild(
   }
 
   // Directors resolve from the pinned closure so a custom director authored in
-  // the workflow's own package runs. Loading them outside the definition-hash
-  // re-verify is safe: the approved hash pins each director's id + config and
-  // the closure's SRI pins its module bytes. See
-  // `loadWorkflowDirectorRegistryFromClosure`.
+  // the workflow's own package runs. Loading them outside the re-verify is
+  // safe: the approved hash pins each director's id + config and the closure's
+  // SRI pins its module bytes.
   const directors = await loadWorkflowDirectorRegistryFromClosure({
     packageDir: opts.env.closurePackageDir,
   });
 
-  // Loop `while`/`carry` functions resolve from the pinned closure's
-  // `interchange.loops` module, outside the definition-hash re-verify for the
-  // same reason as directors. Resolve every loop ref reachable from the
-  // definition eagerly, so a declared loop whose fn the closure does not
+  // Loop `while`/`carry` fns resolve from the pinned closure's
+  // `interchange.loops` module, outside the re-verify for the same reason as
+  // directors. Resolved eagerly so a declared loop the closure does not
   // export fails at establish rather than mid-run.
   const loopFns = await loadWorkflowLoopFnsFromClosure({
     packageDir: opts.env.closurePackageDir,
@@ -665,9 +602,8 @@ export async function runWorkflowChild(
   );
 
   // Action handlers resolve from the pinned closure's `interchange.actions`
-  // module, on the same terms as loop fns. Resolve every handler ref
-  // reachable from the definition eagerly (recursing into loop bodies), so a
-  // declared action whose handler the closure does not export fails at
+  // module, on the same terms as loop fns: resolved eagerly (recursing into
+  // loop bodies) so a declared action the closure does not export fails at
   // establish rather than mid-run.
   const actionResolver = await loadWorkflowActionHandlersFromClosure({
     packageDir: opts.env.closurePackageDir,
@@ -679,10 +615,9 @@ export async function runWorkflowChild(
 
   // Suspendable-child resolver (onTrigger and loop bodies), selected once per
   // deployment; the per-run `onEvent` is injected later in `buildRuntimeEnv`.
-  // Resolves each body from the parent's in-memory closure via the raw
-  // executor binding. A deployment that carries bodies but wired no executor
-  // is a misconfiguration -- fail loud at startup rather than falling back to
-  // a disk read. A deployment with no suspendable body leaves the host
+  // A deployment that carries bodies but wired no executor is a
+  // misconfiguration -- fail loud at startup rather than falling back to a
+  // disk read. A deployment with no suspendable body leaves the host
   // undefined; its slot is never invoked.
   let suspendableChildHost: HostSpawnSuspendableChild | undefined;
   if (bodiesMap.size > 0) {
@@ -700,15 +635,12 @@ export async function runWorkflowChild(
     });
   }
 
-  // Terminal childWorkflow resolver, selected once per deployment. When the
-  // definition embeds any inline child, resolve each from that in-memory map
-  // via the raw terminal executor -- the parent's own re-verified closure --
-  // so an owned child spawns with no disk read. A deployment that embeds a
-  // childWorkflow but wired no executor fails loud at startup rather than
-  // falling back to a disk read. A definition with no inline child keeps the
-  // injected binding (a test seam); its childWorkflow slot is never invoked.
-  // Like the suspendable host, each run injects its own event sink via
-  // `buildRuntimeEnv`; the two fallback arms ignore the sink.
+  // Terminal childWorkflow resolver, selected once per deployment. With any
+  // inline child, resolve each from the in-memory map via the raw terminal
+  // executor (the parent's own re-verified closure), so an owned child spawns
+  // with no disk read; a deployment that embeds a childWorkflow but wired no
+  // executor fails loud at startup. A definition with no inline child keeps
+  // the injected binding (a test seam); its slot is never invoked.
   let spawnChild: HostSpawnChild;
   if (childBodiesMap.size > 0) {
     const executor = opts.bindings.runChild;
@@ -726,9 +658,9 @@ export async function runWorkflowChild(
     const injected = opts.bindings.spawnChild;
     spawnChild = (input, _onEvent) => injected(input);
   } else {
-    // No inline child and no injected binding: a workflow that nonetheless
-    // reaches a childWorkflow spawn fails loud here rather than silently
-    // completing against a child that never ran.
+    // No inline child and no injected binding: a workflow reaching a
+    // childWorkflow spawn fails loud rather than silently completing against
+    // a child that never ran.
     spawnChild = async ({ definitionRef }, _onEvent) => {
       throw new Error(
         `workflow-child: childWorkflow ${definitionRef} reached the runtime ` +
@@ -744,18 +676,17 @@ export async function runWorkflowChild(
 
   const drainController = createWorkflowHostDrainController({ definition });
 
-  // Warm-agent cache (design §3b), built only for a warm candidate
-  // deployment (the single-step long-lived agent). Holds the constructed
-  // agent across messages and is evicted at the loop's teardown points.
-  // A multi-step deployment leaves this `undefined`, so its steps keep
-  // instantiate-send-teardown.
+  // Warm-agent cache (§3b), built only for a warm candidate (the single-step
+  // long-lived agent): holds the constructed agent across messages and is
+  // evicted at the loop's teardown points. A multi-step deployment leaves
+  // this `undefined`, so its steps keep instantiate-send-teardown.
   const warmCache: WarmAgentCache | undefined = opts.env.warmKeep
     ? createWarmAgentCache()
     : undefined;
 
-  // Construct the upstream control-channel sender up-front so the resume
-  // loop below can attach a terminal-event emitter onto every resumed
-  // run's `complete` promise without re-deriving it lazily.
+  // Construct the upstream sender up-front so the resume loop can attach a
+  // terminal-event emitter onto every resumed run's `complete` promise
+  // without re-deriving it lazily.
   const upstreamSender =
     opts.upstreamSender ??
     createControlChannelSender({
@@ -765,8 +696,8 @@ export async function runWorkflowChild(
     });
 
   // Self-discovery before `ready`: the body must see every in-flight run
-  // before the supervisor forwards `trigger.fired` frames, or a fresh
-  // trigger could land ahead of a resume and commit a duplicate run entry.
+  // before the supervisor forwards `trigger.fired`, or a fresh trigger could
+  // land ahead of a resume and commit a duplicate run entry.
   const discovered = await discoverInFlightRuns({
     substrate: opts.bindings.substrate,
     repoId: opts.bindings.workflowRunRepoId,
@@ -774,10 +705,10 @@ export async function runWorkflowChild(
   });
   const resumedRunIds: string[] = [];
   // One-driver-per-run claim: a runId present here is already driven by a
-  // live `runtimeRun` in this process. The trigger.fire path consults it to
-  // refuse a second concurrent driver -- two drivers race to settle the same
-  // residual and the loser throws an uncaught TransitionError. Each site
-  // removes its entry when the run reaches terminal.
+  // live `runtimeRun`. The trigger.fire path consults it to refuse a second
+  // concurrent driver -- two drivers race to settle the same residual and the
+  // loser throws an uncaught TransitionError. Each site removes its entry at
+  // terminal.
   const runsInFlight = new Map<string, RuntimeWorkflowRun>();
   const cancellationBarrier = createCancellationBarrier(
     runtimeRepoStore,
@@ -817,11 +748,9 @@ export async function runWorkflowChild(
       resumeFromEvents: run.seedEvents,
     });
     runsInFlight.set(run.runId, handle);
-    // Fire-and-forget: the runtime body's `complete` settles when the
-    // run reaches a terminal phase; the child's control-loop does not
-    // block on resumed runs. The supervisor's dispatch loop / drain
-    // accumulator subscribes to the resumed run's terminal via the
-    // `terminal.event` upstream frame the child emits below.
+    // Fire-and-forget: `complete` settles at a terminal phase; the control
+    // loop does not block on resumed runs. The supervisor subscribes to the
+    // terminal via the `terminal.event` upstream frame emitted below.
     void handle.complete
       .then((result) => {
         reclaimRunStorageIfCold({
@@ -840,9 +769,8 @@ export async function runWorkflowChild(
   }
 
   // `ready` rides over the control channel back to the supervisor, whose
-  // `waitForReady` consumes it. Upstream frames are signed by the child's
-  // own private key; the `ready` payload publishes the matching public half
-  // so the supervisor can verify every subsequent upstream frame.
+  // `waitForReady` consumes it; the payload publishes the child's public key
+  // so the supervisor can verify subsequent upstream frames.
   await upstreamSender.send({
     type: "ready",
     data: {
@@ -860,9 +788,9 @@ export async function runWorkflowChild(
 
   const triggeredRunIds: string[] = [];
 
-  // Control-loop. The receiver iterator yields one verified payload
-  // per call; any signature/channelId/seq violation crashes the
-  // receiver via `onCrash` and ends the iterator.
+  // Control loop. The receiver iterator yields one verified payload per call;
+  // any signature/channelId/seq violation crashes the receiver via `onCrash`
+  // and ends the iterator.
   const iter = receiveControlChannel({
     publicKey: opts.env.hostPublicKey,
     channelId: opts.env.channelId,
@@ -872,9 +800,9 @@ export async function runWorkflowChild(
     },
   });
 
-  // Resolve the mailbox watch registry the control loop routes `mailbox.notify`
-  // frames to. The opts-level injection wins over the bindings; both absent
-  // leaves notifications logged and dropped.
+  // The watch registry the control loop routes `mailbox.notify` frames to;
+  // the opts-level injection wins over the bindings, and both absent leaves
+  // notifications logged and dropped.
   const mailboxWatchRegistry =
     opts.mailboxWatchRegistry ?? opts.bindings.mailboxWatchRegistry;
 
@@ -933,10 +861,9 @@ export async function runWorkflowChild(
 
   const cleanupControlLoop = async (): Promise<void> => {
     cancellationBarrier.close("workflow-child control loop exited");
-    // Every exit path -- clean, dirty, or shutdown -- cancels still-pending
-    // substrate writes, outbound sends, mailbox mutations, and mailbox
-    // calls so their awaiters surface a structured rejection instead of
-    // hanging on a torn-down channel.
+    // Every exit path cancels still-pending substrate writes, outbound sends,
+    // mailbox mutations, and mailbox calls so their awaiters surface a
+    // structured rejection instead of hanging on a torn-down channel.
     if (opts.substrateWriteBridge !== undefined) {
       opts.substrateWriteBridge.cancelAll("workflow-child control loop exited");
     }
@@ -952,16 +879,16 @@ export async function runWorkflowChild(
       opts.mailboxCallBridge.cancelAll("workflow-child control loop exited");
     }
     // Evict the warm-agent cache on every exit path; eviction runs the
-    // wrapped `agent.close()` that disposes plugins and kills the LSP
-    // subprocess, so no warm agent or LSP outlives the run-loop.
+    // wrapped `agent.close()` (disposes plugins, kills the LSP subprocess),
+    // so no warm agent or LSP outlives the run-loop.
     if (warmCache !== undefined) {
       await warmCache.evictAll("workflow-child control loop exited");
     }
   };
 
   // Run the control loop, then always run the cleanup above. A failing
-  // eviction surfaces on a clean exit but must not mask a control-loop
-  // error already unwinding -- it is logged, not rethrown, in that case.
+  // eviction surfaces on a clean exit but must not mask a control-loop error
+  // already unwinding -- logged, not rethrown, in that case.
   await runBodyThenCleanup(
     runControlLoop,
     cleanupControlLoop,
@@ -1018,23 +945,21 @@ async function handleControlPayload(
 ): Promise<boolean> {
   switch (payload.type) {
     case "trigger.fire": {
-      // One driver per runId. A duplicate/stale trigger frame for a runId
-      // this child already drives (a resume, or an earlier trigger) must
-      // not spawn a second `runtimeRun`: two drivers race to settle the
-      // same residual, the loser throws an uncaught TransitionError, and
-      // even a surviving driver would double-emit the terminal. The live
-      // driver's completion owns the single terminal emission, so nothing
-      // is dropped by declining here.
+      // One driver per runId: a duplicate/stale trigger for a runId this
+      // child already drives (a resume or an earlier trigger) must not spawn
+      // a second `runtimeRun` -- two drivers race to settle the same
+      // residual, the loser throws an uncaught TransitionError, and even a
+      // surviving driver would double-emit the terminal. The live driver's
+      // completion owns the single terminal emission, so nothing is dropped
+      // by declining here.
       if (ctx.runsInFlight.has(payload.data.runId)) {
         ctx.triggeredRunIds.push(payload.data.runId);
         return false;
       }
       // The supervisor resolved the inbound mail to the run's input
-      // (conversation text plus attachment-byte references it committed to
-      // the workflow-run substrate) and shipped it in the frame. The
-      // one-step workflow's first step defaults its input selector to
-      // `trigger.payload`, so the step input resolves to the inbound
-      // message.
+      // (conversation text plus attachment-byte references) and shipped it in
+      // the frame; the first step's default input selector reads
+      // `trigger.payload`, so the step input resolves to the inbound message.
       const triggerPayload = payload.data.payload;
       const env = buildRuntimeEnv({
         runId: payload.data.runId,
@@ -1070,10 +995,10 @@ async function handleControlPayload(
         triggerPayload,
       });
       ctx.runsInFlight.set(payload.data.runId, handle);
-      // Fan the run's terminal status back to the supervisor. The runtime
-      // body commits the terminal event to the workflow-run substrate as
-      // part of the same lifecycle moment, so the on-disk audit chain and
-      // the peer notification originate from the same code path.
+      // Fan the run's terminal status back to the supervisor; the runtime
+      // commits the terminal event to the substrate in the same lifecycle
+      // moment, so the audit chain and the peer notification originate from
+      // the same code path.
       void handle.complete
         .then((result) => {
           reclaimRunStorageIfCold({
@@ -1093,10 +1018,9 @@ async function handleControlPayload(
     }
     case "grants-updated": {
       // Replace the closure-local snapshot reference so every subsequent
-      // `authorize` call reads the new grants without reconstructing the
-      // env. The optional `stepHashes` cross-check crashes the child on a
-      // mismatch against the snapshot's per-step contentHash rather than
-      // honoring a desynchronized push.
+      // `authorize` call reads the new grants without reconstructing the env.
+      // The optional `stepHashes` cross-check crashes the child on a mismatch
+      // rather than honoring a desynchronized push.
       const snapshot: CredentialsSnapshot = {
         steps: payload.data.snapshot.steps.map((s) => ({
           stepId: s.stepId,
@@ -1119,11 +1043,11 @@ async function handleControlPayload(
       return false;
     }
     case "credentials-updated": {
-      // Merge the delivery into the live cell (see `mergeCredentialDelivery`)
-      // rather than replace it: the cell has several independently-scoped
-      // producers, so a swap would evict another producer's credentials. The
-      // result is assigned in one atomic swap, so a reader never observes a
-      // torn cell. The secret stays on this ref only.
+      // Merge into the live cell (see `mergeCredentialDelivery`) rather than
+      // replace it: the cell has several independently-scoped producers, so a
+      // swap would evict another producer's credentials. One atomic assignment
+      // keeps readers from observing a torn cell. The secret stays on this
+      // ref only.
       ctx.credentialMaterialRef.current = mergeCredentialDelivery(
         ctx.credentialMaterialRef.current,
         payload.data.delivery,
@@ -1134,24 +1058,22 @@ async function handleControlPayload(
     case "signal.deliver": {
       // Drop a delivery for a run this child is not driving: a stale or
       // mis-routed frame must not commit an orphan `SignalReceived` to a log
-      // no awaiter is tailing. `runsInFlight` is the authority on which runs
-      // this child drives.
+      // no awaiter is tailing. `runsInFlight` is the authority.
       if (!ctx.runsInFlight.has(payload.data.runId)) {
         logger.warn`signal.deliver for run ${payload.data.runId} which is not in flight; dropping (signalName=${payload.data.signalName})`;
         return false;
       }
-      // Land the signal as a `SignalReceived` commit on the run's event log.
-      // The per-run signal channel's `subscribeKind` peer resolves any pending
-      // `awaitNext` awaiter; the control loop's job is just to commit.
+      // Land the signal as a `SignalReceived` commit on the run's event log;
+      // the per-run signal channel's `subscribeKind` peer resolves any pending
+      // `awaitNext` awaiter.
       //
-      // The deliver writes through the pack-pushing proxy substrate: the hook
-      // emits `pack.push.request` upstream and awaits the supervisor's
-      // `pack.push.response` on this same downstream stream. Awaiting inline
-      // would deadlock the iterator against the response it is blocking on
-      // (observed end-to-end), so the deliver fires off the loop and the
-      // iterator keeps pumping downstream payloads. A commit failure surfaces
-      // via the logger; the `awaitNext` peer either resolves or stays pending
-      // until a subsequent delivery.
+      // The deliver writes through the pack-pushing proxy: it emits
+      // `pack.push.request` upstream and awaits `pack.push.response` on this
+      // SAME downstream stream. Awaiting inline would deadlock the iterator
+      // against the response it is blocking on (observed end-to-end), so the
+      // deliver fires off the loop and the iterator keeps pumping. A commit
+      // failure surfaces via the logger; the `awaitNext` peer resolves or
+      // stays pending until a later delivery.
       const transientSignalChannel = createWorkflowHostSignalChannel({
         repoStore: ctx.bindings.substrate,
         principal: ctx.bindings.principal,
@@ -1201,9 +1123,9 @@ async function handleControlPayload(
     }
     case "drain": {
       // Flip the drain controller's signal; the runtime body's observation
-      // points read it on their next tick. The supervisor's host-side
-      // drainTimeout accumulator escalates to a signed CancelRequested if
-      // cancel-mode work outlasts the deadline.
+      // points read it on their next tick. The supervisor's drainTimeout
+      // accumulator escalates to a signed CancelRequested if cancel-mode work
+      // outlasts the deadline.
       logger.info`workflow-child drain requested (deadlineMs=${String(payload.data.deadlineMs)})`;
       ctx.drainController.requestDrain();
       return false;
@@ -1216,12 +1138,10 @@ async function handleControlPayload(
       return true;
     }
     case "sources-updated": {
-      // Live inference-source rotation for the warm single-step agent. The
-      // wire boundary already validated the list, so this trusts the frame.
-      // Only a single-step deployment rotates sources -- its sole step's id
-      // is the sole key in the table, so the whole table is replaced.
-      // Assert the step count so a mis-route fails loudly rather than
-      // corrupting the table.
+      // Live inference-source rotation for the warm single-step agent. Only a
+      // single-step deployment rotates sources (its sole step's id is the
+      // table's sole key, so the whole table is replaced); assert the step
+      // count so a mis-route fails loudly rather than corrupting the table.
       if (ctx.definition.stepOrder.length !== 1) {
         throw new Error(
           `workflow-child sources-updated: only a single-step deployment can rotate sources; got ${String(ctx.definition.stepOrder.length)} steps`,
@@ -1302,9 +1222,9 @@ async function handleControlPayload(
       );
     }
     case "outbound.result": {
-      // Route the supervisor's send result to the outbound-mail bridge
-      // if one is wired; without one the frame is stale, so log and
-      // drop rather than throw.
+      // Route the supervisor's send result to the outbound-mail bridge when
+      // wired; without one the frame is stale -- log and drop rather than
+      // throw.
       if (ctx.outboundMailBridge === undefined) {
         logger.warn`workflow-child outbound.result received without a bridge wired; requestId=${payload.data.requestId} dropped`;
         return false;
@@ -1337,8 +1257,7 @@ async function handleControlPayload(
     }
     case "mailbox.mutate.response": {
       // Route the supervisor's applied-mutation result to the
-      // mailbox-mutation bridge if one is wired; without one the frame is
-      // stale, so log and drop (mirrors the `outbound.result` arm).
+      // mailbox-mutation bridge when wired; otherwise log and drop.
       if (ctx.mailboxMutationBridge === undefined) {
         logger.warn`workflow-child mailbox.mutate.response received without a bridge wired; requestId=${payload.data.requestId} dropped`;
         return false;
@@ -1354,8 +1273,8 @@ async function handleControlPayload(
       );
     }
     case "mailbox.call.response": {
-      // Route the supervisor's answer to the mailbox-call bridge if one is
-      // wired; without one the frame is stale, so log and drop.
+      // Route the supervisor's answer to the mailbox-call bridge when wired;
+      // otherwise log and drop.
       if (ctx.mailboxCallBridge === undefined) {
         logger.warn`workflow-child mailbox.call.response received without a bridge wired; requestId=${payload.data.requestId} dropped`;
         return false;
@@ -1364,8 +1283,8 @@ async function handleControlPayload(
       return false;
     }
     case "substrate.merge.request": {
-      // Route the request to the substrate-write bridge if one is wired;
-      // without one the frame is stale, so log and drop.
+      // Route the request to the substrate-write bridge when wired;
+      // otherwise log and drop.
       if (ctx.substrateWriteBridge === undefined) {
         logger.warn`workflow-child substrate.merge.request received without a bridge wired; requestId=${payload.data.requestId} dropped`;
         return false;
@@ -1374,8 +1293,8 @@ async function handleControlPayload(
       return false;
     }
     case "substrate.write.response": {
-      // Route the response to the substrate-write bridge if one is wired;
-      // without one the frame is stale, so log and drop.
+      // Route the response to the substrate-write bridge when wired;
+      // otherwise log and drop.
       if (ctx.substrateWriteBridge === undefined) {
         logger.warn`workflow-child substrate.write.response received without a bridge wired; requestId=${payload.data.requestId} dropped`;
         return false;
@@ -1422,17 +1341,14 @@ async function handleControlPayload(
 
 /**
  * Construct a `WorkflowRuntimeEnv` for one run. Each run gets its own
- * `BlobSubstrate` and `SignalChannel` because both are per-run by
- * shape; the substrate handle and per-deployment `RepoStore` adapter
- * are shared across runs.
+ * `BlobSubstrate` and `SignalChannel` (both are per-run by shape); the
+ * substrate handle and per-deployment `RepoStore` adapter are shared.
  */
 
 /**
  * Force-resolve every `action` handler ref reachable from these definitions
- * against the resolver, so a missing action handler surfaces at establish
- * rather than when the action is first invoked mid-run. Recurses into loop
- * bodies (an action body is the common loop shape). The caller passes the
- * lifted onTrigger/childWorkflow bodies separately, as with loop fns.
+ * (recursing into loop bodies), so a missing handler surfaces at establish
+ * rather than when the action is first invoked mid-run.
  */
 function eagerlyResolveActionHandlers(
   definitions: readonly WorkflowDefinition[],
@@ -1502,9 +1418,9 @@ function buildRuntimeEnv(args: {
     runId: args.runId,
     ref: args.bindings.workflowRunRef,
   });
-  // The supervisor committed each part before the trigger. A step asks it
-  // for the bytes. A child with no call bridge cannot read them; inlined
-  // text never asks.
+  // The supervisor committed each part before the trigger; a step asks it for
+  // the bytes. A child with no call bridge cannot read them; inlined text
+  // never asks.
   const mailPartReader =
     args.mailboxCallBridge === undefined
       ? unwiredMailPartReader()
@@ -1514,8 +1430,8 @@ function buildRuntimeEnv(args: {
         });
   // Wrap the step invoker so every `InferenceEvent` funnels through the
   // per-run `onEvent` closure, which forwards it up the HMAC-authenticated
-  // event channel. The wrap is the only translation between the runtime's
-  // narrow `StepInvoker` shape and the host's `ChildStepInvoker` shape.
+  // event channel -- the only translation between the runtime's narrow
+  // `StepInvoker` and the host's `ChildStepInvoker`.
   const invokeStep: StepInvoker = async (req) => {
     return args.bindings.invokeStep(
       req,
@@ -1529,9 +1445,8 @@ function buildRuntimeEnv(args: {
   };
   // Adapt the host binding (which takes the run's `onEvent` sink) down to the
   // runtime's narrow `SpawnSuspendableChild` by injecting this run's event
-  // funnel, so a body's live inference events ride the parent run's channel.
-  // The run's live credential-material cell rides the same seam so the body's
-  // inference resolves its source secret against the parent's current delivery.
+  // funnel, so a body's live inference events ride the parent run's channel;
+  // the live credential-material cell rides the same seam.
   const hostSuspendable = args.suspendableChildHost;
   const spawnSuspendableChild: SpawnSuspendableChild | undefined =
     hostSuspendable === undefined
@@ -1542,8 +1457,7 @@ function buildRuntimeEnv(args: {
             args.onEvent,
             args.credentialWiring.materialRef,
           );
-  // Same adaptation for the terminal childWorkflow seam: inject this run's
-  // event funnel and the live credential-material cell.
+  // Same adaptation for the terminal childWorkflow seam.
   const spawnChild: SpawnChildWorkflow = (spawnInput) =>
     args.spawnChild(
       spawnInput,
@@ -1566,8 +1480,7 @@ function buildRuntimeEnv(args: {
     // for a definition that passed startup.
     loopFns: args.loopFns,
     // Wire the suspendable-child seam only when the host supplied it; the
-    // runtime body fails loud if a workflow reaches a section the env did not
-    // wire.
+    // runtime body fails loud if a workflow reaches an unwired section.
     ...(spawnSuspendableChild !== undefined ? { spawnSuspendableChild } : {}),
     clock: args.clock,
     newId: args.newId,
@@ -1579,30 +1492,29 @@ function buildRuntimeEnv(args: {
       void emitParkNotify(args.upstreamSender, park);
     },
     // Let the resume classifier recover a step that crashed across the park
-    // boundary. Absent (tests, the recursive child-workflow adapter) leaves a
-    // crashed invocation a terminal failure.
+    // boundary; absent (tests, the recursive adapter) leaves a crashed
+    // invocation a terminal failure.
     ...(args.bindings.readParkedApprovalOps !== undefined
       ? { readParkedApprovalOps: args.bindings.readParkedApprovalOps }
       : {}),
   };
   // The suspendable-loop executor runs each iteration's body under this run's
-  // inherited env (its invokeStep, invokeAction, authorize, effect ledger, and
-  // shared repoStore/blobs), giving the body only its own substrate-backed
-  // signal channel -- the inherited-env iteration model plus park capability,
-  // distinct from an onTrigger body's fresh capped env. Assigned AFTER env
-  // construction because it closes over `env`.
+  // inherited env (invokeStep, invokeAction, authorize, effect ledger, shared
+  // repoStore/blobs), giving the body only its own substrate-backed signal
+  // channel -- distinct from an onTrigger body's fresh capped env. Assigned
+  // AFTER env construction because it closes over `env`.
   const loopIterationHost = createInMemorySpawnSuspendableChild({
     bodies: args.bodiesMap,
     runSuspendableChild: async (loopInput, _onEvent) => {
-      // Materialize this iteration's own grants file BEFORE the body runs (the
-      // iteration's first event append), so a childWorkflow grandchild spawned
-      // from the body reads it as authority. The ordering is load-bearing: the
-      // grants write is write-once and its shallow-prefix rebuild is safe only
-      // while the iteration's subtree is still empty. The cap must walk the
+      // Materialize this iteration's grants file BEFORE the body runs (its
+      // first event append), so a childWorkflow grandchild spawned from the
+      // body reads it as authority. The ordering is load-bearing: the grants
+      // write is write-once and its shallow-prefix rebuild is safe only while
+      // the iteration's subtree is still empty. The cap must walk the
       // PRE-rewrite loop body (grandchild still inline); the rewritten body in
-      // `bodiesMap` would skip the grandchild's resources. The binding is a
-      // sidecar-only seam: the in-process host keeps no per-run grants file, so
-      // an absent binding leaves the grants unmaterialized.
+      // `bodiesMap` would skip the grandchild's resources. Sidecar-only seam:
+      // the in-process host keeps no per-run grants file, so an absent binding
+      // leaves the grants unmaterialized.
       const preRewriteBody = args.loopBodyPreRewrite.get(
         loopInput.definitionRef,
       );
@@ -1645,15 +1557,14 @@ function buildRuntimeEnv(args: {
   env.spawnLoopIteration = (spawnInput) =>
     loopIterationHost(spawnInput, args.onEvent);
 
-  // Action handlers run against a per-run effect ledger. The ledger is
-  // in-memory and that is correct -- not a shortcut -- on the deployed store:
-  // `runAction` flushes `StepStarted` durably before the effect and the runtime
-  // never re-invokes a crashed action, so the ledger is never consulted across
-  // a crash. Its cross-crash exactly-once rests on that store-consistency
-  // invariant, which the store layer owns; a durable ledger here would
-  // re-enforce a constraint a lower layer already guarantees. Within one
-  // invocation the ledger still dedups a handler that performs the same effect
-  // twice.
+  // Action handlers run against a per-run effect ledger. In-memory is
+  // correct -- not a shortcut -- on the deployed store: `runAction` flushes
+  // `StepStarted` durably before the effect and the runtime never re-invokes
+  // a crashed action, so the ledger is never consulted across a crash. Its
+  // cross-crash exactly-once rests on that store-consistency invariant, which
+  // the store layer owns; a durable ledger here would re-enforce a constraint
+  // a lower layer already guarantees. Within one invocation the ledger still
+  // dedups a handler that performs the same effect twice.
   const effects = createInMemoryEffectLedger();
   env.effects = effects;
   env.invokeAction = createDefaultActionInvoker(
@@ -1666,14 +1577,13 @@ function buildRuntimeEnv(args: {
 
 /**
  * Forward a control-plane suspension to the supervisor over the upstream
- * control channel. Fired from `env.onPark` each time a step parks on a
- * reserved `signalName(correlationId)` channel; the supervisor stamps the
- * deployment identity and sends a `signal.correlation.register` frame to
+ * control channel, fired from `env.onPark` each time a step parks; the
+ * supervisor stamps the deployment identity and registers the correlation at
  * the hub.
  *
- * Best-effort like `emitTerminalEvent`'s send: a transport failure is logged,
- * not rethrown. A lost frame surfaces structurally as a run that never
- * resumes; the hub register is idempotent, so a re-park re-emit is safe.
+ * Best-effort: a transport failure is logged, not rethrown. A lost frame
+ * surfaces structurally as a run that never resumes; the hub register is
+ * idempotent, so a re-park re-emit is safe.
  */
 export function emitParkNotify(
   upstreamSender: ControlChannelSender,
@@ -1698,32 +1608,30 @@ export function emitParkNotify(
 }
 
 /**
- * Mirror a run's terminal status back to the supervisor over the
- * upstream control channel. Fired once per run from the resume and
- * trigger.fire paths' `complete` continuation.
+ * Mirror a run's terminal status back to the supervisor over the upstream
+ * control channel, fired once per run from the resume and trigger.fire paths'
+ * `complete` continuation.
  *
- * Every frame field is sourced from the run's committed terminal event
- * (which the runtime commits last); `terminalStatus` is only the
- * cross-check. A missing terminal event, or one whose kind disagrees,
- * is a producer bug, and emitting a frame anyway would desync the
- * supervisor from the durable log `discoverInFlightRuns` reads on
- * resume. So this throws instead: no frame keeps supervisor and log
- * agreeing the run is unsettled, and the next recycle/restart resumes
- * it. The throw propagates to the caller's `complete` continuation,
- * which logs it.
+ * Every frame field is sourced from the run's committed terminal event (the
+ * runtime commits it last); `terminalStatus` is only the cross-check. A
+ * missing or disagreeing terminal event is a producer bug, and emitting a
+ * frame anyway would desync the supervisor from the durable log
+ * `discoverInFlightRuns` reads on resume -- so this throws instead: no frame
+ * keeps supervisor and log agreeing the run is unsettled, and the next
+ * recycle/restart resumes it. The throw propagates to the caller's
+ * `complete` continuation, which logs it.
  *
- * A transport send failure is a different case: logged, not rethrown.
- * The supervisor's dispatch loop is the authoritative settler, so a lost
- * frame surfaces as a wedged dispatch rather than a silent lifecycle
- * failure. The invariant throws run before the send so that catch never
- * swallows them.
+ * A transport send failure is different: logged, not rethrown. The
+ * supervisor's dispatch loop is the authoritative settler, so a lost frame
+ * surfaces as a wedged dispatch rather than a silent lifecycle failure. The
+ * invariant throws run before the send, so that catch never swallows them.
  */
 export function emitTerminalEvent(
   upstreamSender: ControlChannelSender,
   result: RunResult,
 ): Promise<void> {
   // The runtime commits the terminal event last, so walking from the end
-  // finds it in one step without rebuilding the state machine.
+  // finds it without rebuilding the state machine.
   let terminalEvent: (typeof result.events)[number] | null = null;
   for (let i = result.events.length - 1; i >= 0; i -= 1) {
     const candidate = result.events[i];
@@ -1753,9 +1661,9 @@ export function emitTerminalEvent(
       `emitTerminalEvent: run ${result.runId} terminated as ${result.terminalStatus} but its committed terminal event is ${terminalEvent.kind}`,
     );
   }
-  // The supervisor's `synthesizeTerminalEvent` guards a missing
-  // RunFailed error.message because it parses untrusted JSON; here the
-  // type is a non-optional `string`, so the case is unreachable.
+  // The supervisor's `synthesizeTerminalEvent` guards a missing RunFailed
+  // error.message (it parses untrusted JSON); here the type is a non-optional
+  // `string`, so the case is unreachable.
   let payload: Extract<ControlPayload, { type: "terminal.event" }>["data"];
   if (terminalEvent.kind === "RunCompleted") {
     payload = {
@@ -1794,11 +1702,10 @@ export function emitTerminalEvent(
 /**
  * Reclaim a completed run's local-disk scratch on the COLD path.
  *
- * Gated on `!warmKeep`: a warm agent reuses one stable workspace across
- * runs, so per-run deletion would wipe a live conversation's files
- * mid-stream. On the cold path each run rebuilds its agent + scratch,
- * so once the run is terminal nothing reopens its `runs/<runId>/`
- * subtree and it is safe to drop.
+ * Gated on `!warmKeep`: a warm agent reuses one stable workspace across runs,
+ * so per-run deletion would wipe a live conversation's files mid-stream. On
+ * the cold path each run rebuilds its agent + scratch, so once terminal
+ * nothing reopens its `runs/<runId>/` subtree and it is safe to drop.
  *
  * Best-effort: a failure is logged and swallowed, never gating the run's
  * terminal status or the upstream terminal.event.

@@ -1,17 +1,16 @@
 // Spawn-time env parser for the workflow-process child.
 //
-// The supervisor's spawn path constructs a fresh env object carrying
-// only the IPC trust anchors plus a tightly-scoped set of deployment
-// identifiers. The binary parses `process.env` once at start and hands
-// the validated struct to `runWorkflowChild`. The struct shape is the
-// only env-shaped surface the runtime body sees; everything else flows
-// through IPC frames.
+// The supervisor's spawn path constructs a fresh env object carrying only
+// the IPC trust anchors plus a tightly-scoped set of deployment identifiers.
+// The binary parses `process.env` once at start and hands the validated
+// struct to `runWorkflowChild`. The struct shape is the only env-shaped
+// surface the runtime body sees; everything else flows through IPC frames.
 //
-// The IPC trust anchors carried here are public-half values: the
-// supervisor's Ed25519 PUBLIC key (`HOST_PUBKEY`) plus the shared HMAC
-// key (`IPC_HMAC_KEY`) the supervisor minted at spawn time. The
-// supervisor's Ed25519 PRIVATE key never appears in env per the IPC
-// threat model; the child verifies but never signs control frames.
+// The trust anchors carried here are public-half values: the supervisor's
+// Ed25519 PUBLIC key (`HOST_PUBKEY`) plus the shared HMAC key
+// (`IPC_HMAC_KEY`). The supervisor's Ed25519 PRIVATE key never appears in
+// env per the IPC threat model; the child verifies but never signs control
+// frames.
 
 import { type } from "arktype";
 
@@ -40,11 +39,11 @@ export const REQUIRED_SPAWN_ENV_KEYS = [
 export type RequiredSpawnEnvKey = (typeof REQUIRED_SPAWN_ENV_KEYS)[number];
 
 /**
- * Required env keys carried by the supervisor at spawn time. The
- * validator surface is intentionally narrow: every key documented at
- * the supervisor's `spawn(opts)` method is represented here, and
- * anything the supervisor did not place in the env causes a targeted
- * failure rather than a silent fallback.
+ * Required env keys carried by the supervisor at spawn time. The validator
+ * surface is intentionally narrow: every key documented at the supervisor's
+ * `spawn(opts)` method is represented here, and anything the supervisor did
+ * not place in the env causes a targeted failure rather than a silent
+ * fallback.
  */
 const SpawnTimeEnvShape = type({
   IPC_CHANNEL_ID: "string > 0",
@@ -53,34 +52,29 @@ const SpawnTimeEnvShape = type({
   DEPLOYMENT_ID: "string > 0",
   DEFINITION_HASH: "string > 0",
   MAILBOX_ADDRESS: "string > 0",
-  // Step count of the deployed `WorkflowDefinition` (`stepOrder.length`),
-  // stringified by the supervisor; the deploy-tree read collapses onto
-  // the head for a single-step deployment (`resolveStepAddress`). Parsed
-  // to a positive integer below; a non-integer or non-positive value
-  // throws.
+  // Step count of the deployed definition (`stepOrder.length`), stringified
+  // by the supervisor; the deploy-tree read collapses onto the head for a
+  // single-step deployment. Parsed to a positive integer below.
   STEP_COUNT: "string > 0",
-  // Warm-keep signal (design §3b): `"true"` only for the single-step
-  // long-lived deployment the deploy projection marked a warm candidate;
-  // any other value (or absence) means cold instantiate-send-teardown.
-  // Carried explicitly rather than re-derived heuristically so the
-  // decision is deterministic and a multi-step agent is never warm-kept
-  // by a silent default.
+  // Warm-keep signal (§3b): `"true"` only for the single-step long-lived
+  // deployment the deploy projection marked a warm candidate; any other
+  // value (or absence) means cold instantiate-send-teardown. Carried
+  // explicitly rather than re-derived so the decision is deterministic and
+  // a multi-step agent is never warm-kept by a silent default.
   "WARM_KEEP?": "string",
-  // Sidecar-local directory of the materialized workflow-definition
-  // closure the deployment evaluates. Source-ref is the only deploy
-  // lineage, so the child always evaluates a pinned code closure to a
-  // LIVE definition and re-verifies it by project-then-hash; without
-  // this dir there is nothing to evaluate, so it is required. It never
-  // travels on the hub deploy frame.
+  // Sidecar-local dir of the materialized workflow-definition closure the
+  // deployment evaluates. Source-ref is the only deploy lineage, so the
+  // child always evaluates a pinned code closure to a LIVE definition and
+  // re-verifies it by project-then-hash; without this dir there is nothing
+  // to evaluate, so it is required. Never travels on the hub deploy frame.
   CLOSURE_PACKAGE_DIR: "string > 0",
 }).onUndeclaredKey("ignore");
 
 /**
- * The parsed spawn-time env. The hex-encoded trust anchors decode to their raw
- * byte representations so the IPC channel constructors can consume them without
- * re-validating the hex shape. Source-ref is the only deploy lineage, so every
- * child evaluates the pinned code closure at `closurePackageDir`; the field is
- * always present.
+ * The parsed spawn-time env. The hex-encoded trust anchors decode to their
+ * raw byte representations so the IPC channel constructors can consume them
+ * without re-validating the hex shape. Source-ref is the only deploy lineage,
+ * so `closurePackageDir` is always present.
  */
 export interface SpawnTimeEnv {
   /** Channel identifier minted by the supervisor for this spawn. */
@@ -93,32 +87,32 @@ export interface SpawnTimeEnv {
   anchorRunId: string;
   /**
    * Content hash of the deployed `WorkflowDefinition`: the hub-approved
-   * wire hash the deploy frame carried
-   * (`AgentDeployWorkflow.approvedWireHash`), not a sidecar recompute.
-   * The hub is the authority; the child re-verifies its own recompute
-   * against this value.
+   * wire hash the deploy frame carried (`AgentDeployWorkflow.approvedWireHash`),
+   * not a sidecar recompute. The hub is the authority; the child re-verifies
+   * its own recompute against this value.
    */
   definitionHash: string;
   /** Mail address the deployment registered on the bus. */
   mailboxAddress: string;
   /**
-   * Number of steps in the deployed `WorkflowDefinition`
-   * (`stepOrder.length`). Selects the head/step collapse in the sidecar's
-   * `resolveStepAddress`: a single-step deployment reads its deploy tree
-   * at the head, a multi-step deployment at the per-step address.
+   * Number of steps in the deployed definition (`stepOrder.length`). Selects
+   * the head/step collapse in the sidecar's `resolveStepAddress`: a
+   * single-step deployment reads its deploy tree at the head, a multi-step
+   * deployment at the per-step address.
    */
   stepCount: number;
   /**
-   * Whether this deployment's agent is warm-kept across messages (design
-   * §3b). True only for the single-step long-lived deployment the deploy
+   * Whether this deployment's agent is warm-kept across messages (§3b).
+   * True only for the single-step long-lived deployment the deploy
    * projection marked a warm candidate; the run-loop builds a warm-agent
    * cache when set and keeps cold instantiate-send-teardown otherwise.
    */
   warmKeep: boolean;
   /**
-   * Sidecar-local dir of the materialized workflow-definition closure the child
-   * evaluates to a live definition and re-verifies by project-then-hash.
-   * Source-ref is the only deploy lineage, so it is always present.
+   * Sidecar-local dir of the materialized workflow-definition closure the
+   * child evaluates to a live definition and re-verifies by
+   * project-then-hash. Source-ref is the only deploy lineage, so it is
+   * always present.
    */
   closurePackageDir: string;
 }
@@ -157,8 +151,7 @@ export function parseSpawnTimeEnv(
     );
   }
   // The IPC primitives expect the hex-encoded string form, so only the
-  // encoded length is verified against the documented channelId byte
-  // width.
+  // encoded length is verified against the documented channelId byte width.
   const expectedChannelIdHex = IPC_CRYPTO.CHANNEL_ID_BYTES * 2;
   if (validated.IPC_CHANNEL_ID.length !== expectedChannelIdHex) {
     throw new Error(

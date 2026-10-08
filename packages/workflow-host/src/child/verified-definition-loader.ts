@@ -27,15 +27,15 @@ export interface LoadVerifiedWorkflowDefinitionFromClosureOpts {
   /**
    * Sidecar-local directory of the materialized workflow-definition closure:
    * the package dir holding `package.json` (with `interchange.workflow`) and
-   * its laid-out `node_modules/`. The sidecar computes this when it applies
-   * the frozen closure and threads it through the child's spawn env.
+   * its laid-out `node_modules/`, computed when the sidecar applies the frozen
+   * closure and threaded through the child's spawn env.
    */
   packageDir: string;
   /**
-   * Hub-approved wire hash the re-verify must match. Sourced from the hub
-   * authority (`SpawnTimeEnv.definitionHash`). The recompute projects the
-   * evaluated LIVE definition back to its inert form and hashes that; a value
-   * that differs throws.
+   * Hub-approved wire hash the re-verify must match (from the hub authority,
+   * `SpawnTimeEnv.definitionHash`). The recompute projects the evaluated LIVE
+   * definition back to its inert form and hashes that; a value that differs
+   * throws.
    */
   approvedHash: string;
   /**

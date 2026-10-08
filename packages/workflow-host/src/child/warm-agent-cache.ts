@@ -2,31 +2,26 @@
 //
 // A long-lived single-step agent is built once -- tools materialized,
 // plugins instantiated, the LSP subprocess spawned -- and reused across
-// every inbound message, removing the instantiate-send-teardown cost and
+// every inbound message, removing instantiate-send-teardown cost and
 // preserving in-memory conversation continuity (durability across child
 // respawns lands in §3c).
 //
-// Ownership and lifetime. The cache lives in the child's address space,
-// owned by the run-loop (`run-child.ts`), not the supervisor. The
-// step-invoker consults it on every step invocation: a hit reuses the
-// warm agent, a miss builds and stores one lazily. The cached agent is
-// torn down -- the wrapped `agent.close()` disposes plugins and kills
-// the LSP subprocess -- only at the run-loop's eviction points, never
-// between messages. On recycle the child process dies, killing the LSP
-// grandchild regardless; the respawned child starts with an empty cache
-// and re-warms lazily.
+// Ownership and lifetime: the cache lives in the child, owned by the
+// run-loop (`run-child.ts`), not the supervisor. The step-invoker consults
+// it per step invocation: a hit reuses the warm agent, a miss builds and
+// stores one lazily. The cached agent is torn down (wrapped `agent.close()`
+// disposes plugins and kills the LSP subprocess) only at the run-loop's
+// eviction points, never between messages; on recycle the child dies with
+// the LSP grandchild and the respawned child re-warms lazily.
 //
-// Per-message event sink. The agent's `stream()` is consumed once, for
-// the agent's whole life, by a single forwarder owned by the entry. The
-// per-step `onEvent` sink differs per message (its error-log path
-// carries the run id), so the forwarder routes through a mutable
-// reference the step-invoker rewrites before each `agent.send`. The
-// forwarder loop ends only when the agent closes at an eviction point.
+// Per-message event sink: the agent's `stream()` is consumed once, for its
+// whole life, by a single forwarder; the per-step `onEvent` sink differs per
+// message, so the forwarder routes through a mutable reference the
+// step-invoker rewrites before each `agent.send`.
 //
-// Warm-keep is gated explicitly: the cache is constructed only when the
-// deploy projection marks the deployment a warm candidate. Multi-step
-// deployments pass no cache and keep instantiate-send-teardown per
-// step -- a multi-step agent is never warm-kept.
+// Warm-keep is gated explicitly: the cache is built only when the deploy
+// projection marks the deployment a warm candidate. Multi-step deployments
+// pass no cache and keep instantiate-send-teardown per step.
 
 import { getLogger } from "@intx/log";
 import type { Agent } from "@intx/agent";
@@ -48,12 +43,11 @@ export interface WarmEventSinkRef {
 
 /**
  * Per-turn settle barrier the connector reply drain exposes to the warm
- * step (design §3c durability). The step snapshots `replySeq()` before its
- * `agent.send` and, for a turn that produced a reply, awaits
- * `waitForReplyAfter(snapshot)` so the run parks -- and the supervisor
- * consumes the inbound mail -- only after the reply is durably sent. This is
- * the structural subset of the harness `ConnectorReplyDrain` the warm path
- * needs. The drain the sidecar builds satisfies it.
+ * step (§3c durability). The step snapshots `replySeq()` before its send
+ * and, for a turn that produced a reply, awaits `waitForReplyAfter(snapshot)`
+ * so the run parks -- and the supervisor consumes the inbound mail -- only
+ * after the reply is durably sent. The structural subset of the harness
+ * `ConnectorReplyDrain` the warm path needs.
  */
 export type WarmReplySettlement =
   | { readonly ok: true }
@@ -88,25 +82,19 @@ interface WarmEntry {
 }
 
 /**
- * Per-address warm-agent cache. Keyed by the step's stable identity (the
- * single step's id), so a long-lived agent resolves to the same entry on
- * every inbound message. The cache is single-writer from the run-loop's
- * perspective: the step-invoker builds-or-reuses inside one step
- * invocation, and the run-loop evicts at teardown.
+ * Per-address warm-agent cache, keyed by the step's stable identity so a
+ * long-lived agent resolves to the same entry on every message.
+ * Single-writer from the run-loop's perspective: the step-invoker
+ * builds-or-reuses inside one step invocation, the run-loop evicts at
+ * teardown.
  */
 export interface WarmAgentCache {
-  /**
-   * Return the warm agent cached for `key`, or `null` when none is
-   * built yet (the lazy first-message path). The caller builds the
-   * agent and calls `store` on a miss.
-   */
+  /** Return the warm agent for `key`, or `null` when none is built yet (the lazy first-message path); the caller builds and calls `store` on a miss. */
   acquire(key: string): Agent | null;
   /**
-   * Cache a freshly-built warm agent under `key`. The `eventSinkRef` is
-   * the mutable sink the agent's stream forwarder reads; `eventForward`
-   * is the forwarder loop's settle promise. `replyDrive` is the connector
-   * reply drain's per-turn barrier, or `null` when the deployment drives no
-   * threaded replies. Throws if an entry already exists for `key` -- a
+   * Cache a freshly-built warm agent under `key` (`eventSinkRef` is the
+   * forwarder's mutable sink, `eventForward` its settle promise, `replyDrive`
+   * the per-turn barrier or `null`). Throws if an entry already exists -- a
    * double-build is a step-invoker bug, not a silent overwrite that would
    * leak the prior agent's LSP subprocess.
    */
@@ -118,57 +106,40 @@ export interface WarmAgentCache {
     replyDrive: WarmReplyDrive | null,
   ): void;
   /**
-   * Return the connector reply drain's per-turn barrier cached for `key`, or
-   * `null` when the deployment drives no threaded replies. The step-invoker
-   * fetches it on every message -- the drain is established once at the
-   * first-message build but each message's send must snapshot and await it.
-   * Throws when no entry exists for `key`: a barrier fetch before the warm
-   * agent is stored is a step-invoker sequencing bug.
+   * Return the connector reply drain's per-turn barrier for `key`, or `null`
+   * when the deployment drives no threaded replies. Fetched on every message
+   * (the drain is established once at build, but each send must snapshot and
+   * await it). Throws when no entry exists -- a fetch before `store` is a
+   * step-invoker sequencing bug.
    */
   getReplyDrive(key: string): WarmReplyDrive | null;
-  /**
-   * Point the warm agent's stream forwarder at the active step's event
-   * sink before its `agent.send`. Throws when no entry exists for
-   * `key` -- the step-invoker must `store` before it rewrites the sink.
-   */
+  /** Point the agent's stream forwarder at the active step's event sink before its send; throws when no entry exists. */
   setEventSink(key: string, onEvent: (event: InferenceEvent) => void): void;
-  /**
-   * Clear the active event sink for `key` after a step's `agent.send`
-   * settles, so a stray event between messages is dropped rather than
-   * delivered to a torn-down per-run channel. A missing entry is a
-   * no-op: the agent may already have been evicted.
-   */
+  /** Clear the active sink after a send settles, so a stray event between messages is dropped rather than delivered to a torn-down channel. A missing entry is a no-op. */
   clearEventSink(key: string): void;
   /**
    * Apply a rotated inference-source list to every retained warm agent in
-   * place, via `Agent.setSources`. A single-step warm cache holds 0 or 1
-   * entry, so this rotates the one built agent -- or is a no-op when none
-   * is built yet (the pre-first-build window). The swap mutates the
-   * agent's shared active-source object in place and takes effect on the
-   * reactor's next inference call; the single-threaded control loop means
-   * there is no torn read against a concurrent send. `setSources` validates
-   * the list and throws on an invalid source (or a closed agent, if a
-   * rotation races eviction), so a bad rotation surfaces rather than being
+   * place via `Agent.setSources` (a single-step cache holds 0 or 1 entry, so
+   * this rotates the one built agent or no-ops in the pre-first-build
+   * window). The swap mutates the agent's shared active-source object in
+   * place and takes effect on the reactor's next call; the single-threaded
+   * control loop means no torn read against a concurrent send. `setSources`
+   * validates the list, so a bad rotation surfaces rather than being
    * swallowed.
    */
   applySources(sources: InferenceSource[], defaultSource: string): void;
   /**
    * Tear down every cached warm agent: run the wrapped `agent.close()`
-   * (disposing plugins and killing the LSP subprocess) and drain the
-   * stream forwarder. Idempotent -- a second call after the cache is
-   * empty is a no-op, so the run-loop can evict on both the shutdown
-   * frame and the exit-path `finally` without double-closing. Resolves
-   * once every agent is closed and every forwarder has drained, so no
-   * LSP subprocess outlives the call.
+   * (disposing plugins, killing the LSP subprocess) and drain the stream
+   * forwarder. Idempotent -- a second call on an empty cache is a no-op, so
+   * the run-loop can evict on both shutdown and the exit-path `finally`
+   * without double-closing. Resolves once every agent is closed and every
+   * forwarder drained.
    */
   evictAll(reason: string): Promise<void>;
 }
 
-/**
- * Construct an empty warm-agent cache. The run-loop builds one per
- * spawn when the deployment is a warm candidate and threads it into the
- * step-invoker; multi-step deployments construct none.
- */
+/** Construct an empty warm-agent cache; multi-step deployments construct none. */
 export function createWarmAgentCache(): WarmAgentCache {
   const entries = new Map<string, WarmEntry>();
 
@@ -226,10 +197,9 @@ export function createWarmAgentCache(): WarmAgentCache {
     defaultSource: string,
   ): void {
     // Rotate every retained agent before surfacing any failure: one agent
-    // rejecting the rotation (an invalid source, or a closed agent racing
-    // eviction) must not skip the rest. Collect failures and throw them
-    // together. (Warm-keep is single-step today, so the cache holds 0 or 1
-    // entry; this keeps the contract honest if warm-keep ever spans steps.)
+    // rejecting the rotation must not skip the rest. Collect failures and
+    // throw them together. (Single-step today, so the cache holds 0 or 1
+    // entry; this stays honest if warm-keep ever spans steps.)
     const failures: unknown[] = [];
     for (const entry of entries.values()) {
       try {
@@ -252,15 +222,13 @@ export function createWarmAgentCache(): WarmAgentCache {
     if (entries.size === 0) return;
     const toEvict = [...entries.values()];
     entries.clear();
-    // Close every entry before surfacing any failure: the wrapped close
-    // rejects when a disposer fails, and one entry's failure must not
-    // strand the remaining entries' teardown (leaking the LSP subprocesses
-    // warm-keep risks). Collect failures and throw them together once
-    // every agent is closed and drained.
+    // Close every entry before surfacing any failure: one entry's failure
+    // must not strand the rest's teardown (leaking LSP subprocesses).
+    // Collect failures and throw together once every agent is closed.
     const failures: unknown[] = [];
     for (const entry of toEvict) {
-      // Clear the sink first so events emitted during the agent's shutdown
-      // window are dropped rather than delivered to a torn-down channel.
+      // Clear the sink first so events emitted during the shutdown window
+      // are dropped rather than delivered to a torn-down channel.
       entry.eventSinkRef.current = null;
       try {
         await entry.agent.close();

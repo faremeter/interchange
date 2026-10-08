@@ -9,11 +9,10 @@
 // runtime body via the seed-events path on `runtimeRun`.
 //
 // Working-tree-read pattern: the substrate's `getRepoDir(repoId)` is a
-// pure path computation; sibling production adapters
-// (`adapters/repo-store.ts`, `adapters/blob-substrate.ts`,
-// `adapters/spawn-child.ts`) read working-tree contents directly via
-// `node:fs/promises`. Self-discovery follows the same path so a
-// startup scan does not need to consult the git object database.
+// pure path computation; sibling production adapters read working-tree
+// contents directly via `node:fs/promises`. Self-discovery follows the
+// same path so a startup scan does not need to consult the git object
+// database.
 
 import type {
   RepoId,
@@ -51,19 +50,16 @@ export interface DiscoverRunsOpts {
 }
 
 /**
- * Enumerate `runs/<runId>/` subdirectories and return one
- * `DiscoveredRun` entry per run whose log does not already end with a
- * terminal event. Runs that already terminated are skipped because
- * resume against a terminal log would still settle without progress
- * but would generate spurious "resume seed" reads for no benefit.
+ * Enumerate `runs/<runId>/` subdirectories and return one `DiscoveredRun`
+ * entry per run whose log does not already end with a terminal event (a
+ * terminal resume would settle without progress and generate spurious reads).
  *
- * Child runs are excluded. A run spawned by another run -- a
- * `childWorkflow` step's child or an `onTrigger` section's per-event body,
- * whichever committed a `ChildSpawned` naming it -- is driven by its
- * PARENT's runtime, not on its own. Resuming a child here would re-run it
- * under the deployment definition rather than the child's own definition,
- * and for a body approval park it would hub-register the child's internal
- * park that the parent already proxies up on the shared correlation. A
+ * Child runs are excluded. A run spawned by another run -- a `childWorkflow`
+ * child or an `onTrigger` section's per-event body, whichever committed a
+ * `ChildSpawned` naming it -- is driven by its PARENT's runtime, not on its
+ * own: resuming it here would re-run it under the deployment definition rather
+ * than the child's own, and for a body approval park it would hub-register an
+ * internal park the parent already proxies up on the shared correlation. A
  * child run is identified structurally, by appearing as a
  * `ChildSpawned.childRunId` in some log, rather than by its id shape.
  */
