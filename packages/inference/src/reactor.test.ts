@@ -148,9 +148,8 @@ function collectEvents(): {
 }
 
 // Resolve with the first collected event matching `predicate`, re-checking
-// after each event-loop turn. No deadline: a wall-clock number here is a race
-// the test loses under load, and a never-arriving event is the lane timeout's
-// job to report (CONVENTIONS.md, "Synchronizing on State, Not Time").
+// after each event-loop turn. No deadline (CONVENTIONS.md): a wall-clock
+// number races under load; a never-arriving event is the lane timeout's job.
 async function waitForEvent(
   events: ReactorEmittedEvent[],
   predicate: (e: ReactorEmittedEvent) => boolean,
@@ -166,9 +165,8 @@ async function waitForEvent(
   return found;
 }
 
-// Simple inbound message factory. Delegates to the mail-builder so the
-// reactor tests exercise the same shape consumers of @intx/mime
-// produce in production code.
+// Inbound message factory. Delegates to the mail-builder so tests exercise
+// the same shape @intx/mime consumers produce in production.
 function makeInboundMessage(correlationId?: string): InboundMessage {
   return createInboundMessage({
     from: "test@example.com",
@@ -180,8 +178,7 @@ function makeInboundMessage(correlationId?: string): InboundMessage {
 
 // An approval decision delivered to a parked run, stamped with the
 // correlationId of the suspension it resolves. The body is the JSON-encoded
-// ApprovalDecision the step invoker packs as the message content, which the
-// reactor parses on the correlation path to drive the resume.
+// ApprovalDecision the reactor parses on the correlation path.
 function makeApprovalMessage(
   correlationId: string,
   outcome: "approved" | "rejected" = "approved",
@@ -218,9 +215,8 @@ function directorFromTable(
 ): ReactorDirector {
   return {
     async decide(event, state, caps) {
-      // TypeScript cannot correlate the runtime key with the mapped type's
-      // per-key handler signature (correlated union problem): table[event.type]
-      // is typed as a union of all handlers, but we know it matches this event.
+      // Correlated union: table[event.type] is typed as a union of all
+      // handlers, but we know it matches this event.
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- correlated union: table[event.type] is guaranteed to be typed for this event.type by the DirectorTable mapped type
       const handler = table[event.type] as
         | DirectorHandler<typeof event>
@@ -249,9 +245,8 @@ type TestReactorOverrides = {
   shutdownTimeoutMs?: number;
   doomLoopThreshold?: number | false;
   // Wire-level tests (see tests/inference/reactor-streaming.test.ts) supply
-  // their own `Dependencies` (fetch stubbed by the harness) and may target a
-  // non-Anthropic provider. Both override hooks are optional; omit them for
-  // tests that don't care about the inference HTTP path.
+  // their own `Dependencies` and may target a non-Anthropic provider. Both
+  // hooks are optional; omit them when the inference HTTP path is irrelevant.
   deps?: Dependencies;
   source?: ReactorConfig["source"];
   failOverToNextSource?: () => boolean;
@@ -1062,13 +1057,12 @@ describe("createReactor — gate lifecycle", () => {
 
   test("does not emit reactor.gate.blocked until the suspend is durably committed", async () => {
     // Persist-before-settle: `reactor.gate.blocked` resolves the `send()`
-    // awaiter as "suspended", and a downstream consumer (the warm agent's
-    // run-boundary durability mirror) reads the pending operation back out of
-    // the context store the instant `send()` settles. So the durable commit
-    // must land BEFORE the event is emitted — otherwise the mirror reads an
-    // uncommitted store and durably loses the approval snapshot. This test
-    // gates the commit's `writeMetadata`: `blocked` must not appear while the
-    // commit is pending, and must appear once it is released.
+    // awaiter as "suspended", and the run-boundary durability mirror reads
+    // the pending operation back out of the context store the instant
+    // `send()` settles. The durable commit must land BEFORE the event is
+    // emitted, or the mirror reads an uncommitted store and loses the
+    // approval snapshot. This test gates the commit's `writeMetadata`:
+    // `blocked` must not appear while the commit is pending.
     let releaseCommit: (() => void) | undefined;
     const commitGate = new Promise<void>((resolve) => {
       releaseCommit = resolve;
@@ -1080,9 +1074,7 @@ describe("createReactor — gate lifecycle", () => {
       signalCommitEntered = resolve;
     });
     // Whether `blocked` had been emitted at the moment the commit was
-    // released -- read inside the store, which is the last point still inside
-    // the window. A reactor that emitted before or concurrently with the
-    // commit shows up here as `true`.
+    // released, read inside the store (the last point still in the window).
     let blockedDuringCommit: boolean | undefined;
     let signalCommitObserved: (() => void) | undefined;
     const commitObserved = new Promise<void>((resolve) => {
@@ -1121,16 +1113,14 @@ describe("createReactor — gate lifecycle", () => {
     reactor.start();
     reactor.deliver(makeInboundMessage());
 
-    // The reactor is parked inside the held commit, so a correctly-ordered
-    // reactor has not emitted `blocked` yet; a reactor that emits before
-    // committing would have emitted it before reaching this point.
+    // Parked inside the held commit, so a correctly-ordered reactor has not
+    // emitted `blocked` yet; one that emits before committing would have.
     await commitEntered;
     expect(events.some((e) => e.type === "reactor.gate.blocked")).toBe(false);
 
     // Release the durable commit; only now may `blocked` be emitted. The
-    // in-store check runs before the release returns control to the reactor,
-    // so it closes the window the check above leaves open: an emit that races
-    // the commit instead of preceding it.
+    // in-store check runs before the release returns control, closing the
+    // window the check above leaves open (an emit racing the commit).
     releaseCommit?.();
     await commitObserved;
     expect(blockedDuringCommit).toBe(false);
@@ -1141,14 +1131,12 @@ describe("createReactor — gate lifecycle", () => {
   });
 
   test("defers a gate clear racing the commit until after blocked", async () => {
-    // blocked-before-cleared: a gate whose timeout timer elapses while the
-    // suspend's durable commit is still in flight must not have its clear take
-    // effect before `reactor.gate.blocked` is emitted — downstream status
-    // derivation and the send-awaiter assume a gate's `blocked` precedes any
-    // effect of its clearing. This holds the commit's `writeMetadata` open
-    // long enough for a short gate timeout to fire inside the window, then
-    // asserts `blocked` is emitted before the `reactor.gate.cleared` it
-    // belongs to.
+    // blocked-before-cleared: a gate whose timeout fires while the suspend's
+    // durable commit is still in flight must not take effect before
+    // `reactor.gate.blocked` is emitted — downstream status derivation and the
+    // send-awaiter assume `blocked` precedes any effect of clearing. This
+    // holds the commit's `writeMetadata` open for a short gate timeout to fire
+    // inside the window, then asserts `blocked` precedes `reactor.gate.cleared`.
     let releaseCommit: (() => void) | undefined;
     const commitGate = new Promise<void>((resolve) => {
       releaseCommit = resolve;
@@ -1186,12 +1174,11 @@ describe("createReactor — gate lifecycle", () => {
     reactor.deliver(makeInboundMessage());
 
     // The gate timer firing inside the commit window is the race under test,
-    // and nothing observable reports it — a deferred clear is by definition
-    // not emitted. So the wait below is ordered against the timer rather than
-    // sized to outlast it: the gate's 30ms deadline was set before
-    // `commitEntered` resolved, and this timer's 80ms deadline is set after,
-    // so the gate's deadline is the earlier of the two and the event loop
-    // fires it first no matter how loaded the machine is.
+    // and nothing observable reports a deferred clear. So the wait below is
+    // ordered against the timer rather than sized to outlast it: the gate's
+    // 30ms deadline was set before `commitEntered` resolved and this timer's
+    // 80ms deadline after, so the gate fires first no matter how loaded the
+    // machine is.
     await commitEntered;
     await new Promise((r) => setTimeout(r, 80));
     expect(events.some((e) => e.type === "reactor.gate.blocked")).toBe(false);
@@ -1303,11 +1290,10 @@ describe("createReactor — tool execution", () => {
 // 7b. Doom-loop detection
 // ---------------------------------------------------------------------------
 
-// Drives one tool batch per turn. `nextBatch(turn)` supplies the batch to run
-// on each turn; returning null (or an empty batch) ends the run with `done`.
-// The director re-issues the next batch only once the current batch's results
-// are all in, mirroring the real director's pending-result accounting so a
-// parallel batch does not fan out into one re-issue per result.
+// Drives one tool batch per turn. `nextBatch(turn)` supplies the batch;
+// returning null (or empty) ends the run with `done`. The director re-issues
+// the next batch only once the current batch's results are all in, mirroring
+// the real director's pending-result accounting.
 function createBatchLoopDirector(
   nextBatch: (turn: number) => ToolCall[] | null,
 ): ReactorDirector {
@@ -1337,10 +1323,10 @@ function createBatchLoopDirector(
 
 // Drives the production-shaped agentic loop: each inference emits an assistant
 // turn carrying one tool_call, the director executes exactly that call, and the
-// tool result feeds the next inference. `argsFor(turn)` controls the arguments;
-// the loop ends after `maxTurns` inferences by issuing `done`. Unlike
-// `createBatchLoopDirector`, this interleaves an inference turn between tool
-// turns, matching the real reactor shape.
+// tool result feeds the next inference. `argsFor(turn)` picks the arguments for
+// the call emitted by that inference turn; the loop ends after `maxTurns`
+// inferences by issuing `done`. Unlike `createBatchLoopDirector`, this
+// interleaves an inference turn between tool turns, matching the real shape.
 function interleavedRunner(
   argsFor: (turn: number) => Record<string, unknown>,
   maxTurns: number,
@@ -1734,10 +1720,9 @@ describe("createReactor — doom-loop detection", () => {
   });
 
   test("accumulates across suspend, approval, and redispatch cycles", async () => {
-    // Each identical batch suspends for approval; approval re-dispatches the
-    // one parked call, and the reactor commits the cycle at every suspend. The
-    // run-scoped counter must survive that commit -- if it were reset there
-    // (e.g. added to resetCycleAccumulators), an approval-gated doom loop would
+    // Each identical batch suspends for approval, which re-dispatches the
+    // parked call and commits the cycle at every suspend. The run-scoped
+    // counter must survive that commit, or an approval-gated doom loop would
     // never trip. Threshold 2, so the second redispatch trips.
     let inferCount = 0;
     const inferenceRunner = async function* (opts: InferenceHarnessOptions) {
@@ -2678,11 +2663,10 @@ describe("createReactor — dequeue priority", () => {
   }
 
   test("tool.done is prioritized over message.received with addToHistory=true", async () => {
-    // Production uses addToHistory=true, so the tool-result turn is appended
-    // before tool.done is consumed; the pendingContinuations counter, not
-    // history shape, must keep the cycle pending. Against the old
-    // history-shape gate the appended turn flips the gate false and the queued
-    // message jumps ahead.
+    // Production uses addToHistory=true: the tool-result turn is appended
+    // before tool.done is consumed, so the pendingContinuations counter, not
+    // history shape, must keep the cycle pending (the old history-shape gate
+    // let the queued message jump ahead).
     const order: string[] = [];
 
     const { reactor, events, waitFor } = createTestReactor({
@@ -2709,8 +2693,7 @@ describe("createReactor — dequeue priority", () => {
       toolRunner: makeToolRunner(async (call) => {
         // Deliver a second message while the tool runs and wait for its enqueue
         // so message.received queues before tool.done — the interleave the bug
-        // lived in. The emitted event carrying this message's id is published
-        // in the same synchronous step as the enqueue.
+        // lived in (event and enqueue publish in the same synchronous step).
         const mail = makeInboundMessage();
         reactor.deliver(mail);
         await waitUntil(() =>
@@ -2736,9 +2719,8 @@ describe("createReactor — dequeue priority", () => {
   });
 
   // Both tool.done events of a two-call batch must be drained before mail
-  // delivered mid-batch. pendingContinuations must track the full batch count,
-  // not a single in-cycle flag. Run for both parallel and sequential
-  // execution since those take different enqueue paths in executeTools.
+  // delivered mid-batch; pendingContinuations must track the full batch count,
+  // not a single in-cycle flag. Run for both parallel and sequential paths.
   async function collectBatchDrainOrder(parallel: boolean): Promise<string[]> {
     const order: string[] = [];
     let toolDoneCount = 0;
@@ -2770,9 +2752,8 @@ describe("createReactor — dequeue priority", () => {
       },
       toolRunner: makeToolRunner(async (call) => {
         // Deliver a second message while the tool runs and wait for its enqueue
-        // so message.received queues before tool.done. The emitted event
-        // carrying this message's id is published in the same synchronous step
-        // as the enqueue.
+        // so message.received queues before tool.done (event and enqueue
+        // publish in the same synchronous step).
         const mail = makeInboundMessage();
         reactor.deliver(mail);
         await waitUntil(() =>
@@ -2842,11 +2823,10 @@ describe("createReactor — dequeue priority", () => {
   });
 
   test("inference.done is processed before mail delivered mid-inference", async () => {
-    // The overlapping-inference window for a plain (no-tool) response: mail
+    // Overlapping-inference window for a plain (no-tool) response: mail
     // arriving while an inference runs must not start a second inference ahead
-    // of the first's completion event. The counter defers it; the old
-    // history-shape gate would have let the mail jump ahead, since a plain
-    // assistant turn is not a pending tool_call turn.
+    // of the first's completion event. The old history-shape gate let the mail
+    // jump ahead, since a plain assistant turn is not a pending tool_call turn.
     const order: string[] = [];
     let inferenceCount = 0;
 
@@ -2869,8 +2849,8 @@ describe("createReactor — dequeue priority", () => {
       inferenceRunner: async function* (opts) {
         inferenceCount += 1;
         // Deliver mail mid-inference and wait for its enqueue so the message
-        // is queued before inference.done. The emitted event carrying this
-        // message's id is published in the same synchronous step as the enqueue.
+        // is queued before inference.done (event and enqueue publish in the
+        // same synchronous step).
         const mail = makeInboundMessage();
         reactor.deliver(mail);
         await waitUntil(() =>
@@ -3176,10 +3156,9 @@ describe("createReactor — state snapshot inspection", () => {
     // suspended call and no approval snapshot.
     expect(op.suspendedCall).toBeUndefined();
     expect(op.approvalSnapshot).toBeUndefined();
-    // It emits no `reactor.gate.blocked` -- the event that drives the hub's
-    // approval co-write -- so a marker never writes an approval row. This keeps
-    // the snapshot columns non-null: only the ask rail co-writes, and it always
-    // carries a snapshot.
+    // It emits no `reactor.gate.blocked` — the event that drives the hub's
+    // approval co-write — so a marker never writes an approval row and the
+    // snapshot columns stay non-null.
     expect(events.some((e) => e.type === "reactor.gate.blocked")).toBe(false);
   });
 
@@ -3373,8 +3352,8 @@ function makeInferenceRunner(
 
 // ---------------------------------------------------------------------------
 // afterInferenceDone abort/halt policy, end to end. Drives the real
-// DefaultDirector so the action sets its abort and halt branches build are
-// validated by the reactor; the regression was those sets being rejected.
+// DefaultDirector so its abort and halt action sets are validated by the
+// reactor; the regression was those sets being rejected.
 // ---------------------------------------------------------------------------
 
 describe("createReactor — afterInferenceDone abort and halt", () => {
@@ -4515,11 +4494,11 @@ describe("createReactor — approval resume re-dispatch", () => {
   });
 
   test("the re-dispatched approved call re-infers exactly once and leaves no outstanding results", async () => {
-    // Guards the pendingToolResults counter trap: a re-dispatch driven from the
+    // Guards the pendingToolResults counter trap: a re-dispatch from the
     // correlation path never passes through inference.done, so the director
     // seeds its outstanding-result count off resume.execute_tools; otherwise
-    // the count sits at zero and the re-dispatched call's tool.done drives an
-    // accidental re-inference off a negative count.
+    // the count sits at zero and the call's tool.done drives a re-inference
+    // off a negative count.
     const cell: PersistedCell = {
       turns: [],
       pendingOperations: [],
@@ -4934,10 +4913,8 @@ describe("createReactor — approval resume error result", () => {
 
   test("a gate with no suspendedCall-bearing op still resumes on a bare gate-cleared timeout", async () => {
     // The non-ask rail (a director-suspended gate, or an async-marker pending
-    // op that carries no suspendedCall) must keep today's behavior on timeout:
-    // a plain reactor.gate.cleared drives the re-infer, with no synthetic tool
-    // result manufactured. The fork only diverts a gate whose op has a
-    // suspendedCall.
+    // op with no suspendedCall) keeps the plain behavior on timeout: a
+    // reactor.gate.cleared drives the re-infer, with no synthetic tool result.
     let cleared = false;
     const director = directorFromTable({
       "message.received": (_e, _s, caps) =>
@@ -4975,10 +4952,9 @@ describe("createReactor — approval resume error result", () => {
 describe("createReactor — corrupt persisted state", () => {
   test("duplicate correlationId in persisted pending operations emits reactor.error and reactor.done", async () => {
     // The pending operations come from the context store, an untrusted
-    // external boundary. Two operations sharing a correlationId make the
-    // second correlation registration throw during rehydration. That failure
-    // must surface as reactor.error plus reactor.done, exactly like a load
-    // failure, rather than bricking the reactor with no lifecycle events.
+    // external boundary: two operations sharing a correlationId make the
+    // second registration throw during rehydration. That must surface as
+    // reactor.error plus reactor.done, like a load failure.
     const now = Date.now();
     const duplicate: PendingOperation[] = [
       {
@@ -5423,10 +5399,9 @@ describe("createReactor — tool result transform chain", () => {
       }),
     });
 
-    // Inject the transforms via a private property — we cannot pass them via
-    // createTestReactor's typed overrides without expanding its shape, so we
-    // construct a second reactor directly below for the headline tests. For
-    // ordering coverage here we lean on the harness-side reactor.
+    // Inject the transforms via a private property — createTestReactor's typed
+    // overrides cannot carry them without expanding its shape. Ordering
+    // coverage here leans on the harness-side reactor.
     void t1;
     void t2;
 
@@ -5710,12 +5685,9 @@ describe("createReactor — transform chain ordering and compact action", () => 
       },
     };
 
-    // After compact, we expect the reactor to deliver no automatic event; the
-    // director needs to drive the next infer. To exercise that, we patch the
-    // director to issue infer after compact via a synthetic message.received.
-    // Here we use a slightly richer director that knows to re-infer once the
-    // compact cycle's commit has happened. We approximate by delivering a
-    // second message after compact via a side channel.
+    // After compact, the reactor delivers no automatic event; the director
+    // must drive the next infer. We approximate the richer director by
+    // delivering a second message after the compact cycle commits.
     void compactor;
 
     const { reactor, events, waitFor } = createDirectReactor({
@@ -5728,12 +5700,10 @@ describe("createReactor — transform chain ordering and compact action", () => 
     reactor.start();
     reactor.deliver(makeInboundMessage());
 
-    // After the compact cycle commits, the conversation has been truncated.
-    // The director did not chain compact + infer; it only emitted compact.
-    // Drive the next infer by delivering another message that re-runs the
-    // event loop. The director's message.received → infer rule will fire.
-    // The compactor's manifest record is written by the compact cycle, so it
-    // reports that the cycle this delivery must follow has happened.
+    // After the compact cycle commits, the conversation is truncated; the
+    // director emitted compact alone, so a second message drives the next
+    // infer. The compactor's manifest record signals that the cycle this
+    // delivery must follow has committed.
     await waitUntil(() =>
       recording.manifests
         .flat()
@@ -6060,10 +6030,9 @@ describe("createReactor — message.run bracket emission", () => {
   });
 
   test("abort mid-message does not emit a bracket-end event", async () => {
-    // The bracket stays open across the abort by routing message.received
-    // to suspend. When the reactor is killed mid-message by an external
-    // abort, the bracket-end event must not fire — cancellation lives in
-    // the workflow-runtime vocabulary, not on the reactor's bracket.
+    // The bracket stays open across the abort: when the reactor is killed
+    // mid-message by an external abort, the bracket-end event must not fire —
+    // cancellation lives in the workflow-runtime layer, not the reactor.
     const { reactor, events, waitFor } = createTestReactor({
       director: directorFromTable({
         "message.received": (_e, _s, caps) =>
@@ -6300,8 +6269,7 @@ describe("createReactor — prompt well-formedness tripwire", () => {
     // History with two tool_result blocks for one callId is the shape
     // OpenAI-compatible providers reject with HTTP 400. executeInfer must
     // catch it before sending and surface it as a fatal reactor error rather
-    // than letting it reach a provider. This also guards the assertion's
-    // call site: without it, no test would notice the prompt going out.
+    // than letting it reach a provider.
     const malformed: ConversationTurn[] = [
       {
         role: "assistant",
