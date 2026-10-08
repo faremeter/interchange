@@ -105,6 +105,16 @@
       "types": "./dist/repo.d.ts",
       "default": "./dist/repo.js"
     },
+    "./runtime-core": {
+      "intx-src": "./src/runtime-core.ts",
+      "types": "./dist/runtime-core.d.ts",
+      "default": "./dist/runtime-core.js"
+    },
+    "./inference-events": {
+      "intx-src": "./src/inference-events.ts",
+      "types": "./dist/inference-events.d.ts",
+      "default": "./dist/inference-events.js"
+    },
     "./attachments": {
       "intx-src": "./src/attachments.ts",
       "types": "./dist/attachments.d.ts",

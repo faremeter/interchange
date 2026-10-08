@@ -31,10 +31,16 @@ pull in the shapes they need:
   `ErrorRecord` shapes for tool-authorization and error records.
 - `@intx/types/content-type` — `detectResponseKind`, which classifies a
   response's `Headers` as an SSE stream or a JSON body.
-- `@intx/types/runtime` — inference and harness contracts:
+- `@intx/types/runtime` — aggregate entry for runtime contracts and
+  inference-event wire schemas.
+- `@intx/types/runtime-core` — inference and harness contracts:
   `ContextStore`, `ToolRunner`, `ToolDefinition`, `AuditStore`,
   `InferenceSource` (the resolved provider/model/credential a call
-  executes against), retry policy, director and reactor types.
+  executes against), retry policy, director and reactor types. Use this
+  lighter entry in child processes that need runtime contracts without
+  constructing the inference-event union.
+- `@intx/types/inference-events` — the `InferenceEvent` wire validator,
+  its discriminated TypeScript type, and `parseInferenceEvent`.
 - `@intx/types/inbound-mail-policy` — `InboundMailOutcome`,
   `AuthorControllableOutcome`, and the authored `InboundMailPolicy` schema.
 - `@intx/types/format-safety-rating` — `formatSafetyRatingText`, the plain-text

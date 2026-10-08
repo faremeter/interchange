@@ -19,7 +19,7 @@
 
 import { getLogger } from "@intx/log";
 
-import { MessageTransportError } from "@intx/types/runtime";
+import { MessageTransportError } from "@intx/types/runtime-core";
 
 import type {
   ControlChannelSender,

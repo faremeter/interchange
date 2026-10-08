@@ -1889,7 +1889,7 @@ are explicitly **not** a go-live gate for INTR-209.
   `packages/hub-sessions/src/ws/sidecar-token-authenticator.ts`.
 - Grants bridge (reusable):
   `dispatch/workflow-launch-and-converge/8a-route_single_step_via_child/8a-groundwork.patch`.
-- Transport interface: `packages/types/src/runtime.ts` (`MessageTransport`).
+- Transport interface: `packages/types/src/runtime-core.ts` (`MessageTransport`).
 - Tool packaging: `@intx/tool-packaging` (`createToolLoader`, `applyAtomic`,
   `createTarballCache`).
 - INTR-209 fixture: `tests/workflow-deploy/multistep-signal.test.ts`.

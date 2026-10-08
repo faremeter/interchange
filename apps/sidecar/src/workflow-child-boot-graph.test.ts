@@ -209,6 +209,8 @@ describe("workflow-child boot graph", () => {
     );
     const forbiddenModules = [
       "packages/types/src/index.ts",
+      "packages/types/src/runtime.ts",
+      "packages/types/src/inference-events.ts",
       "packages/types/src/sidecar.ts",
       "packages/workflow-deploy/src/index.ts",
       "packages/workflow-host/src/index.ts",
@@ -273,6 +275,8 @@ test("probe and authoring imports exclude unused host and execution schemas", as
     "packages/inference/src/harness.ts",
     "packages/types/src/index.ts",
     "packages/types/src/runtime.ts",
+    "packages/types/src/runtime-core.ts",
+    "packages/types/src/inference-events.ts",
     "packages/types/src/sidecar.ts",
     "packages/workflow/src/runtime/",
     "packages/workflow-host/src/probe/index.ts",

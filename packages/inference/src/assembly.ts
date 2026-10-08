@@ -23,7 +23,7 @@ import {
   type ToolDefinition,
   type ToolResultTransform,
   type ToolRunner,
-} from "@intx/types/runtime";
+} from "@intx/types/runtime-core";
 
 import { createAuditCollector, type AuditCollector } from "./audit-collector";
 import {

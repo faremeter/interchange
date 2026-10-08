@@ -62,15 +62,15 @@ import {
 } from "@intx/agent";
 import { getLogger } from "@intx/log";
 import { createInboundMessage, extractAddrSpec, isMessageId } from "@intx/mime";
+import type { InferenceEvent } from "@intx/types/inference-events";
 import type {
   InboundMessage,
-  InferenceEvent,
   InferenceSource,
   Mail,
   MailPartReader,
   MessageAttachment,
-} from "@intx/types/runtime";
-import { isMail } from "@intx/types/runtime";
+} from "@intx/types/runtime-core";
+import { isMail } from "@intx/types/runtime-core";
 import type {
   AuthorizeContext,
   StepInvokeRequest,

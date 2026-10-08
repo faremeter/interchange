@@ -27,16 +27,16 @@ import path from "node:path";
 
 import { type } from "arktype";
 
-import { InferenceSource } from "@intx/types/runtime";
+import { InferenceSource } from "@intx/types/runtime-core";
+import type { InferenceEvent } from "@intx/types/inference-events";
 import type {
   ApprovalSnapshot,
   AuditStore,
   ContextStore,
   InboundMessage,
-  InferenceEvent,
   MessageTransport,
   PendingOperation,
-} from "@intx/types/runtime";
+} from "@intx/types/runtime-core";
 import type { RuntimeCapabilities } from "@intx/types/runtime-capabilities";
 import { evaluateGrants } from "@intx/authz";
 import type { GrantRule } from "@intx/authz";

@@ -18,7 +18,7 @@
 //                                            handler throws.
 //
 // `createToolRunner(tools)` builds a `ToolRunner` that dispatches by tool
-// name. Per the ToolRunner contract (packages/types/src/runtime.ts), `run`
+// name. Per the ToolRunner contract (packages/types/src/runtime-core.ts), `run`
 // must not throw -- unknown tool names and handler exceptions are surfaced
 // as `ToolResult` with `isError: true` so the model sees them and can
 // recover.

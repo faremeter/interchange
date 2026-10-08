@@ -635,7 +635,7 @@ describe("Anthropic parser — citations_delta to inference.citation", () => {
   test("citation missing cited_text throws ProtocolMismatchError", () => {
     // CitationBlock.citedText is required ("Both providers emit it;
     // required for inspection and for fallback offset reconstruction"
-    // — runtime.ts). Surfacing a missing wire field as a thrown error
+    // — runtime-core.ts). Surfacing a missing wire field as a thrown error
     // is the load-bearing alternative to coalescing to an empty
     // string and silently emitting a content-free citation.
     const adapter = createAnthropicAdapter(TEST_SOURCE);

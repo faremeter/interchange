@@ -39,8 +39,8 @@ import type {
   SyncState,
   Thread,
   Unsubscribe,
-} from "@intx/types/runtime";
-import { MessageTransportError } from "@intx/types/runtime";
+} from "@intx/types/runtime-core";
+import { MessageTransportError } from "@intx/types/runtime-core";
 
 import type { ChildMailboxCallBridge } from "./mailbox-call-bridge";
 import type { MailboxCallSuccess } from "./mailbox-call-bridge";
