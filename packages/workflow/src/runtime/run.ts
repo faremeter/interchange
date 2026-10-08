@@ -160,9 +160,8 @@ export function runtimeRun(
         origin,
       };
       try {
-        // Out-of-band vs the body's segment buffer: persist immediately so a
-        // crash mid-cancel does not lose the request. `commitDurable` flushes
-        // pending buffer first, keeping the durable tip contiguous.
+        // Out-of-band vs the segment buffer: persist immediately so a crash
+        // mid-cancel does not lose the request; `commitDurable` flushes first.
         await commitDurable(env, runId, event);
         // Emit ChildCancelRequested for live children before the abort listener
         // fires, so the parent's log records the ask alongside the child's
@@ -224,10 +223,8 @@ async function executeRun(
   }
 }
 
-// Intra-segment commit: validates the transition and assigns the seq in
-// memory but defers the durable write into the per-runId buffer, flushed in
-// one `appendBatch` at the next segment boundary (a suspension or the
-// terminal event).
+// Intra-segment commit: validate the transition and assign the seq in
+// memory; the durable write lands in the per-runId buffer.
 function commit(
   env: WorkflowRuntimeEnv,
   runId: string,
@@ -236,11 +233,10 @@ function commit(
   return commitBufferedToChain(env, runId, event);
 }
 
-// Segment-boundary commit: buffers the event, then flushes the whole pending
-// buffer (this event last) in one durable `appendBatch`. Used for terminal
-// events (on disk the moment the commit resolves), the control-plane `cancel`,
-// and the agent-invoke barrier (see `runStep`). The terminal event as the
-// last blob keeps the workflow-run kind handler's terminal-lock satisfied.
+// Segment-boundary commit: buffer the event, then flush the whole pending
+// buffer in one durable `appendBatch`. Used for terminal events, the
+// control-plane `cancel`, and the agent-invoke barrier (see `runStep`); the
+// terminal event last keeps the terminal-lock satisfied.
 function commitDurable(
   env: WorkflowRuntimeEnv,
   runId: string,
@@ -249,10 +245,9 @@ function commitDurable(
   return commitDurableToChain(env, runId, event);
 }
 
-// Flush the pending buffer in one `appendBatch` at a suspension boundary
-// AFTER buffering the suspension marker, so the marker is durable before the
-// run parks. The out-of-process scheduler tails the durable `TimerSet`; a
-// marker that never flushed would be lost on a park.
+// Flush the pending buffer in one `appendBatch` AFTER buffering the
+// suspension marker, so the marker is durable before the run parks; the
+// out-of-process scheduler tails the durable `TimerSet`.
 async function flush(env: WorkflowRuntimeEnv, runId: string): Promise<void> {
   await flushChain(env, runId);
 }
@@ -307,8 +302,7 @@ async function executeRunBody(
   // recorded them; the runLocal in-memory substrate is ephemeral, so fail
   // with a targeted error rather than a deep `resolveRef` miss. Runs before
   // the terminal short-circuit and the hydration below (both call
-  // `resolveRef`); keyed on `initialEvents` so it fires for any seeded
-  // resume and is a no-op for a seedless one.
+  // `resolveRef`); keyed on `initialEvents`, so a seedless resume skips it.
   const seedBlobRefs = initialEvents.filter(
     (e): e is typeof e & { kind: "StepCompleted" } =>
       e.kind === "StepCompleted" && e.output.ref.startsWith("blob:"),
@@ -319,9 +313,8 @@ async function executeRunBody(
     );
   }
 
-  // Establish canonical state from the durable log, not the seed array -- a
-  // seed reaches this process as `resumeFromEvents` or adopted from disk, so
-  // every decision below keys on the reduced log.
+  // Establish canonical state from the durable log, not the seed array; every
+  // decision below keys on the reduced log.
   let state = await reloadState(env, runId);
 
   // Terminal short-circuit: a recovery call against an already-terminal log
@@ -588,9 +581,7 @@ async function executeRunBody(
   const justSettled = new Set<string>();
   // Per-step local abort controllers. Each scheduled primitive gets one; the
   // controller fires when the outer cancelController aborts, or when
-  // drain.signal aborts AND the step's behavior is `"cancel"`. The main loop
-  // reads this map to abort in-flight cancel-mode steps when drain fires
-  // after the step was already scheduled.
+  // drain.signal aborts AND the step's behavior is `"cancel"`.
   const stepAborts = new Map<string, AbortController>();
 
   // Tick loop: schedule everything ready, await any in-flight to settle,
@@ -602,10 +593,7 @@ async function executeRunBody(
     }
 
     // Drain observation point #1: main loop entry. If drain has fired, abort
-    // every in-flight step whose declared behavior is `"cancel"`. The
-    // supervisor's drainTimeout accumulator ticks against these aborts; on
-    // expiry it commits a signed `CancelRequested{origin:
-    // "supervisor-drain"}` the body picks up via the cancel cascade.
+    // every in-flight step whose declared behavior is `"cancel"`.
     if (env.drain.signal.aborted) {
       for (const stepId of inFlight) {
         if (shouldAbortForDrain(env.drain, stepId)) {
@@ -1002,9 +990,8 @@ async function runPrimitiveSafe(
     if (!stepState) {
       // The step never reached `StepStarted`. If the run is cancelling (or
       // already terminal), the body's cleanup path owns the terminal events;
-      // emitting synthetic step events here would be rejected because
-      // `StepStarted` requires `running`. Surface the original cause and
-      // leave the log untouched.
+      // synthetic step events would be rejected. Surface the original cause
+      // and leave the log untouched.
       if (state.phase === "cancelling" || isTerminalRunPhase(state.phase)) {
         throw cause;
       }
@@ -1039,11 +1026,9 @@ async function runPrimitiveSafe(
       stepState.phase === "awaiting-signal" ||
       stepState.phase === "awaiting-timer";
     if (stillRunning) {
-      // If the run is being cancelled, propagate cancellation directly rather
-      // than landing StepFailed -- a step mid-flight when cancellation
-      // reached it should end up `cancelled`, not `failed`. "Cancellation
-      // wins over failure" at the run level; the step-level guarantee lives
-      // here.
+      // Cancellation wins over failure: a step mid-flight when cancellation
+      // reached it should end up `cancelled`, not `failed`; the step-level
+      // guarantee lives here.
       if (state.phase === "cancelling") {
         const propagated: WorkflowEvent = {
           kind: "CancelPropagated",
@@ -1265,11 +1250,10 @@ async function runStep(
       // Suspend/resume bridge. The first invocation drives a plain agent
       // send; if the reactor parks on a gate, `invokeStep` returns
       // `{ suspend: { correlationId } }` instead of an output. The step then
-      // parks durably under the reserved `signalName(correlationId)` channel
-      // via `parkOnSignal` (emits SignalAwaited, parks, returns the
-      // delivered decision). When the decision arrives, the step is
-      // re-invoked with `resume`, so the invoker re-dispatches the tool and
-      // the real reply -- not the raw signal payload -- is the step output.
+      // parks durably on the reserved `signalName(correlationId)` channel;
+      // when the decision arrives it is re-invoked with `resume`, so the
+      // invoker re-dispatches the tool and the real reply -- not the raw
+      // signal payload -- is the step output.
       let output: unknown;
       let resume:
         | { correlationId: string; decision: unknown; kind: ControlParkKind }
@@ -1433,9 +1417,7 @@ async function runStep(
       let after = await reloadState(env, runId);
       // Cancellation wins over step-level failure: if the run is cancelling,
       // the catch landed because the step's abort fired, so the audit log
-      // records a step cancellation rather than a runtime-attributed
-      // failure. CancelPropagated moves the step to `cancelled`; the
-      // post-loop cancellation branch settles the run.
+      // records a cancellation rather than a runtime-attributed failure.
       if (after.phase === "cancelling") {
         const propagated: WorkflowEvent = {
           kind: "CancelPropagated",
