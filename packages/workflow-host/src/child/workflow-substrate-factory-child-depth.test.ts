@@ -1,20 +1,17 @@
-// The childWorkflow spawn-depth ceiling on the REAL in-process spawn path.
+// The childWorkflow spawn-depth ceiling on the real in-process spawn path.
 //
-// `createSidecarRunChild` recurses on itself: a childWorkflow runs its child in
-// the same process against the same shared workflow-run repo, threading `depth`
-// by value through each rung (no serialization, no reset). So this harness --
-// a real on-disk substrate plus the real `createSidecarRunChild` /
-// `createInMemorySpawnChild` / `runtimeRun` seam -- exercises the identical spawn
-// path a deployed chain runs; the hub deploy-frame and the workflow-host
-// subprocess wrapper are the only things a full roundtrip would add, and neither
-// is where the depth guard lives.
+// `createSidecarRunChild` recurses on itself: a childWorkflow runs its child
+// in the same process against the same shared workflow-run repo, threading
+// `depth` by value through each rung. This harness exercises that identical
+// path; the hub deploy-frame and the workflow-host subprocess wrapper are the
+// only things a full roundtrip would add, and neither holds the depth guard.
 //
-// A nested chain lets depth ACCUMULATE rung over rung until the guard fires,
-// rather than pre-loading a single `depth + 1 > max` arithmetic check (that is
-// covered by the runLocal and child-depth unit tests). With the ceiling lowered
-// to 2, the parent (depth 0) spawns outer (1) and outer spawns mid (2) for real
-// -- proving depth climbs past 0 -- and only mid spawning leaf (depth 3) trips
-// the guard, landing a clean `StepFailed` that names the offending depth.
+// A nested chain lets depth accumulate until the guard fires, rather than
+// pre-loading a single arithmetic check (covered by the runLocal and
+// child-depth unit tests). With the ceiling lowered to 2, parent (0) spawns
+// outer (1) and outer spawns mid (2) for real, and only mid spawning leaf (3)
+// trips the guard, landing a clean `StepFailed` that names the offending
+// depth.
 
 import { describe, test, expect, afterAll, beforeAll } from "bun:test";
 import fs from "node:fs";
@@ -71,12 +68,12 @@ const PRINCIPAL: WorkflowRunWorkflowProcessPrincipal = {
 const tempDirs: string[] = [];
 let signingKey: KeyPair;
 // `buildChildRunEnv` reads each spawned rung's `sources.json` eagerly, keyed by
-// the rung's rewritten ref -- the `<enclosingId>__<stepId>` handle the deploy
-// mints, which accumulates as the chain descends. The intermediate rungs carry
-// no agent step, but the read still happens, so stage a minimal file for every
-// rung that runs its env: the top (`depth-parent`), outer
-// (`depth-parent__spawn`), and mid (`depth-parent__spawn__spawn`). The leaf rung
-// is never reached because the guard fires before mid spawns it.
+// the rung's rewritten ref (the `<enclosingId>__<stepId>` handle, which
+// accumulates as the chain descends). The intermediate rungs carry no agent
+// step, but the read still happens, so stage a minimal file for every rung that
+// runs its env: top (`depth-parent`), outer (`depth-parent__spawn`), and mid
+// (`depth-parent__spawn__spawn`). The leaf rung is never reached because the
+// guard fires before mid spawns it.
 const RUNG_SOURCE_REFS = [
   "depth-parent",
   "depth-parent__spawn",
@@ -296,15 +293,15 @@ describe("createSidecarRunChild spawn-depth ceiling", () => {
     // propagated up every rung's spawn step.
     expect(result.terminalStatus).toBe("failed");
 
-    // Depth climbed for real: the parent spawned outer (depth 1) and outer
-    // spawned mid (depth 2) before the guard fired -- two successful in-process
-    // spawns, not a single pre-loaded arithmetic trip.
+    // Depth climbed for real: parent spawned outer (depth 1) and outer
+    // spawned mid (depth 2) before the guard fired -- two successful
+    // in-process spawns.
     const outerRunId = await spawnedChildRunId(substrate, topRunId);
     const midRunId = await spawnedChildRunId(substrate, outerRunId);
 
     // mid (depth 2) spawning leaf (depth 3) tripped the guard: its spawn step
-    // failed loud, and the error names the offending depth and ceiling verbatim.
-    // mid never committed a ChildSpawned (the guard fires before it).
+    // failed loud, naming the offending depth and ceiling, and mid never
+    // committed a ChildSpawned (the guard fires before it).
     const midEvents: readonly WorkflowEvent[] =
       await reader(substrate).read(midRunId);
     expect(midEvents.some((e) => e.kind === "ChildSpawned")).toBe(false);

@@ -2,34 +2,26 @@
 // design §3b).
 //
 // The supervisor is the sole mail owner: it commits an arrived message to the
-// workflow-run substrate mailbox and fires a `mailbox.notify` control frame.
-// The child's control loop routes that frame to this registry's `fire`, which
-// delivers a typed `exists` `MailboxEvent` to every callback registered for the
-// mailbox through `watch`. The step agent's supervisor-backed transport
-// implements `MessageTransport.watch` over this registry, so `mail_wait`
-// unblocks when new mail lands -- decoupled from the FIFO trigger dispatch that
-// resolves a run's first input.
+// substrate mailbox and fires a `mailbox.notify` control frame; the child's
+// control loop routes that frame to `fire`, which delivers an `exists`
+// `MailboxEvent` to every callback registered through `watch`.
 //
-// Delivery is ASYNCHRONOUS. A `fire` never invokes a callback synchronously on
-// the delivering call stack: it schedules each callback on a microtask, per the
-// IMAP IDLE contract the `MailboxEvent` watcher models (MESSAGE.md § Real-Time
-// Notification). Delivery re-checks registration at the microtask, so a watcher
-// that unsubscribes between `fire` and delivery observes no event.
+// Delivery is asynchronous: `fire` schedules each callback on a microtask per
+// the IMAP IDLE contract, and re-checks registration at delivery so a watcher
+// that unsubscribed in between observes no event.
 
 import type { MailboxEvent, Unsubscribe } from "@intx/types/runtime";
 
 export interface MailboxWatchRegistry {
   /**
-   * Register a callback for a mailbox. Returns an `Unsubscribe` that removes
-   * it; after unsubscribe the callback observes no further events, including
-   * one whose `fire` preceded the unsubscribe but whose asynchronous delivery
-   * had not yet run.
+   * Register a callback for a mailbox. The returned `Unsubscribe` removes it;
+   * a callback observes no event after unsubscribe, including one whose `fire`
+   * preceded the unsubscribe but whose delivery had not yet run.
    */
   watch(mailbox: string, callback: (event: MailboxEvent) => void): Unsubscribe;
   /**
-   * Deliver a `MailboxEvent` to every callback currently registered for the
-   * mailbox, each on its own microtask. A no-op when no callback is registered
-   * for the mailbox.
+   * Deliver a `MailboxEvent` to every callback registered for the mailbox,
+   * each on its own microtask. No-op when none is registered.
    */
   fire(mailbox: string, event: MailboxEvent): void;
 }
@@ -47,7 +39,7 @@ export function createMailboxWatchRegistry(): MailboxWatchRegistry {
       set.add(callback);
       let active = true;
       return () => {
-        // Idempotent: a double-unsubscribe must not remove a same-identity
+        // Idempotent: a second unsubscribe must not remove a same-identity
         // callback a later `watch` re-registered.
         if (!active) return;
         active = false;
@@ -60,10 +52,8 @@ export function createMailboxWatchRegistry(): MailboxWatchRegistry {
     fire(mailbox, event) {
       const set = watchers.get(mailbox);
       if (set === undefined) return;
-      // Snapshot the callbacks registered at fire time, then deliver each on
-      // its own microtask so no callback runs synchronously on this call
-      // stack. Re-check membership at delivery so a callback unsubscribed
-      // between now and its microtask does not receive the event.
+      // Deliver each registered callback on its own microtask; re-check
+      // membership at delivery so an unsubscribed callback sees no event.
       for (const callback of [...set]) {
         queueMicrotask(() => {
           const current = watchers.get(mailbox);

@@ -1,16 +1,13 @@
 // Enumerate a child's currently-parked approval correlations from durable
 // state, so the child can answer a supervisor `parked-correlations.request`.
 //
-// Enumeration keys on REDUCED step state, never on raw `SignalAwaited` log
-// events. `parkOnSignal` commits `SignalAwaited` to the durable log before it
-// checks for the approval snapshot, so a snapshot-less correlated suspend (a
-// director `caps.suspend`, an unwired authz gate) leaves a control-plane
-// `SignalAwaited` in the log yet reduces to `phase === "failed"` -- never
-// `awaiting-signal`, and never a hub row. Filtering on the reduced
+// Enumeration keys on reduced step state, never on raw `SignalAwaited` log
+// events: `parkOnSignal` commits `SignalAwaited` before checking for the
+// approval snapshot, so a snapshot-less correlated suspend reduces to
+// `phase === "failed"`, never `awaiting-signal`. Filtering on the reduced
 // `awaiting-signal` phase therefore surfaces only the parks that carry a
-// durable snapshot by construction; a snapshot-less enumerated step is a
-// disagreement between the log and the step store, which this module surfaces
-// loudly rather than dropping.
+// durable snapshot; a snapshot-less enumerated step is a disagreement between
+// the log and the step store, surfaced loudly.
 
 import type {
   RepoId,
@@ -41,8 +38,8 @@ export type LoadParkedApproval = (args: {
 
 /**
  * One parked control-plane correlation: the child-supplied half of a
- * suspension registration. `parkKind` discriminates approval parks
- * (which carry a snapshot) from input parks (which do not).
+ * suspension registration. `parkKind` discriminates approval parks (which
+ * carry a snapshot) from input parks (which do not).
  */
 export interface ParkedApprovalCorrelation {
   runId: string;
@@ -61,10 +58,10 @@ export interface CollectParkedApprovalCorrelationsOpts {
 /**
  * Enumerate every in-flight run's reduced state and return one entry per step
  * parked on a control-plane approval channel. Throws when a park is found but
- * no `loadParkedApproval` binding is wired to recover its snapshot, or when
- * the binding returns no snapshot for an enumerated park -- both are
- * disagreements between the reduced state and the durable store that must not
- * silently drop a correlation the hub is waiting to register.
+ * no `loadParkedApproval` binding is wired, or when the binding returns no
+ * snapshot for an enumerated park -- both are disagreements between the
+ * reduced state and the durable store that must not silently drop a
+ * correlation the hub is waiting to register.
  */
 export async function collectParkedApprovalCorrelations(
   opts: CollectParkedApprovalCorrelationsOpts,
@@ -83,7 +80,7 @@ export async function collectParkedApprovalCorrelations(
       const correlationId = correlationIdFromSignalName(awaited.name);
       if (correlationId === undefined) continue;
       // An `"input"` park (a long-lived run awaiting its next mail) reduces to
-      // the same `awaiting-signal` on a reserved channel as an approval, but it
+      // the same `awaiting-signal` on a reserved channel as an approval, but
       // carries NO snapshot and is never hub-registered -- the run's owner
       // delivers the input directly. Skip it: enumerating it would call
       // loadParkedApproval, get no snapshot, and throw below, taking the whole

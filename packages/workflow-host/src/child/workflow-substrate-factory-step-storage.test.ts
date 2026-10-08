@@ -1,23 +1,17 @@
 // Per-step scratch keying for `createSidecarStepBuildEnv` (#3 leak fix).
 //
-// `stepStorageRoot` rooted every step invocation's workspace + tool
-// scratch under the per-message `runId`, and nothing ever reclaimed it,
-// so a long-lived deployment's `workflow-step-state/` grew without
-// bound. The fix keys the warm single-step agent's scratch STABLY per
-// agent (so the cached agent reuses one workspace across runs and the
-// warm case is bounded to one dir per agent) while the cold/multi-step
-// path keeps its per-run keying (reclaimed at run completion / undeploy
-// elsewhere).
+// `stepStorageRoot` used to root every step invocation's workspace + tool
+// scratch under the per-message `runId`, and nothing reclaimed it, so a
+// long-lived deployment's `workflow-step-state/` grew without bound. The fix
+// keys the warm single-step agent's scratch stably per agent (one workspace
+// across runs) while the cold/multi-step path keeps its per-run keying
+// (reclaimed at run completion / undeploy elsewhere).
 //
-// These tests pin the keying directly off the production `buildEnv` the
-// substrate factory wires:
-//   - WARM (`durableConversation` present): two different runIds produce
-//     the SAME `env.workdir`, and a file written for run-1 is visible in
-//     the env built for run-2 -- the workspace-continuity the stable key
-//     buys.
-//   - COLD (no `durableConversation`): two different runIds produce
-//     DIFFERENT `env.workdir`s, each under that run's subtree -- the
-//     per-run keying the run-completion cleanup reclaims.
+// These tests pin the keying directly off the production `buildEnv`:
+//   - WARM (`durableConversation` present): two runIds produce the SAME
+//     `env.workdir`, and a file written for run-1 is visible in run-2's env.
+//   - COLD (no `durableConversation`): two runIds produce DIFFERENT
+//     `env.workdir`s, each under that run's subtree.
 
 import { describe, test, expect } from "bun:test";
 import fs from "node:fs/promises";
@@ -71,10 +65,9 @@ function stubOutboundMailBridge(): ChildOutboundMailBridge {
   };
 }
 
-// A warm `durableConversation` whose `acquire(stepId)` returns a storage
-// the env builder files into `env.storage`. `buildEnv` never invokes the
-// store's methods, so a structural double-cast stub is sufficient and is
-// the documented test-stub escape hatch for a wide library interface.
+// A warm `durableConversation` whose `acquire(stepId)` returns a storage the
+// env builder files into `env.storage`. `buildEnv` never invokes the store's
+// methods, so a structural double-cast stub suffices.
 function stubDurableConversationRegistry(): DurableConversationRegistry {
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- buildEnv only files `.storage` into the env; it never calls the store's methods, so a structural stub cannot be satisfied field-by-field
   const storage = {} as ContextStore & AuditStore;
@@ -158,9 +151,9 @@ describe("createSidecarStepBuildEnv per-step scratch keying", () => {
       sourcesRef,
     );
 
-    // Stable keying: a different runId resolves to the SAME workdir, so
-    // the warm case is bounded to one dir per agent (not one-per-message)
-    // and the workspace survives across runs/respawn.
+    // Stable keying: a different runId resolves to the SAME workdir, so the
+    // warm case is bounded to one dir per agent and the workspace survives
+    // across runs/respawn.
     expect(env2.workdir).toBe(env1.workdir);
     // The warm workdir lives under the stable `warm/<stepId>/` sub-root,
     // never under any run's `runs/<runId>/` subtree.
@@ -188,9 +181,8 @@ describe("createSidecarStepBuildEnv per-step scratch keying", () => {
       sourcesRef,
     );
 
-    // Per-run keying: each run gets its own workdir, rooted under that
-    // run's `runs/<runId>/` subtree -- exactly what the run-completion
-    // cleanup reclaims at run granularity.
+    // Per-run keying: each run gets its own workdir, rooted under that run's
+    // `runs/<runId>/` subtree -- exactly what run-completion cleanup reclaims.
     expect(env2.workdir).not.toBe(env1.workdir);
     expect(env1.workdir).toContain(
       path.join(
@@ -293,7 +285,7 @@ describe("createSidecarStepBuildEnv per-step scratch keying", () => {
 // A re-dispatchable ask-rail approval gate always carries a `suspendedCall`
 // (the call to re-run on approval). An async-tool pending marker uses the
 // same `kind: "approval"` but never sets `suspendedCall`, and on resume the
-// reactor clears its gate WITHOUT re-dispatching. The cold-path resume
+// reactor clears its gate without re-dispatching. The cold-path resume
 // keying assertion must therefore find a `suspendedCall`-bearing op for the
 // resumed correlationId, mirroring the reactor's own discriminator.
 const SUSPENDED_CALL: ToolCall = {
@@ -365,9 +357,9 @@ function approvalResumeRequest(
 describe("createSidecarStepBuildEnv cold-path approval-resume keying", () => {
   test("rejects a resume whose matching pending op carries no suspendedCall", async () => {
     const dataDir = await makeTempDir();
-    // A pending op that matches the correlationId but is not a
-    // re-dispatchable gate (no suspendedCall) -- an async-tool marker, not
-    // the ask-rail approval the resume must find.
+    // A pending op matching the correlationId but not a re-dispatchable gate
+    // (no suspendedCall) -- an async-tool marker, not the ask-rail approval
+    // the resume must find.
     await seedColdStore(dataDir, "run-1", [approvalOp("corr-1")]);
     const buildEnv = createSidecarStepBuildEnv(buildDeps({ dataDir }));
 

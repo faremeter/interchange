@@ -1,16 +1,16 @@
 // A parent abort of an in-process child tears it down LOCALLY, settling it
 // FAILED, not cancelled. An in-process child writes through the workflow-run
 // proxy substrate, which cannot sign the supervisor `CancelRequested` a
-// control-plane cancel needs (the kind handler refuses a workflow-process-signed
-// cancel), so the child never self-cancels: the parent abort aborts the child's
-// own controller directly, its parked step fails, and the run settles `failed`
-// under its own principal with no `CancelRequested` in the log.
+// control-plane cancel needs (the kind handler refuses a workflow-process-
+// signed cancel), so the child never self-cancels: the parent abort aborts the
+// child's own controller directly, its parked step fails, and the run settles
+// `failed` under its own principal with no `CancelRequested` in the log.
 //
 // Both in-process spawners are covered: the terminal-only `createSidecarRunChild`
-// and the suspendable `createSidecarSpawnSuspendableChild`. Each abort is driven
-// while the child is live and parked on an approval -- the reachable drain-window
-// path -- so the test exercises the real teardown, not a child that already
-// settled.
+// and the suspendable `createSidecarSpawnSuspendableChild`. Each abort is
+// driven while the child is live and parked on an approval -- the reachable
+// drain-window path -- so the test exercises the real teardown, not a child
+// that already settled.
 
 import { describe, test, expect, afterAll, beforeAll } from "bun:test";
 import fs from "node:fs";
@@ -256,9 +256,9 @@ function reader(substrate: ReturnType<typeof createRepoStore>) {
 // while the child is genuinely in flight. The two seams reach that state
 // differently: a suspendable body parks on a `SignalAwaited`, while a terminal
 // child cannot park and is instead held open mid-step after its `StepStarted`.
-// The commit is the signal, so subscribe to the run's log instead of re-reading
-// it on a timer; the waiter replays what is already committed, so a state that
-// landed before the call counts exactly as a later one does.
+// The commit is the signal, so subscribe to the run's log instead of
+// re-reading it on a timer; the waiter replays what is already committed, so a
+// state that landed before the call counts exactly as a later one does.
 async function waitForChildEvent(
   substrate: ReturnType<typeof createRepoStore>,
   childRunId: string,
@@ -268,7 +268,7 @@ async function waitForChildEvent(
 }
 
 // Assert the child's durable log shows a LOCAL fail teardown: a StepFailed and
-// the terminal RunFailed, and NO CancelRequested (the in-process child cannot
+// the terminal RunFailed, and no CancelRequested (the in-process child cannot
 // sign one, so the teardown never writes one).
 async function expectLocalFailTeardown(
   substrate: ReturnType<typeof createRepoStore>,

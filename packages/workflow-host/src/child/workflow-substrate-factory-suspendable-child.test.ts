@@ -1,17 +1,15 @@
-// An onTrigger body child, spawned through the real sidecar seam, parks on
-// an approval and resumes on the correlated grant.
+// An onTrigger body child, spawned through the real sidecar seam, parks on an
+// approval and resumes on the correlated grant.
 //
-// `createSidecarSpawnSuspendableChild` runs the body definition against a
-// real on-disk workflow-run substrate and hands back the live handle
-// `runOnTrigger` drives. This test exercises that handle end to end: the
-// body step's injected `invokeStep` suspends as an approval, so the child
-// runtime parks on `signalName(correlationId)`; `handle.next()` surfaces the
-// park with the step's snapshot; `handle.resume` delivers the grant on the
-// child's own signal channel, and the re-invoked step completes the run.
+// `createSidecarSpawnSuspendableChild` runs the body definition against a real
+// on-disk workflow-run substrate and hands back the live handle `runOnTrigger`
+// drives. This test exercises that handle end to end: the body step's injected
+// `invokeStep` suspends as an approval, `handle.next()` surfaces the park with
+// the step's snapshot, `handle.resume` delivers the grant on the child's own
+// signal channel, and the re-invoked step completes the run.
 //
 // A second case aborts the parent signal while the body is parked and proves
-// the child cancels and the handle surfaces a terminal rather than hanging --
-// the abort threads through `handle.cancel` and the run settles.
+// the child cancels and the handle surfaces a terminal rather than hanging.
 
 import { describe, test, expect, afterAll, beforeAll } from "bun:test";
 import fs from "node:fs";
@@ -78,16 +76,16 @@ const SNAPSHOT: ApprovalSnapshot = {
 const tempDirs: string[] = [];
 let signingKey: KeyPair;
 // `buildChildRunEnv` reads the body run's `assets/workflow/<ref>/sources.json`
-// eagerly; the suspend/resume mock invoker ignores inference, but the read still
-// happens, so stage a minimal sources file for the body definition id.
+// eagerly; the suspend/resume mock invoker ignores inference, but the read
+// still happens, so stage a minimal sources file for each body definition id.
 let bodySourcesDataDir: string;
 
 beforeAll(async () => {
   signingKey = await generateKeyPair();
   bodySourcesDataDir = await makeTempDir("suspendable-assets-");
-  // The approval-park body ("body-wf") carries an agent step "s"; the
-  // depth body ("depth-body") carries only a childWorkflow step (no
-  // inference), but `buildChildRunEnv` reads its sources eagerly all the same.
+  // The approval-park body ("body-wf") carries an agent step "s"; the depth
+  // body ("depth-body") carries only a childWorkflow step (no inference), but
+  // `buildChildRunEnv` reads its sources eagerly all the same.
   await stageBodySources("body-wf");
   await stageBodySources("depth-body");
 });
@@ -301,17 +299,18 @@ describe("createSidecarSpawnSuspendableChild", () => {
       grant("inference.source:anthropic:m", "invoke"),
     ]);
 
-    // The invoker must never run: the depth guard fires before the grandchild's
-    // agent step is reached.
+    // The invoker must never run: the depth guard fires before the
+    // grandchild's agent step is reached.
     const spawn = makeSpawner(substrate, () => {
       throw new Error("depth: no step should run before the guard fires");
     });
 
-    // Spawn the body AT depth 1 with the ceiling lowered to 1. The body runs at
-    // depth 1 (passed through unchanged), so its `childWorkflow` spawns the
-    // grandchild at depth 2 > 1 and trips the guard. WITHOUT depth threading the
-    // body would run at depth 0 and the grandchild at depth 1 <= 1 -- no trip --
-    // so this failure proves the container's depth reached the body run.
+    // Spawn the body AT depth 1 with the ceiling lowered to 1. The body runs
+    // at depth 1 (passed through unchanged), so its `childWorkflow` spawns the
+    // grandchild at depth 2 > 1 and trips the guard. Without depth threading
+    // the body would run at depth 0 and the grandchild at depth 1 <= 1 -- no
+    // trip -- so this failure proves the container's depth reached the body
+    // run.
     const childRunId = "run-depth-body";
     const handle = await spawn(
       {
@@ -335,8 +334,8 @@ describe("createSidecarSpawnSuspendableChild", () => {
     expect(terminal.terminalStatus).toBe("failed");
 
     // The guard fired before the body committed a ChildSpawned, and the
-    // StepFailed names the tripped depth 2 (body depth 1 + 1), not the depth 1 a
-    // reset-at-the-body-boundary would give.
+    // StepFailed names the tripped depth 2 (body depth 1 + 1), not the depth 1
+    // a reset-at-the-body-boundary would give.
     const bodyEvents: readonly WorkflowEvent[] =
       await reader(substrate).read(childRunId);
     expect(bodyEvents.some((e) => e.kind === "ChildSpawned")).toBe(false);
