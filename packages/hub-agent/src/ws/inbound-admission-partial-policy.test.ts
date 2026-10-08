@@ -36,7 +36,7 @@
 //     blank-`From` loop.
 
 import { describe, expect, test } from "bun:test";
-import type { AuthorControllableOutcome } from "@intx/types/runtime";
+import type { AuthorControllableOutcome } from "@intx/types/inbound-mail-policy";
 
 import {
   decideInboundAdmission,

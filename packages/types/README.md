@@ -6,9 +6,9 @@ wire frames. Nearly every other package imports from here, which
 makes this the canonical home for any shape that crosses a package
 boundary.
 
-Each entry point pairs an ArkType validator with its inferred
-TypeScript type so consumers can validate at the boundary and
-trust the resulting value internally.
+Runtime validators expose their inferred TypeScript types so consumers can
+validate at the boundary and trust the resulting value internally. Dedicated
+helper entry points avoid loading unrelated schema collections.
 
 ## Surface
 
@@ -34,10 +34,15 @@ pull in the shapes they need:
   `ContextStore`, `ToolRunner`, `ToolDefinition`, `AuditStore`,
   `InferenceSource` (the resolved provider/model/credential a call
   executes against), retry policy, director and reactor types.
+- `@intx/types/inbound-mail-policy` — `InboundMailOutcome`,
+  `AuthorControllableOutcome`, and the authored `InboundMailPolicy` schema.
 - `@intx/types/runtime-capabilities` — the capability-registry
   contract harness extensions resolve against (e.g. mail transport,
   blob reader).
 - `@intx/types/sidecar` — hub-sidecar WebSocket wire frames.
+- `@intx/types/workflow-definition` — `workflowDefinitionEnvelopeSchema`,
+  the structural workflow envelope validator used by definition loaders
+  and the repository substrate.
 - `@intx/types/grant-wire` — grant-update wire frames pushed from
   the hub to the sidecar.
 - `@intx/types/tool-packages` — schemas for the tool-package

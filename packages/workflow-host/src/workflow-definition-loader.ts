@@ -34,7 +34,7 @@ import {
   type ToolDeclaration,
 } from "@intx/agent";
 import { PackageJSON, isContainedEntryPath } from "@intx/types/package-json";
-import { workflowDefinitionEnvelopeSchema } from "@intx/hub-sessions/substrate";
+import { workflowDefinitionEnvelopeSchema } from "@intx/types/workflow-definition";
 import type { WorkflowDefinition } from "@intx/workflow/definition";
 import type { ActionHandler, LoopFn, LoopFnRegistry } from "@intx/workflow";
 

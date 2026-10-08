@@ -33,7 +33,7 @@ import {
   canonicalJsonStringify,
   computeWireDefinitionHash,
 } from "@intx/types/wire-definition-hash";
-import type { InboundMailPolicy } from "@intx/types/runtime";
+import type { InboundMailPolicy } from "@intx/types/inbound-mail-policy";
 
 import {
   computeLiveDefinitionHash,

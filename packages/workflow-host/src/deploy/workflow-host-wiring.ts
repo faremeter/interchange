@@ -33,10 +33,12 @@ import {
   type CryptoProvider,
   type InferenceEvent,
   type InferenceSource,
-  type InboundMailOutcome,
-  type InboundMailPolicy,
   type KeyPair,
 } from "@intx/types/runtime";
+import type {
+  InboundMailOutcome,
+  InboundMailPolicy,
+} from "@intx/types/inbound-mail-policy";
 import {
   WORKFLOW_CONTROL_INITIALIZING_ERROR,
   WorkflowProjectionDefinition,

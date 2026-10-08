@@ -69,6 +69,16 @@
       "intx-src": "./src/testing/index.ts",
       "types": "./dist/testing/index.d.ts",
       "default": "./dist/testing/index.js"
+    },
+    "./inbound-mail-policy": {
+      "intx-src": "./src/inbound-mail-policy.ts",
+      "types": "./dist/inbound-mail-policy.d.ts",
+      "default": "./dist/inbound-mail-policy.js"
+    },
+    "./workflow-definition": {
+      "intx-src": "./src/workflow-definition.ts",
+      "types": "./dist/workflow-definition.d.ts",
+      "default": "./dist/workflow-definition.js"
     }
   },
   "dependencies": {

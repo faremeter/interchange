@@ -1,10 +1,10 @@
 import { getLogger } from "@intx/log";
+import type { CryptoProvider } from "@intx/types/runtime";
 import type {
   AuthorControllableOutcome,
-  CryptoProvider,
   InboundMailOutcome,
   InboundMailPolicy,
-} from "@intx/types/runtime";
+} from "@intx/types/inbound-mail-policy";
 import { verifyMimeSignature } from "@intx/mailbox";
 import { parseHeaderSection, extractAddrSpec } from "@intx/mime";
 

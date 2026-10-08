@@ -38,7 +38,7 @@ import type {
 } from "@intx/agent";
 import type { ToolPackagePin } from "@intx/types/tool-packages";
 import type { CredentialBinding, SidecarCapabilityPolicy } from "@intx/types";
-import type { InboundMailPolicy } from "@intx/types/runtime";
+import type { InboundMailPolicy } from "@intx/types/inbound-mail-policy";
 import type {
   ActionPrimitive,
   AwaitSignalPrimitive,
