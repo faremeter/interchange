@@ -92,14 +92,13 @@ import {
 
 const logger = getLogger(["interchange", "sidecar", "workflow-host-wiring"]);
 
-// A raw Ed25519 public key is 32 bytes.
 const ED25519_PUBLIC_KEY_BYTES = 32;
 
 /**
  * Durable per-deployment store for a source-ref deployment's checked-out
- * source assets. Sibling of the closure instance dir: the closure dir is
- * reclaimed on every apply/restore, this store is not, so the assets survive
- * restart without re-delivery. Reclaimed on redeploy and undeploy.
+ * source assets. Sibling of the closure instance dir, kept across apply and
+ * restore so assets survive restart without re-delivery; reclaimed on
+ * redeploy and undeploy.
  */
 function deploymentSourceAssetRoot(
   dataDir: string,
@@ -110,8 +109,8 @@ function deploymentSourceAssetRoot(
 
 /**
  * Durable indexed-`.git` store root a pinned deployment's source-format
- * asset entries are checked out from. Sibling of the plain-file source store;
- * both survive restart so re-materialization needs no re-delivery.
+ * asset entries are checked out from; sibling of the plain-file source store,
+ * survives restart so re-materialization needs no re-delivery.
  */
 function deploymentSourceGitRoot(
   dataDir: string,
@@ -123,8 +122,7 @@ function deploymentSourceGitRoot(
 /**
  * `assetId -> mountPath` map a pinned closure's TARBALL `kind:"asset"` entries
  * resolve against, derived purely from the pin so deploy and restore agree
- * without the frame's delivered assets. Source-format entries resolve through
- * `deriveSourceGitDirs` instead.
+ * without the frame's delivered assets.
  */
 function deriveSourceAssetMounts(
   pin: SourceRefPin,
@@ -148,7 +146,7 @@ function deriveSourceAssetMounts(
 /**
  * `assetId -> gitDir` map a pinned closure's SOURCE `kind:"asset"` entries
  * check subtrees out of, derived purely from the pin so deploy and restore
- * agree without re-delivery.
+ * agree.
  */
 function deriveSourceGitDirs(
   pin: SourceRefPin,
@@ -433,10 +431,9 @@ export type CreateSidecarWorkflowSupervisorOpts = {
    */
   stepCount: number;
   /**
-   * The deployment's flat step-id namespace: `stepOrder` plus the step ids of
-   * every `loop` body. The `onRunStart` grants sink walks these to assemble
-   * the per-run snapshot; a loop iteration inherits the parent run's env and
-   * authorizes against this same snapshot.
+   * The deployment's flat step-id namespace: `stepOrder` plus every `loop`
+   * body's step ids, walked by the `onRunStart` grants sink to assemble the
+   * per-run snapshot.
    */
   stepOrder: readonly string[];
   /** Deployment's mail address. */
@@ -813,9 +810,8 @@ export function createSidecarDeployRouter<THost, TRegistries>(deps: {
    */
   multistepSubstrateEnv?: Record<string, string>;
   /**
-   * Subprocess spawner the multi-step branch hands to the supervisor.
-   * The booting process passes the Bun-backed spawner; tests pass a
-   * deterministic mock.
+   * Subprocess spawner the multi-step branch hands to the supervisor; same
+   * contract as `CreateSidecarWorkflowSupervisorOpts.subprocessSpawner`.
    */
   multistepSubprocessSpawner: SubprocessSpawner;
   /**
@@ -856,19 +852,17 @@ export function createSidecarDeployRouter<THost, TRegistries>(deps: {
   multistepDeriveStepAddress?: DeriveStepAddress;
   /**
    * Per-deployment-address mail handler registry the hub-link's `mail.inbound`
-   * path consults before the legacy session-routed delivery. The multi-step
-   * branch registers `wired.routeInbound` against the deployment address once
-   * spawn succeeds. Optional for tests without an end-to-end mail loop.
+   * path consults before the legacy session-routed delivery. Optional for
+   * tests without an end-to-end mail loop.
    */
   multistepMailRouter?: MultistepMailRouter;
   /**
    * Per-recipient-address registry of resolved inbound-mail admission policies
-   * the hub-link's `mail.inbound` seam enforces. The multi-step branch
-   * resolves the deployment's authored `inboundMailPolicy` into it once spawn
-   * succeeds and removes the entry in the same teardown, so a reused address
-   * never inherits a stale policy. Absent registry: inbound frames for the
-   * address are rejected (fully-closed default) until wired. Optional for
-   * tests without the hub-link seam.
+   * the hub-link's `mail.inbound` seam enforces; `spawnWorkflowRun` resolves
+   * the deployment's authored `inboundMailPolicy` into it on spawn and removes
+   * the entry in the same teardown, so a reused address never inherits a stale
+   * policy. Absent registry: inbound frames for the address are rejected until
+   * wired. Optional for tests without the hub-link seam.
    */
   inboundMailPolicyRegistry?: {
     register(address: string, policy: ResolvedInboundMailPolicy): void;
@@ -876,18 +870,16 @@ export function createSidecarDeployRouter<THost, TRegistries>(deps: {
   };
   /**
    * Per-deployment-address signal handler registry the hub-link's
-   * `signal.deliver` path consults. The multi-step branch registers
-   * `wired.supervisor.deliverSignal` against the deployment address once spawn
-   * succeeds; the child commits the resulting `SignalReceived` through its own
-   * substrate, preserving the workflow-run repo's single-writer invariant.
-   * Optional for tests without an end-to-end signal loop.
+   * `signal.deliver` path consults; `spawnWorkflowRun` registers
+   * `deliverSignal` on it. The child commits the resulting `SignalReceived`
+   * through its own substrate, preserving the workflow-run repo's single-writer
+   * invariant. Optional for tests without an end-to-end signal loop.
    */
   multistepSignalRouter?: MultistepSignalRouter;
   /**
    * Per-deployment-address drain handler registry the hub-link's `drain.deliver`
-   * path consults. The multi-step branch registers `wired.supervisor.drain`
-   * against the deployment address once spawn succeeds; the supervisor's
-   * per-run `drainTimeout` accumulators commit a signed
+   * path consults; `spawnWorkflowRun` registers `drain` on it. The
+   * supervisor's per-run `drainTimeout` accumulators commit a signed
    * `CancelRequested{origin: "supervisor-drain"}` when the deadline expires
    * (cancel-mode steps abort on the child side; wait-mode steps continue).
    * Optional for tests without an end-to-end drain loop.
@@ -895,55 +887,49 @@ export function createSidecarDeployRouter<THost, TRegistries>(deps: {
   multistepDrainRouter?: MultistepDrainRouter;
   /**
    * Per-deployment-address grants handler registry the hub-link's `run.grants`
-   * path consults. The deploy router registers a handler against the
-   * deployment address once spawn succeeds (single- and multi-step alike) so a
-   * hub-side frame writes the run's grants to `runs/<runId>/grants.json` in
-   * the workflow-run repo; `tryRoute` awaits the write, so the frame's FIFO
-   * completion means the grants are durable. Optional for tests without an
-   * end-to-end grants loop.
+   * path consults; `spawnWorkflowRun` registers a handler (single- and
+   * multi-step alike) so a hub-side frame writes the run's grants to
+   * `runs/<runId>/grants.json` in the workflow-run repo; `tryRoute` awaits the
+   * write, so the frame's FIFO completion means the grants are durable.
+   * Optional for tests without an end-to-end grants loop.
    */
   multistepGrantsRouter?: MultistepGrantsRouter;
   /**
    * Per-deployment-address sources-rotation handler registry. Only a
-   * single-step warm deployment registers one (once spawn succeeds) so a
-   * rotation flows into `wired.supervisor.deliverSources` and on to the
-   * child's warm agent; a multi-step deployment has no single warm agent, so
-   * `tryRoute` reports its address as unrouted. Optional for tests without a
-   * rotation loop.
+   * single-step warm deployment registers one, so a rotation flows into
+   * `wired.supervisor.deliverSources` and on to the child's warm agent; a
+   * multi-step deployment has no single warm agent, so `tryRoute` reports its
+   * address as unrouted. Optional for tests without a rotation loop.
    */
   multistepSourcesRouter?: MultistepSourcesRouter;
   /**
    * Optional per-deployment credential-delivery handler registry. Every
-   * deployment with a supervisor registers a handler after `spawn` (the
-   * material cell is per-child and read by every step's tool capabilities); an
-   * inbound `credentials.update` for a torn-down address is unrouted. Optional
-   * for tests without a credential-delivery loop.
+   * deployment with a supervisor registers a handler after spawn (the material
+   * cell is per-child and read by every step's tool capabilities); an inbound
+   * `credentials.update` for a torn-down address is unrouted. Optional for
+   * tests without a credential-delivery loop.
    */
   multistepCredentialsRouter?: MultistepCredentialsRouter;
   /**
    * Optional per-message dispatch-timing observer the multi-step branch
-   * forwards to each supervisor it constructs; resolved at the sidecar boot
-   * edge from the Phase 4.7 latency-gate env, absent in ordinary production.
-   * The supervisor runs in this sidecar subprocess, so the observer sees both
-   * ends of the IPC round-trip in one process.
+   * forwards to each supervisor it constructs; same contract as
+   * `CreateSidecarWorkflowSupervisorOpts.onDispatchTiming`.
    */
   onDispatchTiming?: (mark: DispatchTimingMark) => void;
   /** D2 §10c forced-repack A/B toggle forwarded to each supervisor. */
   repackEveryMessages?: { everyMessages: number };
   /**
    * Consumed-dedup retention horizon (ms) forwarded to every supervisor the
-   * router constructs. The sidecar boot edge resolves the operator's
-   * `CONSUMED_RETENTION_MS` config; absent, the supervisor applies
-   * `DEFAULT_CONSUMED_RETENTION_MS` (24h).
+   * router constructs; same contract as
+   * `CreateSidecarWorkflowSupervisorOpts.consumedRetentionMs`.
    */
   consumedRetentionMs?: number;
   /**
    * Spawn ready-handshake timeout (ms) forwarded to every supervisor the
-   * router constructs. The sidecar boot edge resolves the operator's
-   * `CHILD_READY_TIMEOUT_MS` config; absent, the supervisor applies
-   * `DEFAULT_READY_TIMEOUT_MS` (30s). A child that spawns but never signals
-   * ready is killed and its spawn rejected rather than hanging the deploy or
-   * boot-time restore.
+   * router constructs; same contract as
+   * `CreateSidecarWorkflowSupervisorOpts.readyTimeoutMs`. A child that spawns
+   * but never signals ready is killed and its spawn rejected rather than
+   * hanging the deploy or boot-time restore.
    */
   readyTimeoutMs?: number;
   /**

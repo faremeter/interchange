@@ -905,8 +905,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     } = createChildStreams();
     let observedBinary: string | undefined;
     let observedEnv: Record<string, string> | undefined;
-    // Scoped here, not to the file: `first()` must resolve with THIS
-    // fixture's spawn, not whichever spawn happened earliest in the run.
+    // Scoped to this fixture: `first()` must resolve with THIS spawn, not
+    // the file's earliest.
     const spawnObserver = createSpawnObserver();
     const spawner: SubprocessSpawner = ({ binaryPath, env }) => {
       observedBinary = binaryPath;
@@ -1014,8 +1014,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       resolveExit,
     } = createChildStreams();
     let observedEnv: Record<string, string> | undefined;
-    // Scoped here, not to the file: `first()` must resolve with THIS
-    // fixture's spawn, not whichever spawn happened earliest in the run.
+    // Scoped to this fixture: `first()` must resolve with THIS spawn, not
+    // the file's earliest.
     const spawnObserver = createSpawnObserver();
     const spawner: SubprocessSpawner = ({ env }) => {
       observedEnv = env;
@@ -1092,8 +1092,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     } = createChildStreams();
     let spawnCount = 0;
     let observedEnv: Record<string, string> | undefined;
-    // Scoped here, not to the file: `first()` must resolve with THIS
-    // fixture's spawn, not whichever spawn happened earliest in the run.
+    // Scoped to this fixture: `first()` must resolve with THIS spawn, not
+    // the file's earliest.
     const spawnObserver = createSpawnObserver();
     const spawner: SubprocessSpawner = ({ env }) => {
       spawnCount += 1;
@@ -1254,8 +1254,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       resolveExit,
     } = createChildStreams();
     let observedEnv: Record<string, string> | undefined;
-    // Scoped here, not to the file: `first()` must resolve with THIS
-    // fixture's spawn, not whichever spawn happened earliest in the run.
+    // Scoped to this fixture: `first()` must resolve with THIS spawn, not
+    // the file's earliest.
     const spawnObserver = createSpawnObserver();
     const spawner: SubprocessSpawner = ({ env }) => {
       observedEnv = env;
@@ -1343,8 +1343,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       resolveExit,
     } = createChildStreams();
     let observedEnv: Record<string, string> | undefined;
-    // Scoped here, not to the file: `first()` must resolve with THIS
-    // fixture's spawn, not whichever spawn happened earliest in the run.
+    // Scoped to this fixture: `first()` must resolve with THIS spawn, not
+    // the file's earliest.
     const spawnObserver = createSpawnObserver();
     const spawner: SubprocessSpawner = ({ env }) => {
       observedEnv = env;
@@ -1467,8 +1467,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       resolveExit,
     } = createChildStreams();
     let observedEnv: Record<string, string> | undefined;
-    // Scoped here, not to the file: `first()` must resolve with THIS
-    // fixture's spawn, not whichever spawn happened earliest in the run.
+    // Scoped to this fixture: `first()` must resolve with THIS spawn, not
+    // the file's earliest.
     const spawnObserver = createSpawnObserver();
     const spawner: SubprocessSpawner = ({ env }) => {
       observedEnv = env;
@@ -2042,8 +2042,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       resolveExit,
     } = createChildStreams();
     let observedEnv: Record<string, string> | undefined;
-    // Scoped here, not to the file: `first()` must resolve with THIS
-    // fixture's spawn, not whichever spawn happened earliest in the run.
+    // Scoped to this fixture: `first()` must resolve with THIS spawn, not
+    // the file's earliest.
     const spawnObserver = createSpawnObserver();
     const spawner: SubprocessSpawner = ({ env }) => {
       observedEnv = env;
@@ -2844,8 +2844,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     await deploying;
     spawner.failNextSpawn();
     await spawner.recycleRequestFor(0);
-    // No completion signal; use the deadline-free wait for the
-    // active-address transition, as the neighboring tests do.
+    // No completion signal; use the deadline-free wait for the active-address transition.
     await waitUntil(() => !router.activeAddresses().includes(head));
     expect(await recordExists(dataDir, deploymentId)).toBe(true);
 
@@ -2903,9 +2902,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
 
     spawner.failNextSpawn();
     await spawner.recycleRequestFor(0);
-    // No completion signal exists, so this stays a deadline-free poll
-    // ("Synchronizing on State, Not Time" in CONVENTIONS.md); a reclaim that
-    // never lands is caught by the lane timeout.
+    // No completion signal; deadline-free poll per CONVENTIONS.md.
     await waitUntil(() => !router.activeAddresses().includes(head));
     expect(router.activeAddresses()).toEqual([]);
 
@@ -2963,9 +2960,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // Drive the supervisor to a self-termination via the recycle-failure path.
     spawner.failNextSpawn();
     await spawner.recycleRequestFor(0);
-    // No completion signal exists, so this stays a deadline-free poll
-    // ("Synchronizing on State, Not Time" in CONVENTIONS.md); a reclaim that
-    // never lands is caught by the lane timeout.
+    // No completion signal; deadline-free poll per CONVENTIONS.md.
     await waitUntil(() => !router.activeAddresses().includes(head));
     expect(router.activeAddresses()).toEqual([]);
 
@@ -3645,8 +3640,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       resolveExit,
     } = createChildStreams();
     let observedEnv: Record<string, string> | undefined;
-    // Scoped here, not to the file: `first()` must resolve with THIS
-    // fixture's spawn, not whichever spawn happened earliest in the run.
+    // Scoped to this fixture: `first()` must resolve with THIS spawn, not
+    // the file's earliest.
     const spawnObserver = createSpawnObserver();
     const spawner: SubprocessSpawner = ({ env }) => {
       observedEnv = env;
@@ -3753,8 +3748,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       resolveExit,
     } = createChildStreams();
     let observedEnv: Record<string, string> | undefined;
-    // Scoped here, not to the file: `first()` must resolve with THIS
-    // fixture's spawn, not whichever spawn happened earliest in the run.
+    // Scoped to this fixture: `first()` must resolve with THIS spawn, not
+    // the file's earliest.
     const spawnObserver = createSpawnObserver();
     const spawner: SubprocessSpawner = ({ env }) => {
       observedEnv = env;
