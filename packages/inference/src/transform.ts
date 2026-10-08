@@ -9,11 +9,8 @@
 // buildRequest paths also apply provider-specific history fixes. The
 // originating model is tracked per-message, not per-conversation.
 
-import {
-  formatSafetyRatingText,
-  type ConversationTurn,
-  type ContentBlock,
-} from "@intx/types/runtime";
+import type { ConversationTurn, ContentBlock } from "@intx/types/runtime";
+import { formatSafetyRatingText } from "@intx/types/format-safety-rating";
 
 export type TransformOptions = {
   targetModel: string;

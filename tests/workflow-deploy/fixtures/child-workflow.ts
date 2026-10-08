@@ -128,7 +128,7 @@ export function childWorkflowEntry(params: ChildWorkflowFixtureParams): string {
     : "";
   return `
 import { childWorkflow, defineWorkflow, step } from "@intx/workflow/definition";
-import { defineAgent } from "@intx/agent";
+import { defineAgent } from "@intx/agent/authoring";
 ${toolImport}
 export const workflow = defineWorkflow({
   id: ${JSON.stringify(params.workflowId)},

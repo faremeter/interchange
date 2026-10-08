@@ -36,6 +36,8 @@ pull in the shapes they need:
   executes against), retry policy, director and reactor types.
 - `@intx/types/inbound-mail-policy` — `InboundMailOutcome`,
   `AuthorControllableOutcome`, and the authored `InboundMailPolicy` schema.
+- `@intx/types/format-safety-rating` — `formatSafetyRatingText`, the plain-text
+  rendering helper, without runtime schema initialization.
 - `@intx/types/runtime-capabilities` — the capability-registry
   contract harness extensions resolve against (e.g. mail transport,
   blob reader).

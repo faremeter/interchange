@@ -4,6 +4,14 @@ In-process agent runtime built on `createReactorAssembly` from
 `@intx/inference`. Construct an agent, `send()` it a message,
 get a reply.
 
+Workflow packages can import `defineAgent`, tool and director declarations,
+and director registries from `@intx/agent/authoring`. That entry point keeps
+the reactor and agent execution runtime out of definition loading.
+
+`@intx/agent/canonicalize` exports `canonicalizeForHash` and
+`CanonicalizationError` for deterministic serialization of deploy-hash inputs
+without loading the agent execution runtime.
+
 Use this package when you want an agent you can drive from inside
 your own program — a CLI, a worker, a test, an embedded assistant.
 If you want an agent that lives behind a mailbox instead, see

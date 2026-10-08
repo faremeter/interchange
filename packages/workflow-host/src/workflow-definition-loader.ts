@@ -32,7 +32,7 @@ import {
   type AnnotatedPluginFactory,
   type DirectorRegistry,
   type ToolDeclaration,
-} from "@intx/agent";
+} from "@intx/agent/authoring";
 import { PackageJSON, isContainedEntryPath } from "@intx/types/package-json";
 import { workflowDefinitionEnvelopeSchema } from "@intx/types/workflow-definition";
 import type { WorkflowDefinition } from "@intx/workflow/definition";

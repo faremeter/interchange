@@ -79,6 +79,11 @@
       "intx-src": "./src/workflow-definition.ts",
       "types": "./dist/workflow-definition.d.ts",
       "default": "./dist/workflow-definition.js"
+    },
+    "./format-safety-rating": {
+      "intx-src": "./src/format-safety-rating.ts",
+      "types": "./dist/format-safety-rating.d.ts",
+      "default": "./dist/format-safety-rating.js"
     }
   },
   "dependencies": {

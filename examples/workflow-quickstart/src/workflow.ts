@@ -12,8 +12,14 @@
 // is what lets the deploy substrate hash the definition, show an operator
 // the grants it implies, and freeze the approved shape.
 
-import { defineAgent } from "@intx/agent";
-import { action, defineWorkflow, escalation, loop, step } from "@intx/workflow";
+import { defineAgent } from "@intx/agent/authoring";
+import {
+  action,
+  defineWorkflow,
+  escalation,
+  loop,
+  step,
+} from "@intx/workflow/definition";
 
 import { WORD_COUNT_TOOL, wordCountTool } from "./word-count-tool";
 

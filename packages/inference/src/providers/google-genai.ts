@@ -12,7 +12,7 @@ import type {
   PartialMessage,
   TokenUsage,
 } from "@intx/types/runtime";
-import { formatSafetyRatingText } from "@intx/types/runtime";
+import { formatSafetyRatingText } from "@intx/types/format-safety-rating";
 import type { ProviderAdapter, BuiltRequest } from "../adapter";
 import { CREDENTIAL_SENTINEL } from "../auth";
 import { ProtocolMismatchError } from "../errors";

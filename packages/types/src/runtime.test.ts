@@ -5,7 +5,6 @@ import {
   APPROVAL_SNAPSHOT_MAX_BYTES,
   BoundedApprovalSnapshot,
   ContentBlock,
-  formatSafetyRatingText,
   InferenceEvent,
   InterchangeType,
   MediaSource,
@@ -23,6 +22,7 @@ import {
   MessageTransportError,
   parseToolOutputURI,
 } from "./runtime";
+import { formatSafetyRatingText } from "./format-safety-rating";
 
 // ---------------------------------------------------------------------------
 // 1. TransformRecord validator
