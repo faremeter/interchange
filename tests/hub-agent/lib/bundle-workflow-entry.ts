@@ -1,19 +1,13 @@
 // Bundle a workflow source entry module into one self-contained `.mjs`, with
-// every `@intx/*` import rewritten to its on-disk source. The sidecar-
-// materialized closure evaluates the bundle with no bare `@intx/` import left
-// to resolve, so a code-sourced deploy needs no published workspace packages.
-//
-// Promoted out of `tests/workflow-deploy/source-workflow.e2e.test.ts` so every
-// code-sourced deploy test and the shared `deployWorkflowSourceForTest` helper
-// share one bundler.
+// every `@intx/*` import rewritten to its on-disk source, so a code-sourced
+// deploy needs no published workspace packages.
 
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { dirname } from "node:path";
 
 // This module lives at `tests/hub-agent/lib/`, so the repo root is three
-// directories up. The bundler plugin uses it as the fallback resolve base and
-// to detect an importer that already sits inside the repo tree.
+// directories up; the plugin uses it as the fallback resolve base.
 const repoRoot = path.resolve(import.meta.dir, "..", "..", "..");
 
 export async function bundleWorkflowEntry(
@@ -49,11 +43,9 @@ export async function bundleWorkflowEntry(
   }
   const code = await artifact.text();
   // A workflow's own source legitimately carries `@intx/` string values (a
-  // tool bundle id, a package name), so a bare substring check would false-
-  // positive on those. Detect an UNRESOLVED bare specifier instead: an
-  // `import`/`export ... from`, a dynamic `import(...)`, or a `require(...)`
-  // whose specifier still starts with `@intx/`. The plugin rewrites every such
-  // specifier to on-disk source, so any survivor is a genuine unresolved edge.
+  // tool bundle id, a package name), so a substring check would false-positive.
+  // Detect an unresolved bare specifier instead: an `import`/`export ... from`,
+  // a dynamic `import(...)`, or a `require(...)` still starting with `@intx/`.
   const BARE_INTX_SPECIFIER = /(?:from|import|require)\s*\(?\s*["'`]@intx\//;
   if (BARE_INTX_SPECIFIER.test(code)) {
     throw new Error(

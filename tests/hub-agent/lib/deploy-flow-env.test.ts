@@ -1,10 +1,7 @@
-// Unit-style smoke tests for the Phase I helpers landed alongside the
-// integration-test fixture. These tests stand up only the hub
-// substrate (no sidecar subprocess, no mock inference) so the helper
-// surfaces that operate purely on the substrate (workflow-run repo
-// reads, signal injection, processing-crash simulation) can be
-// exercised in isolation. The end-to-end integration tests in the
-// Phase I commit set exercise the helpers against the full env.
+// Unit-style smoke tests for the Phase I helpers: only the hub substrate is
+// stood up (no sidecar subprocess, no mock inference), so the substrate-only
+// helper surfaces (repo reads, signal injection, processing-crash simulation)
+// are exercised in isolation. The e2e tests exercise them against the full env.
 
 import { describe, test, expect, afterAll, beforeAll } from "bun:test";
 
@@ -34,10 +31,9 @@ import fs from "node:fs";
 const DEPLOYMENT_ID = "run_smoke-test";
 const MAIL_ADDRESS = "run_smoke-test@integration.interchange";
 
-// `startHub` is the slice of `startDeployFlowEnv` that owns just the
-// hub-substrate + WS server. The helpers we smoke-test here operate
-// entirely on the substrate; standing up the sidecar subprocess would
-// add minutes of startup without exercising any path under test.
+// `startHub` owns just the hub-substrate + WS server; the helpers under test
+// operate entirely on the substrate, so the sidecar subprocess would add
+// minutes of startup without exercising any path.
 async function startSmokeEnv(): Promise<{
   env: DeployFlowEnv;
   hub: HubEnv;
@@ -59,9 +55,7 @@ async function startSmokeEnv(): Promise<{
   };
   const env: DeployFlowEnv = {
     hub,
-    // The fields below are unused by the helpers exercised here.
-    // Construct narrow stand-ins so the env-shape type is satisfied
-    // without spinning up the corresponding subsystems.
+    // Narrow stand-ins for subsystems the substrate-only helpers never use.
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- inference is not consulted by the substrate-only helpers under test
     inference: {
       server: { stop: () => undefined },
@@ -76,8 +70,7 @@ async function startSmokeEnv(): Promise<{
     sidecarDiagnostics: () => "",
     deployments,
     registerDeployment,
-    // No sidecar subprocess is spawned here, so there is nothing to register
-    // and no diagnostics for `teardown` to dump.
+    // No sidecar is spawned, so there is nothing to register or report.
     registerSidecar: () => undefined,
     retrying,
     teardown: async () => {
@@ -127,15 +120,11 @@ describe("deploy-flow-env helpers smoke tests", () => {
   });
 
   test("injectSignal routes the wire frame through the hub router to the deployment sidecar", async () => {
-    // The helper now drives the production hub -> sidecar ->
-    // supervisor -> workflow-process pipeline rather than writing a
-    // SignalReceived blob directly to the hub substrate. Routing the
-    // signal through the child preserves the workflow-run repo's
-    // single-writer invariant on the sidecar side -- without it, a
-    // host-side substrate write would race against the next pack push
-    // from the child and surface `non_fast_forward` on the hub. The
-    // smoke env has no sidecar registered against the deployment
-    // address, so the helper surfaces the routing error verbatim.
+    // The helper routes through the production hub -> sidecar -> supervisor ->
+    // workflow-process pipeline, preserving the workflow-run repo's
+    // single-writer invariant on the sidecar side (a host-side write would
+    // race the next pack push and surface `non_fast_forward`). The smoke env
+    // has no sidecar registered, so the routing error surfaces verbatim.
     await expect(
       injectSignal(env, DEPLOYMENT_ID, "run-2", "operator.ack", { ok: true }),
     ).rejects.toThrow(/No sidecar connected/);
@@ -164,18 +153,15 @@ describe("deploy-flow-env helpers smoke tests", () => {
       receivedAt,
     );
 
-    // Surface the resulting tree via the substrate's getRepoDir +
-    // isomorphic-git so the test is decoupled from the kind handler's
-    // private path-construction helpers.
+    // Surface the tree via getRepoDir + isomorphic-git, decoupled from the
+    // kind handler's private path construction.
     const repoDir = env.hub.agentRepoStore.repoStore.getRepoDir({
       kind: "workflow-run",
       id: DEPLOYMENT_ID,
     });
     const git = await import("isomorphic-git");
-    // The claim-check primitives target the workflow-run kind
-    // handler's canonical claim-check ref (`refs/heads/events`); the
-    // smoke test peeks at the resulting tree on that ref to assert
-    // the processing entry landed.
+    // Peek at the claim-check ref (`refs/heads/events`) to assert the
+    // processing entry landed.
     const oid = await git.default.resolveRef({
       fs,
       dir: repoDir,
@@ -192,16 +178,11 @@ describe("deploy-flow-env helpers smoke tests", () => {
   });
 });
 
-// The in-flight wait registry is what `startDeployFlowEnv`'s `teardown()`
-// gates its sidecar-diagnostics dump on, so these tests are what make that
-// gate trustworthy. They exercise the registry directly rather than through
-// `startDeployFlowEnv`, whose sidecar subprocess does not belong in the unit
-// lane; `teardown()` adds only the write of the report these tests assert on.
-//
-// A wedged test is reproduced here by leaving a wait in flight across the
-// assertion, which is the state the runner's per-test budget leaves behind:
-// bun abandons the test body's promise, and nothing aborts the poll loop the
-// body was suspended in, so the helper never reaches its `finally`.
+// `teardown()` gates its diagnostics dump on the in-flight wait registry, so
+// these tests exercise the registry directly (the sidecar subprocess does not
+// belong in the unit lane). A wedged test is reproduced by leaving a wait in
+// flight across the assertion -- the state the runner's budget leaves behind:
+// bun abandons the body's promise and nothing aborts its poll loop.
 describe("in-flight wait registry", () => {
   test("reports a wait that is still in flight, naming the helper", async () => {
     const mark = currentWaitMark();
@@ -211,8 +192,8 @@ describe("in-flight wait registry", () => {
     const report = renderOutstandingWaitReport(mark);
     expect(report).not.toBeNull();
     expect(report).toContain("waitFor");
-    // The label carries the predicate source, which is the only thing that
-    // distinguishes one bare `waitFor` from the several a test file makes.
+    // The label carries the predicate source, the only distinguisher between
+    // a file's several bare `waitFor` calls.
     expect(report).toContain("ready");
 
     ready = true;
@@ -301,10 +282,9 @@ describe("in-flight wait registry", () => {
     let ready = false;
     const inFlight = waitFor(() => ready);
 
-    // A wedged wait from an earlier env in this worker never deregisters, and
-    // `--no-isolate` shares this module's registry across the files a worker
-    // runs. The mark is what keeps that record from being reported against a
-    // later env's teardown.
+    // A wedged wait from an earlier env never deregisters, and `--no-isolate`
+    // shares the registry across a worker's files; the mark keeps that record
+    // from being reported against a later env's teardown.
     const mark = currentWaitMark();
     expect(renderOutstandingWaitReport(mark)).toBeNull();
 
@@ -313,17 +293,15 @@ describe("in-flight wait registry", () => {
   });
 });
 
-// Stopping the waits teardown found still in flight. `startDeployFlowEnv`'s
-// `teardown()` calls `stopOutstandingWaits(waitMark)` and then dismantles the
-// env, so these tests drive the same call in the same order and assert what
-// the abandoned wait does on the far side of it.
+// `teardown()` calls `stopOutstandingWaits(waitMark)` then dismantles the env;
+// these tests drive the same call in the same order and assert what an
+// abandoned wait does on the far side of it.
 describe("stopping in-flight waits at teardown", () => {
   test("stops a wait left in flight, naming it in the error", async () => {
     const mark = currentWaitMark();
-    // Never set true, which is the state a wedged test leaves. Read through
-    // an object so the name survives into the label: the transpiler folds a
-    // `const false` into its value, taking the name out of the source the
-    // label is rendered from.
+    // Read through an object so the name survives into the label: the
+    // transpiler folds a `const false` into its value, taking the name out of
+    // the source the label is rendered from.
     const gate = { ready: false };
     const inFlight = waitFor(() => gate.ready);
 
@@ -342,10 +320,9 @@ describe("stopping in-flight waits at teardown", () => {
   });
 
   // The failure this exists for: a run whose budget lapsed inside
-  // `waitForWorkflowRunComplete` kept polling through teardown, and the read
-  // it made after `deployments.clear()` reported that the test had forgotten
-  // to register its deployment. The wait is stopped ahead of that read, so
-  // the error names the teardown rather than an innocent-looking omission.
+  // `waitForWorkflowRunComplete` kept polling through teardown, and its read
+  // after `deployments.clear()` reported a missing registration. The wait is
+  // stopped ahead of that read, so the error names the teardown instead.
   test("stops a run wait before it reads a deployment teardown cleared", async () => {
     const anchorRunId = "run_stopped-wait";
     const registered = env.deployments.get(DEPLOYMENT_ID);
@@ -370,15 +347,13 @@ describe("stopping in-flight waits at teardown", () => {
     );
   });
 
-  // A quiescence wait is the case where running on would be worse than a
-  // misleading error: teardown kills the sidecar, which is exactly the
-  // "no pack for quietMs" condition the wait exits on, so an unstopped one
-  // would report the pipeline drained when nothing drained it.
+  // A quiescence wait exits on "no pack for quietMs", and teardown killing the
+  // sidecar produces exactly that -- so an unstopped one would report the
+  // pipeline drained when nothing drained it.
   test("stops a quiescence wait instead of letting teardown satisfy it", async () => {
     const mark = currentWaitMark();
     // An hour of quiet no run reaches, so the stop below is the only thing
-    // that can end this wait. It is the helper's own parameter, not a bound
-    // on the test: a slower machine makes nothing here fail.
+    // that can end the wait.
     const quietMs = 3_600_000;
     const inFlight = settleWorkflowRunPacks(env, { quietMs });
 
@@ -391,10 +366,9 @@ describe("stopping in-flight waits at teardown", () => {
     );
   });
 
-  // A loop that consults neither the seam `retrying` hands it nor one of the
-  // registered helpers is a loop the stop cannot reach. What it can do is
-  // refuse the result: a loop that finishes after teardown read its answer out
-  // of an env that no longer exists.
+  // A loop the stop cannot reach (it consults neither the seam nor a
+  // registered helper) can still be refused: a loop that finishes after
+  // teardown read its answer out of an env that no longer exists.
   test("refuses the result of a retry loop that finished after the stop", async () => {
     const mark = currentWaitMark();
     let release = (): void => undefined;
@@ -414,15 +388,13 @@ describe("stopping in-flight waits at teardown", () => {
     );
   });
 
-  // The failure this exists for: a retry loop that polls on its own, through
-  // no registered helper, kept iterating past the stop, and the read it made
-  // after `deployments.clear()` reported that the test had forgotten to
-  // register its deployment -- naming a cause that has nothing to do with the
-  // failure. `checkTornDown` at the top of the loop body is the seam that ends
-  // it, ahead of that read.
+  // The failure this exists for: a self-polling retry loop kept iterating past
+  // the stop, and its read after `deployments.clear()` reported a missing
+  // registration -- a cause unrelated to the failure. `checkTornDown` at the
+  // top of the loop body ends it ahead of that read.
   test("stops a retry loop that checks the seam at the top of its body", async () => {
-    // Stand-in for the env's `deployments`, cleared right after the stop
-    // because that is the order `startDeployFlowEnv`'s `teardown()` uses.
+    // Stand-in for the env's `deployments`, cleared right after the stop in
+    // the order `teardown()` uses.
     const deployments = new Map<string, string>([["run_x", "handle"]]);
     let iterations = 0;
 
@@ -459,8 +431,8 @@ describe("stopping in-flight waits at teardown", () => {
     expect(iterations).toBe(iterationsAtStop);
   });
 
-  // The contrast case: a retry loop whose inner poll IS one of the registered
-  // helpers is reached through that helper, and needs no seam of its own.
+  // Contrast: a retry loop whose inner poll is a registered helper is reached
+  // through that helper and needs no seam of its own.
   test("stops a retry loop that polls through a registered helper", async () => {
     const gate = { ready: false };
     const mark = currentWaitMark();
@@ -499,17 +471,13 @@ describe("stopping in-flight waits at teardown", () => {
   });
 });
 
-// The link between a reconnect test's `sidecarEnv` and the delay the spawned
-// sidecar's hub link actually uses. The fixture shortens the backoff by
-// default, so a test whose recovery must run through the production cycle
-// depends on its override reaching the subprocess env -- and nothing else
-// reports which of the two delays is in effect. Reading the env the fixture
-// would pass needs no subprocess and no hub.
+// The fixture shortens the reconnect backoff by default, so a test whose
+// recovery must run through the production cycle depends on its `sidecarEnv`
+// override reaching the subprocess env -- and nothing else reports which delay
+// is in effect. Reading the env the fixture would pass needs no subprocess.
 //
-// The value the sidecar does with it is pinned on the far side of the seam:
-// `parseReconnectDelayMs` in `apps/sidecar/src/config.test.ts` turns the
-// string into the option, and `hub-link.test.ts` asserts the option is the
-// delay the reconnect scheduler receives.
+// The far side of the seam is pinned in `apps/sidecar/src/config.test.ts`
+// (`parseReconnectDelayMs`) and `hub-link.test.ts`.
 describe("spawned sidecar reconnect delay", () => {
   const baseOpts = { hubPort: 4321, dataDir: "/sidecar-data" };
 
@@ -527,9 +495,9 @@ describe("spawned sidecar reconnect delay", () => {
   });
 });
 
-// The guard `startDeployFlowEnv` applies to a caller's `sidecarEnv`. Composed
-// against the real env builder rather than a hand-written map, so a break in
-// the merge reaches this test the same way it would reach a survival test.
+// Composed against the real env builder rather than a hand-written map, so a
+// break in the merge reaches this test the same way it would reach a survival
+// test.
 describe("assertPinnedSidecarEnvReached", () => {
   const baseOpts = { hubPort: 4321, dataDir: "/sidecar-data" };
   const pinProduction = {
@@ -547,9 +515,8 @@ describe("assertPinnedSidecarEnvReached", () => {
   });
 
   test("throws when the pin never reached the env, naming both values", () => {
-    // The env a broken `sidecarEnv` hop produces: the fixture's own default
-    // survives and looks deliberate, which is the whole reason the caller's
-    // claim has to be checked rather than assumed.
+    // A broken `sidecarEnv` hop leaves the fixture's own default, which looks
+    // deliberate -- the reason the caller's claim must be checked.
     const env = buildSidecarSubprocessEnv(baseOpts);
     expect(() => assertPinnedSidecarEnvReached(pinProduction, env)).toThrow(
       /SIDECAR_RECONNECT_DELAY_MS: pinned 3000, subprocess env has 250/,
@@ -583,21 +550,18 @@ describe("assertPinnedSidecarEnvReached", () => {
     );
   });
 
-  // The seventy-plus files that pass no `sidecarEnv` at all reach the guard
-  // with no keys, so it has nothing to check. `startDeployFlowEnv` skips the
-  // call on that path as well; this pins that an empty claim is vacuous
-  // rather than a failure, so neither layer can fire on the common path.
+  // Files that pass no `sidecarEnv` reach the guard with no keys;
+  // `startDeployFlowEnv` skips the call on that path too. An empty claim is
+  // vacuous, not a failure.
   test("passes vacuously when the caller pinned nothing", () => {
     expect(() =>
       assertPinnedSidecarEnvReached({}, buildSidecarSubprocessEnv(baseOpts)),
     ).not.toThrow();
   });
 
-  // Every real caller's pin reaches the subprocess for one structural
-  // reason: the `extraEnv` spread is the last entry in the built map, so no
-  // fixture-owned key can be written over it. Overriding all of them at once
-  // pins that ordering, which is what the guard passing for a real caller
-  // depends on -- and what it would report if the spread ever moved.
+  // The `extraEnv` spread is the last entry in the built map, so no
+  // fixture-owned key can be written over it; overriding all of them pins that
+  // ordering, which the guard passing for a real caller depends on.
   test("a pin of every fixture-owned variable reaches the env", () => {
     const pinned = {
       PATH: "/sentinel/path",
