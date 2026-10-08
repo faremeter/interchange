@@ -11,6 +11,9 @@ persisted, scheduled, or spawned — those are the host's job.
 
 Multi-entry exports:
 
+- `@intx/workflow/projection` — inspect declared plugins, project a live
+  definition to inert data, and hash that projection without loading the
+  workflow execution runtime.
 - `@intx/workflow/definition` — `WorkflowDefinition`, `defineWorkflow`,
   `hashDefinition`, the `stepId` shape rule. The on-disk form a
   workflow lives in. It also carries the canonical step walk

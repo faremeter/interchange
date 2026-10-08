@@ -23,6 +23,7 @@ pull in the shapes they need:
   discovery view), observability, sidecar status enums (distinct from
   the wire frames under `@intx/types/sidecar` below), run addresses,
   hex and base64 helpers, and the `hasCode` error guard.
+- `@intx/types/hex` — hexadecimal byte encoding and decoding.
 - `@intx/types/authz` — grant rules, condition contexts, and
   authorization result shapes shared between `@intx/authz` and the
   hub.
@@ -45,6 +46,8 @@ pull in the shapes they need:
 - `@intx/types/workflow-definition` — `workflowDefinitionEnvelopeSchema`,
   the structural workflow envelope validator used by definition loaders
   and the repository substrate.
+- `@intx/types/grant-snapshot` — `GrantWalkSnapshot`, the per-step grant
+  declarations and workflow grant requirements serialized for deployment.
 - `@intx/types/grant-wire` — grant-update wire frames pushed from
   the hub to the sidecar.
 - `@intx/types/tool-packages` — schemas for the tool-package

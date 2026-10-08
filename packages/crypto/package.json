@@ -9,6 +9,11 @@
       "intx-src": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./keys": {
+      "intx-src": "./src/keys.ts",
+      "types": "./dist/keys.d.ts",
+      "default": "./dist/keys.js"
     }
   },
   "dependencies": {

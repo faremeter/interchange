@@ -10,8 +10,8 @@
 // as an `ok: false` frame (handled inside the runner), so a throw reaching
 // here is a pre-evaluation defect (bad env, unwritable stdout) that exits
 // non-zero -- the host then reaps and answers `workflow.probe.error`.
-import { walkCapabilities } from "@intx/workflow-deploy";
-import { runWorkflowProbeChildFromProcessEnv } from "@intx/workflow-host/probe";
+import { walkCapabilities } from "@intx/workflow-deploy/capabilities";
+import { runWorkflowProbeChildFromProcessEnv } from "@intx/workflow-host/probe/child";
 
 try {
   await runWorkflowProbeChildFromProcessEnv(walkCapabilities);

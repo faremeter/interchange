@@ -23,8 +23,8 @@
 import {
   signEd25519 as ed25519Sign,
   verifyEd25519 as ed25519Verify,
-} from "@intx/crypto";
-import { hexEncode } from "@intx/types";
+} from "@intx/crypto/keys";
+import { hexEncode } from "@intx/types/hex";
 
 const ED25519_SIGNATURE_BYTES = 64;
 const ED25519_KEY_BYTES = 32;

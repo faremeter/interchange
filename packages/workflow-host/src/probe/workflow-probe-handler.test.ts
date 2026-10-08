@@ -13,12 +13,12 @@ import {
 
 import {
   createWorkflowProbeExecutor,
-  enrichProbeError,
   type MaterializeWorkflowClosure,
   type MaterializedWorkflowClosure,
   type ProbeChildHandle,
   type ProbeChildSpawner,
 } from "./index";
+import { enrichProbeError } from "./errors";
 
 describe("enrichProbeError", () => {
   test("adds a dependencies/devDependencies hint to a module-not-found", () => {

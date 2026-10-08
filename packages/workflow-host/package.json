@@ -29,6 +29,11 @@
       "intx-src": "./src/probe/index.ts",
       "types": "./dist/probe/index.d.ts",
       "default": "./dist/probe/index.js"
+    },
+    "./probe/child": {
+      "intx-src": "./src/probe/child.ts",
+      "types": "./dist/probe/child.d.ts",
+      "default": "./dist/probe/child.js"
     }
   },
   "dependencies": {

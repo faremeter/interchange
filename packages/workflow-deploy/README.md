@@ -1,5 +1,8 @@
 # @intx/workflow-deploy
 
+Use `@intx/workflow-deploy/capabilities` to import `walkCapabilities`
+without loading deployment orchestration or package materialization.
+
 Deploy-time validation, capability walk, operator-approval gating,
 address derivation, and per-step source pinning for the code-sourced
 deploy.
