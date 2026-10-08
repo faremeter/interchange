@@ -115,7 +115,7 @@ receives `clean` mail.
 ## Where this lives
 
 - `InboundMailOutcome`, `AuthorControllableOutcome` and `InboundMailPolicy`,
-  `packages/types/src/runtime.ts`
+  `packages/types/src/inbound-mail-policy.ts`
 - The definition-time rule: `normalize`,
   `packages/workflow/src/definition/workflow.ts`
 - The defaults and the decision: `resolveInboundMailPolicy` and

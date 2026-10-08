@@ -173,7 +173,6 @@ export {
 export {
   workflowKindHandler,
   workflowAuthorize,
-  workflowDefinitionEnvelopeSchema,
   WORKFLOW_JSON_PATH,
   CAPABILITY_DECLARATIONS_JSON_PATH,
   type WorkflowPrincipal,

@@ -8,11 +8,11 @@ import {
   generateMessageId,
   type MessageHeaders,
 } from "@intx/mime";
+import type { CryptoProvider } from "@intx/types/runtime";
 import type {
-  CryptoProvider,
   InboundMailOutcome,
   InboundMailPolicy,
-} from "@intx/types/runtime";
+} from "@intx/types/inbound-mail-policy";
 
 import {
   verifyInboundSignature,

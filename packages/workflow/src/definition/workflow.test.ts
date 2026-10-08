@@ -6,7 +6,7 @@ import {
   type AgentDefinition,
   type BaseEnv,
 } from "@intx/agent";
-import type { InboundMailPolicy } from "@intx/types/runtime";
+import type { InboundMailPolicy } from "@intx/types/inbound-mail-policy";
 
 import {
   action,

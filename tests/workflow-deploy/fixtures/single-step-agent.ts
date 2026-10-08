@@ -9,7 +9,7 @@
 // deploys more than one instance in a single sidecar overrides them to keep the
 // definitions distinct.
 
-import type { InboundMailPolicy } from "@intx/types/runtime";
+import type { InboundMailPolicy } from "@intx/types/inbound-mail-policy";
 
 export type SingleStepAgentFixtureParams = {
   /** The step's key in the workflow's `steps` map. */

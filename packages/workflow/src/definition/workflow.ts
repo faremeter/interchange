@@ -14,7 +14,7 @@ import type {
   GrantRequirement,
   SidecarCapabilityPolicy,
 } from "@intx/types";
-import type { InboundMailPolicy } from "@intx/types/runtime";
+import type { InboundMailPolicy } from "@intx/types/inbound-mail-policy";
 
 import { normalizeSingularShorthand } from "./shorthand";
 import {

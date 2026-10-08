@@ -7,7 +7,8 @@
 import { type } from "arktype";
 
 import { CredentialBinding } from "./credentials";
-import { InboundMailPolicy, InferenceSource } from "./runtime";
+import { InferenceSource } from "./runtime";
+import { InboundMailPolicy } from "./inbound-mail-policy";
 import { SidecarCapabilityPolicy } from "./sidecar-capabilities";
 
 /**
@@ -78,7 +79,7 @@ const WorkflowSteps = type({ "[string]": "unknown" }).narrow((steps, ctx) => {
  * `definition` is the wire projection of `WorkflowDefinition` from
  * `@intx/workflow`. The arktype validator enforces the structural
  * envelope the workflow-process child re-parses on the sidecar after
- * materialization (`packages/hub-sessions/src/workflow-kind.ts`'s
+ * materialization (`packages/types/src/workflow-definition.ts`'s
  * `workflowDefinitionEnvelopeSchema`): `id`, `triggers`, `steps`,
  * `stepOrder`, optional `state`. The wire validator MUST require every
  * field the envelope requires — this projection is the approved surface

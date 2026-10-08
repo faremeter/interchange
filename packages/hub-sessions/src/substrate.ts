@@ -56,8 +56,6 @@ export {
   WORKFLOW_RUN_EVENTS_FILE,
 } from "./workflow-run-event-log";
 
-export { workflowDefinitionEnvelopeSchema } from "./workflow-kind";
-
 export { subscribeKind } from "./repo-store/subscribe-kind";
 export type { SubscribeKindEntry } from "./repo-store/subscribe-kind";
 
