@@ -12,24 +12,6 @@
 // parked in `awaiting-timer` at kill time; the container is a live in-flight
 // resident awaiting the body terminal, with no container park.
 //
-//   1. Fire mail #1 -> the container run starts, spawns the body `section__0`,
-//      the body sleeps. Wait until `section__0`'s durable log carries the sleep
-//      step's `TimerSet` with no `StepCompleted` (parked mid-sleep) and the
-//      container has `ChildSpawned(section__0)` with no `ChildCompleted`.
-//   2. Quiesce, then KILL the sidecar subprocess while the body sleeps.
-//   3. Start a fresh sidecar against the crashed process's SIDECAR_DATA_DIR.
-//      Boot-time restore re-arms the body's unfired timer and re-includes the
-//      container; the container's resume re-adopts the in-flight body
-//      (`planOnTriggerResume` -> `readopt-in-flight-body`), re-spawns it from its
-//      log, and the body re-adopts its own sleep timer (`isResumableSleepStep`).
-//   4. The re-armed timer fires; the body's sleep completes and the container
-//      records `ChildCompleted(section__0)` -- only AFTER the restart.
-//
-// Load-bearing assertions: exactly one `RunStarted` on the container; exactly one
-// `TimerSet` and one `TimerFired` on the body child (no double-count on resume);
-// `ChildSpawned` + `ChildCompleted` for `section__0`; the container never reaches
-// a terminal event.
-//
 // Harness justification: SPAWN-REAL. Real hub, real sidecar subprocess, real
 // workflow-process child, genuine kill + fresh-sidecar restart against the dead
 // process's data dir, so recovery rides the production boot-time restore +

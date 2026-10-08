@@ -5,12 +5,9 @@
 // `crash-looping` state instead of respawning forever, and the latch
 // commits a `RunFailed` for the deployment's run.
 //
-// Shape: deploy a workflow, then SIGKILL the workflow-process child three
-// times in quick succession. No mail is fired: the crash-loop guard counts
-// child-process exits, not runs, so the deployment's anchor run (born
-// `deployed`) is what the latch marks `RunFailed`. The 3rd unexpected exit
-// trips the default `crashLoopMaxCount=3` within `crashLoopWindowMs=60s`;
-// the supervisor stops respawning and tears down to `crash-looping`.
+// No mail is fired: the crash-loop guard counts child-process exits, not
+// runs, so the deployment's anchor run (born `deployed`) is what the latch
+// marks `RunFailed`.
 //
 // Landing each kill on a RUNNING child (not one mid-`recycling`-handshake,
 // which would fail the respawn to `stopped` instead of counting a crash)
@@ -260,14 +257,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await settleWorkflowRunPacks(env);
       const killed: number[] = [];
 
-      // Each crash sequences off two markers: the distinct per-crash backoff
-      // line proves the exit was counted as unexpected (not mistaken for a
-      // planned kill), and the crash-respawn `child ready` marker -- one per
-      // respawn -- proves the replacement reached `running` before the next
-      // kill lands. Keying on the ready marker (not a pid-stability window,
-      // which can elapse mid-handshake on a slow runner) is what keeps the
-      // sequence deterministic under CI load.
-
       // Crash 1: under the threshold -> a 1s backoff and respawn 1.
       killed.push(...killWorkflowHostChild(env));
       await waitForSidecarLog(env, "respawning after '1000'ms backoff");
@@ -286,9 +275,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         "crash-looped: '3' unexpected exits within '60000'ms",
       );
 
-      // The latch committed a RunFailed for the deployment's anchor run,
-      // observable through the real push pipeline. `waitForWorkflowRun
-      // Complete` accepts any terminal event, so assert the type explicitly.
+      // `waitForWorkflowRunComplete` accepts any terminal event, so assert
+      // the type explicitly.
       const terminal = await waitForWorkflowRunComplete(
         env,
         DEPLOYMENT_ID,
@@ -302,13 +290,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       // No 4th respawn: wait past the would-be 4s backoff (never scheduled --
       // the guard latched instead) plus scheduling margin, and confirm no
-      // fresh child appears under the sidecar.
-      //
-      // The duration is load-bearing and must stay a sleep. The assertion is
-      // an absence, so there is no state to wait for; the only thing that
-      // makes the absence meaningful is having outlasted the window in which
-      // a 4th respawn would have been scheduled. A wait on a predicate would
-      // be satisfied immediately and prove nothing.
+      // fresh child appears under the sidecar. The duration is load-bearing:
+      // the assertion is an absence, so there is no state to wait for; a wait
+      // on a predicate would be satisfied immediately and prove nothing.
       await new Promise((r) => setTimeout(r, 6_000));
       const survivors = listWorkflowHostChildren(env).filter(
         (pid) => !killed.includes(pid),
