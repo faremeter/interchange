@@ -217,8 +217,7 @@ describe("decodeMail", () => {
   test("records an absent Date and Message-ID as absent, not as empty", () => {
     // RFC 5322 defines `Date` as `date-time` and `Message-ID` as `msg-id`;
     // neither admits an empty body, so a message carrying neither comes back
-    // with both absent -- a defaulted empty string reads as a value downstream
-    // and is written back out as a malformed header line.
+    // with both absent -- a defaulted empty string reads as a value.
     const mail = decodeMail(
       rawBytes(
         [
@@ -262,10 +261,8 @@ describe("decodeMail", () => {
   });
 
   test("treats a blank In-Reply-To as absent", () => {
-    // RFC 5322 defines `In-Reply-To` as `1*msg-id` under the same clause as
-    // `Message-ID`, so a blank header names no parent; an empty value is an id
-    // no message can carry, and every blank-headed message would otherwise read
-    // as a reply to one shared nonexistent parent.
+    // RFC 5322 defines `In-Reply-To` as `1*msg-id`, so a blank header names
+    // no parent; an empty value is an id no message can carry.
     const mail = decodeMail(
       rawBytes(
         [
@@ -350,9 +347,8 @@ describe("decodeMail", () => {
 
   test("keeps a header named after an Object.prototype member", () => {
     // `__proto__` and `constructor` are well-formed field names (RFC 5322
-    // §3.6.8), so a peer can send them. Accumulating into a plain object
-    // reaches inherited members instead of the accumulator's own properties,
-    // which throws or discards the value.
+    // §3.6.8), so a peer can send them; a plain-object accumulator would
+    // reach inherited members instead of its own properties.
     const mail = decodeMail(
       rawBytes(
         "From: a@b\r\n" +
@@ -421,8 +417,7 @@ describe("decodeMail", () => {
   test("refuses a bare carriage return or line feed before either reading", () => {
     // RFC 5322 §2.3 requires CR and LF only together as CRLF, so a bare break
     // terminates no field. `decodeMail` reads the header section twice (typed
-    // subset, raw map); refusing the section ahead of both keeps the two from
-    // disagreeing about which fields the message carries.
+    // subset, raw map); refusing it ahead of both keeps them from disagreeing.
     for (const brk of ["\r", "\n"]) {
       expect(() =>
         decodeMail(
@@ -439,8 +434,8 @@ describe("decodeMail", () => {
   });
 
   test("records a blank or absent From as no originator, not an empty one", () => {
-    // A defaulted "" made these two states indistinguishable and handed every
-    // consumer an originator the message never carried.
+    // A defaulted "" would hand every consumer an originator the message
+    // never carried.
     expect(
       decodeMail(rawBytes("To: bob@example.com\r\n\r\nbody")).headers.from,
     ).toBeUndefined();
@@ -451,9 +446,8 @@ describe("decodeMail", () => {
   });
 
   test("carries an unparseable From through verbatim", () => {
-    // This projection is lossless. An originator that is present but not a
-    // parseable address is a different judgement from one that was never
-    // there, and the admission gate keys on exactly that difference.
+    // Lossless: an originator that is present but unparseable is a different
+    // judgement from one that was never there.
     expect(
       decodeMail(rawBytes("From: not an address\r\n\r\nbody")).headers.from,
     ).toBe("not an address");
@@ -461,7 +455,7 @@ describe("decodeMail", () => {
 
   test("keeps every header when the header section opens with a blank line", () => {
     // The raw parse used to break on the leading empty line and return no
-    // headers at all, where the typed parse skipped it and kept both fields.
+    // headers at all.
     const mail = decodeMail(
       rawBytes(
         "\r\nFrom: alice@example.com\r\nTo: bob@example.com\r\n\r\nbody",
@@ -474,9 +468,9 @@ describe("decodeMail", () => {
   });
 
   test("names no id in either parser for a lone-LF message", async () => {
-    // CRLF is the sole line terminator (RFC 5321 section 2.3.8, section
-    // 4.1.1.4). `decodeMail` refuses these bytes, so the claim-check id
-    // derived for them must not be one read out of the text it refused.
+    // CRLF is the sole line terminator (RFC 5321 §2.3.8, §4.1.1.4);
+    // `decodeMail` refuses these bytes, so the id must not come from text it
+    // refused.
     const raw = rawBytes("Message-ID: <lf@example.com>\n\nbody");
     expect(() => decodeMail(raw)).toThrow(/must break its lines with CRLF/);
     expect(parseMessageIdHeader(raw)).toBeNull();
@@ -487,8 +481,6 @@ describe("decodeMail", () => {
     // A whole-message search for `CRLF CRLF` finds the one in the body and
     // reads the header section from there: fields after the first fold into
     // it, the body truncates, and the id absorbs sender-controlled body bytes.
-    // The id is the claim-check dedup key, a stored filename and a database
-    // join value, so nothing from the body may reach it.
     const bodyTerminated = rawBytes(
       "Message-ID: <a@b>\nSubject: Hi\n\nbody\r\n\r\ntail\n",
     );
@@ -498,8 +490,7 @@ describe("decodeMail", () => {
     expect(parseMessageIdHeader(bodyTerminated)).toBeNull();
     expect(await deriveMessageId(bodyTerminated)).toMatch(/^[0-9a-f]{64}$/);
 
-    // The same LF-only section, ended by a `CRLF CRLF` of its own rather than
-    // by one the sender left in the body.
+    // The same LF-only section, ended by its own `CRLF CRLF`.
     const crlfTerminated = rawBytes(
       "Message-ID: <a@b>\nSubject: Hi\r\n\r\nbody",
     );
@@ -511,9 +502,8 @@ describe("decodeMail", () => {
   });
 
   test("refuses an LF LF separator in either parser", async () => {
-    // The blank line is a pair of line breaks of its own. Honouring a bare pair
-    // lets a sender who controls one field body end the header section early and
-    // strip the fields after it, `Message-ID` included.
+    // The blank line is a pair of line breaks of its own; honouring a bare
+    // pair lets a sender end the section early and strip fields after it.
     const raw = rawBytes(
       "From: alice@example.com\r\nSubject: Hi\n\n" +
         "Message-ID: <stripped@example.com>\r\n\r\nbody",
@@ -537,9 +527,9 @@ describe("decodeMail", () => {
   });
 
   test("treats a Date that does not parse the same as an absent one", () => {
-    // Every comparison against an Invalid Date is false, so a kept value places
-    // the message inside `before: 1990` and `after: 2999` at once; the absence
-    // falls outside every window, which is already how an absent header reads.
+    // Every comparison against an Invalid Date is false, so a kept value
+    // lands inside `before: 1990` and `after: 2999` at once; an absence falls
+    // outside every window.
     const absent = decodeMail(rawBytes("From: a@example.com\r\n\r\nbody"));
     const garbage = decodeMail(
       rawBytes("From: a@example.com\r\nDate: not a date\r\n\r\nbody"),
@@ -568,9 +558,8 @@ describe("decodeMail", () => {
   });
 
   test("resolves a leading-WSP line to no field in either parser", async () => {
-    // A field begins with a printable name character (RFC 2822 section 2.2),
-    // so the smuggled line continues nothing and names no field. Reading it as
-    // one made the stored envelope id disagree with the dedup key.
+    // A field begins with a printable name character (RFC 2822 §2.2), so the
+    // smuggled line continues nothing and names no field.
     const raw = rawBytes(
       " Message-ID: <smuggled@evil.test>\r\n" +
         "Message-ID: <real@example.com>\r\n" +
@@ -600,8 +589,8 @@ describe("decodeMail", () => {
 
 describe("Content-Transfer-Encoding normalization", () => {
   test("accepts a mechanism that carries a trailing RFC 822 comment", () => {
-    // RFC 2045 section 1: comments in a MIME header field have no semantic
-    // content and are ignored during processing, so this names 7bit.
+    // RFC 2045 §1: comments in a MIME header field have no semantic content
+    // and are ignored during processing, so this names 7bit.
     const mail = decodeMail(
       rawBytes(
         "Content-Type: text/plain\r\n" +
@@ -627,8 +616,8 @@ describe("Content-Transfer-Encoding normalization", () => {
   });
 
   test("does not let a quoted close-paren end a comment early", () => {
-    // RFC 822 section 3.4.5: a backslash quotes the next character, so the
-    // escaped ')' is comment text rather than the comment terminator.
+    // RFC 822 §3.4.5: a backslash quotes the next character, so the escaped
+    // ')' is comment text rather than the terminator.
     const mail = decodeMail(
       rawBytes(
         "Content-Type: text/plain\r\n" +
@@ -639,12 +628,9 @@ describe("Content-Transfer-Encoding normalization", () => {
   });
 
   test("treats a field naming no mechanism as the 7bit default", () => {
-    // RFC 2045 section 6.1 defaults an ABSENT field to 7bit. A field that is
-    // present but names nothing -- empty, or nothing but a comment -- has
-    // declared no mechanism either, so it takes the same default. Routing it
-    // to the unrecognised arm instead treats a body the sender never claimed
-    // to have encoded as opaque bytes, which surfaces to a reader as mojibake
-    // rather than the characters that were sent.
+    // RFC 2045 §6.1 defaults an ABSENT field to 7bit; a field that is present
+    // but names nothing declares no mechanism either and takes the same
+    // default.
     for (const encoding of ["", "   ", "(just a comment)"]) {
       const email = parseMailToEmail(
         multipartWithEncoding(encoding, "caf\u00e9"),
@@ -666,9 +652,8 @@ describe("Content-Transfer-Encoding normalization", () => {
   });
 
   test("returns an unrecognised mechanism's body as opaque bytes", () => {
-    // RFC 2045 section 6.4: an entity with an unrecognised mechanism is
-    // treated as application/octet-stream. Discarding it, or running it
-    // through a text decode, both destroy the bytes the treatment preserves.
+    // RFC 2045 §6.4: an entity with an unrecognised mechanism is treated as
+    // application/octet-stream.
     const body = [0xff, 0xfe, 0x41, 0x00, 0x80];
     const mail = decodeMail(
       rawWithBody(
@@ -685,7 +670,7 @@ describe("Content-Transfer-Encoding normalization", () => {
 
   test("still throws on a malformed body under a recognised mechanism", () => {
     // A malformed base64 body is a different condition from an unrecognised
-    // mechanism, and attachment integrity depends on it surfacing.
+    // mechanism; attachment integrity depends on it surfacing.
     expect(() =>
       decodeMail(
         rawBytes(
@@ -707,8 +692,7 @@ describe("Content-Transfer-Encoding normalization", () => {
 
   test("parseMailToEmail carries an unrecognised mechanism's bytes intact", () => {
     // The body is valid UTF-8 for a non-ASCII character, so a UTF-8 decode
-    // would fold its two bytes into one code point and lose the octets that
-    // octet-stream treatment exists to preserve.
+    // would fold its two bytes into one code point.
     const email = parseMailToEmail(
       multipartWithEncoding("x-weird", "café"),
       "sml_cte_unknown",
@@ -722,8 +706,7 @@ describe("Content-Transfer-Encoding normalization", () => {
   // RFC 2045 §6.4 has two halves: an entity whose mechanism is unrecognised
   // is not interpreted AND is treated as application/octet-stream. Each row
   // pairs a mechanism with the type a part reports under it and the body that
-  // mechanism yields, so a recognised mechanism is the control that keeps its
-  // declared type and is decoded.
+  // mechanism yields.
   const reportedTypeCases: {
     mechanism: string;
     textPartBody: string;
@@ -777,11 +760,9 @@ describe("Content-Transfer-Encoding normalization", () => {
     },
     {
       // A run of CFWS between two tokens is semantically a single space (RFC
-      // 2822 §3.2.3), so a comment separates rather than joins them. This
-      // value is the two tokens `ba` and `se64`; neither names a mechanism,
-      // and RFC 2045 §6.1 admits only a single one. Replacing the comment
-      // with nothing reads `base64` and hands an attacker a body a strict
-      // peer leaves opaque and we decode.
+      // 2822 §3.2.3), so `ba` and `se64` name no mechanism; joining them by
+      // deleting the comment would read `base64` and decode a body a strict
+      // peer leaves opaque.
       mechanism: "ba(c)se64",
       textPartBody: "aGVsbG8=",
       decodedText: "aGVsbG8=",
@@ -790,7 +771,7 @@ describe("Content-Transfer-Encoding normalization", () => {
       reportedAttachmentType: "application/octet-stream",
     },
     {
-      // The same smuggle with the comment at a different interior offset.
+      // The same smuggle at a different interior offset.
       mechanism: "base(x)64",
       textPartBody: "aGVsbG8=",
       decodedText: "aGVsbG8=",
@@ -833,8 +814,8 @@ describe("Content-Transfer-Encoding normalization", () => {
 
   test("decodes a body part by the mechanism its value resolves to", () => {
     // The companion to the relabel below: the type says how the bytes may be
-    // treated, this says which bytes the reader gets. A value that resolves
-    // to no mechanism is not decoded, so its body arrives as it was sent.
+    // treated, this says which bytes the reader gets. A value resolving to no
+    // mechanism is not decoded.
     for (const c of reportedTypeCases) {
       const mail = decodeMail(
         multipartWithEncoding(c.mechanism, c.textPartBody),
@@ -843,8 +824,7 @@ describe("Content-Transfer-Encoding normalization", () => {
         c.decodedText,
       );
 
-      // The JMAP projection is a second decoder over the same field, so it
-      // reads the same value the same way.
+      // The JMAP projection is a second decoder over the same field.
       const email = parseMailToEmail(
         multipartWithEncoding(c.mechanism, c.textPartBody),
         "sml_cte_decoded_body",
@@ -856,10 +836,7 @@ describe("Content-Transfer-Encoding normalization", () => {
   test("reads a single-part message's own transfer encoding on both paths", () => {
     // A single-part message carries its transfer encoding in the message
     // headers; `parseMailToEmail` reaches the decoder through a part it
-    // reconstructs from them. A reconstruction carrying only the content type
-    // leaves the decoder on the RFC 2045 §6.1 default, so a base64 body
-    // arrives still encoded and the two entry points disagree on the same
-    // bytes. Each row asserts the pair agrees.
+    // reconstructs from them. Each row asserts the pair agrees.
     for (const c of reportedTypeCases) {
       const raw = singlePartWithEncoding(c.mechanism, c.textPartBody);
 
@@ -883,9 +860,8 @@ describe("Content-Transfer-Encoding normalization", () => {
 
   test("keeps a single-part unrecognised mechanism's octets intact", () => {
     // The octets, not just the mechanism: a UTF-8 decode folds the two bytes
-    // of a non-ASCII character into one code point, which is the loss that
-    // octet-stream treatment exists to prevent. `decodeMail` already returns
-    // the bytes; the JMAP projection must widen the same ones.
+    // of a non-ASCII character into one code point. `decodeMail` already
+    // returns the bytes; the JMAP projection must widen the same ones.
     const raw = singlePartWithEncoding("x-weird", "café");
     const octets = [0x63, 0x61, 0x66, 0xc3, 0xa9];
 
@@ -899,14 +875,11 @@ describe("Content-Transfer-Encoding normalization", () => {
   test("widens every one of the 256 byte values", () => {
     // RFC 2045 §6.4 hands a body under an unrecognised transfer encoding back
     // as octets, not text, so the JMAP string value carries one code unit per
-    // byte with every byte preserved. The case above covers one character's
-    // worth of the range; this one covers all of it.
+    // byte with every byte preserved. This covers all 256 values.
     //
-    // Regression guard against the obvious optimisation: `new
-    // TextDecoder("latin1")` looks like a one-pass replacement for the
-    // widening, but the WHATWG Encoding Standard makes "latin1"/"iso-8859-1"
-    // labels for windows-1252, which maps 27 of the 256 byte values elsewhere.
-    // This test fails if anyone makes that swap.
+    // Regression guard: `new TextDecoder("latin1")` looks like a one-pass
+    // replacement for the widening, but "latin1"/"iso-8859-1" label
+    // windows-1252, which maps 27 of the 256 byte values elsewhere.
     const body: number[] = [];
     for (let i = 0; i < 256; i++) body.push(i);
     const raw = rawWithBody(
@@ -929,8 +902,8 @@ describe("Content-Transfer-Encoding normalization", () => {
   });
 
   test("names the windows-1252 range a latin1 decode would rewrite", () => {
-    // The byte values the swap would rewrite, asserted against windows-1252
-    // because that is the encoding the "latin1" label resolves to.
+    // The byte values the swap would rewrite, against windows-1252, the
+    // encoding the "latin1" label resolves to.
     const all = new Uint8Array(256);
     for (let i = 0; i < 256; i++) all[i] = i;
     const decoded = new TextDecoder("windows-1252").decode(all);
@@ -940,9 +913,8 @@ describe("Content-Transfer-Encoding normalization", () => {
   });
 
   test("reports a body part under an unrecognised mechanism as octet-stream", () => {
-    // Without the relabel a consumer is told the part holds text in the
-    // charset it declared while it holds bytes that are not that text, and
-    // every consumer that keys on the type acts on that label.
+    // Without the relabel a consumer is told the part holds text in its
+    // declared charset while it holds bytes that are not that text.
     for (const c of reportedTypeCases) {
       const mail = decodeMail(
         multipartWithEncoding(c.mechanism, c.textPartBody),
@@ -950,9 +922,8 @@ describe("Content-Transfer-Encoding normalization", () => {
       expect(mail.parts).toHaveLength(1);
       expect(mail.parts[0]?.contentType).toBe(c.reportedTextType);
 
-      // The JMAP projection reports the same type. The part stays listed in
-      // textBody under it rather than dropping out of the list, so a consumer
-      // that walks textBody to find the body still learns the part exists.
+      // The JMAP projection reports the same type, and the part stays listed
+      // in textBody under it so a consumer walking the list still finds it.
       const email = parseMailToEmail(
         multipartWithEncoding(c.mechanism, c.textPartBody),
         "sml_cte_reported_body",
@@ -997,10 +968,9 @@ describe("Content-Transfer-Encoding normalization", () => {
   });
 
   test("keeps the encoding-problem flag beside the relabelled type", () => {
-    // The flag and the relabel are complementary, not alternatives: the flag
-    // says the decode did not happen, the type says what the undecoded bytes
-    // may be treated as. Routing on the relabelled type would reclassify this
-    // part as an attachment and the flag would never be written.
+    // The flag and the relabel are complementary: the flag says the decode
+    // did not happen, the type says what the undecoded bytes may be treated
+    // as. Routing on the relabelled type alone would never write the flag.
     const email = parseMailToEmail(
       multipartWithEncoding("x-weird", "café"),
       "sml_cte_flag_and_type",
@@ -1011,8 +981,7 @@ describe("Content-Transfer-Encoding normalization", () => {
 
   test("still walks into a multipart wrapper declaring an unrecognised mechanism", () => {
     // A wrapper's children are located from its declared type, so relabelling
-    // the wrapper would make them unreachable and drop their content -- the
-    // opposite of what section 6.4 protects. The relabel is leaf-only.
+    // the wrapper would make them unreachable; the relabel is leaf-only.
     const mail = decodeMail(
       rawBytes(
         [

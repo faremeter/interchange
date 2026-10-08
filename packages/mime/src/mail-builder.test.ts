@@ -16,7 +16,7 @@ const TO = "agent@example.com";
 
 // Test-only escape hatches: the builders' types reject invalid inputs at
 // compile time, but the runtime guards must also fire when callers bypass
-// the type system (e.g. unknown JSON). These route around the type checker.
+// the type system (e.g. unknown JSON).
 function callInboundUnsafe(opts: unknown): unknown {
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- exercise runtime validation against type-violating input
   return createInboundMessage(opts as CreateInboundMessageOpts);
@@ -235,17 +235,17 @@ describe("createInboundMessage", () => {
     });
 
     test("builds a message with no From when from is omitted", () => {
-      // Omitting the originator is how a caller says it has none; an empty
-      // string stays refused as a caller-supplied placeholder.
+      // Omitting the originator says it has none; an empty string stays
+      // refused as a caller-supplied placeholder.
       const msg = createInboundMessage({ to: TO, content: "x" });
       expect(msg.headers.from).toBeUndefined();
       expect(msg.headers.messageId).toMatch(/^<[^<>\s@]+@local>$/);
     });
 
     test("builds a message with no recipient when to is an empty array", () => {
-      // An empty list is how a caller says the message names no recipient it
-      // can vouch for; inbound mail reaches this builder with an absent or
-      // unreadable `To` routinely (the hub routes on an out-of-band address).
+      // An empty list says the message names no recipient it can vouch for;
+      // inbound mail reaches this builder with an absent or unreadable `To`
+      // routinely.
       const msg = createInboundMessage({ from: FROM, to: [], content: "x" });
       expect(msg.headers.to).toEqual([]);
     });
@@ -258,8 +258,8 @@ describe("createInboundMessage", () => {
     });
 
     test("throws when cc is an empty array", () => {
-      // Only `to` carries the no-recipient state; an empty `cc` here is a
-      // caller error.
+      // Only `to` carries the no-recipient state; an empty `cc` is a caller
+      // error.
       expect(() =>
         createInboundMessage({ from: FROM, to: TO, cc: [], content: "x" }),
       ).toThrow(/`cc` must contain at least one recipient address/);
@@ -750,7 +750,7 @@ describe("createOutboundMessage", () => {
 });
 
 // Compile-time guards: the builders' return types match InboundMessage /
-// OutboundMessage exactly. Unused at runtime; `_` prefix satisfies lint.
+// OutboundMessage exactly. Unused at runtime.
 const _inbound: InboundMessage = createInboundMessage({
   from: FROM,
   to: TO,

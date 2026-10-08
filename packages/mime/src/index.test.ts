@@ -165,8 +165,7 @@ describe("extractAddrSpec", () => {
 
   test("throws on an angle-bracketed list rather than taking one member", () => {
     // The reduction this refuses picked the last member: a `From` naming a
-    // victim first and the sender second read as the sender alone while every
-    // full-header parser still saw both.
+    // victim first and the sender second read as the sender alone.
     expect(() =>
       extractAddrSpec(
         '"CEO" <ceo@victim.example>, "x" <attacker@evil.example>',
@@ -175,8 +174,8 @@ describe("extractAddrSpec", () => {
   });
 
   test("throws on adjacent angle-bracketed addresses separated by a space", () => {
-    // A space is not the only spelling of a list, so a rule about commas
-    // alone left this reducing to the last member.
+    // A space is not the only spelling of a list; a comma-only rule left
+    // this reducing to the last member.
     expect(() =>
       extractAddrSpec("<ceo@victim.example> <attacker@evil.example>"),
     ).toThrow(/address lists are not supported/);
@@ -196,7 +195,7 @@ describe("extractAddrSpec", () => {
 
   test("throws on a bare address ahead of an angle-bracketed one", () => {
     // A display name holds no unquoted '@', so the leading addr-spec is a
-    // second address and not a name for the one in brackets.
+    // second address, not a name for the one in brackets.
     expect(() =>
       extractAddrSpec("ceo@victim.example <attacker@evil.example>"),
     ).toThrow(/address lists are not supported/);
@@ -209,15 +208,15 @@ describe("extractAddrSpec", () => {
   });
 
   test("throws on quoted display names between adjacent addresses", () => {
-    // Quoting each member hides the separator but not the second '<'.
+    // Quoting each member hides the separator, not the second '<'.
     expect(() =>
       extractAddrSpec('"CEO" <ceo@victim.example>"x"<attacker@evil.example>'),
     ).toThrow(/address lists are not supported/);
   });
 
   test("throws on an address carried in a leading comment", () => {
-    // A comment may hold '@' as text; extractAddrSpec refuses comments
-    // wherever they appear, so reading it as a second address costs nothing.
+    // A comment may hold '@' as text, so this is a second address, not a
+    // display name.
     expect(() =>
       extractAddrSpec("(ceo@victim.example) <attacker@evil.example>"),
     ).toThrow(/address lists are not supported/);
@@ -252,7 +251,7 @@ describe("extractAddrSpec", () => {
   });
 
   test("throws on an unterminated quoted string", () => {
-    // Leaving the quote open would otherwise hide the separator from the scan.
+    // Leaving the quote open would hide the separator from the scan.
     expect(() =>
       extractAddrSpec('"CEO <ceo@victim.example>, "x" <attacker@evil.example>'),
     ).toThrow(/unterminated quoted string/);
@@ -433,8 +432,7 @@ describe("assembleMessage", () => {
 
   test("rejects a subject containing CRLF (header injection)", () => {
     // A reply copies the subject from the inbound peer message, so this is
-    // the remotely reachable path: a doubled line ending ends the header
-    // block and turns the signed envelope into inert body text.
+    // the remotely reachable header-injection path.
     const content = assembleSignedContent({
       kind: "conversation",
       text: "test",
@@ -472,8 +470,7 @@ describe("assembleMessage", () => {
 
   test("emits a double quote in a header value verbatim", () => {
     // Unstructured text may carry a quote, and the serializer emits its own
-    // quoted boundary parameter on every message, so the emission guard must
-    // reject line breaks only.
+    // quoted boundary parameter, so the guard rejects line breaks only.
     const content = assembleSignedContent({
       kind: "conversation",
       text: "test",
@@ -505,9 +502,7 @@ describe("parseHeaderSection", () => {
 
   test("refuses an LF-terminated message", () => {
     // RFC 5321 §2.3.8 forbids recognizing anything but CRLF as a line
-    // terminator; §4.1.1.4 refuses the lone-LF ending by name. Folding the
-    // breaks instead leaves one field whose value swallows every later field
-    // and the body.
+    // terminator; §4.1.1.4 refuses the lone-LF ending by name.
     const raw = enc.encode("From: alice@test\nTo: bob@test\n\nBody");
     expect(() => parseHeaderSection(raw)).toThrow(
       /must break its lines with CRLF/,
@@ -522,9 +517,8 @@ describe("parseHeaderSection", () => {
   });
 
   test("refuses an LF-only header section that a CRLF CRLF terminates", () => {
-    // The section's own line breaks decide conformity, not the flavour of the
-    // blank line that ends it. Folding these leaves one field whose value
-    // swallows `Interchange-Type` and `Subject`.
+    // The section's own line breaks decide conformity, not the flavour of
+    // the blank line that ends it.
     const raw = enc.encode(
       "From: alice@x\nInterchange-Type: conversation.message\n" +
         "Subject: Hi\r\n\r\nBody",
@@ -535,9 +529,8 @@ describe("parseHeaderSection", () => {
   });
 
   test("refuses an LF-only header section when the body carries a CRLF CRLF", () => {
-    // Searching the whole message for the separator finds the one in the body
-    // and reads the header section from there, which both suppresses every
-    // field after the first and truncates the body to what followed it.
+    // Searching the whole message for the separator finds the one in the
+    // body and reads the header section from there.
     const raw = enc.encode(
       "From: alice@x\nInterchange-Type: conversation.message\n" +
         "Subject: Hi\n\nBody\r\n\r\ntail\n",
@@ -548,9 +541,8 @@ describe("parseHeaderSection", () => {
   });
 
   test("refuses an LF LF separator after a CRLF-only section", () => {
-    // The blank line is a pair of line breaks of its own, so honouring a bare
-    // pair lets a sender who controls one field body end the section early and
-    // strip the fields after it.
+    // The blank line is a pair of line breaks of its own; honouring a bare
+    // pair lets a sender end the section early and strip the fields after it.
     const raw = enc.encode(
       "From: alice@x\r\nSubject: Hi\n\n" +
         "Interchange-Type: conversation.message\r\n\r\nBody",
@@ -628,8 +620,7 @@ describe("parseHeaderSection", () => {
 
   // A bare CR or LF in a field body is refused for every row below: RFC 5322
   // §2.2 admits neither inside a field body and §2.3 requires the two to occur
-  // only as CRLF. Splitting on the bare character resolves a field the sender
-  // smuggled into one it controls; folding it suppresses whatever followed.
+  // only as CRLF.
   const bareBreaks = ["\r", "\n"];
   const bareBreakHeaders: string[] = bareBreaks.flatMap((brk) => [
     `Subject: hello${brk}Bcc: attacker@evil.test`,
@@ -709,9 +700,9 @@ describe("parseMultipart", () => {
   });
 
   test("splits parts whose delimiter lines are LF-terminated", () => {
-    // The boundary scan tolerates an LF-terminated delimiter line. Each part's
-    // own fields are CRLF-terminated (the only terminator the header parse
-    // recognizes, RFC 5322 §2.3), so the two tolerances stay apart.
+    // The boundary scan tolerates an LF-terminated delimiter line; each
+    // part's own fields stay CRLF-terminated (the only terminator the header
+    // parse recognizes).
     const body = enc.encode(
       "--boundary\nContent-Type: text/plain\r\n\r\nPart one\n" +
         "--boundary\nContent-Type: text/html\r\n\r\n<p>Part two</p>\n" +
@@ -1076,8 +1067,8 @@ describe("parseMailToEmail", () => {
 
     const email = parseMailToEmail(msg, "sml_signed_structured");
 
-    // The structured message is multipart/mixed inside multipart/signed.
-    // textBody should include the summary text/plain part.
+    // The structured message is multipart/mixed inside multipart/signed;
+    // textBody includes the summary text/plain part.
     expect(email.textBody).toHaveLength(1);
     const textPartId = defined(email.textBody[0]).partId;
     expect(email.bodyValues[textPartId]?.value).toContain(
@@ -1352,10 +1343,8 @@ describe("conversation attachments round-trip", () => {
   });
 
   test("a text/plain document attachment is distinguished from the body text", () => {
-    // The trickiest case: a text/plain attachment shares its content type
-    // with the conversation body part, so the two are told apart only by
-    // Content-Disposition. The body must not be read as an attachment, and
-    // the attachment must not be lost.
+    // A text/plain attachment shares its content type with the conversation
+    // body part, so the two are told apart only by Content-Disposition.
     const doc: MessageAttachment = {
       name: "notes.txt",
       contentType: "text/plain",
@@ -1408,10 +1397,10 @@ describe("conversation attachments round-trip", () => {
   });
 
   test("an inline html sibling does not steal the PDF's IMAP path", () => {
-    // A mail client that also sends text/html leaves an extra sibling
-    // between BODY[1.1] and the attachment. extractAttachments skips that
-    // inline part; the PDF's path must still be the sibling number
-    // extractPartByPath uses (1.3), not the attachment-array index (1.2).
+    // A text/html sibling between BODY[1.1] and the attachment must not
+    // shift the PDF's path: extractAttachments skips the inline part, and the
+    // path stays the sibling number extractPartByPath uses (1.3), not the
+    // attachment-array index (1.2).
     const pdf = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d]);
     const signed = [
       `Content-Type: multipart/mixed; boundary="inner"`,
@@ -1474,8 +1463,8 @@ describe("conversation attachments round-trip", () => {
   });
 
   test("rejects an attachment header that is not 7-bit or over 998 octets", () => {
-    // These headers sit inside the signed part and have no transfer
-    // encoding. An 8-bit name, or a line past 998, is one a relay can rewrite.
+    // These headers sit inside the signed part with no transfer encoding;
+    // an 8-bit name or a line past 998 is one a relay can rewrite.
     const blob = new Uint8Array([1]);
     expect(() =>
       assembleSignedContent({

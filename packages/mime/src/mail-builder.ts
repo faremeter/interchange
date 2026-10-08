@@ -4,13 +4,11 @@
  * Hand-assembling these requires MessageRef, MessageHeaders, payload
  * envelopes, signature status and other fields the transport normally
  * produces from wire bytes; these builders collapse that boilerplate behind
- * two factories with sensible defaults.
- *
- * They use the parsed-shape MessageHeaders from @intx/types/runtime (date is
- * an ISO string), NOT the wire-shape MessageHeaders local to this package
- * (date is a Date, serialized to RFC 2822 bytes via assembleMessage).
- * Consumers import the message types from @intx/types directly; the
- * @intx/mime barrel does not re-export them.
+ * two factories with sensible defaults. They use the parsed-shape
+ * MessageHeaders from @intx/types/runtime (date is an ISO string), NOT the
+ * wire-shape MessageHeaders local to this package (date is a Date,
+ * serialized via assembleMessage). Consumers import the message types from
+ * @intx/types directly.
  */
 
 import { type } from "arktype";
@@ -29,9 +27,8 @@ import {
 import { generateMessageId } from "./mime";
 
 /**
- * Default schema version for structured payloads. Matches docs/MESSAGE.md
- * § Payload Structure ("version": "1" for every payload type). Audit when
- * that document increments.
+ * Default schema version for structured payloads, per docs/MESSAGE.md
+ * § Payload Structure ("version": "1" for every payload type).
  */
 const DEFAULT_PAYLOAD_VERSION = "1";
 
@@ -42,10 +39,7 @@ const ADDRESS_RE = /^[^@\s]+@[^@\s]+$/;
 // InboundMessage builder
 // ---------------------------------------------------------------------------
 
-/**
- * Structured payload envelope for an inbound message. `version` defaults to
- * the current schema version per docs/MESSAGE.md.
- */
+/** Structured payload envelope for an inbound message; `version` defaults to the current schema version. */
 export type InboundPayloadInput = {
   type: InterchangeType;
   body: Record<string, unknown>;
@@ -68,13 +62,10 @@ export type CreateInboundMessageOpts = {
   cc?: string | string[];
   subject?: string;
 
-  /**
-   * Defaults to `new Date().toISOString()`. Accepts Date or any string
-   * parseable by `new Date(...)`; stored as an ISO 8601 string.
-   */
+  /** Defaults to `new Date().toISOString()`; stored as an ISO 8601 string. */
   date?: Date | string;
 
-  /** Defaults to `generateMessageId(from)`. Must be `<id@host>`. */
+  /** Defaults to `generateMessageId(from)`; must be `<id@host>`. */
   messageId?: string;
 
   inReplyTo?: string;
@@ -82,8 +73,8 @@ export type CreateInboundMessageOpts = {
   listId?: string;
 
   /**
-   * Interchange-Type header value. Auto-derived from `payload.type` when a
-   * payload is supplied; throws if explicitly set to a conflicting value.
+   * Interchange-Type header value; auto-derived from `payload.type` when a
+   * payload is supplied, and throws if explicitly set to a conflicting value.
    */
   interchangeType?: InterchangeType;
 
@@ -310,8 +301,8 @@ export function createOutboundMessage(
   const fn = "createOutboundMessage";
 
   validateInterchangeType(opts.type, "type", fn);
-  // Validate addresses without mutating the source shape; OutboundMessage
-  // preserves `string | string[]` and consumers handle both.
+  // Validate without mutating the source shape; OutboundMessage preserves
+  // `string | string[]` and consumers handle both.
   normalizeAndValidateAddressArray(opts.to, "to", fn, false);
   if (opts.cc !== undefined) {
     normalizeAndValidateAddressArray(opts.cc, "cc", fn, false);
@@ -413,8 +404,8 @@ function requireAddress(value: unknown, field: string, fn: string): void {
 }
 
 /**
- * Validate an address list and normalize a bare string into a one-entry array.
- * `allowNone` permits an empty list, which only an inbound `to` does.
+ * Validate an address list and normalize a bare string into a one-entry
+ * array. `allowNone` permits an empty list, which only an inbound `to` does.
  */
 function normalizeAndValidateAddressArray(
   input: string | string[],
@@ -470,11 +461,10 @@ function validateMessageId(value: string, field: string, fn: string): void {
 
 /**
  * Non-throwing predicate for the RFC 2822 message-identifier form `<id@host>`.
- * A caller forwarding a `messageId`/`inReplyTo`/`references` value into
- * `createInboundMessage` (which rejects a malformed identifier) uses this to
- * decide whether the value is safe to forward: inbound mail can carry a
- * headerless-derived (sha256) or otherwise malformed Message-Id that is a
- * valid claim-check key but not a valid RFC identifier.
+ * A caller forwarding a value into `createInboundMessage` (which rejects a
+ * malformed identifier) uses this to decide whether the value is safe to
+ * forward: inbound mail can carry a headerless-derived (sha256) Message-Id
+ * that is a valid claim-check key but not a valid RFC identifier.
  */
 export function isMessageId(value: string): boolean {
   return MESSAGE_ID_RE.test(value);
