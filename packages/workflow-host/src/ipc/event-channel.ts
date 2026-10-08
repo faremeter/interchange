@@ -20,8 +20,8 @@
 // Mixing failure mode: the payload union here covers InferenceEvent
 // shapes only. A "control message" structurally shaped as `drain` or
 // `recycle` will not satisfy this union and the receiver will crash.
-// The discriminated arktype validators in `control-channel.ts` and
-// here are disjoint by construction.
+// The per-kind control validators in `control-payloads.ts` reject these
+// inference-event shapes, keeping the channels' payload schemas disjoint.
 
 import { type } from "arktype";
 

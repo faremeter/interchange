@@ -47,7 +47,7 @@ import {
   createControlChannelSender,
   type NdjsonReader,
   type NdjsonWriter,
-} from "../ipc/control-channel";
+} from "../ipc/control-sender";
 import type { FrameWriter } from "../ipc/event-sender";
 
 /**

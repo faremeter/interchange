@@ -340,7 +340,8 @@ The contract is intentionally narrow:
    `process.exit(1)` with a stderr message on rejection).
 
 Use the `/child` entry to keep supervisor orchestration and parent wire
-validators out of the child.
+validators out of the child. Its control receiver validates each message with
+an ArkType schema cached on first receipt of that message kind.
 
 Example host binary (`apps/<host>/bin/workflow-child`):
 

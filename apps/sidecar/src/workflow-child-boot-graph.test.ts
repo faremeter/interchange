@@ -215,6 +215,7 @@ describe("workflow-child boot graph", () => {
       "packages/workflow-deploy/src/index.ts",
       "packages/workflow-host/src/index.ts",
       "packages/workflow-host/src/ipc/index.ts",
+      "packages/workflow-host/src/ipc/control-channel.ts",
       "packages/workflow-host/src/ipc/event-channel.ts",
     ];
     expect(forbiddenModules.filter((module) => modules.has(module))).toEqual(

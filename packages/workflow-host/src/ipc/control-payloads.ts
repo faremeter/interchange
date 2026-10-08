@@ -1,0 +1,1072 @@
+import { type } from "arktype";
+import {
+  BoundedApprovalSnapshot,
+  ControlParkKind,
+  InferenceSource,
+  InterchangeType,
+  MessageTransportCondition,
+  SignatureStatus,
+} from "@intx/types/runtime-core";
+import { CredentialDelivery } from "@intx/types/credential-delivery";
+
+/**
+ * Wire-shape of one per-step credentials entry the supervisor pushes
+ * inside a `grants-updated` frame. Mirrors `CredentialsSnapshotStep`
+ * in `supervisor/credentials.ts` -- duplicated here as an arktype
+ * validator so the control-channel module stays free of a
+ * compile-time import on the supervisor module (the IPC module sits
+ * underneath the supervisor and child modules in the dependency
+ * graph). The contentHash pins the per-step grants so the child can
+ * detect a stale push and ignore an out-of-order one.
+ */
+export const CredentialsSnapshotStepPayload = type({
+  stepId: "string",
+  address: "string",
+  grants: "unknown[]",
+  contentHash: "string",
+});
+
+export const CredentialsSnapshotPayload = type({
+  steps: CredentialsSnapshotStepPayload.array(),
+});
+
+/**
+ * Wire shape of a `sources-updated` frame's `data`: the full ordered
+ * inference-source failover chain plus the default source id. Carried
+ * inline like the grants snapshot -- a single-producer, single-consumer
+ * supervisor->child push, so a substrate round-trip would only add
+ * latency. No per-source hash rides along; a source list is flat, with no
+ * per-item pin for a receiver to cross-check.
+ *
+ * The `narrow` pins two frame-structural invariants at this boundary so
+ * every consumer can trust them without re-checking: source ids are
+ * unique, and the first element is the default source. The head-is-default
+ * rule is what keeps the two rotation paths in agreement -- a warm agent's
+ * `setSources` activates the matched default index, while a cold rebuild
+ * pins element 0 -- so they pick the same active source only when the
+ * default is the head.
+ */
+export const SourcesUpdatedData = type({
+  sources: InferenceSource.array().atLeastLength(1),
+  defaultSource: "string > 0",
+}).narrow((data, ctx) => {
+  const seen = new Set<string>();
+  for (const source of data.sources) {
+    if (seen.has(source.id)) {
+      return ctx.mustBe(
+        `a source list with unique ids; "${source.id}" appears more than once`,
+      );
+    }
+    seen.add(source.id);
+  }
+  const head = data.sources[0];
+  if (head === undefined || head.id !== data.defaultSource) {
+    return ctx.mustBe(
+      "a source list whose first element is the default source",
+    );
+  }
+  return true;
+});
+
+/**
+ * Wire projection of an attachment on an outbound mail message. The
+ * runtime `MessageAttachment.data` is raw bytes; the NDJSON control
+ * channel is text, so the bytes ride base64-encoded under `dataBase64`.
+ * The child encodes on send; the supervisor decodes before handing the
+ * `OutboundMessage` to the host transport.
+ */
+export const OutboundAttachmentPayload = type({
+  name: "string",
+  contentType: "string",
+  dataBase64: "string",
+});
+
+/**
+ * Wire projection of `@intx/types/runtime`'s `OutboundMessage`. Mirrors
+ * that type field-for-field with two adjustments for the NDJSON wire:
+ * attachment bytes are base64 strings (see `OutboundAttachmentPayload`),
+ * and every optional field is spelled with the `"?"` suffix so an
+ * absent field round-trips as absent rather than `null`. The supervisor
+ * reconstructs the runtime `OutboundMessage` from this shape before
+ * invoking `MailBusBindings.sendOutbound`.
+ *
+ * Duplicated here as an arktype validator (rather than importing the
+ * TypeScript `OutboundMessage` type) so the IPC module validates the
+ * child-supplied payload at the wire boundary -- the child is a separate
+ * process and its frames are untrusted input the receiver must parse.
+ */
+export const OutboundMessagePayload = type({
+  to: "string | string[]",
+  "cc?": "string | string[]",
+  "subject?": "string",
+  type: InterchangeType,
+  "content?": "string",
+  "payload?": "Record<string, unknown>",
+  "summary?": "string",
+  "attachments?": OutboundAttachmentPayload.array(),
+  "inReplyTo?": "string",
+  "references?": "string[]",
+  "correlationId?": "string",
+  "sessionId?": "string",
+  "tenantId?": "string",
+});
+
+export type OutboundMessagePayload = typeof OutboundMessagePayload.infer;
+
+/**
+ * Wire shape of the parsed `MessageHeaders` the supervisor rides inline on a
+ * `mailbox.notify` frame. Mirrors `@intx/types/runtime`'s `MessageHeaders`
+ * field-for-field so a child watcher gets the arrived message's envelope for
+ * its `exists` `MailboxEvent` without a substrate round-trip. Only `to` is
+ * required; the rest are optional, matching the runtime type.
+ *
+ * Duplicated here as an arktype validator (rather than importing the TypeScript
+ * `MessageHeaders` type) so the IPC module validates the header block at the
+ * wire boundary, exactly as `OutboundMessagePayload` does for outbound mail.
+ */
+export const MailboxNotifyHeaders = type({
+  "from?": "string",
+  to: "string[]",
+  "cc?": "string[]",
+  "date?": "string",
+  "messageId?": "string",
+  "inReplyTo?": "string",
+  "references?": "string[]",
+  "subject?": "string",
+  "listId?": "string",
+  "interchangeType?": InterchangeType,
+  "interchangeCorrelationId?": "string",
+  "interchangeTenantId?": "string",
+  "interchangeAgentId?": "string",
+  "interchangeSessionId?": "string",
+  "interchangeOfferingId?": "string",
+  "interchangeSchemaVersion?": "string",
+  "traceparent?": "string",
+  "tracestate?": "string",
+});
+
+export type MailboxNotifyHeaders = typeof MailboxNotifyHeaders.infer;
+
+/**
+ * Recursive mailbox values carried on `mailbox.call`. Date fields of a search
+ * stay strings: reviving them here would turn a bad date into a control-channel
+ * failure, and the handler revives the tree before it runs the query.
+ */
+const mailboxCall = type.module({
+  SearchQuery: {
+    "from?": "string",
+    "to?": "string",
+    "cc?": "string",
+    "bcc?": "string",
+    "header?": {
+      field: "string",
+      contains: "string",
+    },
+    "before?": "string",
+    "after?": "string",
+    "on?": "string",
+    "sentBefore?": "string",
+    "sentAfter?": "string",
+    "sentOn?": "string",
+    "hasFlags?": "string[]",
+    "missingFlags?": "string[]",
+    "body?": "string",
+    "text?": "string",
+    "largerThan?": "number",
+    "smallerThan?": "number",
+    "and?": "SearchQuery[]",
+    "or?": "SearchQuery[]",
+    "not?": "SearchQuery",
+  },
+  Thread: {
+    ref: {
+      uid: "number >= 1",
+      mailbox: "string > 0",
+    },
+    children: "Thread[]",
+  },
+  BodyStructure: {
+    contentType: "string",
+    "size?": "number",
+    "disposition?": "string",
+    "parts?": "BodyStructure[]",
+  },
+});
+
+const MailboxCallMessageRef = type({
+  uid: "number >= 1",
+  mailbox: "string > 0",
+});
+
+/**
+ * Caller-supplied message coordinates. They are not bounded: a frame this
+ * schema rejects crashes the child, and the supervisor is what refuses a
+ * mailbox name or a uid. Refs the supervisor emits stay on
+ * `MailboxCallMessageRef`, which admits only a positive uid and a non-empty
+ * mailbox.
+ */
+const MailboxCallRequestRef = type({
+  uid: "number",
+  mailbox: "string",
+});
+
+const MailboxCallOp = type.enumerated(
+  "search",
+  "thread",
+  "fetchHeaders",
+  "fetchStructure",
+  "fetchPart",
+  "fetchFull",
+  "sync",
+  "getMailboxStatus",
+  "append",
+  "listMailboxes",
+  "createMailbox",
+  "deleteMailbox",
+  "move",
+  "copy",
+  "createList",
+  "listMembers",
+  "subscribe",
+  "unsubscribe",
+  "watch",
+  "readMailPart",
+);
+
+const MailboxCallStructuredPayload = type({
+  type: InterchangeType,
+  version: "string",
+  body: "Record<string, unknown>",
+});
+
+/** Decoded part bytes. `encoding` is omitted when the part was 7bit. */
+const MailboxCallPart = type({
+  contentType: "string",
+  contentBase64: "string",
+  "encoding?": "string",
+  "filename?": "string",
+  "disposition?": "'inline' | 'attachment'",
+});
+
+/**
+ * A fetched attachment. `part` is the IMAP section `fetchPart` addresses, so
+ * it has to survive this schema; a header-only attachment object would drop
+ * it on the way to the caller.
+ */
+const MailboxCallAttachment = type({
+  name: "string",
+  contentType: "string",
+  dataBase64: "string",
+  "part?": "string",
+});
+
+const MailboxCallFetchedMessage = type({
+  ref: MailboxCallMessageRef,
+  headers: MailboxNotifyHeaders,
+  flags: "string[]",
+  signatureStatus: SignatureStatus,
+  "content?": "string",
+  "payload?": MailboxCallStructuredPayload,
+  "attachments?": MailboxCallAttachment.array(),
+});
+
+const MailboxCallSyncResult = type({
+  vanished: "number[]",
+  changed: type({
+    uid: "number >= 1",
+    flags: "string[]",
+  }).array(),
+  newMessages: MailboxCallMessageRef.array(),
+  fullResyncRequired: "boolean",
+});
+
+const MailboxCallStatus = type({
+  total: "number >= 0",
+  unseen: "number >= 0",
+  recent: "number >= 0",
+  uidNext: "number >= 1",
+  uidValidity: "number",
+  highestModSeq: "number >= 0",
+});
+
+const MailboxCallMailbox = type({
+  name: "string > 0",
+  "role?": "string",
+  "delimiter?": "string",
+});
+
+const MailboxCallListInfo = type({
+  address: "string",
+  name: "string",
+  memberCount: "number >= 0",
+  createdAt: "string",
+});
+
+/**
+ * Operands the child forwards are unbounded. A frame this schema rejects
+ * crashes the child, and the supervisor refuses a mailbox, a uid, or a part
+ * it does not own. Results the supervisor emits stay bounded.
+ */
+function createMailboxCallRequestData() {
+  return type.or(
+    {
+      requestId: "string > 0",
+      runId: "string > 0",
+      op: "'search'",
+      mailbox: "string",
+      query: mailboxCall.SearchQuery,
+    },
+    {
+      requestId: "string > 0",
+      runId: "string > 0",
+      op: "'thread'",
+      mailbox: "string",
+      algorithm: "'references' | 'orderedsubject'",
+      "query?": mailboxCall.SearchQuery,
+    },
+    {
+      requestId: "string > 0",
+      runId: "string > 0",
+      op: "'fetchHeaders' | 'fetchStructure' | 'fetchFull'",
+      ref: MailboxCallRequestRef,
+    },
+    {
+      requestId: "string > 0",
+      runId: "string > 0",
+      op: "'fetchPart'",
+      ref: MailboxCallRequestRef,
+      partPath: "string",
+    },
+    {
+      requestId: "string > 0",
+      runId: "string > 0",
+      op: "'sync'",
+      mailbox: "string",
+      uidNext: "number",
+      uidValidity: "number",
+      highestModSeq: "number",
+    },
+    {
+      requestId: "string > 0",
+      runId: "string > 0",
+      op: "'getMailboxStatus' | 'watch'",
+      mailbox: "string",
+    },
+    {
+      requestId: "string > 0",
+      runId: "string > 0",
+      op: "'append'",
+      mailbox: "string",
+      headers: MailboxNotifyHeaders,
+      "content?": "string",
+      "payload?": MailboxCallStructuredPayload,
+      "flags?": "string[]",
+    },
+    {
+      requestId: "string > 0",
+      runId: "string > 0",
+      op: "'listMailboxes'",
+    },
+    {
+      requestId: "string > 0",
+      runId: "string > 0",
+      op: "'createMailbox' | 'deleteMailbox'",
+      name: "string",
+    },
+    {
+      requestId: "string > 0",
+      runId: "string > 0",
+      op: "'move' | 'copy'",
+      ref: MailboxCallRequestRef,
+      toMailbox: "string",
+    },
+    {
+      requestId: "string > 0",
+      runId: "string > 0",
+      op: "'createList'",
+      address: "string",
+      name: "string",
+    },
+    {
+      requestId: "string > 0",
+      runId: "string > 0",
+      op: "'listMembers'",
+      address: "string",
+    },
+    {
+      requestId: "string > 0",
+      runId: "string > 0",
+      op: "'subscribe' | 'unsubscribe'",
+      listAddress: "string",
+      subscriberAddress: "string",
+    },
+    {
+      requestId: "string > 0",
+      runId: "string > 0",
+      op: "'readMailPart'",
+      partRef: "string",
+    },
+  );
+}
+
+/**
+ * `op` is echoed so `value` is checked under that operation. A shared value
+ * union would let a structure object match a part fetch and drop
+ * `contentBase64`. Operations with no result omit `value` rather than sending
+ * null. Part and attachment bytes are base64.
+ */
+function createMailboxCallResponseData() {
+  return type.or(
+    {
+      requestId: "string > 0",
+      ok: "false",
+      op: MailboxCallOp,
+      reason: "string > 0",
+      "condition?": MessageTransportCondition,
+    },
+    {
+      requestId: "string > 0",
+      ok: "true",
+      op: "'watch' | 'deleteMailbox' | 'move' | 'copy' | 'subscribe' | 'unsubscribe'",
+    },
+    {
+      requestId: "string > 0",
+      ok: "true",
+      op: "'search'",
+      value: MailboxCallMessageRef.array(),
+    },
+    {
+      requestId: "string > 0",
+      ok: "true",
+      op: "'thread'",
+      value: mailboxCall.Thread.array(),
+    },
+    {
+      requestId: "string > 0",
+      ok: "true",
+      op: "'fetchHeaders'",
+      value: MailboxNotifyHeaders,
+    },
+    {
+      requestId: "string > 0",
+      ok: "true",
+      op: "'fetchStructure'",
+      value: mailboxCall.BodyStructure,
+    },
+    {
+      requestId: "string > 0",
+      ok: "true",
+      op: "'fetchPart'",
+      value: MailboxCallPart,
+    },
+    {
+      requestId: "string > 0",
+      ok: "true",
+      op: "'fetchFull'",
+      value: MailboxCallFetchedMessage,
+    },
+    {
+      requestId: "string > 0",
+      ok: "true",
+      op: "'sync'",
+      value: MailboxCallSyncResult,
+    },
+    {
+      requestId: "string > 0",
+      ok: "true",
+      op: "'getMailboxStatus'",
+      value: MailboxCallStatus,
+    },
+    {
+      requestId: "string > 0",
+      ok: "true",
+      op: "'append'",
+      value: MailboxCallMessageRef,
+    },
+    {
+      requestId: "string > 0",
+      ok: "true",
+      op: "'listMailboxes'",
+      value: MailboxCallMailbox.array(),
+    },
+    {
+      requestId: "string > 0",
+      ok: "true",
+      op: "'createMailbox'",
+      value: MailboxCallMailbox,
+    },
+    {
+      requestId: "string > 0",
+      ok: "true",
+      op: "'createList'",
+      value: MailboxCallListInfo,
+    },
+    {
+      requestId: "string > 0",
+      ok: "true",
+      op: "'listMembers'",
+      value: "string[]",
+    },
+    {
+      requestId: "string > 0",
+      ok: "true",
+      op: "'readMailPart'",
+      value: {
+        contentBase64: "string",
+      },
+    },
+  );
+}
+
+// A message's discriminant selects its validator. Keep each schema factory lazy
+// so a process constructs only the payload schemas it actually receives.
+const controlPayloadFactories = defineControlPayloadFactories({
+  "trigger.fire": () =>
+    type({
+      type: "'trigger.fire'",
+      data: {
+        runId: "string",
+        messageId: "string",
+        receivedAt: "number",
+        // The run's inbound-mail input, resolved by the supervisor (the sole
+        // mail owner) before the frame: a decoded `Mail` (headers plus part
+        // descriptors that reference the part bytes committed to the workflow-run
+        // substrate). The child hands this straight to the runtime as the trigger
+        // payload. Refs, not raw mail bytes, ride here; the committed part files
+        // stay in the substrate. Typed `unknown` -- `Mail` is a nested structural
+        // type validated at the consumption boundary by `isMail`.
+        payload: "unknown",
+      },
+    }),
+  "signal.deliver": () =>
+    type({
+      type: "'signal.deliver'",
+      data: {
+        runId: "string",
+        signalName: "string",
+        signalId: "string",
+        // The resume decision in FINAL form -- the child commits it as the
+        // SignalReceived payload verbatim. Each sender owns any
+        // provenance-specific preparation BEFORE this frame: the dispatch loop
+        // resolves an inbound mail to a decoded `Mail` (headers plus part
+        // references, like the turn-1 trigger), while `deliverSignal` ships a
+        // structured signal payload unchanged -- so this field stays
+        // polymorphic. Do NOT ship raw inbound mail bytes through here.
+        payload: "unknown",
+      },
+    }),
+  drain: () =>
+    type({
+      type: "'drain'",
+      data: {
+        deadlineMs: "number",
+      },
+    }),
+  shutdown: () =>
+    type({
+      type: "'shutdown'",
+      data: {
+        reason: "string",
+      },
+    }),
+  "cancel.prepare": () =>
+    type({
+      type: "'cancel.prepare'",
+      data: { requestId: "string", runId: "string", reason: "string" },
+    }),
+  "cancel.prepared": () =>
+    type({
+      type: "'cancel.prepared'",
+      data: { requestId: "string", "error?": "string" },
+    }),
+  "cancel.committed": () =>
+    type({
+      type: "'cancel.committed'",
+      data: { requestId: "string", "error?": "string" },
+    }),
+  "grants-updated": () =>
+    type({
+      type: "'grants-updated'",
+      data: {
+        /**
+         * Full credentialsSnapshot the supervisor assembled. The child
+         * replaces its in-memory snapshot wholesale on receive so the
+         * authorize closure binds to the new per-step grants on the
+         * next step invocation. Carried inline rather than by reference
+         * because the snapshot is per-step grants payload -- the
+         * supervisor is the only producer and the child is the only
+         * consumer, so the substrate round-trip would just add latency.
+         */
+        snapshot: CredentialsSnapshotPayload,
+        /**
+         * Per-step content hashes the supervisor expects the snapshot
+         * to pin to. Surfaced separately so receivers can cheap-compare
+         * a push against the snapshot they already have without rehashing
+         * each step's grants. Optional; the receiver does not require it
+         * but uses it for the staleness cross-check when present.
+         */
+        "stepHashes?": "Record<string, string>",
+      },
+    }),
+  "sources-updated": () =>
+    type({
+      type: "'sources-updated'",
+      data: SourcesUpdatedData,
+    }),
+  "credentials-updated": () =>
+    type({
+      // Refreshed credential material for the deployment's inference sources and
+      // tools. The child MERGES this into its in-memory cell (see
+      // `mergeCredentialDelivery`): `delivery.materials` upsert by credentialId
+      // and `delivery.bindings` upsert by (consumer, handle); `revoke` names
+      // credentialIds to drop, and dropping one drops every binding referencing
+      // it. Merge rather than wholesale-replace because the cell has several
+      // independently-scoped producers (the deploy frame, an inference rotation,
+      // a tool-grant push), each carrying only its own slice -- a swap would let
+      // one evict another's credentials. Revocation is therefore explicit, never
+      // by omission. Carried inline like the grants and sources snapshots. The
+      // secret rides this frame and the in-memory cell only; it is never
+      // persisted.
+      type: "'credentials-updated'",
+      data: {
+        delivery: CredentialDelivery,
+        "revoke?": "string[]",
+      },
+    }),
+  ready: () =>
+    type({
+      type: "'ready'",
+      data: {
+        childPid: "number",
+        /**
+         * Hex-encoded Ed25519 public key the child minted at startup.
+         * The supervisor extracts this on receive and uses it to verify
+         * every subsequent upstream control frame's signature. The
+         * child's private key never leaves the child's address space.
+         */
+        childPublicKey: "string",
+      },
+    }),
+  "recycle.request": () =>
+    type({
+      // Child-initiated request to recycle the workflow-process. The
+      // child emits this when its own self-check decides it needs to be
+      // recycled (an internal consistency error it can't recover from,
+      // a watchdog tripping); the supervisor receives it on its
+      // upstream control-channel reader and funnels it into the same
+      // `triggerRecycle` code path the operator and policy origins use.
+      // The `reason` rides verbatim into the supervisor's reason field;
+      // the supervisor does not interpret it beyond logging and
+      // attaching it to the recycle attempt.
+      type: "'recycle.request'",
+      data: {
+        reason: "string",
+      },
+    }),
+  "substrate.write.request": () =>
+    type({
+      // Child-initiated `writeTreePreservingPrefix` request. The child
+      // does not hold a substrate write authority for the workflow-run
+      // repo (single-writer at the ref tip belongs to the supervisor);
+      // its workflow-run substrate proxy forwards every write through
+      // this frame. The supervisor receives the request, runs its own
+      // wrapped `writeTreePreservingPrefix`, and reaches back to the
+      // child for the merge bytes via `substrate.merge.request` so the
+      // child's merge closure (which knows about seq computation,
+      // duplicate detection, etc.) keeps producing the prospective tree.
+      // The supervisor resolves the child's awaiter with
+      // `substrate.write.response`.
+      type: "'substrate.write.request'",
+      data: {
+        requestId: "string > 0",
+        repoId: {
+          kind: "string",
+          id: "string > 0",
+        },
+        ref: "string > 0",
+        preservePrefix: "string > 0",
+        message: "string > 0",
+      },
+    }),
+  "substrate.merge.request": () =>
+    type({
+      // Supervisor-initiated request for the child's merge bytes. Fired
+      // from inside the supervisor's `writeTreePreservingPrefix` merge
+      // callback while the per-repo lock is held; the child receives the
+      // existing prefix entries (base64-encoded bytes), invokes its merge
+      // closure, and replies with the prospective tree on
+      // `substrate.merge.response`. Carrying the entries inline preserves
+      // the lock window: the supervisor blocks inside the merge callback
+      // until the response lands.
+      type: "'substrate.merge.request'",
+      data: {
+        requestId: "string > 0",
+        existing: type({
+          path: "string > 0",
+          contentBase64: "string",
+        }).array(),
+      },
+    }),
+  "substrate.merge.response": () =>
+    type({
+      // Child's merge result. `requestId` correlates with the
+      // `substrate.write.request` that started the write; the supervisor
+      // resumes its merge callback with the supplied entries (or
+      // propagates the structured failure).
+      type: "'substrate.merge.response'",
+      data: {
+        requestId: "string > 0",
+        result: type(
+          {
+            ok: "true",
+            files: type({
+              path: "string > 0",
+              contentBase64: "string",
+            }).array(),
+          },
+          "|",
+          {
+            ok: "false",
+            reason: "string > 0",
+          },
+        ),
+      },
+    }),
+  "substrate.write.response": () =>
+    type({
+      // Supervisor's terminal reply to a child's `substrate.write.request`.
+      // The `requestId` echoes the child's allocated correlation id so
+      // the child's pending-id map resolves the awaiter. A successful
+      // write surfaces `commitSha`; the child's proxy returns that to its
+      // caller. A failed write (substrate rejection, validatePush
+      // violation, the supervisor's pack-push wrap's downstream
+      // `HubLink.pushWorkflowRunPack` rejection) surfaces a structured
+      // `{ ok: false, reason }` the child's proxy rethrows.
+      type: "'substrate.write.response'",
+      data: {
+        requestId: "string > 0",
+        result: type(
+          {
+            ok: "true",
+            commitSha: "string > 0",
+          },
+          "|",
+          {
+            ok: "false",
+            reason: "string > 0",
+          },
+        ),
+      },
+    }),
+  "outbound.message": () =>
+    type({
+      // Child-initiated outbound-mail request (OUTBOUND half of mailbox
+      // ownership, §3a). The workflow-process child never holds the
+      // agent's signing key and never calls `transport.send` itself. When
+      // a step agent produces a reply or invokes a mail-send tool, the
+      // child forwards the structured outbound message plus the sender
+      // (agent) address up over the control channel; the supervisor
+      // performs the actual signed send through the host's real transport
+      // (`MailBusBindings.sendOutbound`), which signs with the sender's
+      // `CryptoProvider` exactly as the in-process path does. The
+      // supervisor is the sole mail owner and the only process that can
+      // emit signed mail on the agent's behalf.
+      //
+      // `requestId` correlates the supervisor's `outbound.result` reply so
+      // the child's mail-tool `send()` resolves with the real
+      // `SendReceipt` (or rejects with the supervisor's structured
+      // failure). The message is carried as a JSON-projected
+      // `OutboundMessage`; attachment bytes ride base64-encoded so the
+      // NDJSON wire stays text-safe.
+      //
+      // `completeReferences` is set only by a connector reply. The
+      // supervisor then fills References from the committed mailbox when
+      // `inReplyTo` is set and `references` is absent. A send without the
+      // flag is left alone: `mail_send` is the same shape, and completing
+      // it would replace its one-parent chain with the full ancestry.
+      type: "'outbound.message'",
+      data: {
+        requestId: "string > 0",
+        senderAddress: "string > 0",
+        "mailbox?": "string",
+        "completeReferences?": "boolean",
+        message: OutboundMessagePayload,
+      },
+    }),
+  "outbound.result": () =>
+    type({
+      // Supervisor's terminal reply to a child's `outbound.message`. The
+      // `requestId` echoes the child's correlation id so the child's
+      // pending mail-tool awaiter resolves. A successful send surfaces the
+      // `SendReceipt` (messageId + status); a failed send (unregistered
+      // sender, signing failure, transport rejection) surfaces a
+      // structured `{ ok: false, reason }` the child's transport rethrows
+      // so the mail-tool call fails loudly rather than dropping the send.
+      type: "'outbound.result'",
+      data: {
+        requestId: "string > 0",
+        result: type(
+          {
+            ok: "true",
+            messageId: "string > 0",
+            status: "'delivered' | 'queued'",
+          },
+          "|",
+          {
+            ok: "false",
+            reason: "string > 0",
+          },
+        ),
+      },
+    }),
+  "terminal.event": () =>
+    type({
+      // Child-initiated terminal-run notification. The workflow-process
+      // child emits this when one of its runs reaches a terminal phase
+      // (`RunCompleted`, `RunFailed`, `RunCancelled`) so the supervisor's
+      // dispatch loop and drain accumulators can settle without re-reading
+      // the workflow-run substrate from the supervisor process. The child
+      // commits the terminal event to its own substrate through the
+      // workflow-run pack-push pipeline; this frame is the peer-channel
+      // notification that mirrors the commit so the supervisor's
+      // in-process consumers do not have to round-trip the substrate.
+      //
+      // The `seq` mirrors the on-disk EventBase.seq the child assigned at
+      // commit time. The supervisor does not authoritatively verify the
+      // commit landed -- the pack-push response covers that contract --
+      // but the field is carried so a downstream consumer can correlate
+      // the notification with the substrate blob.
+      type: "'terminal.event'",
+      data: {
+        runId: "string > 0",
+        seq: "number >= 0",
+        kind: "'RunCompleted' | 'RunFailed' | 'RunCancelled'",
+        at: "string > 0",
+        "error?": {
+          message: "string",
+        },
+      },
+    }),
+  "park.notify": () =>
+    type({
+      // Child-initiated control-plane suspension notification. The
+      // workflow-process child emits this when a workflow agent step parks
+      // on a reserved `signalName(correlationId)` channel (`env.onPark`),
+      // so the supervisor can register the correlation out-of-band before
+      // the parked run can be resumed. The supervisor stamps the
+      // deployment identity it owns (`runId` + `agentAddress`) and
+      // forwards a `signal.correlation.register` frame to the hub, which
+      // co-writes the run's routing + approval rows. Mirrors
+      // `terminal.event`: a peer-channel notification the supervisor fans
+      // out, distinct from the substrate commit the run also produces.
+      //
+      // `signalName` is deliberately NOT carried: it is a pure function of
+      // `correlationId` (`signalName(correlationId)`), recomputed by every
+      // consumer that needs it, so the two cannot drift.
+      type: "'park.notify'",
+      data: {
+        runId: "string > 0",
+        correlationId: "string > 0",
+        parkKind: ControlParkKind,
+        // Approver-facing snapshot of the parked tool call, size-capped at this
+        // process boundary. Optional: only an ask-rail suspension carries one.
+        "snapshot?": BoundedApprovalSnapshot,
+      },
+    }),
+  "parked-correlations.request": () =>
+    type({
+      // Supervisor-initiated request: enumerate the child's currently-parked
+      // approval correlations. The supervisor fires this after a
+      // re-establishment (child respawn, or hub-link reconnect fanned out to
+      // this deployment) so it can re-register at the hub every correlation
+      // whose original `park.notify`-driven register may have been lost while
+      // the hub was down. Modeled on `substrate.merge.request`: a
+      // supervisor->child request the child answers on `parked-correlations.
+      // response`, correlated by `requestId`. Carries no filter -- one child
+      // owns one deployment, so the child enumerates everything parked and the
+      // supervisor re-emits all; the hub co-write is idempotent.
+      type: "'parked-correlations.request'",
+      data: {
+        requestId: "string > 0",
+      },
+    }),
+  "parked-correlations.response": () =>
+    type({
+      // Child's reply to `parked-correlations.request`. Each entry mirrors
+      // `park.notify`'s data -- the child-supplied half of a
+      // `SuspensionRegistration` the supervisor stamps its deployment identity
+      // onto -- so the supervisor's re-emit path shares one transform with the
+      // `park.notify` arm. Only reduced-state approval parks appear here: the
+      // child enumerates steps whose reduced phase is `awaiting-signal` on a
+      // control-plane `signalName(correlationId)` channel, each of which carries
+      // a durable snapshot by construction (a snapshot-less correlated suspend
+      // reduces to `failed`, not `awaiting-signal`). `snapshot` is therefore
+      // required, and size-capped at this process boundary like `park.notify`.
+      type: "'parked-correlations.response'",
+      data: {
+        requestId: "string > 0",
+        parked: type({
+          runId: "string > 0",
+          correlationId: "string > 0",
+          parkKind: ControlParkKind,
+          // Snapshot is required for approval parks and absent for input parks.
+          "snapshot?": BoundedApprovalSnapshot,
+        }).array(),
+      },
+    }),
+  "resumed.runs": () =>
+    type({
+      // Child reports self-discovered runs after reconnect or recycle.
+      // The supervisor seeds its cohort tracking from these runIds so
+      // drain accumulators and dispatch routing account for runs the
+      // supervisor did not personally trigger.fire.
+      type: "'resumed.runs'",
+      data: {
+        runIds: type("string > 0").array(),
+      },
+    }),
+  "mailbox.notify": () =>
+    type({
+      // Supervisor-to-child one-way notification that new mail landed in a
+      // deployment mailbox (INBOUND half of mailbox ownership, §3b). One-way
+      // like `grants-updated`/`sources-updated`: no correlation id, no response.
+      // The supervisor -- the sole mail owner -- commits the arrived message to
+      // the workflow-run substrate mailbox, then fires this frame so a registered
+      // `watch` observes the arrival decoupled from the FIFO trigger dispatch
+      // that resolves a run's first input. `headers` rides inline and is copied
+      // onto the `exists` event. The frame is not a copy of the message: a later
+      // fetch is its own mailbox call. The frame carries no commit pin.
+      type: "'mailbox.notify'",
+      data: {
+        runId: "string > 0",
+        mailbox: "string > 0",
+        uid: "number >= 1",
+        headers: MailboxNotifyHeaders,
+      },
+    }),
+  "mailbox.mutate.request": () =>
+    type({
+      // Child-initiated mailbox-mutation request (INBOUND half of mailbox
+      // ownership, §3b). The supervisor is the sole writer to the
+      // workflow-run mailbox. Flag writes and `expunge` route up here so
+      // the supervisor applies them to its owned store. A child flushing the
+      // same ref would race the supervisor's in-memory mirror and break
+      // uid / modseq monotonicity.
+      //
+      // `data` is discriminated on `op`: an `addFlags` / `removeFlags`
+      // carries the target `uid` and the `flags` to change, so the wire
+      // boundary rejects a flag frame that omits them; an `expunge` sweeps
+      // every `\Deleted` message in the mailbox and the child constructs it
+      // with neither. The mailbox name and the flag uid are not bounded. A
+      // frame this schema rejects crashes the child, and the supervisor
+      // refuses a mailbox other than INBOX and an unknown uid. `requestId`
+      // correlates the supervisor's `mailbox.mutate.response` reply.
+      type: "'mailbox.mutate.request'",
+      data: type(
+        {
+          requestId: "string > 0",
+          runId: "string > 0",
+          mailbox: "string",
+          op: "'addFlags' | 'removeFlags'",
+          uid: "number",
+          flags: "string[]",
+        },
+        "|",
+        {
+          requestId: "string > 0",
+          runId: "string > 0",
+          mailbox: "string",
+          op: "'expunge'",
+        },
+      ),
+    }),
+  "mailbox.mutate.response": () =>
+    type({
+      // Supervisor's terminal reply to a child's `mailbox.mutate.request`.
+      // The `requestId` echoes the child's correlation id so the child's
+      // pending mail-tool awaiter resolves. The reply is sent only after
+      // the supervisor flushes the mutation, so the child's next committed
+      // read observes it -- the same flush-before-signal ordering
+      // `mailbox.notify` relies on. A successful `expunge` carries the
+      // `expungedUids` it swept so the agent tool can report the count; a
+      // flag write carries no operand echo. A failed mutation (unknown
+      // uid, substrate fault) surfaces a structured `{ ok: false, reason }`
+      // the child's bridge rethrows so the mail-tool call fails loudly.
+      type: "'mailbox.mutate.response'",
+      data: {
+        requestId: "string > 0",
+        result: type(
+          {
+            ok: "true",
+            "expungedUids?": "number[]",
+          },
+          "|",
+          {
+            ok: "false",
+            reason: "string > 0",
+            // Present when the supervisor refused the mailbox itself. Absent
+            // for a failure that names no IMAP condition, such as an unknown uid.
+            "condition?": MessageTransportCondition,
+          },
+        ),
+      },
+    }),
+  "mailbox.call.request": () =>
+    type({
+      // A child asks the supervisor to answer one mailbox operation. The
+      // supervisor owns the deployment mailbox, so the answer — including a
+      // refusal — is its decision. `data` is discriminated on `op`, and each
+      // operation carries only the operands it uses. `requestId` correlates
+      // the `mailbox.call.response`.
+      type: "'mailbox.call.request'",
+      data: createMailboxCallRequestData(),
+    }),
+  "mailbox.call.response": () =>
+    type({
+      // Reply to `mailbox.call.request`, sent after the operation finishes.
+      // `op` echoes the request. See `createMailboxCallResponseData()`.
+      type: "'mailbox.call.response'",
+      data: createMailboxCallResponseData(),
+    }),
+});
+
+function defineControlPayloadFactories<
+  T extends { [K in keyof T]: () => { infer: { type: K } } },
+>(factories: T): T {
+  return factories;
+}
+
+type ControlPayloadFactory =
+  (typeof controlPayloadFactories)[keyof typeof controlPayloadFactories];
+type ControlPayloadSchema = ReturnType<ControlPayloadFactory>;
+export type ControlPayload = ControlPayloadSchema["infer"];
+
+const factories = new Map<string, ControlPayloadFactory>(
+  Object.entries(controlPayloadFactories),
+);
+const schemas = new Map<string, ControlPayloadSchema>();
+const PayloadHeader = type({ type: type.enumerated(...factories.keys()) });
+
+function getControlPayloadSchema(kind: string): ControlPayloadSchema {
+  const cached = schemas.get(kind);
+  if (cached) return cached;
+  const create = factories.get(kind);
+  if (!create) throw new Error("Unknown control payload kind: " + kind);
+  const schema = create();
+  schemas.set(kind, schema);
+  return schema;
+}
+
+export function parseControlPayload(
+  value: unknown,
+): ControlPayload | type.errors {
+  const header = PayloadHeader(value);
+  if (header instanceof type.errors) return header;
+  return getControlPayloadSchema(header.type)(value);
+}
+
+// The public inspection schema remains available to hosts and tooling. Child
+// receivers use parseControlPayload and never construct this combined union.
+export function createControlPayloadSchema() {
+  return type.or(...[...factories.keys()].map(getControlPayloadSchema));
+}

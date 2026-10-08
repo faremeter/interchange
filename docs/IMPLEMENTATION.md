@@ -387,10 +387,10 @@ The workflow-process runs code the operator deploys but the sidecar does not ful
 
 Each deployment gets two channels:
 
-- **Control channel.** NDJSON over stdio, Ed25519-signed by the supervisor. Carries trigger fires, signal deliveries, drain, recycle, shutdown, grants-updated, sources-updated, and the child's `ready` signal back. Low rate, high authority. Implementation lives in `packages/workflow-host/src/ipc/control-channel.ts`.
+- **Control channel.** NDJSON over stdio, Ed25519-signed per direction. Carries trigger fires, signal deliveries, drain, recycle, shutdown, grants-updated, sources-updated, and the child's `ready` signal back. Low rate, high authority. Sending and receiving live in `packages/workflow-host/src/ipc/control-sender.ts` and `control-receiver.ts`; payload validation lives in `control-payloads.ts`.
 - **Event channel.** A UNIX socketpair, HMAC-SHA256-authenticated with a 32-byte symmetric key derived at spawn time. Carries `InferenceEvent`s from the reactor (including the per-message `message.run.started` / `message.run.ended` brackets). High rate. Sending lives in `packages/workflow-host/src/ipc/event-sender.ts`; receiving and payload validation live in `event-channel.ts`.
 
-Asymmetric crypto on control is correct because only the supervisor signs and the child must not forge supervisor commands. Symmetric HMAC on events is correct because both sides must authenticate every frame at reactor cadence — Ed25519 per frame at that rate would dominate runtime cost. The two channels' payload unions are disjoint by construction; the typed `ControlPayload` validator does not accept inference-event shapes and the typed `EventPayload` validator does not accept control-plane shapes, so a confused-deputy attack that smuggles a `drain` or `recycle` over the event channel fails at validation.
+Each side signs control frames with its own private key and verifies incoming frames against its peer's public key, so the child cannot forge supervisor commands. Symmetric HMAC authenticates the event stream at reactor cadence — Ed25519 per frame at that rate would dominate runtime cost. The control receiver validates each payload against its message kind's schema. Those schemas and the event channel's `EventPayload` union are disjoint: control schemas reject inference-event shapes, and the event schema rejects control-plane shapes, so a confused-deputy attack that smuggles a `drain` or `recycle` over the event channel fails at validation.
 
 ### Frame Envelope
 
