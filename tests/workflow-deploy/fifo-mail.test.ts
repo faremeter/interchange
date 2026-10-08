@@ -6,9 +6,9 @@
 // deployment's one stable run while the queued post-terminal mails are
 // rejected in FIFO order.
 //
-// The supervisor's mail flow path enqueues every inbound mail into the
-// workflow-run repo's `addresses/<segment>/inbox/` FIFO via `enqueueInbox`,
-// and a per-deployment serial dispatch loop drains the inbox in arrival order
+// The supervisor's mail flow enqueues every inbound mail into the workflow-run
+// repo's `addresses/<segment>/inbox/` FIFO via `enqueueInbox`, and a
+// per-deployment serial dispatch loop drains the inbox in arrival order
 // (filename-prefix sort on `receivedAt`), forwarding the first entry to the
 // workflow-process child as a `trigger.fire`. The loop waits for the run's
 // terminal event before dequeueing the next entry; once terminal, it
@@ -25,15 +25,6 @@
 // Crash-replay across a real child SIGKILL -- the respawn-time
 // `replayProcessingToInbox` -- is covered end to end in
 // `crash-respawn-fifo.test.ts`.
-//
-// The deployment is deployed BY SOURCE-REF (bundle a source entry module into a
-// hub asset, probe it, approve+freeze it against a real DB, deploy the
-// source-ref frame). This mirrors the multistep-signal and drain-roundtrip
-// tests' shape so a regression in any of the seven hops surfaces uniformly
-// across the three.
-//
-// The pre-landed `deploy-flow-env` fixture supplies every helper this
-// file consumes; this file does not modify the fixture.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 

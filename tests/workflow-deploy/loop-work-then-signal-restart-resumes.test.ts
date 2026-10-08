@@ -17,8 +17,7 @@
 // `awaitSignal`. After crash + restart + resume the test asserts `work` ran
 // EXACTLY ONCE -- at the log layer (one `StepCompleted{work}`) and the effect
 // layer (one inference invocation). Reintroducing a resume-time grants
-// re-write would either fail the run (seq conflict) or re-run `work`, driving
-// a count to two.
+// re-write would either fail the run (seq conflict) or re-run `work`.
 //
 // Harness: SPAWN-REAL. The crash is a genuine kill of the sidecar subprocess;
 // the restart is a fresh sidecar against the dead process's SIDECAR_DATA_DIR.

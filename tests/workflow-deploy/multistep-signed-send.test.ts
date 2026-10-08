@@ -10,11 +10,10 @@
 // carries the inline `mail_send` tool in its transport variant. The tool
 // routes through the real outbound chain (supervisor-backed transport ->
 // outbound bridge -> IPC -> supervisor `sendOutbound` -> host transport
-// SIGNED send), so the send reaches the host transport as the deployment
-// address and the hub persists the delivered `mail.outbound` frame. A
-// captured frame whose sender is the deployment address is load-bearing proof
-// that the address held a registered signing identity; a registration gap
-// would reject the send inside the step and forward no frame.
+// SIGNED send); a captured `mail.outbound` frame whose sender is the
+// deployment address is load-bearing proof that the address held a registered
+// signing identity -- a registration gap would reject the send inside the step
+// and forward no frame.
 //
 // The sender is a step of a multi-step deployment (not a single-step head),
 // so this covers the deployment-scoped registration the single-step path

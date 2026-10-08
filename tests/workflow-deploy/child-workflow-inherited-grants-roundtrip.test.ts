@@ -16,15 +16,15 @@
 //
 // What this ADDS over the unit coverage. Which grants survive the cap is
 // proven in `packages/workflow-deploy/src/child-grant-filter.test.ts`; the
-// factory's injection of that filter is proven in
+// factory's injection of that filter in
 // `packages/workflow-host/src/child/workflow-substrate-factory-child-grants.test.ts`.
-// This test proves the WIRING composes: that a real mail trigger's delivered
-// grants reach `runs/<parentRunId>/grants.json` through the supervisor, and
-// that the real child-spawn adapter caps them against the child body during an
-// honest parent->child spawn. The fail-closed negative is not reproducible
-// here -- every mail-triggered run materializes a grants file, so an absent
-// parent file cannot arise through the trigger path -- and stays covered at
-// the unit level.
+// This test proves the WIRING composes: a real mail trigger's delivered grants
+// reach the parent's grants file through the supervisor, and the real
+// child-spawn adapter caps them against the child body during an honest
+// parent->child spawn. The fail-closed negative is not reproducible here --
+// every mail-triggered run materializes a grants file, so an absent parent
+// file cannot arise through the trigger path -- and stays covered at the unit
+// level.
 //
 // SCOPE. The grants-file write happens at spawn time, BEFORE the child step
 // runs, so this test asserts only the spawn-time capped write. Whether the

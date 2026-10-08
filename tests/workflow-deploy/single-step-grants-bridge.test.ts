@@ -15,15 +15,13 @@
 // the definition version row; the run's per-run grants (delivered on the
 // trigger frame) authorize the tool call at run time.
 //
-// Assertions: (a) identity -- the deploy-ack persisted the public key for the
-// run mail address and `isRunAddress` recognizes it; (b) grants resolve -- the
-// frozen grant snapshot carries the granted tool's `tool:<name>` grant (an
-// empty snapshot here is the silent zero-grants failure this sub-step
-// prevents); (c) authorize round-trip -- `evaluateGrants` ALLOWS the granted
-// resource and FAILS CLOSED on an ungranted one, and the behavioral half
-// drives a mail whose model turn calls the granted tool to `RunCompleted`;
-// (d) events -- an `inference.start` reaches the hub's `agent.event` sink
-// carrying the deploy's sessionId.
+// Assertions: (a) the deploy-ack persisted the public key for the run mail
+// address; (b) the frozen grant snapshot carries the granted tool's
+// `tool:<name>` grant (an empty snapshot here is the silent zero-grants
+// failure this sub-step prevents); (c) `evaluateGrants` ALLOWS the granted
+// resource and FAILS CLOSED on an ungranted one, and a mail-driven run calls
+// the granted tool to `RunCompleted`; (d) an `inference.start` reaches the
+// hub's `agent.event` sink carrying the deploy's sessionId.
 
 import fs from "node:fs";
 import path from "node:path";

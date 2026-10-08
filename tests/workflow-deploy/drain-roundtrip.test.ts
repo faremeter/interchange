@@ -19,12 +19,6 @@
 // `drain` -> child `DrainController` -> runtime aborts the cancel-mode step ->
 // `StepFailed` -> `RunFailed`, asserted end-to-end so a regression in any of
 // the seven hops surfaces here.
-//
-// The orchestrator's multi-step branch is composed in-test (matching the
-// multi-step signal round-trip): the per-step launch callback drives
-// `stageWorkflowStep` (stage-only, no warm harness) and the
-// `sendMultiStepDeploy` hand-off is supplied against
-// `env.hub.router.sendAgentDeploy`.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdir, readFile, writeFile } from "node:fs/promises";

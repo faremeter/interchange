@@ -8,22 +8,19 @@
 //
 // Shape: deploy BY SOURCE-REF a single-step workflow whose one step is an
 // `onTrigger` section subscribed to the deployment mail address, with a
-// non-agent (sleep) body. The source-ref deploy stages the inline body to its
-// own workflow asset and the runtime spawns each event's body as a child run.
+// non-agent (sleep) body.
 //
-//   1. Fire mail #1 -> the container run starts, spawns the body `section__0`
-//      with the mail body as its input, the body sleeps and completes, and the
-//      container re-arms on a snapshot-less `input` park -- parked between
-//      events (no RunCompleted; a long-lived section never self-completes).
-//   2. Quiesce, then KILL the sidecar subprocess while the container is parked.
+//   1. Fire mail #1 -> the container run starts, spawns the body `section__0`,
+//      the body sleeps and completes, and the container re-arms on a
+//      snapshot-less `input` park -- parked between events.
+//   2. KILL the sidecar subprocess while the container is parked.
 //   3. Start a fresh sidecar against the crashed process's SIDECAR_DATA_DIR.
 //      Boot-time restore re-spawns the deployment; self-discovery re-includes
-//      the CONTAINER run (it is the parent, never itself a child) while
-//      EXCLUDING the body child. The restored container re-adopts its durable
-//      input park and re-parks.
-//   4. Fire mail #2 -> the unified dispatch waits for the re-armed input park
-//      and delivers the mail as a `signal.deliver` (event 1, NOT a spurious
-//      fresh trigger). The container spawns `section__1`, which completes.
+//      the CONTAINER run while EXCLUDING the body child, and the restored
+//      container re-adopts its durable input park.
+//   4. Fire mail #2 -> the unified dispatch delivers it as a `signal.deliver`
+//      (event 1, NOT a fresh trigger) and the container spawns `section__1`,
+//      which completes.
 //
 // Load-bearing assertions: exactly one `RunStarted`; `ChildSpawned` +
 // `ChildCompleted` for BOTH bodies; the container never reaches a terminal

@@ -4,9 +4,8 @@
 // (which holds the conversation open WITHIN one turn via `mail_wait`), this
 // agent replies to each inbound and RETURNS. The runtime re-arms the step on a
 // snapshot-less `input` park after every turn, so the SECOND inbound mail is
-// dispatched as turn 2 via `signal.deliver` on the SAME stable run (its runId
-// is the deployment address's local part), rather than opening a new run or
-// being rejected as terminal.
+// dispatched as turn 2 via `signal.deliver` on the SAME stable run, rather
+// than opening a new run or being rejected as terminal.
 //
 // Run model: a batch step (`triggers` absent / `1`) completes on its first
 // output, so a second inbound would hit a terminal run and be refused. With
@@ -15,19 +14,17 @@
 // `signal.deliver` (turn 2) instead of `trigger.fire` (a fresh run). Turn 2's
 // mail flows through the step-invoker's `seedInbound` connector hook exactly
 // like turn 1, so the connector thread continues across the two turns. The
-// scripted mock returns a plain text reply per turn (no tool call, no
-// `mail_wait`), and each reply's wire headers are composed from the durable
-// connector thread the hook advanced.
+// scripted mock returns a plain text reply per turn.
 //
 // Assertions (off the delivered `mail.outbound` bytes and the run event log):
 //   (a) exactly ONE `RunStarted` across both turns, no terminal event between
-//       them (the unbounded re-arm kept the run live);
+//       them;
 //   (b) each turn's reply threads onto that turn's mail (In-Reply-To), R2
 //       carrying the FULL References ancestry [m1, r1, m2];
 //   (c) mail 2 was consumed as turn 2 on the same run (a `SignalReceived` with
 //       mail 2's Message-Id, two input re-arms serviced);
-//   (d) connector cc-accumulation: R2 cc-includes userA, the prior turn's
-//       participant -- the thread continued rather than restarting on mail 2.
+//   (d) R2 cc-includes userA, the prior turn's participant -- the thread
+//       continued rather than restarting on mail 2.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 

@@ -1,4 +1,4 @@
-// CAPSTONE end-to-end approval-tracer integration test, through the real hub +
+// CAPSTONE end-to-end approval-tracer integration test through the real hub +
 // sidecar stack with no stubbed suspend or resume: on approval the ORIGINAL
 // tool runs and the agent continues with its real result.
 //
@@ -6,14 +6,13 @@
 // sidecar co-writes `signal_correlation` + `approval` rows; the real hub HTTP
 // approve route resolves the correlation, `sendSignalDeliver` resumes the
 // parked run, the reactor grants a one-shot bypass keyed on the parked
-// ToolCall.id, re-dispatches the call, and the run completes carrying the
-// tool's REAL result.
+// ToolCall.id, re-dispatches the call, and the run completes with the tool's
+// REAL result.
 //
-// Assertions: parked before approval (rows present, tool not run); approve
-// once -> 200; after approval the tool executes EXACTLY ONCE, the run reaches
-// terminal `completed`, and there is NO re-park (one `SignalAwaited`, one
-// `approval` row, one `signal_correlation` row -- the one-shot bypass let the
-// re-dispatched call through without a second suspension).
+// Assertions: parked before approval (rows present, tool not run); approve ->
+// 200; the tool executes EXACTLY ONCE; the run reaches terminal `completed`
+// with NO re-park (one `SignalAwaited`, one `approval` row, one
+// `signal_correlation` row).
 //
 // The mock model is the discriminator between fixed and broken: it re-issues
 // the tool call until a tool_result answers it. Under the old broken resume
@@ -21,19 +20,16 @@
 // re-hit the still-`ask` grant, and re-parked forever; a latched "call once"
 // mock would hide that loop.
 //
-// Harness: the suspend/register/resume half runs against the real sidecar
-// subprocess through the shared `deploy-flow-env` fixture; the approval-store
-// + approve-route half runs against a real migrated Postgres schema, with the
-// fixture hub's `registerSignalCorrelation` bridged to the real DB co-write.
-// Approval is driven through the REAL hub HTTP route: a mock betterAuth
-// session bound to a seeded active user-principal, authorized by a real
+// Harness: SPAWN-REAL (real hub, sidecar subprocess, workflow-process child,
+// migrated Postgres schema) through the shared `deploy-flow-env` fixture;
+// approval goes through the REAL hub HTTP route with a mock betterAuth
+// session bound to a seeded user-principal, authorized by a real
 // `approval:<anchorRunId>` / `resolve` grant.
 //
 // Single-test file: the shared env (real sidecar subprocess + on-disk warm
 // step-state) is beforeAll-scoped while the DB resets per test; a second test
 // would inherit the first run's warm workspace and "sentinel written exactly
-// once" would silently stop meaning what it claims. A run-once guard below
-// fails loud if a second test is ever added here.
+// once" would silently stop meaning what it claims.
 
 import fs from "node:fs";
 import path from "node:path";

@@ -16,9 +16,8 @@
 //
 // Neither case asserts that no approval reached an operator: a terminal
 // child's env carries no notify sink, so no park there registers a correlation
-// whether it is refused or not -- an assertion to that effect could not fail.
-// What is asserted is that no durable suspension is recorded and the run ends,
-// which is what separates the fixed behaviour from the reported one.
+// whether it is refused or not. What is asserted is that no durable suspension
+// is recorded and the run ends.
 //
 // A timed gate is the boundary case and must still work: its own timer
 // resolves it with no upstream involvement.

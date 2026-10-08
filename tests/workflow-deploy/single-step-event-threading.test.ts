@@ -11,14 +11,11 @@
 // recording `onEvent` and asserting the agent's `InferenceEvent`s arrive at
 // the sink.
 //
-// The agent is driven through a two-turn tool loop: the mock provider emits a
-// `tool_use` turn calling a real tool, the tool executes in the step's workdir,
-// and a second turn produces the text reply. That fires `inference.start` (per
-// turn), the tool-call inference events, the `tool.start` / `tool.done`
-// execution events, and `inference.done` -- every InferenceEvent member except
-// the intentionally excluded `message.received`. Against pre-Phase-3 behaviour
-// the wrapper `void onEvent`d, so the recorder would stay empty -- this test
-// fails there.
+// The agent is driven through a two-turn tool loop, firing `inference.start`
+// (per turn), the tool-call events, `tool.start` / `tool.done`, and
+// `inference.done` -- every InferenceEvent member except the intentionally
+// excluded `message.received`. Against pre-Phase-3 behaviour the wrapper
+// `void onEvent`d, so the recorder would stay empty -- this test fails there.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, existsSync } from "node:fs";

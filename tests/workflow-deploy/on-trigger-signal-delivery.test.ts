@@ -12,19 +12,17 @@
 // is an `onTrigger` section subscribed to the deployment mail address, with a
 // NON-AGENT body -- a single `awaitSignal({ name })` gate with no timeout.
 //
-//   1. Fire mail #1 -> the container run starts and spawns the body
-//      `section__0`, which parks on `awaitSignal({ name: "proceed" })`. The
-//      section proxies that gate UP as a signal-relay `SignalAwaited` on the
-//      container over the SAME author name.
-//   2. Deliver "proceed" to the PARENT deployment run id. The container's await
-//      resolves, the section relays the signal down into the body, the body's
-//      gate completes, section__0 completes, and the section re-arms on its
-//      input park for the next event.
+//   1. Fire mail #1 -> the container run spawns `section__0`, which parks on
+//      `awaitSignal({ name: "proceed" })`; the section proxies that gate UP as
+//      a signal-relay `SignalAwaited` over the SAME author name.
+//   2. Deliver "proceed" to the PARENT deployment run id: the container's
+//      await resolves, the section relays the signal down into the body, and
+//      `section__0` completes; the section re-arms on its input park.
 //
 // Load-bearing assertions: the container carries a signal-relay `SignalAwaited`
 // for the author name and a `SignalReceived` for it (the delivery to the
-// PARENT); `section__0` completes ONLY after the delivery; the long-lived
-// container never self-completes and re-arms on an input park.
+// PARENT); `section__0` completes ONLY after the delivery; the container never
+// self-completes.
 //
 // Harness: SPAWN-REAL (real hub, sidecar subprocess, workflow-process child).
 // No inference (the body is pure runtime). The signal is delivered through the

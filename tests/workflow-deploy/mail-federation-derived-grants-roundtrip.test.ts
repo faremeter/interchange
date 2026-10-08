@@ -16,15 +16,13 @@
 //     grant. The route rejects `403 insufficient_grants` and commits
 //     nothing -- the creator gate actually gates.
 //
-// FALLBACK (stated honestly): GAP-3 was scoped as an A-mails-B federation
-// (deployment A mails B, and B's run materializes via the real hub path),
-// which this harness cannot reproduce -- the deploy-flow fixture's inbound
-// path injects grants directly and never wires the real materializer, and A
-// could only mail B from an action step this host does not execute. So this
-// test drives B's `/mail` route directly through the real `createApp` seam
-// with a creator-declared requirement -- the SAME `resolveGrantMaterialization`
-// against B's asset creator a federated trigger would. The A->B mail hop is
-// not exercised; the creator-derived materialization it would feed is.
+// FALLBACK: GAP-3 was scoped as an A-mails-B federation (deployment A mails
+// B, and B's run materializes via the real hub path), which this harness
+// cannot reproduce -- the fixture's inbound path injects grants directly and
+// never wires the real materializer. So this test drives B's `/mail` route
+// directly through the real `createApp` seam with a creator-declared
+// requirement -- the SAME `resolveGrantMaterialization` against B's asset
+// creator a federated trigger would. The A->B mail hop is not exercised.
 //
 // SCOPE: the run's CONSUME side is not exercised (this host does not execute
 // the run's steps); the derivation, materialization, and DB commit (or

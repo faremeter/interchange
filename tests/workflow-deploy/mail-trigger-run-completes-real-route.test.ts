@@ -20,8 +20,7 @@
 //
 // The deployment is stood up through the shared code-sourced front: it
 // bundles the tool-less single-step fixture, installs/probes/gates/freezes
-// the definition against the real DB (writing the frozen grant snapshot the
-// trigger route materializes from), deploys it by source-ref to the real
+// the definition against the real DB, deploys it by source-ref to the real
 // sidecar, and writes the anchor `workflow_run` row.
 
 import {

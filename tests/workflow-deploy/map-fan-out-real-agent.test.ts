@@ -16,8 +16,7 @@
 //
 // The workflow is deliberately multi-step (a leading `seed` step plus the
 // `fanout` map) so the deploy stages per-step assets at a per-step address; a
-// regressed lookup throws or materializes nothing on the scoped id, so the
-// run would fail or omit the expected content.
+// regressed lookup throws or materializes nothing on the scoped id.
 //
 // Two cases share the same fixture shape: no tool (guards the inference-source
 // resolver) and an inline tool (guards the tool-deploy-tree base resolution).

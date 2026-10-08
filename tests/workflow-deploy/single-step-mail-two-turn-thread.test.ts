@@ -14,15 +14,14 @@
 // reply to mail 1 (inReplyTo = m1); turn 1 mail_wait for the next sender
 // (blocks); turn 2 mail_send a reply to mail 2 (inReplyTo = m2); turn 3 a
 // closing text turn ends the run. The reply message-ids the agent threads on
-// (m1, m2) are the ones THIS test fired, so every scripted tool input is known
-// up front.
+// (m1, m2) are the ones THIS test fired.
 //
 // Assertions, off the delivered `mail.outbound` bytes: a reply threaded onto
 // mail 1 (In-Reply-To == m1, To == userA); a reply threaded onto mail 2
 // (In-Reply-To == m2, To == userB); the whole exchange ran under ONE run (a
-// single RunStarted consuming m1; mail 2 was consumed mid-run by mail_wait,
-// the continuation); and the `mail_wait` tool_result carries mail 2's sender,
-// proving mail 2's arrival resolved the wait rather than the wait expiring.
+// single RunStarted; mail 2 was consumed mid-run by mail_wait); and the
+// `mail_wait` tool_result carries mail 2's sender, proving mail 2's arrival
+// resolved the wait rather than the wait expiring.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 

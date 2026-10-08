@@ -5,40 +5,34 @@
 //
 // Lifecycle stages, each asserting a prior sub-step composes with the rest:
 //
-//   1. DEPLOY (4.1): a single agent with grants + a mail-send tool, through the
-//      spawned workflow-process child (source-ref deploy path). Identity
-//      preserved (deploy-ack for the run's `run_<hex>` address); grants
-//      enforced (the granted tool runs in-child).
+//   1. DEPLOY (4.1): a single agent with grants + a mail-send tool through the
+//      spawned workflow-process child (source-ref deploy path).
 //   2. MAIL IN (4.2): an inbound mail with a KNOWN body reaches the warm
-//      agent's `agent.send` as the step input -- proven by the tool-driven
-//      reply round-trip completing for that message's run.
-//   3. TOOL-DRIVEN SIGNED REPLY OUT (4.3): the model turn calls `mail_send`;
-//      the tool's `env.transport.send` routes through the supervisor-backed
-//      transport -> outbound bridge -> IPC -> supervisor `sendOutbound` ->
-//      host transport SIGNED send -> `SendReceipt`. The tool writes its
-//      workspace sentinel ONLY on a successful receipt, so the sentinel proves
-//      the outbound signed-send composed across the real OS process boundary.
+//      agent's `agent.send` as the step input, proven by the tool-driven reply
+//      round-trip completing for that message's run.
+//   3. TOOL-DRIVEN SIGNED REPLY OUT (4.3): `mail_send`'s `env.transport.send`
+//      routes supervisor-backed transport -> outbound bridge -> IPC ->
+//      supervisor `sendOutbound` -> host transport SIGNED send ->
+//      `SendReceipt`; the tool writes its workspace sentinel ONLY on a
+//      successful receipt, so the sentinel proves the outbound signed-send
+//      composed across the real OS process boundary.
 //   4. DURABLE CONVERSATION SNAPSHOT (4.4): the completed turn is mirrored
 //      from the warm agent's conversation store into the workflow-run
 //      substrate at the run boundary.
-//   5. KILL + RESPAWN (4.5): the conversation RESUMES from the substrate. A
-//      FRESH process (a `createDurableConversationRegistry` built in-process
-//      against the subprocess's on-disk substrate, with a fresh local store
-//      dir) restores the warm agent's prior conversation; the fresh store
-//      starts empty, so the restored turns can come ONLY from the substrate --
-//      closing the hole where a surviving local store would mask a broken
-//      restore. This is a CROSS-PROCESS durability proof.
+//   5. KILL + RESPAWN (4.5): a FRESH process (a
+//      `createDurableConversationRegistry` built in-process against the
+//      subprocess's on-disk substrate, with a fresh local store dir) restores
+//      the warm agent's prior conversation; the fresh store starts empty, so
+//      the restored turns can come ONLY from the substrate -- a CROSS-PROCESS
+//      durability proof.
 //   6. EVENTS (4.1 sessionId wiring): inference events reached the hub's
 //      `agent.event` sink keyed to the deploy's sessionId across the lifecycle.
 //
 // Harness: stages 1-4 and 6 are SPAWN-REAL (real hub, sidecar subprocess,
 // workflow-process child, test inference provider). Stage 5's respawn restore
 // is exercised in-process against the SAME on-disk substrate the subprocess
-// wrote, mirroring the 4.5 conversation-durability test: a respawn IS a fresh
-// process building a fresh registry against the durable substrate, and reading
-// the snapshot the prior process committed proves continuity without the
-// kill-timing nondeterminism of a hard subprocess kill. The restore path is
-// the real production wiring.
+// wrote, avoiding kill-timing nondeterminism; the restore path is the real
+// production wiring.
 
 import fs from "node:fs";
 import path from "node:path";

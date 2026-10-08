@@ -7,12 +7,11 @@
 // Shape: deploy a `step1 -> awaitSignal{name:"go"} -> step2` workflow whose
 // deployment address and every per-step derived address are run addresses
 // (`isRunAddress` true), so they all share the workflow routing family that
-// survives reconnect. Drive one mail trigger through the full inter-step chain,
-// `settleThenDrop` the hub link, wait for the deployment address to re-route
-// through allocation-authenticated reconnect, then fire a SECOND mail trigger
-// and run the whole inter-step chain again. The second run only exists because
-// the sidecar re-established the link and inter-step mail/signal routing came
-// back with it.
+// survives reconnect. Drive one mail trigger through the full inter-step
+// chain, `settleThenDrop` the hub link, wait for the deployment address to
+// re-route through allocation-authenticated reconnect, then fire a SECOND
+// mail trigger and run the whole inter-step chain again -- the second run
+// only exists because the link came back.
 //
 // The authenticated sidecar identity is allocation-bound to one workflow run
 // address; reconnect revalidates it and the current allocation generation

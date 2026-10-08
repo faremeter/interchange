@@ -20,13 +20,11 @@
 //
 // Proofs:
 //   * Positive: the exact source-resolved secret arrives at the pinned origin
-//     as a bearer -- the whole rail carried it, without the secret ever
-//     touching disk or the tool's own API.
+//     as a bearer, without the secret ever touching disk or the tool's own API.
 //   * Channel-only: a workflow that declares NO binding takes its credential
-//     purely over the live `credentials.update` channel, proving the channel
-//     delivers to a source-workflow tool. (A binding-declaring deploy
-//     re-applies its frame material on every pre-trigger barrier, so a channel
-//     push would be clobbered.)
+//     purely over the live `credentials.update` channel. (A binding-declaring
+//     deploy re-applies its frame material on every pre-trigger barrier, so a
+//     channel push would be clobbered.)
 //   * Negative: a run whose grant does not authorize the consumer fails the
 //     resolve closed -- no request ever reaches the origin.
 

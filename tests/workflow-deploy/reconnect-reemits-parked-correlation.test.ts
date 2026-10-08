@@ -3,40 +3,33 @@
 // correlation to drive the parked run to completion.
 //
 // Scenario: "suspend with the hub down -> hub comes up -> the correlation is
-// registered and the run is approvable". The load-bearing state is the ABSENCE
-// of the parked run's `signal_correlation` + `approval` rows at the hub (the
-// suspend's register frame never co-wrote them) followed by their APPEARANCE
-// after the hub link reconnects. Recovery is the sidecar's Trigger B: on the
-// reconnect route announcement the hub-link fires `onWorkflowAddressesRoutable`
-// -> `reEmitParkedCorrelations(address)` -> the supervisor re-queries the
-// child's durably-parked correlations and re-emits each register -> the co-write
-// lands the rows -> the run is approvable. The test then approves through the
-// real resolve route and asserts the run resumes to RunCompleted.
+// registered and the run is approvable". Recovery is the sidecar's Trigger B:
+// on reconnect the hub-link fires `onWorkflowAddressesRoutable` ->
+// `reEmitParkedCorrelations(address)` -> the supervisor re-queries the child's
+// durably-parked correlations and re-emits each register -> the co-write lands
+// the rows.
 //
 // Making "the register did not co-write" deterministic: emitting the register
 // while the link is genuinely down would be a race with no harness hook to gate
 // it. Two hub-side facts force the scenario instead:
 //
 //   1. A mere WebSocket drop leaves the sidecar and supervisor alive; only the
-//      link reconnects. The parked run is never resumed, so Trigger A (child
-//      re-establishment) never fires -- Trigger B is the ONLY re-emit driver.
+//      link reconnects, so Trigger A (child re-establishment) never fires --
+//      Trigger B is the ONLY re-emit driver.
 //   2. The rows are hub-side DB state. Deleting them while the link is down
 //      reproduces exactly a hub that missed the suspend-time register.
 //
-// So the test parks the run with the link up (register co-writes the rows),
-// captures the correlationId, drops the link, DELETES both rows, reconnects,
-// and asserts they reappear -- which can only come from the Trigger B re-emit,
-// since no other actor writes these rows and the child is never respawned.
+// So the test parks the run with the link up, drops the link, DELETES both
+// rows, reconnects, and asserts they reappear -- only Trigger B can write them
+// back, since the child is never respawned.
 //
-// Harness: SPAWN-REAL -- a real hub server, sidecar subprocess, workflow-process
-// child, and test inference provider. The suspend/park half runs against the
-// real sidecar through the shared `deploy-flow-env` fixture; the co-write +
-// row assertions run against a real migrated Postgres schema, bridged by wiring
-// the fixture hub's `registerSignalCorrelation` to the real DB co-write.
+// Harness: SPAWN-REAL (real hub, sidecar subprocess, workflow-process child,
+// test inference provider); the row assertions run against a real migrated
+// Postgres schema, bridged by wiring the fixture hub's
+// `registerSignalCorrelation` to the real DB co-write.
 //
 // Single-test file: the env is beforeAll-scoped while the DB resets per test; a
 // second test would inherit the first run's warm workspace and live parked run.
-// A run-once guard below fails loud if a second test is ever added here.
 
 import {
   afterAll,

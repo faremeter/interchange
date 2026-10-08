@@ -3,32 +3,26 @@
 // run does not ask again for that tool.
 //
 // Flow: deploy a single-step source-ref workflow whose agent carries the inline
-// ask-marked `mail_send` tool -> start the run through the REAL trigger route
-// (materializes the frozen ask snapshot into committed run grants) -> the model
-// calls the tool, the committed `ask` floor suspends and mints a pending
-// `approval` row -> approve via the REAL hub HTTP route with scope "always" ->
-// the resolver mutates the run's committed grant ask -> allow and pushes
-// `grants-updated` ahead of the resume signal -> the parked call re-dispatches
-// and runs; the agent then makes a SECOND call to the SAME tool, which sees the
-// now-`allow` grant and runs WITHOUT re-parking, and the run completes.
+// ask-marked `mail_send` tool -> the model's call suspends on the committed
+// `ask` floor -> approve via the real hub HTTP route with scope "always" ->
+// the resolver mutates the run's committed grant -> allow -> the parked call
+// re-dispatches; a SECOND call to the SAME tool sees the now-`allow` grant and
+// runs WITHOUT re-parking.
 //
-// Assertions: parked before approval (one pending row pair, one SignalAwaited,
-// tool not run); approve -> 200 with scope "always" recorded; after approval the
-// run completes with BOTH calls executed and NO re-park (one SignalAwaited, one
-// row pair) -- the completion requires the mock to have seen two tool results,
-// so the second call must have run; one park means it did not re-ask.
+// Assertions: one pending row pair + one SignalAwaited while parked; approve ->
+// 200; the run completes with BOTH calls executed and NO re-park (one
+// SignalAwaited, one row pair) -- the mock must have seen two tool results.
 //
 // The mock is the discriminator: it counts `tool_result` blocks and issues the
-// call twice before replying. If the mutated grant never reached the child, the
-// second call re-hits the `ask` floor and re-parks -- a second row pair appears
-// and the single-park assertion fails. The two calls carry DISTINCT `tool_use`
-// ids so the re-dispatched first call is not confused with the second.
+// call twice before replying; if the mutated grant never reached the child, the
+// second call re-hits the `ask` floor and re-parks, failing the single-park
+// assertion. The two calls carry DISTINCT `tool_use` ids so the re-dispatched
+// first call is not confused with the second.
 //
 // Why the second call is not defeated by the tool-mark floor: the deployment is
 // SOURCE-REF, and the child skips the tool-mark floor on the source-ref lineage
 // -- the frozen snapshot's `tool:<name>` grant authorizes the inline tool
-// directly with its own effect, so the mutated `allow` is the sole matching
-// grant.
+// directly, so the mutated `allow` is the sole matching grant.
 //
 // Harness: SPAWN-REAL -- real hub server, sidecar subprocess, workflow-process
 // child, and migrated Postgres schema; started and approved through the real hub

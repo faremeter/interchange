@@ -12,18 +12,14 @@
 // POSITIVE: the manifest maps provider "custom-x" to an absolute-path .ts
 // fixture adapter (which delegates to the Anthropic adapter so it speaks the
 // mock server's wire). A one-step workflow whose source.provider is
-// "custom-x" runs to completion in the child and the echoed reply carries
-// the inbound body -- the run could only complete if the child resolved
-// "custom-x", which is impossible without the manifest crossing the fork and
-// being import()-ed child-side.
+// "custom-x" runs to completion in the child -- only possible if the manifest
+// crossed the fork and was import()-ed child-side.
 //
 // NEGATIVE (the security firewall): a second deployment names a provider the
 // manifest does NOT contain. The sidecar deploy router's source-admission
-// gate rejects it, so the deploy frame rejects synchronously and
-// `deployWorkflowSourceForTest` throws -- a provider string (which
-// deploy/tenant config does control) cannot conjure an adapter; only
-// operator-supplied manifest specifiers can, and they are import()-ed, never
-// the provider key.
+// gate rejects it, so the deploy frame rejects synchronously -- a provider
+// string cannot conjure an adapter; only operator-supplied manifest
+// specifiers can, and they are import()-ed, never the provider key.
 
 import path from "node:path";
 

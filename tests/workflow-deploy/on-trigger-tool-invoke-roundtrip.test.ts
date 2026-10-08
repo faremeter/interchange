@@ -15,9 +15,6 @@
 // nothing, so the assertion here is POSITIVE: the tool's own return text must
 // appear as a `tool_result` in the captured inference traffic.
 //
-// The env runs exactly one workflow, and an `onTrigger` container runs no agent
-// of its own, so the body agent is the ONLY agent in this deployment.
-//
 // Harness: SPAWN-REAL (real hub, sidecar subprocess, workflow-process child,
 // body-only invoker), driven against the mock inference fixture. The mock
 // drives a `tool_use` on the first request that exposes the tool.
