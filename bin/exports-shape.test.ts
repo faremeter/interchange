@@ -15,8 +15,8 @@ import {
   fixWorkspaceExports,
 } from "./exports-shape";
 
-// Each fixture is a throwaway workspace: packages/<name>/package.json with
-// an exports map. checkWorkspaceExports / fixWorkspaceExports run against it.
+// Each fixture is a throwaway workspace: packages/<name>/package.json with an
+// exports map, checked or fixed in place.
 
 type PackageSpec = { name: string; private?: boolean; exports?: unknown };
 

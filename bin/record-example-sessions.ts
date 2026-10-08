@@ -1,13 +1,8 @@
 // Regenerate the committed synthetic example session captures under
-// `packages/inference-discovery-anthropic/example-sessions/anthropic/`.
-//
-// The script uses the test seam (`fetch` override paired with
-// `bypassCIGuardForTests`) and synthetic provider wire bytes built with
-// the `wire` helpers, so no real provider credentials are needed. The
-// resulting sessions are deterministic and committed as fixtures for the
-// integration test under `tests/inference-testing/session-replay.test.ts`.
-//
-// To regenerate after a manifest-schema or capture-format change:
+// `packages/inference-discovery-anthropic/example-sessions/anthropic/` using
+// the test seam (fetch override + bypassCIGuardForTests) and synthetic wire
+// bytes, so no real credentials are needed. To regenerate after a
+// manifest-schema or capture-format change:
 //
 //     bun --conditions=intx-src bin/record-example-sessions.ts
 
@@ -44,9 +39,8 @@ const ANTHROPIC_SOURCE: InferenceSource = {
   model: "claude-test",
 };
 
-// The fetch override returns synthetic wire bytes, so the injected credential
-// never reaches a real endpoint. The resolver only has to satisfy the sentinel
-// substitution the adapter's built request headers request.
+// The fetch override returns synthetic bytes, so the injected credential
+// never reaches a real endpoint; the resolver just satisfies the sentinel.
 const readMaterial: CredentialMaterialResolver = () => ({
   secret: "session-replay-stub",
 });

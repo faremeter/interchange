@@ -1,8 +1,6 @@
 // Validated database connection inputs for the bin scripts that open a direct
-// `db` handle (bin/seed's workflow-definition seeding).
-//
-// The `DB_*` parse lives in `bin/lib` so it can be unit-tested without
-// importing an entry point.
+// `db` handle (bin/seed's workflow-definition seeding). The `DB_*` parse lives
+// in `bin/lib` so it can be unit-tested without importing an entry point.
 
 import { requireEnvVar, requireIntVar } from "./env";
 
@@ -18,13 +16,9 @@ export type DbConfig = {
 
 /**
  * Validate and resolve the database connection inputs from an environment
- * map. Throws with a diagnostic naming the offending variable when a required
- * value is missing or `DB_PORT` is not a positive integer, so a misconfigured
- * environment fails at the boundary rather than surfacing as an opaque
- * database-config error. `PG_SCHEMA` is threaded through only when set,
- * matching how the hub pins its connection schema.
- * `DB_STATEMENT_TIMEOUT_MS` is likewise optional; when set it must be a
- * positive integer, matching the hub's reading of the same variable.
+ * map, throwing with a diagnostic naming the offending variable on a missing
+ * required value or non-positive `DB_PORT`. `PG_SCHEMA` and
+ * `DB_STATEMENT_TIMEOUT_MS` are optional, threaded through only when set.
  */
 export function resolveDbConfig(
   env: Record<string, string | undefined>,

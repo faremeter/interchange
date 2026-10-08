@@ -5,12 +5,10 @@
 // directory whose children are capability sessions (the layout bin/probe.ts
 // writes and the committed sessions/ tree uses), it replays each session
 // through the production decoder and reports the support-matrix outcome the
-// decode implies: captured, refused, or misled.
-//
-// This is the read side of discovery: it makes no network call and is safe in
-// CI. A capability directory that holds exchanges but no session.json was a
-// non-2xx capture the probe did not manifest — an http-error the probe already
-// recorded — so it is reported as such rather than replayed.
+// decode implies: captured, refused, or misled. This is the read side of
+// discovery: it makes no network call and is safe in CI. A directory that
+// holds exchanges but no session.json was a non-2xx capture the probe did not
+// manifest, so it is reported as an http-error rather than replayed.
 
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { resolve } from "node:path";

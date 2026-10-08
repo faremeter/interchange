@@ -1,18 +1,13 @@
 #!/usr/bin/env bun
 /* eslint-disable no-console */
 
-// Exploratory capability probe for a single model that need not be in the
-// support matrix yet. Where bin/discover.ts replays the curated matrix,
-// bin/probe.ts sweeps a model the matrix does not list — the first step of
-// bringing a new model in. For each capability the provider can build, it makes
-// one live call and records the HTTP outcome it alone can see (the capture
-// format does not persist the status line): unsupported when the provider
-// cannot build the request at all, http-error on a non-2xx, or a 2xx capture
-// written to a scratch tree for bin/classify-sessions.ts to classify offline.
-//
-// Captures land under a scratch directory, never the committed sessions/ tree:
-// baking a model is a deliberate copy of the cells that classify as captured,
-// plus their matrix rows, so the corpus stays curated by construction.
+// Exploratory capability probe for a single model not yet in the support
+// matrix. Where bin/discover.ts replays the curated matrix, probe sweeps a new
+// model: one live call per capability the provider can build, recording
+// unsupported (cannot build), http-error (non-2xx), or a 2xx capture under a
+// scratch tree for bin/classify-sessions.ts to classify offline. Captures never
+// land in the committed sessions/ tree; baking a model copies the captured
+// cells deliberately.
 
 import { rmSync } from "node:fs";
 import { resolve } from "node:path";
@@ -152,12 +147,10 @@ async function main(): Promise<number> {
       ? resolve(ROOT, args.outDir)
       : resolve(ROOT, "tmp", "probe", args.provider, args.model);
 
-  // For google-genai, the request shape depends on the model class. The label
-  // must distinguish a declared class, a class known from the model's set
-  // membership, and a class the tool is guessing for an unknown model — the
-  // last case is a deliberate default (probing must not require pre-registering
-  // a model) but the operator has to see that it is a guess, especially for an
-  // image model where a wrong text guess reports image-output as unsupported.
+  // For google-genai the label must distinguish a declared class, a class known
+  // from model-set membership, and a guessed class for an unknown model — a
+  // deliberate default (probing must not require pre-registering a model), but
+  // a wrong text guess on an image model would report image-output unsupported.
   let classLabel = "";
   if (args.provider === "google-genai") {
     if (args.modelClass !== undefined) {
@@ -193,9 +186,8 @@ async function main(): Promise<number> {
   console.error(
     `[probe] classify the captures: bin/classify-sessions --dir ${outDir}`,
   );
-  // A call-failed cell is an unexpected error, not a normal outcome; surface it
-  // in the exit code so a scripted caller can tell a clean sweep from one that
-  // hit a bug. http-error and unsupported are expected discovery results.
+  // A call-failed cell is a bug, not a discovery outcome; surface it in the
+  // exit code. http-error and unsupported are expected results.
   return counts.failed > 0 ? 1 : 0;
 }
 

@@ -1,8 +1,6 @@
-// Exercise the live-session recorder's orchestration through a stub fetch, so
-// the multi-turn drive loop, tool-call extraction, dispatch recording, and
-// manifest write are covered without a real provider call. The live CLI runs
-// the same recordLiveSession with no fetch override (real network) — only the
-// seam differs.
+// Exercise the live-session recorder's orchestration through a stub fetch —
+// the multi-turn drive loop, dispatch recording, and manifest write — without
+// a real provider call. Only the fetch seam differs from the live CLI.
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import fs from "node:fs/promises";
@@ -84,8 +82,7 @@ describe("recordLiveSession", () => {
       now: () => new Date("2026-05-22T00:00:00Z"),
     });
 
-    // Two turns were driven: the tool-call turn and the follow-up that feeds
-    // the tool result back.
+    // Two turns: the tool-call turn and the follow-up feeding the result back.
     expect(exchange).toBe(2);
 
     const exchangeDirs = (await fs.readdir(path.join(dir, "exchanges"))).sort();
@@ -109,9 +106,8 @@ describe("recordLiveSession", () => {
     expect(turn2Body).toContain("tool_result");
     expect(turn2Body).toContain("68");
 
-    // Origin is "synthetic" here: a supplied fetch override is the recording
-    // harness's synthetic seam. A real live run passes no override and records
-    // "live".
+    // A supplied fetch override is the recording harness's synthetic seam; a
+    // real live run passes none and records "live".
     const manifest = await loadCaptureManifest(dir);
     expect(manifest.schemaVersion).toBe("2");
     expect(manifest.origin).toBe("synthetic");

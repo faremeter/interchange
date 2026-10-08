@@ -1,12 +1,9 @@
-// Boundary parse for the required environment variables the bin scripts read.
-// Kept apart from each config resolver so a missing or malformed value fails
-// with a diagnostic naming the offending variable, rather than surfacing as an
-// opaque error further in.
+// Boundary parse for the required environment variables the bin scripts read,
+// so a missing or malformed value fails with a diagnostic naming the variable.
 
 /**
  * Return `env[name]`, or throw when it is unset or empty. An empty string is
- * treated as absent: a blank connection variable is a misconfiguration, not an
- * intentional value.
+ * treated as absent: a blank connection variable is a misconfiguration.
  */
 export function requireEnvVar(
   env: Record<string, string | undefined>,
@@ -20,9 +17,8 @@ export function requireEnvVar(
 }
 
 /**
- * Return `env[name]` parsed as a positive integer, or throw. Requires the
- * variable (via `requireEnvVar`) and rejects a value that is not a whole number
- * greater than zero, so a bad port fails at the boundary.
+ * Return `env[name]` parsed as a positive integer, or throw. Rejects a value
+ * that is not a whole number greater than zero.
  */
 export function requireIntVar(
   env: Record<string, string | undefined>,

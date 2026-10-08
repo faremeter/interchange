@@ -1,8 +1,7 @@
 import type { InferenceEvent } from "@intx/types/runtime";
 
 // Frame recorded SSE chunk bytes into a single text/event-stream Response —
-// the shape both recording scripts and the live-replay test feed back
-// through the harness.
+// the shape both recording scripts and the live-replay test feed back.
 export function sseResponse(chunks: Uint8Array[]): Response {
   let total = 0;
   for (const c of chunks) total += c.byteLength;
@@ -19,8 +18,7 @@ export function sseResponse(chunks: Uint8Array[]): Response {
 }
 
 // Pull the terminal inference.done off an event stream, attaching any
-// inference.error detail so a run that never reached done is diagnosable
-// rather than failing with a bare "expected inference.done".
+// inference.error detail so a run that never reached done is diagnosable.
 export function expectDone(
   events: InferenceEvent[],
   label: string,

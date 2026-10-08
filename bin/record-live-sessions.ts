@@ -2,18 +2,11 @@
 /* eslint-disable no-console */
 
 // Record one committed LIVE multi-turn tool session per adapter against real
-// provider endpoints. Credentials come from the environment at recording time
-// and each session lands under its discovery package's `live-sessions/<brand>/`
-// tree — deliberately outside the `sessions/<provider>/` tree the discovery
-// probe rig overwrites.
-//
-// Unlike record-example-sessions.ts (synthetic, deterministic, credential-free)
-// this drives the REAL model: it declares a tool, prompts a question that needs
-// it, and asserts the model actually emitted a tool call — failing loudly rather
-// than committing a session that skipped the tool path. The provider has no
-// forced-tool-choice control here, so a model that answers without calling the
-// tool fails the run; re-run or adjust the prompt/model. It makes real, paid
-// network calls and must never run in CI.
+// provider endpoints, landing under `live-sessions/<brand>/` — outside the
+// `sessions/<provider>/` tree the discovery probe rig overwrites. Unlike
+// record-example-sessions.ts (synthetic, credential-free), this drives the
+// real model and fails if it never calls the declared tool. It makes real,
+// paid network calls and must never run in CI.
 
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -47,10 +40,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-// A location-agnostic canned result: the live model chooses the argument
-// string, so the handler must answer for whatever city it asked about rather
-// than a fixed lookup. The value is recorded to `dispatches/` and fed back to
-// the model verbatim, so both sides see the same result.
+// Location-agnostic canned result: answer for whatever city the live model
+// asked about; the value is recorded and fed back verbatim.
 function weatherResult(args: unknown): unknown {
   const location =
     isRecord(args) && typeof args.location === "string"
@@ -94,10 +85,8 @@ export interface RecordLiveSessionOpts {
   now?: () => Date;
 }
 
-// Drive a two-turn tool conversation and write the session. Turn 1 asks the
-// question with the tool declared; the model must call the tool. Turn 2 feeds
-// the tool result back and records the model's final answer. Injecting `fetch`
-// exercises the exact orchestration a live run uses without the network.
+// Drive a two-turn tool conversation and write the session: turn 1 must yield
+// a tool call, turn 2 feeds the result back and records the final answer.
 export async function recordLiveSession(
   opts: RecordLiveSessionOpts,
 ): Promise<void> {
@@ -120,13 +109,11 @@ export async function recordLiveSession(
         ? { quirks: opts.quirks }
         : {}),
     },
-    // Two turns, plus headroom for a provider-side retry, still bounded so a
-    // runaway loop can't silently rack up charges.
+    // Two turns plus retry headroom, bounded so a runaway loop can't rack up charges.
     maxExchanges: 4,
     // Every provider's auth header, so a live capture never commits a key.
     redactRequestHeaders: ["x-api-key", "authorization", "x-goog-api-key"],
-    // set-cookie plus the provider account/org/project identifiers, so a
-    // committed capture cannot be traced back to a specific account.
+    // Account/org/project identifiers, so a committed capture cannot be traced.
     redactResponseHeaders: [
       "set-cookie",
       "anthropic-organization-id",
@@ -149,8 +136,7 @@ export async function recordLiveSession(
     model: opts.model,
     ...(opts.quirks !== undefined ? { quirks: opts.quirks } : {}),
   };
-  // Live recording drives the real endpoint, so the resolver hands the harness
-  // the environment-supplied key to inject into the built request headers.
+  // Live recording drives the real endpoint; hand the env-supplied key through.
   const readMaterial: CredentialMaterialResolver = () => ({
     secret: opts.apiKey,
   });
