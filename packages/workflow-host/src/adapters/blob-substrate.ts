@@ -26,7 +26,7 @@
 // `ephemeral: false` -- blob refs survive instance turnover because
 // they resolve back to bytes on the workflow-run repo.
 
-import { hexEncode } from "@intx/types";
+import { hexEncode } from "@intx/types/hex";
 import type {
   Principal,
   RepoId,

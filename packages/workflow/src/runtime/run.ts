@@ -8,7 +8,7 @@
 // us swap the env implementations underneath without re-validating the
 // body.
 
-import { correlationIdFromSignalName, signalName } from "@intx/types";
+import { correlationIdFromSignalName, signalName } from "@intx/types/signals";
 import type { ApprovalSnapshot, ControlParkKind } from "@intx/types/runtime";
 
 import type {

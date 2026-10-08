@@ -1,5 +1,5 @@
 import git from "isomorphic-git";
-import { hasCode } from "@intx/types";
+import { hasCode } from "@intx/types/has-code";
 import type { StorageRuntime } from "./runtime";
 
 /**

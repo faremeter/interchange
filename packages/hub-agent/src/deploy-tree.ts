@@ -16,7 +16,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { type } from "arktype";
 
-import { hasCode } from "@intx/types";
+import { hasCode } from "@intx/types/has-code";
 
 const AssetMountsFile = type({
   assetMounts: type({ "[string]": "string" }),

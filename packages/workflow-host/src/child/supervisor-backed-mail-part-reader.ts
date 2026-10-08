@@ -2,7 +2,7 @@
 // supervisor owns the committed blob and answers `readMailPart`. This
 // reader does not open the workflow-run repo.
 
-import { base64Decode } from "@intx/types";
+import { base64Decode } from "@intx/types/base64";
 import type { MailPartReader } from "@intx/types/runtime";
 
 import type { ChildMailboxCallBridge } from "./mailbox-call-bridge";

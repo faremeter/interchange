@@ -208,6 +208,7 @@ describe("workflow-child boot graph", () => {
       binaryEntrypoints(CHILD_BINARY),
     );
     const forbiddenModules = [
+      "packages/types/src/index.ts",
       "packages/types/src/sidecar.ts",
       "packages/workflow-deploy/src/index.ts",
       "packages/workflow-host/src/index.ts",

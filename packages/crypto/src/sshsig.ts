@@ -1,4 +1,4 @@
-import { base64Encode, base64Decode } from "@intx/types";
+import { base64Encode, base64Decode } from "@intx/types/base64";
 import { signEd25519, verifyEd25519 } from "./keys";
 
 const MAGIC_PREAMBLE = new TextEncoder().encode("SSHSIG");

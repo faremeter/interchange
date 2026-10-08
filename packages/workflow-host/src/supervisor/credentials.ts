@@ -29,7 +29,7 @@
 
 import { type } from "arktype";
 
-import { hexEncode } from "@intx/types";
+import { hexEncode } from "@intx/types/hex";
 import type {
   Principal,
   RepoId,

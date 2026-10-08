@@ -7,7 +7,7 @@ import path from "node:path";
 import { type } from "arktype";
 import { type AnnotatedPluginFactory } from "@intx/agent";
 import { getLogger } from "@intx/log";
-import { hasCode } from "@intx/types";
+import { hasCode } from "@intx/types/has-code";
 import type { ToolCredentialDeclaration } from "@intx/types/package-json";
 import { ToolPackageManifest } from "@intx/types/tool-packages";
 

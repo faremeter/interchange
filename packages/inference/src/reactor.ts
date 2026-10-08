@@ -41,7 +41,7 @@ import type {
 } from "@intx/types/runtime";
 
 import { getLogger } from "@intx/log";
-import { ApprovalDecision, signalKindToGateType } from "@intx/types";
+import { ApprovalDecision, signalKindToGateType } from "@intx/types/signals";
 import type { CredentialMaterialResolver } from "@intx/types";
 import { canonicalJsonStringify } from "@intx/types/wire-definition-hash";
 import { type } from "arktype";

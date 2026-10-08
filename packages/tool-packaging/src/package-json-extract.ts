@@ -23,7 +23,7 @@ import { type } from "arktype";
 import { Parser as TarParser } from "tar/parse";
 import type { ReadEntry } from "tar/read-entry";
 
-import { concatBytes } from "@intx/types";
+import { concatBytes } from "@intx/types/concat";
 import { PackageJSON } from "@intx/types/package-json";
 
 /**

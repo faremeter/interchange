@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { hasCode } from "@intx/types";
+import { hasCode } from "@intx/types/has-code";
 import type { RepoDiskUsage, RepoObjectCounts } from "./repo-disk";
 
 // Synchronous Node counterparts to the runtime-backed helpers in repo-disk.ts.

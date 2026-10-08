@@ -1,6 +1,6 @@
 import git from "isomorphic-git";
 import { getLogger } from "@intx/log";
-import { hasCode } from "@intx/types";
+import { hasCode } from "@intx/types/has-code";
 import { collectReachableObjects } from "./object-walk";
 import { publishPackAtomically } from "./pack-receive";
 import {

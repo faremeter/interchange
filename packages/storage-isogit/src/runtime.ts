@@ -1,5 +1,5 @@
 import type { FsClient } from "isomorphic-git";
-import { hasCode } from "@intx/types";
+import { hasCode } from "@intx/types/has-code";
 
 const textDecoder = new TextDecoder();
 

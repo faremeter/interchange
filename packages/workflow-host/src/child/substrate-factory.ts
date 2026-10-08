@@ -64,7 +64,7 @@ import {
   type CredentialProviderRegistry,
 } from "@intx/harness";
 import { createSSHSignature } from "@intx/crypto";
-import { parseRunAddress } from "@intx/types";
+import { parseRunAddress } from "@intx/types/agent-address";
 import {
   createAgentRepoStore,
   WORKFLOW_RUN_AGENT_STATE_PREFIX,
