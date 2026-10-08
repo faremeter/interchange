@@ -266,11 +266,10 @@ export type AuthorControllableOutcome = typeof AuthorControllableOutcome.infer;
 
 /**
  * A per-workflow inbound-mail admission policy: for each
- * {@link AuthorControllableOutcome}, whether a message raising that outcome is
- * `reject`ed or `admit`ted. Sparse: every key is optional, an omitted key is
- * not a default, and undeclared keys are rejected so a typo fails at the wire
- * boundary. Sparse keys keep the content hash covering only what the author
- * declared.
+ * {@link AuthorControllableOutcome}, whether a message raising that outcome
+ * is `reject`ed or `admit`ted. Sparse and undeclared-key-rejecting: omitted
+ * keys are not defaults, and sparse keys keep the content hash covering only
+ * what the author declared.
  */
 export const InboundMailPolicy = type({
   "untrustedFrom?": "'reject' | 'admit'",
@@ -354,10 +353,9 @@ export type Mail = {
 };
 
 const MailShape = type({
-  // Require the recipient list a consumer dereferences unconditionally; other
-  // header fields stay optional and are carried losslessly in `rawHeaders`.
-  // `from` is optional here deliberately: a mail with no usable originator is
-  // still mail, and requiring it makes `isMail` reject one.
+  // Require the recipient list consumers dereference unconditionally; other
+  // headers stay optional and lossless in `rawHeaders`. `from` stays
+  // optional: mail with no usable originator is still mail.
   headers: {
     "from?": "string",
     to: "string[]",
@@ -675,10 +673,9 @@ export type ToolCall = typeof ToolCall.infer;
 
 /**
  * Approver-facing snapshot of the tool call awaiting approval, built at the
- * authz `ask` branch and threaded to the hub co-write on the approval row.
- * `name`, `description`, and `inputSchema` mirror the {@link ToolDefinition};
- * `arguments` is the live call's. A sibling of the pending operation's
- * `suspendedCall`, never folded into {@link ToolCall}.
+ * authz `ask` branch and threaded to the hub co-write. `name`,
+ * `description`, and `inputSchema` mirror the {@link ToolDefinition};
+ * `arguments` is the live call's; never folded into {@link ToolCall}.
  */
 export const ApprovalSnapshot = type({
   name: "string",
@@ -692,22 +689,17 @@ export type ApprovalSnapshot = typeof ApprovalSnapshot.infer;
  * The kind of a control-plane park: a step suspended awaiting an external
  * event.
  *
- * - `"approval"` -- parked on a tool/authz gate; REQUIRES an
- *   {@link ApprovalSnapshot} and notifies the host (`env.onPark`) so the
- *   sidecar co-writes the approval/correlation rows.
- * - `"input"` -- parked awaiting its next input (e.g. the next mail for a
- *   long-lived agent run). Carries NO snapshot and does NOT notify the host;
- *   the run's owner delivers the input on the same channel. Deliberately NOT
- *   a {@link SignalKind}, so it never touches approval routing.
+ * - `"approval"` -- parked on a tool/authz gate; carries an
+ *   {@link ApprovalSnapshot} and notifies the host (`env.onPark`).
+ * - `"input"` -- parked awaiting its next input; carries no snapshot, does
+ *   not notify the host, and is deliberately not a {@link SignalKind}.
  * - `"signal-relay"` -- an onTrigger section container parked on an
- *   author-named signal so a body child's `awaitSignal` is serviced through
- *   the deployment run. The channel name is NOT a reserved
- *   `signalName(correlationId)`, so recovery must branch on this kind before
- *   assuming the awaited name is a reserved channel.
+ *   author-named signal; the name is not a reserved
+ *   `signalName(correlationId)`, so recovery must branch on this kind first.
  *
- * Kinds are distinguished by an EXPLICIT discriminant everywhere they flow,
- * never by snapshot presence, which would silently reclassify a malformed
- * snapshot-less approval as another park kind.
+ * Kinds are discriminated by an explicit discriminant, never by snapshot
+ * presence, which would silently reclassify a malformed snapshot-less
+ * approval as another park kind.
  */
 export const ControlParkKind = type.enumerated(
   "approval",
@@ -728,8 +720,7 @@ export const APPROVAL_SNAPSHOT_MAX_BYTES = 131072;
  * Parse the snapshot through this validator at trust boundaries (the
  * `park.notify` and `parked-correlations.response` IPC frames, the
  * sidecar→hub register frame); internal hops use the unbounded
- * {@link ApprovalSnapshot}. `.narrow` bounds the runtime check only, so the
- * cap holds where a frame is actually parsed.
+ * {@link ApprovalSnapshot}.
  */
 export const BoundedApprovalSnapshot = ApprovalSnapshot.narrow(
   (snapshot, ctx) => {
@@ -743,10 +734,10 @@ export const BoundedApprovalSnapshot = ApprovalSnapshot.narrow(
 export type BoundedApprovalSnapshot = typeof BoundedApprovalSnapshot.infer;
 
 /**
- * Result of a tool execution. `content` is what the model sees as the result;
- * `detail` is extra data for the harness only. `isError` surfaces an error to
- * the model; `pendingMarker` marks an async tool — the reactor registers the
- * correlation ID and waits for a matching inbound message.
+ * Result of a tool execution. `content` is what the model sees; `detail` is
+ * harness-only. `isError` surfaces an error to the model; `pendingMarker`
+ * marks an async tool whose correlation ID awaits a matching inbound
+ * message.
  *
  * (INFERENCE.md § Tool Execution Semantics)
  */
@@ -782,12 +773,9 @@ export interface ToolRunner {
 /**
  * Partial assistant message accumulated during streaming, carrying all
  * content blocks seen so far so late-joining subscribers get current state
- * without replaying deltas.
- *
- * `text` and `thinking` are cumulative across every delta of that kind in the
- * current turn — intentionally flat even when the harness's per-index block
- * tracking split the stream into multiple blocks. Per-block structure lives
- * in the finalized inference.done turn's content[].
+ * without replaying deltas. `text` and `thinking` are cumulative across
+ * every delta of that kind; per-block structure lives in the finalized
+ * `inference.done` turn's content[].
  *
  * (INFERENCE.md § Event Protocol › Partial State)
  */
@@ -818,11 +806,9 @@ export type TokenUsage = typeof TokenUsage.infer;
 /**
  * Slim source descriptor stamped onto `inference.usage` / `inference.done`
  * events and `ReactorState.lastCycleSource`, so state-aware policies can
- * attribute usage without re-reading the live `InferenceSource`.
- *
- * Deliberately a strict subset of `InferenceSource`: credentials and
- * endpoints must not leak to policy code or event consumers. Full-source
- * needs go through the harness's source registry.
+ * attribute usage without re-reading the live `InferenceSource`. Strict
+ * subset: credentials and endpoints must not leak to policy code; full
+ * sources go through the harness's source registry.
  */
 export const LastCycleSource = type({
   sourceId: "string",
@@ -851,8 +837,7 @@ const TextBlock = type({
 /**
  * How a media payload is carried by a content block: inline base64, an
  * opaque provider-native handle (Gemini fileUri, Anthropic file_id), or a
- * public URL the provider fetches itself. The provider adapter builds the
- * wire shape; MediaSource is the internal, provider-agnostic form.
+ * public URL the provider fetches itself. Provider-agnostic internal form.
  *
  * (INFERENCE.md § Generalized Multimodal Taxonomy)
  */
@@ -932,11 +917,9 @@ export type RedactedThinkingBlock = typeof RedactedThinkingBlock.infer;
 /**
  * A model-emitted refusal: the provider's strict-mode structured-outputs
  * path declined to satisfy the requested schema (OpenAI `delta.refusal` /
- * `message.refusal`). The `reason` is the text the model emitted in lieu of
- * conformant output.
- *
- * Distinct from `inference.error`: the HTTP call succeeded, and the response
- * is "I will not satisfy this schema" rather than schema-conformant content.
+ * `message.refusal`). Distinct from `inference.error`: the HTTP call
+ * succeeded, and `reason` is the model's refusal text in lieu of
+ * schema-conformant content.
  *
  * Exported because `inference.refusal.delta` events reference it by name.
  */
@@ -981,10 +964,9 @@ const CitationSource = type({
 /**
  * A citation supporting a span of assistant text. Without a paired
  * source-block index, consumers MUST attribute it by adjacency to the
- * nearest preceding TextBlock in the same turn.
- *
- * Deliberately excluded from ToolResultBlock.content — citations annotate
- * model output, not tool output.
+ * nearest preceding TextBlock in the same turn. Deliberately excluded from
+ * ToolResultBlock.content — citations annotate model output, not tool
+ * output.
  *
  * Exported because `inference.citation` events reference it by name.
  */
@@ -1005,9 +987,8 @@ export type CitationBlock = typeof CitationBlock.infer;
 /**
  * A structured safety signal on model output or request filtering. The
  * payload mirrors the first real Gemini capture (2026-07-28), which was
- * prompt-level only: `promptFeedback: { blockReason: "PROHIBITED_CONTENT" }`
- * with no candidates and no per-category ratings. This block carries
- * `blockReason` and does not invent category/probability/blocked fields.
+ * prompt-level only: `promptFeedback: { blockReason: "PROHIBITED_CONTENT" }`,
+ * no candidates, no per-category ratings. Carries `blockReason` only.
  *
  * Deliberately excluded from ToolResultBlock.content — safety signals
  * annotate model/request filtering, not tool output.
@@ -1037,8 +1018,8 @@ export function formatSafetyRatingText(block: SafetyRatingBlock): string {
  * Paired with a CodeExecutionResultBlock whose `requestId` matches this
  * block's `id`. Streaming order for one execution is
  * `inference.code_execution.start` → zero or more `...delta` →
- * `inference.code_execution.result`, uninterrupted by other events sharing
- * the `requestId`.
+ * `inference.code_execution.result`, uninterrupted by events sharing the
+ * `requestId`.
  *
  * Exported because `inference.code_execution.start` references it by name.
  */
@@ -1062,9 +1043,8 @@ export type CodeExecutionRequestBlock = typeof CodeExecutionRequestBlock.infer;
  * The result of executing a CodeExecutionRequestBlock; `requestId`
  * back-points to the request block's `id`. Status is normalized across
  * providers; raw provider signals (return code, native outcome string,
- * abort reason) are preserved on optional fields.
- *
- * File outputs from code execution are not modeled by this block today.
+ * abort reason) are preserved on optional fields. File outputs are not
+ * modeled today.
  *
  * Exported because `inference.code_execution.result` references it by name.
  */
@@ -1213,9 +1193,9 @@ const WireInboundMessage = type({
 });
 
 /**
- * A single event in the inference event protocol. Every event carries a
- * monotonic session-scoped sequence number; types are namespaced
- * (`inference.*`, `tool.*`, `reactor.*`, `fork.*`, `message.*`, `custom.*`).
+ * A single event in the inference event protocol: a monotonic session-scoped
+ * sequence number plus a namespaced type (`inference.*`, `tool.*`,
+ * `reactor.*`, `fork.*`, `message.*`, `custom.*`).
  *
  * (INFERENCE.md § Event Protocol)
  */
@@ -1325,10 +1305,10 @@ export const InferenceEvent = type.or(
   {
     type: "'inference.citation'",
     seq: "number",
-    // `index` names the source content block the citation annotates, letting
-    // the harness interleave it into the finalized turn after that block.
-    // Adapters without per-citation indices omit it; the harness then appends
-    // those citations at the end of `content[]`.
+    // `index` names the cited source content block so the harness can
+    // interleave it into the finalized turn; absent when the adapter has no
+    // per-citation index, in which case the harness appends at `content[]`
+    // end.
     data: { citation: CitationBlock, "index?": "number" },
   },
   {
@@ -1347,8 +1327,7 @@ export const InferenceEvent = type.or(
     type: "'inference.code_execution.delta'",
     seq: "number",
     // requestId correlates fragments to the originating request; index is a
-    // positional hint for the per-block accumulator. Independent: one
-    // response may interleave fragments for several requests.
+    // positional hint. One response may interleave several requests.
     data: {
       requestId: "string",
       codeFragment: "string",
@@ -1364,8 +1343,7 @@ export const InferenceEvent = type.or(
     type: "'inference.image_output'",
     seq: "number",
     // Fires mid-stream when an adapter finalizes an image-output block, so
-    // the image is ready for handoff before inference.done lands. The payload
-    // is typically a large base64 blob (~1MB in Gemini captures).
+    // the image is ready before inference.done lands.
     data: { image: ImageBlock, "index?": "number" },
   },
   {
@@ -1621,11 +1599,9 @@ export type InferenceEvent =
   | {
       /**
        * Per-message run-bracket open, emitted when the reactor dequeues an
-       * inbound mail message and begins per-message work.
-       *
-       * `messageRunId` is reactor-minted, unique per dequeue, and required
-       * for crash-replay correlation: the same `messageId` can be dequeued
-       * more than once across a crash + replay cycle.
+       * inbound mail message. `messageRunId` is reactor-minted, unique per
+       * dequeue, and required for crash-replay correlation: the same
+       * `messageId` can be dequeued more than once across a crash + replay.
        */
       type: "message.run.started";
       seq: number;
@@ -1641,11 +1617,10 @@ export type InferenceEvent =
        * `messageRunId`. `messageId` is carried redundantly for log
        * correlation; absent for a message with no id of its own.
        *
-       * `status` is `"completed" | "failed"` only. Cancellation surfaces as
-       * a harness abort, structurally `"failed"` with a specific
-       * `error.kind`: `"inference_error" | "tool_error" | "reactor_fatal" |
-       * "harness_aborted" | "doom_loop"`. `"doom_loop"` marks a protective
-       * break on a repeated identical tool batch, not an internal fault.
+       * `status` is `"completed" | "failed"` only; cancellation is a harness
+       * abort with `error.kind` `"inference_error" | "tool_error" |
+       * "reactor_fatal" | "harness_aborted" | "doom_loop"`. `"doom_loop"`
+       * marks a protective break on a repeated identical tool batch.
        */
       type: "message.run.ended";
       seq: number;
@@ -1759,15 +1734,15 @@ export type PendingOperation = {
   registeredAt: number;
   gateId: string;
   /**
-   * Absolute deadline (epoch ms) for the parking gate. Persisted so a restart
-   * re-arms the gate with the remaining time against the original deadline
-   * rather than restarting the countdown. Absent when parked with none.
+   * Absolute deadline (epoch ms) for the parking gate, persisted so a restart
+   * re-arms the gate against the original deadline. Absent when parked with
+   * none.
    */
   timeoutAt?: number;
   /**
-   * The tool call suspended when this operation parked, captured for
-   * `kind: "approval"` operations so the approved call can re-run on resume.
-   * Absent for director-path async-tool pending markers.
+   * The tool call suspended when this operation parked, for `kind:
+   * "approval"` operations so the approved call re-runs on resume. Absent
+   * for director-path async-tool pending markers.
    */
   suspendedCall?: ToolCall;
   /**
@@ -1781,11 +1756,10 @@ export type PendingOperation = {
 /**
  * Complete reactor state visible to the director decision function.
  *
- * `tokenUsage` is the cumulative session usage. `lastCycleUsage` and
- * `lastCycleSource` describe the most recent *successful* inference call and
- * move together: both null before the first completion, set atomically on
- * every `inference.done`, and not cleared by `inference.error`. Per-cycle
- * values support compaction triggers and policies keyed on recent input cost.
+ * `tokenUsage` is cumulative session usage. `lastCycleUsage` and
+ * `lastCycleSource` describe the most recent *successful* inference call
+ * and move together: both null before the first completion, set atomically
+ * on `inference.done`, not cleared by `inference.error`.
  *
  * (INFERENCE.md § Agent Reactor › Director Decision Function)
  */
@@ -1879,14 +1853,12 @@ export type ReactorCapabilities = {
  * The inbound events delivered to the director decision function.
  *
  * `resume.execute_tools` fires when an approval resolves and a parked tool
- * call must re-run on resume. It carries the calls about to be dispatched so
- * the director can seed its outstanding tool-result count before their
- * `tool.done` events arrive; without the seed the count starts at zero and
- * the first `tool.done` drives an accidental re-inference.
- *
- * `resume.tool_result` fires when a parked approval ends without running its
- * tool (rejected or timed out), carrying a synthetic error result that answers
- * the parked call so history stays well-formed. No tool runs, so no count seed.
+ * call must re-run; it carries the calls so the director can seed its
+ * outstanding tool-result count before their `tool.done` events arrive
+ * (without the seed the first `tool.done` drives an accidental
+ * re-inference). `resume.tool_result` fires when a parked approval ends
+ * without running its tool, carrying a synthetic error result that answers
+ * the parked call; no tool runs, so no count seed.
  *
  * (INFERENCE.md § Agent Reactor › Reactor Structure)
  */
@@ -1911,8 +1883,8 @@ export type ReactorInboundEvent =
 
 /**
  * The core director is a single decision function: given an event and the
- * current reactor state, return one or more actions. If it throws, the
- * reactor emits `reactor.error` and shuts down gracefully.
+ * current reactor state, return one or more actions; a throw emits
+ * `reactor.error` and shuts the reactor down gracefully.
  *
  * (INFERENCE.md § Reactor Director › Core Director)
  */
@@ -1933,10 +1905,8 @@ export interface ReactorDirector {
  *
  * - `allow` — the tool proceeds.
  * - `block` — the tool is answered with an error result carrying `reason`.
- * - `suspend` — the call is parked awaiting an external decision: the reactor
- *   registers `gate`, persists `pendingOp`, and neither runs nor
- *   error-completes the call. `correlationId` on both ties an inbound
- *   resolution back to the suspension.
+ * - `suspend` — the call is parked: the reactor registers `gate`, persists
+ *   `pendingOp`, and neither runs nor error-completes the call.
  */
 export type BeforeToolDecision =
   | { type: "allow" }
@@ -1954,12 +1924,10 @@ export type BeforeToolDecision =
 
 /**
  * Extension that runs before a tool call is executed, returning a
- * `BeforeToolDecision`.
- *
- * `grantOneShot` registers a within-cycle bypass token keyed on a
- * `ToolCall.id`: the next `beforeTool` for that id skips a suspension it
- * would otherwise raise, consuming the token. Optional — only extensions that
- * can suspend a call have anything to bypass.
+ * `BeforeToolDecision`. `grantOneShot` registers a within-cycle bypass token
+ * keyed on a `ToolCall.id`: the next `beforeTool` for that id skips a
+ * suspension, consuming the token. Optional; only extensions that can
+ * suspend a call have anything to bypass.
  */
 export interface BeforeToolExtension {
   beforeTool(
@@ -2081,10 +2049,10 @@ export type Compactor = ContextStrategy<ConversationTurn[], ConversationTurn[]>;
  * `ContextStore.writeBlob` and returns a pointer of that form; the agent's
  * read tool reaches the spill via `BlobReader.read(uri)`.
  *
- * The URI scheme is deliberately rigid: scheme `tool-output`, empty authority
- * (the `///` puts the callId in pathname so case survives URL parsing),
- * `/{callId}` path, and no query or fragment. Any deviation throws; missing
- * blobs throw. The reader never accepts a filesystem path.
+ * The URI scheme is rigid: `tool-output` scheme, empty authority (the `///`
+ * keeps the callId in pathname so case survives URL parsing), `/{callId}`
+ * path, no query or fragment. Any deviation or missing blob throws; the
+ * reader never accepts a filesystem path.
  */
 export interface BlobReader {
   /** Resolve `uri` to the blob bytes; throws on a malformed URI or missing blob. */
@@ -2098,9 +2066,7 @@ export interface BlobSource {
 
 /**
  * Parse a `tool-output:///{callId}` URI and return the callId. Throws on any
- * deviation from the documented shape.
- *
- * The two-slash form is rejected because the URL parser lowercases the
+ * deviation. The two-slash form is rejected: the URL parser lowercases the
  * hostname, silently corrupting callIds with uppercase letters; the
  * three-slash form keeps the callId in `pathname`, where case survives.
  */
@@ -2189,8 +2155,7 @@ export const InferenceSourceDefaults = type({
   "maxTokens?": "number",
   // Provider-native knobs merged into the outbound request body (Anthropic
   // `metadata.user_id`, OpenAI `user`, Gemini `safetySettings`, ...); the
-  // per-call merge is shallow — a per-call providerOptions object replaces
-  // the source-bound one wholesale.
+  // per-call merge is shallow: a per-call object replaces the source one.
   "providerOptions?": "Record<string, unknown>",
 });
 export type InferenceSourceDefaults = typeof InferenceSourceDefaults.infer;
@@ -2198,13 +2163,11 @@ export type InferenceSourceDefaults = typeof InferenceSourceDefaults.infer;
 /**
  * A specific (provider, model) bundle the agent runtime can route to. `id`
  * is the catalog offering's primary key and the routing key for
- * `AgentConfig.defaultSource` / `Agent.setSource`. Multi-model providers
- * become multiple sources — `model` is part of the identity.
- *
- * `quirks` is an opaque per-deployment bag of provider adapter
- * accommodations, read once at adapter instantiation. Present-and-populated
- * or absent, never `null`: a source row with no quirks stores SQL `NULL`,
- * and the resolver translates that into an omitted key.
+ * `AgentConfig.defaultSource` / `Agent.setSource`; multi-model providers
+ * become multiple sources. `quirks` is an opaque bag of provider-adapter
+ * accommodations, read once at adapter instantiation; present-and-populated
+ * or absent, never `null` (no quirks stores SQL `NULL`, resolved to an
+ * omitted key).
  *
  * (INFERENCE.md § Providers)
  */
@@ -2224,10 +2187,9 @@ export type InferenceSource = typeof InferenceSource.infer;
 
 /**
  * Replace every field on `active` with the corresponding field from `next`,
- * in place; optional fields are `delete`d when absent on `next` so the swap
- * is exact. Used by the agent's source registry and the harness's source
- * hot-swap path to mutate the single shared `InferenceSource` the reactor
- * reads lazily at the start of each inference call.
+ * in place; optional fields absent on `next` are `delete`d so the swap is
+ * exact. Used by the source registry and hot-swap path to mutate the single
+ * shared `InferenceSource` the reactor reads lazily per call.
  */
 export function applyInferenceSourceFields(
   active: InferenceSource,
@@ -2297,11 +2259,10 @@ export type RetrySituation = {
 };
 
 /**
- * Per-call retry policy, invoked once per `inference.error` an attempt
- * produces, in 1-indexed attempt order. `{ kind: "abort" }` ends the call;
- * `{ kind: "retry", delayMs }` discards the failed attempt's events, sleeps
- * `delayMs` against the Scheduler, and re-issues the request with the
- * identical body. May be async.
+ * Per-call retry policy, invoked once per `inference.error`, in 1-indexed
+ * attempt order. `{ kind: "abort" }` ends the call; `{ kind: "retry",
+ * delayMs }` discards the failed attempt's events, sleeps `delayMs` against
+ * the Scheduler, and re-issues the request with the same body. May be async.
  *
  * (INFERENCE.md § Providers › Streaming Harness)
  */
@@ -2322,19 +2283,17 @@ export type InferenceOptions = {
   /**
    * Modalities the caller wants the model to emit; adapters translate to the
    * provider-native shape (e.g. Gemini `generationConfig.responseModalities`
-   * accepts uppercase `"TEXT"` / `"IMAGE"`). Providers without a modality
-   * switch ignore it; when omitted the provider's default applies.
+   * accepts uppercase `"TEXT"` / `"IMAGE"`). Providers without a switch
+   * ignore it; omitted means the provider default.
    */
   responseModalities?: ("text" | "image" | "audio")[];
   /**
    * Structured-output constraint: free-form text, JSON, or JSON conforming
    * to a schema. Adapters translate to the provider-native wire shape —
-   * OpenAI `response_format` (with `delta.refusal` chunks surfaced as
-   * RefusalBlocks when strict mode declines), Gemini `responseMimeType` /
-   * `responseSchema` (a JSON Schema subset; forwarded verbatim). Anthropic
-   * has no native structured-output API: `text` is a no-op, `json` and
-   * `json-schema` throw at the adapter boundary. When omitted the provider's
-   * default applies (typically free-form text).
+   * OpenAI `response_format` (strict-mode refusals surface as
+   * RefusalBlocks), Gemini `responseMimeType` / `responseSchema` (a JSON
+   * Schema subset, forwarded verbatim). Anthropic has none: `text` is a
+   * no-op, `json` / `json-schema` throw. Omitted means the provider default.
    */
   responseFormat?:
     | { kind: "text" }
@@ -2346,17 +2305,16 @@ export type InferenceOptions = {
         strict?: boolean;
       };
   /**
-   * Provider-native knobs merged into the outbound request body. The
-   * model-bound defaults live in `InferenceSourceDefaults.providerOptions`;
-   * this field overrides them per call. The merge is shallow: a per-call
-   * object replaces the source-bound one wholesale.
+   * Provider-native knobs merged into the outbound request body, overriding
+   * `InferenceSourceDefaults.providerOptions` per call. The merge is
+   * shallow: a per-call object replaces the source-bound one wholesale.
    */
   providerOptions?: Record<string, unknown>;
   /**
    * Per-call inactivity timeout in ms: no event (other than `inference.start`)
-   * for this long aborts the fetch and ends the call with an
-   * `inference.error` of category `"timeout"`. Default 120_000. `0` arms the
-   * timer to fire on the next tick (fail-fast, useful in tests).
+   * for this long ends the call with an `inference.error` of category
+   * `"timeout"`. Default 120_000; `0` fires on the next tick (fail-fast,
+   * useful in tests).
    */
   inactivityTimeoutMs?: number;
   /**
@@ -2384,10 +2342,10 @@ export type ContextCommit = {
 
 /**
  * State of an active connector thread (one durable thread per agent,
- * persisted so it survives sidecar restarts). `replyTo` is the most recent
- * speaker, the primary recipient on the next outbound reply; `cc` is every
- * other participant who has spoken, deduplicated in arrival order. Defined
- * as an arktype so the wire layer can validate snapshots.
+ * persisted across sidecar restarts). `replyTo` is the most recent speaker,
+ * the primary recipient on the next outbound reply; `cc` is every other
+ * participant who has spoken, deduplicated in arrival order. An arktype so
+ * the wire layer can validate snapshots.
  */
 export const ConnectorThreadState = type({
   "threadRoot?": "string",
@@ -2520,10 +2478,10 @@ export type ToolDefinition = typeof ToolDefinition.infer;
 
 /**
  * Agent harness configuration, assembled from the agent definition package
- * and capability grants during harness initialization. `principalId` is the
- * agent's principal, needed to reconstruct the in-memory grant store on
- * restart. `grants` uses `WireGrantRule` because the type arrives over JSON
- * where `GrantRule.expiresAt` is a serialized string.
+ * and capability grants during harness initialization. `principalId`
+ * reconstructs the in-memory grant store on restart; `grants` uses
+ * `WireGrantRule` because it arrives over JSON where `GrantRule.expiresAt`
+ * is a serialized string.
  *
  * (ARCHITECTURE.md § Agent Harness)
  */
