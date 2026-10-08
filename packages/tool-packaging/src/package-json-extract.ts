@@ -4,18 +4,12 @@
 // package/package.json entry, parse it as JSON, hand the parsed value
 // back". Used by the hub-side resolver and the hub-sessions
 // `package-registry` kind handler, which used to ship near-identical
-// streaming parsers that drifted independently.
-//
-// Returns a discriminated outcome rather than throwing so each caller
-// can map the failure classes onto its own domain error type
-// (ManifestInvalidError on the resolver side, a ValidatePushResult
-// reason on the kind-handler side).
+// streaming parsers that drifted independently. Returns a
+// discriminated outcome rather than throwing so each caller can map
+// the failure classes onto its own domain error type.
 //
 // Node-bound: streams through node:stream and tar, not portable to
 // environments without those APIs.
-
-// This module is Node-bound: it streams through node:stream and the tar
-// library, which are not portable to environments without those APIs.
 
 import { Readable } from "node:stream";
 

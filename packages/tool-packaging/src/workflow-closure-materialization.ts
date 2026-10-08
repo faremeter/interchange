@@ -1,20 +1,12 @@
 // Host-side materializer for a workflow-probe frame's frozen closure.
-//
-// The airlocked probe child evaluates a code-sourced workflow's
-// `interchange.workflow` entry, but the frozen closure it evaluates
-// against is materialized on the sidecar host first — fetch + SRI-verify
-// + extract + `node_modules` layout is I/O, not author-code evaluation,
-// so it stays out of the child. This module lays out the frame's frozen
-// closure and returns the workflow package directory the child loads
-// from, without importing any author code.
-//
-// Phases 1-2 only, no `applyAtomic`: a probe is ephemeral and inert, so
-// the durable-deploy lifecycle (`active-deploy-id`, the retention
-// ladder) is the wrong semantics. The closure is laid out under a
-// per-probe scratch dir that `cleanup` removes once the child has been
-// reaped. `loadManifest` is invoked with an EMPTIED `topLevel` so the
-// loader's phase-3 import loop imports nothing while still fetching,
-// extracting, and laying out the full `entries` set.
+// The airlocked probe child evaluates the code-sourced workflow entry,
+// but the frozen closure it evaluates against is materialized here on
+// the host first — fetch + SRI-verify + extract + `node_modules`
+// layout is I/O, not author-code evaluation. Phases 1-2 only, no
+// `applyAtomic`: a probe is ephemeral and inert, so the durable-deploy
+// lifecycle is the wrong semantics. `loadManifest` runs with an emptied
+// `topLevel` so the loader imports no author code while still
+// materializing the full `entries` set.
 
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -98,11 +90,6 @@ export interface WorkflowClosureMaterializerConfig {
  * returned function lays out a probe frame's frozen closure under a
  * fresh scratch dir and returns the workflow package directory plus a
  * `cleanup` that removes the scratch dir.
- *
- * @throws if the closure does not pin exactly one top-level package,
- *   the source registry is not configured, asset delivery rejects, the
- *   layout fails, or the frame's `entry` disagrees with the package's
- *   `interchange.workflow`.
  */
 export function createWorkflowClosureMaterializer(
   config: WorkflowClosureMaterializerConfig,

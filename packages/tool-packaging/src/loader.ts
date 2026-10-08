@@ -1,41 +1,12 @@
 // eslint-disable-next-line @typescript-eslint/triple-slash-reference -- npm-team packages ship no types; declarations.d.ts must be visible to downstream typecheckers that import from this package's source.
 /// <reference path="./declarations.d.ts" />
-// Sidecar-side tool-package loader.
-//
-// Given a resolved `ToolPackageManifest`, the loader builds an
-// npm-compatible nested `node_modules/` layout under the per-instance
-// scratch directory so each top-level package and each transitive
-// dependency can satisfy its own `require()` / `import` calls without
-// help from the sidecar host.
-//
-//   1. Filters by host os/cpu metadata; mismatches are skipped with a
-//      debug log (`platform.mismatch.skipped`).
-//   2. Materializes every remaining entry into the content-addressable
-//      cache: bytes are pulled from the entry's source on a miss and
-//      verified through `cache.put`; the bytes are then unpacked via
-//      `cache.extractTarball` so a single sha512 has a single extraction
-//      shared across instances.
-//   3. Lays out each entry under `<scratch>/store/<name>/<version>/` by
-//      copying the file tree from the cache extraction. Each layout
-//      directory gets its own `node_modules/<dep>` symlink to the
-//      sibling `store/<dep>/<depVersion>/` chosen for that requirer.
-//      Diamond dependencies share a single store entry; version
-//      conflicts coexist as separate store entries and Node's standard
-//      ancestor-walk resolves each requirer's deps to the version that
-//      satisfies its own range.
-//   4. Reads each top-level package's unpacked `package.json`, resolves
-//      the `interchange.tools` entry path, and dynamic-import()s it.
-//   5. Validates each named export is an `AnnotatedToolFactory` (a
-//      callable with `id: string` and `requires: readonly string[]`).
-//
-// Only entries listed in `manifest.topLevel` contribute tools; the
-// loader still materializes every other entry (modulo platform
-// filtering) because top-level packages reach them through Node's
-// `node_modules/` resolution at apply time.
-//
-// Errors are surfaced as `ToolLoaderError` with a `category` matching
-// one of the `DeployApplyErrorCategory` values. The atomic-apply layer
-// catches these and translates them into wire-level frames.
+// Sidecar-side tool-package loader: lays out a resolved
+// `ToolPackageManifest` into an npm-compatible nested `node_modules/`
+// tree under the per-instance scratch dir, then imports each
+// top-level package's `interchange.tools` entry and validates its
+// exports. Only `manifest.topLevel` entries contribute tools;
+// transitive entries are still materialized for `node_modules/`
+// resolution.
 
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -132,13 +103,12 @@ export interface LoadedToolPackage {
   readonly directors: readonly LoadedDirectorFactory[];
   /**
    * The provider-backed credentials the package's tools statically
-   * declare via `interchange.credentials`. A declaration is advisory: it
-   * names a handle the agent definition binds to a concrete credential
-   * and the launch-time grant gate authorizes; it consents to nothing
-   * on its own. Surfaced here — parsed from the SAME `package.json` the
-   * code loaded from — so the declared set is the authoritative one
-   * rather than a hub manifest that could drift. Empty when the package
-   * omits the field.
+   * declare via `interchange.credentials`. A declaration is advisory:
+   * it names a handle the agent definition binds to a concrete
+   * credential the launch-time grant gate authorizes; it consents to
+   * nothing on its own. Parsed from the same `package.json` the code
+   * loaded from, so the declared set is authoritative rather than a
+   * hub manifest that could drift. Empty when the field is omitted.
    */
   readonly credentials: readonly ToolCredentialDeclaration[];
 }
@@ -165,21 +135,17 @@ export interface LoaderConfig {
    * Asset-sourced tarballs do not go through this path; their
    * containment is the substrate's upload-time cap on the hub side.
    *
-   * The default mirrors the hub's `HUB_MAX_TARBALL_BYTES` cap so a
-   * tarball legitimately accepted by the hub-side upload route is
-   * also legitimately fetchable from a registry mirror seeded from
-   * that hub. An operator pointing the sidecar at a third-party
-   * registry whose curated tarballs run larger should raise the cap
-   * explicitly.
+   * The default mirrors the hub's `HUB_MAX_TARBALL_BYTES` cap; an
+   * operator pointing the sidecar at a registry whose curated
+   * tarballs run larger should raise the cap explicitly.
    */
   readonly maxRegistryTarballBytes?: number;
   /**
    * Deadline in milliseconds for a single HTTP-registry tarball fetch,
-   * spanning the request and the streamed body read. A stalled registry
-   * cannot block the fetch — and the deploy's tool materialization
-   * awaiting it — past this bound. Defaults to
-   * `DEFAULT_REGISTRY_FETCH_TIMEOUT_MS`. Asset-sourced tarballs read
-   * from the local filesystem and are not subject to it.
+   * spanning the request and the streamed body read, so a stalled
+   * registry cannot block the awaiting deploy past this bound.
+   * Defaults to `DEFAULT_REGISTRY_FETCH_TIMEOUT_MS`. Asset-sourced
+   * tarballs read from the local filesystem and are not subject to it.
    */
   readonly registryFetchTimeoutMs?: number;
   /** Test seam for tarball fetching. Production omits this and the

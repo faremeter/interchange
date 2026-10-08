@@ -1,40 +1,17 @@
 // Apply protocol for a ToolPackageManifest.
 //
-// Each apply materializes its closure into a stable, per-deploy-id
-// directory that is never moved:
-//
-//   <instanceDir>/packages/<deploy-id>/store/<name>/<version>/...
-//
-// The loader dynamic-imports each pinned package's `interchange.tools`
-// module from an absolute path inside that directory. Because the
-// directory is never renamed, the URL Node keys its ESM module cache
-// under stays valid for the life of the deploy: call-time
-// `import.meta.url`, `require.resolve()`, or `await import("./sibling.js")`
-// still resolves. (The earlier protocol staged under `pending/` and
-// renamed to `active/` after import; the renamed-away URL ENOENTed
-// late resolution. This module exists to remove that swap.)
-//
-// This module does NOT commit. It stages, loads, validates, and returns
-// the loaded packages plus the deploy-id directory; the caller commits
-// by writing `<instanceDir>/active-deploy-id` to name `newDeployId`.
-//
-// Retention. A prelude sweep removes every `packages/<id>/` except
-// `{newDeployId, previousDeployId}`, bounding disk to ~2 closures and
-// preserving the prior deploy as a liveness window for sessions still
-// draining against it. Safe only because per-agent applies are
-// serialized (one apply per `agentAddress` at a time), so by the time
-// apply N+2 reaps deploy N, generation-N's harness teardown has
-// completed and no live code references deploy N's tree.
-//
-// Crash safety. Boot never reads a deploy-id directory; the harness
-// rebuilds by re-running the apply into a fresh id, so a half-written
-// `packages/<newDeployId>/` is self-healing (the next prelude sweep
-// reclaims the orphan). Only `active-deploy-id` needs durability, and
-// the caller owns that — this module fsyncs nothing.
-//
-// Cross-apply ESM identity: per-deploy-id directories already make each
-// apply's import URL unique; the loader's `?integrity=<sri>` cache-bust
-// stays correct under them.
+// Each apply materializes its closure into a stable, never-renamed
+// `<instanceDir>/packages/<deploy-id>/store/<name>/<version>/...`
+// directory, so the URLs Node keys its ESM module cache under stay
+// valid for the life of the deploy (`import.meta.url`-relative
+// resolution still works). This module only stages, loads, and
+// validates; the caller commits by writing `active-deploy-id` to name
+// `newDeployId`. A prelude sweep retains only `{newDeployId,
+// previousDeployId}`, bounding disk to ~2 closures and preserving the
+// prior deploy as a liveness window for sessions still draining.
+// Boot never reads a deploy-id directory — the harness rebuilds by
+// re-applying into a fresh id, so a half-written new deploy is
+// self-healing and the next prelude sweep reclaims it.
 
 import { promises as fs } from "node:fs";
 import path from "node:path";

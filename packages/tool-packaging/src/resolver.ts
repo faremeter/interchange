@@ -1,37 +1,8 @@
 // eslint-disable-next-line @typescript-eslint/triple-slash-reference -- npm-team packages ship no types; declarations.d.ts must be visible to downstream typecheckers that import from this package's source.
 /// <reference path="./declarations.d.ts" />
-// Hub-side npm closure resolver.
-//
-// Walks a list of agent-pinned tool packages, resolves each pin against
-// a configured registry source (HTTP-backed `npm-registry-fetch` or an
-// in-process `package-registry` asset), recurses on transitive
-// `dependencies` and `optionalDependencies`, and produces a
-// `ToolPackageManifest` carrying the full pinned closure with per-entry
-// source tags and integrity strings.
-//
-// Per-package responsibilities:
-//
-//   - Spec parsing via npm-package-arg.
-//   - Packument fetching via a `RegistrySource`:
-//       - `HttpRegistrySource` wraps `npm-registry-fetch`.
-//       - `AssetRegistrySource` opens tarballs out of a
-//         `package-registry` asset via the asset service's in-process
-//         read API.
-//   - Version picking via npm-pick-manifest.
-//   - Scope routing: `@scope/foo` requests can be routed to a specific
-//     registry name from the scopeRouting table; everything else uses
-//     the registry named by `defaultRegistry`.
-//   - Per-entry source materialization: the walker asks the
-//     `RegistrySource` for the entry's `source` and `tarballUrl`. HTTP
-//     sources emit `kind: "registry"` plus the picked tarball URL;
-//     asset sources emit `kind: "asset"` carrying the asset id and the
-//     in-asset path.
-//   - Peer-dependency validation: peerDependencies declared by any
-//     entry must be satisfied by some other entry in the closure;
-//     unsatisfied peers throw ManifestInvalidError before the closure
-//     is returned. The walker captures peer-dep metadata during the
-//     walk so validation does not require a second pass over the
-//     network.
+// Hub-side npm closure resolver: resolves agent-pinned tool packages
+// against configured registry sources, recurses transitive
+// dependencies, and produces the pinned `ToolPackageManifest`.
 
 import npmPickManifest from "npm-pick-manifest";
 import npmRegistryFetch from "npm-registry-fetch";
@@ -195,10 +166,6 @@ export interface ClosureResolver {
   resolveClosure(pins: readonly ToolPackagePin[]): Promise<ToolPackageManifest>;
 }
 
-/**
- * One unsatisfied peer-dependency declaration discovered while
- * resolving a closure.
- */
 export interface PeerDependencyViolation {
   readonly dependent: { readonly name: string; readonly version: string };
   readonly peer: { readonly name: string; readonly range: string };
@@ -427,16 +394,6 @@ export class AssetRegistrySource implements RegistrySource {
   }
 }
 
-/**
- * Extract the npm dependency-related fields from a raw package.json
- * object so the AssetRegistrySource can hand the walker a packument
- * that carries the transitive-dependency information. The shared
- * `PackageJSON` validator deliberately covers only the minimum set the
- * substrate enforces (name, version, `interchange.tools`); the
- * resolver-side packument needs more, but those fields are part of
- * npm's documented package.json schema rather than the substrate's
- * invariants, so they are validated here at the resolver boundary.
- */
 /** A peer-dependency declaration captured during the closure walk, with
  *  whether the dependent marked it optional via `peerDependenciesMeta`. An
  *  unsatisfied optional peer is not a violation. */
@@ -991,15 +948,6 @@ function parseScope(packageName: string): string | null {
  * decorates HTTP errors with `statusCode` and DNS/connect errors
  * with `code`) and `npm-pick-manifest` (which throws for missing
  * versions / unsatisfiable ranges with no extra fields).
- *
- * Routing rules:
- *   - `code` in the ECONN/EAI/ENET family or `statusCode >= 500`
- *     → transport.
- *   - `statusCode === 404` or any non-2xx without the 5xx shape →
- *     structural (the registry answered; the answer was a
- *     missing-or-malformed packument).
- *   - Everything else (npm-pick-manifest's range-not-satisfiable,
- *     malformed-packument JSON parse failures) → structural.
  */
 function classifyResolveError(err: unknown): "transport" | "structural" {
   if (err === null || typeof err !== "object") return "structural";

@@ -1,27 +1,9 @@
 // @intx/tool-packaging — the single API boundary the rest of the tree
-// uses to flow tool packages through the system.
-//
-// Owns every npm-team dependency (`npm-registry-fetch`,
-// `npm-package-arg`, `npm-pick-manifest`, `semver`, `tar`, `ssri`); no
-// other package imports those directly. If the npm tooling is ever
-// swapped or vendored, this package is the only boundary that changes.
-//
-// Surface areas:
-//
-//   - Hub-side (deploy assembly):
-//       createClosureResolver({ registries, scopeRouting? })
-//         → resolveClosure(pins) → ToolPackageManifest
-//
-//   - Sidecar-side (deploy apply):
-//       createTarballCache / createToolLoader — content-addressable
-//       store plus fetch/extract/import of each pinned package.
-//       applyAtomic — per-deploy-id staging; maps every loader failure
-//       category onto an `ApplyAtomicFailure`.
-//       materializeToolPackages — validates a step manifest, applies
-//       it, and persists the active deploy id.
-//       applyFrozenWorkflowClosure / createWorkflowClosureMaterializer
-//       — lay out frozen workflow closures and load definitions
-//       through caller-supplied callbacks.
+// uses to flow tool packages through the system. Owns every npm-team
+// dependency (`npm-registry-fetch`, `npm-package-arg`,
+// `npm-pick-manifest`, `semver`, `tar`, `ssri`); no other package
+// imports those directly, so swapping or vendoring the npm tooling
+// touches only this package.
 
 export {
   type ClosureResolver,

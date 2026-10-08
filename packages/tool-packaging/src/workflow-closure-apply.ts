@@ -1,22 +1,10 @@
-// Deploy-side application of a code-sourced workflow's frozen closure.
-//
-// When a deploy frame carries a `source` (the registry the workflow
-// definition package is published to) plus the hub's frozen dependency
-// `closure` (concrete versions + integrity SRIs), the sidecar applies
-// exactly that closure — never re-resolving the pin at apply time. The
-// caller-supplied `loadDefinition` evaluates the pinned code to a
-// definition rather than trusting an inline serialized projection.
-//
-// Reuses the same apply machinery as `tool-materialization.ts`
-// (`createTarballCache` / `createToolLoader` / `applyAtomic`), so
-// fetch + SRI-verify + extract + `node_modules` layout is not
-// reimplemented here.
-//
-// A workflow-definition package declares `interchange.workflow`, not
-// `interchange.tools`, so the layout manifest handed to `applyAtomic`
-// carries an EMPTY `topLevel`: every entry is still materialized and
-// laid out, but no tool factory is imported; `loadDefinition` imports
-// the workflow entry against the materialized package directory.
+// Deploy-side application of a code-sourced workflow's frozen closure:
+// applies exactly the hub's frozen `closure` (never re-resolving the
+// pin at apply time) through the shared tool-packaging machinery, then
+// evaluates the pinned definition package via the caller-supplied
+// `loadDefinition`. The layout manifest carries an EMPTY `topLevel` —
+// a workflow-definition package declares `interchange.workflow`, not
+// `interchange.tools`, so no tool factory is imported.
 
 import path from "node:path";
 
@@ -108,10 +96,6 @@ export interface AppliedWorkflowClosure<
 /**
  * Materialize a workflow definition's frozen closure durably and load
  * the pinned code through `loadDefinition`.
- *
- * @throws if the closure does not carry exactly one top-level pin, the
- *   source registry is not configured, the apply fails, or
- *   `loadDefinition` rejects.
  */
 export async function applyFrozenWorkflowClosure<
   TDefinition extends { readonly id: string },

@@ -70,25 +70,17 @@ function isByteStreamAsyncIterable(
 
 /**
  * Read an HTTP-registry tarball response into a Uint8Array while
- * enforcing `maxBytes` with two guards:
- *
- *   1. A digit-only `Content-Length` (RFC 9110 §8.6) is rejected up
- *      front when it exceeds the cap; a non-digit header (e.g. `1e9`)
- *      is rejected too so it cannot smuggle past a Number() check.
- *   2. The body is streamed chunk-by-chunk and the read aborts when
- *      the running total crosses the cap, catching missing or lying
- *      headers.
+ * enforcing `maxBytes` with two guards: a digit-only `Content-Length`
+ * (RFC 9110 §8.6) is rejected up front when it exceeds the cap, and
+ * the body is streamed chunk-by-chunk with the read aborted once the
+ * running total crosses the cap — catching missing or lying headers.
  *
  * Handles both body shapes — web `ReadableStream` (`getReader`) and
  * Node/Minipass async-iterable — so the byte guard is never bypassed
- * by buffering the whole body (`arrayBuffer()`).
- *
- * An optional `signal` adds a time guard: on abort the in-flight read
- * is cancelled (web `cancel()`, Node `destroy()`) and the call rejects,
- * so a slow or stalled registry cannot outlast the deadline while
- * staying under the byte cap.
- *
- * All rejections surface as `registry.fetch.failed`.
+ * by buffering the whole body. An optional `signal` adds a time guard:
+ * on abort the in-flight read is cancelled and the call rejects, so a
+ * stalled registry cannot outlast the deadline while staying under the
+ * cap. All rejections surface as `registry.fetch.failed`.
  *
  * Exported for direct unit testing.
  */

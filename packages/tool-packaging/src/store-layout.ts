@@ -1,10 +1,9 @@
-// Closure materialization and per-instance store layout for the tool-package
-// loader: fetching + SRI-verifying + extracting each platform-matching entry
-// into the content-addressable cache, resolving dependency ranges, and
-// copying the closure into a per-instance store the loader then imports
-// author code from. Extracted from `loader.ts` so this eval-free
-// materialization concern is isolated from author-code loading. `loader.ts`
-// re-exports `materializeClosure` and `storeEntryDir` for existing consumers.
+// Closure materialization and per-instance store layout for the
+// tool-package loader: fetch + SRI-verify + extract each
+// platform-matching entry into the content-addressable cache, resolve
+// dependency ranges, and copy the closure into a per-instance store
+// the loader imports author code from. Extracted from `loader.ts` so
+// this eval-free materialization concern stays isolated.
 
 import { constants as fsConstants, promises as fs } from "node:fs";
 import path from "node:path";
@@ -32,25 +31,18 @@ const logger = getLogger(["sidecar", "tool-packaging", "store-layout"]);
 
 /**
  * Lay out a resolved manifest closure into the per-instance store
- * WITHOUT importing any author code. This is phases 1-2 of the loader:
+ * WITHOUT importing any author code — phases 1-2 of the loader:
+ * fetch + SRI-verify + extract each platform-matching entry into the
+ * content-addressable cache, then resolve dependency ranges by first
+ * arrival and copy each entry into
+ * `<instanceScratchDir>/store/<name>/<version>/`, symlinking each
+ * direct dep into the entry's `node_modules/`. Only entries whose
+ * `os`/`cpu` match `host` are materialized; the rest are skipped with
+ * a `platform.mismatch.skipped` debug log.
  *
- *   1. Fetch + SRI-verify + extract each platform-matching entry into
- *      the content-addressable cache.
- *   2. Resolve the closure's dependency ranges by first arrival, then
- *      copy each entry into `<instanceScratchDir>/store/<name>/<version>/`
- *      and symlink each direct dep into that entry's `node_modules/` so
- *      Node's ancestor walk resolves bare-specifier imports.
- *
- * Returns the `storeDir` the closure was laid out under. The first real
- * `import()` of author code is NOT here — it belongs to `loadManifest`'s
- * phase-3 loop — so a caller (e.g. an install-time probe) can stage the
- * frozen closure into a package directory the loader consumes without
- * executing author code on its host.
- *
- * Only entries whose `os`/`cpu` match `host` are materialized; the rest
- * are skipped with a `platform.mismatch.skipped` debug log. Errors
- * surface as `ToolLoaderError` with a `category` matching the
- * corresponding `DeployApplyErrorCategory`.
+ * The first `import()` of author code is NOT here — it belongs to
+ * `loadManifest`'s phase-3 loop — so a caller can stage a frozen
+ * closure without executing author code on its host.
  */
 export async function materializeClosure(
   args: MaterializeClosureArgs,
@@ -374,18 +366,13 @@ interface RangeResolution {
  * same `(name, range)` reuse the recorded pick instead of re-running
  * `semver.maxSatisfying` against the current closure shape.
  *
- * Mirrors the resolver's first-arrival-per-`(name, range)` semantics
- * on the loader side. Without this, two requirers with overlapping
- * ranges of the same dep could each pick a different version of that
- * dep — `maxSatisfying` is deterministic given its candidate set, but
- * the candidate set is the full closure for the name and a transitive
- * addition since the first arrival can shift the answer. Recording
- * the first arrival per range freezes the pick so every requirer in
- * the same equivalence class lands on the same version of the dep.
+ * Mirrors the resolver's first-arrival-per-`(name, range)` semantics on
+ * the loader side; without it, overlapping ranges of the same dep could
+ * pick different versions as the candidate set shifts.
  *
- * Returns null for a `(name, range)` that has no satisfying entry in
- * the filtered closure; callers decide whether that is fatal (hard
- * dep) or skippable (optional dep).
+ * Returns null for a `(name, range)` with no satisfying entry in the
+ * filtered closure; callers decide whether that is fatal (hard dep) or
+ * skippable (optional dep).
  */
 async function resolveRangesByFirstArrival(
   args: ResolveRangesArgs,
@@ -512,39 +499,24 @@ async function copyTree(
     } else if (entry.isSymbolicLink()) {
       // Preserve symlinks from the tarball verbatim; npm packages
       // occasionally ship them and replacing one with a regular file
-      // would change the file's identity.
-      //
-      // ISOMORPHIC-LAYOUT ASSUMPTION: writing the source-side
-      // relative target verbatim into the destination only works
-      // because the source extraction tree and the per-instance
-      // store tree mirror each other entry-for-entry — the symlink
-      // copies into the same shape, so the relative target still
-      // resolves to the same sibling in the destination. A future
-      // change that flattens, reshapes, or partially copies the
-      // extraction tree would invalidate every symlink it touched
-      // and would need to rewrite the targets instead of preserving
-      // them.
+      // would change the file's identity. Writing the source-side
+      // relative target verbatim only works because the extraction
+      // tree and the per-instance store mirror each other
+      // entry-for-entry (isomorphic layout), so the target resolves
+      // to the same sibling in the destination.
       //
       // Symlink targets originate from the tarball and cross the trust
       // boundary into the sidecar. Resolve each target against the
       // symlink's own directory and verify it lands inside the
       // extraction root; a target that escapes would let a malicious
       // tarball point at arbitrary sidecar-readable files via the
-      // layout dir's `node_modules` walk.
-      //
-      // The `tar` package version we use rejects absolute symlink
-      // targets during extraction, so by the time we observe a
-      // symlink here it is necessarily relative.
-      //
-      // The immediate target of `src` may itself be a directory whose
-      // own contents include another symlink. Resolving only the
-      // first hop with `path.resolve(path.dirname(src), target)`
-      // checks containment of the link's literal target — a chain
-      // whose first hop lands inside the extraction root but whose
-      // realpath ultimately escapes (target is a directory that
-      // itself contains an escaping symlink) would slip past.
-      // `fs.realpath` walks the full chain and returns the canonical
-      // absolute path; verify containment against that.
+      // layout dir's `node_modules` walk. `path.resolve` checks only
+      // the link's literal target — a chain whose first hop lands
+      // inside the root but whose realpath ultimately escapes would
+      // slip past — so containment is verified against `fs.realpath`,
+      // which walks the full chain. The `tar` version we use rejects
+      // absolute symlink targets during extraction, so every symlink
+      // observed here is relative.
       const target = await fs.readlink(src);
       // Compare against the realpath of the extraction root so a chain
       // whose canonical path lands under the same logical root, but
@@ -560,25 +532,20 @@ async function copyTree(
           message: `tarball symlink ${src} → ${target}: extraction-root realpath failed: ${describeError(err)}`,
         });
       }
-      // `path.resolve` produces the absolute path the symlink would
-      // dereference to without following any links itself; realpath
-      // walks the chain. A dangling symlink — one whose target chain
-      // ENOENTs before the final inode — is harmless on disk (it
-      // points at a name that does not exist), so the containment
-      // check falls back to the literal resolved path in that case.
-      // Any other realpath error is fatal; we cannot prove containment
-      // and the package is rejected.
+      // A dangling symlink — one whose target chain ENOENTs before the
+      // final inode — is harmless on disk (it points at a name that
+      // does not exist), so the containment check falls back to the
+      // literal resolved path in that case. Any other realpath error
+      // is fatal; we cannot prove containment and the package is
+      // rejected.
       //
-      // The fallback anchors the literal resolution at `realpath(src
-      // dirname)` rather than the as-declared `dirname(src)`. The
-      // dirname already exists on disk (extraction wrote it); realpath
-      // walks any symlinks in the prefix so the comparison against
-      // `realExtractionRoot` is realpath-vs-realpath on both sides.
-      // Without this, platforms whose extraction-root prefix contains
-      // symlinks (notably macOS, where `/var/folders/...` resolves to
+      // The fallback anchors the literal resolution at the realpath of
+      // `dirname(src)` rather than the as-declared path, so the
+      // comparison is realpath-vs-realpath on both sides. Without
+      // this, platforms whose extraction-root prefix contains symlinks
+      // (notably macOS, where `/var/folders/...` resolves to
       // `/private/var/folders/...`) would reject a properly-contained
-      // dangling link because the literal path keeps the as-declared
-      // prefix while the extraction root has been realpath'd.
+      // dangling link.
       let targetAbs: string;
       try {
         targetAbs = await fs.realpath(path.resolve(path.dirname(src), target));

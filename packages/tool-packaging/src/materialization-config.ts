@@ -1,9 +1,6 @@
 // Registry-map and host-platform boundary for tool-package apply.
-//
-// `parseToolRegistries` owns the `SIDECAR_TOOL_REGISTRIES` rules,
-// including the unset-versus-empty distinction. `hostPlatform` owns
-// the npm `os`/`cpu` allowlists. Callers pass the raw env string and
-// the process platform and arch; neither function reads the process.
+// Callers pass the raw env string and the process platform and arch;
+// neither function reads the process.
 
 import { type } from "arktype";
 

@@ -359,15 +359,13 @@ async function persistActiveDeployId(
 }
 
 /**
- * Remove a stale `.dirty` sibling of the active-deploy-id file. Called
- * after either the fsync'd primary persist or the no-fsync fallback
- * persist; a pre-existing marker carries a now-stale id that would
- * otherwise shadow the recorded id on the next boot (the boot reader
- * prefers the marker when present).
- *
- * Best-effort: a failure to remove the marker leaves the next boot
- * reading the now-redundant marker, bounded to a noisier log path.
- * ENOENT is the normal case when no prior failure wrote a marker.
+ * Remove a stale `.dirty` sibling of the active-deploy-id file after a
+ * successful persist; a pre-existing marker carries a now-stale id
+ * that would otherwise shadow the recorded id on the next boot (the
+ * boot reader prefers the marker when present). Best-effort: a failure
+ * leaves the next boot reading the now-redundant marker, bounded to a
+ * noisier log path. ENOENT is the normal case when no prior failure
+ * wrote a marker.
  *
  * Exported for direct unit testing of the cleanup contract.
  */
@@ -431,17 +429,13 @@ export async function persistActiveDeployIdWithFallback(
 /**
  * Persist the rejected manifest and the failure payload to the agent's
  * on-disk audit trail at `<storeDir>/audit/rejected-applies/<attemptId>/`:
- *
- *   - `manifest.json` — the rejected manifest bytes written verbatim
- *     (corrupt JSON, wrong-shape JSON, or a validator-accepted
- *     manifest the loader later rejected). Persisting the raw bytes
- *     lets a future investigator replay the same input against a
- *     newer validator without losing whitespace, key order, or
- *     tolerated fields the validator narrowed away.
- *   - `error.json` — `{ attemptId, previousDeployId, category,
- *     message, package?, occurredAt }`
- *
- * The files live in the agent's storeDir so a future
+ * `manifest.json` holds the rejected bytes verbatim (corrupt JSON,
+ * wrong-shape JSON, or a validator-accepted manifest the loader later
+ * rejected), so a future investigator can replay the same input
+ * against a newer validator without losing whitespace, key order, or
+ * tolerated fields the validator narrowed away; `error.json` holds
+ * `{ attemptId, previousDeployId, category, message, package?,
+ * occurredAt }`. The files live in the agent's storeDir so a future
  * git-commit-of-audit-entries pass can pick them up without rerouting
  * the data.
  */

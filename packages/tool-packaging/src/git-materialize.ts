@@ -1,12 +1,8 @@
 // Materialize a source-format asset closure entry (`kind:"asset"` with
-// `package.format:"source"`) from an indexed pack.
-//
-// A source-format entry's files come from a subtree of a hub `workflow` git
-// asset at a pinned commit, not a tarball. The pack is indexed once at
-// checkout time (the caller supplies the resulting `gitDir`); this reads the
-// pinned subtree straight from those authenticated objects, verifies its git
-// tree oid against the frozen `treeOid`, and writes the subtree into a scratch
-// directory the store layout then copies from. The tarball cache is bypassed:
+// `package.format:"source"`) from an indexed pack: read the pinned
+// subtree from the checkout's git objects, verify its tree oid
+// against the frozen `treeOid`, and write it into a scratch directory
+// the store layout then copies from. The tarball cache is bypassed —
 // `treeOid` is a git oid, not an SRI.
 
 import { promises as fs } from "node:fs";

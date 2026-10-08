@@ -168,10 +168,7 @@ function makeFakeFactory(
 
 /**
  * Build a director-factory-shaped stub the loader's structural check
- * accepts. `configSchema` is a callable arktype-shaped validator (the
- * real `defineDirector` requires this); the body returns a director
- * stub adequate for the loader's structural narrow without exercising
- * the runtime director protocol.
+ * accepts; the factory body is never invoked in these tests.
  */
 function makeFakeDirectorFactory(
   id: string,

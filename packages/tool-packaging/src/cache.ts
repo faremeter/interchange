@@ -1,22 +1,13 @@
 // eslint-disable-next-line @typescript-eslint/triple-slash-reference -- npm-team packages ship no types; declarations.d.ts must be visible to downstream typecheckers that import from this package's source.
 /// <reference path="./declarations.d.ts" />
-// Content-addressable tarball cache, shared across agent instances on
-// the sidecar. Tarballs are immutable bytes addressed by their SRI
-// integrity. The cache lives at `rootDir/sha512/<2-char>/<rest>/tarball.tgz`.
-// Get returns cached bytes or null; put verifies bytes against the
-// integrity, writes them atomically, and evicts least-recently-used
-// entries until the total cache size is under maxBytes. Evict removes
-// one entry (used after extraction discovers a corrupted file on disk).
-//
-// `maxBytes` covers both the tarball bytes and the extracted directory
-// tree the loader copies from; the extraction tree dominates disk usage
-// in practice (tarballs are gzip-compressed), so the cap reflects the
-// cost of holding one cache entry but excludes the loader's per-instance
-// copies.
-//
-// Integrity is verified on store and re-verified inside `extractTarball`
-// before unpacking. `get` returns bytes without re-hashing; callers that
-// route through `extractTarball` get the extra check for free.
+// Content-addressable tarball cache shared across sidecar agent
+// instances. Tarballs are immutable bytes addressed by their SRI
+// integrity, stored at `rootDir/sha512/<2-char>/<rest>/tarball.tgz`.
+// `put` verifies bytes against the integrity and evicts
+// least-recently-used entries until the total on-disk footprint
+// (tarball + extracted tree) is under `maxBytes`; `extractTarball`
+// re-verifies before unpacking. `maxBytes` excludes the loader's
+// per-instance store copies.
 
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -84,17 +75,13 @@ export interface TarballCache {
     readonly release: () => void;
   }>;
   /**
-   * Walk the cache tree and remove any staged tmp paths left behind
-   * by a `put` or `extractTarball` that crashed between staging and
-   * the final rename. Callers should invoke this once at sidecar
-   * boot, before any apply runs. Idempotent: a no-op if the tree
-   * holds no orphans.
-   *
-   * Orphans take the shape `<entryDir>/tarball.tgz.tmp.<pid>.<rand>`
-   * (from `put`) and `<entryDir>/extracted.tmp.<pid>.<rand>` (from
-   * `extractTarball`). The single-process contract means a tmp path
-   * surviving across boots cannot be in use by another process; it
-   * is always safe to remove.
+   * Walk the cache tree and remove staged tmp paths left behind by a
+   * `put` or `extractTarball` that crashed between staging and the
+   * final rename (`<entryDir>/tarball.tgz.tmp.<pid>.<rand>` and
+   * `<entryDir>/extracted.tmp.<pid>.<rand>`). The single-process
+   * contract means a tmp path surviving across boots cannot be in
+   * use by another process; it is always safe to remove. Invoke once
+   * at sidecar boot, before any apply runs. Idempotent.
    */
   sweepOrphans(): Promise<void>;
   /** Test-only: total bytes currently stored. */
@@ -300,8 +287,7 @@ export function createTarballCache(config: TarballCacheConfig): TarballCache {
 
   /**
    * Sum the on-disk size of every regular file under `dir` recursively.
-   * Returns 0 when `dir` does not exist. Each regular file's
-   * `stat.size` is charged to this cache entry once.
+   * Returns 0 when `dir` does not exist.
    *
    * ACCOUNTING vs. DISK USAGE: `maxBytes` bounds the sum reported by
    * this walker, not the actual disk consumption of the cache plus
