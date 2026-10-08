@@ -10,10 +10,9 @@
 //   - The bodies to descend into are an EXPLICIT argument (`StepWalkDescent`),
 //     never an implicit house rule.
 //   - `nestedWorkflowBodies` dispatches over an EXHAUSTIVE switch with a
-//     `never` assignment: a newly-added primitive kind fails at compile time
-//     rather than silently reading as a leaf. The deploy-time capability walk
-//     descends through here, and a missed container kind there is a silent,
-//     fail-open authorization gap.
+//     `never` assignment, so a newly-added primitive kind fails at compile
+//     time rather than silently reading as a leaf (see that function for why
+//     a missed container kind fails open).
 //   - The walk hands each step's ancestor chain over (`StepWalkEntry.path`)
 //     rather than leaving a consumer to rebuild it from call order.
 //
@@ -64,11 +63,10 @@ export interface StepWalkDescent {
 
 /**
  * Descend into every body form a deployment carries: loop bodies, inline
- * onTrigger section bodies, and inline childWorkflow definitions -- EVERY STEP
- * ID THAT CAN EXECUTE IN THIS DEPLOYMENT. A step reached under this descent
- * runs as part of the deployment the walked definition describes, so the
- * deploy-time capability walk uses this one: an operator approving a
- * deployment must approve everything it can run.
+ * onTrigger section bodies, and inline childWorkflow definitions -- every
+ * step id that can execute in this deployment. The deploy-time capability
+ * walk uses this: an operator approving a deployment must approve everything
+ * it can run.
  *
  * It deliberately crosses the lifted-body boundary, so the ids it reaches
  * span more than one step-id namespace; see {@link executableStepIds}.
@@ -80,12 +78,11 @@ export const EXECUTABLE_STEP_DESCENT: StepWalkDescent = Object.freeze({
 });
 
 /**
- * Descend into loop bodies and stop at the lifted-body boundary: every step id
- * in ONE FLAT STEP-ID NAMESPACE. A loop body's steps resolve against the
- * enclosing definition's flat map (the body shares the parent env), whereas an
- * inline onTrigger section or childWorkflow body is lifted to its own
- * definition and keyed under its own ref. The deploy's per-step
- * inference-source pin uses this one.
+ * Descend into loop bodies and stop at the lifted-body boundary: every step
+ * id in one flat step-id namespace. A loop body's steps resolve against the
+ * enclosing definition's flat map (the body shares the parent env); an inline
+ * onTrigger section or childWorkflow body is lifted to its own definition
+ * under its own ref. The deploy's per-step inference-source pin uses this.
  */
 export const LOOP_BODY_DESCENT: StepWalkDescent = Object.freeze({
   loopBodies: true,
@@ -113,8 +110,8 @@ export interface StepWalkEntry<TStep, TTree> {
   readonly tree: TTree;
   /**
    * The chain of step ids this step was reached through, ending in `stepId`.
-   * Two nested bodies may legitimately carry the same step id, so the path --
-   * not `stepId` alone -- names a step's position in the walk.
+   * Two nested bodies may carry the same step id, so the path -- not
+   * `stepId` alone -- names a step's position in the walk.
    *
    * Rooted at the tree the walk was GIVEN: {@link walkNestedWorkflowSteps}
    * starts one walk per nested body, so those bodies' steps are rooted at the
@@ -126,8 +123,8 @@ export interface StepWalkEntry<TStep, TTree> {
 export interface StepWalkArgs<TStep, TTree extends StepTree<TStep>> {
   readonly tree: TTree;
   /**
-   * The nested bodies to descend into for a given step, already filtered by the
-   * caller's `StepWalkDescent`. Supplied by the caller because the descent is
+   * The nested bodies to descend into for a given step, already filtered by
+   * the caller's `StepWalkDescent`. Caller-supplied because the descent is
    * the one part that differs per representation: a live definition reads its
    * bodies off the typed primitive, while an inert wire projection validates
    * each body as it reaches it.
@@ -142,15 +139,15 @@ export interface StepWalkArgs<TStep, TTree extends StepTree<TStep>> {
 }
 
 /**
- * Visit every step of `tree` and of the nested bodies `nestedTrees` selects, in
- * pre-order: a step is visited before the bodies it carries, and a body's steps
- * are visited in its own `stepOrder` before the next sibling step. Consumers
- * that accumulate into an ordered result depend on that order.
+ * Visit every step of `tree` and of the nested bodies `nestedTrees` selects,
+ * in pre-order: a step is visited before the bodies it carries, and a body's
+ * steps are visited in its own `stepOrder` before the next sibling step.
+ * Consumers that accumulate into an ordered result depend on that order.
  *
- * A `stepOrder` entry with no matching `steps` record entry throws. The
+ * A `stepOrder` entry with no matching `steps` record entry throws; the
  * definition validator forecloses it, so reaching the throw means a
- * hand-assembled or tampered definition, which must fail loud rather than walk
- * a surface that silently omits a step.
+ * hand-assembled or tampered definition, which must fail loud rather than
+ * walk a surface that silently omits a step.
  */
 export function walkStepTree<TStep, TTree extends StepTree<TStep>>(
   args: StepWalkArgs<TStep, TTree>,
@@ -175,13 +172,13 @@ export function walkStepTree<TStep, TTree extends StepTree<TStep>>(
 
 /**
  * The nested body definitions a live primitive carries, filtered by `descent`.
- * A container whose body is a `{ ref }` yields nothing: the referenced asset is
- * deployed and walked on its own.
+ * A container whose body is a `{ ref }` yields nothing: the referenced asset
+ * is deployed and walked on its own.
  *
  * The switch is EXHAUSTIVE: a newly-added primitive kind fails the `never`
  * assignment below at compile time, forcing the author to decide whether it
  * carries a nested body. That matters most for the deploy-time capability
- * walk, whose per-step approval must cover everything a step can run -- a
+ * walk, whose per-step approval must cover everything a step can run: a
  * container kind missed here would drop a nested closure's grants silently,
  * and `director:` grants are not re-gated at runtime, so the gap fails open.
  */
@@ -244,9 +241,9 @@ export function walkWorkflowSteps(
 }
 
 /**
- * Visit every step INSIDE a single primitive's nested bodies, transitively, and
- * not the primitive itself. The caller that already holds the primitive handles
- * it directly and uses this for everything it can run underneath.
+ * Visit every step INSIDE a single primitive's nested bodies, transitively,
+ * and not the primitive itself. The caller that already holds the primitive
+ * handles it directly and uses this for everything it can run underneath.
  */
 export function walkNestedWorkflowSteps(
   args: WorkflowStepWalkArgs & { readonly primitive: Primitive },
@@ -263,9 +260,9 @@ export function walkNestedWorkflowSteps(
  *
  * Deduplication is exact within one flat namespace (a loop body's ids resolve
  * against the enclosing definition's map) and a deliberate flattening across
- * the lifted-body boundary: two steps in different bodies may legitimately
- * share an id and appear here once. A consumer that must keep those apart
- * walks with an explicit descent and reads each entry's `tree` instead.
+ * the lifted-body boundary: two steps in different bodies may share an id and
+ * appear here once. A consumer that must keep them apart walks with an
+ * explicit descent and reads each entry's `tree` instead.
  *
  * Exported for consumers that want the id set alone; nothing in this
  * repository calls it.

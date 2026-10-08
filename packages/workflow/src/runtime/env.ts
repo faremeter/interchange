@@ -37,8 +37,7 @@ export interface RepoStore {
   /**
    * Tail the run's event log, yielding one `{ seq, event }` per committed
    * event in commit order (`seq` is the workflow-event seq, not a substrate
-   * counter). Cancellation: when `opts.signal` aborts, the iterator ends
-   * cleanly.
+   * counter). When `opts.signal` aborts, the iterator ends cleanly.
    *
    * Replay vs live: `from: { seq: number }` enumerates prior events with
    * `seq >=` the number, then continues live; `from: "head"` emits only
@@ -71,8 +70,8 @@ export interface SubscribeOpts {
  *
  * The returned disposer cancels the pending `TimerFired` commit (the race
  * between the awaiting consumer settling on a sibling event and the timer's
- * deadline). Restart recovery never re-arms a disposed entry because the run's
- * log already carries a sibling terminal event for that step.
+ * deadline). Restart recovery never re-arms a disposed entry: the run's log
+ * already carries a sibling terminal event for that step.
  */
 export interface Scheduler {
   scheduleIn(runId: string, timerId: string, fireAt: Date): () => void;
@@ -85,8 +84,8 @@ export interface Scheduler {
  *
  * In-process callback-based (`deliver` / `awaitNext`). A production mail-bus
  * source must translate "mail arrives" into "the right awaiter's promise
- * resolves"; how (rehydrate from the log, consult the state-machine queue, or
- * a log-tail subscription) is a substrate-shaped decision.
+ * resolves"; how (rehydrate from the log, the state-machine queue, or a
+ * log-tail subscription) is a substrate-shaped decision.
  */
 export interface SignalChannel {
   /** Inject a signal. The state machine handles dedup by `signalId`. */
@@ -137,12 +136,12 @@ export interface StepInvokeRequest {
  * The outcome of a single `invokeStep`: an `output` (the agent replied) or a
  * suspension on a tool/authz gate, handing back the `correlationId` the
  * runtime parks the step on until the correlated decision arrives. The
- * suspend carries an explicit `kind: "approval"` and a REQUIRED snapshot (the
- * sidecar->hub co-write treats it as mandatory), so a snapshot-less approval
- * is unrepresentable here.
+ * suspend carries an explicit `kind: "approval"` and a REQUIRED snapshot
+ * (the sidecar->hub co-write treats it as mandatory), so a snapshot-less
+ * approval is unrepresentable here.
  *
  * An invoker can ONLY suspend as an approval. The `"input"` control-plane
- * park is minted exclusively by the runtime's trigger-budget re-arm -- never
+ * park is minted exclusively by the runtime's trigger-budget re-arm, never
  * by an invoker -- which keeps the finite-budget respawn seed sound: every
  * input `SignalAwaited` in the durable log is a runtime re-arm, so counting
  * them counts turns serviced.
@@ -189,9 +188,9 @@ export interface ActionInvokeResult {
  * Crash-safe exactly-once substrate for action effects, DISTINCT from the run
  * event log: recording must not enter the run-log commit chain or trigger a
  * segment flush, so a dropped run-log buffer never takes the ledger with it.
- * `record` must be durable on return and must not be co-located with
- * `StepCompleted` in a shared batch -- the crash-dedup contract depends on the
- * ledger surviving a dropped run-log buffer.
+ * `record` must be durable on return and must not share a batch with
+ * `StepCompleted` -- the crash-dedup contract depends on the ledger surviving
+ * a dropped run-log buffer.
  */
 export interface EffectLedger {
   /** Return the recorded output for a key, or `undefined` on a miss. */
@@ -312,11 +311,11 @@ export type SuspendableChildHandle = {
  * the granted decision back into the child.
  *
  * `resumeFromEvents` re-adopts a body child that was mid-flight at a crash:
- * the seam drives `runtimeRun` from the durable log, and a step that was
- * parked on an approval re-parks on its reserved channel. A re-park does NOT
- * re-fire `onPark` (the park is already durable), so the caller does not see
- * it via `next()` on resume; it relays the grant via `resume` on the
- * correlation recovered from its own log.
+ * the seam drives `runtimeRun` from the durable log, and a step parked on an
+ * approval re-parks on its reserved channel. A re-park does NOT re-fire
+ * `onPark` (the park is already durable), so the caller does not see it via
+ * `next()` on resume; it relays the grant via `resume` on the correlation
+ * recovered from its own log.
  */
 export type SpawnSuspendableChild = (input: {
   definitionRef: string;

@@ -4,8 +4,7 @@
 // singular shorthand) and returns a normalized `WorkflowDefinition`:
 // portable, hashable data the deploy substrate can ship and the runtime
 // can interpret. Normalization populates every primitive's `id` from its
-// record key and applies the default-input convention, so the runtime
-// sees a fully-specified definition with no implicit shape.
+// record key and applies the default-input convention.
 
 import { canonicalizeForHash } from "@intx/agent";
 import type { AgentDefinition, BaseEnv } from "@intx/agent";
@@ -127,8 +126,8 @@ export const STEP_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
  * used verbatim as a durable-store path segment (`runs/<runId>/...`) and
  * as the local part of a derived per-step mail address
  * (`<runId>-<stepId>@<domain>`), so an unconstrained caller-supplied id
- * is a path-escape and an unroutable-address hazard. Enforced at the
- * `runtimeRun` boundary where a run id enters the system.
+ * is a path-escape and unroutable-address hazard. Enforced at the
+ * `runtimeRun` boundary.
  */
 export const RUN_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
 
@@ -325,26 +324,23 @@ function applyDefaultInputStep(
  * Run every step-record validation pass in the order their dependencies
  * require. `validateLoopBody`, `validateChildWorkflowBody` and
  * `validateOnTriggerBody` re-enter this same suite on an embedded body, so
- * a malformed body (ill-formed step id, dangling `after`, cycle, forbidden
- * loop body, misplaced onFailure) fails at the parent's authoring time
- * exactly as it would at its own. All three body kinds carry identical
- * trust: each is a plain `WorkflowDefinition` field, structurally forgeable
- * and swappable after normalization, so none may rest on having come from
+ * a malformed body fails at the parent's authoring time exactly as it
+ * would at its own. All three body kinds carry identical trust: each is a
+ * plain `WorkflowDefinition` field, structurally forgeable and swappable
+ * after normalization, so none may rest on having come from
  * `defineWorkflow`.
  *
  * `isTopLevel` distinguishes the definition's own step record from a body a
- * spawned run executes. The only pass that reads it is the onTrigger
- * placement rule: the runtime lifts sections once, at the top level, so a
- * section inside a spawned body is unreachable. Every recursion site passes
- * `false`.
+ * spawned run executes; only the onTrigger placement rule reads it (the
+ * runtime lifts sections once, at the top level, so a section inside a
+ * spawned body is unreachable). Every recursion site passes `false`.
  *
- * `loopDepth` is the loop-body nesting level this record sits at; it is
- * what `validateLoopBody` counts against `MAX_LOOP_NESTING_DEPTH`, threaded
- * through rather than recomputed so the loop recursion runs exactly once
- * per body and the count survives re-entry. A `childWorkflow` or
- * `onTrigger` body starts a fresh count: the ceiling bounds the recursive
- * readers that descend loop-in-loop chains (`projectForHash`, `runLoop`'s
- * frames), and neither descends through a child or section body.
+ * `loopDepth` is the loop-body nesting level this record sits at, counted
+ * by `validateLoopBody` against `MAX_LOOP_NESTING_DEPTH`; threaded through
+ * so the count survives re-entry. A `childWorkflow` or `onTrigger` body
+ * starts a fresh count: the ceiling bounds recursive readers that descend
+ * loop-in-loop chains (`projectForHash`, `runLoop`'s frames), and neither
+ * descends through a child or section body.
  */
 function validateSteps(
   steps: Record<string, Primitive>,
@@ -372,22 +368,20 @@ function validateSteps(
 
 /**
  * Enforce the step-id grammar over one step record. Every rule constrains
- * the record's KEYS alone, so it reads identically at a workflow root and in
- * a nested body -- and a nested body needs it just as much: a `loop` body, a
- * `childWorkflow` inline body, and an `onTrigger` inline body are plain
- * `WorkflowDefinition` fields the parent embeds, structurally forgeable and
- * never proven to have come from `defineWorkflow`. Owning the grammar in one
- * pass of the `validateSteps` suite is what makes every id-bearing record
- * answer to it, at every nesting level.
+ * the record's KEYS alone, so it reads identically at a workflow root and
+ * in a nested body -- and a nested body needs it just as much, since `loop`,
+ * `childWorkflow` inline, and `onTrigger` inline bodies are plain
+ * `WorkflowDefinition` fields the parent embeds. Owning the grammar in one
+ * pass of the `validateSteps` suite makes every id-bearing record answer to
+ * it at every nesting level.
  */
 function validateStepIds(steps: Record<string, Primitive>): void {
   for (const [stepId, primitive] of Object.entries(steps)) {
     // The record key is the id every id-derived table is built on, while the
     // runtime authorizes under the primitive's own `id`. At the root these
     // cannot disagree (`normalize` assigns the key over the embedded id
-    // before this pass runs); a nested body never passes through that
-    // assignment, so a hand-assembled one can point the two halves at
-    // different steps.
+    // first); a nested body never passes through that assignment, so a
+    // hand-assembled one can point the two halves at different steps.
     if (primitive.id !== "" && primitive.id !== stepId) {
       throw new Error(
         `step ${stepId} carries a conflicting embedded id ${primitive.id}; ` +
@@ -399,10 +393,8 @@ function validateStepIds(steps: Record<string, Primitive>): void {
       throw new Error("step ids cannot be empty");
     }
     // The workflow-deploy orchestrator derives per-step mail addresses
-    // `<runId>-<stepId>@<deploymentDomain>` for multi-step deployments.
-    // Constraining `stepId` to `[a-zA-Z0-9_-]+` at definition time means the
-    // derived local-part never needs escaping and the address parser never
-    // sees a step-id-shaped local-part it cannot round-trip.
+    // `<runId>-<stepId>@<deploymentDomain>`; the id must round-trip through
+    // the address parser unescaped.
     if (!STEP_ID_PATTERN.test(stepId)) {
       throw new Error(
         `step id ${JSON.stringify(stepId)} must match ${STEP_ID_PATTERN.source}`,
@@ -475,15 +467,15 @@ function straddlerOutputSelector(p: Primitive): Selector | undefined {
 
 /**
  * Enforce the onFailure sentinel-guard contract. When a unit U with handler H
- * fails, U's normal after-dependents are pruned EXCEPT nodes reachable from H,
- * so a straddler -- reachable from both the failure path and a normal
+ * fails, U's normal after-dependents are pruned EXCEPT nodes reachable from
+ * H, so a straddler -- reachable from both the failure path and a normal
  * dependent -- reads U's own output, which on failure is the sentinel
  * `{ failed, stepId, error: { message } }`, not U's success shape. A selector
- * throws at the first missing segment, so a straddler reading a deep, indexed,
- * or project-narrowed path into U's success shape breaks at runtime on the
- * failure path. Only an agent `step` selecting the WHOLE `steps.<U>.output`
- * (to branch on `.failed` in its body) is safe; an action/childWorkflow
- * straddler, or any narrowed read, is rejected.
+ * throws at the first missing segment, so a straddler reading a deep,
+ * indexed, or project-narrowed path into U's success shape breaks at runtime
+ * on the failure path. Only an agent `step` selecting the WHOLE
+ * `steps.<U>.output` (to branch on `.failed`) is safe; an
+ * action/childWorkflow straddler, or any narrowed read, is rejected.
  */
 function validateOnFailureStraddlers(steps: Record<string, Primitive>): void {
   for (const [unitId, primitive] of Object.entries(steps)) {
@@ -549,12 +541,11 @@ function validateOnFailureStraddlers(steps: Record<string, Primitive>): void {
  * only on a member kind (`step`/`action`/`childWorkflow`) that is a direct
  * entry of a workflow root's `steps` record -- the top level, a childWorkflow
  * inline body, or an onTrigger section body, each validated as its own root.
- * Elsewhere a set onFailure hashes into the approved surface yet never routes,
- * a hash-bound no-op the author cannot see. The first arm rejects the field on
- * any node it does not belong on (a hand-assembled definition rides the open
- * wire schema, so the type alone cannot block it); the second arm rejects the
- * `map` inner-step template, a member kind reached through the map rather than
- * as a root entry.
+ * Elsewhere a set onFailure hashes into the approved surface yet never
+ * routes, a hash-bound no-op the author cannot see. The first arm rejects the
+ * field on any node it does not belong on (a hand-assembled definition rides
+ * the open wire schema, so the type alone cannot block it); the second arm
+ * rejects the `map` inner-step template.
  */
 function assertNoRoutableFailure(stepId: string, primitive: Primitive): void {
   if ("onFailure" in primitive && primitive.onFailure !== undefined) {
@@ -709,18 +700,18 @@ const LOOP_BODY_FORBIDDEN = new Set<Primitive["kind"]>(["sleep", "onTrigger"]);
 const MAX_LOOP_NESTING_DEPTH = 8;
 
 /**
- * Reject a loop whose body contains a forbidden primitive or routes on failure,
- * at every nesting level, and reject nesting deeper than
+ * Reject a loop whose body contains a forbidden primitive or routes on
+ * failure, at every nesting level, and reject nesting deeper than
  * `MAX_LOOP_NESTING_DEPTH`. Those two rules are what a loop body ADDS over a
- * workflow root; everything else it must satisfy it shares with one, so the
- * pass then re-enters `validateSteps` on the body, making the whole suite
- * independent of the (type-unenforced) invariant that every loop body came
- * from its own `defineWorkflow`.
+ * workflow root; everything else it shares with one, so the pass re-enters
+ * `validateSteps` on the body, making the suite independent of the
+ * (type-unenforced) invariant that every loop body came from its own
+ * `defineWorkflow`.
  *
- * The re-entry IS the recursion into nested loop bodies: `validateSteps` calls
- * this pass back with `bodyDepth`, so the count keeps descending and each body
- * is walked once. Recursing separately would double the traversals per level
- * and let the re-entered walk restart the count at zero.
+ * The re-entry IS the recursion into nested loop bodies: `validateSteps`
+ * calls this pass back with `bodyDepth`, so the count keeps descending and
+ * each body is walked once. Recursing separately would double the traversals
+ * per level and restart the count at zero.
  */
 function validateLoopBody(
   steps: Record<string, Primitive>,
@@ -770,12 +761,12 @@ function validateLoopBody(
  * long-lived input loop.
  *
  * The placement rule mirrors the deploy-side inert-body enumeration in
- * `@intx/workflow-deploy`, which lifts sections only at the top level; keeping
- * the two in step stops an author from getting a clean definition and local run
- * followed by a deploy rejection.
+ * `@intx/workflow-deploy`, which lifts sections only at the top level;
+ * keeping the two in step stops an author from getting a clean definition
+ * and local run followed by a deploy rejection.
  *
- * A body agent `step` is accepted here and executes: a section body runs
- * inference and calls tools like any other step, under its own grant record.
+ * A body agent `step` runs inference and calls tools like any other step,
+ * under its own grant record.
  */
 function validateOnTriggerBody(
   steps: Record<string, Primitive>,
@@ -822,8 +813,8 @@ function validateChildWorkflowBody(steps: Record<string, Primitive>): void {
  * edges run the same direction as the `after` edges and close no loop; a gate
  * that names an ancestor (a back-edge) closes a cycle, which at runtime
  * silently corrupts branch-pruning so the not-selected branch's subtree runs.
- * The check must include the gate edges: an F2 back-edge forms a cycle only in
- * the `after ∪ gate` graph, never in the `after` graph alone.
+ * The check must include the gate edges: a back-edge forms a cycle only in the
+ * `after ∪ gate` graph, never in the `after` graph alone.
  */
 function validateAcyclic(steps: Record<string, Primitive>): void {
   const adjacency = buildDependencyAdjacency(steps);
@@ -909,17 +900,16 @@ function buildDependencyAdjacency(
 /**
  * Reject a definition that lets two schedulable-concurrent `awaitSignal` steps
  * await the same signal name. `handleSignalReceived` is a FIFO single-consumer
- * scan keyed on the name, so two gates awaiting one name simultaneously make a
- * delivery's binding order-dependent, and on resume the consumed signal cannot
- * be durably re-bound to a specific gate. INTR-277 added a runtime fail-loud
+ * scan keyed on the name, so two gates awaiting one name make a delivery's
+ * binding order-dependent, and on resume the consumed signal cannot be
+ * durably re-bound to a specific gate. INTR-277 added a runtime fail-loud
  * guard for this topology; rejecting it here makes it unauthorable.
  *
- * A loop or inline onTrigger body's awaitSignal park relays up into the parent
- * run over the body's own author signal name, so a container step contributes
- * its body's await names into the parent's concurrency set (recursively
- * through nested loop / inline onTrigger bodies). A childWorkflow runs as a
- * separate run with its own signal namespace, so its awaiters never collide
- * with the parent's and are excluded.
+ * A loop or inline onTrigger body's awaitSignal park relays up into the
+ * parent run over the body's own author signal name, so a container step
+ * contributes its body's await names into the parent's concurrency set
+ * (recursively). A childWorkflow runs as a separate run with its own signal
+ * namespace, so its awaiters are excluded.
  *
  * Two static-analysis limitations remain, both backstopped by the runtime
  * guard:
@@ -928,8 +918,7 @@ function buildDependencyAdjacency(
  *     never both be live is a dominator analysis whose permissive-direction
  *     error would re-admit the hazard.
  *   - Under-reject: a `{ ref }` onTrigger body is a separately-deployed asset
- *     not visible here, so an await name it relays is not collected; a
- *     collision with such a body is caught by the runtime guard, not here.
+ *     not visible here, so an await name it relays is not collected.
  */
 function validateConcurrentAwaitSignalNames(
   steps: Record<string, Primitive>,
