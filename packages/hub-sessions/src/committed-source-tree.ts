@@ -1,20 +1,17 @@
 // Adapts a repo-store `CommittedReads` handle (reads pinned to a commit,
 // addressed by object id) to the `SourceTreeReads` shape the source-closure
-// resolver consumes (reads addressed by repo-relative path). This bridge lives
-// at the caller layer, not inside the resolver: the resolver stays agnostic of
-// where its tree bytes come from (a test fake, this store, a future one), and
-// the repo-store stays unaware of the closure interface. Only a layer that
-// composes both types -- the install/deploy glue's caller -- owns the join.
+// resolver consumes (reads addressed by repo-relative path). The bridge lives
+// at the caller layer: the resolver stays agnostic of where its tree bytes
+// come from and the repo-store stays unaware of the closure interface, so only
+// a layer that composes both types owns the join.
 
 import type { CommittedReads } from "./repo-store/types";
 import type { SourceTreeReads } from "./workflow-source-closure";
 
 /**
  * Wrap `reads` so `readBlob(path)` resolves a repo-relative POSIX path to its
- * blob: list the path's parent directory, match the final segment as a `blob`
- * entry, then read by its object id. `listDir` and `treeOid` pass straight
- * through -- both handles already speak repo-relative paths and return the same
- * shapes.
+ * blob: list the parent directory, match the final segment as a `blob` entry,
+ * then read by its object id. `listDir` and `treeOid` pass straight through.
  */
 export function committedReadsToSourceTree(
   reads: CommittedReads,

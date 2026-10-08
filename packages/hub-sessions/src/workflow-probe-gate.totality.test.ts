@@ -11,14 +11,12 @@
 //
 // The walk folds a nested body's grants into the record of the top-level step
 // that carries the body, so the gate looks for one record per top-level step
-// an executable step descends from. What the gate checks is PRESENCE of that
-// record, not its contents: it never opens a record to confirm the grants
-// inside actually cover the steps beneath it, so these tests bound the same
-// thing and no more. They exercise both directions of the presence check: a
-// deployment whose snapshot is missing a record is refused and names the
-// affected steps, and well-formed deployments carrying tool-bearing loop and
-// onTrigger bodies still pass. A record that is present but under-filled is
-// outside what either the gate or these tests detect.
+// an executable step descends from. It checks PRESENCE of that record, never
+// its contents, so these tests bound the same thing: a snapshot missing a
+// record is refused and names the affected steps, while tool-bearing loop and
+// onTrigger bodies still pass when every top-level step is recorded. A record
+// present but under-filled is outside what either the gate or these tests
+// detect.
 
 import { describe, test, expect } from "bun:test";
 
@@ -159,10 +157,10 @@ describe("gateAndFreezeProbeResult grant-record totality", () => {
   });
 
   test("names a step inside a childWorkflow body nested in a loop body", async () => {
-    // Two rungs down and across a lifted-body boundary. The capability walk
-    // folds this grandchild's grants into the top-level `spin` record too, so
-    // the missing record is reported against `spin` and the chain is what tells
-    // the reader where the step actually lives.
+    // Two rungs down and across a lifted-body boundary. The walk folds this
+    // grandchild's grants into the top-level `spin` record too, so the missing
+    // record is reported against `spin` and the chain tells the reader where
+    // the step actually lives.
     const grandchild = projection({
       id: "grandchild",
       steps: { work: agentStep() },
