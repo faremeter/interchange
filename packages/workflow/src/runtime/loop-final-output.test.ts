@@ -24,8 +24,8 @@ const allowAll: WorkflowAuthorizeFn = async () => ({
   resolvedBy: null,
 });
 
-// One action that returns its numeric input plus one, so an iteration's
-// output is always distinguishable from the input it ran on.
+// One action returning its numeric input plus one, so an iteration's output
+// is always distinguishable from the input it ran on.
 const body = defineWorkflow({
   id: "bump-body",
   trigger: { type: "manual" },
@@ -46,8 +46,7 @@ function bumpOf(childOutput: unknown): number {
   throw new Error("iteration output missing numeric bump");
 }
 
-// `while` judges the iteration OUTPUT, the surface's natural reading: keep
-// going while the bump is still under three.
+// `while` judges the iteration OUTPUT: keep going while the bump is under three.
 const cont: LoopFn = (childOutput) => bumpOf(childOutput) < 3;
 // `carry` threads the iteration's own output forward as the next input.
 const next: LoopFn = (childOutput) => bumpOf(childOutput);
@@ -109,9 +108,9 @@ function runWith(maxIterations: number, downstreamPath: string) {
 describe("loop final-iteration output", () => {
   test("a converged loop exposes the converging iteration's output", async () => {
     // input 0 -> {bump:1} -> carry 1 -> {bump:2} -> carry 2 -> {bump:3};
-    // `cont` goes false at 3, so the loop settles before `carry` runs on
-    // that third iteration. `carry` is therefore 2 (its input) and `final`
-    // is {bump:3} (its output).
+    // `cont` goes false at 3, so the loop settles before `carry` runs on that
+    // third iteration: `carry` is 2 (its input) and `final` is {bump:3} (its
+    // output).
     const result = await runWith(10, "steps.rework.output");
 
     expect(result.terminalStatus).toBe("completed");
@@ -134,7 +133,7 @@ describe("loop final-iteration output", () => {
   test("an exhausted loop exposes the last iteration's output", async () => {
     // Capped at two, `cont` is still true at {bump:2}: the loop exhausts and
     // routes to `escalate`, pruning `downstream`. `final` is the last
-    // iteration's output either way -- the key does not depend on outcome.
+    // iteration's output either way.
     const result = await runWith(2, "steps.rework.output");
 
     expect(result.terminalStatus).toBe("completed");

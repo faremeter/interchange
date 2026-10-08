@@ -149,12 +149,12 @@ describe("action primitive", () => {
   });
 
   test("re-driving an action dedups its effect against the durable ledger", async () => {
-    // Models the crash window "effect recorded, StepCompleted lost": the
-    // ledger is durable on write, so a re-drive (fresh run-log, same
-    // runId, shared ledger) replays the handler but the per-effect ledger
-    // hit skips the real effect and reconstructs the same output. A crash
-    // BETWEEN the effect and the record is the handler's to close via
-    // idempotency (the R2b contract); this test pins the ledger-hit path.
+    // Models the crash window "effect recorded, StepCompleted lost": the ledger
+    // is durable on write, so a re-drive (fresh run-log, same runId, shared
+    // ledger) replays the handler but the ledger hit skips the real effect and
+    // reconstructs the same output. A crash BETWEEN the effect and the record
+    // is the handler's to close via idempotency (the R2b contract); this test
+    // pins the ledger-hit path.
     const effects = inMemoryLedger();
     const authorize = allowAll();
     let effectRuns = 0;

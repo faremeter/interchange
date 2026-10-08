@@ -39,8 +39,8 @@ function countOf(childOutput: unknown): number {
   throw new Error("iteration output missing numeric count");
 }
 
-// Continue while count < 2: input 0->1->2, goes false at count 2 (the
-// 3rd iteration).
+// Continue while count < 2: input 0->1->2, false at count 2 (the 3rd
+// iteration).
 const cont: LoopFn = (childOutput) => countOf(childOutput) < 2;
 const next: LoopFn = (_childOutput, currentInput) =>
   typeof currentInput === "number" ? currentInput + 1 : 0;
@@ -98,9 +98,8 @@ function build(maxIterations: number) {
 
 describe("loop boundary", () => {
   test("cap exactly at convergence point counts as converged (cap=3)", async () => {
-    // Converges at the 3rd iteration (count reaches 2). cap=3 means the
-    // convergence check must win over the exhaustion check on that
-    // iteration.
+    // Converges at the 3rd iteration (count reaches 2); with cap=3 the
+    // convergence check must win over the exhaustion check on that iteration.
     const result = await runLocal(build(3), {
       authorize: allowAll,
       hasUpstreamSignalResolver: true,

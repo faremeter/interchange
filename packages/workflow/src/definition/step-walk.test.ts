@@ -128,8 +128,8 @@ describe("walkWorkflowSteps", () => {
   test("a loop body's steps are visited between the loop and its successor", () => {
     const workflow = workflowWithLoop();
 
-    // Pre-order: the container, then its body in the body's own stepOrder,
-    // then the container's sibling.
+    // Pre-order: container, then its body in the body's stepOrder, then the
+    // container's sibling.
     expect(visitedIds(workflow, EXECUTABLE_STEP_DESCENT)).toEqual([
       "rework",
       "work",
@@ -308,8 +308,8 @@ describe("walkWorkflowSteps", () => {
       "polish",
       "childEsc",
     ]);
-    // The flat-namespace descent never crosses the lift, so the loop bodies
-    // inside the spawned bodies are out of reach entirely.
+    // The flat-namespace descent never crosses the lift, so loop bodies inside
+    // the spawned bodies are out of reach entirely.
     expect(visitedIds(workflow, LOOP_BODY_DESCENT)).toEqual([
       "section",
       "spawn",
@@ -368,8 +368,7 @@ describe("walkWorkflowSteps", () => {
 
   test("the chain grows one rung per body the walk descends into", () => {
     // Three rungs, crossing the lifted-body boundary at the second: two steps
-    // in different bodies may share an id, so the chain is what tells them
-    // apart.
+    // in different bodies may share an id, so the chain tells them apart.
     const grandchild = defineWorkflow({
       id: "grandchild",
       trigger: { type: "manual" },
@@ -443,8 +442,8 @@ describe("walkNestedWorkflowSteps", () => {
   });
 
   test("roots each chain at the nested body, not at the enclosing step", () => {
-    // This walk is handed the primitive, not the step id it sits under, so the
-    // chain it can honestly report starts inside the body.
+    // Handed the primitive, not the step id it sits under, so the chain it
+    // can honestly report starts inside the body.
     const workflow = workflowWithLoop();
     const rework = workflow.steps["rework"];
     if (rework === undefined) throw new Error("missing loop step");
@@ -537,9 +536,9 @@ describe("nestedWorkflowBodies", () => {
 });
 
 describe("executableStepIds", () => {
-  // The contract two producers and their deploy-time reconciliation depend on:
-  // `EXECUTABLE_STEP_DESCENT` is the setting that yields every step id the
-  // deployment can execute, across loop bodies and lifted spawned bodies alike.
+  // `EXECUTABLE_STEP_DESCENT` yields every step id the deployment can
+  // execute, across loop bodies and lifted spawned bodies alike -- the
+  // contract two producers and their deploy-time reconciliation depend on.
   test("reaches every step id the deployment can execute", () => {
     const loopBody = defineWorkflow({
       id: "loop-body",
@@ -617,9 +616,9 @@ describe("executableStepIds", () => {
 });
 
 describe("walkStepTree", () => {
-  // The traversal core is generic so the inert wire projection -- whose step
-  // values are `unknown` and are validated as the caller descends -- rides the
-  // same walk as the live definition.
+  // Generic so the inert wire projection -- whose step values are `unknown`
+  // and validated as the caller descends -- rides the same walk as the live
+  // definition.
   interface OpaqueTree {
     readonly stepOrder: readonly string[];
     readonly steps: Record<string, unknown>;

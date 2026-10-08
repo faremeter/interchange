@@ -1,11 +1,10 @@
 // Suspend/resume bridge for an agent `step`.
 //
-// A step whose `invokeStep` returns `{ suspend: { correlationId } }`
-// becomes a durable `awaiting-signal` step parked under
-// `signalName(correlationId)`. When the decision is delivered on that
-// channel, the step is re-invoked with `resume` carrying the delivered
-// payload as `decision`, and the step completes with the RE-INVOCATION's
-// reply -- not the raw signal payload.
+// A step whose `invokeStep` returns `{ suspend: { correlationId } }` becomes a
+// durable `awaiting-signal` step parked under `signalName(correlationId)`.
+// When the decision is delivered on that channel, the step is re-invoked with
+// `resume` carrying the delivered payload as `decision`, and completes with
+// the RE-INVOCATION's reply -- not the raw signal payload.
 
 import { describe, test, expect } from "bun:test";
 
@@ -50,8 +49,7 @@ const replyTurn: ConversationTurn = {
   timestamp: 0,
 };
 
-// A control-plane approval suspend always carries a snapshot; the bridge
-// mechanics under test are indifferent to its contents.
+// The bridge mechanics under test are indifferent to the snapshot contents.
 const suspendSnapshot: ApprovalSnapshot = {
   name: "charge_card",
   description: "Charge the customer's card",
@@ -106,9 +104,8 @@ describe("step suspend/resume bridge", () => {
 
     const handle = runtimeRun(oneStep, env, { runId: "run-1" });
 
-    // The park flushes its SignalAwaited durably before it waits on the
-    // channel, so that event arriving is the first invocation having landed
-    // and the step being parked.
+    // The park flushes SignalAwaited durably before waiting on the channel, so
+    // that event arriving means the first invocation landed and the step parked.
     await waitForEvent(
       env.repoStore,
       "run-1",
@@ -202,8 +199,8 @@ describe("step suspend/resume bridge", () => {
     );
     await channel.deliver(signalName("corr-A"), { step: "A" }, "sig-A");
 
-    // The second park is a FRESH correlation, so it emits its own
-    // SignalAwaited; wait for that one before delivering the second signal.
+    // The second park is a fresh correlation with its own SignalAwaited; wait
+    // for it before delivering the second signal.
     await waitForEvent(
       env.repoStore,
       "run-2",

@@ -3,10 +3,10 @@
 // A loop iteration runs its body through the SAME `SuspendableChildHandle`
 // contract onTrigger bodies use, including `resumeFromEvents`. `runLoop` does
 // not send `resumeFromEvents` today (each iteration spawns fresh; crash-resume
-// of a parked iteration is a later commit), so this drives that arm of the
-// contract directly: a handle spawned with a terminal child log must short-
-// circuit to `terminal` via `runtimeRun`'s buildResultFromLog, resolving the
-// recorded outputs from the shared blob substrate WITHOUT re-running the body.
+// of a parked iteration is a later commit), so this drives that arm directly:
+// a handle spawned with a terminal child log must short-circuit to `terminal`
+// via `runtimeRun`'s buildResultFromLog, resolving the recorded outputs from
+// the shared blob substrate WITHOUT re-running the body.
 
 import { describe, test, expect } from "bun:test";
 
@@ -79,9 +79,9 @@ describe("createLoopIterationHandle", () => {
       return { echoed: input };
     };
 
-    // Share the blob substrate so the recorded StepCompleted output ref
-    // resolves on resume; use a SEPARATE fresh store for the resume so the
-    // terminal log arrives ONLY via resumeFromEvents (the contract arm).
+    // Share the blob substrate so the recorded output ref resolves on resume;
+    // use a SEPARATE fresh store so the terminal log arrives ONLY via
+    // resumeFromEvents (the contract arm).
     const blobs = createInMemoryBlobSubstrate();
     const first = await runtimeRun(body, buildEnv(blobs, resolver), {
       runId: "child-0",

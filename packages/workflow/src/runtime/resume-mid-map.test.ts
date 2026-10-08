@@ -1,12 +1,12 @@
-// Resume contract: mid-map seed logs are unsupported and must surface
-// the limitation as `RuntimeResumeUnsupportedError` rather than
-// stalling with an opaque "no schedulable primitives" message.
+// Resume contract: mid-map seed logs are unsupported and must surface the
+// limitation as `RuntimeResumeUnsupportedError` rather than stalling with an
+// opaque "no schedulable primitives" message.
 //
-// The runtime's v1 resume path supports complete-or-cancelled seed
-// logs and seed logs aligned on step boundaries. A seed log that
-// stops mid-map (one inner item completed, the outer `map` step still
-// in-flight) has no way to re-arm without rebuilding the runMap inner
-// state; the runtime body declines and the host decides how to recover.
+// The v1 resume path supports complete-or-cancelled seed logs and seed logs
+// aligned on step boundaries. A seed log that stops mid-map (one inner item
+// completed, the outer `map` step still in-flight) has no way to re-arm
+// without rebuilding the runMap inner state; the runtime declines and the
+// host decides how to recover.
 
 import { describe, test, expect } from "bun:test";
 

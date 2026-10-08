@@ -2,11 +2,10 @@
 // its live failure sentinel lives only in the in-process stepOutputs map. On
 // resume the pre-loop reconciliation must reconstruct it from the routed
 // StepFailed, or the handler -- which reads `steps.<unit>.output.error.message`
-// -- fails its input selector against an absent output.
-//
-// The crash is modeled by slicing the runtime's OWN durably-emitted log at the
-// after-routed-StepFailed / before-handler window and re-driving from that
-// prefix, so the emitter and the resume path are proven against each other.
+// -- fails its input selector against an absent output. The crash is modeled
+// by slicing the runtime's OWN durable log at the after-routed-StepFailed /
+// before-handler window and re-driving from that prefix, so the emitter and
+// the resume path are proven against each other.
 
 import { describe, test, expect } from "bun:test";
 
@@ -180,9 +179,9 @@ describe("onFailure route crash-resume", () => {
     expect(invoked).not.toContain("unit");
     expect(invoked).not.toContain("normal");
     expect(invoked).toContain("rescue");
-    // The reconstructed sentinel the handler reads is message-only: the crash
-    // `code` must not leak into steps.<unit>.output (toEqual is exact, so an
-    // extra `code` key would fail), though the durable event keeps it below.
+    // The reconstructed sentinel is message-only: the crash `code` must not
+    // leak into steps.<unit>.output (toEqual is exact, so an extra `code` key
+    // would fail), though the durable event keeps it below.
     expect(handlerInput).toEqual({
       failed: true,
       stepId: "unit",

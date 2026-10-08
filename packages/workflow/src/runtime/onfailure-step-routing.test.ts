@@ -4,10 +4,8 @@
 // are pruned via the skip-sentinel mechanism a gate/loop uses, and the handler
 // branch is selected. On success the mirror happens -- the handler branch is
 // pruned. A diamond-join reachable from the selected side stays live.
-//
-// "Ran" vs "pruned" is distinguished by whether `invokeStep` was called for a
-// step's agent: a real step invokes the agent, a pruned step is completed with
-// a skip-sentinel without ever invoking.
+// "Ran" vs "pruned" is whether `invokeStep` was called for the step's agent:
+// a pruned step is completed with a skip-sentinel without ever invoking.
 
 import { describe, test, expect } from "bun:test";
 
@@ -29,8 +27,8 @@ import {
   type WorkflowRuntimeEnv,
 } from "@intx/workflow";
 
-// A sibling whose invocation settles only after several microtasks, waking the
-// drive loop's Promise.race in the middle of a concurrent prune.
+// A sibling that settles only after several microtasks, waking the drive
+// loop's Promise.race in the middle of a concurrent prune.
 async function settleLate(): Promise<{ output: null }> {
   for (let i = 0; i < 8; i += 1) await Promise.resolve();
   return { output: null };
@@ -77,18 +75,17 @@ function buildEnv(
 }
 
 // An already-aborted drain reporting "cancel": the window after drain fires
-// but before the supervisor commits CancelRequested, so the run stays
-// `running`. The routing prune must complete in this window rather than bail.
+// but before the supervisor commits CancelRequested, while the run stays
+// `running`. The routing prune must complete here rather than bail.
 function abortedDrain(): WorkflowRuntimeEnv["drain"] {
   const controller = new AbortController();
   controller.abort();
   return { signal: controller.signal, behaviorFor: () => "cancel" };
 }
 
-// A pruned step reaches a terminal StepCompleted carrying a skip sentinel, but
-// that sentinel is committed straight to the log -- it never rides the drive
-// loop's in-process stepOutputs, so it is read back from the log, not the live
-// RunResult.outputs.
+// A pruned step's skip sentinel is committed straight to the log -- it never
+// rides the drive loop's in-process stepOutputs -- so it is read back from
+// the log, not the live RunResult.outputs.
 async function skipSentinelOf(
   repoStore: ReturnType<typeof createInMemoryRepoStore>,
   env: WorkflowRuntimeEnv,
@@ -147,8 +144,8 @@ describe("onFailure step routing", () => {
   });
 
   test("the routed unit's own output is the failure sentinel", async () => {
-    // The handler reads steps.unit.output on the live path; the unit's own
-    // output is the failure sentinel, so an input selector resolves it.
+    // The unit's own output is the failure sentinel, so an input selector on
+    // steps.unit.output resolves it.
     const def = defineWorkflow({
       id: "of-sentinel",
       trigger: { type: "manual" },
@@ -235,16 +232,16 @@ describe("onFailure step routing", () => {
     const res = await run.complete;
 
     expect(res.terminalStatus).toBe("completed");
-    // rescue ran, normal pruned, and the join still ran (reachable from the
-    // selected handler branch, so collectBranchClosure spares it).
+    // rescue ran, normal pruned, and the join still ran: reachable from the
+    // selected handler branch, so collectBranchClosure spares it.
     expect(invoked).toContain("rescue");
     expect(invoked).toContain("join");
     expect(invoked).not.toContain("normal");
   });
 
   test("a routed failure under drain still prunes the normal branch", async () => {
-    // A drain fires the unit's abort while the run is still running. The
-    // routing prune must complete anyway, or the normal branch runs.
+    // A drain fires the unit's abort while the run is running; the routing
+    // prune must complete anyway, or the normal branch runs.
     const def = defineWorkflow({
       id: "of-drain-fail",
       trigger: { type: "manual" },
@@ -294,9 +291,9 @@ describe("onFailure step routing", () => {
   });
 
   test("a routed failure prunes a depth-2 branch with a sleep under a mid-prune sibling", async () => {
-    // The onFailure route pruning a deep branch that ends in a resumable
-    // sleep, with a sibling settling mid-prune: leaf-first ordering must keep
-    // the sleep from being scheduled (it would arm a long timer and hang).
+    // A deep pruned branch ends in a resumable sleep, with a sibling settling
+    // mid-prune: leaf-first ordering must keep the sleep from being scheduled
+    // (it would arm a long timer and hang).
     const def = defineWorkflow({
       id: "of-deep-fail",
       trigger: { type: "manual" },

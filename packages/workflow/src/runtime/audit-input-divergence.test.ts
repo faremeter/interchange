@@ -1,10 +1,9 @@
 // Audit log must agree with the invoker on what a step's input is.
 //
-// Previously, runStep computed `input = step.input ? evaluate(...) : null`,
-// recorded `input ?? null` to the audit blob, but passed the raw
-// `input` (possibly `undefined`) to `env.invokeStep`. The audit log
-// claimed `inline:null` while the agent received `undefined`. The two
-// must observe the same canonicalized value.
+// Previously runStep recorded `input ?? null` to the audit blob but passed the
+// raw `input` (possibly `undefined`) to `env.invokeStep`, so the log claimed
+// `inline:null` while the agent received `undefined`. The two must observe the
+// same canonicalized value.
 
 import { describe, test, expect } from "bun:test";
 
@@ -35,11 +34,10 @@ function makeAgent(id: string) {
 
 describe("audit/invoker input agreement", () => {
   test("a `from` selector that resolves to undefined canonicalizes to null on both sides", async () => {
-    // trigger.payload carries an explicit `field: undefined`. The
-    // selector's `in` check accepts the key as present and returns
-    // `undefined`. The runtime canonicalizes this to `null` before
-    // recording the audit blob AND before passing it to the invoker;
-    // the two sides must agree.
+    // `trigger.payload` carries an explicit `field: undefined`; the selector's
+    // `in` check accepts the key as present and returns `undefined`. The
+    // runtime canonicalizes this to `null` before recording the audit blob AND
+    // before passing it to the invoker.
     const a = makeAgent("a");
     const def = defineWorkflow({
       id: "audit-divergence",

@@ -1,14 +1,13 @@
 // The resume classifier recovers a step that crashed across the park boundary.
 //
 // When an agent step's `StepStarted` is durable but its `SignalAwaited` never
-// flushed (the crash-mid-park window), the step reduces to `in-flight` and is
-// otherwise settled as a terminal crash-mid-invocation failure. When the host
-// wires `readParkedApprovalOps` and the reactor left a durable pending approval
-// operation, the classifier instead reconstructs the missing `SignalAwaited`,
-// re-parks the step on the original correlation channel WITHOUT re-invoking the
-// agent, and the run resumes on an approver decision. Absent the binding, or
-// with no pending op, the step still settles terminal -- the pre-recovery
-// behavior.
+// flushed (the crash-mid-park window), the step reduces to `in-flight` and
+// otherwise settles as a terminal crash-mid-invocation failure. When the host
+// wires `readParkedApprovalOps` and a durable pending approval op exists, the
+// classifier reconstructs the missing `SignalAwaited`, re-parks the step on
+// the original correlation channel WITHOUT re-invoking the agent, and the run
+// resumes on an approver decision. Without the binding or pending op, the step
+// still settles terminal -- the pre-recovery behavior.
 
 import { describe, test, expect } from "bun:test";
 
@@ -83,8 +82,8 @@ function buildEnv(
   };
 }
 
-// Seed the crash-mid-park window: RunStarted + StepStarted are durable, the
-// park's SignalAwaited never flushed, so the step reduces to in-flight.
+// Seed the crash-mid-park window: RunStarted + StepStarted durable, the park's
+// SignalAwaited never flushed, so the step reduces to in-flight.
 async function seedCrashedPark(
   repoStore: ReturnType<typeof createInMemoryRepoStore>,
   runId: string,
@@ -123,7 +122,7 @@ describe("resume classifier recovers a crash-mid-park approval step", () => {
     let invoked = 0;
     const invokeStep: StepInvoker = async (req) => {
       invoked += 1;
-      // The agent runs only on the RESUME invoke carrying the decision, never
+      // The agent runs only on the resume invoke carrying the decision, never
       // as a fresh re-invocation of the crashed park.
       if (req.resume === undefined) {
         throw new Error("crashed park must not re-invoke the agent fresh");
@@ -144,9 +143,9 @@ describe("resume classifier recovers a crash-mid-park approval step", () => {
 
     const handle = runtimeRun(oneStep, env, { runId });
     // The seed carries no SignalAwaited (that is the crash window), so the
-    // reconstructed one on the original correlation channel is a fresh commit,
-    // flushed durably before the step re-parks. The classifier consults
-    // `readParkedApprovalOps` to build it, so this also orders after that read.
+    // reconstructed one is a fresh commit on the original correlation channel,
+    // flushed durably before the step re-parks. This also orders after the
+    // `readParkedApprovalOps` read.
     await waitForEvent(
       repoStore,
       runId,
@@ -160,8 +159,7 @@ describe("resume classifier recovers a crash-mid-park approval step", () => {
     // The agent was not re-invoked as a fresh park.
     expect(invoked).toBe(0);
 
-    // A reconstructed SignalAwaited on the original correlation channel moved
-    // the step to durable awaiting-signal.
+    // The reconstructed SignalAwaited moved the step to durable awaiting-signal.
     const events = await repoStore.read(runId);
     const controlPlaneAwaited = events.filter(
       (e) =>
@@ -194,8 +192,8 @@ describe("resume classifier recovers a crash-mid-park approval step", () => {
       repoStore,
       invokeStep,
       signalChannel: channel,
-      // Binding wired but the store holds no pending approval op: the classifier
-      // takes the terminal-failure fallback, unchanged from the no-binding path.
+      // Binding wired, store empty: the classifier takes the terminal-failure
+      // fallback, unchanged from the no-binding path.
       readParkedApprovalOps: async () => [],
     });
 

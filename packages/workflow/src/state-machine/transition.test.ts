@@ -119,11 +119,10 @@ describe("applyEvent: RunStarted", () => {
   });
 
   test("consumedMessageId dedup is independent across distinct message-ids", () => {
-    // Two distinct message-ids consumed against two separate runs are
-    // both retained on each run's consumedMessageIds set. The invariant
-    // covers the per-run scope; the per-address FIFO serialization
-    // invariant is enforced by the queue substrate, not the state
-    // machine (see events.ts on RunStarted.consumedMessageId).
+    // Two distinct message-ids consumed against two separate runs are both
+    // retained on each run's set. The invariant covers per-run scope;
+    // per-address FIFO serialization is enforced by the queue substrate, not
+    // the state machine (see events.ts on RunStarted.consumedMessageId).
     const runA = applyEvent(emptyState("run-A"), {
       kind: "RunStarted",
       seq: 1,
@@ -906,9 +905,9 @@ describe("applyEvent: children", () => {
   });
 
   test("a re-emitted ChildSpawned cannot clobber a child's terminal state", () => {
-    // Without the guard the second spawn would reset terminalStatus to
-    // undefined, resurrecting a finished child into the cancel cascade.
-    // This is the spike's R4 regression, encoded against the reducer.
+    // Without the guard the second spawn would reset terminalStatus,
+    // resurrecting a finished child into the cancel cascade (the spike's R4
+    // regression).
     let state = fresh();
     state = applyEvent(state, startRun());
     state = applyEvent(state, {
@@ -1155,8 +1154,8 @@ describe("applyEvent: SignalAwaitAbandoned", () => {
       stepId: "sec",
       signalName: "wake",
     });
-    // A signal that lands after the abandon is not lost: it queues under its
-    // name for the next await, exactly like a timed-out awaitSignal.
+    // A signal landing after the abandon queues under its name for the next
+    // await, exactly like a timed-out awaitSignal.
     const late = applyEvent(abandoned, {
       kind: "SignalReceived",
       seq: nextSeq + 1,

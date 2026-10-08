@@ -1,20 +1,15 @@
 // The finite trigger-budget seed: a respawned run recovers how many triggers
-// its step has already serviced by counting the step's input-park
-// `SignalAwaited`s in the durable log. These tests pin the seed at crash
-// points where an off-by-one in either direction is observable (the
-// durable-long-lived-run test crashes after turn 2 of 3, where an inflated
-// seed is observationally identical to a correct one):
+// its step has serviced by counting the step's input-park `SignalAwaited`s in
+// the durable log. The tests crash where an off-by-one is observable:
 //
-//   1. Crash after turn 1 of 3: an overcounting seed completes the run one
-//      trigger early; an undercounting seed re-arms one extra time and the
-//      run never completes. The final log must hold EXACTLY two input
-//      SignalAwaiteds (one per re-arm; the crash-resume re-park re-adopts the
-//      durable one rather than minting another), and every crash-recovered
-//      resume must come back `kind: "input"`, not the legacy-approval read.
-//   2. An approval park must NOT count toward the seed: turn 1 suspends on an
-//      approval gate before replying, then the run crashes parked on the
-//      input re-arm. Were the approval SignalAwaited counted, the respawned
-//      run would complete a trigger early.
+//  1. Crash after turn 1 of 3: an overcounting seed completes a trigger
+//     early; an undercounting seed re-arms one extra time and never
+//     completes. The final log must hold exactly two input SignalAwaiteds
+//     (the crash-resume re-park re-adopts the durable one), and every
+//     crash-recovered resume must be `kind: "input"`.
+//  2. An approval park must not count: turn 1 suspends on an approval gate,
+//     then the run crashes parked on the input re-arm. Were the approval
+//     SignalAwaited counted, the respawned run would complete early.
 
 import { describe, test, expect } from "bun:test";
 
@@ -122,10 +117,9 @@ function chatWorkflow(triggers: number | "unbounded"): WorkflowDefinition {
   });
 }
 
-// The reserved channel each re-arm mints is a random `corr-<id>`, so the
-// delivering owner discovers it from the log. Strict equality on the optional
-// `parkKind` field: the reducer reads an absent parkKind as "approval", this
-// does not, and no caller here relies on the reducer's reading.
+// The re-arm mints a random `corr-<id>` channel, so the deliverer discovers it
+// from the log. Strict equality on `parkKind` -- the reducer reads an absent
+// parkKind as "approval", this does not.
 async function waitForInputPark(
   repoStore: RepoStore,
   runId: string,
@@ -163,12 +157,9 @@ function createChatInvoker(store: Store): StepInvoker {
 
 describe("retry/budget combination at the runtime read point", () => {
   test("a hydrated retry + multi-trigger step fails loud at runStep entry", async () => {
-    // A definition hydrated from workflow.json never passes through `step()`
-    // or `map()`, so the runtime's read-point guard at runStep entry is the
-    // enforcement that actually protects a persisted definition. Build the
-    // forbidden combination directly, as hydration would, and drive it
-    // through the runtime: the step must fail with the rejection -- BEFORE
-    // any agent invocation -- rather than servicing a wrong conversation.
+    // Hydrated definitions skip `step()`/`map()`, so the runStep read-point
+    // guard protects persisted definitions. Build the forbidden combination
+    // as hydration would: the step must fail before any agent invocation.
     const runId = "run-retry-budget-rejected";
     const def = chatWorkflow(3);
     const s = def.steps["s"];
@@ -269,9 +260,7 @@ describe("finite trigger-budget seed across a respawn", () => {
     expect(finalOutput.finalReply).toBe("reply#3; heard=[one|two|three]");
     expect(finalOutput.turns).toBe(6);
 
-    // Every resume the respawned invoker saw was an input resume -- the
-    // crash-recovered park kind came back as "input", not the
-    // legacy-approval read.
+    // Every crash-recovered resume came back "input", not the legacy-approval read.
     expect(resumeKinds).toEqual(["input", "input"]);
 
     // Exactly two input parks over the whole run: one per re-arm, none added
@@ -291,8 +280,7 @@ describe("finite trigger-budget seed across a respawn", () => {
     const store = createStore();
     const def = chatWorkflow(3);
 
-    // Turn 1 suspends on an approval gate before replying; the approved
-    // resume produces turn 1's output. Later turns are plain input resumes.
+    // Turn 1 suspends on an approval gate; later turns are plain input resumes.
     function createApprovalFirstInvoker(): StepInvoker {
       const inner = createChatInvoker(store);
       return async (req) => {
@@ -339,8 +327,8 @@ describe("finite trigger-budget seed across a respawn", () => {
     await channelA.deliver(signalName("corr-appr"), { text: "one" }, "sig-a");
     const ch1 = await waitForInputPark(repoStore, runId, 1);
 
-    // Crash parked on the input re-arm. The log now holds one approval
-    // SignalAwaited and one input SignalAwaited; the seed must be 1.
+    // Crash parked on the input re-arm. The log holds one approval and one
+    // input SignalAwaited; the seed must be 1.
     void runA;
     const seed = await repoStore.read(runId);
 

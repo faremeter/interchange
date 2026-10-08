@@ -24,8 +24,8 @@ describe("step-scope", () => {
 
   test("baseStepId strips only a trailing bracketed integer", () => {
     // Author step ids match STEP_ID_PATTERN (`[a-zA-Z0-9_-]+`), so they never
-    // contain a bracket; the only stripping case is a trailing numeric scope.
-    // A trailing non-numeric bracket is not a scope marker and is preserved.
+    // contain a bracket; the only stripping case is a trailing numeric scope,
+    // and a trailing non-numeric bracket is preserved.
     expect(baseStepId("foo[x]")).toBe("foo[x]");
     // A bracket that is not at the end is preserved.
     expect(baseStepId("a[1]b")).toBe("a[1]b");
@@ -39,10 +39,10 @@ describe("step-scope", () => {
   });
 
   test("loopBodyRunId is injective even when the run id contains __", () => {
-    // The store keys runs by this string, so two distinct
-    // (runId, loopId, index) triples must never render equal. Injectivity does
-    // not need a __-free run id: loopId carries no __ (definition-time invariant)
-    // and index is digits, so the final two __ are always the separators.
+    // The store keys runs by this string, so two distinct (runId, loopId,
+    // index) triples must never render equal. Injectivity does not need a
+    // __-free run id: loopId carries no __ and index is digits, so the final
+    // two __ are always the separators.
     const runIds = ["a", "a__b", "a__0", "run-1_x__body__0", "x__y__z", "1"];
     const loopIds = ["l", "y", "0", "inner", "b", "z"];
     const indices = [0, 1, 12, 100];
@@ -62,8 +62,8 @@ describe("step-scope", () => {
   });
 
   test("loopBodyRunId re-roots per nesting level", () => {
-    // A loop nested in an outer iteration runs under that iteration's own body
-    // run id, so an inner loop under two outer iterations gets distinct ids.
+    // A loop nested in an outer iteration runs under that iteration's own
+    // body run id, so an inner loop gets distinct ids across outer iterations.
     const outerZero = loopBodyRunId("run-abc", "outer", 0);
     const outerOne = loopBodyRunId("run-abc", "outer", 1);
     expect(loopBodyRunId(outerZero, "inner", 0)).toBe(

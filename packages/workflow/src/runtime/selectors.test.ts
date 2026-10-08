@@ -97,8 +97,8 @@ describe("evaluate", () => {
   });
 
   test("from resolves an own key that shadows an inherited member", () => {
-    // `__proto__` is a legal mail header field name (RFC 5322 section 3.6.8),
-    // and `JSON.parse` keeps it as an own data property.
+    // `__proto__` is a legal mail header field name (RFC 5322 3.6.8), and
+    // `JSON.parse` keeps it as an own data property.
     const payload: unknown = JSON.parse(
       '{"rawHeaders":{"__proto__":["injected"],"subject":["hi"]}}',
     );
@@ -243,11 +243,10 @@ describe("evaluate", () => {
   });
 
   test("from resolves an own member whose value is undefined", () => {
-    // The index guard refuses an absent own property, not a stored value, so a
-    // filled element holding `undefined` resolves exactly as the key branch
-    // resolves an own key holding one. `runStep` canonicalizes a step input of
-    // `undefined` to `null` for both the audit blob and the invoker, which is
-    // why `from` admits the hole that `project` refuses.
+    // The index guard refuses an absent own property, not a stored value, so
+    // a filled element holding `undefined` resolves like an own key holding
+    // one. `runStep` canonicalizes a step input of `undefined` to `null`, which
+    // is why `from` admits the hole that `project` refuses.
     const holeCtx: SelectorContext = {
       trigger: { payload: { goal: undefined, items: [undefined] } },
       steps: {},

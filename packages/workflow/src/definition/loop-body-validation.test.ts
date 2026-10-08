@@ -1,17 +1,12 @@
 // Which validation passes reach a loop body.
 //
-// A loop body is a `WorkflowDefinition` the parent embeds by value. Nothing in
-// the type system says it came from `defineWorkflow`, and nothing marks a
-// definition as normalized, so a body can be hand-assembled or spread-swapped
-// into place without ever passing through a validation. Every case here builds
-// its body BY HAND for that reason: a body built through `defineWorkflow` was
-// already validated at its own construction and would prove nothing about what
-// the parent's loop-body walk catches.
-//
+// A loop body is embedded by value, and nothing marks it as normalized, so it
+// can be hand-assembled or spread-swapped in without ever passing through a
+// validation. Every case here builds its body BY HAND for that reason: a body
+// built through `defineWorkflow` was already validated at its own construction
+// and would prove nothing about what the parent's loop-body walk catches.
 // Each case carries the defect owned by one pass of `validateSteps` and asserts
-// the parent rejects it at authoring time. Together they state executably that a
-// loop body is validated as thoroughly as an `onTrigger` section body and a
-// `childWorkflow` inline body.
+// the parent rejects it at authoring time.
 
 import { describe, test, expect } from "bun:test";
 
@@ -44,10 +39,8 @@ function makeAgent(id: string): AgentDefinition<BaseEnv> {
 
 /**
  * Assemble a `WorkflowDefinition` directly, bypassing `defineWorkflow`. Only the
- * record-key-to-`id` assignment is reproduced, because the primitive
- * constructors leave `id` empty and a definition that reached the runtime would
- * carry it. No validation runs, which is the whole point: this is the shape the
- * trust boundary actually has to defend against.
+ * record-key-to-`id` assignment is reproduced; no validation runs, which is the
+ * whole point -- this is the shape the trust boundary has to defend against.
  */
 function handBuiltBody(
   id: string,
@@ -122,10 +115,9 @@ describe("loop body validation passes", () => {
   });
 
   test("validateConcurrentAwaitSignalNames reaches a loop body", () => {
-    // The parent cannot see this one even in principle: it collects both body
-    // awaiters as relays of the SAME loop step, and its comparison loop skips
-    // pairs sharing a node. Only validating the body as its own step record
-    // separates them.
+    // The parent collects both body awaiters as relays of the same loop step
+    // and skips pairs sharing a node, so only validating the body as its own
+    // step record separates them.
     const body = handBuiltBody("two-awaiters", {
       first: awaitSignal({ name: "go" }),
       second: awaitSignal({ name: "go" }),
@@ -136,10 +128,8 @@ describe("loop body validation passes", () => {
   });
 
   test("the loop-body onFailure ban preempts validateOnFailureStraddlers", () => {
-    // validateOnFailureStraddlers is a no-op inside a loop body: a loop
-    // iteration threads carry into the next input, so no body step may route on
-    // failure at all. The blanket ban fires before the straddler analysis can
-    // have anything to reason about.
+    // No loop body step may route on failure (iteration threads carry into
+    // the next input), so the blanket ban fires before the straddler analysis.
     const body = handBuiltBody("routes-on-failure", {
       unit: step({ agent: makeAgent("u"), onFailure: "rescue" }),
       rescue: action({ handler: "noop", after: ["unit"] }),
@@ -159,9 +149,9 @@ describe("loop body validation passes", () => {
   });
 
   test("validateOnTriggerBody reaches a loop body", () => {
-    // A section directly in the loop body is already banned by kind. The
-    // placement rule adds the level below: a section inside a childWorkflow body
-    // inside the loop body is equally unsubscribable, and only re-entry finds it.
+    // A section directly in the loop body is banned by kind; the placement
+    // rule adds the level below -- a section inside a childWorkflow body inside
+    // the loop body -- which only re-entry finds.
     const grandchild = handBuiltBody("grandchild", {
       section: onTrigger({
         on: { type: "manual" },
@@ -176,9 +166,8 @@ describe("loop body validation passes", () => {
   });
 
   test("validateLoopBody reaches a loop nested under a childWorkflow body", () => {
-    // The loop-to-loop walk alone steps over a childWorkflow, so a sleep in a
-    // loop body two containers down used to escape. Re-entry follows the whole
-    // chain.
+    // The loop-to-loop walk steps over a childWorkflow, so a sleep two
+    // containers down used to escape; re-entry follows the whole chain.
     const leaf = handBuiltBody("leaf", { nap: sleep({ duration: 1 }) });
     const grandchild = handBuiltBody("grandchild", {
       inner: loop({

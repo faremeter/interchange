@@ -2,20 +2,18 @@
 // that recovers how a single admitted `awaitSignal` gate left `awaiting-signal`
 // on resume: which delivered signal it consumed, or that its own timer fired
 // first. The resume short-circuit reaches it only on the crash-window log-read
-// path, so its bindings are proven here against hand-built logs.
-//
-// Each log is a COMPLETE run log from seq 1; the gate step id is "gate" and the
-// signal name is "go" throughout. The gate is the sole awaiter of the name in
-// every log here -- the precondition the short-circuit enforces via
+// path, so its bindings are proven here against hand-built logs. Each log is a
+// COMPLETE run log from seq 1; the gate step id is "gate" and the signal name
+// is "go" throughout. The gate is the sole awaiter of the name in every log
+// here -- the precondition the short-circuit enforces via
 // `hasForeignSameNameAwaiter` before calling the replay.
 
 import { describe, test, expect } from "bun:test";
 
 import { applyEvent, emptyState, type WorkflowEvent } from "@intx/workflow";
 
-// Imported directly from the runtime module: like `boundSignalForContainerAwait`
-// the binding is not part of the package's public surface, so it is exercised
-// via its source path rather than promoted to the barrel for a test.
+// Not part of the package's public surface, so it is exercised via its source
+// path rather than promoted to the barrel for a test.
 import { reconstructGateOutcome } from "./run";
 
 const at = "2026-01-01T00:00:00.000Z";
@@ -74,9 +72,8 @@ describe("reconstructGateOutcome", () => {
     ];
     const outcome = reconstructGateOutcome(log, NAME, GATE);
     // The common happy path: exactly one delivery. The retired
-    // findConsumedSignal returned this same {payload, signalId} for this case
-    // (its newest-observed is the only observed), so the replay is a
-    // no-regression byte-for-byte here.
+    // findConsumedSignal returned this same {payload, signalId} here, so the
+    // replay is a no-regression byte-for-byte.
     expect(outcome).toEqual({
       timedOut: false,
       payload: { v: 1 },
@@ -94,10 +91,9 @@ describe("reconstructGateOutcome", () => {
     ];
     const outcome = reconstructGateOutcome(log, NAME, GATE);
     // The gate consumed sig-1 while awaiting; sig-2 landed after and only
-    // queued (the gate was no longer awaiting), so it is NOT what the gate
-    // consumed. The retired findConsumedSignal returned the LAST observed for
-    // the name -- sig-2 -- and would have bound the gate to {v:2}: exactly the
-    // silent mis-bind this replay closes.
+    // queued, so it is NOT what the gate consumed. The retired
+    // findConsumedSignal took the LAST observed -- sig-2 -- and would have
+    // bound the gate to {v:2}: the silent mis-bind this replay closes.
     expect(outcome).toEqual({
       timedOut: false,
       payload: { v: 1 },
@@ -113,11 +109,11 @@ describe("reconstructGateOutcome", () => {
       received(4, "sig-1", { v: 1 }),
       received(5, "sig-2", { v: 2 }),
     ];
-    // Independent oracle: fold the SAME log through the real reducer event by
-    // event and capture the SignalReceived that flips the gate
-    // awaiting-signal -> in-flight. That is the delivery the reducer actually
-    // consumed, derived WITHOUT the replay under test -- so this asserts the
-    // replay reproduces the reducer's move, not a plausible FIFO that diverges.
+    // Independent oracle: fold the same log through the real reducer and
+    // capture the SignalReceived that flips the gate awaiting-signal ->
+    // in-flight -- the delivery the reducer actually consumed, derived WITHOUT
+    // the replay under test. Asserts the replay reproduces the reducer's move,
+    // not a plausible FIFO that diverges.
     let state = emptyState("fidelity");
     let reducerConsumed: string | undefined;
     for (const event of log) {

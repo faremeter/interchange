@@ -1,13 +1,10 @@
 // A gate held two inheritance hops below the run that declared itself
-// unanswerable.
-//
-// The single-hop case is covered alongside the guard itself. This one exists
-// because the defect it guards is a missing env spread, and every added
-// nesting layer is another place to reintroduce one.
-//
-// The production chain is: terminal child env (false) -> loop iteration env
-// (inherits) -> nested loop iteration env (inherits). Each hop is a spread of
-// the container's env, so a single missing spread anywhere reopens the hole.
+// unanswerable. The single-hop case is covered alongside the guard itself;
+// this one exists because the defect it guards is a missing env spread, and
+// every added nesting layer is another place to reintroduce one. The chain is:
+// terminal child env (false) -> loop iteration env (inherits) -> nested loop
+// iteration env (inherits). Each hop is a spread of the container's env, so a
+// single missing spread anywhere reopens the hole.
 
 import { describe, test, expect } from "bun:test";
 
@@ -106,11 +103,11 @@ describe("two hops below an unanswerable run", () => {
     const result = await run.complete;
     expect(result.terminalStatus).toBe("failed");
 
-    // Two hops down, the gate's own message stays in the innermost body's
-    // log. What reaches the top run is the outer loop failing on its first
-    // iteration, and -- the part that only a refusal produces -- no relay
-    // await at all. A gate that parked would have proxied `approve` up
-    // through both containers and committed `SignalAwaited` here.
+    // Two hops down, the gate's own message stays in the innermost body's log.
+    // What reaches the top run is the outer loop failing on its first
+    // iteration, and -- the part only a refusal produces -- no relay await at
+    // all: a parked gate would have proxied `approve` up and committed
+    // `SignalAwaited` here.
     const failed = result.events.find((e) => e.kind === "StepFailed");
     expect(failed?.kind === "StepFailed" ? failed.stepId : "").toBe(
       "outerLoop",
@@ -131,8 +128,8 @@ describe("two hops below an unanswerable run", () => {
     expect(await race(run.complete, 1500)).toBe("pending");
     await run.cancel("supervisor-operator", "teardown");
 
-    // The control for the refused case: the relay really does climb both
-    // hops and surface on the top run, which is what its absence above means.
+    // The control: the relay really does climb both hops and surface on the
+    // top run, which is what its absence above means.
     const relayed = (await run.complete).events.find(
       (e) => e.kind === "SignalAwaited",
     );
@@ -155,9 +152,9 @@ describe("two hops below an unanswerable run", () => {
     const result = await run.complete;
     expect(result.terminalStatus).toBe("completed");
 
-    // Completing is not enough on its own: a gate skipped outright would
-    // also complete. The relay await proves it genuinely parked, and the
-    // abandon proves its own timer -- not anything upstream -- released it.
+    // Completing alone is not enough: a gate skipped outright would also
+    // complete. The relay await proves it parked, and the abandon proves its
+    // own timer -- not anything upstream -- released it.
     const kinds = result.events.map((e) => e.kind);
     expect(kinds).toContain("SignalAwaited");
     expect(kinds).toContain("SignalAwaitAbandoned");

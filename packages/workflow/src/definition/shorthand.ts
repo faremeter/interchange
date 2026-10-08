@@ -1,26 +1,8 @@
-// Singular shorthand for the trivial single-step case.
-//
-// A workflow whose entire body is one agent's send-and-respond loop
-// fans through the same `WorkflowDefinition` shape as the plural form
-// after normalization. Authors write:
-//
-//   defineWorkflow({
-//     id: "support",
-//     agent: support,
-//     trigger: { type: "mail", to: "support@..." },
-//   });
-//
-// which is structurally equivalent to:
-//
-//   defineWorkflow({
-//     id: "support",
-//     trigger: { type: "mail", to: "support@..." },
-//     steps: { default: step({ agent: support }) },
-//   });
-//
-// The two forms must produce deep-equal `WorkflowDefinition` values
-// so authors who later switch from one to the other (or who hash and
-// compare definitions) see no spurious differences.
+// Singular shorthand for the trivial single-step case: a workflow whose whole
+// body is one agent's loop normalizes to the plural form as
+// `steps: { default: step({ agent }) }`. The two forms must produce
+// deep-equal `WorkflowDefinition` values, so authors who switch between them
+// (or hash and compare definitions) see no spurious differences.
 
 import type { BaseEnv } from "@intx/agent";
 import type {

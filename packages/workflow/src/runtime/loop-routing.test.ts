@@ -60,11 +60,10 @@ function has(result: RunResult, id: string): boolean {
 }
 
 describe("loop diamond routing", () => {
-  // Diamond: `join` lists BOTH a normal dependent (consolidate) and the
-  // onExhausted downstream (afterEscalate) in its after. On converge,
-  // consolidate is selected -> join is reachable from a selected root and
-  // must stay LIVE even though it is also reachable from the pruned
-  // onExhausted side.
+  // Diamond: `join` lists both a normal dependent (consolidate) and the
+  // onExhausted downstream (afterEscalate) in its after. On converge, join is
+  // reachable from the selected root and must stay LIVE even though it is
+  // also reachable from the pruned onExhausted side.
   function diamondWorkflow(maxIterations: number) {
     return defineWorkflow({
       id: "loop-diamond",
@@ -102,8 +101,7 @@ describe("loop diamond routing", () => {
 
     expect(result.terminalStatus).toBe("completed");
     expect(has(result, "consolidate")).toBe(true);
-    // escalate + afterEscalate pruned; join stays live because it is
-    // reachable from consolidate (selected).
+    // escalate + afterEscalate pruned; join stays live via consolidate (selected).
     expect(has(result, "escalate")).toBe(false);
     expect(has(result, "afterEscalate")).toBe(false);
     expect(result.outputs.join).toBe("ran:join");
@@ -126,9 +124,9 @@ describe("loop diamond routing", () => {
 });
 
 describe("loop no-normal-dependent routing", () => {
-  // The loop has an onExhausted but NO normal after-dependents. On
-  // converge, `selected` (normal dependents) is EMPTY. The not-taken side
-  // (onExhausted) must still be pruned; the run must complete.
+  // The loop has an onExhausted but NO normal after-dependents, so on
+  // converge `selected` is EMPTY; the not-taken onExhausted side must still
+  // be pruned.
   function noDepsWorkflow(maxIterations: number) {
     return defineWorkflow({
       id: "loop-no-deps",

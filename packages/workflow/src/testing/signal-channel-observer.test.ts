@@ -12,9 +12,8 @@ describe("createObservedSignalChannel counting", () => {
 
   test("counts awaitNext calls per name, keeping names independent", async () => {
     const channel = createObservedSignalChannel();
-    // Park on two names, one of them twice. Nothing delivers, so the awaits
-    // stay pending; the counts are what this asserts, so the promises are
-    // deliberately left unsettled and are resolved by the deliveries below.
+    // Park on two names, one twice. Nothing delivers yet, so the awaits stay
+    // pending; the promises are settled by the deliveries below.
     void channel.awaitNext(NAME);
     void channel.awaitNext(NAME);
     void channel.awaitNext("other");
@@ -23,8 +22,7 @@ describe("createObservedSignalChannel counting", () => {
     expect(channel.awaitedCount("other")).toBe(1);
     expect(channel.awaitedCount("never-awaited")).toBe(0);
 
-    // Settle the three parked awaiters so no unresolved promise outlives the
-    // test: a test owns every async operation it starts.
+    // Settle the three parked awaiters so no unresolved promise outlives the test.
     await channel.deliver(NAME, { n: 1 }, "s1");
     await channel.deliver(NAME, { n: 2 }, "s2");
     await channel.deliver("other", { n: 3 }, "s3");
@@ -62,8 +60,8 @@ describe("createObservedSignalChannel awaitAwaitedCount", () => {
     const waited = channel.awaitAwaitedCount(NAME, 2);
 
     const first = channel.awaitNext(NAME);
-    // One park is not two. Give the waiter every chance to resolve early: a
-    // macrotask turn drains the microtasks its continuation would run on.
+    // One park is not two; a macrotask turn drains the microtasks a wrongly
+    // resolved continuation would run on.
     let resolved = false;
     void waited.then(() => {
       resolved = true;
@@ -71,8 +69,8 @@ describe("createObservedSignalChannel awaitAwaitedCount", () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(resolved).toBe(false);
 
-    // The first awaiter must settle before the run would park again, which is
-    // what the real re-park sequence does.
+    // The first awaiter settles before the run would park again, as the real
+    // re-park sequence does.
     await channel.deliver(NAME, { n: 1 }, "s1");
     await first;
     const second = channel.awaitNext(NAME);
@@ -88,9 +86,8 @@ describe("createObservedSignalChannel awaitAwaitedCount", () => {
     const waited = channel.awaitAwaitedCount(NAME, 1);
 
     const other = channel.awaitNext("other");
-    // A park on another name must not wake this waiter. As above, the yield is
-    // a yield and not a duration bet: it drains the microtasks the waiter's
-    // continuation would run on, so a wrongly-woken waiter is caught here.
+    // A park on another name must not wake this waiter; the yield drains the
+    // microtasks a wrongly-woken continuation would run on, so one is caught.
     let resolved = false;
     void waited.then(() => {
       resolved = true;
@@ -132,8 +129,8 @@ describe("createObservedSignalChannel passthrough", () => {
   test("a delivery before the park is queued for it, as the unwrapped channel does", async () => {
     const channel = createObservedSignalChannel();
     await channel.deliver(NAME, { queued: true }, "sig-q");
-    // The wrapper must not change the queueing semantics the runtime relies
-    // on: a signal that arrives before the park is not lost.
+    // The wrapper must keep the runtime's queueing semantics: a signal
+    // arriving before the park is not lost.
     expect(await channel.awaitNext(NAME)).toEqual({
       payload: { queued: true },
       signalId: "sig-q",

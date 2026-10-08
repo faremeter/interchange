@@ -5,12 +5,10 @@
 // one after cancellation is not recoverable by anything downstream: the ledger
 // dedups only effects routed through `perform`, and there is no retry to
 // reconsider the decision. The step invoker already refuses a pre-aborted
-// signal at entry; this is the same obligation on the action path, and without
-// it the same cancel stops an agent step while still letting a charge through.
-//
-// This covers the runtime's half of the contract only. Whether a handler stops
-// once it can observe the abort is the handler's own obligation, which the
-// runtime hands over with the signal and cannot enforce.
+// signal at entry; without the same obligation on the action path, a cancel
+// would stop an agent step while still letting a charge through. This covers
+// the runtime's half of the contract only; whether a handler stops once it
+// can observe the abort is the handler's own obligation.
 
 import { describe, test, expect } from "bun:test";
 
@@ -80,8 +78,8 @@ describe("the default action invoker", () => {
     const env = buildAbortWindowEnv(oneAction, {
       repoStore: abortOnDurableEvent(teardown, "StepStarted"),
     });
-    // The real invoker, not a mock: the point is that the production path
-    // refuses, not that a stand-in can be written to.
+    // The real invoker, not a mock: the point is the production path refuses,
+    // not that a stand-in can be written to.
     env.invokeAction = createDefaultActionInvoker(
       allow,
       createInMemoryEffectLedger(),

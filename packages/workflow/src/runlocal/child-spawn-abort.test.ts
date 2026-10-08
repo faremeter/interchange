@@ -4,12 +4,10 @@
 // awaits separate the child run id allocation from the spawn call -- one of
 // them a durable flush. A cancel landing anywhere in that stretch arrives
 // before the spawner runs, so the spawner must consult the signal's level on
-// entry. Subscribing to the edge alone would miss it, leaving the child
-// uncancelled and the parent waiting on a terminal that never comes.
-//
-// Asserted against the spawner directly rather than through a full run: the
-// production adapter's own pre-abort coverage takes the same shape, and it
-// removes the race that driving this end to end would otherwise depend on.
+// entry; subscribing to the edge alone would leave the child uncancelled and
+// the parent waiting on a terminal that never comes. Asserted directly against
+// the spawner rather than through a full run, which removes the race an
+// end-to-end drive would depend on.
 
 import { describe, test, expect } from "bun:test";
 
@@ -40,9 +38,8 @@ const childDefinition = defineWorkflow({
 
 describe("the local child spawner", () => {
   test("refuses a pre-aborted signal instead of starting a child run", async () => {
-    // The child's one step runs through the default invoker, which calls
-    // authorize exactly once. A zero count is the local stand-in for the
-    // host adapter's `runCalls`: proof no child run was ever started.
+    // The child's one step authorizes exactly once; a zero count is the local
+    // stand-in for the host adapter's `runCalls`: proof no child run started.
     let authorizeCalls = 0;
     const countingAllow: WorkflowAuthorizeFn = async () => {
       authorizeCalls += 1;
@@ -56,10 +53,10 @@ describe("the local child spawner", () => {
     const ctrl = new AbortController();
     ctrl.abort();
 
-    // `ctrl.abort()` with no argument leaves a DOMException as the signal's
-    // reason, and the spawner rethrows that reason as-is. Match on the name
-    // rather than the message: the reason-less branch builds its own
-    // DOMException with a different message, and only the name is stable.
+    // A reason-less abort leaves a DOMException as the signal's reason, and
+    // the spawner rethrows it as-is. Match on the name: the reason-less
+    // branch builds its own DOMException with a different message, and only
+    // the name is stable.
     await expect(
       spawn({
         definitionRef: "child-ref",
