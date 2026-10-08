@@ -10,6 +10,7 @@ import type {
 } from "@intx/hub-sessions/substrate";
 import {
   createInMemoryRepoStore,
+  sectionBodyRunId,
   type RepoStore as RuntimeRepoStore,
   type WorkflowEvent,
 } from "@intx/workflow";
@@ -140,14 +141,15 @@ async function setup(
 
 describe("discoverInFlightRuns", () => {
   test("excludes a run that another run spawned as a child", async () => {
+    const bodyRunId = sectionBodyRunId("dep-run", "section", 0);
     const { substrate, runtimeRepoStore } = await setup([
       {
         runId: "dep-run",
-        events: sectionRunWithChild("dep-run", "section__0", "corr-parent"),
+        events: sectionRunWithChild("dep-run", bodyRunId, "corr-parent"),
       },
       {
-        runId: "section__0",
-        events: parkedRun("section__0", "s", "corr-parent"),
+        runId: bodyRunId,
+        events: parkedRun(bodyRunId, "s", "corr-parent"),
       },
       {
         runId: "sibling-run",
@@ -161,8 +163,9 @@ describe("discoverInFlightRuns", () => {
       runtimeRepoStore,
     });
 
-    // The body child (`section__0`) is driven by its parent, so it is not a
-    // top-level in-flight run; the parent and the unrelated sibling are.
+    // The body child is driven by its parent, so it is not a top-level
+    // in-flight run; the parent and the unrelated sibling are. Exclusion is
+    // the parent's ChildSpawned, not the shape of the body run id.
     expect(discovered.map((r) => r.runId).sort()).toEqual([
       "dep-run",
       "sibling-run",

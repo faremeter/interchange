@@ -34,6 +34,8 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
+import { sectionBodyRunId } from "@intx/workflow";
+
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
 import {
   createApprovalSet,
@@ -78,7 +80,6 @@ const DEPLOYMENT_ID = "run_on-trigger-tool-invoke-1";
 const SECTION_ID = "section";
 const BODY_STEP_ID = "work";
 const BODY_AGENT_ID = "agent-on-trigger-tool-invoke-body";
-const BODY_CHILD_RUN_ID = `${SECTION_ID}__0`;
 
 const TENANT_ID = "tnt_on_trigger_tool_invoke";
 const CALLER_PRINCIPAL_ID = "prn_on_trigger_tool_invoke";
@@ -145,7 +146,7 @@ afterAll(async () => {
 
 /**
  * The container run is the single run under the deployment's workflow-run repo
- * that is NOT a body child (body children are `${SECTION_ID}__<n>`).
+ * whose id sorts ahead of a minted section body (it is a proper prefix).
  */
 async function findContainerRunId(
   workflowRunRepoId: RepoId,
@@ -293,7 +294,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
             DEPLOYMENT_ID,
             containerRunId,
           );
-          return hasChildCompleted(events, BODY_CHILD_RUN_ID);
+          return hasChildCompleted(
+            events,
+            sectionBodyRunId(containerRunId, SECTION_ID, 0),
+          );
         },
         { diagnostics: env.sidecarDiagnostics },
       );
@@ -304,7 +308,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const bodyEvents = await readWorkflowRunEvents(
         env,
         DEPLOYMENT_ID,
-        BODY_CHILD_RUN_ID,
+        sectionBodyRunId(containerRunId, SECTION_ID, 0),
       );
       const bodyTypes = bodyEvents.map((e) => e.type);
       expect(bodyTypes).not.toContain("StepFailed");

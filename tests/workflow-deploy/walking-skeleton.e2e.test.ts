@@ -43,6 +43,8 @@ import path from "node:path";
 import { dirname } from "node:path";
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+
+import { sectionBodyRunId } from "@intx/workflow";
 import { and, eq } from "drizzle-orm";
 import * as tar from "tar";
 
@@ -142,9 +144,6 @@ const bodyDeploymentMailAddress = deriveRunAddress({
 // sectionId) -- and the id the run child re-derives from the re-evaluated
 // closure. They must match, or the body's sources.json ENOENTs at runtime.
 const BODY_REF = `${BODY_WORKFLOW_ID}__${BODY_SECTION_ID}`;
-// The section's body child run id is `<sectionId>__<index>`; index 0 is the
-// first fired event.
-const BODY_CHILD_RUN_ID_FIRST = `${BODY_SECTION_ID}__0`;
 
 // The self-contained entry the fixture package ships as its
 // `interchange.workflow`. A single toolless agent step triggered by the
@@ -638,7 +637,8 @@ describe.skipIf(!harnessDbEnvAvailable())("walking skeleton e2e", () => {
   }, 90_000);
 
   test("deploys an onTrigger body by source-ref and runs it from the record-carried per-body sources", async () => {
-    // The container is the top-level run; body children are `<sectionId>__<n>`.
+    // The container id is a proper prefix of the minted section body id, so it
+    // sorts first in this listing.
     const findBodyContainerRunId = async (
       repoId: RepoId,
     ): Promise<string | undefined> => {
@@ -837,7 +837,10 @@ describe.skipIf(!harnessDbEnvAvailable())("walking skeleton e2e", () => {
           containerRunId,
         );
         return (
-          findChildCompleted(events, BODY_CHILD_RUN_ID_FIRST) !== undefined
+          findChildCompleted(
+            events,
+            sectionBodyRunId(containerRunId, BODY_SECTION_ID, 0),
+          ) !== undefined
         );
       },
       { diagnostics: env.sidecarDiagnostics },
@@ -853,15 +856,16 @@ describe.skipIf(!harnessDbEnvAvailable())("walking skeleton e2e", () => {
       containerRunId,
     );
     expect(
-      findChildCompleted(containerEvents, BODY_CHILD_RUN_ID_FIRST)?.body[
-        "terminalStatus"
-      ],
+      findChildCompleted(
+        containerEvents,
+        sectionBodyRunId(containerRunId, BODY_SECTION_ID, 0),
+      )?.body["terminalStatus"],
     ).toBe("completed");
 
     const bodyEvents = await readWorkflowRunEvents(
       env,
       BODY_DEPLOYMENT_ID,
-      BODY_CHILD_RUN_ID_FIRST,
+      sectionBodyRunId(containerRunId, BODY_SECTION_ID, 0),
     );
     const bodyTypes = bodyEvents.map((e) => e.type);
     expect(bodyTypes).not.toContain("StepFailed");

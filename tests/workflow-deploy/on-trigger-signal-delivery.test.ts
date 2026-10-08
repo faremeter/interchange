@@ -18,20 +18,20 @@
 // by nature, so the body IS an awaitSignal, exercising exactly the capability
 // under test.)
 //
-//   1. Fire mail #1 -> the container run starts and spawns the body
-//      `section__0`, which parks on `awaitSignal({ name: "proceed" })`. The
+//   1. Fire mail #1 -> the container run starts and spawns event 0's body,
+//      which parks on `awaitSignal({ name: "proceed" })`. The
 //      section proxies that gate UP as a signal-relay `SignalAwaited` on the
 //      container over the SAME author name; the container is now awaiting
-//      "proceed" and section__0 is parked (not complete).
+//      "proceed" and the body is parked (not complete).
 //   2. Deliver "proceed" to the PARENT deployment run id (the container), the
 //      way an operator would via the signals path. The container's await
 //      resolves, the section relays the signal down into the body, the body's
-//      gate completes, section__0 completes, and the section re-arms on its
+//      gate completes, the body completes, and the section re-arms on its
 //      input park for the next event.
 //
 // Load-bearing assertions: the container carries a signal-relay `SignalAwaited`
 // for the author name (the proxied gate) and a `SignalReceived` for it (the
-// delivery to the PARENT); `section__0` completes ONLY after the delivery (the
+// delivery to the PARENT); the body completes ONLY after the delivery (the
 // relay reached the child body); the long-lived container never self-completes
 // and re-arms on an input park.
 //
@@ -44,6 +44,8 @@
 // test of the signal-relay capability C built.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+
+import { sectionBodyRunId } from "@intx/workflow";
 
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
 import {
@@ -135,8 +137,8 @@ afterAll(async () => {
 
 /**
  * The container run is the single run under the deployment's workflow-run repo
- * that is NOT a body child. Body children are `${SECTION_ID}__<n>`; the
- * container carries their `ChildSpawned`/`ChildCompleted` records in its own
+ * whose id sorts ahead of a minted section body. The
+ * container carries the bodies' `ChildSpawned`/`ChildCompleted` records in its own
  * log. Returns `undefined` until the container's `runs/` entry exists.
  */
 async function findContainerRunId(
@@ -279,7 +281,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         body: { variant: "awaitSignal", signalName: SIGNAL_NAME },
       });
 
-      // The body is parked on its gate: section__0 spawned, not yet completed.
+      // The body is parked on its gate: event 0's body spawned, not yet completed.
       const parked = await readWorkflowRunEvents(
         env,
         DEPLOYMENT_ID,
@@ -289,10 +291,16 @@ describe.skipIf(!harnessDbEnvAvailable())(
         parked.some(
           (e) =>
             e.type === "ChildSpawned" &&
-            e.body["childRunId"] === `${SECTION_ID}__0`,
+            e.body["childRunId"] ===
+              sectionBodyRunId(containerRunId, SECTION_ID, 0),
         ),
       ).toBe(true);
-      expect(hasChildCompleted(parked, `${SECTION_ID}__0`)).toBe(false);
+      expect(
+        hasChildCompleted(
+          parked,
+          sectionBodyRunId(containerRunId, SECTION_ID, 0),
+        ),
+      ).toBe(false);
 
       // ---- deliver the author signal to the PARENT deployment run id ----
       // The body (a child run) never receives a signal directly; delivering to
@@ -302,7 +310,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         go: true,
       });
 
-      // The relay reached the body: its gate completed, section__0 completed, and
+      // The relay reached the body: its gate completed, the body completed, and
       // the section re-armed on its input park for the next event.
       await waitFor(
         async () => {
@@ -312,7 +320,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
             containerRunId,
           );
           return (
-            hasChildCompleted(events, `${SECTION_ID}__0`) &&
+            hasChildCompleted(
+              events,
+              sectionBodyRunId(containerRunId, SECTION_ID, 0),
+            ) &&
             events.some(
               (e) =>
                 e.type === "SignalAwaited" && e.body["parkKind"] === "input",
@@ -347,7 +358,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
       ).toBe(true);
 
       // The body completed only after the delivery (the relay reached the child).
-      expect(hasChildCompleted(finalEvents, `${SECTION_ID}__0`)).toBe(true);
+      expect(
+        hasChildCompleted(
+          finalEvents,
+          sectionBodyRunId(containerRunId, SECTION_ID, 0),
+        ),
+      ).toBe(true);
 
       // One long-lived run that never self-completes.
       expect(finalTypes.filter((t) => t === "RunStarted").length).toBe(1);
@@ -385,7 +401,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
             containerRunId,
           );
           return (
-            hasChildCompleted(events, `${SECTION_ID}__0`) &&
+            hasChildCompleted(
+              events,
+              sectionBodyRunId(containerRunId, SECTION_ID, 0),
+            ) &&
             events.some(
               (e) =>
                 e.type === "SignalAwaited" && e.body["parkKind"] === "input",
@@ -419,7 +438,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
         ),
       ).toBe(true);
       // The body completed via the timeout route; the section keeps working.
-      expect(hasChildCompleted(finalEvents, `${SECTION_ID}__0`)).toBe(true);
+      expect(
+        hasChildCompleted(
+          finalEvents,
+          sectionBodyRunId(containerRunId, SECTION_ID, 0),
+        ),
+      ).toBe(true);
       expect(finalTypes.filter((t) => t === "RunStarted").length).toBe(1);
       expect(finalTypes).not.toContain("RunCompleted");
       expect(finalTypes).not.toContain("RunFailed");

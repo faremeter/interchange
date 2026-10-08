@@ -26,6 +26,8 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
+import { sectionBodyRunId } from "@intx/workflow";
+
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
 import {
   createApprovalSet,
@@ -65,7 +67,6 @@ import {
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const SECTION_ID = "section";
-const BODY_CHILD_RUN_ID = `${SECTION_ID}__0`;
 const DRAIN_DEADLINE_MS = 1_000;
 
 const TENANT_ID = "tnt_on_trigger_drain";
@@ -231,7 +232,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const bodyEvents = await readWorkflowRunEvents(
         env,
         anchorRunId,
-        BODY_CHILD_RUN_ID,
+        sectionBodyRunId(runId, SECTION_ID, 0),
       );
       const bodyTypes = bodyEvents.map((e) => e.type);
       expect(
@@ -272,7 +273,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           const events = await readWorkflowRunEvents(
             env,
             anchorRunId,
-            BODY_CHILD_RUN_ID,
+            sectionBodyRunId(runId, SECTION_ID, 0),
           );
           return events.some((e) => e.type === "TimerSet");
         },

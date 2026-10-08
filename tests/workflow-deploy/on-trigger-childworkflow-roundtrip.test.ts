@@ -25,6 +25,8 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
+import { sectionBodyRunId } from "@intx/workflow";
+
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
 import {
   createApprovalSet,
@@ -111,10 +113,6 @@ const SPAWN_STEP_ID = "spawn";
 const CHILD_STEP_ID = "childStep";
 const CHILD_AGENT_ID = "agent-nested-child";
 
-// The body child run the section spawns for the first event. The runtime keys
-// it on `<sectionId>__<eventIndex>`.
-const BODY_CHILD_RUN_ID = `${SECTION_ID}__0`;
-
 // The ref the deploy assigns to the body's inline childWorkflow. The section's
 // body is lifted to `<workflowId>__<sectionId>` and becomes that body's id; the
 // body's own inline childWorkflow is then lifted to `<bodyRef>__<spawnStepId>`
@@ -165,7 +163,7 @@ afterAll(async () => {
 
 /**
  * The container run is the single run under the deployment's workflow-run repo
- * that is NOT a body child (body children are `${SECTION_ID}__<n>`).
+ * whose id sorts ahead of a minted section body (it is a proper prefix).
  */
 async function findContainerRunId(
   workflowRunRepoId: RepoId,
@@ -265,14 +263,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
         return id;
       })();
 
-      // The body child (`section__0`) runs the childWorkflow spawn step, which
+      // The body child runs the childWorkflow spawn step, which
       // emits ChildSpawned into the body child's own run log. Wait for it.
       await waitFor(
         async () => {
           const events = await readWorkflowRunEvents(
             env,
             DEPLOYMENT_ID,
-            BODY_CHILD_RUN_ID,
+            sectionBodyRunId(containerRunId, SECTION_ID, 0),
           );
           return events.some((e) => e.type === "ChildSpawned");
         },
@@ -282,7 +280,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const bodyEvents = await readWorkflowRunEvents(
         env,
         DEPLOYMENT_ID,
-        BODY_CHILD_RUN_ID,
+        sectionBodyRunId(containerRunId, SECTION_ID, 0),
       );
       const bodySpawned = bodyEvents.find((e) => e.type === "ChildSpawned");
       if (bodySpawned === undefined) throw new Error("unreachable");
@@ -347,7 +345,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           const events = await readWorkflowRunEvents(
             env,
             DEPLOYMENT_ID,
-            BODY_CHILD_RUN_ID,
+            sectionBodyRunId(containerRunId, SECTION_ID, 0),
           );
           return events.some(
             (e) =>
@@ -360,7 +358,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const finalBodyEvents = await readWorkflowRunEvents(
         env,
         DEPLOYMENT_ID,
-        BODY_CHILD_RUN_ID,
+        sectionBodyRunId(containerRunId, SECTION_ID, 0),
       );
       const bodyChildCompleted = finalBodyEvents.find(
         (e) => e.type === "ChildCompleted",

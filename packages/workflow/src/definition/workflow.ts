@@ -436,11 +436,13 @@ function validateStepIds(steps: Record<string, Primitive>): void {
     // derives from it: an inline-body ref (`<workflowId>__<stepId>`, and under
     // nesting `<parentRef>__<stepId>`), a loop iteration body run id
     // (`<runId>__<loopId>__<index>`), and an onTrigger section body run id
-    // (`<sectionId>__<index>`, which is parsed back). A `__` inside a step id
-    // would make one of those ids ambiguous with a different chain -- and they
-    // key the durable store, so the collision is silent shared-state
-    // corruption. A body step id feeds those same joins, which is why this pass
-    // has to reach a body rather than trust it to have normalized itself.
+    // (`<parentRunId>__<sectionId>__<index>` via `sectionBodyRunId`, which is
+    // parsed back, as is a body already recorded as `<sectionId>__<index>`).
+    // A `__` inside a step id would make one of those ids ambiguous with a
+    // different chain -- and they key the durable store, so the collision is
+    // silent shared-state corruption. A body step id feeds those same joins,
+    // which is why this pass has to reach a body rather than trust it to have
+    // normalized itself.
     if (stepId.includes("__")) {
       throw new Error(
         `step id ${JSON.stringify(stepId)} must not contain "__"; ` +
