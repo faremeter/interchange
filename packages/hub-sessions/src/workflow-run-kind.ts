@@ -1528,8 +1528,8 @@ async function validateClaimCheckSubtree(
   listDirOids?: (path: string) => Promise<{ name: string; oid: string }[]>,
 ): Promise<ValidatePushResult> {
   // Surface each consumed entry's git blob OID during enumeration
-  // straight from the tree listing on both sides when the substrate
-  // provides it, falling back to hashing the bytes otherwise.
+  // straight from the tree listing when the substrate provides it,
+  // falling back to hashing the bytes otherwise.
   const prospectiveConsumedOid = makeListingOidResolver(
     "prospective",
     listDirOids,
@@ -1707,8 +1707,7 @@ async function validateClaimCheckSubtree(
       // watermark — prune only what the watermark passed. The suffix
       // relation is deliberately NOT enforced: a retained entry may sit
       // below the watermark (a late-consumed or replayed message), which
-      // gives only extra dedup. Only dropped entries are read; retained
-      // entries are proven byte-identical by the OID compare above.
+      // gives only extra dedup.
       for (const e of priorBucket.consumed) {
         if (prospectiveConsumedPaths.has(e.blobPath)) continue;
         const priorParsed = await parseConsumedBlobFrom(e, priorReadBlob);
@@ -2219,8 +2218,7 @@ export const workflowRunKindHandler: KindHandler = {
           // that authors the event; a later commit carrying the cancel
           // forward (e.g. the run's own cascade write) is signed
           // differently and must not be rejected. Byte equality already
-          // proves a carried-forward blob unchanged. Mirrors the
-          // newly-terminal gate below.
+          // proves a carried-forward blob unchanged.
           if (await blobIsNewlyAdded(entry.blobPath, priorReadBlob)) {
             const principalCheck = checkCancelOriginPrincipal(
               entry.blobPath,
@@ -3156,8 +3154,7 @@ export async function scanRunsForBoot(
       // ENOENT means no events yet (grants may be staged first); skip.
       // A non-ENOENT error drops the run from both sets — a live run
       // dropped from ownedMessageIds gets re-admitted and double-dispatched
-      // on the same runId. Surface it, but still skip: aborting the whole
-      // scan over one run is worse.
+      // on the same runId. Surface it, but still skip.
       if (
         !(cause instanceof Error) ||
         !("code" in cause) ||

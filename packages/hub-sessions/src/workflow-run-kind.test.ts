@@ -205,11 +205,9 @@ describe("workflowRunKindHandler.validatePush — accepts", () => {
   });
 
   test("accepts a run carrying a per-run grants.json alongside its events", async () => {
-    // The hub's `run.grants` frame writes `runs/<runId>/grants.json` -- a
-    // sibling of the run's `events/` subtree -- ahead of the trigger. The
-    // handler must accept the grants file as a permitted run-dir child, not
-    // reject it as an unexpected entry, or the whole per-run grants channel
-    // fails at the substrate boundary.
+    // The hub's `run.grants` frame writes `runs/<runId>/grants.json` ahead
+    // of the trigger; the handler must accept it as a permitted run-dir
+    // child, not reject it as unexpected.
     const r = await validate({
       [WORKFLOW_RUN_GITIGNORE_PATH]: "",
       [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/${WORKFLOW_RUN_GRANTS_FILE}`]:
@@ -223,10 +221,9 @@ describe("workflowRunKindHandler.validatePush — accepts", () => {
   });
 
   test("accepts a grants-only run directory in the pre-first-event window", async () => {
-    // The grants frame lands BEFORE the child emits its first event, so
-    // there is a window where the run directory holds only `grants.json`
-    // with no `events/` subtree yet. The handler must carry that transient
-    // shape forward rather than reject it for a missing events subdirectory.
+    // The grants frame lands before the child's first event, so a run dir
+    // holding only `grants.json` must pass rather than fail the missing
+    // events requirement.
     const r = await validate({
       [WORKFLOW_RUN_GITIGNORE_PATH]: "",
       [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/${WORKFLOW_RUN_GRANTS_FILE}`]:
@@ -237,8 +234,8 @@ describe("workflowRunKindHandler.validatePush — accepts", () => {
 
   test("accepts a run whose grants.json survives alongside a sealed events.jsonl", async () => {
     // Compaction folds a terminated run's `events/` into `events.jsonl` and
-    // leaves the sibling `grants.json` untouched. The resulting sealed shape
-    // -- combined events file plus grants file -- must validate.
+    // leaves the sibling `grants.json` untouched; that sealed shape must
+    // validate.
     const r = await validate({
       [WORKFLOW_RUN_GITIGNORE_PATH]: "",
       [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/${WORKFLOW_RUN_GRANTS_FILE}`]:
@@ -292,13 +289,11 @@ describe("workflowRunKindHandler.validatePush — accepts", () => {
   });
 
   test("accepts the two-tier WAL + checkpoint agent-state layout (Phase D1)", async () => {
-    // The durable conversation store no longer writes a single
-    // `conversation.json`; it writes a compacted `checkpoint.json` plus
-    // bucket-sharded `wal/<bucket>/<seq>.json` delta blobs. The validator
-    // enforces only that every `agent-state/<segment>` is a non-empty
-    // directory (not a dangling blob) and round-trips URL-encoding -- it
-    // says nothing about the files INSIDE, so the nested WAL layout must
-    // pass unchanged with no validator loosening.
+    // The durable conversation store writes a compacted `checkpoint.json`
+    // plus bucket-sharded `wal/<bucket>/<seq>.json` delta blobs. The
+    // validator only requires a non-empty round-tripping
+    // `agent-state/<segment>` directory, so the nested WAL layout must
+    // pass unchanged.
     const r = await validate(
       {
         [WORKFLOW_RUN_GITIGNORE_PATH]: "",
@@ -393,7 +388,7 @@ describe("workflowRunKindHandler.validatePush — accepts", () => {
       {
         [WORKFLOW_RUN_GITIGNORE_PATH]: "",
         // No `<agentKey>/` directory layer: the blob sits directly under
-        // the prefix, so it is not keyed by any agent.
+        // the prefix.
         [`${WORKFLOW_RUN_AGENT_STATE_PREFIX}/conversation.json`]: "{}",
       },
       { principal: WORKFLOW_PROCESS_PRINCIPAL },
@@ -428,13 +423,12 @@ describe("workflowRunKindHandler.validatePush — newly-terminal signal", () => 
   });
 
   test("reports a lone seq-1 RunFailed with no preceding RunStarted", async () => {
-    // The exact artifact the crash-loop guard's supervisor-authored tombstone
-    // produces: the anchor run's events subtree is empty when the guard
-    // latches, so the RunFailed lands as the sole event at seq 1 (the
-    // runtime's first-event convention) with no RunStarted ahead of it. The
-    // validator keys contiguity off the first filename seq, not a fixed 0, and
-    // enforces no "RunStarted precedes terminal" rule, so this is accepted and
-    // flips the run to `failed`.
+    // The crash-loop guard's supervisor-authored tombstone: the anchor run's
+    // events subtree is empty when the guard latches, so RunFailed lands as
+    // the sole event at seq 1 (the runtime's first-event convention) with no
+    // RunStarted ahead. The validator keys contiguity off the first filename
+    // seq, not a fixed 0, and enforces no "RunStarted precedes terminal"
+    // rule, so this is accepted and flips the run to `failed`.
     const r = await validate({
       [WORKFLOW_RUN_GITIGNORE_PATH]: "",
       [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/1.json`]: eventBody(
@@ -477,8 +471,8 @@ describe("workflowRunKindHandler.validatePush — newly-terminal signal", () => 
       ),
     };
     // The prior tree already carries the terminal event, so a no-op
-    // re-validation -- and a later compaction commit that folds the
-    // events forward -- must not re-fire the signal.
+    // re-validation -- and a later compaction commit -- must not re-fire the
+    // signal.
     const r = await validate(files, { priorFiles: files });
     if (!r.ok) throw new Error(`expected ok, got: ${r.reason}`);
     expect(r.newlyTerminalRuns ?? []).toEqual([]);
@@ -533,8 +527,8 @@ describe("workflowRunKindHandler.validatePush — newly-terminal signal", () => 
         "RunCompleted",
       ),
     };
-    // run-a's terminal event is already in the prior tree (carried
-    // forward unchanged); only run-b's newly added terminal must fire.
+    // run-a's terminal event is already in the prior tree (carried forward
+    // unchanged); only run-b's newly added terminal must fire.
     const r = await validate(
       {
         [WORKFLOW_RUN_GITIGNORE_PATH]: "",
@@ -990,8 +984,8 @@ describe("workflowRunKindHandler.validatePush — CancelRequested origin", () =>
 describe("workflowRunKindHandler.validatePush — CancelRequested principal-vs-origin", () => {
   // Only a `hub` principal may mint a `hub-admin` origin; only a
   // `supervisor` principal may mint `self`, `supervisor-drain`, or
-  // `supervisor-operator`. The handler enforces the principal-vs-
-  // origin pairing at `validatePush`; these cases pin the boundary.
+  // `supervisor-operator`. These cases pin that pairing at
+  // `validatePush`.
 
   function cancelTree(origin: string): Record<string, string> {
     return {
@@ -1068,11 +1062,12 @@ describe("workflowRunKindHandler.validatePush — CancelRequested principal-vs-o
 
   test("accepts a workflow-process write that carries a supervisor-signed CancelRequested forward unchanged", async () => {
     // The origin-vs-signer rule is a WRITE-TIME check on the commit that
-    // authors the CancelRequested. A run's own cascade write of RunCancelled
-    // is signed workflow-process and re-lists the whole events prefix, carrying
-    // the earlier supervisor-signed CancelRequested forward byte-for-byte. The
-    // handler must accept that; re-checking the carried-forward cancel's origin
-    // against the cascade write's signer would reject a legitimate terminal.
+    // authors the CancelRequested. A run's own cascade write of
+    // RunCancelled is signed workflow-process and re-lists the whole
+    // events prefix, carrying the earlier supervisor-signed
+    // CancelRequested forward byte-for-byte. The handler must accept
+    // that; re-checking the carried-forward cancel's origin against the
+    // cascade write's signer would reject a legitimate terminal.
     const cancel = eventBody(1, "CancelRequested", {
       origin: "supervisor-operator",
       reason: "cancel",
@@ -1099,10 +1094,10 @@ describe("workflowRunKindHandler.validatePush — CancelRequested principal-vs-o
   });
 
   test("still rejects a workflow-process write that mutates a carried-forward CancelRequested", async () => {
-    // The carry-forward exemption is gated strictly on the blob being absent
-    // from the prior tree; a byte-DIVERGED carried-forward CancelRequested is
-    // not a carry-forward, so the append-only byte-equality check rejects it
-    // before the origin exemption is even reached.
+    // The carry-forward exemption is gated strictly on the blob being
+    // absent from the prior tree; a byte-DIVERGED carried-forward
+    // CancelRequested is not a carry-forward, so the append-only
+    // byte-equality check rejects it first.
     const prior = {
       [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/0.json`]: eventBody(
         0,
@@ -1136,10 +1131,9 @@ describe("workflowRunKindHandler.validatePush — CancelRequested principal-vs-o
 });
 
 describe("workflowRunKindHandler.validatePush — append-only via prior-tree", () => {
-  // The handler reads the parent commit's tree via `priorReadBlob`
-  // and rejects any event path whose prospective bytes diverge from
-  // the prior bytes. These cases pin that append-only boundary at
-  // `validatePush`.
+  // The handler reads the parent commit's tree via `priorReadBlob` and
+  // rejects any event path whose prospective bytes diverge from the
+  // prior bytes. These cases pin that append-only boundary.
 
   test("rejects a prospective tree that mutates the bytes of an event present in the prior tree", async () => {
     const prior = {
@@ -1221,10 +1215,8 @@ describe("workflowRunKindHandler.validatePush — append-only via prior-tree", (
 
 describe("workflowRunKindHandler.validatePush — blobs subtree", () => {
   // The production `BlobSubstrate` adapter spills outputs whose
-  // JSON-stringified form exceeds 1 MiB to `runs/<runId>/blobs/<sha256-hex>`,
+  // JSON-stringified form exceeds 1 MiB to `runs/<runId>/blobs/<sha256-hex>`:
   // a lowercase 64-char sha256 hex key with opaque, immutable bytes.
-  // This fixture mirrors such a commit: a blob keyed by the sha256 of
-  // the payload, sized comfortably above 1 MiB.
 
   const BLOB_KEY_A =
     "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -1315,8 +1307,7 @@ describe("workflowRunKindHandler.validatePush — mail parts subtree", () => {
   // files under `runs/<runId>/parts/<urlEncoded(messageId)>/<index>-<name>`.
   // Bytes are opaque and immutable, enforced by prior-tree git-OID
   // equality — the filename is not content-addressed, so a same-path
-  // rewrite must be caught by comparing content, and the OID compare
-  // avoids re-reading bytes on every commit that touches the run.
+  // rewrite must be caught by comparing content.
 
   const SEGMENT = encodeURIComponent("<msg-1@host>");
   const SEGMENT_B = encodeURIComponent("<msg-2@host>");
@@ -1354,8 +1345,8 @@ describe("workflowRunKindHandler.validatePush — mail parts subtree", () => {
   });
 
   test("accepts mail parts in the pre-first-event window (grants.json, no events)", async () => {
-    // The supervisor commits mail part bytes before firing the trigger, so
-    // the mail parts land in a commit that carries no `events/` subtree yet.
+    // The supervisor commits mail part bytes before firing the trigger,
+    // so they land in a commit carrying no `events/` subtree yet.
     const r = await validate({
       [WORKFLOW_RUN_GITIGNORE_PATH]: "",
       [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/${WORKFLOW_RUN_GRANTS_FILE}`]: "{}",
@@ -1452,7 +1443,8 @@ describe("workflowRunKindHandler.validatePush — mail parts subtree", () => {
     const prior = partsTree("run-a", {
       [`${SEGMENT}/0-photo.png`]: "png-bytes",
     });
-    // Prospective keeps the run and its event but drops the mail part file.
+    // Prospective keeps the run and its event but drops the mail part
+    // file; the immutability walk must reject the deletion.
     const prospective = partsTree("run-a", {}, { withEvent: true });
     const r = await validate(prospective, { priorFiles: prior });
     expect(r.ok).toBe(false);
@@ -1475,8 +1467,8 @@ describe("workflowRunKindHandler.validatePush — mail parts subtree", () => {
   });
 
   test("rejects a nested directory in place of a mail part file", async () => {
-    // The `<index>-<name>` shape is permissive, so a directory named `0-foo`
-    // must be rejected rather than admitting a nested subtree.
+    // The `<index>-<name>` shape is permissive, so a directory named
+    // `0-foo` must be rejected rather than admitting a nested subtree.
     const r = await validate(
       partsTree("run-a", { [`${SEGMENT}/0-foo/deep.png`]: "png-bytes" }),
     );
@@ -1488,8 +1480,8 @@ describe("workflowRunKindHandler.validatePush — mail parts subtree", () => {
   });
 
   test("enforces mail part immutability under changedPathPrefixes scoping", async () => {
-    // The production write path validates a bounded change set; exercise the
-    // scoped path rather than only the validate-all path the cases above use.
+    // The production write path validates a bounded change set; exercise
+    // the scoped path rather than only the validate-all path above.
     const scope = new Set([`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/`]);
     const prior = partsTree("run-a", {
       [`${SEGMENT}/0-photo.png`]: "original-bytes",
@@ -1668,15 +1660,14 @@ describe("workflowRunKindHandler.validatePush — mailbox subtree", () => {
   });
 
   test("accepts expunging a prior message while the index persists", async () => {
-    // The warm agent physically removes a message from the live INBOX. The
-    // index is rewritten (mutable) and retained; the `<uid>.eml` blob is
-    // dropped from the tree but survives in git history because a
-    // workflow-run repo is never GC'd.
+    // The warm agent physically removes a message from the live INBOX:
+    // the index is rewritten (mutable) and retained; the `<uid>.eml`
+    // blob is dropped but survives in git history because a workflow-run
+    // repo is never GC'd.
     const prior = mailboxTree({
       [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: JSON.stringify({ messages: [1] }),
       "1.eml": "raw-bytes",
     });
-    // Prospective keeps the index but drops the message blob.
     const prospective = mailboxTree({
       [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: JSON.stringify({ messages: [] }),
     });
@@ -1707,9 +1698,8 @@ describe("workflowRunKindHandler.validatePush — mailbox subtree", () => {
 
   test("rejects dropping the whole mailbox subtree (index continuity)", async () => {
     // Dropping the whole `mailbox/` subtree removes the index, which would
-    // reset uidValidity/uidNext on the next open and force uid reuse from 1.
-    // A real backing keeps index.json even after expunging every message, so
-    // this rejects only the pathological whole-subtree drop.
+    // reset uidValidity/uidNext on the next open and force uid reuse from
+    // 1; a real backing keeps index.json even after expunging every message.
     const prior = mailboxTree({
       [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: JSON.stringify({ messages: [1] }),
       "1.eml": "raw-bytes",
@@ -1810,8 +1800,7 @@ describe("workflowRunAuthorize — workflow-process principal", () => {
 describe("workflowRunKindHandler.validatePush — workflow-process path-scope fail-closed", () => {
   // A permissive authorize (e.g. a test `allowAll`) can let a malformed
   // workflow-process principal reach `validatePush`; the path-scope
-  // helper must fail closed there, since the runId scoping below needs
-  // a parsed principal carrying a valid `anchorRunId`.
+  // helper must fail closed there.
   test("a malformed workflow-process principal reaching validatePush rejects with a structured reason", async () => {
     const principal: Principal = { kind: "workflow-process" };
     const events = {
@@ -2561,12 +2550,9 @@ describe("claim-check API — markConsumed", () => {
   });
 });
 
-// ---------------------------------------------------------------------
-// Substrate-level FIFO unit test — validation criterion 4 (substrate
-// half). Two messages enqueued in order and dequeued twice, then a
-// mid-FIFO "crash" leaves a processing entry behind;
-// `replayProcessingToInbox` must restore it under its original key so
-// the next dequeue picks the entry the crashed worker claimed.
+// Substrate-level FIFO: two messages enqueued and dequeued in order, then
+// a mid-FIFO "crash" leaves a processing entry behind that
+// `replayProcessingToInbox` restores under its original key.
 
 describe("claim-check substrate FIFO invariant", () => {
   test("dequeues two messages in receivedAt order and re-dequeues after crash replay with the original key", async () => {
@@ -2604,9 +2590,8 @@ describe("claim-check substrate FIFO invariant", () => {
     expect(second.envelope.messageId).toBe("msg-2");
     expect(second.key).toBe("200-msg-2");
 
-    // Mid-FIFO crash: msg-2 stays in processing, no consumed entry
-    // landed. The worker process is gone. The recovery path moves
-    // processing entries back to inbox preserving the filename key.
+    // Mid-FIFO crash: msg-2 stays in processing with no consumed entry;
+    // the recovery path moves it back to inbox preserving the key.
     const replay = await replayProcessingToInbox(
       store,
       principal,
@@ -2658,19 +2643,14 @@ describe("claim-check substrate FIFO invariant", () => {
       ADDRESS,
     );
     expect(replay.replayedKeys).toEqual([]);
-    // The inbox entry is untouched.
     const next = await dequeueToProcessing(store, principal, repoId, ADDRESS);
     expect(next).not.toBeNull();
     if (next === null) throw new Error("unreachable");
     expect(next.envelope.messageId).toBe("msg-1");
   });
 
-  // Regression: lexicographic-sort FIFO bug. Before the fix,
-  // dequeueToProcessing sorted inbox filenames as strings, so a
-  // later-received message with a longer receivedAt prefix dequeued
-  // first (e.g. "100-msg-B" < "99-msg-A" because '1' < '9'). After
-  // the fix the substrate sorts by parsed numeric receivedAt and the
-  // earlier message wins.
+  // Regression: a raw string sort would put "100-msg-B" before "99-msg-A"
+  // ('1' < '9'), breaking FIFO across non-uniform receivedAt widths.
   test("non-uniform receivedAt widths still respect FIFO (msg-A at 99 dequeues before msg-B at 100)", async () => {
     const { store, repoId, principal } =
       await makeClaimCheckStore("cc-fifo-width-");
@@ -2700,12 +2680,9 @@ describe("claim-check substrate FIFO invariant", () => {
 });
 
 // A `processing/` entry owned by a live run stays put across replay:
-// `scanRunsForBoot` finds those runs' messageIds so the spawn-time
-// replay leaves them in `processing/` rather than re-admitting them
-// and dispatching a colliding second run on the same runId. The run
-// logs live on `refs/heads/main`, which the claim-check ref
-// (`refs/heads/events`) cannot see, so the caller reads them via the
-// working tree.
+// re-admitting it would dispatch a second run on the same runId. The run
+// logs live on `refs/heads/main`, which the claim-check ref cannot see,
+// so the caller reads them via the working tree.
 describe("claim-check API — resume-owned processing entries survive replay", () => {
   function runStartedBody(runId: string): string {
     return JSON.stringify({
@@ -2729,7 +2706,7 @@ describe("claim-check API — resume-owned processing entries survive replay", (
 
   test("scanRunsForBoot returns non-terminal run messageIds and excludes terminal ones", async () => {
     const { store, repoId, principal } = await makeClaimCheckStore("cc-owned-");
-    // A mail-triggered run's runId is its messageId. `live` is parked
+    // A mail-triggered run's runId is its messageId: `live` is parked
     // (RunStarted only); `done` reached RunCompleted.
     await store.writeTree(principal, repoId, "refs/heads/main", {
       files: {
@@ -2750,9 +2727,8 @@ describe("claim-check API — resume-owned processing entries survive replay", (
     const { store, repoId, principal } = await makeClaimCheckStore("cc-scan-");
     // `live` is parked (RunStarted only). `done` reached RunCompleted but is
     // still in per-event form -- the crash window an interrupted fold leaves
-    // behind. A single terminal run must appear in `pendingSealRunIds` and be
-    // absent from `ownedMessageIds`: the same event that ends a run stops it
-    // owning its message and makes it a seal candidate.
+    // behind. The same event that ends a run stops it owning its message and
+    // makes it a seal candidate.
     await store.writeTree(principal, repoId, "refs/heads/main", {
       files: {
         [`${WORKFLOW_RUN_RUNS_PREFIX}/live/events/0.json`]:
@@ -2775,8 +2751,8 @@ describe("claim-check API — resume-owned processing entries survive replay", (
   test("scanRunsForBoot excludes an already-sealed run from pendingSealRunIds", async () => {
     const { store, repoId, principal } =
       await makeClaimCheckStore("cc-scan-sealed-");
-    // A sealed run (combined events.jsonl, no per-event directory) is already
-    // folded, so it is not a seal candidate.
+    // A sealed run (combined events.jsonl) is already folded, not a seal
+    // candidate.
     const sealed =
       [runStartedBody("sealed"), runCompletedBody(1)].join("\n") + "\n";
     await store.writeTree(principal, repoId, "refs/heads/main", {
@@ -2857,9 +2833,8 @@ describe("claim-check API — resume-owned processing entries survive replay", (
   });
 
   test("readWorkflowRunLifecycle and readCommittedWorkflowRunLifecycle agree across states", async () => {
-    // Both readers run one shared classification core over different read
-    // surfaces (working-tree fs vs committed git objects). Seed one tree and
-    // read every run BOTH ways to prove the two surfaces classify identically.
+    // One shared classification core over two read surfaces (working-tree fs
+    // vs committed git objects); seed one tree and read every run both ways.
     const { store, repoId, principal } = await makeClaimCheckStore("cc-equiv-");
     const sealedLog =
       [runStartedBody("sealed"), runCompletedBody(1)].join("\n") + "\n";
@@ -2905,10 +2880,9 @@ describe("claim-check API — resume-owned processing entries survive replay", (
   });
 
   test("readWorkflowRunLifecycle wraps an unreadable latest event", async () => {
-    // A validated write cannot store a corrupt event, so seed a valid live run
-    // and then corrupt its latest event on disk -- the storage-corruption case
-    // the reader must surface as `workflow_run_event_unreadable` rather than
-    // misclassify.
+    // A validated write cannot store a corrupt event, so seed a valid
+    // live run and corrupt its latest event on disk -- the reader must
+    // surface `workflow_run_event_unreadable` rather than misclassify.
     const { store, repoId, principal } =
       await makeClaimCheckStore("cc-corrupt-fs-");
     await store.writeTree(principal, repoId, "refs/heads/main", {
@@ -2933,8 +2907,8 @@ describe("claim-check API — resume-owned processing entries survive replay", (
   });
 
   test("readCommittedWorkflowRunLifecycle wraps an unreadable latest event", async () => {
-    // The committed reader reads git objects, so inject the corruption through
-    // a reads stub whose latest blob will not parse.
+    // The committed reader reads git objects, so inject the corruption
+    // through a reads stub whose latest blob will not parse.
     const reads = {
       async treeOid() {
         return null;
@@ -2956,9 +2930,9 @@ describe("claim-check API — resume-owned processing entries survive replay", (
   });
 
   test("readWorkflowRunLifecycle surfaces a non-ENOENT events-directory read error", async () => {
-    // An absent events directory (ENOENT) classifies as absent, but a
-    // non-ENOENT read error must surface rather than be swallowed as absent.
-    // Seed the per-event `events` path as a file so readdir fails with ENOTDIR.
+    // An absent events directory (ENOENT) classifies as absent; a non-ENOENT
+    // read error must surface. Seed `events` as a file so readdir fails with
+    // ENOTDIR.
     const { store, repoId } = await makeClaimCheckStore("cc-enotdir-");
     const runDir = path.join(
       store.getRepoDir(repoId),
@@ -2977,11 +2951,8 @@ describe("claim-check API — resume-owned processing entries survive replay", (
     const { store, repoId, principal } = await makeClaimCheckStore(
       "cc-owned-cancelling-",
     );
-    // A cancelling run: the operator requested cancel (CancelRequested)
-    // but the run has not yet reached its RunCancelled finalizer.
-    // CancelRequested is NOT terminal -- only RunCancelled is -- so the
-    // run still owns its message and must stay in the owned set, keeping
-    // its message suppressed on replay until the finalizer lands.
+    // A cancelling run: CancelRequested is NOT terminal -- only RunCancelled
+    // is -- so the run still owns its message until the finalizer lands.
     await store.writeTree(principal, repoId, "refs/heads/main", {
       files: {
         [`${WORKFLOW_RUN_RUNS_PREFIX}/cancelling/events/0.json`]:
@@ -3005,9 +2976,8 @@ describe("claim-check API — resume-owned processing entries survive replay", (
     const { store, repoId, principal } =
       await makeClaimCheckStore("cc-owned-no-msgid-");
     // A child run (e.g. a spawned sub-run) starts without a
-    // consumedMessageId: it was not triggered by an inbound claim-check
-    // message. scanRunsForBoot only adds when consumedMessageId is a
-    // string, so this live run contributes no messageId to suppress.
+    // consumedMessageId; scanRunsForBoot only adds when it is a string, so
+    // this live run contributes no messageId to suppress.
     await store.writeTree(principal, repoId, "refs/heads/main", {
       files: {
         [`${WORKFLOW_RUN_RUNS_PREFIX}/child/events/0.json`]: JSON.stringify({
@@ -3028,12 +2998,9 @@ describe("claim-check API — resume-owned processing entries survive replay", (
   test("a sealed run (combined events.jsonl) is excluded from the owned set", async () => {
     const { store, repoId, principal } =
       await makeClaimCheckStore("cc-owned-sealed-");
-    // A terminated run is sealed: its per-event `events/<seq>.json` blobs
-    // are folded into one combined `events.jsonl` file. Only a terminated
-    // run may be sealed, so a sealed run owns nothing even though its
-    // RunStarted still carries a consumedMessageId. scanRunsForBoot
-    // detects the sealed run by the combined file's presence and skips it
-    // without reading the (absent) per-event directory.
+    // A sealed run's per-event blobs were folded into one `events.jsonl`.
+    // Only a terminated run may be sealed, so a sealed run owns nothing even
+    // though its RunStarted still carries a consumedMessageId.
     const sealed =
       [runStartedBody("sealed"), runCompletedBody(1)].join("\n") + "\n";
     await store.writeTree(principal, repoId, "refs/heads/main", {
@@ -3049,10 +3016,8 @@ describe("claim-check API — resume-owned processing entries survive replay", (
 
   test("an absent runs directory yields an empty owned set", async () => {
     const { store, repoId } = await makeClaimCheckStore("cc-owned-no-runs-");
-    // A freshly-initialised repo has only a `.gitignore` genesis tree and
-    // no `runs/` directory. readdir on the missing directory surfaces
-    // ENOENT, which scanRunsForBoot treats as an empty owned set
-    // rather than throwing.
+    // A freshly-initialised repo has no `runs/` directory; the ENOENT from
+    // readdir reads as an empty owned set rather than throwing.
     const { ownedMessageIds: owned } = await scanRunsForBoot(store, repoId);
     expect(owned.size).toBe(0);
   });
@@ -3208,10 +3173,8 @@ describe("claim-check API — enqueueInbox per-messageId atomicity in inbox", ()
 });
 
 // Regression at the validatePush layer for the same intra-state
-// atomicity gap. A prospective tree carrying two inbox entries for
-// the same messageId at distinct receivedAt values is structurally
-// invalid; the rejection lands on the same code path that catches
-// inbox+processing collisions.
+// atomicity gap: a tree with two inbox entries for one messageId at
+// distinct receivedAt values is structurally invalid.
 describe("workflowRunKindHandler.validatePush — claim-check intra-state atomicity", () => {
   test("rejects a tree with two inbox entries sharing a messageId at different receivedAt", async () => {
     const r = await validate({
@@ -3348,12 +3311,10 @@ describe("workflow-run substrate — per-commit pack validation", () => {
       throw new Error("expected source ref to resolve");
     }
     // Build a pack carrying BOTH the enqueue and the dequeue commits.
-    // `collectReachableObjects` walks one commit's tree (not its
-    // ancestor commits), so to feed the per-commit walker on the
-    // target a pack with every parent it needs, also include the
-    // genesis commit `initRepo` produced -- both the enqueue and
-    // the dequeue commits chain back to it. Mirrors the supervisor
-    // bootstrap shape the per-commit walker has to handle.
+    // `collectReachableObjects` walks one commit's tree (not its ancestor
+    // commits), so to feed the per-commit walker the pack must also
+    // include the genesis commit `initRepo` produced, which both commits
+    // chain back to.
     const genesisSha = await git.resolveRef({
       fs,
       dir: sourceDir,
@@ -4033,9 +3994,7 @@ describe("workflow-run substrate — pack-path per-run scope completeness", () =
 //
 // The watermark is a per-address monotonic receivedAt horizon:
 // markConsumed advances it and prunes entries below it; enqueueInbox
-// refuses inbound below it as definitively-stale. These tests prove
-// the structural contract relaxation and the end-to-end exactly-once
-// + bounded behaviour against a real on-disk store.
+// refuses inbound below it as definitively-stale.
 
 describe("workflowRunKindHandler.validatePush — retention watermark contract", () => {
   // Gate 3: a watermark regression is rejected.
@@ -4089,10 +4048,9 @@ describe("workflowRunKindHandler.validatePush — retention watermark contract",
         250,
       ),
     };
-    // Drop msg-recent (the younger one), keep msg-old (the older one).
-    // The writer claims a watermark above 200 so the dropped 200 is
-    // below it; the retained 100 is below it too. Both sit below the
-    // watermark, so every resubmit in that region is stale-rejected.
+    // Drop msg-recent (receivedAt 200), keep msg-old (receivedAt 100);
+    // both sit below the watermark (201), so every resubmit in that
+    // region is stale-rejected.
     const r = await validate(
       {
         [WORKFLOW_RUN_GITIGNORE_PATH]: "",
@@ -4108,12 +4066,11 @@ describe("workflowRunKindHandler.validatePush — retention watermark contract",
     );
     // The consumed walk does NOT enforce the suffix relation: that
     // would mean reading every retained blob, the O(retained) work the
-    // delta walk avoids. Both the dropped (receivedAt 200) and retained
-    // (receivedAt 100) entries sit below the watermark (201), so
-    // `claim_check_stale_enqueue` refuses every resubmit in that region
-    // regardless of the consumed/ shape — the retained entry only adds
-    // dedup, so a non-suffix prune below the watermark cannot open a
-    // reprocess.
+    // delta walk avoids. Both dropped and retained entries sit below
+    // the watermark (201), so enqueue stale-rejects every resubmit in
+    // that region regardless of the consumed/ shape — the retained
+    // entry only adds dedup, so a non-suffix prune below the watermark
+    // cannot open a reprocess.
     expect(r.ok).toBe(true);
 
     // Boundary lock. The removed-check rejects a dropped entry at
@@ -4121,8 +4078,7 @@ describe("workflowRunKindHandler.validatePush — retention watermark contract",
     // `receivedAt < watermark` stale-reject so the entry AT the
     // watermark is both retained and not stale-rejected — no gap).
     // Assert BOTH sides so a later refactor cannot silently widen
-    // `>=` to `>` and drop the entry at the watermark, letting a
-    // resubmit at that receivedAt miss dedup.
+    // `>=` to `>` and drop the entry at the watermark.
     // (a) strictly above the watermark -> rejected.
     const droppedAbove = await validate(
       {
@@ -4617,10 +4573,9 @@ describe("claim-check API — retention watermark exactly-once + bounded", () =>
     );
     await fs.promises.access(consumedPath);
 
-    // 5. No double-process: nothing remains to dequeue, and a
-    //    re-enqueue of the same content (fresh receivedAt >= watermark)
-    //    is now deduped by the retained consumed entry, surfacing as an
-    //    already-present outcome.
+    // 5. No double-process: nothing remains to dequeue, and a re-enqueue
+    //    of the same content (fresh receivedAt >= watermark) is deduped
+    //    by the retained consumed entry.
     const drained = await dequeueToProcessing(
       store,
       principal,
