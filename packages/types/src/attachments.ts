@@ -6,7 +6,6 @@
 // can produce the right ContentBlock and an adapter can marshal it. Per-agent
 // or per-workflow narrowing rides on top of this ceiling — it narrows the
 // accepted set, it never widens past what the adapters support.
-
 export const ATTACHMENT_CATEGORIES = [
   "image",
   "video",

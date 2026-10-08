@@ -14,14 +14,12 @@ export type SignalKind = typeof SignalKind.infer;
 
 /**
  * The internal resumption taxonomy: how a parked run resumes, keyed by
- * (`kind`, `outcome`). This is NOT the approver's wire decision -- that is
- * `ApprovalDecision`, which the delivery path parses. `ControlSignal` is the
- * `kind`-discriminated union the resumption dispatch is designed around;
- * `correlationId` ties an entry back to the suspension it resolves and
- * `payload` carries kind-specific data opaquely. It is intentionally ahead of
- * its consumers: the `approval` arm is the only one wired today, and its
- * `timeout` outcome arrives via the gate-timeout path, not as a delivered
- * decision. Each remaining signal flow activates its own arm as it lands.
+ * (`kind`, `outcome`). This is NOT the approver's wire decision — that is
+ * `ApprovalDecision`, which the delivery path parses. `correlationId` ties
+ * an entry back to the suspension it resolves and `payload` carries
+ * kind-specific data opaquely. Intentionally ahead of its consumers: the
+ * `approval` arm is the only one wired today, and its `timeout` outcome
+ * arrives via the gate-timeout path, not as a delivered decision.
  */
 export const ControlSignal = type({
   correlationId: "string",
@@ -32,11 +30,12 @@ export const ControlSignal = type({
 export type ControlSignal = typeof ControlSignal.infer;
 
 /**
- * The decision an approver hands back when they resolve an approval. This is
- * the payload delivered to the parked run through `sendSignalDeliver`; the
- * run's `parkOnSignal` awaitNext returns it verbatim as the correlated inbound.
- * `scope` is deliberately absent: it is a storage-and-grant concern the
- * resolver records on the approval row, not something the resumed run consumes.
+ * The decision an approver hands back when they resolve an approval. This
+ * is the payload delivered to the parked run through `sendSignalDeliver`;
+ * the run's `parkOnSignal` awaitNext returns it verbatim as the correlated
+ * inbound. `scope` is deliberately absent: it is a storage-and-grant
+ * concern the resolver records on the approval row, not something the
+ * resumed run consumes.
  */
 export const ApprovalDecision = type({
   outcome: "'approved' | 'rejected'",

@@ -72,14 +72,13 @@ function decode(data: string | Uint8Array): Uint8Array | null {
  * Validate and decode attachments against a policy at either boundary
  * (mail tools or the request body).
  *
- * The attachment count is checked first, before anything is decoded.
- * Encoded base64 is size-checked from its compact length (whitespace
- * stripped, padding counted) before decode, and the first error returns
- * without decoding later entries. Remaining checks, in encounter order:
+ * Order of checks: attachment count first (before anything is decoded);
+ * encoded base64 is size-checked from its compact length (whitespace
+ * stripped, padding counted) before decode; then in encounter order
  * encoded oversize, malformed base64, decoded per-attachment oversize,
- * disallowed MIME type, invalid name. After every attachment passes, the
- * per-message total is checked. On success the decoded
- * `MessageAttachment[]` is returned with names defaulted to
+ * disallowed MIME type, invalid name; the per-message total last. The
+ * first error returns without decoding later entries. On success the
+ * decoded `MessageAttachment[]` is returned with names defaulted to
  * `attachment-{index}` by input position.
  */
 export function validateAttachments(
@@ -157,10 +156,9 @@ export function validateAttachments(
       };
     }
     // A user-supplied name becomes the MIME part's quoted filename, so it
-    // must not contain characters that would break out of the header
-    // (line breaks or a double quote). Empty and whitespace-only names
-    // cannot round-trip through `filename=""`. The default name is always
-    // safe.
+    // must not break out of the header (line breaks or a double quote).
+    // Empty and whitespace-only names cannot round-trip through
+    // `filename=""`. The default name is always safe.
     if (
       input.name !== undefined &&
       (input.name.trim() === "" || /[\r\n"]/.test(input.name))

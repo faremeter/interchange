@@ -12,8 +12,7 @@
 // mail.* grants live in `grants` and carry no effect entry.
 //
 // `grantRequirements` is the full, unfiltered requirement list (both
-// creator- and invoker-sourced). Consumers filter it by source themselves;
-// the snapshot does not filter here.
+// creator- and invoker-sourced); consumers filter it by source themselves.
 
 import { type } from "arktype";
 

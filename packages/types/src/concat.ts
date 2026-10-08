@@ -1,8 +1,7 @@
 // Concatenate byte arrays into a single Uint8Array.
 //
 // A Web-standard replacement for Node's `Buffer.concat`: sum the chunk
-// lengths, allocate the result once, and copy each chunk in at its
-// running offset so the bytes land in input order.
+// lengths, allocate once, and copy each chunk in at its running offset.
 
 export function concatBytes(chunks: Uint8Array[]): Uint8Array {
   let total = 0;

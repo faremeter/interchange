@@ -41,8 +41,7 @@ export type CredentialMaterialSource = () => CredentialMaterial;
  * (not bound to one, unlike `CredentialMaterialSource`) because a source's
  * forward-only failover chain carries a distinct credential per entry. Reads
  * live, so a rotation of the cell is picked up on the next call; fails closed
- * when the credential is absent (revoked or never delivered). This is the single
- * seam a future mode swaps to keep the raw secret out of the child entirely.
+ * when the credential is absent (revoked or never delivered).
  */
 export type CredentialMaterialResolver = (
   credentialId: string,
@@ -94,7 +93,7 @@ export type MediatedCredential = HttpMediatedCredential;
  * its provider. Registered under `key`, matched against a resolved provider's
  * plugin identifier. The plugin shapes a handle from a material source; it does
  * not acquire material and never decides authorization -- both happen upstream,
- * at the delivery boundary, before a plugin is ever consulted.
+ * at the delivery boundary.
  */
 export interface CredentialProvider {
   readonly key: string;

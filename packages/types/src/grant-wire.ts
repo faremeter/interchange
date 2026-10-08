@@ -2,8 +2,7 @@
 //
 // GrantRule.expiresAt is a Date | null at runtime, but JSON round-trips
 // turn it into a string | null. This validator accepts either form and
-// coerces strings back to Date instances, making it safe to use when
-// deserializing grants that have round-tripped through JSON.
+// coerces strings back to Date instances.
 
 import { type } from "arktype";
 

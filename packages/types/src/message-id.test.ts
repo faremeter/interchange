@@ -28,8 +28,7 @@ describe("deriveMessageId", () => {
   test("names no id in a lone-LF message, taking the digest instead", async () => {
     // CRLF is the sole line terminator (RFC 5321 section 2.3.8, section
     // 4.1.1.4), so a lone LF ends no field and `@intx/mime` refuses the
-    // message outright. Reading an id out of that text would give the two
-    // parsers different answers about the same bytes.
+    // message outright; the two parsers must agree about the same bytes.
     const raw = encoder.encode(
       ["Message-ID: <lf@example.com>", "", "body"].join("\n"),
     );
@@ -38,8 +37,8 @@ describe("deriveMessageId", () => {
   });
 
   test("resolves no id from a bare break inside a field body", () => {
-    // The smuggled field would otherwise name the id for a message whose real
-    // `Message-ID` is the one the sender wrote above it.
+    // The smuggled field would otherwise name the id for a message whose
+    // real `Message-ID` is the one the sender wrote above it.
     const raw = encoder.encode(
       "From: a@example.com\nMessage-ID: <smuggled@evil.test>\r\n\r\nbody",
     );
@@ -47,11 +46,11 @@ describe("deriveMessageId", () => {
   });
 
   test("names no id for an LF-only header section, whatever ends it", async () => {
-    // A whole-message search for the `CRLF CRLF` separator finds the one a
-    // sender left in the body and reads the header section from there, so the id
-    // absorbs the fields after the first and the head of the body. This id is
-    // the claim-check dedup key, a stored filename and a database join value, so
-    // no body bytes may reach it.
+    // A whole-message search for `CRLF CRLF` finds the one a sender left
+    // in the body and reads the header section from there, so the id would
+    // absorb the fields after the break and the head of the body. The id
+    // is a dedup key, a stored filename, and a database join value, so no
+    // body bytes may reach it.
     const bodyTerminated = encoder.encode(
       "Message-ID: <a@b>\nSubject: Hi\n\nbody\r\n\r\ntail\n",
     );
@@ -66,9 +65,9 @@ describe("deriveMessageId", () => {
   });
 
   test("names no id when an LF LF ends the header section", () => {
-    // The blank line is a pair of line breaks of its own. Honouring a bare pair
-    // lets a sender who controls one field body end the section early and strip
-    // the `Message-ID` after it.
+    // A bare line-break pair is the blank-line separator of its own
+    // flavour; honouring it lets a sender who controls one field body end
+    // the section early and strip the `Message-ID` after it.
     const raw = encoder.encode(
       "From: a@example.com\r\nSubject: Hi\n\n" +
         "Message-ID: <stripped@example.com>\r\n\r\nbody",
@@ -98,8 +97,8 @@ describe("deriveMessageId", () => {
   });
 
   test("treats a blank Message-ID header as naming no id", () => {
-    // RFC 2822 defines `Message-ID` as `msg-id`, which admits no empty value,
-    // so a header a sender left blank names nothing.
+    // RFC 2822 defines `Message-ID` as `msg-id`, which admits no empty
+    // value, so a header a sender left blank names nothing.
     const raw = encoder.encode(
       ["From: a@example.com", "Message-ID:   ", "", "body"].join("\r\n"),
     );
@@ -107,10 +106,10 @@ describe("deriveMessageId", () => {
   });
 
   test("two different messages with blank Message-ID headers derive different ids", async () => {
-    // The derived id is the dedup key that makes the same bytes consume once.
-    // Answering `""` for a blank header would make it one key two different
-    // messages share, so the second would be discarded as a redelivery of the
-    // first. Each falls back to its own digest instead.
+    // The derived id is the dedup key that makes the same bytes consume
+    // once. Answering `""` for a blank header would give two different
+    // messages one shared key, so the second would be discarded as a
+    // redelivery of the first. Each falls back to its own digest instead.
     const first = encoder.encode(
       ["From: a@example.com", "Message-ID:", "", "first body"].join("\r\n"),
     );
