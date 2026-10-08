@@ -98,7 +98,7 @@ const REGISTRY_NAME = "ext-reg";
 const PACKAGE_VERSION = "1.0.0";
 const WORKFLOW_ENTRY = "./workflow.mjs";
 
-const TENANT_ID = "tnt_source_closure_director";
+const TENANT_ID = "tnt-closure-director";
 const CALLER_PRINCIPAL_ID = "prn_source_closure_director_creator";
 const DEFINITION_ASSET_ID = "ast_source_closure_director_wf";
 const SOURCE_ASSET_ID = "ast_source_closure_director_src";
