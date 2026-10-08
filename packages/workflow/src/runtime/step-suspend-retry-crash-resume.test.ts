@@ -2,24 +2,23 @@
 // suspended.
 //
 // `step-suspend-crash-resume.test.ts` covers the pure-suspend case: a step
-// that parked on its FIRST attempt. There `currentAttempt` is 1, so the
-// resume re-entry happens to re-invoke on attempt 1 whether or not it
-// recovers the attempt -- attempt 1 is right by coincidence.
+// that parked on its FIRST attempt, where `currentAttempt` is 1, so the
+// resume re-entry re-invokes on attempt 1 whether or not it recovers the
+// attempt -- right by coincidence.
 //
-// This test covers the case the coincidence hides: a step that FAILED
-// attempt 1 (StepFailed + AttemptScheduled{nextAttempt:2} + TimerFired) and
-// then, on attempt 2, suspended on a signal. Its durable tail reduces to
+// This test covers the case the coincidence hides: a step that FAILED attempt
+// 1 (StepFailed + AttemptScheduled{nextAttempt:2} + TimerFired) and then, on
+// attempt 2, suspended on a signal. Its durable tail reduces to
 // `awaiting-signal` with `currentAttempt === 2`. The cold-path ContextStore
 // is rooted at `.../steps/<stepId>/attempt-<N>`, so the pending-op the
 // suspend committed lives under `attempt-2`. The crash-resume re-invoke MUST
 // carry attempt 2 so the reopened store is the same `attempt-2` store the
 // reactor rehydrates its gate from; re-invoking on attempt 1 would reopen
 // `attempt-1`, rehydrate no gate, and the delivered decision would correlate
-// against nothing -- a silent forever-hang.
-//
-// The coverage this test owns is that the resume re-invocation carries the
-// recovered `authzContext.attempt` (2, not 1), which is the input the
-// sidecar's `stepStorageRoot`/`buildEnv` key the store on.
+// against nothing -- a silent forever-hang. The coverage this test owns is
+// that the resume re-invocation carries the recovered `authzContext.attempt`
+// (2, not 1), which is the input the sidecar's `stepStorageRoot`/`buildEnv`
+// key the store on.
 
 import { describe, test, expect } from "bun:test";
 

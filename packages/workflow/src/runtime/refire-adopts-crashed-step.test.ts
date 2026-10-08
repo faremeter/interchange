@@ -2,25 +2,24 @@
 // canonical durable log, not only against a `resumeFromEvents` seed.
 //
 // The supervisor re-drives a crashed run as a FRESH run: it re-fires the
-// parked inbound message with `runId = messageId` and NO
-// `resumeFromEvents`. `executeRunBody` then finds the durable log already
-// carrying the crashed run's tail (a `RunStarted` + an agent step's
-// `StepStarted` with no `StepCompleted`). Keying the settling pass on the
-// canonical `state.phase === "running"` settles the residual in-flight
-// step as a terminal `StepFailed` (the agent is NOT re-invoked) and lets
-// the run settle `RunFailed`, instead of stalling with no schedulable
-// primitive.
+// parked inbound message with `runId = messageId` and NO `resumeFromEvents`.
+// `executeRunBody` then finds the durable log already carrying the crashed
+// run's tail (a `RunStarted` + an agent step's `StepStarted` with no
+// `StepCompleted`). Keying the settling pass on the canonical
+// `state.phase === "running"` settles the residual in-flight step as a
+// terminal `StepFailed` (the agent is NOT re-invoked) and lets the run settle
+// `RunFailed`, instead of stalling with no schedulable primitive.
 //
-// A fresh re-fire against a durable log that is ALREADY terminal returns
-// the existing terminal result without re-driving (no `RunStarted`, no
+// A fresh re-fire against a durable log that is ALREADY terminal returns the
+// existing terminal result without re-driving (no `RunStarted`, no
 // `terminal-phase` throw, no agent invocation); the reconstructed result
 // matches the original live-path result byte-for-byte.
 //
 // A second property covers the seeded-resume side of the reload-at-entry
-// restructuring: a genuine `resumeFromEvents` seed truncated at a
-// completed step's `StepCompleted` adopts that step by skip (NOT
-// re-invoked) and hydrates its recorded output from the canonical log so
-// a downstream step's selector can read it.
+// restructuring: a genuine `resumeFromEvents` seed truncated at a completed
+// step's `StepCompleted` adopts that step by skip (NOT re-invoked) and
+// hydrates its recorded output from the canonical log so a downstream step's
+// selector can read it.
 
 import { describe, test, expect } from "bun:test";
 

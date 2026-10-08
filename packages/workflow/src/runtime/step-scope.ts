@@ -1,14 +1,12 @@
 // Single owner of the scoped step-id format for fan-out iterations.
 //
 // A `map` iteration runs its inner step in place, and a `loop` iteration
-// tracks its step state, under a per-index scoped step id
-// `<baseStepId>[<index>]`. Base ids never contain brackets
-// (`STEP_ID_PATTERN` is `[a-zA-Z0-9_-]+`), so the trailing `[<index>]`
-// is an unambiguous scope marker. One owner here instead of hand-rolled
-// templates and strip regexes scattered across the runtime and the sidecar.
-//
-// This module also owns the loop-iteration body run id format
-// (`loopBodyRunId`), documented below.
+// tracks its step state, under a per-index scoped step id `<baseStepId>[<index>]`.
+// Base ids never contain brackets (`STEP_ID_PATTERN` is `[a-zA-Z0-9_-]+`), so
+// the trailing `[<index>]` is an unambiguous scope marker. One owner here
+// instead of hand-rolled templates and strip regexes scattered across the
+// runtime and the sidecar. This module also owns the loop-iteration body run
+// id format (`loopBodyRunId`), documented below.
 
 /**
  * Encode a fan-out iteration's scoped step id from its base step id and

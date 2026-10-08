@@ -1,16 +1,15 @@
 // Loop-iteration env shaping for the suspendable-child seam.
 //
 // A loop iteration runs its body through the same `SuspendableChildHandle`
-// contract an onTrigger section body uses, but INHERITS the parent run's
-// env (real tools, action invoker, grants, durable store) -- a loop is the
+// contract an onTrigger section body uses, but INHERITS the parent run's env
+// (real tools, action invoker, grants, durable store) -- a loop is the
 // parent's own bounded rework, not a fresh capped section body. Two things
-// are not inherited:
-//   - a fresh, iteration-OWNED signalChannel (sharing the parent's would
-//     race the body's `awaitSignal` awaits with the container's relay awaits
-//     on one FIFO name);
-//   - `onPark`/`onSignalPark`, which `createSuspendableChildHandle` owns.
-// `hasUpstreamSignalResolver` is restated explicitly rather than left to the
-// spread so a future change to the spread cannot silently drop it.
+// are not inherited: a fresh, iteration-OWNED signalChannel (sharing the
+// parent's would race the body's `awaitSignal` awaits with the container's
+// relay awaits on one FIFO name), and `onPark`/`onSignalPark`, which
+// `createSuspendableChildHandle` owns. `hasUpstreamSignalResolver` is
+// restated explicitly rather than left to the spread so a future change to
+// the spread cannot silently drop it.
 
 import type { WorkflowDefinition } from "../definition/index";
 import { createNoopDrainController } from "./drain";

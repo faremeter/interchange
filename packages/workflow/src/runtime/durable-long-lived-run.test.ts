@@ -44,9 +44,9 @@ import { waitForNthEvent } from "@intx/workflow/testing";
 // ---------------------------------------------------------------------------
 // The durable conversation store the run rehydrates from. In production this
 // is the sidecar's per-agent `agent-state/<key>` substrate; here an in-memory
-// map the two "processes" (phase A and phase B) share by instance, standing in
-// for a store that survives a child respawn. `load` returns a copy so a caller
-// mutating the returned array cannot corrupt the stored history.
+// map the two "processes" (phase A and phase B) share by instance, standing
+// in for a store that survives a child respawn. `load` returns a copy so a
+// caller mutating the returned array cannot corrupt the stored history.
 // ---------------------------------------------------------------------------
 interface ConversationStore {
   load(runId: string): Promise<ConversationTurn[]>;
@@ -94,9 +94,9 @@ const agent = defineAgent({
 // appends the inbound message, and persists. It returns `{ output }` every
 // turn and NEVER parks itself: the runtime owns the re-arm (driven by the
 // step's `triggers` budget). This is exactly the production shape -- the real
-// adapter returns a reply as `{ output }`; only the runtime decides to keep the
-// step alive. A fresh closure with an empty warm cache still answers with full
-// memory because the memory lives in the store, not the process.
+// adapter returns a reply as `{ output }`; only the runtime decides to keep
+// the step alive. A fresh closure with an empty warm cache still answers with
+// full memory because the memory lives in the store, not the process.
 //
 // Turn 1's message is the launch trigger (`req.input`); later turns' message is
 // the delivered trigger (`req.resume.decision`, a `kind: "input"` resume).

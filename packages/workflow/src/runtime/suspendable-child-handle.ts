@@ -1,15 +1,15 @@
 // Shared park-aware drive for a suspendable child body.
 //
-// Runs a body sub-DAG through `runtimeRun` and returns a
-// `SuspendableChildHandle` the caller drives across the body's approval /
-// author-`awaitSignal` parks. This is the SINGLE handle implementation
-// behind the contract: every suspendable-child seam (an onTrigger section
-// body, a loop iteration) builds its own host-shaped env and hands it here,
-// so both share identical park/resume/signal semantics by construction.
+// Runs a body sub-DAG through `runtimeRun` and returns a `SuspendableChildHandle`
+// the caller drives across the body's approval / author-`awaitSignal` parks.
+// This is the SINGLE handle implementation behind the contract: every
+// suspendable-child seam (an onTrigger section body, a loop iteration) builds
+// its own host-shaped env and hands it here, so both share identical
+// park/resume/signal semantics by construction.
 //
-// The helper OWNS `onPark`/`onSignalPark` -- it installs its own sinks to
-// feed the FIFO the caller drains via `next()`. A caller-set sink would be
-// silently overridden, so this fails loud instead.
+// The helper OWNS `onPark`/`onSignalPark` -- it installs its own sinks to feed
+// the FIFO the caller drains via `next()`. A caller-set sink would be silently
+// overridden, so this fails loud instead.
 
 import { signalName } from "@intx/types";
 
@@ -113,13 +113,13 @@ export function createSuspendableChildHandle(
     },
   };
 
-  // A suspendable body runs in-process under the child's own principal,
-  // which cannot sign a control-plane `CancelRequested` (that needs
-  // supervisor authority). So the body never self-cancels; teardown -- a
-  // parent-abort cascade or an illegal input re-arm -- aborts the run's own
-  // cancel controller via `runtimeRun`'s `localAbort`, failing the parked
-  // step to `StepFailed` with no durable cancel to sign. One controller
-  // unifies both teardown triggers.
+  // A suspendable body runs in-process under the child's own principal, which
+  // cannot sign a control-plane `CancelRequested` (that needs supervisor
+  // authority). So the body never self-cancels; teardown -- a parent-abort
+  // cascade or an illegal input re-arm -- aborts the run's own cancel
+  // controller via `runtimeRun`'s `localAbort`, failing the parked step to
+  // `StepFailed` with no durable cancel to sign. One controller unifies both
+  // teardown triggers.
   const localTeardown = new AbortController();
   const onParentAbort = (): void => {
     localTeardown.abort();

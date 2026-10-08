@@ -1,9 +1,9 @@
 // EffectContext factory.
 //
-// The capability- and ledger-checked handle an action handler uses to
-// perform external effects. Both hosts build their EffectContext through
-// this factory so the exactly-once contract -- authorize, then dedup per
-// effect against the ledger -- lives in one place.
+// The capability- and ledger-checked handle an action handler uses to perform
+// external effects. Both hosts build their EffectContext through this factory
+// so the exactly-once contract -- authorize, then dedup per effect against
+// the ledger -- lives in one place.
 //
 // The effect key includes an intra-handler `effectId`, so distinct effects
 // from one handler are keyed separately rather than collapsed into one.

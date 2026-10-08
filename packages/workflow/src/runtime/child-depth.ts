@@ -8,11 +8,11 @@
 export const MAX_CHILD_SPAWN_DEPTH = 32;
 
 /**
- * Resolve the effective ceiling at a `runtimeRun` edge. A caller may
- * request a LOWER ceiling, never a higher one, so an injected value cannot
- * defeat the backstop. Absent request defaults to the constant. A
- * non-finite request is rejected rather than clamped, because `Math.min`
- * would let `NaN` through and `childDepth > NaN` is always false.
+ * Resolve the effective ceiling at a `runtimeRun` edge. A caller may request a
+ * LOWER ceiling, never a higher one, so an injected value cannot defeat the
+ * backstop. Absent request defaults to the constant. A non-finite request is
+ * rejected rather than clamped: `Math.min` would let `NaN` through and
+ * `childDepth > NaN` is always false.
  */
 export function resolveMaxChildSpawnDepth(
   requested: number | undefined,

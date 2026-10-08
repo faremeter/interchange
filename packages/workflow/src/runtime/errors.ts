@@ -10,11 +10,10 @@
  * a crash-mid-invocation `step`/`action` which the runtime settles as a
  * terminal `StepFailed`. A log that stops while a step is `awaiting-timer`,
  * mid-`map`, or otherwise `in-flight` (a `childWorkflow`, or a
- * timeout-bearing `awaitSignal`) has no schedulable primitive to advance it.
- * The host (supervisor) owns the recovery decision.
- *
- * Surfacing the limitation as a structured error keeps the contract honest
- * instead of stalling with an opaque "no schedulable primitives" message.
+ * timeout-bearing `awaitSignal`) has no schedulable primitive to advance it;
+ * the host (supervisor) owns the recovery decision. Surfacing the limitation
+ * as a structured error keeps the contract honest instead of stalling with an
+ * opaque "no schedulable primitives" message.
  */
 export class RuntimeResumeUnsupportedError extends Error {
   readonly stepId: string;

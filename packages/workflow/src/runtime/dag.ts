@@ -1,9 +1,8 @@
 // DAG scheduling helpers for the workflow runtime.
 //
-// A step is schedulable once every dependency named in its `after`
-// field has reached a terminal phase in the run state. The runtime
-// asks `nextSchedulable` for the set of ids it should kick off on
-// each tick.
+// A step is schedulable once every dependency named in its `after` field has
+// reached a terminal phase in the run state. The runtime asks
+// `nextSchedulable` for the ids it should kick off on each tick.
 
 import type { Primitive, WorkflowDefinition } from "../definition/index";
 import {
@@ -15,14 +14,13 @@ import {
 import { baseStepId } from "./step-scope";
 
 /**
- * A loop container `<loopId>` (or its synthetic iteration step
- * `<loopId>[i]`) left non-terminal in a seed log is resumable in both
- * live phases: `in-flight` while an iteration body is mid-flight
- * (`runLoop` re-derives its cursor from the log) and `awaiting-signal`
- * while the container is proxy-parked on an iteration body's approval or
- * author-`awaitSignal` gate (`runLoop`'s resume planner re-links the park
- * and drives it). A synthetic iteration id is stripped back to its
- * container -- not a definition key -- to resolve the kind.
+ * A loop container `<loopId>` (or its synthetic iteration step `<loopId>[i]`)
+ * left non-terminal in a seed log is resumable in both live phases: `in-flight`
+ * while an iteration body is mid-flight (`runLoop` re-derives its cursor from
+ * the log) and `awaiting-signal` while the container is proxy-parked on an
+ * iteration body's approval or author-`awaitSignal` gate (`runLoop`'s resume
+ * planner re-links the park and drives it). A synthetic iteration id is
+ * stripped back to its container -- not a definition key -- to resolve the kind.
  */
 export function isResumableLoopStep(
   def: WorkflowDefinition,
@@ -39,16 +37,14 @@ export function isResumableLoopStep(
  * primitive kinds that park a durable awaiter:
  *
  *   - an `awaitSignal` gate: `runAwaitSignal` skips its already-emitted
- *     `StepStarted`/`SignalAwaited` and re-parks on the signal channel,
- *     holding a live awaiter for a signal delivered after the restart;
+ *     `StepStarted`/`SignalAwaited` and re-parks on the signal channel;
  *   - an agent `step` suspended on a reactor gate: `runStep` recovers the
  *     reserved `signalName(correlationId)` channel from the durable
- *     `SignalAwaited`, re-parks, and re-invokes the agent with the
- *     delivered decision once the signal arrives -- without re-invoking it
- *     against the original input.
+ *     `SignalAwaited`, re-parks, and re-invokes the agent with the delivered
+ *     decision once the signal arrives -- without re-invoking it against the
+ *     original input.
  *
- * Without this the re-driving run would stall at the still-awaiting step
- * and a post-recovery signal would find no awaiter.
+ * Without this the re-driving run would stall at the still-awaiting step.
  */
 export function isResumableAwaitingSignalStep(
   def: WorkflowDefinition,
@@ -61,14 +57,13 @@ export function isResumableAwaitingSignalStep(
 }
 
 /**
- * An `awaitSignal` step left `in-flight` in a seed log is resumable: a
- * mover (`SignalReceived`, a pre-await queued signal, or for a timed gate
+ * An `awaitSignal` step left `in-flight` in a seed log is resumable: a mover
+ * (`SignalReceived`, a pre-await queued signal, or for a timed gate
  * `TimerFired`) already took it off `awaiting-signal`, so it only needs its
- * `StepCompleted`. This is the crash-after-move-before-`StepCompleted`
- * window; `runAwaitSignal` reconstructs the outcome from the log and
- * short-circuits to completion without parking (distinct from
- * `isResumableAwaitingSignalStep`, which re-parks a gate whose signal has
- * NOT yet arrived).
+ * `StepCompleted` -- the crash-after-move-before-`StepCompleted` window;
+ * `runAwaitSignal` reconstructs the outcome from the log and short-circuits
+ * to completion without parking (distinct from `isResumableAwaitingSignalStep`,
+ * which re-parks a gate whose signal has NOT yet arrived).
  *
  * The reduced state cannot distinguish "signal received" from "timeout
  * fired"; the durable log can, so a fired timeout resolves to a timeout
@@ -104,16 +99,16 @@ export function isResumableOnTriggerStep(
  * An `in-flight` `step`/`action` is a crash mid-invocation: a durable
  * `StepStarted` with no `StepCompleted`, dispatched once, with no
  * runtime-body re-arm surface to re-invoke it safely. Both kinds flush
- * `StepStarted` durably before invoking, so a lone crash always leaves
- * this residual. The resume guard settles it as a terminal `StepFailed`
+ * `StepStarted` durably before invoking, so a lone crash always leaves this
+ * residual. The resume guard settles it as a terminal `StepFailed`
  * (at-most-once refusal) rather than throwing.
  *
- * Container/coordination primitives left `in-flight` (a `map` outer step,
- * a `childWorkflow`) are deliberately excluded -- they have a re-arm
- * surface the in-process body lacks -- and stay
- * `RuntimeResumeUnsupportedError`. An `awaitSignal` gate left `in-flight`
- * is admitted by `isResumableReceivedAwaitSignalStep`; resumable loop
- * iterations by `isResumableLoopStep`.
+ * Container/coordination primitives left `in-flight` (a `map` outer step, a
+ * `childWorkflow`) are deliberately excluded -- they have a re-arm surface
+ * the in-process body lacks -- and stay `RuntimeResumeUnsupportedError`. An
+ * `awaitSignal` gate left `in-flight` is admitted by
+ * `isResumableReceivedAwaitSignalStep`; resumable loop iterations by
+ * `isResumableLoopStep`.
  */
 export function isCrashedInvocationStep(
   def: WorkflowDefinition,
@@ -129,12 +124,11 @@ export function isCrashedInvocationStep(
  * A `sleep` step left non-terminal in a seed log is resumable in both live
  * phases: `awaiting-timer` while its `TimerSet` is unfired (`runSleep`
  * re-adopts the durable timer, honouring the persisted `fireAt`) and
- * `in-flight` after `TimerFired` landed but before `StepCompleted`
- * (`runSleep` completes it without re-parking).
+ * `in-flight` after `TimerFired` landed but before `StepCompleted` (`runSleep`
+ * completes it without re-parking).
  *
  * The kind guard is exact: a retrying `step`/`action` also parks in
- * `awaiting-timer` during backoff, and that residual has no sleep-resume
- * path -- it must stay `RuntimeResumeUnsupportedError`.
+ * `awaiting-timer` during backoff, and that residual has no sleep-resume path.
  */
 export function isResumableSleepStep(
   def: WorkflowDefinition,
@@ -150,21 +144,21 @@ export function nextSchedulable(
   state: RunState,
   inFlight: ReadonlySet<string>,
 ): readonly Primitive[] {
-  // A primitive can only be started inside the `running` phase; the
-  // state machine rejects StepStarted in any other phase.
+  // A primitive can only be started inside the `running` phase; the state
+  // machine rejects StepStarted in any other phase.
   //
   // `state.steps.has(stepId)` skips steps in `awaiting-signal`,
   // `awaiting-timer`, and `in-flight` -- the in-process body has no surface
   // for re-arming a generic in-flight primitive on resume. The predicates
-  // above are the resumable carve-outs, and the resume guard keys on the
-  // same predicates so the two views agree.
+  // above are the resumable carve-outs, and the resume guard keys on the same
+  // predicates so the two views agree.
   if (state.phase !== "running") {
     return [];
   }
   const out: Primitive[] = [];
   for (const stepId of def.stepOrder) {
-    // The in-memory in-flight skip stays ahead of the exemptions so a
-    // step already running this process is not double-scheduled.
+    // Keep the in-memory in-flight skip ahead of the exemptions so a step
+    // already running this process is not double-scheduled.
     if (inFlight.has(stepId)) continue;
     const existing = state.steps.get(stepId);
     // Skip any step already in state.steps except a resumable carve-out,

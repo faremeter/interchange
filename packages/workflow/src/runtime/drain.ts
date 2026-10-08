@@ -1,15 +1,15 @@
 // Workflow runtime drain surface.
 //
-// `DrainController` is the runtime body's read-only view of a host-
-// initiated drain. The runtime observes `signal` at four sites in
-// `run.ts` and consults `behaviorFor(stepId)` for the in-flight step:
-// a `"cancel"` behavior aborts the step's local controller (the
-// existing cancellation cascade tears it down); a `"wait"` behavior
-// leaves it running, and the supervisor's `drainTimeout` escalates to
-// a signed `CancelRequested{origin: "supervisor-drain"}`.
+// `DrainController` is the runtime body's read-only view of a host-initiated
+// drain. The runtime observes `signal` at four sites in `run.ts` and consults
+// `behaviorFor(stepId)` for the in-flight step: a `"cancel"` behavior aborts
+// the step's local controller (the existing cancellation cascade tears it
+// down); a `"wait"` behavior leaves it running, and the supervisor's
+// `drainTimeout` escalates to a signed `CancelRequested{origin:
+// "supervisor-drain"}`.
 //
-// `runLocal` wires a no-op controller whose `signal` never fires;
-// production wires `@intx/workflow-host/src/drain-controller.ts`.
+// `runLocal` wires a no-op controller whose `signal` never fires; production
+// wires `@intx/workflow-host/src/drain-controller.ts`.
 
 import {
   stepTriggerBudget,
@@ -39,9 +39,9 @@ export interface DrainController {
 /**
  * Compute the drainBehavior for a primitive in a workflow definition.
  * Shared between the production and runLocal controllers so the
- * default-resolution rule lives in exactly one place. Defaults mirror
- * the constructors in `definition/primitives.ts`; `gate`, `escalation`,
- * and `map` (outer) carry no behavior of their own and return `"cancel"`.
+ * default-resolution rule lives in one place. Defaults mirror the
+ * constructors in `definition/primitives.ts`; `gate`, `escalation`, and
+ * `map` (outer) carry no behavior of their own and return `"cancel"`.
  */
 export function resolveDrainBehavior(
   definition: WorkflowDefinition,
@@ -67,8 +67,8 @@ export function resolveDrainBehavior(
       return primitive.drainBehavior ?? "cancel";
     case "onTrigger":
       // A live event-driven section is definitionally interactive;
-      // draining means "stop feeding new events", not "abort the
-      // paused waiter".
+      // draining means "stop feeding new events", not "abort the paused
+      // waiter".
       return primitive.drainBehavior ?? "wait";
     case "awaitSignal":
       return primitive.drainBehavior ?? "wait";

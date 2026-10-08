@@ -1,9 +1,9 @@
 // Runtime evaluator for the path-selector DSL.
 //
-// Resolves a `Selector` against a `SelectorContext` rooted at the
-// run's trigger payload and the captured outputs of completed steps.
-// Used by the step executor to materialize a step's `input` and to
-// resolve declared `reads` against the run-state subtree.
+// Resolves a `Selector` against a `SelectorContext` rooted at the run's
+// trigger payload and the captured outputs of completed steps. Used by the
+// step executor to materialize a step's `input` and to resolve declared
+// `reads` against the run-state subtree.
 
 import {
   isFromSelector,

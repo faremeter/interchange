@@ -1,10 +1,9 @@
 // Workflow runtime environment contract.
 //
 // `WorkflowRuntimeEnv` is the surface the single runtime body consumes;
-// `runLocal` and any child-process entry point satisfy it. The body
-// switches on env keys, not on which process it runs in, and must not
-// reference any `isChildProcess`-shaped discriminator (`run.test.ts`
-// asserts the discipline).
+// `runLocal` and any child-process entry point satisfy it. The body switches
+// on env keys, not on which process it runs in, and must not reference any
+// `isChildProcess`-shaped discriminator (`run.test.ts` asserts the discipline).
 
 import type { AgentDefinition, BaseEnv, DirectorRegistry } from "@intx/agent";
 import type { ApprovalSnapshot, ControlParkKind } from "@intx/types/runtime";
@@ -18,9 +17,9 @@ import type { TerminalRunPhase, WorkflowEvent } from "../state-machine/index";
 import type { DrainController } from "./drain";
 
 /**
- * Per-run event log: the durable substrate the runtime writes to, reads
- * from on resume, and tails when awaiting an externally-committed event.
- * The append-only invariant is the state machine's responsibility.
+ * Per-run event log: the durable substrate the runtime writes to, reads from
+ * on resume, and tails when awaiting an externally-committed event. The
+ * append-only invariant is the state machine's responsibility.
  */
 export interface RepoStore {
   /** Return every committed event in seq order. */
@@ -29,32 +28,25 @@ export interface RepoStore {
   append(runId: string, event: WorkflowEvent): Promise<void>;
   /**
    * Append a contiguous run of events in ONE durable commit. Events must
-   * carry strictly-monotonic, gap-free seqs continuing the run's prior
-   * tip. Equivalent to `append` per event, but the substrate writes all
-   * blobs under one tree-rewrite + ref-advance. An empty array is a
-   * no-op.
-   *
-   * This is the batch seam the commit-chain flushes through at a segment
-   * boundary: per-event in-memory validation is unchanged; only the
-   * durable write is coalesced.
+   * carry strictly-monotonic, gap-free seqs continuing the run's prior tip.
+   * Equivalent to `append` per event, but the substrate writes all blobs
+   * under one tree-rewrite + ref-advance. An empty array is a no-op. This is
+   * the batch seam the commit-chain flushes through at a segment boundary.
    */
   appendBatch(runId: string, events: readonly WorkflowEvent[]): Promise<void>;
   /**
-   * Tail the run's event log, yielding one `{ seq, event }` per
-   * committed event in commit order (`seq` is the workflow-event seq,
-   * not a substrate counter).
+   * Tail the run's event log, yielding one `{ seq, event }` per committed
+   * event in commit order (`seq` is the workflow-event seq, not a substrate
+   * counter). Cancellation: when `opts.signal` aborts, the iterator ends
+   * cleanly.
    *
-   * Cancellation: when `opts.signal` aborts, the iterator ends cleanly.
+   * Replay vs live: `from: { seq: number }` enumerates prior events with
+   * `seq >=` the number, then continues live; `from: "head"` emits only
+   * events committed strictly after the last seq at subscribe time.
    *
-   * Replay vs live:
-   *   - `from: { seq: number }` enumerates prior events with `seq >=`
-   *     the number, then continues live;
-   *   - `from: "head"` emits only events committed strictly after the
-   *     last seq at subscribe time.
-   *
-   * Backpressure: events are buffered up to `bufferLimit` (default
-   * 1024); on overrun the iterator throws -- silent drop would corrupt
-   * the runtime's view, so consumers that cannot keep up must abort.
+   * Backpressure: events are buffered up to `bufferLimit` (default 1024); on
+   * overrun the iterator throws -- silent drop would corrupt the runtime's
+   * view, so consumers that cannot keep up must abort.
    */
   subscribe(
     runId: string,
@@ -71,41 +63,38 @@ export interface SubscribeOpts {
 /**
  * Durable timer scheduler.
  *
- * Callers commit `TimerSet` against the run's log themselves;
- * `scheduleIn` registers wall-clock intent so that at `fireAt` the
- * scheduler commits `TimerFired{timerId}`. The single-writer-on-
- * `TimerFired` invariant lives here: the scheduler is the only thing
- * that commits it. Callers await the commit by tailing
- * `repoStore.subscribe`.
+ * Callers commit `TimerSet` against the run's log themselves; `scheduleIn`
+ * registers wall-clock intent so that at `fireAt` the scheduler commits
+ * `TimerFired{timerId}`. The single-writer-on-`TimerFired` invariant lives
+ * here: the scheduler is the only thing that commits it. Callers await the
+ * commit by tailing `repoStore.subscribe`.
  *
- * The returned disposer cancels the pending `TimerFired` commit (the
- * race between the awaiting consumer settling on a sibling event and
- * the timer's deadline). Restart recovery never re-arms a disposed
- * entry because the run's log already carries a sibling terminal event
- * for that step.
+ * The returned disposer cancels the pending `TimerFired` commit (the race
+ * between the awaiting consumer settling on a sibling event and the timer's
+ * deadline). Restart recovery never re-arms a disposed entry because the run's
+ * log already carries a sibling terminal event for that step.
  */
 export interface Scheduler {
   scheduleIn(runId: string, timerId: string, fireAt: Date): () => void;
 }
 
 /**
- * FIFO single-consumer signal channel. Pre-await delivery is queued
- * under the signal name; an awaiter consumes the next queued signal
- * for its name on subscription.
+ * FIFO single-consumer signal channel. Pre-await delivery is queued under the
+ * signal name; an awaiter consumes the next queued signal for its name on
+ * subscription.
  *
- * In-process callback-based (`deliver` / `awaitNext`). A production
- * mail-bus source must translate "mail arrives" into "the right
- * awaiter's promise resolves"; how (rehydrate from the log, consult
- * the state-machine queue, or a log-tail subscription) is a
- * substrate-shaped decision.
+ * In-process callback-based (`deliver` / `awaitNext`). A production mail-bus
+ * source must translate "mail arrives" into "the right awaiter's promise
+ * resolves"; how (rehydrate from the log, consult the state-machine queue, or
+ * a log-tail subscription) is a substrate-shaped decision.
  */
 export interface SignalChannel {
   /** Inject a signal. The state machine handles dedup by `signalId`. */
   deliver(name: string, payload: unknown, signalId?: string): Promise<void>;
   /**
-   * Wait for the next signal of the given name. Resolves with the
-   * payload (and the assigned `signalId`) when the signal arrives.
-   * Rejects on `signal.abort()` if `signal` is supplied.
+   * Wait for the next signal of the given name. Resolves with the payload
+   * (and the assigned `signalId`) when the signal arrives. Rejects on
+   * `signal.abort()` if `signal` is supplied.
    */
   awaitNext(
     name: string,
@@ -145,18 +134,18 @@ export interface StepInvokeRequest {
 }
 
 /**
- * The outcome of a single `invokeStep`: an `output` (the agent replied)
- * or a suspension on a tool/authz gate, handing back the `correlationId`
- * the runtime parks the step on until the correlated decision arrives.
- * The suspend carries an explicit `kind: "approval"` and a REQUIRED
- * snapshot (the sidecar->hub co-write treats it as mandatory), so a
- * snapshot-less approval is unrepresentable here.
+ * The outcome of a single `invokeStep`: an `output` (the agent replied) or a
+ * suspension on a tool/authz gate, handing back the `correlationId` the
+ * runtime parks the step on until the correlated decision arrives. The
+ * suspend carries an explicit `kind: "approval"` and a REQUIRED snapshot (the
+ * sidecar->hub co-write treats it as mandatory), so a snapshot-less approval
+ * is unrepresentable here.
  *
  * An invoker can ONLY suspend as an approval. The `"input"` control-plane
- * park is minted exclusively by the runtime's trigger-budget re-arm --
- * never by an invoker -- which keeps the finite-budget respawn seed sound:
- * every input `SignalAwaited` in the durable log is a runtime re-arm, so
- * counting them counts turns serviced.
+ * park is minted exclusively by the runtime's trigger-budget re-arm -- never
+ * by an invoker -- which keeps the finite-budget respawn seed sound: every
+ * input `SignalAwaited` in the durable log is a runtime re-arm, so counting
+ * them counts turns serviced.
  */
 export type StepInvokeResult =
   | { output: unknown }
@@ -197,13 +186,12 @@ export interface ActionInvokeResult {
 }
 
 /**
- * Crash-safe exactly-once substrate for action effects, DISTINCT from
- * the run event log: recording must not enter the run-log commit chain
- * or trigger a segment flush, so a dropped run-log buffer never takes
- * the ledger with it. `record` must be durable on return and must not
- * be co-located with `StepCompleted` in a shared batch -- the
- * crash-dedup contract depends on the ledger surviving a dropped
- * run-log buffer.
+ * Crash-safe exactly-once substrate for action effects, DISTINCT from the run
+ * event log: recording must not enter the run-log commit chain or trigger a
+ * segment flush, so a dropped run-log buffer never takes the ledger with it.
+ * `record` must be durable on return and must not be co-located with
+ * `StepCompleted` in a shared batch -- the crash-dedup contract depends on the
+ * ledger surviving a dropped run-log buffer.
  */
 export interface EffectLedger {
   /** Return the recorded output for a key, or `undefined` on a miss. */
@@ -214,11 +202,11 @@ export interface EffectLedger {
 
 /**
  * Capability- and ledger-checked handle passed to an action handler.
- * Every external effect must run through `perform` so it is (a)
- * authorized against the operator-approved effect floor and (b)
- * deduplicated by the effect ledger across a crash re-run. Refuses any
- * `capability` not in the declared `requires` set; on a ledger hit
- * returns the recorded result without running `run`.
+ * Every external effect must run through `perform` so it is (a) authorized
+ * against the operator-approved effect floor and (b) deduplicated by the
+ * effect ledger across a crash re-run. Refuses any `capability` not in the
+ * declared `requires` set; on a ledger hit returns the recorded result
+ * without running `run`.
  */
 export interface EffectContext {
   perform(opts: {
@@ -253,13 +241,12 @@ export interface BlobSubstrate {
 
 /**
  * Spawn callback for `childWorkflow`. The parent runtime allocates the
- * `childRunId` and commits `ChildSpawned` before invoking the callback,
- * so the parent's audit log records the spawn first. The callback
- * resolves `definitionRef` (the internal ref the deploy step assigned)
- * to a concrete `WorkflowDefinition` via the runtime-supplied lookup
- * (lifted-body map in runLocal, re-evaluated closure map in production)
- * and returns the terminal status. The runtime body carries no lookup
- * of its own.
+ * `childRunId` and commits `ChildSpawned` before invoking the callback, so
+ * the parent's audit log records the spawn first. The callback resolves
+ * `definitionRef` (the internal ref the deploy step assigned) to a concrete
+ * `WorkflowDefinition` via the runtime-supplied lookup (lifted-body map in
+ * runLocal, re-evaluated closure map in production) and returns the terminal
+ * status. The runtime body carries no lookup of its own.
  */
 export type SpawnChildWorkflow = (input: {
   definitionRef: string;
@@ -351,12 +338,11 @@ export type SpawnSuspendableChild = (input: {
 }) => Promise<SuspendableChildHandle>;
 
 /**
- * A loop's `while` predicate or `carry` transform. Receives only data
- * (the iteration's output and the current carry state) and no effect
- * context, authorize, or signal: these run on every forward pass and
- * every resume, so they must be pure, and the type makes an effectful
- * function inexpressible. `while` coerces to a boolean; `carry` returns
- * the next iteration's input.
+ * A loop's `while` predicate or `carry` transform. Receives only data (the
+ * iteration's output and the current carry state) and no effect context,
+ * authorize, or signal: these run on every forward pass and every resume, so
+ * they must be pure, and the type makes an effectful function inexpressible.
+ * `while` coerces to a boolean; `carry` returns the next iteration's input.
  */
 export type LoopFn = (childOutput: unknown, carryState: unknown) => unknown;
 
@@ -370,8 +356,8 @@ export type LoopFnRegistry = (ref: string) => LoopFn;
  * A control-plane suspension the runtime notifies the host of when a step
  * parks on a reserved `signalName(correlationId)` channel, carrying the
  * correlation the eventual resolver routes a decision back on so the host
- * can register the suspension out-of-band (the sidecar co-writes a routing
- * + approval row at the hub). A plain `awaitSignal` gate on an author-chosen
+ * can register the suspension out-of-band (the sidecar co-writes a routing +
+ * approval row at the hub). A plain `awaitSignal` gate on an author-chosen
  * name does NOT produce one.
  */
 export type WorkflowPark = {
@@ -391,11 +377,11 @@ export type WorkflowPark = {
 /**
  * The notify a suspendable child body fires when a step parks on an author
  * `awaitSignal` gate -- a NON-reserved, author-chosen name. Distinct from
- * {@link WorkflowPark}: an author gate carries no correlation and no
- * snapshot, so the host cannot register it at the hub; the seam surfaces it
- * to `runOnTrigger`, which proxies the body's await as a signal-relay await
- * on its own run and relays the resolved signal back down. A non-body host
- * (the container run, runLocal) leaves `onSignalPark` unset.
+ * {@link WorkflowPark}: an author gate carries no correlation and no snapshot,
+ * so the host cannot register it at the hub; the seam surfaces it to
+ * `runOnTrigger`, which proxies the body's await as a signal-relay await on
+ * its own run and relays the resolved signal back down. A non-body host (the
+ * container run, runLocal) leaves `onSignalPark` unset.
  */
 export type WorkflowSignalPark = {
   runId: string;
@@ -405,11 +391,11 @@ export type WorkflowSignalPark = {
 /**
  * The minimal durable record the resume classifier needs to recover a step
  * that crashed mid-park (`StepStarted` flushed, `SignalAwaited` not). The
- * reactor commits its pending operation before the park flush, so this
- * record survives even when the log does not carry the `SignalAwaited`.
- * Deliberately narrow: the runtime reconstructs the missing `SignalAwaited`
- * from the correlationId (and optional timeout) alone and never learns the
- * reactor's pending-operation internals.
+ * reactor commits its pending operation before the park flush, so this record
+ * survives even when the log does not carry the `SignalAwaited`. Deliberately
+ * narrow: the runtime reconstructs the missing `SignalAwaited` from the
+ * correlationId (and optional timeout) alone and never learns the reactor's
+ * pending-operation internals.
  */
 export type ParkedApprovalOp = {
   correlationId: string;
@@ -454,9 +440,8 @@ export interface WorkflowRuntimeEnv {
   invokeAction?: ActionInvoker;
   /**
    * Effect ledger for crash-safe exactly-once action effects. On the env
-   * only so the host's `invokeAction` can build its `EffectContext`;
-   * the runtime body never calls it directly. Optional like
-   * `invokeAction`.
+   * only so the host's `invokeAction` can build its `EffectContext`; the
+   * runtime body never calls it directly. Optional like `invokeAction`.
    */
   effects?: EffectLedger;
   /** Spawn callback for `childWorkflow`. */
@@ -467,8 +452,8 @@ export interface WorkflowRuntimeEnv {
    * {@link SpawnSuspendableChild}). Optional: a host that does not wire it
    * does not support onTrigger sections, and `runOnTrigger` fails loudly.
    *
-   * A second child-drive seam alongside the terminal-only `spawnChild`,
-   * kept separate deliberately: unifying them would require migrating
+   * A second child-drive seam alongside the terminal-only `spawnChild`, kept
+   * separate deliberately: unifying them would require migrating
    * `childWorkflow`'s terminal-only path onto the park-aware drive.
    */
   spawnSuspendableChild?: SpawnSuspendableChild;
@@ -522,10 +507,10 @@ export interface WorkflowRuntimeEnv {
    * the host can register the correlation out-of-band (the sidecar sends a
    * `signal.correlation.register` frame; the hub co-writes routing + approval
    * rows). Fires exactly once per suspension, on the initial park: a resume
-   * that finds the step already `awaiting-signal` does not re-fire.
-   * Recovering a registration lost across a crash is driven from durable
-   * state on a later re-establishment, whose hub write is idempotent on the
-   * correlationId. runLocal leaves it unset.
+   * that finds the step already `awaiting-signal` does not re-fire. Recovering
+   * a registration lost across a crash is driven from durable state on a later
+   * re-establishment, whose hub write is idempotent on the correlationId.
+   * runLocal leaves it unset.
    */
   onPark?: (park: WorkflowPark) => void;
   /**
@@ -547,7 +532,7 @@ export interface WorkflowRuntimeEnv {
    * distinguish a step that crashed AFTER the reactor durably recorded an
    * approval suspension but BEFORE the `SignalAwaited` flushed -- resumable,
    * by reconstructing the missing `SignalAwaited` and re-parking -- from a
-   * genuine crash mid-agent turn, which stays a terminal failure. Production
+   * genuine crash mid-agent-turn, which stays a terminal failure. Production
    * wires it to the sidecar's durable step store; runLocal leaves every
    * crashed invocation a terminal failure.
    */
