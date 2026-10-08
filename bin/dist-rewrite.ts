@@ -5,24 +5,23 @@
 // explicit `.js` (or `/index.js`) extensions.
 //
 // The workspace source uses extensionless relative imports (`./foo`,
-// `../bar`, and directory barrels like `./providers`) under
+// `../bar`, directory barrels like `./providers`) under
 // `moduleResolution: "bundler"`. `tsc` copies those specifiers verbatim
-// into the emitted `.js` and `.d.ts`, so the compiled output does not
-// run on Node — whose ESM loader requires a real file path — until every
-// relative specifier names one. This module resolves each relative
-// specifier against the emitted tree (a sibling file `foo.js`, or a
-// directory barrel `foo/index.js`) and rewrites it in place. The `.d.ts`
-// declarations get the same `.js` specifiers; TypeScript maps `./foo.js`
-// to the sibling `./foo.d.ts` when resolving types. External specifiers
-// (`@intx/*`, `arktype`, `node:*`) and already-extensioned ones are left
-// untouched.
+// into the emitted `.js` and `.d.ts`, so the compiled output does not run
+// on Node — whose ESM loader requires a real file path — until every
+// relative specifier names one. This module resolves each against the
+// emitted tree (sibling `foo.js`, or directory barrel `foo/index.js`) and
+// rewrites it in place. The `.d.ts` declarations get the same `.js`
+// specifiers; TypeScript maps `./foo.js` to the sibling `./foo.d.ts` when
+// resolving types. External specifiers (`@intx/*`, `arktype`, `node:*`)
+// and already-extensioned ones are left untouched.
 //
 // `rewriteSpecifiers` is the pure core — an AST walk plus surgical text
 // splices, with the filesystem injected as a resolver — and is exported
 // for tests. `rewriteDistTree` binds a filesystem resolver and rewrites a
-// whole `dist` tree. The CLI gate runs only when this file is the entry
-// point. An unresolved relative specifier is left in place (and reported)
-// rather than mangled, so a genuine gap fails loudly at load time.
+// whole `dist` tree. An unresolved relative specifier is left in place
+// (and reported) rather than mangled, so a genuine gap fails loudly at
+// load time.
 
 import {
   existsSync,
@@ -48,10 +47,10 @@ function isRewritable(spec: string): boolean {
 type SpecifierRef = { start: number; end: number; text: string };
 
 /** Collect the module-specifier string literals of a parsed source file:
- *  static `import`/`export ... from` clauses, `import x = require("...")`,
- *  dynamic `import("...")`, and `.d.ts` `import("...")` type nodes. A
- *  `declare module "name"` declaration names a module rather than
- *  importing one, so its name literal is deliberately not collected. */
+ *  static `import`/`export ... from` clauses, `import x =
+ *  require("...")`, dynamic `import("...")`, and `.d.ts`
+ *  `import("...")` type nodes. A `declare module "name"` names a
+ *  module rather than importing one, so its literal is not collected. */
 function collectSpecifiers(source: ts.SourceFile): SpecifierRef[] {
   const refs: SpecifierRef[] = [];
   const record = (node: ts.Node | undefined): void => {
@@ -88,12 +87,11 @@ function collectSpecifiers(source: ts.SourceFile): SpecifierRef[] {
   return refs;
 }
 
-/** Rewrite the relative module specifiers of `sourceText` using
- *  `resolve`, which maps a relative, extensionless specifier to its
- *  extensioned form (or returns null to leave it in place). Pure: the
- *  filesystem lives entirely in `resolve`. Edits are applied to the
- *  original text right-to-left, so formatting outside the specifiers is
- *  preserved exactly. */
+/** Rewrite the relative module specifiers of `sourceText` using `resolve`,
+ *  which maps a relative, extensionless specifier to its extensioned form
+ *  (or null to leave it in place). Pure: the filesystem lives entirely in
+ *  `resolve`. Edits are applied right-to-left, so formatting outside the
+ *  specifiers is preserved exactly. */
 export function rewriteSpecifiers(
   sourceText: string,
   fileName: string,
@@ -133,16 +131,16 @@ export function rewriteSpecifiers(
  *
  *  Probing only `.js`/`index.js` is complete, not a coverage gap: every
  *  extensionless relative specifier that reaches here targets a file
- *  `tsc` emitted as `.js`. A specifier already carrying a Node-resolvable
- *  extension (`.json`, `.node`, `.mjs`, `.cjs`) is treated as resolved by
- *  `isRewritable` and never reaches this function; and an extensionless
- *  specifier pointing at a non-`.js` file (e.g. a bare `./data` for a
- *  sibling `./data.json`) cannot be emitted at all — under this repo's
- *  `moduleResolution: "bundler"` config it fails to type-check (TS2307)
- *  and the build aborts before the rewriter runs. The invariant holds
- *  only while that resolution mode and the all-`.ts`-sources assumption
- *  do; switching `moduleResolution`, or adding `.mts`/`.cts` sources,
- *  would require revisiting the probe set. */
+ *  `tsc` emitted as `.js`. A specifier already carrying a
+ *  Node-resolvable extension (`.json`, `.node`, `.mjs`, `.cjs`) is
+ *  treated as resolved by `isRewritable` and never reaches this
+ *  function; and an extensionless specifier pointing at a non-`.js` file
+ *  (e.g. a bare `./data` for a sibling `./data.json`) cannot be emitted
+ *  at all — under this repo's `moduleResolution: "bundler"` it fails to
+ *  type-check (TS2307) and the build aborts before the rewriter runs.
+ *  The invariant holds only while that resolution mode and the
+ *  all-`.ts`-sources assumption do; switching `moduleResolution`, or
+ *  adding `.mts`/`.cts` sources, would require revisiting the probe set. */
 function resolveAgainstTree(spec: string, fromDir: string): string | null {
   if (existsSync(join(fromDir, `${spec}.js`))) return `${spec}.js`;
   if (existsSync(join(fromDir, spec, "index.js"))) return `${spec}/index.js`;

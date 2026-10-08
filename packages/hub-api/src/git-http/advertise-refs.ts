@@ -12,19 +12,16 @@
  * The advertisement begins with HEAD when the repo has a born HEAD;
  * HEAD carries the capability list NUL-separated and a
  * `symref=HEAD:<target>` token so stock `git clone` lands on a real
- * branch instead of leaving the working tree unborn. The visible refs
- * follow in lexicographic order.
+ * branch. The visible refs follow in lexicographic order.
  *
- * Refs are filtered against `principal.tokenClaims.refPattern` via
- * the shared simple-glob matcher before advertisement so a token
- * cannot learn about refs outside its declared scope. HEAD is itself a
- * symbolic alias and not subject to refPattern filtering, but it is
- * only advertised when its target ref survives that filter — a token
- * that cannot see the target cannot learn about HEAD either.
- *
- * When no refs survive filtering (or the repo is empty) the
- * advertisement emits a single zero-oid `capabilities^{}` record so
- * that stock `git clone` and `git ls-remote` accept the response.
+ * Refs are filtered against `principal.tokenClaims.refPattern` via the
+ * shared simple-glob matcher so a token cannot learn about refs
+ * outside its declared scope. HEAD is itself a symbolic alias and not
+ * subject to refPattern filtering, but it is only advertised when its
+ * target ref survives that filter. When no refs survive (or the repo
+ * is empty) the advertisement emits a single zero-oid
+ * `capabilities^{}` record so that stock `git clone` and
+ * `git ls-remote` accept the response.
  */
 
 import type { RepoId } from "@intx/types/sidecar";
@@ -50,12 +47,11 @@ export type RefEntry = {
 };
 
 /**
- * Result of resolving HEAD on the underlying repo. `symbolicTarget` is
- * the ref HEAD symbolically points at (e.g. `refs/heads/main`); `sha`
- * is the SHA that target currently resolves to. Both fields are
- * required: a detached HEAD or an unborn HEAD is signalled by
- * returning `null` from `resolveHead`, not by populating one field and
- * leaving the other empty.
+ * Result of resolving HEAD on the underlying repo. `symbolicTarget` is the
+ * ref HEAD symbolically points at; `sha` is what that target currently
+ * resolves to. A detached or unborn HEAD is signalled by returning `null`
+ * from `resolveHead`, not by populating one field and leaving the other
+ * empty.
  */
 export type HeadResolution = {
   readonly symbolicTarget: string;
@@ -70,12 +66,10 @@ export type HeadResolution = {
 export interface RefSource {
   listRefs(principal: AdvertisePrincipal, repoId: RepoId): Promise<RefEntry[]>;
   /**
-   * Resolve HEAD into the ref it symbolically targets plus the SHA
-   * that ref currently resolves to. Returns `null` when HEAD is
-   * unborn (no commits yet), detached, or the on-disk repo does not
-   * exist. The advertiser uses the result to emit the
-   * `symref=HEAD:<target>` capability so stock `git clone` checks out
-   * a real branch.
+   * Resolve HEAD into the ref it symbolically targets plus the SHA that ref
+   * resolves to. Returns `null` when HEAD is unborn, detached, or the on-disk
+   * repo does not exist. Used to emit `symref=HEAD:<target>` so stock
+   * `git clone` checks out a real branch.
    */
   resolveHead(
     principal: AdvertisePrincipal,
@@ -96,10 +90,9 @@ export const UPLOAD_PACK_CAPABILITIES = [
   ...BASELINE_CAPABILITIES,
 ].join(" ");
 
-// receive-pack does not advertise `side-band-64k`: the handler returns
-// the `report-status` payload as raw pkt-lines, not channel-wrapped.
-// Advertising side-band-64k would invite the client to expect a
-// channel-framed response, which `handleReceivePack` does not emit.
+// receive-pack does not advertise `side-band-64k`: the handler returns the
+// `report-status` payload as raw pkt-lines, not channel-wrapped, so advertising
+// it would invite a channel-framed response `handleReceivePack` does not emit.
 export const RECEIVE_PACK_CAPABILITIES = [
   ...BASELINE_CAPABILITIES,
   "report-status",
@@ -128,10 +121,10 @@ async function writeAdvertisement(
   await writePktLine(writer, `# service=${service}\n`);
   await writeFlush(writer);
 
-  // HEAD is only advertised when its symbolic target survives ref
-  // filtering: a token that cannot see the target ref has no business
-  // learning about HEAD either, and stock git would otherwise resolve
-  // the symref against a ref it never received and abort.
+  // HEAD is only advertised when its symbolic target survives ref filtering:
+  // a token that cannot see the target ref has no business learning about
+  // HEAD either, and stock git would otherwise resolve the symref against a
+  // ref it never received and abort.
   const headTargetVisible =
     head !== null &&
     refs.some((r) => r.name === head.symbolicTarget && r.sha === head.sha);

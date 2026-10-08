@@ -3,9 +3,7 @@
 
 // Command-line front end for the tool-package publisher. Parses flags and
 // environment, then delegates to `publishToolPackages` in
-// `bin/lib/publish-tool-packages.ts` (which `bin/dev.ts` also calls in its
-// in-process publish path). See that module for the publish workflow and
-// the auth pattern.
+// `bin/lib/publish-tool-packages.ts`, which bin/dev.ts also calls.
 
 import path from "node:path";
 import { parseArgs } from "node:util";
@@ -62,13 +60,10 @@ async function runCLI(): Promise<void> {
   }
 
   const hubURL = requireEnv("HUB_URL");
-  // Warn whenever the admin credentials still match the dev seed.
-  // The tenant slug is a routing concern (the wrong slug fails the
-  // launch loudly upstream), but default admin credentials let any
-  // operator authenticated against a seeded hub act as the
-  // publishing admin — that risk does not depend on whether the
-  // operator picked a custom tenant. Either default credential is
-  // enough to fire the warning.
+  // Warn on default admin credentials: any operator authenticated against a
+  // seeded hub could act as the publishing admin. Either default credential
+  // is enough to fire the warning; the tenant slug is a separate routing
+  // concern that fails loudly upstream.
   const usingDefaultEmail = process.env.HUB_ADMIN_EMAIL === undefined;
   const usingDefaultPassword = process.env.HUB_ADMIN_PASSWORD === undefined;
   if (usingDefaultEmail || usingDefaultPassword) {
@@ -90,8 +85,7 @@ async function runCLI(): Promise<void> {
   const tenantName =
     values["tenant-name"] ??
     optionalEnv("HUB_TENANT_NAME", PUBLISH_SEED_DEFAULTS.tenantName);
-  // parseArgs above declares defaults for `registry` and `from`, so
-  // `values.registry` and `values.from` are always strings here.
+  // parseArgs declared defaults above, so both values are always strings.
   const registryName = values.registry;
   const fromRaw = values.from;
   const fromDir = path.isAbsolute(fromRaw)

@@ -1,11 +1,10 @@
 // Resume contract for an `awaitSignal` gate. Two shapes resume:
 //
 //   1. The tail is `SignalAwaited` (no signal yet): the gate is
-//      `awaiting-signal`. A run re-driving the durable log re-offers the
-//      gate (`isResumableAwaitingSignalStep`); runAwaitSignal skips the
-//      already-emitted StepStarted/SignalAwaited and RE-PARKS on the
-//      signal channel, so a signal delivered later (the operator signals
-//      AFTER the restart) resolves it.
+//      `awaiting-signal`. A run re-driving the durable log re-offers the gate
+//      (`isResumableAwaitingSignalStep`); runAwaitSignal skips the
+//      already-emitted StepStarted/SignalAwaited and RE-PARKS on the signal
+//      channel, so a signal delivered after the restart resolves it.
 //   2. The tail already carries the gate's mover -- a `SignalReceived`, or,
 //      for a timed gate, a `TimerFired` -- so the reduction moved the gate
 //      `in-flight` (the crash-after-move-before-`StepCompleted` window,
@@ -86,8 +85,7 @@ const timedGateWithHandler = defineWorkflow({
 // Two dependency-free gates awaiting the same signal name is the ambiguous
 // single-consumer topology the resume guard defends. defineWorkflow rejects it
 // at authoring time (INTR-281), so build it with distinct names and rewrite
-// gateB's name to reproduce the topology -- bypassing the load-time check that
-// the runtime guard exercised here is the backstop for.
+// gateB's name to reproduce the topology -- the runtime guard is the backstop.
 const twoGatesSameName = ((): WorkflowDefinition => {
   const def = defineWorkflow({
     id: "wait-resume-two-gates",
@@ -186,13 +184,11 @@ describe("resume awaiting signal", () => {
     });
     // The resumed run re-parks on the signal channel; deliver the awaited
     // signal so the RE-ARMED AWAITER resolves it -- delivering before the
-    // re-park would instead queue the payload for `awaitNext` to drain, which
-    // is a different path and not the one this case is about. The re-park
-    // commits nothing, so the channel registration is what marks it.
-    //
-    // The zero is what makes that wait a barrier: the seed names "go" in a
-    // SignalAwaited, but the observer counts `awaitNext` calls, which only a
-    // live park makes -- so the deliver below lands on the re-armed awaiter.
+    // re-park would instead queue the payload for `awaitNext` to drain, a
+    // different path. The re-park commits nothing, so the channel
+    // registration is what marks it: the observer counts `awaitNext` calls,
+    // which only a live park makes, so the deliver below lands on the
+    // re-armed awaiter.
     expect(channel.awaitedCount("go")).toBe(0);
     await channel.awaitAwaitedCount("go", 1);
     expect(channel.awaitedCount("go")).toBe(1);
@@ -256,15 +252,14 @@ describe("resume awaiting signal", () => {
   });
 
   test("a fresh re-drive of a durable log with the gate in-flight-received recovers it and runs its dependents once", async () => {
-    // This is the host's re-trigger recovery: a fresh run (NO
-    // resumeFromEvents) is driven against a runId whose durable log the
-    // crashed process left with the gate `in-flight` (SignalReceived,
-    // StepCompleted{gate} not yet). The fresh run's RunStarted is
-    // phase-rejected, it adopts the durable log, and
-    // `isResumableReceivedAwaitSignalStep` re-offers the gate so
-    // runAwaitSignal completes it -- WITHOUT this the run would stall
-    // ("no schedulable primitives") because the dependent step is blocked
-    // on the non-terminal gate. The dependent agent runs exactly once.
+    // The host's re-trigger recovery: a fresh run (NO resumeFromEvents) is
+    // driven against a runId whose durable log the crashed process left with
+    // the gate `in-flight` (SignalReceived, no StepCompleted{gate}). The fresh
+    // run's RunStarted is phase-rejected, it adopts the durable log, and
+    // `isResumableReceivedAwaitSignalStep` re-offers the gate so runAwaitSignal
+    // completes it -- WITHOUT this the run would stall ("no schedulable
+    // primitives") because the dependent step is blocked on the non-terminal
+    // gate. The dependent agent runs exactly once.
     const runId = "run-redrive";
     let invocations = 0;
     const env = buildEnv(gateThenStep, {
@@ -313,11 +308,11 @@ describe("resume awaiting signal", () => {
     const env = buildEnv(twoGatesSameName);
     // Both dependency-free gates parked on "go", then two deliveries landed
     // durably before the crash: SignalReceived{sig-1} consumes gateA (first
-    // awaiter), SignalReceived{sig-2} then consumes gateB. Both gates are
-    // now `in-flight` with no StepCompleted -- the same crash window as the
+    // awaiter), SignalReceived{sig-2} then consumes gateB. Both gates are now
+    // `in-flight` with no StepCompleted -- the same crash window as the
     // single-gate case, but a name-scoped binder cannot tell which delivery
-    // each gate consumed, so completing either would risk binding it to the
-    // other gate's payload.
+    // each gate consumed, so completing either would risk binding the wrong
+    // payload.
     const seed: WorkflowEvent[] = [
       runStartedSeed(runId),
       {
@@ -362,10 +357,9 @@ describe("resume awaiting signal", () => {
     }).complete;
 
     // Fail-loud: the ambiguous topology is refused rather than silently
-    // completing a gate with the wrong payload. The short-circuit guard
-    // throws RuntimeResumeUnsupportedError; the body lands it as StepFailed
-    // and the run ends `failed`. Neither gate ever reaches StepCompleted, so
-    // no wrong payload is bound.
+    // completing a gate with the wrong payload. The short-circuit guard throws
+    // RuntimeResumeUnsupportedError; the body lands it as StepFailed and the
+    // run ends `failed`. Neither gate reaches StepCompleted.
     expect(result.terminalStatus).toBe("failed");
     const types = result.events.map((e) => e.kind);
     expect(types.filter((t) => t === "StepCompleted").length).toBe(0);
@@ -391,8 +385,8 @@ describe("resume awaiting signal", () => {
     // awaiters would miss it and admit the resume -- and a name-scoped binder
     // would then recover the LAST observed "go" (sig-2) and bind gateB to
     // gateA's payload: a silent mis-bind. hasForeignSameNameAwaiter keys on
-    // gateA's durable SignalAwaited, which outlives its completion, and refuses
-    // so gateB never completes with the wrong payload.
+    // gateA's durable SignalAwaited, which outlives its completion, so gateB
+    // never completes with the wrong payload.
     const seed: WorkflowEvent[] = [
       runStartedSeed(runId),
       {
@@ -704,11 +698,10 @@ describe("resume awaiting signal", () => {
   test("resumes an in-flight window captured from the runtime's OWN emitted log, not a hand-authored seed", async () => {
     // Every seed above is hand-authored, which leaves the emitter unproven:
     // the resume path assumes the runtime emits a SignalAwaited/SignalReceived
-    // shape it can recover from. Here a REAL run drives the gate forward, we
+    // shape it can recover from. Here a REAL run drives the gate forward; we
     // slice its durably-emitted log at the crash-after-signal-before-completed
-    // window (the exact shape the hand-authored in-flight seeds mimic), and
-    // resume from that slice -- so the emitter and the resume path are proven
-    // against each other end to end.
+    // window and resume from that slice, proving the emitter and the resume
+    // path against each other end to end.
     const liveRunId = "run-organic";
     const channel = createInMemorySignalChannel();
     const liveEnv = buildEnv(gateOnly, { signalChannel: channel });

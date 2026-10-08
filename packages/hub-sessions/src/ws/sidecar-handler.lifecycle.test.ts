@@ -15,9 +15,9 @@ import {
 } from "./sidecar-handler";
 
 /**
- * The router's timers, driven by the test. The intervals were already
- * injectable; arming was not, so a test had to sleep past an interval to
- * observe what it triggered.
+ * The router's timers, driven by the test: intervals were already injectable
+ * but arming was not, so a test had to sleep past an interval to observe what
+ * it triggered.
  */
 function createManualTimers(): {
   scheduleTimeout: (handler: () => void, ms: number) => () => void;
@@ -57,12 +57,9 @@ describe("SidecarRouter allocation connection lifecycle", () => {
   });
 
   test("ping resets the connection liveness deadline", async () => {
-    // The subject is that the ping REPLACES the armed deadline, which is a
-    // claim about which timer exists, not about elapsed time. Sleeping part
-    // way into the window and asserting the socket is still open only holds
-    // while the pause lands inside the window: a loaded worker overshoots
-    // it, the deadline fires first, and the test fails on a ping that was
-    // merely late.
+    // The claim is that the ping REPLACES the armed deadline -- a claim about
+    // which timer exists, not elapsed time: a loaded worker can overshoot a
+    // pause inside the window and fail on a ping that was merely late.
     const timers = createManualTimers();
     const router = createAllocatedRouter({
       pingTimeoutMs: 30,
@@ -73,7 +70,7 @@ describe("SidecarRouter allocation connection lifecycle", () => {
 
     router.handleMessage(ws, JSON.stringify({ type: "ping" }));
     // The connect-time deadline is cancelled and a fresh one armed in its
-    // place, so re-read rather than reusing the earlier snapshot. Firing the
+    // place, so re-read rather than reuse the earlier snapshot; firing the
     // cancelled one must not close the socket.
     const afterPing = timers.armed();
     expect(afterPing).toHaveLength(2);

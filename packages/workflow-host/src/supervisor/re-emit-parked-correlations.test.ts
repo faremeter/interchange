@@ -1,13 +1,14 @@
 // Supervisor `reEmitParkedCorrelations` driver and its Trigger A wiring.
 //
-// On a re-establishment the supervisor queries the child for its currently-
-// parked correlations (`parked-correlations.request`) and re-registers each
-// through `onSuspensionRegister` -- recovering a `park.notify` register the hub
-// may have missed while it was down at suspend. The supervisor fires this
-// automatically whenever a fresh child becomes addressable: after a spawn and
-// after a recycle's `installNewChild`. The driver itself is best-effort: it
-// no-ops when the child is not addressable, and a query that times out or whose
-// send fails is dropped for the next re-establishment to re-drive.
+// On a re-establishment the supervisor queries the child for its
+// currently-parked correlations (`parked-correlations.request`) and
+// re-registers each through `onSuspensionRegister` -- recovering a
+// `park.notify` register the hub may have missed while it was down at
+// suspend. Fired automatically whenever a fresh child becomes
+// addressable: after a spawn and after a recycle's `installNewChild`.
+// The driver is best-effort: it no-ops when the child is not
+// addressable, and a query that times out or fails to send is dropped
+// for the next re-establishment to re-drive.
 
 import { describe, test, expect } from "bun:test";
 import fs from "node:fs/promises";
@@ -97,8 +98,9 @@ type FakeChild = {
 };
 
 /**
- * A subprocess spawner that records one `FakeChild` per spawn, so the test can
- * drive the initial cohort and every recycle's replacement cohort.
+ * A subprocess spawner that records one `FakeChild` per spawn, so the
+ * test can drive the initial cohort and every recycle's replacement
+ * cohort.
  */
 function createSpawnTracker() {
   const children: FakeChild[] = [];
@@ -115,10 +117,10 @@ function createSpawnTracker() {
       failWrites: false,
     };
     children.push(child);
-    // `exited` models the live child's process: it stays pending until the
-    // supervisor kills the handle. Resolving it up front would signal an
-    // immediate process exit, which the supervisor's exit-watcher reads as
-    // a crash and respawns.
+    // `exited` models the live child's process: it stays pending until
+    // the supervisor kills the handle. Resolving it up front would
+    // signal an immediate process exit, which the exit-watcher reads
+    // as a crash and respawns.
     let resolveExited: (code: number) => void = () => undefined;
     const exited = new Promise<number>((resolve) => {
       resolveExited = resolve;
@@ -146,13 +148,14 @@ function createSpawnTracker() {
 }
 
 /**
- * Drive a cohort's `ready` handshake and start a mock child loop that answers
- * `parked-correlations.request` from the shared `nextReply` ref (a `null` ref
- * means never reply, to exercise the watchdog). Calls `onRequest` as each
- * query arrives and `onReply` after each answer, so a test can await the
- * fire-and-forget Trigger A effect deterministically. The two are distinct
- * reports because the watchdog path answers nothing: a test asserting a query
- * is in flight has only `onRequest` to go on.
+ * Drive a cohort's `ready` handshake and start a mock child loop that
+ * answers `parked-correlations.request` from the shared `nextReply`
+ * ref (a `null` ref means never reply, to exercise the watchdog).
+ * Calls `onRequest` as each query arrives and `onReply` after each
+ * answer, so a test can await the fire-and-forget Trigger A effect
+ * deterministically. The two are distinct reports because the
+ * watchdog path answers nothing: a test asserting a query is in
+ * flight has only `onRequest` to go on.
  */
 async function driveReadyAndAnswer(
   child: FakeChild,
@@ -211,11 +214,11 @@ interface Harness {
 }
 
 /**
- * Spawn a supervisor with the mock cohort tracker and drive the initial
- * cohort's `ready`. `initialReply` is what the first cohort reports for the
- * spawn-seam Trigger A query; `setup` awaits that first reply so the fire-and-
- * forget auto-emit has settled before the test proceeds (no race with a later
- * `nextReply` change).
+ * Spawn a supervisor with the mock cohort tracker and drive the
+ * initial cohort's `ready`. `initialReply` is what the first cohort
+ * reports for the spawn-seam Trigger A query; `setup` awaits that
+ * first reply so the fire-and-forget auto-emit has settled before the
+ * test proceeds (no race with a later `nextReply` change).
  */
 async function setup(opts: {
   initialReply: ParkedEntry[] | null;
@@ -290,8 +293,9 @@ async function setup(opts: {
     },
   );
   await spawnPromise;
-  // Await the spawn-seam Trigger A round-trip (unless the cohort withholds its
-  // reply) so a later `nextReply` change cannot race the auto-emit.
+  // Await the spawn-seam Trigger A round-trip (unless the cohort
+  // withholds its reply) so a later `nextReply` change cannot race
+  // the auto-emit.
   if (nextReply.current !== null) {
     await waitUntil(() => replies >= 1);
   }
@@ -334,8 +338,9 @@ describe("supervisor reEmitParkedCorrelations", () => {
     ];
     const harness = await setup({ initialReply: parked });
 
-    // The spawn seam fired the driver automatically; each parked correlation is
-    // re-registered with the deployment identity stamped on.
+    // The spawn seam fired the driver automatically; each parked
+    // correlation is re-registered with the deployment identity
+    // stamped on.
     await harness.waitForRegistrations(2);
     expect(harness.registrations).toEqual(parked.map(registrationFor));
 
@@ -343,9 +348,10 @@ describe("supervisor reEmitParkedCorrelations", () => {
   });
 
   test("re-registers the parked set on recycle against the new cohort (Trigger A)", async () => {
-    // Cohort A reports nothing on spawn; the recycle's fresh cohort reports a
-    // parked correlation, and the supervisor must re-emit it -- proving the
-    // recycle seam fires the driver against the NEW cohort's controlSender.
+    // Cohort A reports nothing on spawn; the recycle's fresh cohort
+    // reports a parked correlation, and the supervisor must re-emit
+    // it -- proving the recycle seam fires the driver against the NEW
+    // cohort's controlSender.
     const harness = await setup({ initialReply: [] });
     expect(harness.registrations).toEqual([]);
 
@@ -375,9 +381,10 @@ describe("supervisor reEmitParkedCorrelations", () => {
     );
     await recycleP;
 
-    // The recycle-seam re-emit registered the new cohort's parked correlation.
-    // Only cohort B could have reported `corr-c` (cohort A reported nothing), so
-    // this proves the re-emit queried the fresh cohort.
+    // The recycle-seam re-emit registered the new cohort's parked
+    // correlation. Only cohort B could have reported `corr-c` (cohort
+    // A reported nothing), so this proves the re-emit queried the
+    // fresh cohort.
     await harness.waitForRegistrations(1);
     expect(harness.registrations).toEqual([registrationFor(recycled)]);
     expect(cohortBReplies).toBeGreaterThanOrEqual(1);
@@ -386,8 +393,8 @@ describe("supervisor reEmitParkedCorrelations", () => {
   });
 
   test("re-registers what the child reports on an explicit call", async () => {
-    // The spawn auto-emit reported nothing; an explicit call then re-registers
-    // the freshly-reported set.
+    // The spawn auto-emit reported nothing; an explicit call then
+    // re-registers the freshly-reported set.
     const harness = await setup({ initialReply: [] });
     expect(harness.registrations).toEqual([]);
 
@@ -456,10 +463,11 @@ describe("supervisor reEmitParkedCorrelations", () => {
   });
 
   test("an in-flight query settles via sentinel when shutdown aborts it", async () => {
-    // Guards the reject->settle refactor: a teardown that aborts an in-flight
-    // query must settle it with the null sentinel, not reject it (which would
-    // surface as an unhandled rejection since the auto-emit fires concurrently
-    // with arbitrary shutdown/recycle).
+    // Guards the reject->settle refactor: a teardown that aborts an
+    // in-flight query must settle it with the null sentinel, not
+    // reject it (which would surface as an unhandled rejection since
+    // the auto-emit fires concurrently with arbitrary
+    // shutdown/recycle).
     const harness = await setup({ initialReply: [] });
     harness.nextReply.current = null; // the child answers no further query
 
@@ -474,19 +482,18 @@ describe("supervisor reEmitParkedCorrelations", () => {
         rejected = true;
       });
 
-    // Wait on the query REACHING the child rather than on a duration. The
-    // spawn-seam query is the first one (`setup` awaited its reply), so the
-    // second arrival is this driver's. The child withholds its answer, so at
-    // that point the supervisor is parked on a response that will never come
-    // -- which is what "in flight" means here.
+    // Wait on the query REACHING the child rather than on a duration.
+    // The spawn-seam query is the first one (`setup` awaited its
+    // reply), so the second arrival is this driver's. The child
+    // withholds its answer, so the supervisor is parked on a response
+    // that will never come -- which is what "in flight" means here.
     await waitUntil(() => harness.queriesReceived() >= 2);
     expect(settled).toBe(false); // still pending: proves the query was in flight
 
     await harness.supervisor.shutdown();
 
-    // No deadline on this await: a query that stays unsettled after shutdown
-    // is a hang, and the lane timeout is where CONVENTIONS.md puts that
-    // failsafe. A 1s race here just loses under load.
+    // A query that stays unsettled after shutdown is a hang; the lane
+    // timeout is where the suite-level failsafe lives.
     await inflight;
 
     expect(settled).toBe(true);

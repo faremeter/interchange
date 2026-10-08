@@ -1,29 +1,18 @@
-// Source-entry builder for a `childWorkflow` child that contains a `loop`
-// whose BODY step carries a real inline tool -- the loop-nested-one-rung-down
-// case.
+// Source-entry builder for a `childWorkflow` child containing a `loop` whose
+// BODY step carries a real inline tool. The parent spawns the child as its own
+// run with a FRESH credentials snapshot minted over the child definition; a
+// snapshot minted over the child's `stepOrder` alone carries no entry for the
+// body step and the call fails, even where the same loop works at the top
+// level. The loop converges after exactly two iterations: the `while`/`carry`
+// functions read only the carry state, so convergence is deterministic
+// regardless of the body agent's output.
 //
-// The parent spawns the child as its own run with a FRESH credentials snapshot
-// minted over the child definition. The child then runs a loop whose iteration
-// inherits that snapshot (a loop iteration re-enters its enclosing run's env),
-// so the body step's tool call authorizes against the child's snapshot under
-// the body step's own id. A snapshot minted over the child's `stepOrder` alone
-// therefore carries no entry for the body step and the call fails, even where
-// the same loop works at the top level.
-//
-// The entry exports the loop `while`/`carry` functions so the deployment points
-// `interchange.loops` at the same bundled entry and the fns resolve by export
-// name. The loop converges after exactly two iterations: `input` seeds
-// `currentInput = 0`; `keepGoing` stays true at 0 and turns false at 1. Both
-// read only the carry state, so convergence is deterministic regardless of the
-// body agent's output.
-//
-// STEP ID DISTINCTNESS. Every step id in this fixture -- the parent's, the
-// child's, and the loop body's -- is distinct, and anyone changing them must
-// keep them so. The per-step tables a step resolves against are keyed by
-// `baseStepId(stepId)`, and the deploy-tree address resolver keys off the
-// PARENT deployment's mailbox and step count, so a body step id equal to
-// another step's id resolves to that other step's entry and an assertion about
-// the body step would pass against the wrong step.
+// STEP ID DISTINCTNESS. Every step id here -- parent's, child's, loop body's --
+// must stay distinct. Per-step tables are keyed by `baseStepId(stepId)` and the
+// deploy-tree address resolver keys off the parent deployment's mailbox and
+// step count, so a body step id equal to another step's id would resolve to
+// that other step's entry and an assertion about the body step could pass
+// against the wrong step.
 
 import path from "node:path";
 

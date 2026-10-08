@@ -1,22 +1,10 @@
-// End-to-end replay of the committed structured-output captures.
-//
-// Each streaming test loads a captured session, replays its response
-// through the production adapter via replayResponsesForParsing, then
-// takes the accumulated text content from the finalized assistant turn
-// and asserts it parses as JSON conforming to the catalog intent's
-// schema. The session-corpus parser-regression suite already validates
-// that every captured fixture replays cleanly against the shape
-// invariants; these tests are the extra step that turns the bytes
-// into a typed value and pins the round-trip — the model produced
-// schema-conformant JSON, the wire bytes survived capture and
-// replay, the adapter assembled the text deltas into a coherent
-// content block, and the bytes still parse on the other side.
-//
-// The refusal-path round-trip is covered by synthetic SSE through the
-// OpenAI adapter (tests/inference/providers/openai.test.ts) and the
-// harness (tests/inference/refusal-harness.test.ts). A live
-// openai/gpt-5.5/structured-output-refusal-streaming probe is retained
-// as a misled matrix row: the model did not emit delta.refusal.
+// End-to-end replay of the committed structured-output captures. Each test
+// replays a captured session through the production adapter via
+// replayResponsesForParsing and asserts the accumulated assistant text
+// parses as JSON per the catalog intent's schema — the step past the
+// parser-regression suite's shape invariants that pins the typed round-trip.
+// The refusal path is covered by synthetic SSE elsewhere; a live refusal
+// probe stays as a misled matrix row (the model did not emit delta.refusal).
 
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
@@ -57,9 +45,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const WORKSPACE_ROOT = path.resolve(__dirname, "..", "..");
 
-// Resolve a session directory through the catalog's canonical resolver so
-// this test follows the corpus wherever getSessionDir points, rather than
-// reconstructing a root of its own.
+// Resolve a session directory through the catalog's canonical resolver.
 function sessionDirFor(
   provider: string,
   model: string,
@@ -90,23 +76,16 @@ function exchange0(sessionDir: string, file: string): string {
   return path.join(sessionDir, "exchanges", "0", file);
 }
 
-// The catalog intent in
-// packages/inference-discovery/src/catalog/intent.ts declares this
-// schema for the structured-output probe. Mirroring it here as an
-// arktype validator turns "the accumulated assistant text" into a
-// typed value and pins both the model's adherence and the adapter's
-// assembly correctness.
+// Mirrors the structured-output probe's schema from the catalog intent as an
+// arktype validator, pinning the model's adherence and the adapter's assembly.
 const UserInfo = type({
   name: "string",
   age: "number.integer",
   email: "string",
 });
 
-// Pull the accumulated text from every text-delta event the
-// streaming replay emitted. The captured JSON content for these
-// fixtures lands in delta.content frames (OpenAI) or
-// candidates[0].content.parts[0].text frames (Gemini); both
-// providers' adapters surface them as inference.text.delta.
+// Pull the accumulated text from every inference.text.delta the streaming
+// replay emitted (OpenAI and Gemini both surface their text frames that way).
 function accumulateText(events: readonly InferenceEvent[]): string {
   return events
     .map((e) => (e.type === "inference.text.delta" ? e.data.token : ""))
@@ -139,22 +118,16 @@ function assertSchemaConformant(events: readonly InferenceEvent[]): void {
   const accumulated = accumulateText(events).trim();
   const parsed: unknown = JSON.parse(accumulated);
   const validated = UserInfo.assert(parsed);
-  // The catalog intent's prompt names Alice / 30 / alice@example.com
-  // verbatim; on the capture day the model surfaced those values.
-  // Future re-captures may produce different equivalent JSON, so the
-  // assertion sticks to the schema shape rather than the specific
-  // values.
+  // The model surfaced these values on the capture day; re-captures may
+  // differ, so the assertion sticks to the schema shape.
   expect(typeof validated.name).toBe("string");
   expect(Number.isInteger(validated.age)).toBe(true);
   expect(typeof validated.email).toBe("string");
 }
 
-// Non-streaming captures live as response.json (the raw provider
-// response body), not response.sse. For the non-streaming variant this
-// test reads the response payload directly from disk and pulls the
-// assistant content via a provider-specific path — a simpler check than
-// replaying, and independent of the adapter's non-streaming decode,
-// which the parser-regression suite exercises separately.
+// Non-streaming captures live as response.json; this variant reads the
+// payload directly from disk via a provider-specific path, independent of the
+// adapter's non-streaming decode (covered by the parser-regression suite).
 
 const OpenAIChatCompletion = type({
   choices: type({
@@ -302,17 +275,11 @@ describe("structured-output round-trip — google-genai gemini-3.6-flash", () =>
   });
 });
 
-// Drift guard: the per-provider responseFormat translation lives in
-// two places — the runtime adapter (`@intx/inference`) and the
-// discovery plug-in (`@intx/inference-discovery-*`). The two
-// builders read from the same CapabilityIntent shape and must
-// produce the same provider-native wire payload, but nothing in the
-// type system pins that. These tests build a request through the
-// adapter using the catalog intent's responseFormat as input, then
-// load the captured request body from disk (which the discovery
-// plug-in produced), and assert the provider-native structured-
-// output field is byte-equal. A drift between the two builders
-// fails one of these tests with the diff.
+// Drift guard: the per-provider responseFormat translation lives in both the
+// runtime adapter and the discovery plug-in, and nothing in the type system
+// pins them together. These tests build a request through the adapter from
+// the catalog intent's responseFormat, load the captured request body the
+// plug-in produced, and assert the provider-native field is byte-equal.
 
 const STRUCTURED_INTENT = INTENTS["structured-output"];
 const PROMPT_TURN: ConversationTurn = {
@@ -373,11 +340,8 @@ describe("translation drift guard — adapter vs discovery plug-in", () => {
       "utf8",
     );
     const capturedBody = CapturedGeminiBody.assert(JSON.parse(capturedRaw));
-    // Only the structured-output-relevant subset of generationConfig
-    // is in the contract: maxOutputTokens / thinkingConfig / etc.
-    // may differ between the discovery probe and an adapter call
-    // configured with different timeouts. Pin only responseMimeType
-    // and responseSchema.
+    // Pin only responseMimeType/responseSchema; the rest of generationConfig
+    // may differ between the probe and an adapter call.
     expect(adapterBody.generationConfig?.responseMimeType).toBe(
       capturedBody.generationConfig?.responseMimeType,
     );

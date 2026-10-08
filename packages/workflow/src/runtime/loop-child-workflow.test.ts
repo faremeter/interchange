@@ -1,12 +1,9 @@
 // A loop body may spawn a `childWorkflow` grandchild. runLocal lifts the loop
-// body's inline child to a ref and registers the grandchild in the map the
-// iteration's inherited `spawnChild` resolves from, so the grandchild runs as
-// its own child run.
-//
-// The grandchild's single step is a `map` over an empty list: it runs zero
-// iterations, so the grandchild completes without reaching any inner step. A
-// completed run proves the whole lift/resolve/spawn path, since a loop that
-// converges required the body's childWorkflow to complete.
+// body's inline child to a ref and registers it in the map the iteration's
+// inherited `spawnChild` resolves from, so the grandchild runs as its own
+// child run. The grandchild's single step is a `map` over an empty list: it
+// runs zero iterations and completes without reaching an inner step, so a
+// converged loop proves the whole lift/resolve/spawn path.
 
 import { describe, test, expect } from "bun:test";
 
@@ -84,10 +81,9 @@ const loopFns = (ref: string): LoopFn => {
   throw new Error(`unknown loop fn ${ref}`);
 };
 
-// A NESTED loop whose INNER body spawns the childWorkflow grandchild. The
-// grandchild lives two loop levels down, so it is registered only if the
-// recursive body enumeration reaches the inner loop body AND the per-body
-// childWorkflow rewrite folds its grandchild.
+// A nested loop whose inner body spawns the grandchild. It lives two loop
+// levels down, so it is registered only if the recursive body enumeration
+// reaches the inner body AND the per-body childWorkflow rewrite folds it.
 const nestedCwParent = defineWorkflow({
   id: "nested-cw-parent",
   trigger: { type: "manual" },
@@ -131,8 +127,7 @@ describe("childWorkflow inside a loop body", () => {
     }).complete;
 
     // The loop converged after one iteration, which required the body's
-    // childWorkflow grandchild to spawn (lifted + resolved from the inherited
-    // env) and run to completion.
+    // childWorkflow grandchild to spawn and run to completion.
     expect(result.terminalStatus).toBe("completed");
     expect(result.outputs.rework).toMatchObject({
       outcome: "converged",
@@ -148,10 +143,8 @@ describe("childWorkflow inside a loop body", () => {
     }).complete;
 
     // The outer loop converged after one iteration, which required the inner
-    // loop to converge, which required the inner body's childWorkflow grandchild
-    // -- registered via the recursive body fold -- to spawn and complete. A
-    // missing fold would fail the inner spawn loud and the run would not
-    // converge.
+    // loop to converge, which required the inner body's grandchild --
+    // registered via the recursive body fold -- to spawn and complete.
     expect(result.terminalStatus).toBe("completed");
     expect(result.outputs.outer).toMatchObject({
       outcome: "converged",

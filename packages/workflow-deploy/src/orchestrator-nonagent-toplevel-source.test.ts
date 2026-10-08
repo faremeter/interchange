@@ -2,12 +2,11 @@
 //
 // A step that cannot invoke inference is pinned an inert placeholder -- the
 // deploy's default source -- and is not approval-gated. Its pin exists only
-// because the wire shape requires a source for every step.
-//
-// Gating that placeholder on an `inference.source:` approval demanded a grant
-// the capability walk emits only from agent definitions. A workflow whose
-// default source no agent happened to declare could not deploy, and one with no
-// agent step at all could never deploy. Agent steps keep the resolver and its
+// because the wire shape requires a source for every step. Gating that
+// placeholder on an `inference.source:` approval would demand a grant the
+// capability walk emits only from agent definitions; a workflow whose default
+// source no agent happened to declare could not deploy, and one with no agent
+// step at all could never deploy. Agent steps keep the resolver and its
 // operator-approval gate.
 
 import { describe, test, expect } from "bun:test";
@@ -150,8 +149,8 @@ describe("buildInertProjectionStepSources (non-agent top-level steps)", () => {
   });
 
   test("pins an approved agent beside an action whose placeholder is unapproved", () => {
-    // The mixed case, and the one that shows the reach of this rule. Before it,
-    // a workflow like this deployed only when the tenant's default source
+    // The mixed case, and the one that shows the reach of this rule. Before
+    // it, a workflow like this deployed only when the tenant's default source
     // happened to carry a (provider, model) some agent in the workflow also
     // declared -- a coincidence, not a decision. The action step's pin is now
     // ungated, while the agent step's is not.

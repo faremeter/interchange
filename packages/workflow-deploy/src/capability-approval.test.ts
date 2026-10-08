@@ -1,24 +1,14 @@
 // The contract `createApprovalSet` and `isApprovedGrantRequirement` enforce.
 //
-// The two kinds of approved item are tested by two different operations, and
-// these cases pin both:
-//
-//   - A grant string is approved by exact membership in `grants`. It is never
-//     consulted when a requirement is being tested, and a requirement is never
-//     consulted when a grant string is.
-//   - A requirement is approved by `node:util`'s `isDeepStrictEqual` over the
-//     whole record against `requirements`. That is stricter than "same fields,
-//     same values": a present-but-undefined optional key is NOT equal to an
-//     absent one.
-//
-// `createApprovalSet` is where that strictness is made safe. It validates every
-// requirement, and `GrantRequirement` admits an object or `null` for
-// `conditions` but never `undefined`, so an approval assembled by spreading a
-// partially-filled record (`{ ...base, conditions }` where `conditions` is
-// undefined) is rejected at construction. Before the parse existed, such an
-// approval was accepted and then silently failed to match a probe requirement
-// that omits the key, refusing the deploy with
-// `grant_requirements_not_approved` and nothing pointing at the cause.
+// The two kinds of approved item are tested by two different operations: a
+// grant string by exact membership in `grants`, a requirement by
+// `isDeepStrictEqual` over the whole record -- where a present-but-undefined
+// optional key is NOT equal to an absent one. `createApprovalSet` makes that
+// strictness safe: it validates every requirement, and `GrantRequirement`
+// never admits `undefined`, so an approval assembled by spreading a
+// partially-filled record is rejected at construction instead of silently
+// failing to match and refusing the deploy with an unexplained
+// `grant_requirements_not_approved`.
 
 import { describe, test, expect } from "bun:test";
 

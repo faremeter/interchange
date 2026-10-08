@@ -51,9 +51,7 @@ describe("buildDefaultDirectorRef", () => {
 
   test("accepts the known mode field and round-trips it as the ref config", () => {
     // The arktype schema permits unknown extra keys by default, so
-    // rejection of unknowns is not tested here. If the schema is
-    // tightened to reject unknown fields later, this test becomes the
-    // contract pin for the known-field path.
+    // unknown-field rejection is not tested here.
     const ref = buildDefaultDirectorRef({ mode: "conversational" });
     expect(ref.config).toEqual({ mode: "conversational" });
   });

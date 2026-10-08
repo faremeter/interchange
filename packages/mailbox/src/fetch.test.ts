@@ -88,10 +88,9 @@ async function signedRawMessage(crypto: CryptoProvider): Promise<Uint8Array> {
 }
 
 /**
- * Drop the `From` line from a message's header section, leaving every other
- * byte alone. The detached signature covers the signed-content part inside the
- * body, not the outer headers, so a message stripped this way still verifies
- * -- which is what makes it a fixture for a message that carries no
+ * Drop the `From` line, leaving every other byte. The detached signature
+ * covers the signed-content part inside the body, not the outer headers, so
+ * the message still verifies -- the fixture for a message that carries no
  * originator and would otherwise have a valid signature.
  */
 function stripFromHeader(raw: Uint8Array): Uint8Array {
@@ -171,8 +170,7 @@ function rawQuotedPrintableAttachment(): Uint8Array {
 /**
  * A multipart/mixed message whose single part declares `encoding`. The part
  * declares a bare `text/plain` with no parameters, so the comparison is the
- * transfer-encoding relabel and not parameter stripping. Both readers report
- * type/subtype.
+ * transfer-encoding relabel and not parameter stripping.
  */
 function rawMultipartWithEncoding(encoding: string, body: string): Uint8Array {
   const boundary = "b0undary";
@@ -214,13 +212,12 @@ function rawMessageWithEncoding(encoding: string, body: string): Uint8Array {
 }
 
 /**
- * A `multipart/signed` message built by hand, so a test can choose the transfer
- * encoding of the signed content. The assembler only ever emits `7bit`, and the
- * shape under test is the one a peer's mail client produces. `signedPart` is the
- * whole signed content part, headers included.
+ * A hand-built `multipart/signed` message so a test can choose the signed
+ * content's transfer encoding (the assembler only ever emits `7bit`).
+ * `signedPart` is the whole signed content part, headers included.
  *
- * The signature part is a placeholder: `fetchFull` resolves no key for this
- * sender in these tests, so it reports `unknown` without reading it.
+ * The signature part is a placeholder: these tests resolve no key for this
+ * sender, so `fetchFull` reports `unknown` without reading it.
  */
 function handBuiltSigned(
   signedPart: string[],
@@ -305,7 +302,7 @@ function signedStructuredWithEncoding(
 }
 
 /**
- * Wrap a store so every `readRaw` is counted. Proves the pure functions read
+ * Wrap a store so every `readRaw` is counted; proves the pure functions read
  * raw only when a projection or predicate needs the bytes.
  */
 function countingStore(inner: MailboxStore): {
@@ -450,13 +447,11 @@ describe("async fetch projections route through readRaw", () => {
   });
 
   // A run of CFWS between two lexical tokens is semantically a single space
-  // (RFC 2822 section 3.2.3), so a comment separates the tokens either side.
-  // `ba(c)se64` is therefore the two tokens `ba` and `se64` and names no
-  // mechanism, where a reading that deletes the comment sees `base64`. Each
-  // row is a message read two ways -- this projection and the whole-message
-  // decode -- and the point is that both ways give one answer, because a
-  // sender that can pick which reading a consumer gets can smuggle content
-  // past whichever one inspects it.
+  // (RFC 2822 §3.2.3), so `ba(c)se64` is the two tokens `ba` and `se64` and
+  // names no mechanism, where deleting the comment sees `base64`. Each row is
+  // read two ways -- this projection and the whole-message decode -- and both
+  // must give one answer, so a sender cannot smuggle content past one reader
+  // or the other.
   const transferEncodingCases: {
     declared: string;
     body: string;
@@ -519,8 +514,8 @@ describe("async fetch projections route through readRaw", () => {
       expect(part.contentType).toBe(c.contentType);
       expect(part.encoding).toBe(c.encoding);
 
-      // Pinning both sides to the same row proves the expectation, not just
-      // that two readers are wrong together.
+      // Pinning both sides to the same row proves the expectation rather
+      // than two readers being wrong together.
       const whole = decodeMail(raw).parts[0];
       expect(new TextDecoder().decode(whole?.content)).toBe(c.content);
       expect(whole?.contentType).toBe(c.contentType);
@@ -628,9 +623,8 @@ describe("async fetch projections route through readRaw", () => {
   });
 
   test("fetchFull verifies a signed message against its sender's key", async () => {
-    // The positive control for the no-originator case below: this fixture
-    // does verify, so an `unknown` there is the guard's doing and not a
-    // fixture that could never have verified.
+    // Positive control for the no-originator case below: this fixture does
+    // verify, so `unknown` there is the guard's doing.
     const crypto = createEd25519Crypto(await generateKeyPair());
     const store = createInMemoryMailboxStore();
     const uid = store.append(await signedRawMessage(crypto), envelopeFor(), []);
@@ -644,9 +638,8 @@ describe("async fetch projections route through readRaw", () => {
   });
 
   // `fetchFull` reads the same `Content-Transfer-Encoding` the whole-message
-  // decoders read. Each row is a body whose declared mechanism has to be undone
-  // before the bytes are the message's text; reading the part bytes directly
-  // would hand a caller the source form of the encoding.
+  // decoders read: each body's declared mechanism is undone before the bytes
+  // are the message's text.
   const contentEncodingCases: { encoding: string; body: string }[] = [
     { encoding: "base64", body: "aGVsbG8gd29ybGQ=" },
     { encoding: "quoted-printable", body: "hello=20world" },
@@ -709,9 +702,9 @@ describe("async fetch projections route through readRaw", () => {
   });
 
   test("fetchFull reads a non-multipart message's own body as its content", async () => {
-    // An ordinary unsigned email is a single part, so it has no part 1 to index
-    // into and the message is its own leaf part. Returning it with no content
-    // would drop the body of every sender that writes this shape.
+    // An ordinary unsigned email is a single part with no part 1 to index
+    // into; the message is its own leaf part. Returning no content would drop
+    // the body of every sender that writes this shape.
     const store = createInMemoryMailboxStore();
     const uid = store.append(
       rawMessage("Hello", "the whole body"),
@@ -729,7 +722,7 @@ describe("async fetch projections route through readRaw", () => {
 
   test("fetchFull undoes a non-multipart message's transfer encoding", async () => {
     // The message's own headers are the part's headers on this shape, so the
-    // mechanism it declares is the one that applies to its body.
+    // declared mechanism applies to its body.
     for (const c of contentEncodingCases) {
       const store = createInMemoryMailboxStore();
       const uid = store.append(
@@ -746,18 +739,17 @@ describe("async fetch projections route through readRaw", () => {
     }
   });
 
-  // A body that does not decode into text: RFC 2045 section 6.4 makes the
-  // first opaque octets, and the second is base64 that will not decode.
+  // A body that does not decode into text: the first is an unrecognized
+  // mechanism (RFC 2045 §6.4); the second is base64 that will not decode.
   const undecodableBodyCases: { encoding: string; body: string }[] = [
     { encoding: "x-uuencode", body: "begin 644 x" },
     { encoding: "base64", body: "!!! not base64 !!!" },
   ];
 
   test("fetchFull delivers a message whose body it cannot decode", async () => {
-    // Refusing the message is not a behaviour any mail client has: one that
-    // cannot render a body still shows the message. `content` is text, so an
-    // undecodable body is carried as an absent one rather than as invented
-    // text; the octets remain reachable through `fetchPart`.
+    // No mail client refuses a message whose body it cannot render. `content`
+    // is text, so an undecodable body is carried as an absent one and the
+    // octets stay reachable through `fetchPart`.
     for (const c of undecodableBodyCases) {
       const store = createInMemoryMailboxStore();
       const uid = store.append(
@@ -798,10 +790,9 @@ describe("async fetch projections route through readRaw", () => {
   });
 
   test("fetchPart reports an undecodable body as application/octet-stream", async () => {
-    // The two paths agree about the same bytes: what `fetchFull` declines to
-    // call text, `fetchPart` hands back as octets under the section 6.4
-    // relabel. A part path resolves against the signed content, so "1.1" is
-    // the body part `fetchFull` reads.
+    // What `fetchFull` declines to call text, `fetchPart` hands back as octets
+    // under the §6.4 relabel. A part path resolves against the signed content,
+    // so "1.1" is the body part `fetchFull` reads.
     const store = createInMemoryMailboxStore();
     const uid = store.append(
       signedConversationWithEncoding("x-uuencode", "begin 644 x"),
@@ -821,9 +812,9 @@ describe("async fetch projections route through readRaw", () => {
   });
 
   test("fetchFull still refuses a structured payload that is not valid JSON", async () => {
-    // A decode failure and a payload failure are different conditions: here the
-    // bytes decoded and the sender's JSON is wrong, which is a fault to surface
-    // rather than a body this transport cannot read.
+    // A decode failure and a payload failure differ: here the bytes decoded
+    // and the sender's JSON is wrong, a fault to surface rather than a body
+    // this transport cannot read.
     const store = createInMemoryMailboxStore();
     const uid = store.append(
       signedStructuredWithEncoding("7bit", "{ not json"),
@@ -837,9 +828,9 @@ describe("async fetch projections route through readRaw", () => {
 
   test("fetchFull propagates a sender whose getPublicKey throws", async () => {
     // A CryptoProvider that cannot produce its own public key is a local
-    // fault, not a bad signature: the error surfaces rather than being
-    // masked as a signature status. The key is resolved for every inbound
-    // from a known sender, so even this non-signed message reaches it.
+    // fault, not a bad signature, so the error surfaces rather than being
+    // masked as a signature status. The key is resolved for every inbound from
+    // a known sender, so even this unsigned message reaches it.
     const store = createInMemoryMailboxStore();
     const uid = store.append(rawMessage("Hello", "b"), envelopeFor(), []);
 
@@ -860,10 +851,9 @@ describe("async fetch projections route through readRaw", () => {
 
 describe("a message that carries no originator", () => {
   test("matches no sender query, including the empty one", async () => {
-    // There is no sender for the substring to be found in, so no `from`
-    // query can match. The empty query is the assertion that matters: every
-    // string contains "", so it catches a stand-in substituted for the
-    // absent sender whatever address that stand-in names.
+    // There is no sender for the substring to be found in, so no `from` query
+    // can match. The empty query is the assertion that matters: every string
+    // contains "", so it would catch a stand-in whatever address it named.
     const store = createInMemoryMailboxStore();
     const orphanUid = store.append(
       stripFromHeader(rawMessage("Hello", "body text")),
@@ -877,25 +867,23 @@ describe("a message that carries no originator", () => {
     );
 
     const byEmpty = await executeSearch("INBOX", store, { from: "" });
-    // The named message proves the empty query is a query that matches, so
-    // the orphan's absence from the result is the guard and not a query that
-    // matches nothing.
+    // The named message proves the empty query matches; the orphan's absence
+    // is the guard.
     expect(byEmpty.map((r) => r.uid)).toEqual([namedUid]);
 
     const byAddress = await executeSearch("INBOX", store, { from: "alice@x" });
     expect(byAddress.map((r) => r.uid)).toEqual([namedUid]);
 
-    // Every other predicate still sees the orphan, so it is in the mailbox
-    // and reachable -- it is the sender predicate alone that excludes it.
+    // Every other predicate still sees the orphan; the sender predicate alone
+    // excludes it.
     const byRecipient = await executeSearch("INBOX", store, { to: "bob@y" });
     expect(byRecipient.map((r) => r.uid)).toEqual([orphanUid, namedUid]);
   });
 
   test("fetchFull reports its signature unknown without consulting the key lookup", async () => {
-    // A message with no originator names no key to verify against. Asking
-    // the lookup for a stand-in address would return whichever key that
-    // address happens to have and verify the message against it, so the
-    // lookup must not be asked at all.
+    // A message with no originator names no key to verify against. Asking the
+    // lookup for a stand-in address would verify against whichever key that
+    // address has, so the lookup must not be asked at all.
     const crypto = createEd25519Crypto(await generateKeyPair());
     const store = createInMemoryMailboxStore();
     const raw = stripFromHeader(await signedRawMessage(crypto));
@@ -903,7 +891,7 @@ describe("a message that carries no originator", () => {
 
     const asked: string[] = [];
     // Answers with the signing key for any address, so a stand-in would
-    // verify and report `valid`.
+    // report `valid`.
     const getCrypto = (fromAddress: string): CryptoProvider => {
       asked.push(fromAddress);
       return crypto;
@@ -919,11 +907,10 @@ describe("a message that carries no originator", () => {
 
 describe("a message that carries no date", () => {
   test("matches no date window, in either direction", async () => {
-    // Every date predicate asks where the sender placed the message in time. A
-    // message that named no date placed itself nowhere, so each window has to
-    // exclude it. The dated message in the same mailbox proves each query is
-    // one that matches, so the undated message's absence is the guard rather
-    // than a query matching nothing.
+    // Every date predicate asks where the sender placed the message in time;
+    // one that named no date placed itself nowhere, so each window excludes
+    // it. The dated message proves each query matches, so the undated
+    // message's absence is the guard.
     const store = createInMemoryMailboxStore();
     const undatedUid = store.append(
       rawMessage("Hello", "body text"),
@@ -952,18 +939,16 @@ describe("a message that carries no date", () => {
       expect(hits.map((r) => r.uid)).toEqual([datedUid]);
     }
 
-    // Every other predicate still sees the undated message, so it is in the
-    // mailbox and reachable -- the date predicates alone exclude it.
+    // Every other predicate still sees the undated message; the date
+    // predicates alone exclude it.
     const byRecipient = await executeSearch("INBOX", store, { to: "bob@y" });
     expect(byRecipient.map((r) => r.uid)).toEqual([undatedUid, datedUid]);
   });
 
   test("sorts behind a dated message in a thread rather than taking a date", async () => {
-    // Threading orders by date, and an undated message supplies no key. It
-    // sorts after every dated message, so the dated message keeps the root
-    // slot instead of hanging off a message that placed itself nowhere in
-    // time. The undated message is appended first, so append order cannot be
-    // what puts it last.
+    // Threading orders by date; an undated message sorts after every dated
+    // one so the dated message keeps the root slot. The undated message is
+    // appended first, so append order cannot be what puts it last.
     const store = createInMemoryMailboxStore();
     const undatedUid = store.append(
       rawMessage("Shared", "second"),
@@ -990,11 +975,10 @@ describe("a message that carries no date", () => {
 
 describe("an envelope whose declared structure is not there", () => {
   // A sender chooses its own `Content-Type`, so it chooses whether the part
-  // `fetchFull` reads can be found at all. These three shapes are the ones
-  // that leave the projection with no content part, and it refuses the
-  // message rather than inventing one. Refusing is not deleting: the caller
-  // that reads the refusal owns what happens to the mail, and the INBOX watch
-  // in `@intx/harness` keeps it.
+  // `fetchFull` reads exists. These three shapes leave the projection with no
+  // content part, and it refuses the message rather than inventing one.
+  // Refusing is not deleting: the bytes a caller may still want stay in the
+  // mailbox.
 
   /** A `multipart/*` message whose declared boundary appears nowhere. */
   function boundaryDeclaredButAbsent(): Uint8Array {
@@ -1059,8 +1043,8 @@ describe("an envelope whose declared structure is not there", () => {
         fetchFull({ uid, mailbox: "INBOX" }, store, () => undefined),
       ).rejects.toThrow();
 
-      // The refusal leaves the mailbox as it found it: the projections are
-      // pure reads, so the bytes a caller may still want are all there.
+      // The refusal leaves the mailbox as it found it; the projections are
+      // pure reads.
       expect(store.find(uid)).toBeDefined();
       expect(await store.readRaw(uid)).toEqual(shape.raw());
     });
@@ -1068,10 +1052,9 @@ describe("an envelope whose declared structure is not there", () => {
 });
 
 describe("a body that will not decode reports itself", () => {
-  // The default sink routes `warning` and above to `console.warn`, so spying
-  // on it asserts what an operator actually sees rather than an internal
-  // logger call. The development formatter colours every interpolated value,
-  // so the escape sequences come off before anything is matched.
+  // The default sink routes `warning` and above to `console.warn`, so the spy
+  // asserts what an operator actually sees. The development formatter colours
+  // interpolated values, so escape sequences come off before matching.
   const ansiEscape = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 
   /* eslint-disable no-console -- intentional spy on console.warn */
@@ -1097,10 +1080,9 @@ describe("a body that will not decode reports itself", () => {
   /* eslint-enable no-console */
 
   test("fetchFull records the decode failure it delivers the message without", async () => {
-    // Absent `content` is the whole of what the caller learns, and "not text"
-    // and "would not decode" reach it as the same value. Without a record the
-    // second is indistinguishable from the first and nobody learns the peer is
-    // sending bodies its own declared encoding does not describe.
+    // `undefined` `content` reaches the caller as the same value for "not
+    // text" and "would not decode"; without a record nobody learns the peer
+    // sends bodies its own declared encoding does not describe.
     const store = createInMemoryMailboxStore();
     const uid = store.append(
       signedConversationWithEncoding("base64", "!!! not base64 !!!"),
@@ -1115,9 +1097,8 @@ describe("a body that will not decode reports itself", () => {
     );
     expect(full.content).toBeUndefined();
 
-    // The record has to name the message and the encoding that failed, so an
-    // operator can read the octets back through `fetchPart` and can tell which
-    // peer to ask about.
+    // The record names the message and the encoding that failed so an
+    // operator can read the octets back through `fetchPart`.
     const record = warned.find((line) => line.includes("body did not decode"));
     expect(record).toBeDefined();
     expect(record).toContain(`uid=${String(uid)}`);
@@ -1126,9 +1107,9 @@ describe("a body that will not decode reports itself", () => {
   });
 
   test("an unrecognized encoding is not reported as a decode failure", async () => {
-    // The RFC 2045 section 6.4 relabel is the declared handling of an encoding
-    // this transport does not implement, not a fault. Reporting it would cry
-    // wolf on every opaque part a peer legitimately sends.
+    // The RFC 2045 §6.4 relabel is the declared handling of an encoding this
+    // transport does not implement, not a fault; reporting it would cry wolf
+    // on every opaque part a peer legitimately sends.
     const store = createInMemoryMailboxStore();
     const uid = store.append(
       signedConversationWithEncoding("x-uuencode", "begin 644 x"),

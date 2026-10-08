@@ -1,6 +1,6 @@
-// Negotiation test: after a clone and a small push, a second fetch
-// against the same clone transfers fewer objects than the original
-// clone. Verified via `git count-objects -v` before and after.
+// Negotiation test: after a clone and a small push, a second fetch of
+// the same clone transfers fewer objects than the original clone,
+// verified via `git count-objects -v` before and after.
 
 import { describe, test, expect, afterEach } from "bun:test";
 import fs from "node:fs/promises";
@@ -162,11 +162,9 @@ describe.skipIf(!harnessHubEnvAvailable())("incremental fetch", () => {
     }
     const after = parseCountObjects(afterCounts.stdout);
 
-    // The fetch must transfer the delta only: the count of objects
-    // already in the local clone (the haves) must NOT be repeated.
-    // That is, the delta `totalAfter - totalBefore` must be strictly
-    // less than `totalAfter` — proving that fewer than all objects
-    // were transferred in the second exchange.
+    // The fetch transfers the delta only: the delta
+    // `totalAfter - totalBefore` must be strictly less than `totalAfter`,
+    // proving fewer than all objects were transferred a second time.
     const totalBefore = before.count + before.inPack;
     const totalAfter = after.count + after.inPack;
     expect(totalAfter).toBeGreaterThan(totalBefore);

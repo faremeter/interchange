@@ -1,5 +1,4 @@
-// Status vocabulary for the first-class workflow definition model, kept in its
-// own workflow-scoped module.
+// Status vocabulary for the first-class workflow definition model.
 export const workflowDefinitionStatuses = ["deployed", "stopped"] as const;
 export type WorkflowDefinitionStatus =
   (typeof workflowDefinitionStatuses)[number];

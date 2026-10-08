@@ -7,8 +7,7 @@
 // grants a trigger must deliver, the text of every `tool_result` the agent saw,
 // and the failure events a run log carries. Every test importing this module
 // asserts on identical shapes, so the readers live here rather than as per-file
-// copies that could drift apart while claiming to prove the same property at
-// different nesting depths.
+// copies that could drift apart.
 
 import type { GrantEffect, GrantWalkSnapshot } from "@intx/types";
 import type { WireGrantRule } from "@intx/types/grant-wire";
@@ -75,7 +74,7 @@ export function deriveWireRunGrants(
  * Anthropic adapter serializes a result as a user-turn content block whose own
  * `content` is either a bare string or an array of `{ type: "text", text }`.
  *
- * The text is what a caller must assert on. `createToolRunner.run` converts a
+ * The text is what a caller must assert on: `createToolRunner.run` converts a
  * handler throw into an error `ToolResult` rather than propagating it, so a
  * refusal at the authorize seam still appends a well-formed `tool_result` and
  * the agent answers it in an ordinary turn. Only the tool's own return value

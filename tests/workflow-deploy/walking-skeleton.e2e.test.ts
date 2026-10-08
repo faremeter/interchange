@@ -1,40 +1,16 @@
-// Walking-skeleton end-to-end: install a code-sourced workflow package from
-// a test npm registry, probe it, approve+freeze it, deploy it BY SOURCE-REF,
-// and assert the deployed workflow runs to completion.
+// Walking-skeleton end-to-end: install a code-sourced workflow package from a
+// test npm registry, probe it, approve+freeze it, deploy it BY SOURCE-REF, and
+// assert the deployed workflow runs to completion. Composes the two production
+// entrypoints (installAndApproveWorkflowDefinition, deployCodeSourcedWorkflow)
+// end to end; the load-bearing assertion is the terminal RunCompleted on a
+// single mail-triggered toolless agent step, proving closure resolution, the
+// probe, gate+freeze, source-ref deploy, child re-verify, and per-run grant
+// materialization compose into one run.
 //
-// This is the one test that drives every seam of the INTR-416 walking
-// skeleton in a single flow, composing the two PRODUCTION entrypoints the
-// hub exposes and reimplementing none of their glue:
-//
-//   installAndApproveWorkflowDefinition(...)  — resolve the frozen closure,
-//     probe the live sidecar (airlocked probe child evaluates the package's
-//     interchange.workflow entry, projects it to its inert needs-surface,
-//     ships the advisory grant set + wire hash), gate the advisory grants
-//     against the operator's ApprovalSet, and freeze the recomputed wire hash
-//     onto the definition version row.
-//
-//   deployCodeSourcedWorkflow(...)            — carry the gate's frozen wire
-//     hash + inert projection + frozen closure verbatim into a source-ref
-//     agent.deploy frame. The sidecar re-materializes the pinned closure
-//     (HTTP fetch + SRI verify), re-evaluates the entry, projects live->inert,
-//     writes workflow.json, and the child's load-boundary re-verify recomputes
-//     the wire hash over that inert projection and matches the frozen anchor.
-//
-// The workflow is a single toolless agent step triggered by mail; the mock
-// inference server returns a deterministic reply, so the run reaches
-// RunCompleted on the echo alone. The load-bearing assertion is that terminal
-// event: it proves closure resolution, the probe transport + airlocked probe
-// child, the hub gate + freeze, source-ref deploy, sidecar apply of the frozen
-// closure, child re-verify on load, and per-run grant materialization from the
-// frozen set all composed into one run.
-//
-// The fixture workflow package is built at test time: a self-contained
-// `defineWorkflow(...)` entry is bundled with Bun.build (its @intx imports
-// inlined to source so the sidecar-materialized closure needs no workspace
-// module resolution), tarred as an npm package with an `interchange.workflow`
-// entry, and served from a small in-process HTTP registry. The hub reads the
-// package's packument through the injected `fetchPackument` seam; the sidecar
-// fetches + SRI-verifies the tarball over HTTP from the same registry.
+// The fixture package is built at test time (bundled entry with @intx imports
+// inlined), tarred with an `interchange.workflow` entry, and served from an
+// in-process HTTP registry: the hub reads the packument via the injected
+// `fetchPackument` seam and the sidecar SRI-verifies the tarball over HTTP.
 
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
@@ -96,9 +72,10 @@ import {
 } from "../hub-agent/lib/deploy-flow-env";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
-// A run-first anchor id (run_<hex>): the live trigger->run path derives the run
-// id from the deployment address via parseRunAddress, which requires the run_
-// prefix, so a non-run_ literal would throw "Invalid run address" mid-test.
+// A run-first anchor id (run_<hex>): the live trigger->run path derives the
+// run id from the deployment address via parseRunAddress, which requires the
+// run_ prefix, so a non-run_ literal would throw "Invalid run address"
+// mid-test.
 const DEPLOYMENT_ID = generateId("workflowRun");
 const STEP_ID = "run";
 const WORKFLOW_RUN_REF = "refs/heads/main";
@@ -121,11 +98,10 @@ const deploymentMailAddress = deriveRunAddress({
 const repoRoot = path.resolve(import.meta.dir, "..", "..");
 
 // Second deployment: an onTrigger-container workflow whose inline section body
-// runs a tool-less agent step. This is the acceptance test for source-ref
-// per-body inference-source pinning -- the base test above proves the
-// single-step source-ref stack; this one proves an onTrigger body runs inference
-// end-to-end from its staged `sources.json`, and fails closed when that file is
-// removed.
+// runs a tool-less agent step. The acceptance test for source-ref per-body
+// inference-source pinning: an onTrigger body runs inference end-to-end from
+// its sealed per-body sources (the staging sources.json is retired; the test
+// asserts its absence).
 const BODY_PACKAGE_NAME = "@wf/walking-skeleton-body";
 const BODY_PACKAGE_VERSION = "1.0.0";
 const BODY_PACKAGE_BASENAME = "walking-skeleton-body";
@@ -140,7 +116,7 @@ const bodyDeploymentMailAddress = deriveRunAddress({
 });
 // The ref the hub stages the body under -- inlineBodyRef(projection.id,
 // sectionId) -- and the id the run child re-derives from the re-evaluated
-// closure. They must match, or the body's sources.json ENOENTs at runtime.
+// closure. They must match, or the body's sealed sources never resolve.
 const BODY_REF = `${BODY_WORKFLOW_ID}__${BODY_SECTION_ID}`;
 // The section's body child run id is `<sectionId>__<index>`; index 0 is the
 // first fired event.
@@ -176,8 +152,8 @@ export const workflow = defineWorkflow({
 
 // The onTrigger-container entry the second fixture ships. A single section
 // subscribed to the deployment's mail address; its inline body is a one-step
-// tool-less agent, so a fired event spawns a body child that runs inference from
-// its env-delivered per-body sources.
+// tool-less agent, so a fired event spawns a body child that runs inference
+// from its env-delivered per-body sources.
 const bodyWorkflowEntrySource = `
 import { defineWorkflow, onTrigger, step } from "@intx/workflow/definition";
 import { defineAgent } from "@intx/agent";
@@ -350,10 +326,9 @@ describe.skipIf(!harnessDbEnvAvailable())("walking skeleton e2e", () => {
     });
 
     // In-process HTTP registry: serves each fixture's tarball bytes so the
-    // sidecar's closure materializer can fetch + SRI-verify them. It is
-    // consulted only for the tarball GET (the hub reads the packument through
-    // the `fetchPackument` seam, no HTTP). Route by tarball filename so the two
-    // packages resolve to their own bytes.
+    // sidecar's closure materializer can fetch + SRI-verify them (the hub
+    // reads the packument through the `fetchPackument` seam, no HTTP). Route
+    // by tarball filename so the two packages resolve to their own bytes.
     registryServer = Bun.serve({
       port: 0,
       fetch(req) {
@@ -379,11 +354,10 @@ describe.skipIf(!harnessDbEnvAvailable())("walking skeleton e2e", () => {
 
     h = await createTestDb();
 
-    // Seed the tenancy both tests' freezes anchor on:
-    // installAndApproveWorkflowDefinition projects a first-class
-    // workflow_definition over each test's asset, so the shared tenant + creator
-    // principal must exist before either gate persists. Seeded once here so the
-    // two tests are independent of ordering (each still seeds its own asset).
+    // Seed the tenancy both tests' freezes anchor on: the gate projects a
+    // first-class workflow_definition over each test's asset, so the shared
+    // tenant + creator principal must exist first. Seeded once here so the two
+    // tests are independent of ordering (each still seeds its own asset).
     await h.db.insert(tenantTable).values({
       id: TENANT_ID,
       name: TENANT_ID,
@@ -419,9 +393,8 @@ describe.skipIf(!harnessDbEnvAvailable())("walking skeleton e2e", () => {
   });
 
   test("install -> probe -> approve -> deploy-by-source-ref -> run-to-completion", async () => {
-    // The tenant + creator principal are seeded once in beforeAll; this test
-    // seeds only its own workflow asset (the freeze projects a first-class
-    // workflow_definition over it).
+    // This test seeds only its own workflow asset (the freeze projects a
+    // first-class workflow_definition over it).
     await seedAsset(h.db, {
       id: DEFINITION_ASSET_ID,
       tenantId: TENANT_ID,
@@ -487,8 +460,6 @@ describe.skipIf(!harnessDbEnvAvailable())("walking skeleton e2e", () => {
           `${JSON.stringify(approved.approval)}\n${env.sidecarDiagnostics()}`,
       );
     }
-    // The probe evaluated the pinned package and projected it to its inert
-    // needs-surface; the freeze anchored the recomputed wire hash.
     expect(approved.projection.id).toBe("wf_walking_skeleton");
     expect(approved.projection.stepOrder).toEqual([STEP_ID]);
     expect(approved.closure.topLevel).toEqual([
@@ -496,8 +467,6 @@ describe.skipIf(!harnessDbEnvAvailable())("walking skeleton e2e", () => {
     ]);
     expect(approved.approval.approvedWireHash.length).toBeGreaterThan(0);
 
-    // The freeze persisted the approved wire hash onto the definition's
-    // version row.
     const versionRow = await h.db
       .select({
         approvedWireHash: workflowDefinitionVersionTable.approvedWireHash,
@@ -518,9 +487,8 @@ describe.skipIf(!harnessDbEnvAvailable())("walking skeleton e2e", () => {
       approved.approval.approvedWireHash,
     );
 
-    // 2) Deploy by source-ref through the production entrypoint. The concrete
-    // inference source (baseURL -> mock inference) is supplied per step; the
-    // fixture agent's declared `anthropic:mock-model` source binds to it.
+    // 2) Deploy by source-ref: the fixture agent's declared
+    // `anthropic:mock-model` source binds to the mock inference source.
     const inferenceSource = {
       id: "anthropic:mock-model",
       provider: "anthropic",
@@ -584,8 +552,6 @@ describe.skipIf(!harnessDbEnvAvailable())("walking skeleton e2e", () => {
     expect(anchorRow?.publicKey).toBe(deployResult.publicKey);
     expect(anchorRow?.tenantId).toBe(TENANT_ID);
 
-    // Register the deployment so the fixture helpers resolve its workflow-run
-    // repo, then wait for the deployment address to become routable.
     const workflowRunRepoId: RepoId = {
       kind: "workflow-run",
       id: deriveWorkflowRunRepoId(deploymentMailAddress),
@@ -710,8 +676,6 @@ describe.skipIf(!harnessDbEnvAvailable())("walking skeleton e2e", () => {
           `${JSON.stringify(approved.approval)}\n${env.sidecarDiagnostics()}`,
       );
     }
-    // The frozen projection id is the authored workflow id; the body ref the hub
-    // stages under is derived from it.
     expect(approved.projection.id).toBe(BODY_WORKFLOW_ID);
 
     const inferenceSource = {
@@ -781,12 +745,10 @@ describe.skipIf(!harnessDbEnvAvailable())("walking skeleton e2e", () => {
     });
 
     // (a) The hub pinned the body's per-step sources under the SHARED body ref
-    // (inlineBodyRef(frozen projection.id, sectionId)). The sidecar now seals
-    // those into the run record and delivers the plaintext to the run child
-    // through the spawn env; it no longer stages a plaintext sources.json. The
-    // id-equivalence proof moves entirely to the runtime layer below: the body
-    // resolves its sources by the ref it re-derives from the re-evaluated
-    // closure and only runs if that matches the ref the hub pinned under.
+    // (inlineBodyRef(frozen projection.id, sectionId)); the sidecar seals them
+    // into the run record and delivers them through the spawn env -- no
+    // plaintext sources.json is staged. The id-equivalence proof moves to the
+    // runtime layer (the body only runs if its re-derived ref matches).
     await waitFor(
       () =>
         env.hub.router
@@ -843,10 +805,9 @@ describe.skipIf(!harnessDbEnvAvailable())("walking skeleton e2e", () => {
       { diagnostics: env.sidecarDiagnostics },
     );
 
-    // The container recorded the body child completed; the body child's own
-    // agent step completed (ran inference), not failed. Body-runs-e2e AND
-    // id-equivalence: the body could only resolve its env-delivered sources and
-    // run if the runtime ref matched the frozen ref the hub pinned under.
+    // The body child's agent step completed (ran inference), not failed --
+    // body-runs-e2e AND id-equivalence: it could only run if the runtime ref
+    // matched the frozen ref the hub pinned under.
     const containerEvents = await readWorkflowRunEvents(
       env,
       BODY_DEPLOYMENT_ID,
@@ -876,11 +837,9 @@ describe.skipIf(!harnessDbEnvAvailable())("walking skeleton e2e", () => {
     // The body's inference call actually reached the mock provider.
     expect(env.inference.requests.length).toBeGreaterThan(inferenceBefore);
 
-    // Fail-closed on body sources that cannot be resolved -- a corrupt or
-    // wrong-key sealed record whose bodySources will not decrypt -- is covered at
-    // the record boundary by the workflow-run-record store tests (a decrypt
-    // failure soft-skips the whole run). It is no longer reachable by removing a
-    // per-body sources.json here: the file is retired, so this e2e asserts only
-    // the happy path and the file's absence above.
+    // Fail-closed on unresolvable body sources (a corrupt or wrong-key sealed
+    // record) is covered at the record boundary by the workflow-run-record
+    // store tests. With the staging file retired, this e2e asserts only the
+    // happy path and the file's absence above.
   }, 180_000);
 });

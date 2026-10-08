@@ -1,9 +1,6 @@
-// Resume-from-log seam test.
-//
-// Drives a workflow to a known mid-run state, snapshots the event log,
-// kills the in-process runtime, instantiates a fresh runtime against
-// the same log, asserts it resumes to the same observable state and
-// runs to completion.
+// Resume-from-log seam test: drive a workflow to a known state, snapshot the
+// event log, then run a fresh runtime against the same log and assert it
+// resumes to the same state and runs to completion.
 
 import { describe, test, expect } from "bun:test";
 
@@ -68,10 +65,8 @@ describe("resume-from-log seam", () => {
     expect(result1.terminalStatus).toBe("completed");
     const log = result1.events;
 
-    // Phase 2: instantiate a fresh runtime against the same log, assert
-    // it resumes to the same terminal state without re-running steps.
-    // We give the fresh runtime an invokeStep that throws -- if it
-    // actually invokes a step, the test fails.
+    // Phase 2: a fresh runtime resumes the same log without re-running steps --
+    // its invokeStep throws if a step is invoked.
     const invokeStepNever: StepInvoker = async () => {
       throw new Error("must not invoke a step during resume");
     };
@@ -116,8 +111,7 @@ describe("resume-from-log seam", () => {
       trigger: { type: "manual" },
       steps: { big: step({ agent: a }) },
     });
-    // Force the step's output to spill to a blob by capping inline at
-    // a tiny size; the originating substrate retains the blob.
+    // Cap inline at a tiny size to force the step's output to spill to a blob.
     const originating = createInMemoryBlobSubstrate({ inlineMaxBytes: 4 });
     const clock = () => new Date();
     const repoStore = createInMemoryRepoStore();
@@ -148,8 +142,8 @@ describe("resume-from-log seam", () => {
     );
     expect(hasBlobRef).toBe(true);
 
-    // Resume against a fresh ephemeral substrate -- must fail with
-    // the targeted error rather than crash on `unknown blob ref`.
+    // Resume against a fresh ephemeral substrate -- must fail with the targeted
+    // error rather than crash on `unknown blob ref`.
     const freshEnv: WorkflowRuntimeEnv = {
       ...env,
       repoStore: createInMemoryRepoStore(),

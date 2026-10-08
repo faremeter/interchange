@@ -2,13 +2,12 @@
 // its turn (INTR-310).
 //
 // The sibling `child-workflow-roundtrip.test.ts` proves a child EXPOSES an
-// inline tool (the mock lists its name). This proves the stronger property: the
+// inline tool (the mock lists its name); this proves the stronger property: the
 // child's real agent actually CALLS the tool and feeds the result back into a
 // follow-up turn -- the real `tool_use` -> execute -> `tool_result` -> reply
-// round-trip, the same loop a top-level source step runs. The mock is
-// configured to drive a `tool_use` on the first request that exposes the tool,
-// so the child runs the inline `mail_send` tool for real and re-inferences with
-// its result.
+// round-trip, the same loop a top-level source step runs. The mock drives a
+// `tool_use` on the first request that exposes the tool, so the child runs the
+// inline `mail_send` tool for real and re-inferences with its result.
 //
 // The env runs exactly one workflow: a parent whose leading step is toolless
 // and a child step that carries the tool. The parent step can produce no

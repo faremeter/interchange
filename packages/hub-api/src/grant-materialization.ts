@@ -18,10 +18,9 @@ export type MaterializedGrantRow = {
   updatedAt: Date;
 };
 
-// Build a materialized grant row: mint the id and stamp createdAt/updatedAt from
-// a single `now`, so every materialization site -- creator/invoker delegation,
-// ad-hoc invoker grants, and the launch route's tenant-owned credential
-// bindings -- constructs the identical row shape one way.
+// Build a materialized grant row: mint the id and stamp createdAt/updatedAt
+// from a single `now`, so every materialization site constructs the identical
+// row shape one way.
 export function makeGrantRow(fields: {
   tenantId: string;
   principalId: string;
@@ -63,19 +62,19 @@ export type ResolveGrantMaterializationArgs = {
   // The principal the materialized grants are written onto.
   targetPrincipalId: string;
   // The definition's grant requirements, already parsed and validated by the
-  // caller. Each is resolved against the creator's or invoker's authority.
+  // caller; each resolves against the creator's or invoker's authority.
   grantRequirements: readonly GrantRequirement[];
   // Ad-hoc grants the invoker asks to delegate at launch, resolved against
   // the invoker's authority in addition to the definition's requirements.
   adHocInvokerGrants: readonly AdHocInvokerGrant[];
-  // The invoker's collected grants. Used to authorize invoker-sourced
+  // The invoker's collected grants, used to authorize invoker-sourced
   // requirements and ad-hoc invoker grants.
   invokerGrants: GrantRule[];
-  // The creator's collected grants. Used to authorize creator-sourced
-  // requirements. Empty when the definition declares no creator requirements.
+  // The creator's collected grants, used to authorize creator-sourced
+  // requirements; empty when the definition declares none.
   creatorGrants: GrantRule[];
-  // Timestamp stamped onto materialized rows and used to compute the invoker
-  // grant expiry.
+  // Timestamp stamped onto materialized rows; also sets the invoker grant
+  // expiry.
   now: Date;
 };
 
@@ -101,14 +100,11 @@ export const INVOKER_GRANT_TTL_MS = 24 * 60 * 60 * 1000;
  *
  * Pure over its inputs: it runs creator- and invoker-sourced delegation
  * checks with `authorizeAction` against the supplied collected grants and
- * accumulates the rows to insert. Only `system`/`role`/`creator` grants can be
- * delegated, so invoker-origin grants are filtered out of the invoker's
- * delegatable set before resolving invoker-sourced requirements. Nothing is
- * written to the database; the caller inserts the returned rows.
- *
- * Returns a rejection instead of rows when the creator or invoker lacks the
- * authority a requirement demands (403 `insufficient_grants`), or when a
- * requirement carries an unrecognized source (409 `not_launchable`).
+ * accumulates the rows to insert. Nothing is written to the database; the
+ * caller inserts the returned rows. Returns a rejection instead of rows when
+ * the creator or invoker lacks the authority a requirement demands (403
+ * `insufficient_grants`), or when a requirement carries an unrecognized
+ * source (409 `not_launchable`).
  */
 export async function resolveGrantMaterialization({
   tenantId,
@@ -119,8 +115,8 @@ export async function resolveGrantMaterialization({
   creatorGrants,
   now,
 }: ResolveGrantMaterializationArgs): Promise<ResolveGrantMaterializationResult> {
-  // Only system/role/creator grants can be delegated. Invoker-sourced
-  // grants cannot be transitively re-delegated.
+  // Only system/role/creator grants can be delegated; invoker-sourced grants
+  // cannot be transitively re-delegated.
   const delegatableInvokerGrants = invokerGrants.filter(
     (g) => g.origin !== "invoker",
   );

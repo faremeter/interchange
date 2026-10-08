@@ -1,9 +1,8 @@
 // A unit carrying onFailure whose WORK succeeds but whose terminalization --
 // pruning the handler branch, or committing StepCompleted -- fails (a transient
-// durable-store blip) must NOT be inverted into a routed failure or retried.
-// It lands a bare failure so the run fails loudly via the verdict. Before the
-// fix, the terminalization throw fell into the same catch as an invocation
-// failure and routed the succeeded unit to its onFailure handler.
+// durable-store blip) must NOT be inverted into a routed failure or retried;
+// it lands a bare failure so the run fails loudly. Before the fix, the throw
+// fell into the invocation-failure catch and routed the succeeded unit.
 
 import { describe, test, expect } from "bun:test";
 
@@ -48,8 +47,8 @@ function cwUnit(): Primitive {
 
 // Wrap the in-memory blobs so recordOutput throws ONCE when its key matches --
 // a deterministic transient store blip in the success-terminalization window.
-// recordOutput is the single choke point: the unit's own StepCompleted records
-// under its bare stepId, and each skip StepStarted records under `<id>.input`.
+// recordOutput is the single choke point: StepCompleted records under the bare
+// stepId, and each skip StepStarted records under `<id>.input`.
 function faultingBlobs(
   inner: WorkflowRuntimeEnv["blobs"],
   faultOnKey: string,
@@ -126,8 +125,8 @@ function stepDef(id: string): WorkflowDefinition {
 describe("onFailure success-terminalization failures do not route", () => {
   test("a step whose StepCompleted commit fails lands a bare failure, not routed", async () => {
     const def = stepDef("term-step-complete");
-    // Fault on the unit's own output key -- the StepCompleted after a
-    // successful invocation.
+    // Fault on the unit's output key -- the StepCompleted after a successful
+    // invocation.
     const { env, repoStore } = buildEnv(def, {
       blobs: faultingBlobs(createInMemoryBlobSubstrate(), "unit"),
     });
@@ -195,8 +194,8 @@ describe("onFailure success-terminalization failures do not route", () => {
   });
 
   test("a multi-attempt step whose terminalization fails is not re-invoked", async () => {
-    // The sentinel branch sits above the retry branch: a step that already did
-    // its work must not be re-invoked when its terminal fails to land.
+    // The sentinel sits above the retry branch: a step that already did its
+    // work must not be re-invoked when its terminal fails to land.
     const def = defineWorkflow({
       id: "term-noreinvoke",
       trigger: { type: "manual" },
@@ -227,8 +226,8 @@ describe("onFailure success-terminalization failures do not route", () => {
   });
 
   test("a multi-attempt step whose invocation fails once still retries and completes", async () => {
-    // Boundary pin: an ordinary invocation failure on attempt 1 still retries
-    // -- the sentinel only diverts a post-success terminalization throw.
+    // Boundary pin: an ordinary invocation failure on attempt 1 still retries;
+    // the sentinel only diverts a post-success terminalization throw.
     const def = defineWorkflow({
       id: "term-boundary",
       trigger: { type: "manual" },

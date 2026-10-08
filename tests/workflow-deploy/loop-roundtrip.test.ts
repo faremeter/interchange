@@ -5,9 +5,9 @@
 //
 // The fixture converges after exactly three iterations (see loop-workflow.ts),
 // so the top-level run log carries three `ChildSpawned` records under the loop
-// step. That count double-checks the app-provided `keepGoing`/`nextCount` were
-// resolved and applied; `RunCompleted` double-checks the hub tolerated the loop
-// child-run terminal events rather than failing their packs closed.
+// step -- double-checking the app-provided `keepGoing`/`nextCount` were resolved
+// and applied, and that the hub tolerated the loop child-run terminal events
+// rather than failing their packs closed.
 //
 // Harness justification: SPAWN-REAL. A real hub server, a real sidecar
 // subprocess, and a real workflow-process child evaluating the deployed source.
@@ -124,8 +124,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const handle = await deployWorkflowSourceForTest(env, {
         entryModule: loopWorkflowEntry({ address: deploymentMailAddress }),
-        // The entry module exports both `workflow` and the loop fns, so point
-        // interchange.loops at the same bundled entry.
+        // The entry exports `workflow` and the loop fns; point interchange.loops at the same bundled entry.
         loops: "./workflow.mjs",
         db: h.db,
         tenantId: TENANT_ID,

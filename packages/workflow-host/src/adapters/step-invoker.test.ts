@@ -47,9 +47,7 @@ const STUB_SOURCE: InferenceSource = {
 };
 
 // The step invoker never touches the storage or blob reader on the
-// stub path; the env-validation gate accepts any object-shaped value
-// for these fields. A throwing proxy is overkill -- the agent layer
-// never reaches in -- so a bare empty-object cast is enough.
+// stub path; a bare empty-object cast is enough.
 function stubContextStore(): ContextStore {
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; never invoked on the adapter path
   return {} as ContextStore;
@@ -91,11 +89,9 @@ interface StubAgentControl {
 }
 
 /**
- * Construct an `Agent` stub that records every observable interaction
- * and surfaces controllable `send` / `close` behaviour. The send path
- * settles via `resolveSend` / `rejectSend` so a test can drive the
- * happy path, the abort path (close races send), and the failure
- * path independently.
+ * `Agent` stub recording every observable interaction, with
+ * controllable `send` / `close` driven via `resolveSend` /
+ * `rejectSend`.
  */
 function buildStubAgent(): StubAgentControl {
   const events: string[] = [];
@@ -109,15 +105,9 @@ function buildStubAgent(): StubAgentControl {
     resolveSend = resolve;
     rejectSend = reject;
   });
-  // Absorb rejections that no consumer observed -- the adapter only
-  // attaches a `.then` handler after `agent.send` is invoked, so a
-  // close that rejects the pending promise before `send` was ever
-  // called (e.g. the input-synthesis throws synchronously inside the
-  // adapter's executor and the finally block calls `close`) would
-  // surface as an unhandled rejection that Bun's test harness
-  // promotes to a failure. The noop catch only fires for the
-  // unobserved case; consumers that attach their own `.then` still
-  // see the rejection.
+  // Absorb rejections no consumer observed: a close that rejects the
+  // pending promise before `send` was ever called would otherwise
+  // surface as an unhandled rejection.
   pending.catch(() => {
     /* noop */
   });
@@ -182,15 +172,11 @@ interface StreamingStubControl {
 }
 
 /**
- * Construct an `Agent` stub whose `stream()` yields a controllable
- * sequence of `InferenceEvent`s and then blocks until `close()` fires,
- * mimicking a live stream that ends only when the agent tears down.
- * `state.streamStarted` records whether the adapter ever subscribed (so
- * a test can prove the no-`onEvent` path never consumes the stream);
- * `state.closed` records teardown (so a test can prove the subscription
- * is torn down with the agent). Unlike `buildStubAgent`, `send` resolves
- * immediately and independently of `close`, matching the real agent's
- * send/stream separation.
+ * `Agent` stub whose `stream()` yields a controllable sequence of
+ * `InferenceEvent`s and then blocks until `close()` fires. Tracks
+ * whether the adapter ever subscribed and whether teardown ran, so a
+ * test can prove the no-`onEvent` path never consumes the stream and
+ * that the subscription dies with the agent.
  */
 function buildStreamingStubAgent(
   events: InferenceEvent[],
@@ -271,11 +257,9 @@ function buildRequest(opts: {
 
 describe("workflow-host StepInvoker adapter - warm source rotation", () => {
   test("a rotation during the first warm build reaches the built agent", async () => {
-    // Finding: a sources rotation that lands during the (async) first warm
-    // build hits the still-empty cache as a no-op applySources, while the
-    // in-flight build already captured the prior sources. After the built
-    // agent is stored, the adapter re-applies the live table so the rotation
-    // is not lost for the warm agent's life.
+    // A rotation during the (async) first build hits the still-empty
+    // cache as a no-op applySources; the re-apply after store must
+    // deliver it to the built agent.
     const stub = buildStreamingStubAgent([]);
     const setSourcesCalls: {
       sources: InferenceSource[];
@@ -299,8 +283,8 @@ describe("workflow-host StepInvoker adapter - warm source rotation", () => {
     const buildGate = new Promise<void>((resolve) => {
       releaseBuild = resolve;
     });
-    // The factory reports its own entry, so the rotation below lands inside
-    // the build window without the test guessing when that window opens.
+    // The factory reports its own entry, so the rotation below lands
+    // inside the build window without guessing when it opens.
     let announceBuildStarted!: () => void;
     const buildStarted = new Promise<void>((resolve) => {
       announceBuildStarted = resolve;
@@ -372,7 +356,7 @@ describe("workflow-host StepInvoker adapter - happy path", () => {
     // The closure delegating to workflowAuthorize is constructed at
     // env build time. Exercising it through the workflow-typed
     // surface here proves the per-call AuthorizeContext is captured
-    // by the closure for any authz call originating from the step.
+    // by the closure.
     const envBase = stubBuildEnv();
     void envBase;
     const builtAuth = (): Promise<unknown> =>
@@ -431,13 +415,9 @@ describe("workflow-host StepInvoker adapter - happy path", () => {
   });
 
   test("throws on a suspended send result that carries no approval snapshot", async () => {
-    // A suspended reactor outcome is always an approval and must carry a
-    // snapshot; a snapshot-less suspend (a director `caps.suspend` with no tool
-    // definitions) is not a supported approval park. The producer classifies
-    // the failure here rather than emitting an ambiguous suspend the runtime
-    // would reject downstream. (The "input" park -- a conversational step
-    // re-arming for the next mail -- is the workflow-host's decision, not a
-    // reactor `SendResult`, so it never flows through here.)
+    // A suspended reactor outcome is always an approval and must carry
+    // a snapshot; a snapshot-less suspend is not a supported park. The
+    // producer classifies the failure here.
     const stub = buildStubAgent();
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: async () => ({
@@ -457,9 +437,9 @@ describe("workflow-host StepInvoker adapter - happy path", () => {
   });
 
   test("surfaces the send error, not the teardown close error, when both fail", async () => {
-    // The wrapped agent close now rejects when a plugin/LSP disposer fails.
-    // In the cold path that close runs in the adapter's teardown; a close
-    // failure must not mask a step error already unwinding from the send.
+    // The wrapped agent close rejects when a plugin/LSP disposer fails;
+    // in the cold path that close runs in the adapter's teardown and
+    // must not mask a step error already unwinding from the send.
     let closeCalls = 0;
     const agent: Agent = {
       send() {
@@ -550,10 +530,9 @@ describe("workflow-host StepInvoker adapter - happy path", () => {
     });
     const req = buildRequest({ input: () => "function" });
     await expect(invoker(req)).rejects.toThrow(/not JSON-serializable/);
-    // The agent is constructed before the synthesizer runs because the
-    // adapter must build the env to honor the workflow-typed authorize
-    // closure regardless of input shape. Close() must still fire so
-    // the workdir lock and stream consumers do not leak.
+    // The agent is built before the synthesizer runs (the env must
+    // honor the authorize closure regardless of input shape); close must
+    // still fire so the workdir lock and stream consumers do not leak.
     expect(stub.events).toContain("close");
   });
 });
@@ -695,9 +674,9 @@ describe("workflow-host StepInvoker adapter - onEvent contract", () => {
     });
 
     // The stub's `stream()` blocks until `close()` fires, so the
-    // forwarder's loop only ends once the agent is torn down. The
+    // forwarder's loop only ends once the agent is torn down; the
     // invoker resolving proves the subscription was drained and closed
-    // with the agent rather than leaking past the step.
+    // with the agent.
     await invoker(buildRequest({ input: { goal: "go" } }));
     expect(stub.state.streamStarted).toBe(true);
     expect(stub.state.closed).toBe(true);
@@ -705,9 +684,8 @@ describe("workflow-host StepInvoker adapter - onEvent contract", () => {
   });
 
   test("omitting onEvent never consumes the agent stream", async () => {
-    // `buildStubAgent`'s `stream()` throws when invoked. Reusing it here
-    // proves the no-`onEvent` path never touches the stream: were the
-    // adapter to subscribe, the throwing `stream()` would surface.
+    // `buildStubAgent`'s `stream()` throws when invoked; reusing it here
+    // proves the no-`onEvent` path never touches the stream.
     const stub = buildStubAgent();
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: async () => ({
@@ -751,13 +729,11 @@ interface WarmStubControl {
 }
 
 /**
- * Construct a warm-agent stub that models the lifecycle warm-keep
- * guards: an LSP-subprocess analogue spawned once at construction and
- * disposed on `close()`, an in-memory conversation that retains every
- * user turn across sends (so a later reply can reflect an earlier
- * message), and a `stream()` that ends only at `close()`. The reply
- * echoes the running conversation so a test proves continuity:
- * `reply(N) = "reply<N>:" + every prior user turn`.
+ * Warm-agent stub modeling the lifecycle warm-keep guards: an
+ * LSP-subprocess analogue spawned at construction and disposed on
+ * `close()`, an in-memory conversation retaining every user turn (so a
+ * later reply reflects earlier messages), and a `stream()` that ends
+ * only at `close()`. The reply echoes the running conversation.
  */
 function buildWarmStubAgent(): WarmStubControl {
   const lifecycle: WarmStubLifecycle = {
@@ -996,10 +972,8 @@ describe("workflow-host StepInvoker adapter - warm-keep mode", () => {
       buildRequest({ input: "two" }),
     );
 
-    // The agent's single lifetime stream yields one `inference.start`,
-    // delivered to whichever message's sink was active when it fired.
-    // Each message's events reach its own sink; neither leaks to the
-    // other after its send settles.
+    // The single lifetime stream yields one `inference.start`, delivered
+    // to whichever message's sink was active when it fired.
     expect([...firstSink, ...secondSink]).toContain("inference.start");
     await warmCache.evictAll("test teardown");
   });
@@ -1020,20 +994,17 @@ interface ReplyDriveHarness {
   settle(outcome: WarmReplySettlement): void;
   /**
    * Resolve once the invoker has asked to wait on a reply at least `count`
-   * times. `waitForReplyAfter` is the last thing the invoker does before it
-   * blocks, so this is the signal that the turn has reached the barrier --
-   * everything the barrier is meant to gate has already happened.
+   * times -- the turn has reached the barrier.
    */
   awaitBarrier(count: number): Promise<void>;
 }
 
 /**
- * A controllable stand-in for the connector reply drain's per-turn barrier.
- * The `driveReplies` callback consumes the agent's lifetime stream in the
- * background (so `done` reflects stream end, foldable into eviction, and
- * `observed` records event types). Settlement is either manual (`settle`) or,
- * when `autoSettleOnReply` is set, recorded once per observed `connector.reply`
- * -- mirroring the real drain advancing its sequence after a send acks.
+ * Controllable stand-in for the reply drain's per-turn barrier. The
+ * `driveReplies` callback consumes the agent's lifetime stream in the
+ * background (so `done` reflects stream end and `observed` records
+ * event types). Settlement is either manual (`settle`) or, when
+ * `autoSettleOnReply` is set, once per observed `connector.reply`.
  */
 function buildReplyDriveHarness(opts?: {
   autoSettleOnReply?: WarmReplySettlement;
@@ -1088,12 +1059,9 @@ function buildReplyDriveHarness(opts?: {
           settle(opts.autoSettleOnReply);
         }
       }
-      // Extra async gap after the stream ends so a test can prove the invoker
-      // folded `done` into the warm entry the cache awaits: `evictAll` returns
-      // only after this settles. This delay is the double's own simulated
-      // work, not a bet on how fast the machine is: a loaded machine only
-      // makes the gap longer, which makes an `evictAll` that fails to await
-      // `done` more visible rather than less.
+      // Extra async gap after the stream ends so a test can prove the
+      // invoker folded `done` into the warm entry the cache awaits:
+      // `evictAll` returns only after this settles.
       await new Promise((resolve) => setTimeout(resolve, 20));
       drainDone = true;
     })();
@@ -1127,10 +1095,9 @@ function buildReplyDriveHarness(opts?: {
 }
 
 /**
- * A warm-agent stub whose `send` returns the given `SendResult` and whose
- * `stream()` stays open until `close()`. The stream emits no `connector.reply`
- * by default, so the reply barrier stays pending until a test settles it
- * manually -- letting a test observe that the warm step blocks on the barrier.
+ * Warm-agent stub whose `send` returns the given `SendResult` and whose
+ * `stream()` stays open until `close()`. No `connector.reply` by default,
+ * so the reply barrier stays pending until a test settles it manually.
  */
 function buildBarrierStubAgent(result: SendResult): {
   agent: Agent;
@@ -1193,9 +1160,9 @@ describe("workflow-host StepInvoker adapter - warm reply drain", () => {
   test("drives replies once over the agent lifetime stream and drains at eviction", async () => {
     const warmCache = createWarmAgentCache();
 
-    // A warm stub whose stream carries a `connector.reply` and ends only at
-    // close(), modeling the agent's lifetime event stream the reply drain
-    // consumes.
+    // A warm stub whose stream carries a `connector.reply` and ends
+    // only at close(), modeling the agent's lifetime event stream the
+    // drain consumes.
     let endStream: () => void = () => undefined;
     const streamEnded = new Promise<void>((resolve) => {
       endStream = resolve;
@@ -1260,15 +1227,14 @@ describe("workflow-host StepInvoker adapter - warm reply drain", () => {
     await invoker(buildRequest({ input: "first message" }));
 
     // The drain is established exactly once -- at the first-message build --
-    // keyed by the step id, and reused across later messages rather than
-    // re-subscribed per send.
+    // keyed by the step id, and reused across later messages.
     expect(harness.driveCalls()).toBe(1);
     expect(harness.keys).toEqual(["step-1"]);
 
     // Eviction drains the reply loop alongside the observability forwarder:
     // the stub drain settles only after the stream ends (at close) plus a
-    // tick, and it is settled once `evictAll` returns -- proving the invoker
-    // folded the drain's promise into the warm entry the cache awaits.
+    // tick, settled once `evictAll` returns -- proving the invoker folded
+    // the drain's promise into the warm entry the cache awaits.
     await warmCache.evictAll("test teardown");
     expect(closeCount).toBe(1);
     expect(harness.drainSettled()).toBe(true);
@@ -1280,8 +1246,8 @@ describe("workflow-host StepInvoker adapter - warm reply drain", () => {
   test("a reply turn blocks on the barrier until the reply is durably sent", async () => {
     const warmCache = createWarmAgentCache();
     const { agent } = buildBarrierStubAgent(replySendResult("the reply"));
-    // No auto-settle: the barrier stays pending until the test settles it, so
-    // we can observe the step blocking on a reply that has not yet been sent.
+    // No auto-settle: the barrier stays pending until the test settles it,
+    // so we can observe the step blocking on a reply not yet sent.
     const harness = buildReplyDriveHarness();
 
     const invoker = createWorkflowStepInvoker({
@@ -1380,9 +1346,9 @@ describe("workflow-host StepInvoker adapter - warm reply drain", () => {
     await harness.awaitBarrier(1);
     harness.settle({ ok: false, cause: sendCause });
 
-    // The step rejects rather than returning a step result that claims a reply
-    // which never went out. The run fails, and the supervisor consumes the
-    // inbound mail without a reply rather than replaying it.
+    // The step rejects rather than returning a result that claims a reply
+    // which never went out; the supervisor consumes the inbound mail
+    // without a reply rather than replaying it.
     let thrown: unknown;
     try {
       await pending;
@@ -1399,11 +1365,11 @@ describe("workflow-host StepInvoker adapter - warm reply drain", () => {
   });
 
   test("a reply with no connector thread names that, not a failed send", async () => {
-    // The connector router passes a message that names no reply address
-    // through without opening a thread, so composing a reply on that step
-    // later throws `NoActiveConnectorThreadError` and nothing is ever
-    // submitted. The turn still fails, but the operator must not be told the
-    // send failed -- there was no send to fail.
+    // The connector router passes a message naming no reply address
+    // through without opening a thread, so composing a reply later throws
+    // `NoActiveConnectorThreadError` and nothing was ever submitted. The
+    // turn still fails, but the operator must not be told the send failed
+    // -- there was no send to fail.
     const warmCache = createWarmAgentCache();
     const { agent } = buildBarrierStubAgent(replySendResult("unaddressed"));
     const harness = buildReplyDriveHarness();
@@ -1490,11 +1456,10 @@ describe("workflow-host StepInvoker adapter - resume send path", () => {
     expect(sentContent.headers.interchangeCorrelationId).toBe("corr-1");
     expect(sentContent.content).toBe(JSON.stringify({ outcome: "approved" }));
 
-    // The message body must be a well-formed ApprovalDecision: the reactor's
-    // re-dispatch path parses it from the content at the correlation boundary
-    // and re-runs the parked tool call on an "approved" outcome. A body that
-    // does not validate would fail loud there, so the invoker's job is to
-    // deliver exactly that shape.
+    // The message body must be a well-formed ApprovalDecision: the
+    // reactor's re-dispatch path parses it from the content at the
+    // correlation boundary and re-runs the parked tool call on an
+    // "approved" outcome.
     if (sentContent.content === undefined) {
       throw new Error("resume message carried no decision body");
     }
@@ -1513,10 +1478,8 @@ describe("workflow-host StepInvoker adapter - resume send path", () => {
 
   test("a resumed cycle that re-parks on a second gate re-suspends instead of hanging", async () => {
     // The resumed cycle (tool A approved) hits a second gate (tool B needs
-    // approval) and re-parks. `agent.send` settles that as a "suspended"
-    // SendResult carrying the new correlation id; the invoker must hand
-    // that straight back as a fresh suspend rather than hanging waiting for
-    // a reply that never comes.
+    // approval) and re-parks; the invoker must hand that straight back as a
+    // fresh suspend rather than hanging for a reply that never comes.
     let sentContent: string | InboundMessage | undefined;
     const agent = buildResumeStubAgent((content) => {
       sentContent = content;
@@ -1576,11 +1539,9 @@ describe("workflow-host StepInvoker adapter - resume send path", () => {
   });
 
   test("an input resume delivers a plain next turn, not a correlated gate inbound", async () => {
-    // An `"input"` resume is the step's next turn (a long-lived agent's next
-    // mail), with no gate to re-correlate. The adapter must send the decision
-    // as PLAIN synthesized content, NOT an InboundMessage stamped with the
-    // correlationId (the approval path). A plain string is the tell: nothing
-    // for the reactor's `tryCorrelate` to match, just a fresh user turn.
+    // An `"input"` resume is the step's next turn, with no gate to
+    // re-correlate: the decision goes out as PLAIN synthesized content, not
+    // an InboundMessage stamped with the correlationId (the approval path).
     const nextTurn = {
       role: "assistant" as const,
       content: [{ type: "text" as const, text: "next turn reply" }],
@@ -2086,10 +2047,9 @@ describe("workflow-host StepInvoker adapter - inbound mail input", () => {
 
   test("recognises a Mail carrying no originator as mail", async () => {
     // The cases above assert what the model is told about the sender; this
-    // asserts the branch that judgement rests on. A mail with no originator
-    // is still mail, and when `isMail` rejected it the payload fell through
-    // to the arbitrary-step-value path and reached the agent JSON-stringified
-    // into a text turn, with no error and no log.
+    // asserts the branch that judgement rests on: a mail with no originator
+    // is still mail (were `isMail` to reject it, the payload would reach the
+    // agent JSON-stringified into a text turn).
     const { agent, captured } = buildCapturingAgent();
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allowAll,
@@ -2205,18 +2165,15 @@ describe("workflow-host StepInvoker adapter - inbound mail input", () => {
   });
 
   /**
-   * The projection must not forward the mail's `Interchange-Correlation-ID`.
-   * Resolving a correlation in the reactor clears the gate a parked call
-   * suspended on and, on the approval rail, grants that call a one-shot
-   * authorization bypass. The correlation id on a delivered mail is a value its
-   * sender chose, and the MIME decoder does carry such a header onto the `Mail`
-   * (see `packages/mime/src/mail-decode.test.ts`), so the only thing keeping a
-   * sender's header out of `tryCorrelate` is that this projection drops it.
-   *
-   * This asserts nothing about `createInboundMessage` refusing to stamp the
-   * header: the resume-send-path suite above proves the workflow host's own
-   * resume request does stamp it, so a regression there would fail that test
-   * rather than pass this one vacuously.
+   * The projection must not forward the mail's
+   * `Interchange-Correlation-ID`. Resolving a correlation in the
+   * reactor clears the gate a parked call suspended on and, on the
+   * approval rail, grants that call a one-shot authorization bypass.
+   * The correlation id on a delivered mail is a value its sender
+   * chose, and the MIME decoder does carry such a header onto the
+   * `Mail` (see `packages/mime/src/mail-decode.test.ts`), so the only
+   * thing keeping a sender's header out of `tryCorrelate` is that this
+   * projection drops it.
    */
   test("drops a mail-supplied correlation id rather than forwarding it", async () => {
     const correlated: Mail = {

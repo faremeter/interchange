@@ -159,11 +159,9 @@ describe("runInference — Dependencies parameter", () => {
     );
   });
 
-  // The crash-loudly contract: a missing or malformed `deps.fetch` is a
-  // programmer bug, not a transport failure. `runInference` must throw a
-  // plain Error out of the generator (lazily, on first iteration — the
-  // throw fires from inside `for await`, not at the `runInference(...)`
-  // call site) and must not yield any event, including `inference.start`.
+  // Crash-loudly contract: a missing or malformed deps.fetch is a programmer
+  // bug, not a transport failure. runInference throws a plain Error on first
+  // iteration (from inside `for await`) and yields no events.
 
   test("throws plainly when deps.fetch is undefined", async () => {
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- modeling a JS caller that assigned undefined to deps.fetch
@@ -279,15 +277,9 @@ describe("createDefaultDependencies", () => {
   });
 });
 
-// `source.defaults` carries model-bound knobs that the harness merges
-// into the per-call `InferenceOptions` at the top of `runInference`
-// before the adapter sees anything. The contract: per-call wins over
-// source-bound; source-bound applies when per-call omits the key.
-//
-// These tests use the openai-compatible adapter because it carries the
-// fully-populated `max_tokens` floor through to the request body
-// (anthropic's adapter only forwards `max_tokens` when set), so the
-// merge result is observable at the wire.
+// source.defaults knobs merge into per-call InferenceOptions: per-call wins,
+// source-bound applies when the per-call option is absent. These tests use
+// the openai-compatible adapter because it forwards `max_tokens` to the wire.
 describe("runInference — source.defaults merge precedence", () => {
   const OPENAI_SOURCE: InferenceSource = {
     id: "openai:gpt-test",
@@ -369,11 +361,8 @@ describe("runInference — source.defaults merge precedence", () => {
   });
 });
 
-// providerOptions on InferenceSourceDefaults is the model-bound bag of
-// provider-native knobs. Per-call InferenceOptions.providerOptions
-// overrides via the same shallow-spread merge that handles maxTokens.
-// The merge is shallow: a per-call providerOptions object wholesale
-// replaces the source-bound one rather than deep-merging per key.
+// providerOptions merge is shallow: a per-call providerOptions object
+// wholesale replaces the source-bound one rather than deep-merging per key.
 describe("runInference — providerOptions merge precedence", () => {
   function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -383,10 +372,9 @@ describe("runInference — providerOptions merge precedence", () => {
     sourceProviderOptions?: Record<string, unknown>;
     perCallProviderOptions?: Record<string, unknown>;
   }): Promise<Record<string, unknown> | undefined> {
-    // A fresh provider name per call keeps independent runs isolated. The
-    // custom adapter is injected through `deps.adapters`: a manifest entry
-    // points at a synthetic module that `loadAdapterRegistry` resolves via
-    // an injected importer, so nothing is loaded from disk.
+    // Fresh provider per call keeps runs isolated; the custom adapter is
+    // injected through a synthetic manifest module, so nothing loads from
+    // disk.
     const providerName = `test-provideroptions-${Math.random().toString(36).slice(2)}`;
     let captured: Record<string, unknown> | undefined | "absent" = "absent";
 
@@ -477,10 +465,9 @@ describe("runInference — providerOptions merge precedence", () => {
   });
 });
 
-// The JSDoc on `Dependencies` documents which reflective APIs leak the
-// optional `[HarnessId]` tag. Pin those claims so a future refactor that
-// makes the tag enumerable (e.g., renaming it to a string key) cannot
-// silently turn a safe serializer into a leak.
+// Pin the JSDoc claims about which reflective APIs expose the optional
+// `[HarnessId]` tag, so a refactor cannot silently turn a safe serializer
+// into a leak.
 describe("Dependencies — reflective exposure of HarnessId", () => {
   function stampedDeps(): Dependencies {
     return {
@@ -492,11 +479,8 @@ describe("Dependencies — reflective exposure of HarnessId", () => {
   }
 
   test("JSON.stringify ignores symbol-keyed fields", () => {
-    // Probe with a serializable string value at the symbol key. If
-    // `HarnessId` were ever changed from a symbol to a string key, the
-    // serializer would walk it and the assertion would fail. The
-    // string-keyed control proves the test isn't passing just because
-    // `JSON.stringify` produced an empty object for unrelated reasons.
+    // A string-keyed control proves the assertion isn't passing because the
+    // object was empty for unrelated reasons.
     const probe = {
       visible: "yes",
       [HarnessId]: "leaked-value",
@@ -516,15 +500,9 @@ describe("Dependencies — reflective exposure of HarnessId", () => {
 });
 
 // ---------------------------------------------------------------------------
-// runInference — source-identity stamping on inference events
-//
-// The harness snapshots `{id, provider, model}` from the active source at
-// the top of the call and stamps that descriptor onto every inference.usage
-// and inference.done event for that call. The snapshot defends against
-// `applyInferenceSourceFields` (or any other in-place mutation of the
-// shared source object) firing between call start and inference.done: the
-// identity stamped onto the events must reflect the source that *began*
-// the call, not whatever the active source happens to be at done-time.
+// Source-identity stamping: the harness snapshots {id, provider, model} at
+// call start and stamps it onto usage/done events, so in-place source
+// mutation between start and done cannot leak into the events.
 // ---------------------------------------------------------------------------
 
 describe("runInference — source-identity stamping", () => {
@@ -625,11 +603,9 @@ describe("runInference — source-identity stamping", () => {
   });
 
   test("hot-swap mid-call: inference.done reflects the call-start source, not the post-mutation fields", async () => {
-    // Simulate the harness's `setSource` pattern: a single InferenceSource
-    // object is mutated in place via `applyInferenceSourceFields`. If the
-    // call captured a reference to the live object instead of snapshotting
-    // its identifying fields, the descriptor on inference.done would
-    // observe whatever id/provider/model the swap mutated in.
+    // Mutate the source in place (the harness setSource pattern); a
+    // live-object reference would leak the post-swap identity onto
+    // inference.done.
     const activeSource: InferenceSource = {
       id: "anthropic:claude-pre",
       provider: "anthropic",
@@ -638,12 +614,9 @@ describe("runInference — source-identity stamping", () => {
       model: "claude-pre",
     };
 
-    // Mutate the source between fetch invocation and stream consumption.
-    // The Response body resolves synchronously here, but the harness still
-    // reads `source.*` (model in the request body) on the way out; the
-    // post-mutation values must NOT show up on the inference.done event
-    // because the snapshot at call start already captured the pre-swap
-    // identity.
+    // The Response body resolves synchronously, but the harness reads
+    // source.* on the way out; post-mutation values must not reach
+    // inference.done.
     const deps: Dependencies = {
       fetch: () => {
         activeSource.id = "openai:gpt-post";
@@ -684,9 +657,8 @@ describe("runInference — source-identity stamping", () => {
 });
 
 describe("runInference — source quirks reach the adapter registry", () => {
-  // A registry that records the quirks argument every resolve receives and
-  // returns a do-nothing adapter, so the test observes exactly what the
-  // harness forwards without depending on any real provider.
+  // Records the quirks argument every resolve receives and returns a
+  // do-nothing adapter.
   function spyRegistry(): {
     registry: AdapterRegistry;
     quirksCalls: unknown[];
@@ -780,9 +752,8 @@ describe("runInference — non-streaming JSON responses", () => {
     };
   }
 
-  // Re-expresses a whole non-streaming body as the harness's delta/marker
-  // protocol: the assistant text as a single indexed text.delta plus a usage
-  // event, exactly as an SSE parser would emit them incrementally.
+  // Re-expresses a non-streaming body as the delta/marker protocol: one
+  // indexed text.delta plus a usage event, as an SSE parser would emit them.
   const decodingFactory: AdapterFactory = (source) => ({
     buildRequest: (_messages, model) => ({
       url: "https://example.test/v1/json",

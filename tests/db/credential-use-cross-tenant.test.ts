@@ -63,9 +63,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
     // Parent `tnt_root` owns the credential, the model catalog, and the
     // credential-backed "opus" offering; child `tnt_child` inherits all of it.
     // `credentialPrincipalId` sets the credential's ownership: `null` =
-    // tenant-owned (usable by ownership), a principal id = personal (not usable
-    // through the catalog). The child hosts a definition whose creator is
-    // `creatorPrincipalId` -- possibly `null`, since ownership needs none.
+    // tenant-owned (usable by ownership), a principal id = personal (not
+    // usable through the catalog). The child hosts a definition whose creator
+    // is `creatorPrincipalId` -- possibly `null`, since ownership needs none.
     async function seed(opts: {
       credentialPrincipalId: string | null;
       creatorPrincipalId: string | null;

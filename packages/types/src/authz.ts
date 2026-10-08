@@ -15,13 +15,12 @@ export type GrantRule = {
 export type GrantStore = {
   collectGrants(principalId: string, tenantId: string): Promise<GrantRule[]>;
   /**
-   * Like `collectGrants`, but unions the principal's grants across the tenant
-   * ancestor chain (the acting tenant plus every ancestor up to the root)
-   * rather than a single tenant. Only the source-resolution credential-use
-   * check uses this: it mirrors the ancestor-chain reach of credential
-   * resolution so a `credential:{id}` / `use` grant stamped with an inherited
-   * credential's own (ancestor) tenant still authorizes use. The general RBAC
-   * path stays on the single-tenant `collectGrants`.
+   * Like `collectGrants`, but unions the principal's grants across the
+   * tenant ancestor chain (the acting tenant plus every ancestor up to
+   * the root). Only the source-resolution credential-use check uses
+   * this: it mirrors the ancestor-chain reach of credential resolution
+   * so a `credential:{id}` / `use` grant stamped with an inherited
+   * (ancestor) tenant still authorizes use.
    */
   collectGrantsInChain(
     principalId: string,

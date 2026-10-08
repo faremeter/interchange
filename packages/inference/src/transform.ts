@@ -1,13 +1,7 @@
-// Cross-provider message transformation.
-//
-// When conversations cross provider boundaries the message history must be
-// adapted: thinking blocks are stripped for foreign models, orphaned tool
-// calls receive synthetic error results, and tool call IDs are normalized to
-// a portable format.
-//
-// Callers invoke transformMessages when switching models. Adapter
-// buildRequest paths also apply provider-specific history fixes. The
-// originating model is tracked per-message, not per-conversation.
+// Cross-provider message history adaptation: strip thinking blocks for
+// foreign models, add synthetic error results for orphaned tool calls, and
+// normalize tool call IDs to a portable format. The originating model is
+// tracked per-message, not per-conversation.
 
 import {
   formatSafetyRatingText,
@@ -17,8 +11,8 @@ import {
 
 export type TransformOptions = {
   targetModel: string;
-  // When true, keep thinking blocks for messages that originated from the
-  // same model. When false, strip all thinking blocks (cross-provider replay).
+  // Keep thinking blocks for messages from the same model; strip them
+  // otherwise (cross-provider replay).
   keepThinkingForSameModel?: boolean;
 };
 
@@ -42,10 +36,8 @@ export function transformMessages(
             }
             return true;
           })
-          // safety_rating is output-only metadata. Convert it to text
-          // so cross-provider history keeps role alternation and a
-          // human-readable block reason without requiring every
-          // adapter to special-case the block.
+          // safety_rating is output-only metadata; convert it to text so
+          // foreign adapters need no special case for the block.
           .map((block): ContentBlock => {
             if (block.type === "safety_rating") {
               return {
@@ -56,8 +48,8 @@ export function transformMessages(
             return block;
           });
 
-        // Filter out assistant messages that have no text or tool calls
-        // (aborted/error messages with only thinking blocks removed).
+        // Drop assistant messages left with no text or tool calls
+        // (aborted/error messages whose thinking blocks were removed).
         const hasUsableContent = filteredContent.some(
           (b) => b.type === "text" || b.type === "tool_call",
         );
@@ -94,10 +86,8 @@ function injectOrphanedToolResults(
 
     if (toolCalls.length === 0) continue;
 
-    // Collect tool call IDs from this assistant message.
     const calledIds = new Set(toolCalls.map((tc) => tc.id));
 
-    // Check the following messages for results that cover these calls.
     const coveredIds = new Set<string>();
     for (let j = i + 1; j < messages.length; j++) {
       const next = messages[j];
@@ -111,12 +101,12 @@ function injectOrphanedToolResults(
       }
     }
 
-    // Find which tool calls have no corresponding result.
+    // Orphaned calls have no result in the following user turns.
     const orphanedIds = [...calledIds].filter((id) => !coveredIds.has(id));
 
     if (orphanedIds.length === 0) continue;
 
-    // Inject a synthetic user message with error tool results for each orphan.
+    // Inject a synthetic user turn with error tool results for the orphans.
     const syntheticBlocks: ContentBlock[] = orphanedIds.map((id) => ({
       type: "tool_result" as const,
       callId: id,
@@ -142,9 +132,9 @@ function injectOrphanedToolResults(
 // ---------------------------------------------------------------------------
 // Tool call ID normalization
 //
-// OpenAI Responses API generates 450+ character IDs with pipes. Anthropic
-// has strict format requirements. IDs are normalized to a short portable
-// format with a bidirectional map for round-trip fidelity.
+// OpenAI IDs are long and contain pipes; Anthropic has strict format
+// requirements. IDs are mapped to a short portable form with a bidirectional
+// map for round-trip fidelity.
 // ---------------------------------------------------------------------------
 
 const PORTABLE_ID_PREFIX = "tc_";

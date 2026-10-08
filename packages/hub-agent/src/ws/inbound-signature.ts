@@ -18,13 +18,13 @@ const logger = getLogger([
 ]);
 
 /**
- * The two-axis verdict of verifying one inbound mail frame. `absent` is the
- * gate looking for a visible `From` and finding none; `notEvaluated` is the
- * placeholder an `error` verdict carries for an axis the gate never reached.
+ * The two-axis verdict of verifying one inbound mail frame. `absent` means no
+ * visible `From`; `notEvaluated` is the placeholder an `error` verdict
+ * carries for an axis the gate never reached.
  *
- * The signature covers only the message's signed content part, NOT its
- * top-level `From` header, so `fromMatch` binds the hub-stamped sender to the
- * visible envelope `From` rather than to a `From` inside the signed bytes.
+ * The signature covers only the signed content part, not the top-level `From`
+ * header, so `fromMatch` binds the hub-stamped sender to the visible envelope
+ * `From`, not one inside the signed bytes.
  */
 export type InboundSignatureVerdict = {
   signature: "valid" | "invalid" | "missing" | "unknown" | "error";
@@ -35,10 +35,9 @@ export type InboundSignatureVerdict = {
 
 /**
  * Reduce a two-axis {@link InboundSignatureVerdict} to the single
- * {@link InboundMailOutcome} that best SUMMARIZES it, for the verdict log line.
- * This is a headline, NOT the admission decision -- that is
- * {@link decideInboundAdmission}, and the two can name different findings. The
- * ordering below is not a security precedence and must not be read as one.
+ * {@link InboundMailOutcome} that best summarizes it, for the verdict log
+ * line. A headline, NOT the admission decision -- that is
+ * {@link decideInboundAdmission}, and the two can name different findings.
  */
 export function outcomeForVerdict(
   verdict: InboundSignatureVerdict,
@@ -69,17 +68,12 @@ export type ResolvedInboundMailPolicy = Record<
 
 /**
  * Resolve the SPARSE authored {@link InboundMailPolicy} into a TOTAL
- * {@link ResolvedInboundMailPolicy}, applying every default HERE. The per-mail
- * delivery path looks up the resolved map directly -- it must never re-derive a
- * default with a `?? "reject"` of its own.
- *
- * `clean` and `error` are pinned whatever the author declared: nothing about a
- * clean message is suspect, and a fault stopped the check from running, so no
- * trust claim can be made about it. `error` is not a key in
- * {@link InboundMailPolicy} at all, so an authored policy cannot relax it.
- *
- * Every author-controllable outcome defaults to `reject`, so a policy that
- * omits one fails closed rather than open.
+ * {@link ResolvedInboundMailPolicy}, applying every default here; the
+ * per-mail delivery path looks up the resolved map directly and never
+ * re-derives a default of its own. `clean` and `error` are pinned whatever
+ * the author declared: nothing about a clean message is suspect, and a fault
+ * stopped the check from running. Every author-controllable outcome defaults
+ * to `reject`, so a policy that omits one fails closed rather than open.
  */
 export function resolveInboundMailPolicy(
   authored: InboundMailPolicy | undefined,
@@ -104,9 +98,9 @@ export type InboundAdmission = {
 /**
  * Decide whether one inbound mail frame is admitted, over the SET of findings
  * its verdict raised rather than over a single reduced outcome. Each axis
- * carries a separate author judgement, so reducing the pair to one outcome and
- * keying admission on that discards one of the two judgements -- and it can
- * discard it in the ADMITTING direction.
+ * carries a separate author judgement, so reducing the pair to one outcome
+ * would discard one of the two judgements -- and it can discard it in the
+ * ADMITTING direction.
  */
 export function decideInboundAdmission(
   verdict: InboundSignatureVerdict,
@@ -124,9 +118,8 @@ export function decideInboundAdmission(
   for (const finding of findings) {
     if (policy[finding] !== "admit") return { findings, rejectedBy: finding };
   }
-  // A binding that raised nothing without binding was never evaluated, whatever
-  // the signature axis found. The gate has no trust claim to make for it, and no
-  // policy relaxes that.
+  // A binding that raised no finding never bound (notEvaluated): the gate has
+  // no trust claim for it, and no policy relaxes that.
   if (fromBinding === null && fromMatch !== "match") {
     return { findings, rejectedBy: "error" };
   }
@@ -166,16 +159,14 @@ export type InboundSignatureInput = {
 
 /**
  * Verify an inbound mail frame's signature against the key the recipient's
- * local cache holds for `authenticatedSender` and LOG the verdict. The key is
- * resolved through `resolveSenderCrypto` -- the cache-backed source populated by
- * the hub's co-delivery on the run's grants barrier -- so the recipient verifies
- * locally against the key the hub vouched for, never a key travelling on the
- * message itself.
+ * local cache holds for `authenticatedSender` and LOG the verdict. The key
+ * comes from `resolveSenderCrypto` -- the cache-backed source populated by the
+ * hub's co-delivery on the run's grants barrier -- so the recipient verifies
+ * against the key the hub vouched for, never a key travelling on the message.
  *
- * This NEVER throws. A fault degrades to an `error` verdict, logged at ERROR
- * and returned like any other verdict. The enforcement caller relies on this
- * contract: it awaits this inline on the delivery path with no per-call catch,
- * so a throw that escaped here would wedge the delivery chain.
+ * NEVER throws: a fault degrades to an `error` verdict, logged at ERROR. The
+ * enforcement caller awaits this inline on the delivery path with no per-call
+ * catch, so a throw here would wedge the delivery chain.
  */
 export async function verifyInboundSignature(
   input: InboundSignatureInput,
@@ -196,11 +187,10 @@ export async function verifyInboundSignature(
       signature = "unknown";
     } else {
       const publicKey = crypto.getPublicKey();
-      // The cache-backed resolver cannot reach this: that cache refuses a
-      // wrong-length key at write and THROWS for an entry that failed to load,
-      // so an address it answers for carries a usable key. The resolver is an
-      // injected seam, and a composition supplying its own is not covered by
-      // that, so the check stays.
+      // The cache-backed resolver cannot reach this (it refuses a wrong-length
+      // key at write and THROWS for a load fault), so an address it answers
+      // for carries a usable key. The resolver is an injected seam, so the
+      // check stays.
       requireUsableSenderKey(authenticatedSender, publicKey);
       signature = await verifyMimeSignature(raw, publicKey);
     }
@@ -247,10 +237,10 @@ type VisibleFromArgs = {
 };
 
 /**
- * The comparison does NOT consult the signature axis, and must not. Nothing
- * downstream of the gate sees `authenticatedSender`, so a `From` contradicting
- * the stamp is a claim the gate can refuse whether or not a verified signature
- * stood behind it.
+ * The comparison does NOT consult the signature axis, and must not: nothing
+ * downstream of the gate sees `authenticatedSender`, so a `From`
+ * contradicting the stamp is a claim the gate can refuse with or without a
+ * verified signature behind it.
  */
 function evaluateVisibleFrom(
   args: VisibleFromArgs,

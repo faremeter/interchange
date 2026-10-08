@@ -7,10 +7,8 @@ import {
 import type { CommittedReads, Principal, RepoId, RepoStore } from "./types";
 
 /**
- * Substrate envelope shape. Imported textually rather than from
- * `types.ts` so this helper has a local, validator-checked view of
- * what `RepoStore.subscribe` yields and does not depend on the
- * substrate's TypeScript type for runtime safety.
+ * Substrate envelope shape, validator-checked locally so this helper
+ * does not depend on the substrate's TypeScript type for runtime safety.
  */
 const SubstrateEvent = type({
   type: "'ref.updated'",
@@ -29,7 +27,6 @@ type EventCandidate = {
   /** Git object id of the event blob, for a direct cache-backed read. */
   oid: string;
 };
-
 const KindEnvelope = type({
   type: "string",
 });
@@ -37,55 +34,31 @@ const KindEnvelope = type({
 export type SubscribeKindOpts = {
   signal: AbortSignal;
   from: "head" | { seq: number };
-  /**
-   * Workflow-event kinds to surface. Matches against the inner
-   * payload's `type` field after the validator narrows the blob. The
-   * helper yields only events whose `type` appears in this list.
-   */
+  /** Workflow-event `type` values to surface, matched after the validator narrows the blob. */
   kinds: readonly string[];
   bufferLimit?: number;
 };
 
 export type SubscribeKindEntry<T> = {
-  /**
-   * Workflow-event seq parsed from the committed filename
-   * (`runs/<runId>/events/<seq>.json`). Distinct from the substrate's
-   * commit-level seq exposed by `RepoStore.subscribe`.
-   */
+  /** Workflow-event seq parsed from the committed filename; distinct from the substrate's commit-level seq. */
   seq: number;
-  /**
-   * Owning runId, parsed from the committed blob's path. The substrate
-   * stores each run's event log under `runs/<runId>/events/`; the helper
-   * surfaces the path segment so consumers can attribute each yielded
-   * event to its run without re-walking the tree. Required by the
-   * workflow-host scheduler's live-ingest path, which routes incoming
-   * `TimerSet` events to per-run queue entries.
-   */
+  /** runId parsed from the committed blob's path, so consumers can attribute each event to its run without re-walking the tree. */
   runId: string;
   event: T;
 };
 
 /**
  * Typed entrypoint over `RepoStore.subscribe` for the workflow-run
- * event log. The substrate emits one ref-update envelope per commit;
- * each commit may add one or more `runs/<runId>/events/<seq>.json`
- * blobs. This helper loads those blobs from the new commit's tree,
- * narrows each through the supplied arktype validator, applies the
- * kinds filter against the inner `type` discriminator, and yields one
- * `{ seq, event }` entry per matching blob.
+ * event log: loads the event blobs a commit added from the new commit's
+ * tree, narrows each through `validator`, applies the kinds filter
+ * against the inner `type` discriminator, and yields one `{ seq, event }`
+ * entry per matching blob.
  *
- * The path-layout vocabulary (the `runs/`/`events/` prefixes and the
- * `<seq>.json` filename shape) lives in the workflow-run kind handler,
- * which is the authority for what may land under this prefix; this
- * helper imports it rather than re-encoding it. The substrate
- * `subscribe` it wraps is a generic ref-tail primitive and knows
- * nothing about workflow-runs.
- *
- * Diff scope: the helper enumerates event blobs present in the new
- * commit but absent from the old commit. A commit that does not add
- * any event blobs (e.g. a kind-handler-internal rewrite) produces no
- * entries even if the kinds filter would otherwise match earlier
- * events.
+ * The path-layout vocabulary (`runs/`/`events/` prefixes, `<seq>.json`
+ * filename shape) lives in the workflow-run kind handler — the authority
+ * for what may land under this prefix — and is imported, not re-encoded.
+ * Only blobs present in the new commit and absent from the old are
+ * surfaced; a commit that adds none produces no entries.
  */
 export async function* subscribeKind<V extends Type>(
   store: RepoStore,
@@ -120,7 +93,7 @@ export async function* subscribeKind<V extends Type>(
       envelope.newSha,
     );
     // A commit a concurrent GC pruned between the ref-update event and
-    // this read yields nothing; the substrate surfaces that as `null`.
+    // this read yields nothing; the substrate surfaces that as null.
     if (newReads === null) continue;
     const oldReads =
       envelope.oldSha === undefined || envelope.oldSha === null
@@ -160,15 +133,12 @@ export async function* subscribeKind<V extends Type>(
 }
 
 /**
- * Diff the `runs/<runId>/events/` subtree between the new and old commit
- * reads and return the event candidates present in the new commit but
- * not the old. `oldReads` is `null` for the ref's first commit (no prior
- * tip) or when the prior commit is no longer in the object store, in
- * which case every event in the new commit is treated as added.
- * Filenames that fail the `<seq>.json` shape are surfaced as errors
- * rather than silently skipped — the workflow-run kind handler's
- * validatePush is the authority for what may land under this prefix, so
- * an unexpected shape here is a substrate-side invariant violation.
+ * Diff the `runs/<runId>/events/` subtree between the new and old
+ * commit reads; entries present only in the new commit are candidates.
+ * `oldReads` null (first commit, or the prior commit pruned from the
+ * object store) treats every new entry as added. Filenames failing the
+ * `<seq>.json` shape error rather than skip — an unexpected shape here
+ * is a substrate-side invariant violation.
  */
 async function collectAddedEventBlobs(
   newReads: CommittedReads,

@@ -1,21 +1,9 @@
 // Source-entry builder for the single action-step workflow fixture (F9):
 // one mail-triggered `action({ handler, effect: { requires: [...] } })` step.
-// The returned string is a `@intx/*`-importing entry module;
-// `bundleWorkflowEntry` inlines it to a self-contained `.mjs` the sidecar
-// evaluates in-child.
-//
-// The action step declares an effect requirement; the deploy-time capability
-// walk lifts each `requires` entry into a runtime `effect:<name>` grant, which
-// the trigger route materializes onto the run principal. The entry ALSO exports
-// the handler (named by the handler ref) so the deployment can point
-// `interchange.actions` at it: the child host resolves every action handler at
-// establish, so a declared-but-unresolvable handler fails closed. The handler
-// itself is a no-op that returns a value -- it declares the effect but does not
-// perform it, which is enough to exercise deploy-time grant derivation.
-//
-// Parameterised by the mail trigger address, the step id, the handler ref, and
-// the effect requirements so a caller pins the run's address and the effect
-// grant it exercises.
+// The deploy-time capability walk lifts each `requires` entry into a runtime
+// `effect:<name>` grant. The entry exports the handler (named by the handler
+// ref) so the deployment can point `interchange.actions` at it; the handler is
+// a no-op that declares the effect but does not perform it.
 
 export type ActionStepFixtureParams = {
   /** The mail trigger's `to` address the deployment routes on. */

@@ -1,11 +1,8 @@
-// Fixture seeding helpers for the real-database resolution tests.
-//
-// These insert rows through the real drizzle client, so they honor the
-// schema's NOT NULL / FK / unique / CHECK constraints — the things the
-// old query-introspection mocks silently bypassed. Helpers fill
-// required columns the resolvers never read with deterministic values
-// derived from the row id, so a test only specifies the fields its
-// assertions actually depend on.
+// Fixture seeding helpers for the real-database resolution tests. Rows go
+// through the real drizzle client, so the schema's NOT NULL / FK / unique /
+// CHECK constraints are honored. Helpers fill columns the resolvers never
+// read with deterministic values, so a test only specifies the fields its
+// assertions depend on.
 
 import type { DB } from "@intx/db";
 import { createPrincipalKeyStore } from "@intx/db";
@@ -37,27 +34,14 @@ export type SeedTenant = {
 };
 
 /**
- * Derive a tenant slug from a tenant id.
- *
- * `tenant_slug_dns_label_check` constrains the slug to a single DNS label,
- * and a tenant id carries a `tnt_` prefix whose underscore is not a legal
- * label character, so every underscore becomes a hyphen. Substitution is
- * the whole of the derivation, so it refuses any id whose derived slug the
- * constraint would refuse: one that runs past 63 characters, one that
- * begins or ends with a hyphen (an id that begins or ends with an
- * underscore), or one that keeps a character outside letters, digits and
- * hyphens. Refusing here names the seed call that supplied the id;
- * returning the slug instead reports a constraint violation raised by an
- * insert, on a column the failing test's assertions never read.
- *
- * The gate is `TenantSlug`, the grammar the tenant create route admits, so
- * it cannot drift from the constraint. Callers also pass ids that are not
- * tenant ids, so nothing here assumes a `tnt_` prefix; only the derived
- * slug is checked.
- *
- * Two ids can still derive one slug — `tnt_a_b` and `tnt_a-b` both give
- * `tnt-a-b` — and that stays unchecked: `slug` is UNIQUE, so the collision
- * already surfaces as a unique violation naming the duplicated slug.
+ * Derive a tenant slug from a tenant id: every `_` becomes `-` (a tenant
+ * id's `tnt_` prefix is not a legal DNS label character), then the result
+ * is checked against `TenantSlug`, the grammar the create route admits, so
+ * it cannot drift from the `tenant_slug_dns_label_check` constraint.
+ * Refusing here names the seed call that supplied the id, instead of a
+ * constraint violation on a column the failing test never reads. A slug
+ * collision (`tnt_a_b` vs `tnt_a-b`) stays unchecked: `slug` is UNIQUE, so
+ * it already surfaces as a unique violation.
  */
 export function tenantSlugFromId(id: string): string {
   const slug = id.replaceAll("_", "-");
@@ -74,17 +58,10 @@ export function tenantSlugFromId(id: string): string {
 }
 
 /**
- * Insert a set of tenants honoring the immediate self-referential
- * `parent_id` FK: a row is inserted only once its parent already
- * exists, so callers can pass a tree in any order. `slug` is derived from
- * the id and `domain` from the slug, satisfying their NOT NULL + UNIQUE
- * constraints.
- *
- * The domain comes from the lowercased SLUG rather than from the id because
- * that is the chain the tenant create route builds. Deriving it from the id
- * instead put an underscore back into a domain whose slug had just had one
- * substituted out, giving fixtures a slug/domain pair no real tenant can
- * hold.
+ * Insert a set of tenants honoring the self-referential `parent_id` FK:
+ * a row is inserted only once its parent exists, so callers can pass a
+ * tree in any order. `slug` derives from the id and `domain` from the
+ * lowercased slug, the same chain the tenant create route builds.
  */
 export async function seedTenants(
   db: Db,
@@ -160,15 +137,12 @@ export async function seedPrincipal(db: Db, p: SeedPrincipal): Promise<void> {
 }
 
 /**
- * Mint the active `principal_key` a principal carries in production. INTR-164
- * mints a key in the same transaction a principal is created, so every real
- * principal has one; `seedPrincipal` inserts the row directly and bypasses that
- * path, so a fixture whose principal must SIGN (for example, the caller of a
- * hub-originated mail trigger) mints the key explicitly here. Seals the seed
- * with the noop cipher -- the same fallback `createApp` uses when no
- * `PRINCIPAL_KEY_ENCRYPTION_KEY` is configured -- so the app's key store reads
- * it back. Returns the hex-encoded public key so a test can verify signatures
- * against it. The principal row must already exist.
+ * Mint the active `principal_key` a real principal carries in production.
+ * `seedPrincipal` bypasses the create-principal key mint, so a fixture
+ * whose principal must sign (e.g. the caller of a hub-originated mail
+ * trigger) mints the key here, sealed with the noop cipher the app falls
+ * back to when no `PRINCIPAL_KEY_ENCRYPTION_KEY` is configured. Returns the
+ * hex public key for signature verification.
  */
 export async function seedPrincipalKey(
   db: Db,
@@ -361,9 +335,8 @@ export type SeedWorkflowRun = {
   endedAt?: Date | null;
 };
 
-// definition_id is NOT NULL on workflow_run. When a caller does not care which
-// definition a seeded run anchors on, anchor it on a per-tenant throwaway
-// definition created once, so the test need not seed one itself.
+// workflow_run.definition_id is NOT NULL; anchor a run that does not care
+// which definition it uses on a per-tenant throwaway created once.
 async function ensureSeedDefinition(db: Db, tenantId: string): Promise<string> {
   const id = `wfd_seed_${tenantId}`;
   await db
@@ -405,10 +378,9 @@ export type SeedWorkflowDefinitionVersion = {
   grantSnapshot: GrantWalkSnapshot | null;
 };
 
-// Freeze a grant-walk snapshot onto a definition's version row, the way a
-// deploy-time approval does. The mail-triggered materializer and the HTTP
-// trigger route both read the run's grants from this row, keyed by
-// (definitionId, version "1").
+// Freeze a grant-walk snapshot onto a definition's version row the way a
+// deploy-time approval does; both trigger paths read the run's grants from
+// this row, keyed by (definitionId, version "1").
 export async function seedWorkflowDefinitionVersion(
   db: Db,
   v: SeedWorkflowDefinitionVersion,

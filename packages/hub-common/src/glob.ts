@@ -1,16 +1,10 @@
 /**
- * Self-contained simple-glob matcher used to validate `refPattern`
- * grammar at the mint-endpoint boundary and to filter ref
- * advertisements at the route layer. Grammar:
+ * Simple-glob matcher for `refPattern` validation at the mint endpoint
+ * and ref-advertisement filtering. Grammar:
  *
- * - literal characters match themselves
- * - `*` matches any run of characters within a single `/`-delimited
- *   segment (does not cross `/`)
- * - `**` matches any run of characters including `/` (crosses
- *   segments; may match zero segments)
- *
- * No regex backend — the matcher operates directly on the input and
- * pattern token streams.
+ * - literals match themselves
+ * - `*` matches any run of characters within one `/`-delimited segment
+ * - `**` matches any run of characters including `/` (may match zero)
  */
 
 type Token =
@@ -83,10 +77,7 @@ function matchTokens(
 }
 
 export const glob = {
-  /**
-   * Test whether `input` matches `pattern` under the simple-glob
-   * grammar described above.
-   */
+  /** Match `input` against `pattern` under the grammar above. */
   match(pattern: string, input: string): boolean {
     const tokens = tokenize(pattern);
     return matchTokens(tokens, 0, input, 0);

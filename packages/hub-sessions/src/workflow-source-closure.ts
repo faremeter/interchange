@@ -5,7 +5,7 @@
 // Unlike the registry and tarball arms (which resolve against npm packuments
 // with SRI integrity), a source package has no packument: its content
 // identity is the git tree oid of its subtree, and its dependency closure is
-// a DISJOINT UNION of two origins built by construction --
+// a DISJOINT UNION of two origins built by construction:
 //   - workspace-local members (other subtrees in the SAME asset) become
 //     `format:"source"` entries and are walked recursively, and
 //   - external npm dependencies are resolved through the pristine registry
@@ -85,21 +85,17 @@ export async function resolveSourceWorkflowClosure(
   const { members, rootName, catalog } = await enumerateMembers(reads);
   const selected = selectMember(members, packageName);
 
-  // BFS over the reachable workspace members. A dependency classifies by NAME,
-  // never by parsing its range: a name that is a member recurses (a
-  // workspace-local edge); the workspace root's own name is an invalid target
-  // (the root is not a member) and fails loud regardless of how the range is
-  // spelled; anything else is external and resolves through the registry walker.
+  // BFS over reachable workspace members. A dependency classifies by NAME,
+  // never by its range: a member name recurses (workspace-local edge); the
+  // workspace root's own name is an invalid target and fails loud; anything
+  // else is external and resolves through the registry walker.
   //
-  // External deps collect by name, and a second member contributing the same
-  // name at a DIFFERENT resolved range fails loud rather than silently
-  // collapsing to one pin -- the walker resolves a single range per name, so a
-  // silent overwrite would drop a real constraint. This is a DELIBERATE v1
-  // limitation: two members with drifting-but-compatible ranges (e.g. `^1.0.0`
-  // and `^1.2.0`) that npm/bun would reconcile to one version are rejected here,
-  // not intersected. Aligning the ranges across members, or declaring the dep
-  // once in the root `catalog`, resolves it. (Semver intersection across
-  // members is tracked separately as INTR-460.)
+  // External deps collect by name; two members pinning the same name at a
+  // DIFFERENT resolved range fail loud rather than silently collapsing to one
+  // pin. This is a DELIBERATE v1 limitation: compatible-but-drifting ranges
+  // that npm/bun would reconcile are rejected, not intersected; aligning the
+  // ranges across members, or declaring the dep once in the root `catalog`,
+  // resolves it. (Semver intersection is tracked as INTR-460.)
   const sourceEntries: ToolPackageManifestEntry[] = [];
   const externalPins = new Map<string, string>();
   const seen = new Set<string>();
@@ -223,11 +219,10 @@ async function enumerateMembers(
   for (const glob of root.workspaces) {
     for (const packageDir of await expandWorkspaceGlob(reads, glob)) {
       // A `<dir>/*` glob matches every subdirectory, but not all are packages
-      // (docs, fixtures, ...). Skip a directory with no package.json rather than
-      // fail the whole resolution, matching how bun/yarn/pnpm treat a
-      // non-package directory that a workspace glob happens to match. A
-      // directory that HAS a package.json must still parse and declare a name
-      // and version, so a malformed member fails loud.
+      // (docs, fixtures, ...). Skip a directory with no package.json rather
+      // than fail the whole resolution, matching bun/yarn/pnpm. A directory
+      // that HAS a package.json must still parse and declare a name and
+      // version, so a malformed member fails loud.
       if (!(await dirHasPackageJSON(reads, packageDir))) continue;
       const parsed = await readPackageJSON(reads, packageDir);
       const member = requireMember(parsed, packageDir);

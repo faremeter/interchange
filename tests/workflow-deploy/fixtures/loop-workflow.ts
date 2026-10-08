@@ -2,17 +2,12 @@
 // whose body is a single non-suspending agent `step` -- the plain-loop roundtrip
 // case. (A loop body MAY now suspend on an `awaitSignal` or spawn a
 // `childWorkflow`; this fixture deliberately keeps the body a straight-through
-// agent step.) The entry module exports BOTH `workflow` and the loop
-// `while`/`carry` functions, so the deployment points `interchange.loops` at the
-// same bundled entry and `loadWorkflowLoopFnsFromClosure` resolves the refs by
-// export name.
-//
-// The loop converges after exactly three iterations: `input` seeds
-// `currentInput = 0`; `keepGoing(output, currentInput)` stays true for 0 and 1
-// and turns false at 2; `nextCount` increments. On convergence the normal
-// dependent (`settle`) runs and the `onExhausted` target (`escalate`) is pruned.
-// while/carry read only the carry state, so convergence is deterministic
-// regardless of the body agent's output.
+// agent step.) The entry exports BOTH `workflow` and the loop `while`/`carry`
+// functions so the deployment points `interchange.loops` at the same bundled
+// entry. The loop converges after exactly three iterations (`keepGoing` turns
+// false at 2; the functions read only the carry state); on convergence the
+// normal dependent (`settle`) runs and the `onExhausted` target (`escalate`) is
+// pruned.
 
 export type LoopWorkflowFixtureParams = {
   /** The mail trigger's `to` address the deployment routes on. */

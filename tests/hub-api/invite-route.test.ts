@@ -27,9 +27,9 @@ import {
 import { createTestCredentialCipher } from "@intx/test-harness/crypto";
 import { seedPrincipal, seedTenants } from "@intx/test-harness/seed";
 
-// Exercises the invite route end to end through the in-process hub app with a
-// real key store, proving the invited principal is both created and minted an
-// active signing key on the write path.
+// Exercises the invite route end to end through the in-process hub app with
+// a real key store: the invited principal is created and minted an active
+// signing key on the write path.
 
 const TENANT_ID = "tnt_invite";
 const ACTOR_PRINCIPAL_ID = "prn_invite_actor";

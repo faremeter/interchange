@@ -2,14 +2,11 @@
 // paths handle it differently and this pins both: the remote-send handler
 // throws (it is awaited through the transport, so the producing agent gets a
 // real error), while the post-delivery audit handler logs and skips (a throw
-// there is swallowed by the transport's Promise.allSettled, so throwing would
-// be an invisible dead check). The hub re-enforces the cap on receive -- that
-// is the authoritative DoS backstop, covered separately in the hub-sessions
-// suite; these send-side checks are the producer-facing complement.
-//
-// The two handlers are captured through a fake transport and invoked directly,
-// so the test needs no live socket: `createHubLink` only touches the transport
-// to register these handlers.
+// there is swallowed by the transport's Promise.allSettled). The hub
+// re-enforces the cap on receive -- the authoritative DoS backstop; these
+// send-side checks are the producer-facing complement. The two handlers are
+// captured through a fake transport and invoked directly, so no live socket is
+// needed.
 
 import {
   describe,

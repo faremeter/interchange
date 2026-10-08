@@ -1,6 +1,6 @@
 // The step invoker resolves a mail part's ref through this reader. The
-// supervisor owns the committed blob and answers `readMailPart`. This
-// reader does not open the workflow-run repo.
+// supervisor owns the committed blob and answers `readMailPart`; this reader
+// does not open the workflow-run repo.
 
 import { base64Decode } from "@intx/types";
 import type { MailPartReader } from "@intx/types/runtime";

@@ -3,10 +3,10 @@
 // loose objects into a fresh, differently-named pack and pruning the old
 // one — behind that cache's back. These tests pin that the cache stays a
 // pure accelerator across a repack: an object that migrates from a pruned
-// pack into the new one still reads correctly under the SAME warm cache
-// (because reads enumerate .idx files from disk, so a stranded parse of a
-// pruned pack is never consulted), and an object GC genuinely drops
-// surfaces NotFound rather than stale bytes.
+// pack still reads correctly under the SAME warm cache (reads enumerate
+// .idx files from disk, so a stranded parse of a pruned pack is never
+// consulted), and an object GC genuinely drops surfaces NotFound rather
+// than stale bytes.
 
 import { describe, test, expect, afterEach } from "bun:test";
 import fs from "node:fs";
@@ -138,8 +138,8 @@ describe("shared-cache repack transparency", () => {
       true,
     );
 
-    // The test: read the target again under the SAME warm cache, after the
-    // pack the cache indexed was pruned from disk.
+    // The test: read the target again under the SAME warm cache, after
+    // the pack the cache indexed was pruned from disk.
     const reread = await git.readBlob({ fs, dir, oid: targetOid, cache });
     expect(Buffer.from(reread.blob).toString()).toBe(targetContent);
 

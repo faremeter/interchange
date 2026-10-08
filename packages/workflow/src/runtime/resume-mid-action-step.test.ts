@@ -12,9 +12,6 @@
 // completed run's log is not: a completed run flushes its whole buffer at
 // the terminal boundary, so its log carries the action's `StepStarted`
 // regardless of whether `runAction` made it durable at invoke time.
-// Without the barrier a lone action's `StepStarted` is buffered, unflushed
-// at invoke time, and absent from the captured snapshot -- so the resume
-// has no residual to settle and the property does not hold.
 
 import { describe, test, expect } from "bun:test";
 

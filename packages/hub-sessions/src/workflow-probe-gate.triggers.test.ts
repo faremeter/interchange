@@ -1,12 +1,11 @@
 // Gate tests for trigger types the runtime does not implement.
 //
-// `defineWorkflow` is bundled INTO the pinned workflow closure, so an
-// authoring-time rejection only ever reaches an author who rebuilds and
-// republishes. A closure that predates the authoring check keeps its own frozen
-// copy of `defineWorkflow` and sails through every re-evaluation point. The
-// inert projection is the one surface a stale closure cannot carry: its
-// `triggers` array is produced by the hub's own live->inert projector, not by
-// the closure. So the gate is where an already-deployed schedule-triggered
+// `defineWorkflow` is bundled INTO the pinned closure, so an authoring-time
+// rejection only reaches an author who rebuilds and republishes; a stale
+// closure keeps its frozen copy and sails through every re-evaluation point.
+// The inert projection is the one surface a stale closure cannot carry: its
+// `triggers` array comes from the hub's own live->inert projector, not the
+// closure. So the gate is where an already-deployed schedule-triggered
 // workflow is stopped.
 
 import { describe, test, expect } from "bun:test";

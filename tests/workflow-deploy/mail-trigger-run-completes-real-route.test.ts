@@ -2,30 +2,26 @@
 //
 // The supervisor keys a run on the deployment's mail address as the stable
 // runId and reads that run's grants from `runs/<runId>/grants.json`; the
-// sidecar's `onRunStart` barrier refuses to start a run whose grants file
-// is absent at that path. So a producer that stages the run's grants under
-// any OTHER id leaves the supervisor's path empty and the run fails closed.
+// sidecar's `onRunStart` barrier refuses to start a run whose grants file is
+// absent at that path. So a producer that stages the run's grants under any
+// OTHER id leaves the supervisor's path empty and the run fails closed.
 //
-// This test drives the PRODUCTION `POST /workflows/:runId/mail`
-// route against a real migrated schema and a real sidecar subprocess, and
-// asserts the dispatched run reaches `RunCompleted` -- not just that DB
-// rows were committed. A completing single-step agent workflow (echo
-// inference) is used precisely so the run CAN terminate successfully; the
-// only thing that keeps it from completing is the grants file landing under
-// a runId the supervisor never reads. Before the runId contract was
-// unified (the route derived runId from the mail's Message-ID), the grants
-// were staged under that per-message id, `onRunStart` found no grants at
-// `runs/<deploymentMailAddress>/`, and the run failed closed -- this test
-// fails there. The `mail-trigger-derived-grants-roundtrip` sibling proves
-// the derivation + DB commit; this one proves the run actually runs.
+// This test drives the PRODUCTION `POST /workflows/:runId/mail` route against
+// a real migrated schema and a real sidecar subprocess, and asserts the
+// dispatched run reaches `RunCompleted` -- not just that DB rows were
+// committed. A completing single-step agent workflow (echo inference) is used
+// precisely so the run CAN terminate successfully; the only thing that keeps
+// it from completing is the grants file landing under a runId the supervisor
+// never reads. Before the runId contract was unified (the route derived runId
+// from the mail's Message-ID), the grants were staged under that per-message
+// id and the run failed closed -- this test fails there. The
+// `mail-trigger-derived-grants-roundtrip` sibling proves the derivation + DB
+// commit; this one proves the run actually runs.
 //
-// The deployment is stood up through the shared code-sourced front
-// (`deployWorkflowSourceForTest`): it bundles the tool-less single-step
-// fixture, installs/probes/gates/freezes the definition against the real DB
-// (writing the frozen grant snapshot the trigger route materializes from),
-// deploys it by source-ref to the real sidecar, and writes the anchor
-// `workflow_run` row. The route then hydrates the run's grants from that
-// frozen snapshot -- the static `workflow.json` definition path is gone.
+// The deployment is stood up through the shared code-sourced front: it
+// bundles the tool-less single-step fixture, installs/probes/gates/freezes
+// the definition against the real DB, deploys it by source-ref to the real
+// sidecar, and writes the anchor `workflow_run` row.
 
 import {
   afterAll,

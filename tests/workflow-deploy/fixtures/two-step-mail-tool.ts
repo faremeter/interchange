@@ -1,16 +1,9 @@
 // Source-entry builder for the mail-tool two-step workflow fixture (F5):
 // `send(mail-tool) -> tail`. The first step's agent carries the inline
 // `mail_send` tool from the sibling `mail-tool.ts` module; the second (tail)
-// step runs `after: [sendId]` with a plain, tool-less agent. The returned
-// string is a `@intx/*`-importing entry module that also imports the tool by
-// absolute path; `bundleWorkflowEntry` inlines both into a self-contained
-// `.mjs` the sidecar evaluates in-child, so the tool runs with the same
-// filesystem / transport side effect the ex-synthetic bundle produced.
-//
-// Parameterised by the tool variant (fs | transport | ask), the mail trigger
-// address, the step ids, and the per-step system prompts so a caller pins each
-// agent's inference request to the deployment it exercises and selects the tool
-// behaviour it exercises.
+// step runs `after: [sendId]` with a plain, tool-less agent, so the tool runs
+// with the same filesystem / transport side effect the ex-synthetic bundle
+// produced.
 
 import path from "node:path";
 

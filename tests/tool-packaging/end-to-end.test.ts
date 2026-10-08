@@ -1,23 +1,6 @@
-// End-to-end integration of the tool-package pipeline.
-//
-// Exercises the gluing between the hub-side resolver, the deploy-tree
-// round-trip, and the sidecar-side loader+atomic-apply. The test does
-// not spin up a subprocess sidecar — the same harness builder code
-// runs in-process here against synthetic fixtures, which is what the
-// production path runs against real ones.
-//
-// What the test demonstrates per scenario:
-//
-//   - happy path: resolver walks pins → manifest written to deploy
-//     tree → readDeployTree round-trips → loader materializes →
-//     applyAtomic swaps → loaded factories registered.
-//
-//   - integrity.mismatch: bytes served by the mock registry do not
-//     match the resolver's pinned integrity → applyAtomic returns
-//     failed with the right category and previousDeployId.
-//
-//   - registry.unknown: manifest references a registry the sidecar
-//     was not told about → loader rejects with registry.unknown.
+// End-to-end integration of the tool-package pipeline: hub-side
+// resolver, deploy-tree round-trip, and sidecar-side
+// loader+atomic-apply, run in-process against synthetic fixtures.
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { promises as fs } from "node:fs";
@@ -464,16 +447,10 @@ describe("hub→sidecar pipeline (cache behavior)", () => {
 
 describe("hub→sidecar pipeline (asset-backed registry)", () => {
   /**
-   * Synthesize an in-memory asset that mirrors what the asset service
-   * would expose for a `package-registry` asset: a `tarballs/` tree
-   * holding npm-style tarballs whose `package.json`s validate.
-   *
-   * The fixture returns the bound `readBlob`/`listBlobs` pair the
-   * resolver consumes, plus a writeMount helper that lays the same
-   * tarball bytes onto disk at the mount path the deploy pack will
-   * point the loader at. End-to-end: the resolver picks an entry,
-   * the deploy tree records `(assetId, mount)`, the loader joins
-   * `assetRoot + mount + path` and reads the same bytes back.
+   * Synthesize an in-memory `package-registry` asset: a `tarballs/`
+   * tree holding npm-style tarballs. Returns the `readBlob`/`listBlobs`
+   * pair the resolver consumes plus a writeMount helper that lays the
+   * same bytes at the mount path the loader will read.
    */
   async function buildAssetRegistryFixture(
     pkgs: readonly {
@@ -585,11 +562,9 @@ describe("hub→sidecar pipeline (asset-backed registry)", () => {
       `tarballs/${fixture.tarballs[0]?.filename ?? ""}`,
     );
 
-    // Persist the manifest + the asset-mounts file the way the agent
-    // repo's writeDeployTree would, then read it back via the same
-    // readDeployTree the sidecar uses. The round-trip locks in that
-    // the loader's view of `assetMounts` matches the session
-    // service's write shape.
+    // Persist manifest + asset-mounts the way writeDeployTree would,
+    // then read them back with the same readDeployTree the sidecar
+    // uses.
     const deployRoot = path.join(scratch, "agent-tree");
     const deployDir = path.join(deployRoot, "deploy");
     await fs.mkdir(deployDir, { recursive: true });
@@ -605,9 +580,8 @@ describe("hub→sidecar pipeline (asset-backed registry)", () => {
     const tree = await readDeployTree(deployRoot);
     expect(tree.assetMounts.get(assetId)).toBe(mountPath);
 
-    // Materialize the asset tarballs onto disk at the same mount the
-    // deploy tree advertises. The loader's default tarball fetcher
-    // resolves `kind: "asset"` entries against `assetRoot + mount + path`.
+    // Materialize the asset tarballs at the mount the deploy tree
+    // advertises.
     await fixture.writeMount(path.join(assetRoot, mountPath));
 
     const cache = createTarballCache({
@@ -640,14 +614,10 @@ describe("hub→sidecar pipeline (asset-backed registry)", () => {
   });
 
   test("asset registry shadows an HTTP registry of the same name", async () => {
-    // Build two distinct package contents under the same registry
-    // name `shared`: one in an asset, one served by HTTP. The asset
-    // source occupies the slot the HTTP source would otherwise hold;
-    // the resolver picks the asset's bytes, and the manifest entry
-    // tags `kind: "asset"`. The session service uses the same
-    // tie-break (asset wins) when building the per-agent registry
-    // map from the visible-assets set; this test confirms the rule at
-    // the resolver layer.
+    // Same registry name in an asset and over HTTP: the asset source
+    // wins the slot, so the resolver picks the asset's bytes. The
+    // session service applies the same tie-break; this test pins the
+    // rule at the resolver layer.
     const fixture = await buildAssetRegistryFixture([
       { name: "shared-pkg", version: "1.0.0", exportName: "main" },
     ]);

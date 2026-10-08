@@ -151,7 +151,6 @@ describe("evaluateConditions", () => {
   });
 
   test("no registry provided with non-null conditions throws", async () => {
-    // No registry argument at all -- defaults to empty registry
     expect(evaluateConditions({ some_condition: true }, ctx())).rejects.toThrow(
       'Unknown condition: "some_condition"',
     );

@@ -97,10 +97,9 @@ function installErrorCapture(sink: string[]): () => void {
   });
   return () => {
     // A null capture means this file loaded without `@intx/log` having
-    // installed its default sink, which cannot happen -- importing the
-    // package runs the install. Resetting here instead would leave the
-    // worker with no logging configuration at all, and the install
-    // cannot re-fire to repair it.
+    // installed its default sink, which cannot happen -- importing the package
+    // runs the install. Resetting here instead would leave the worker with no
+    // logging configuration at all.
     if (!savedConfig) {
       throw new Error(
         "no logging configuration was captured before this suite replaced it",
@@ -171,9 +170,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
     }
 
     // Build a workflow-run pack whose tip commit adds each run's event log.
-    // The genesis commit carries a
-    // `.gitignore`-only tree (the kind handler's accepted initial commit); the
-    // tip adds every requested event in one commit.
+    // The genesis commit carries a `.gitignore`-only tree (the kind handler's
+    // accepted initial commit); the tip adds every requested event in one
+    // commit.
     async function buildPack(
       runs: {
         runId: string;
@@ -182,9 +181,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
         signalId?: string;
         consumedMessageId?: string;
         // When true, omit the seq-0 RunStarted and emit the terminal event
-        // alone at seq 1 -- the exact artifact the crash-loop guard's
-        // supervisor-authored RunFailed produces on an anchor run whose event
-        // log is otherwise empty.
+        // alone at seq 1 -- the artifact the crash-loop guard's
+        // supervisor-authored RunFailed produces on an anchor run with an
+        // otherwise-empty event log.
         terminalOnlyAtSeq1?: boolean;
       }[],
     ): Promise<{ pack: Uint8Array; tip: string }> {
@@ -489,10 +488,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     test("flips a deployed run to failed from a lone seq-1 RunFailed tombstone", async () => {
       // The crash-loop guard's supervisor-authored RunFailed is the sole event
-      // on the deployment's anchor run: seq 1, no preceding RunStarted, on a run
-      // still in its pre-trigger `deployed` window. This drives that exact
-      // artifact through the full pack-receive path -- not validatePush in
-      // isolation -- and asserts the run's status flips to `failed`.
+      // on the anchor run: seq 1, no preceding RunStarted, on a run still in
+      // its pre-trigger `deployed` window. Drive that artifact through the
+      // full pack-receive path and assert the run's status flips to `failed`.
       await seedWorkflowRun(h.db, {
         id: "run-crashloop",
         anchorRunId: DEPLOYMENT,
@@ -521,10 +519,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
     test("deactivates only the run's own principal, not a bystander", async () => {
       // The run's own principal, plus an unrelated bystander principal on the
       // same tenant. The flip must deactivate only the run's own principal
-      // (matched by `won.principalId`), leaving the bystander active. (The
-      // bystander cannot share the run's refId: the principal table's
+      // (matched by `won.principalId`), leaving the bystander active. The
+      // bystander cannot share the run's refId -- the principal table's
       // (tenantId, kind, refId) uniqueness forbids two workflow principals with
-      // the same refId, so scoping is proven through the id match.)
+      // the same refId -- so scoping is proven through the id match.
       await seedPrincipal(h.db, {
         id: "prn-owner",
         tenantId: TENANT,
@@ -1501,10 +1499,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     test("a terminal event for another deployment's run is ignored loudly", async () => {
-      // The deployment-boundary check. A run row that EXISTS and anchors on a
-      // different deployment must not be settled by this deployment's pack: the
-      // seam logs at ERROR and leaves the row untouched. This is the case the
-      // missing-row mint above must not swallow.
+      // The deployment-boundary check: a run row that EXISTS and anchors on a
+      // different deployment must not be settled by this deployment's pack.
+      // The seam logs at ERROR and leaves the row untouched; this is the case
+      // the missing-row mint above must not swallow.
       await seedWorkflowRun(h.db, {
         id: FOREIGN_DEPLOYMENT,
         anchorRunId: FOREIGN_DEPLOYMENT,
@@ -1546,10 +1544,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     test("markTerminal flips a running run once and is a no-op thereafter", async () => {
-      // Direct store test of the `status = 'running'` guard -- the property the
-      // pack-receive seam relies on for idempotency. This is the test that dies
-      // if the guard is removed: a second flip on an already-completed row must
-      // match nothing and mutate nothing.
+      // Direct store test of the `status = 'running'` guard the pack-receive
+      // seam relies on for idempotency. This test dies if the guard is removed:
+      // a second flip on an already-completed row must match nothing and mutate
+      // nothing.
       await seedWorkflowRun(h.db, {
         id: "run-guard",
         anchorRunId: DEPLOYMENT,
@@ -1634,14 +1632,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
     test("a failed flip for one run does not block the batch or the ack", async () => {
       // The regression that proves the withdrawn crash-window is closed: with
       // two newly-terminal runs in one pack, if ONE run's DB flip throws,
-      // (a) the pack is still acked (verdict accepted), and (b) the OTHER run is
-      // still flipped and its principal deactivated. A throw that escaped the
-      // per-run loop would drop the ack and abort the batch.
-      //
-      // The kind handler's run-enumeration order is not contractually fixed, so
-      // the injected failure targets whichever run the seam happens to process
-      // first; the assertions below are order-agnostic (exactly one run stuck,
-      // exactly one flipped).
+      // (a) the pack is still acked (verdict accepted) and (b) the OTHER run
+      // is still flipped and its principal deactivated. The kind handler's
+      // run-enumeration order is not contractually fixed, so the injected
+      // failure targets whichever run the seam happens to process first; the
+      // assertions below are order-agnostic (exactly one run stuck, exactly
+      // one flipped).
       for (const runId of ["run-a", "run-b"]) {
         await seedPrincipal(h.db, {
           id: `prn-${runId}`,

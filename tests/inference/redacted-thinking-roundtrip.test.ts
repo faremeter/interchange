@@ -1,15 +1,10 @@
 // End-to-end coverage of the Anthropic redacted_thinking round-trip:
-// SSE `content_block_start` of type `redacted_thinking` arrives →
-// parser emits `inference.thinking.redacted` → harness threads it
-// through and lands the RedactedThinkingBlock in the final
-// `inference.done` turn → the request builder echoes the same
-// opaque `data` bytes back on a follow-up turn.
+// start event → inference.thinking.redacted → RedactedThinkingBlock in
+// the final turn → request builder echoes the opaque `data` bytes back.
 //
-// The opaque `data` blob must survive every stage unchanged.
-// Anthropic rejects any follow-up that mutates or omits the blob
-// with a 400 (or worse, with silent context corruption that taints
-// downstream turns), so the round-trip is the load-bearing invariant
-// the adapter exists to preserve.
+// The `data` blob must survive every stage unchanged; Anthropic
+// rejects a mutated or omitted blob (or silently corrupts context),
+// so byte-identical round-trip is the load-bearing invariant.
 
 import { describe, test, expect } from "bun:test";
 
@@ -37,12 +32,8 @@ const TEST_SOURCE: LastCycleSource = {
   model: "test-anthropic-model",
 };
 
-// Adversarial payload: includes characters that an over-eager
-// normalizer would touch (newlines, padding, internal whitespace,
-// escape-sensitive bytes). The byte-identical round-trip is the
-// invariant — a `JSON.stringify`-of-already-stringified bug, a
-// whitespace strip, or a Unicode normalization would all corrupt
-// this payload.
+// Adversarial payload: newlines, padding, whitespace, and
+// escape-sensitive bytes that an over-eager normalizer would touch.
 const SYNTHETIC_REDACTED_DATA = 'Opaque\nBytes\r\n  ==\tFromAnthropic\\"AAAA==';
 
 const SOURCE: InferenceSource = {
@@ -123,9 +114,8 @@ describe("runInference — Anthropic redacted_thinking round-trip", () => {
       }),
     );
 
-    // The streaming event lands with the opaque data and the source
-    // index — downstream consumers (event collector, audit store) see
-    // it before inference.done.
+    // Downstream consumers see the event (data + source index) before
+    // inference.done.
     const redactedEvents = events.filter(
       (e) => e.type === "inference.thinking.redacted",
     );
@@ -156,11 +146,9 @@ describe("runInference — Anthropic redacted_thinking round-trip", () => {
   });
 
   test("data survives the full round-trip back into a follow-up request body", async () => {
-    // Drive a redacted_thinking response through the harness, take the
-    // final assistant turn, and feed it back into the request builder
-    // as conversation history. The opaque data must land in the
-    // outbound request's messages[].content[] verbatim. This is the
-    // actual invariant Anthropic checks on every follow-up turn.
+    // Feed the final assistant turn back into the request builder: the
+    // opaque data must land in the outbound messages[].content[]
+    // verbatim — the invariant Anthropic checks on follow-up turns.
     const chunks: Uint8Array[] = [
       wire.anthropic.messageStart({
         usage: { inputTokens: 5, outputTokens: 0 },
@@ -218,12 +206,9 @@ describe("runInference — Anthropic redacted_thinking round-trip", () => {
       {},
     );
 
-    // Decode the body and locate the assistant message's
-    // redacted_thinking block to assert byte-exact equality on the
-    // opaque data. A substring match (toContain) would still pass on
-    // a buggy adapter that surrounded the data with whitespace,
-    // padding, or a BOM — Anthropic rejects such mutations, so the
-    // test must be just as strict.
+    // Byte-exact equality on the opaque data; a substring match would
+    // pass on an adapter that padded or wrapped it, which Anthropic
+    // rejects.
     const parsed: unknown = JSON.parse(req.body);
     if (!isRecord(parsed)) {
       throw new Error("expected request body to be a JSON object");

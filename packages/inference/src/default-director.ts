@@ -40,24 +40,20 @@ const logger = getLogger(["interchange", "inference", "default-director"]);
  *
  *   continue — proceed with the director's normal post-inference logic
  *              (tool extraction, reply, or wait per the existing flow).
- *   abort    — terminate the agent. Routes to `[checkpoint, done]` and
- *              the reactor shuts down. Stronger than the
- *              `inference.error` branch, which only replies and stays
- *              alive — `abort` is for "session is over, do not accept
- *              further inputs."
+ *   abort    — terminate the agent. Routes to `[checkpoint, done]` and the
+ *              reactor shuts down. Stronger than the `inference.error`
+ *              branch, which only replies and stays alive — `abort` is for
+ *              "session is over, do not accept further inputs."
  *   halt     — pause the current cycle without terminating. Routes to
  *              `[checkpoint, reply]`; the reply returns the reactor to
- *              waiting for the next inbound event, so it stays alive.
- *              There is no auto-resume; an external event (mail, gate
- *              clearance, etc.) must reach the reactor for the agent to
- *              make progress again.
+ *              waiting for the next inbound event, so it stays alive. There
+ *              is no auto-resume; an external event (mail, gate clearance,
+ *              etc.) must reach the reactor for the agent to make progress.
  *
- * `reason` on a `halt` becomes the connector reply text verbatim, so
- * policy authors choose what is safe to surface to the user. On an
- * `abort` the reason is not surfaced: a terminal action cannot carry a
- * reply, since a reply invites continuation. Delivering an abort reason
- * to the user needs a dedicated terminal-notice path, which does not
- * exist today.
+ * `reason` on a `halt` becomes the connector reply text verbatim, so policy
+ * authors choose what is safe to surface to the user. On an `abort` the
+ * reason is not surfaced: a terminal action cannot carry a reply, since a
+ * reply invites continuation.
  */
 export type AfterInferenceDecision =
   | { type: "continue" }
@@ -68,41 +64,37 @@ export type AfterInferenceDecision =
  * Function shape for an after-inference-done policy hook.
  *
  * The hook fires only on `inference.done` (a successful cycle). Errored
- * cycles do not invoke it. `mode: "reactive"` does not change firing —
- * the hook gates the entire `inference.done` branch, including the
- * reactive-wait shortcut, so a budget check applies to reactive agents
- * the same way it does to conversational ones.
+ * cycles do not invoke it. `mode: "reactive"` does not change firing — the
+ * hook gates the entire `inference.done` branch, including the reactive-wait
+ * shortcut, so a budget check applies to reactive agents the same way it does
+ * to conversational ones.
  *
  * The hook receives the post-cycle `ReactorState` (with `lastCycleSource`
  * and `lastCycleUsage` populated for the just-completed call) and the
- * assistant turn. Returns a decision (sync or async) that controls
- * whether the director continues, terminates the agent, or pauses the
- * cycle.
+ * assistant turn. Returns a decision (sync or async) that controls whether
+ * the director continues, terminates the agent, or pauses the cycle.
  *
- * Canonical use case: cost-aware gating. Read `state.lastCycleSource`
- * + `state.lastCycleUsage`, price the call against user-supplied rate
- * data, decide whether the budget is exhausted. Token caps, time caps,
- * wallet checks, and governance triggers fit the same shape; the
- * type stays policy-agnostic.
+ * Canonical use case: cost-aware gating. Read `state.lastCycleSource` +
+ * `state.lastCycleUsage`, price the call against user-supplied rate data,
+ * decide whether the budget is exhausted. Token caps, time caps, wallet
+ * checks, and governance triggers fit the same shape; the type stays
+ * policy-agnostic.
  *
- * "Downgrade to cheaper model" policies do NOT use this hook to return
- * a new source. Compose them via an external observer of
- * `lastCycleSource` / `lastCycleUsage` that calls `setSource` from
- * outside the director.
+ * "Downgrade to cheaper model" policies do NOT use this hook to return a new
+ * source. Compose them via an external observer of `lastCycleSource` /
+ * `lastCycleUsage` that calls `setSource` from outside the director.
  *
- * The hook blocks the reactor's inference.done branch: keep its
- * latency low. The return type admits a Promise, but every await
- * inside the hook is wall-clock time the agent isn't making progress.
- * Small lookups (in-memory caches, fast DB reads) are fine; arbitrary
- * waits are not.
+ * The hook blocks the reactor's inference.done branch: keep its latency low.
+ * The return type admits a Promise, but every await inside the hook is
+ * wall-clock time the agent isn't making progress. Small lookups (in-memory
+ * caches, fast DB reads) are fine; arbitrary waits are not.
  *
- * Tool calls and `halt`: if the model emitted tool calls and the hook
- * returns `halt` (or `abort`), those tool calls are dropped — the
- * director never executes them. On resume, the model's next inference
- * sees an assistant turn with unanswered tool calls; depending on the
- * provider this is either a validation error or a confused model.
- * Policy authors that combine `halt` with tool-heavy agents need to
- * understand this.
+ * Tool calls and `halt`: if the model emitted tool calls and the hook returns
+ * `halt` (or `abort`), those tool calls are dropped — the director never
+ * executes them. On resume, the model's next inference sees an assistant
+ * turn with unanswered tool calls; depending on the provider this is either
+ * a validation error or a confused model. Policy authors that combine `halt`
+ * with tool-heavy agents need to understand this.
  */
 export type AfterInferenceHook = (
   state: ReactorState,
@@ -127,13 +119,13 @@ export type DefaultDirectorPolicy = {
 
   /**
    * Optional policy hook fired after every successful `inference.done`.
-   * See `AfterInferenceHook` for the contract: firing boundary, return
-   * shape, composition patterns, and policy-author caveats.
+   * See `AfterInferenceHook` for the contract: firing boundary, return shape,
+   * composition patterns, and policy-author caveats.
    *
-   * If the hook throws or rejects, the director catches the error,
-   * routes to `{ type: "abort", reason: "afterInferenceDone policy
-   * threw: <message>" }`, and logs at error level. The director's
-   * never-throws contract is preserved.
+   * If the hook throws or rejects, the director catches the error, routes to
+   * `{ type: "abort", reason: "afterInferenceDone policy threw: <message>" }`,
+   * and logs at error level. The director's never-throws contract is
+   * preserved.
    */
   afterInferenceDone?: AfterInferenceHook;
 };
@@ -153,13 +145,11 @@ function extractToolCalls(turn: AssistantTurn): ToolCall[] {
 }
 
 function extractTextContent(turn: AssistantTurn): string {
-  // Text, refusal, and safety_rating blocks all carry human-readable
-  // output the connector needs to surface. A refusal-only or
-  // safety-only turn would otherwise route through the empty-response
-  // branch below and never reach the reply path, leaving the human
-  // waiting for an answer the model already declined or blocked.
-  // Structural part kinds are preserved at the persistence layer;
-  // the reply path only needs the words.
+  // Text, refusal, and safety_rating blocks all carry human-readable output
+  // the connector needs to surface. A refusal-only or safety-only turn would
+  // otherwise route through the empty-response branch below and never reach
+  // the reply path, leaving the human waiting for an answer the model already
+  // declined or blocked. The reply path only needs the words.
   const parts: string[] = [];
   for (const block of turn.content) {
     if (block.type === "text") {
@@ -230,11 +220,10 @@ export class DefaultDirector implements ReactorDirector {
       }
 
       case "inference.done": {
-        // The hook gates the entire inference.done branch (including
-        // tool extraction and the reactive-mode wait shortcut). An
-        // abort/halt from the policy drops any tool calls the model
-        // emitted in this turn; see AfterInferenceHook TSDoc for the
-        // implications.
+        // The hook gates the entire inference.done branch (including tool
+        // extraction and the reactive-mode wait shortcut). An abort/halt from
+        // the policy drops any tool calls the model emitted in this turn; see
+        // AfterInferenceHook TSDoc for the implications.
         if (this.policy.afterInferenceDone !== undefined) {
           let decision: AfterInferenceDecision;
           try {
@@ -249,9 +238,9 @@ export class DefaultDirector implements ReactorDirector {
             };
           }
           if (decision.type === "abort") {
-            // A reply invites the next inbound message, but abort is
-            // terminal — the reactor rejects reply paired with done. The
-            // reason is therefore not surfaced on this path.
+            // A reply invites the next inbound message, but abort is terminal
+            // — the reactor rejects reply paired with done. The reason is
+            // therefore not surfaced on this path.
             return [
               capabilities.checkpoint("after-inference-abort"),
               capabilities.done(),
@@ -259,8 +248,8 @@ export class DefaultDirector implements ReactorDirector {
           }
           if (decision.type === "halt") {
             // A reply already returns the reactor to waiting for the next
-            // inbound message, so no separate wait is needed (and the
-            // reactor rejects reply paired with wait).
+            // inbound message, so no separate wait is needed (and the reactor
+            // rejects reply paired with wait).
             return [
               capabilities.checkpoint("after-inference-halt"),
               capabilities.reply(decision.reason),
@@ -314,10 +303,10 @@ export class DefaultDirector implements ReactorDirector {
 
       case "resume.tool_result": {
         // A parked approval ended without running its tool (rejected or timed
-        // out). The reactor appends the synthetic error result that answers the
-        // parked call, then this re-infers once so the model sees the failure
-        // and continues. No tool ran, so pendingToolResults is untouched — the
-        // counter only gates batches of real executions.
+        // out). The reactor appends the synthetic error result that answers
+        // the parked call, then this re-infers once so the model sees the
+        // failure and continues. No tool ran, so pendingToolResults is
+        // untouched — the counter only gates batches of real executions.
         return [
           capabilities.checkpoint("resume-tool-result"),
           capabilities.infer({

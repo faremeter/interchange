@@ -1,20 +1,20 @@
-// Generic pending-request core shared by the child-side control-IPC
-// bridges (substrate-write, outbound-mail, mailbox-mutation, mailbox-call).
+// Generic pending-request core shared by the child-side control-IPC bridges
+// (substrate-write, outbound-mail, mailbox-mutation, mailbox-call).
 //
 // Every bridge runs the same request/response round-trip over the control
 // channel: `submit` mints a `requestId`, registers a pending awaiter keyed
 // by that id, emits a request frame upstream, and resolves/rejects the
-// awaiter when the supervisor's matching response frame lands. The
-// bridges differ only in the request payload they send, the value they
-// resolve, the label their error messages carry, and (for the
-// substrate-write bridge) an intermediate merge round-trip that must peek
-// at the pending entry without settling it.
+// awaiter when the supervisor's matching response frame lands. The bridges
+// differ only in the request payload they send, the value they resolve, the
+// label their error messages carry, and (for the substrate-write bridge) an
+// intermediate merge round-trip that must peek at the pending entry without
+// settling it.
 //
-// This core owns that lifecycle in one place so the per-bridge files
-// contain only their wire-specific parts. It never touches the control
-// channel itself: each bridge performs its own `upstreamSender.send` so
-// the frame payloads stay byte-identical to what the supervisor's
-// `ControlPayload` validator expects.
+// This core owns that lifecycle in one place so the per-bridge files contain
+// only their wire-specific parts. It never touches the control channel
+// itself: each bridge performs its own `upstreamSender.send` so the frame
+// payloads stay byte-identical to what the supervisor's `ControlPayload`
+// validator expects.
 
 type PendingEntry<Value, Meta> = {
   meta: Meta;
@@ -36,11 +36,8 @@ export type PendingEntryHandle<Value, Meta> = {
 
 /**
  * Options for {@link createPendingRequestCore}. `label` prefixes every
- * error the core builds (`<label>: upstream send failed for requestId
- * <id>: ...`, `<label> (requestId=<id>) rejected by supervisor: ...`,
- * `<label> (requestId=<id>) cancelled: ...`, `<label>: no pending entry
- * for requestId <id>`), so each bridge's observable error strings stay
- * its own. `allocatorPrefix` seeds the default requestId allocator
+ * error the core builds, so each bridge's observable error strings stay its
+ * own. `allocatorPrefix` seeds the default requestId allocator
  * (`<prefix>-<counter>-<rand>`); tests inject `allocateRequestId` for a
  * deterministic id.
  */

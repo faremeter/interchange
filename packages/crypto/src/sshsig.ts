@@ -103,11 +103,9 @@ function dearmorSSHSig(armored: string): Uint8Array {
 }
 
 /**
- * Produce an SSH signature (SSHSIG format) over a commit payload.
- *
- * The returned string is the PEM-armored signature suitable for embedding
- * in a git commit's gpgsig header. Compatible with `git verify-commit`
- * when the allowed_signers file lists the corresponding public key.
+ * SSH signature (SSHSIG format) over a commit payload, PEM-armored for a
+ * git commit's `gpgsig` header. `git verify-commit` accepts it when
+ * allowed_signers lists the corresponding public key.
  */
 export async function createSSHSignature(
   payload: string,
@@ -147,12 +145,10 @@ export async function createSSHSignature(
 }
 
 /**
- * Verify an SSH signature (SSHSIG format) over a commit payload.
- *
- * Returns true if the signature is valid for the given public key.
- * Throws on malformed input (truncated data, wrong magic, unsupported
- * version or algorithm). Returns false only when the signature is
- * structurally valid but cryptographically incorrect.
+ * Verify an SSHSIG signature over a commit payload. Throws on malformed
+ * input (truncation, wrong magic, unsupported version or algorithm);
+ * returns false only when the signature is structurally valid but
+ * cryptographically incorrect.
  */
 export async function verifySSHSignature(
   payload: string,

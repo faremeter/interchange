@@ -1,17 +1,12 @@
-// End-to-end coverage of the protocol_mismatch failure path: when an
-// upstream emits a chunk whose JSON is malformed or whose shape rejects
-// against the adapter's arktype schema, `runInference` must surface
-// the failure as an `inference.error` event with category
-// `"protocol_mismatch"` carrying the offending bytes in `error.raw` —
-// not silently drop the chunk and let the agent guess.
+// End-to-end coverage of the protocol_mismatch failure path: malformed
+// or schema-rejecting chunks surface as an `inference.error` with
+// category `"protocol_mismatch"` carrying the offending bytes in
+// `error.raw`, not a silent drop.
 //
-// The unit tests in `tests/inference/providers/{openai,anthropic}.test.ts`
-// pin the throw shape at the adapter layer; the test in
-// `packages/inference/src/errors.test.ts` pins `classifyStreamError`'s
-// dispatch. This file pins the harness-level integration: a real
-// `runInference` call against a stub fetch sees the failure category
-// at the event boundary the way every downstream consumer (default
-// director's reply, hub event collector, audit store) will see it.
+// The adapter-layer throw shape and `classifyStreamError` dispatch are
+// pinned in the provider unit tests and `packages/inference/src/
+// errors.test.ts`; this file pins the harness-level integration a real
+// `runInference` call exposes at the event boundary.
 
 import { describe, test, expect } from "bun:test";
 

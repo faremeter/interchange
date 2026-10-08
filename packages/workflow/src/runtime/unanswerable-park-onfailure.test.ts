@@ -57,11 +57,9 @@ describe("a refused child gate under a top-level spawn step", () => {
     const result = await run.complete;
     expect(result.terminalStatus).toBe("completed");
 
-    // Completing alone would also hold if the child never failed, which is
-    // the opposite of what this test is for. Pin the absorption: the spawn
-    // step failed, it routed to the handler, and the handler ran. The child's
-    // own message naming the gate stays in the child's log, which a terminal
-    // child does not share with its parent.
+    // Completing alone would also hold if the child never failed, the
+    // opposite of what this test is for. Pin the absorption: the spawn step
+    // failed, routed to the handler, and the handler ran.
     const failed = result.events.find((e) => e.kind === "StepFailed");
     if (failed?.kind !== "StepFailed") {
       throw new Error("expected the spawn step to fail");
@@ -88,8 +86,7 @@ describe("a refused child gate under a top-level spawn step", () => {
 
     // The run must fail AT the spawn step, carrying the child's terminal, so
     // an author reading the parent log is pointed at the child that could not
-    // hold its gate. The child was spawned and reported a failed terminal --
-    // the refusal is not a spawn that never happened.
+    // hold its gate. The refusal is not a spawn that never happened.
     const failed = result.events.find((e) => e.kind === "StepFailed");
     if (failed?.kind !== "StepFailed") {
       throw new Error("expected the spawn step to fail");

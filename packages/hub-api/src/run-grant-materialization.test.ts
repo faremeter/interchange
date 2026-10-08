@@ -11,8 +11,8 @@ import type { PrincipalKeyStore } from "@intx/db";
 
 import { createMailTriggeredRunGrantsMaterializer } from "./run-grant-materialization";
 
-// This suite exercises grant materialization, not key minting. The key store is
-// a no-op stub so the winning-reservation path does not try to insert into
+// This suite exercises grant materialization, not key minting. The key store
+// is a no-op stub so the winning-reservation path does not try to insert into
 // principal_key against the hand-rolled mock DB.
 const stubPrincipalKeyStore: PrincipalKeyStore = {
   generate: async () => "pky_stub",
@@ -27,9 +27,7 @@ const WORKFLOW_ADDRESS = "run_wf1@tenant.example";
 
 // The deploy-approved grant-walk snapshot for a one-step workflow: one `tool:`
 // runtime grant plus a creator-sourced and an invoker-sourced requirement. The
-// walk yields the `tool:read_file` grant; the creator requirement resolves
-// against the creator's grants; the invoker requirement must be OMITTED on the
-// mail path.
+// invoker requirement must be OMITTED on the mail path.
 function snapshot(): GrantWalkSnapshot {
   return {
     perStep: [

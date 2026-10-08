@@ -41,9 +41,8 @@ describe("inlineBodyRef", () => {
   });
 
   test("is the ref the live rewrite mints (single owner of the scheme)", () => {
-    // A hub that stages a body under this ref and the run child that reads it
-    // back must agree; the rewrite must route through the same helper so the
-    // two never drift.
+    // The hub staging a body and the run child reading it back must agree; the
+    // rewrite must route through the same helper so the two never drift.
     const { bodies } = rewriteInlineOnTriggerBodies(inlineBodyWorkflow("wf"));
     expect(bodies[0]?.ref).toBe(inlineBodyRef("wf", "sect"));
   });
@@ -57,8 +56,7 @@ describe("rewriteInlineOnTriggerBodies", () => {
 
     expect(bodies).toHaveLength(1);
     expect(bodies[0]?.ref).toBe("wf__sect");
-    // The extracted body's id is overridden to the ref (regardless of the
-    // inline definition's authored id).
+    // The extracted body's id is overridden to the ref, whatever the authored id.
     expect(bodies[0]?.definition.id).toBe("wf__sect");
 
     const sect = workflow.steps["sect"];
@@ -150,8 +148,8 @@ describe("rewriteInlineChildWorkflowBodies", () => {
     );
 
     expect(bodies).toHaveLength(1);
-    // Mints refs through the same `<workflowId>__<stepId>` scheme onTrigger
-    // bodies use; a step carries at most one of the two, so they never collide.
+    // Same `<workflowId>__<stepId>` scheme onTrigger bodies use; a step is one
+    // kind, so the refs never collide.
     expect(bodies[0]?.ref).toBe(inlineBodyRef("wf", "spawn"));
     expect(bodies[0]?.definition.id).toBe("wf__spawn");
 
@@ -184,8 +182,7 @@ describe("rewriteInlineChildWorkflowBodies", () => {
   });
 
   test("leaves inline onTrigger bodies untouched (disjoint from the onTrigger rewrite)", () => {
-    // The two rewrites target disjoint primitive kinds; the childWorkflow
-    // rewrite must not lift an onTrigger body and vice versa.
+    // The two rewrites target disjoint primitive kinds and never cross-lift.
     const input = inlineBodyWorkflow("wf");
     const { workflow, bodies } = rewriteInlineChildWorkflowBodies(input);
     expect(bodies).toHaveLength(0);
@@ -223,19 +220,19 @@ describe("enumerateInlineLoopBodies", () => {
     const bodies = enumerateInlineLoopBodies(loopWorkflow("wf"));
 
     expect(bodies).toHaveLength(1);
-    // Same `<workflowId>__<stepId>` scheme the onTrigger/childWorkflow bodies
-    // use; a step is exactly one primitive kind, so the refs never collide.
+    // Same scheme as the onTrigger/childWorkflow bodies; a step is exactly one
+    // kind, so the refs never collide.
     expect(bodies[0]?.ref).toBe(inlineBodyRef("wf", "rework"));
-    // The lifted body's id is the ref, regardless of the authored id.
+    // The lifted body's id is the ref, whatever the authored id.
     expect(bodies[0]?.definition.id).toBe("wf__rework");
     expect(Object.keys(bodies[0]?.definition.steps ?? {})).toEqual(["touch"]);
   });
 
   test("does not mutate the primitive's inline body, so the hash is unchanged", () => {
-    // A loop keeps its body inline (unlike the onTrigger/childWorkflow rewrite
-    // to a `{ ref }`), because both hash layers project the body inline. The
-    // enumerator must therefore mint a fresh copy and leave the input untouched,
-    // or it would change every existing loop definition's hash.
+    // A loop keeps its body inline (unlike the `{ ref }` rewrites), because
+    // both hash layers project the body inline; the enumerator must mint a
+    // fresh copy and leave the input untouched, or it would change every
+    // loop's hash.
     const wf = loopWorkflow("wf");
     const before = hashDefinition(wf);
     const bodies = enumerateInlineLoopBodies(wf);
@@ -243,13 +240,11 @@ describe("enumerateInlineLoopBodies", () => {
     const rework = wf.steps["rework"];
     expect(rework?.kind).toBe("loop");
     if (rework?.kind === "loop") {
-      // The primitive still holds its inline body with its authored id --
-      // untouched, not rewritten to a `{ ref }` and not re-id'd.
+      // The primitive still holds its inline body with its authored id, untouched.
       expect(rework.body.id).toBe("authored-loop-body");
-      // The lifted copy is a fresh top-level object, so rebinding its `id` to
-      // the ref does not touch the primitive's body. (The spread is shallow, so
-      // nested structure is shared -- fine, since the enumerator only rebinds
-      // `id` and never mutates the copy.)
+      // The lifted copy is a fresh top-level object, so rebinding `id` does
+      // not touch the primitive's body; the shallow spread shares nested
+      // structure, which is fine since the enumerator only rebinds `id`.
       expect(bodies[0]?.definition).not.toBe(rework.body);
     }
     const after = hashDefinition(wf);
@@ -257,12 +252,11 @@ describe("enumerateInlineLoopBodies", () => {
   });
 
   test("keeps the loop body inline in the hash, never lifted to a ref", () => {
-    // The hash-safety guarantee: both hash layers project a loop body inline
-    // under the bare `body` field. If a future change lifts loop bodies to a
-    // `{ ref }` (as onTrigger/childWorkflow bodies are), every existing loop's
-    // hash changes and deployed loops fail re-verify. `hashDefinition` returns
-    // the canonical (sorted-key) form, so the loop body serializes inline with
-    // its authored id and its steps, and the workflow carries no `ref` anywhere.
+    // Both hash layers project a loop body inline under the bare `body` field.
+    // If a future change lifts loop bodies to a `{ ref }`, every existing
+    // loop's hash changes and deployed loops fail re-verify. The canonical
+    // form serializes the body inline with its authored id and carries no
+    // `ref`.
     const canonical = new TextDecoder().decode(
       hashDefinition(loopWorkflow("wf")),
     );
@@ -319,10 +313,9 @@ describe("enumerateInlineLoopBodies", () => {
   });
 
   test("recurses into nested loop bodies, minting a ref per depth", () => {
-    // The enumerator is a pure structural pass over a `WorkflowDefinition`; the
-    // runtime resolves an inner loop's body from this same map, so the map must
-    // carry a ref at every depth. Stack three loop levels (outer -> inner ->
-    // innermost) over a leaf action body by swapping each loop's body.
+    // The runtime resolves an inner loop's body from this same map, so the map
+    // must carry a ref at every depth. Stack three loop levels (outer -> inner
+    // -> innermost) over a leaf action body by swapping each loop's body.
     const leaf = defineWorkflow({
       id: "leaf",
       steps: { touch: action({ handler: "noop" }) },

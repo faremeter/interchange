@@ -1,10 +1,6 @@
-// runLocal synthetic dispatch-shape fixture and integration test.
-//
-// Mirrors the dispatch-demo shape in-tree (no external repo
-// dependency): planner step -> map over tasks -> critic -> gate ->
-// attribution. Exercises step, map, gate, awaitSignal, sleep,
-// childWorkflow, retry, AuthorizeContext propagation, and the
-// blob-substrate threshold in one workload.
+// runLocal synthetic dispatch-shape fixture: planner step -> map over tasks ->
+// critic -> gate -> attribution. Exercises step, map, gate, awaitSignal, sleep,
+// childWorkflow, and AuthorizeContext propagation in one workload.
 
 import { describe, test, expect } from "bun:test";
 
@@ -114,10 +110,8 @@ describe("runLocal dispatch-shape fixture", () => {
       invokeStep,
     });
 
-    // The signal channel queues pre-await deliveries under the signal
-    // name, so injecting "approve" once before the awaitSignal step
-    // reaches it is enough -- the awaiter consumes the queued payload
-    // when it arrives.
+    // The channel queues pre-await deliveries under the signal name, so one
+    // injection before the awaitSignal step reaches it is enough.
     await run.signal("approve", { ok: true });
 
     const result = await run.complete;
@@ -135,8 +129,8 @@ describe("runLocal dispatch-shape fixture", () => {
     // Map fan-out hit two indices.
     expect(observed.filter((c) => c.stepId === "impl[0]")).toHaveLength(1);
     expect(observed.filter((c) => c.stepId === "impl[1]")).toHaveLength(1);
-    // The gate selected the then-branch (review.output.ok === true);
-    // the escalator agent must not have been invoked.
+    // The gate selected the then-branch (review.output.ok === true); the
+    // escalator agent must not have been invoked.
     expect(observed.filter((c) => c.stepId === "escalate")).toHaveLength(0);
   });
 
@@ -194,15 +188,14 @@ describe("runLocal dispatch-shape fixture", () => {
     const result = await run.complete;
 
     expect(result.terminalStatus).toBe("completed");
-    // The empty fan-out scheduled no inner implementer step, so the
-    // implementer agent was never invoked.
+    // The empty fan-out scheduled no inner implementer step.
     expect(
       observed.filter(
         (c) => typeof c.stepId === "string" && c.stepId.startsWith("impl["),
       ),
     ).toHaveLength(0);
-    // The map container still completes with an empty output, which the
-    // downstream step consumes as an empty array.
+    // The map container still completes with an empty output, consumed by the
+    // downstream step as an empty array.
     expect(result.outputs.impl).toEqual([]);
     expect(consumeInput).toEqual([]);
   });

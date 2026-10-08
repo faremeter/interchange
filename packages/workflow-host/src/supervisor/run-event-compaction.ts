@@ -40,21 +40,22 @@ export type CompactRunEventsOpts = {
 
 /**
  * Fold a terminated run's per-event `events/<seq>.json` blobs into one
- * combined `events.jsonl`, dropping the per-event files. This shrinks the
- * repo's file count -- and so every per-commit cost that scales with it --
- * without losing any event.
+ * combined `events.jsonl`, dropping the per-event files. This shrinks
+ * the repo's file count -- and so every per-commit cost that scales
+ * with it -- without losing any event.
  *
- * Idempotent and terminal-only: a run already sealed (no `events/` subtree)
- * or one whose latest event is not terminal is left untouched, so the call
- * is safe to repeat. The live caller invokes it once per run, right after the
- * run terminates; `recoverInterruptedCompactions` re-runs it for a run whose
- * fold a crash interrupted before it could seal.
+ * Idempotent and terminal-only: a run already sealed (no `events/`
+ * subtree) or one whose latest event is not terminal is left
+ * untouched, so the call is safe to repeat. The live caller invokes it
+ * once per run right after termination; `recoverInterruptedCompactions`
+ * re-runs it for a run whose fold a crash interrupted.
  *
- * The combined file is the verbatim byte concatenation of the per-event
- * blobs in seq order (`encodeCombinedEventLog`), the exact shape the
- * workflow-run kind handler's compaction validation requires. It is written
- * as a sibling of `events/`, so returning it from the merge while omitting
- * the per-event files lets the substrate's prefix clear drop them.
+ * The combined file is the verbatim byte concatenation of the
+ * per-event blobs in seq order (`encodeCombinedEventLog`), the exact
+ * shape the workflow-run kind handler's compaction validation
+ * requires. It is written as a sibling of `events/`, so returning it
+ * from the merge while omitting the per-event files lets the
+ * substrate's prefix clear drop them.
  */
 export async function compactRunEvents(
   opts: CompactRunEventsOpts,
@@ -64,10 +65,10 @@ export async function compactRunEvents(
   const dir = opts.substrate.getRepoDir(opts.repoId);
   const eventsDir = path.join(dir, RUNS_PREFIX, opts.runId, EVENTS_DIR);
 
-  // Cheap pre-check off the working tree to skip an empty commit when there
-  // is nothing to seal (already combined, or not yet terminal). The merge
-  // re-reads the prefix under the per-repo lock, so the seal stays
-  // consistent if another writer raced in between.
+  // Cheap pre-check off the working tree to skip an empty commit when
+  // there is nothing to seal (already combined, or not yet terminal).
+  // The merge re-reads the prefix under the per-repo lock, so the seal
+  // stays consistent if another writer raced in between.
   let filenames: string[];
   try {
     filenames = await fs.readdir(eventsDir);

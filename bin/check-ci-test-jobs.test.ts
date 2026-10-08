@@ -12,9 +12,8 @@ afterEach(() => {
 });
 
 // Write a throwaway repo root carrying a single ci.yml at the path the guard
-// reads. The guard resolves the enumerating targets from the module-level
-// ENUMERATING_TARGETS, so a valid fixture must invoke test-unit/test-workflow/
-// test-core (test-load is exempt) and gate every job behind "make all".
+// reads. A valid fixture invokes test-unit/test-workflow/test-core (test-load
+// is exempt) and gates every job behind "make all".
 function makeRepo(ciYaml: string): string {
   const root = mkdtempSync(join(tmpdir(), "check-ci-test-jobs-"));
   roots.push(root);
@@ -24,8 +23,7 @@ function makeRepo(ciYaml: string): string {
   return root;
 }
 
-// A well-formed workflow: the three enumerated passes each run in a job, and
-// the "make all" gate runs `always()` and needs every worker.
+// Well-formed: each enumerated pass runs in a job behind the "make all" gate.
 const VALID = `
 jobs:
   static:

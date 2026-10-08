@@ -29,8 +29,8 @@ export type WorkflowProbeStatus =
 /**
  * A workflow probe and the temporary provisioned capacity executing it.
  *
- * Deployment intent deliberately does not live here. The source and entry are
- * the probe input; the result is the probe output. The provisioner binding is
+ * Deployment intent deliberately does not live here: the source and entry are
+ * the probe input, the result is the probe output. The provisioner binding is
  * retained only so uncertain or abandoned capacity can be destroyed safely.
  */
 export const workflowProbe = pgTable(

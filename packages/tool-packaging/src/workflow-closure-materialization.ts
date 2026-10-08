@@ -1,31 +1,12 @@
 // Host-side materializer for a workflow-probe frame's frozen closure.
-//
-// The airlocked probe child evaluates a code-sourced workflow's
-// `interchange.workflow` entry, but the frozen dependency closure it
-// evaluates against is materialized on the sidecar host first -- fetch +
-// SRI-verify + extract + `node_modules` layout is I/O, not author-code
-// evaluation, so it stays out of the child. This module lays out the
-// frame's frozen closure and returns the workflow package directory the
-// child loads from, without importing any author code.
-//
-// `host` and `materializeAssets` come from the caller. This package must
-// not import `@intx/hub-agent` or `@intx/workflow-host`: asset delivery and
-// the workflow-definition loader stay outside this package, and the probe
-// handler keeps the callback type the executor injects.
-//
-// Phases 1-2 only, no `applyAtomic`: a probe is ephemeral and inert, so
-// the durable-deploy lifecycle bookkeeping (`active-deploy-id`, the
-// per-deploy-id retention ladder) is the wrong semantics. The closure is
-// laid out under a per-probe scratch dir that `cleanup` removes once the
-// child has been reaped. `createToolLoader(...).loadManifest(...)` is
-// invoked with an EMPTIED `topLevel`: the loader's phase-3 import loop
-// only imports packages named in `topLevel`, so an empty `topLevel`
-// fetches + extracts + lays out every closure entry (the full `entries`
-// set) while importing NONE of them. That runs exactly the eval-free
-// `materializeClosure` phases the probe needs. The production registry
-// fetcher is reached through `createToolLoader`, so the layout is driven
-// through the loader rather than by calling `materializeClosure` with a
-// fetcher of its own.
+// The airlocked probe child evaluates the code-sourced workflow entry,
+// but the frozen closure it evaluates against is materialized here on
+// the host first — fetch + SRI-verify + extract + `node_modules`
+// layout is I/O, not author-code evaluation. Phases 1-2 only, no
+// `applyAtomic`: a probe is ephemeral and inert, so the durable-deploy
+// lifecycle is the wrong semantics. `loadManifest` runs with an emptied
+// `topLevel` so the loader imports no author code while still
+// materializing the full `entries` set.
 
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -105,16 +86,10 @@ export interface WorkflowClosureMaterializerConfig {
 }
 
 /**
- * Build the materializer the workflow-probe executor injects. The returned
- * function lays out a probe frame's frozen closure under a fresh scratch
- * dir and returns the workflow package directory plus a `cleanup` that
- * removes the scratch dir.
- *
- * @throws (from the returned materializer) if the closure does not pin
- *   exactly one top-level package, the source registry is not configured,
- *   asset delivery rejects, the layout fails (fetch / integrity / extract),
- *   or the frame's `entry` disagrees with the materialized package's
- *   `interchange.workflow`.
+ * Build the materializer the workflow-probe executor injects. The
+ * returned function lays out a probe frame's frozen closure under a
+ * fresh scratch dir and returns the workflow package directory plus a
+ * `cleanup` that removes the scratch dir.
  */
 export function createWorkflowClosureMaterializer(
   config: WorkflowClosureMaterializerConfig,
@@ -122,11 +97,9 @@ export function createWorkflowClosureMaterializer(
   return async function materialize(
     frame: WorkflowProbeRequestFrame,
   ): Promise<MaterializedProbeClosure> {
-    // Gap 1: the closure's single top-level pin IS the workflow definition
-    // package (the hub resolved the closure for exactly that pin). Assert
-    // the cardinality and fail loud rather than silently picking `[0]`; a 0-
-    // or >1-pin closure is an incoherent request the materializer owns
-    // rejecting at this boundary.
+    // The closure's single top-level pin IS the workflow definition
+    // package (the hub resolved the closure for exactly that pin).
+    // Assert the cardinality rather than silently picking `[0]`.
     const topLevel = frame.closure.topLevel;
     if (topLevel.length !== 1) {
       throw new Error(
@@ -140,13 +113,11 @@ export function createWorkflowClosureMaterializer(
       );
     }
 
-    // Boundary check on the definition's source. The `registry` arm surfaces a
-    // missing source registry loudly before any I/O (the per-entry registry
-    // gates fire again inside the loader). An `asset` closure is materialized
-    // from the `assets` the frame delivers -- tarball entries from a plain-file
-    // mount, source entries from an indexed gitDir -- checked below. The
-    // `never` default makes a future source kind a compile error rather than a
-    // silent fallthrough.
+    // Boundary check on the definition's source. The `registry` arm
+    // surfaces a missing source registry loudly before any I/O (the
+    // per-entry gates fire again inside the loader); the `asset` arm's
+    // delivery check happens below after materialization. The `never`
+    // default makes a future source kind a compile error.
     switch (frame.source.kind) {
       case "registry":
         if (!config.registries.has(frame.source.registry)) {
@@ -186,11 +157,10 @@ export function createWorkflowClosureMaterializer(
           : {}),
       });
 
-      // Materialize any inline-delivered assets under the probe scratch:
-      // tarball entries as plain files under the workspace root, source entries
-      // as an indexed gitDir the loader checks subtrees out of. Registry-sourced
-      // closures deliver none; both maps stay empty and the loader fetches over
-      // HTTP.
+      // Materialize inline-delivered assets under the probe scratch:
+      // tarball entries as plain files under the workspace root, source
+      // entries as an indexed gitDir. Registry-sourced closures deliver
+      // none; both maps stay empty.
       const assetRoot = path.join(scratchDir, "workspace");
       const gitDirRoot = path.join(scratchDir, "gitdirs");
       const { assetMounts, gitDirs } = await config.materializeAssets({
@@ -201,12 +171,10 @@ export function createWorkflowClosureMaterializer(
         maxAssetPayloadBytes: config.maxAssetPayloadBytes,
       });
 
-      // Source-boundary check for the asset arm, the post-unpack analog of the
-      // registry arm's config check: the asset the definition is sourced from
-      // holds the workflow package, so it MUST be among the delivered assets --
-      // as a gitDir for a source definition, as a mount for a tarball one.
-      // Surface a missing delivery here rather than as a downstream failure on
-      // the top-level entry.
+      // The asset the definition is sourced from must be among the
+      // delivered assets — as a gitDir for a source definition, as a
+      // mount for a tarball one. Surface a missing delivery here rather
+      // than as a downstream failure on the top-level entry.
       if (frame.source.kind === "asset") {
         const delivered =
           frame.source.package.format === "source"
@@ -219,11 +187,9 @@ export function createWorkflowClosureMaterializer(
         }
       }
 
-      // Lay out phases 1-2 only. `topLevel` is emptied so the loader's
-      // phase-3 loop imports nothing -- no author code is evaluated on the
-      // host; the airlocked child owns the single import of the workflow
-      // entry. The full `entries` set is still fetched, SRI-verified,
-      // extracted, and laid out with its `node_modules` graph.
+      // Lay out phases 1-2 only: `topLevel` is emptied so the loader's
+      // phase-3 loop imports nothing — no author code is evaluated on
+      // the host; the airlocked child owns the workflow-entry import.
       const layoutManifest: ToolPackageManifest = {
         schemaVersion: frame.closure.schemaVersion,
         topLevel: [],
@@ -259,13 +225,12 @@ export function createWorkflowClosureMaterializer(
 }
 
 /**
- * Gap 2: cross-check the probe frame's `entry` against the materialized
- * package's own `interchange.workflow`. The child loader reads the entry
- * path from the package's `package.json`, ignoring the frame's `entry`;
- * left unchecked the frame field is an input that travels but is never
- * validated. Comparing them host-side -- a `package.json` read, no author
- * code -- surfaces a tampered or incoherent request before the child is
- * ever spawned, and fails loud on mismatch.
+ * Cross-check the probe frame's `entry` against the materialized
+ * package's own `interchange.workflow`. The child loader reads the
+ * entry path from `package.json`, ignoring the frame's `entry`, so
+ * left unchecked that field travels but is never validated. Comparing
+ * them host-side (a `package.json` read, no author code) fails a
+ * tampered or incoherent request before the child is spawned.
  */
 async function assertFrameEntryMatchesPackage(
   packageDir: string,

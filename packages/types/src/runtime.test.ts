@@ -180,12 +180,9 @@ describe("compact action", () => {
 
 describe("ContextTransform vs ToolResultTransform assignability", () => {
   test("a ContextTransform is not assignable to a ToolResultTransform", () => {
-    // A ContextTransform operates on ConversationTurn[]; a ToolResultTransform
-    // operates on { call, result }. Their input types are disjoint, so a
-    // value typed as one cannot satisfy the other. The // @ts-expect-error
-    // below proves the compiler enforces this — if the assignment ever
-    // becomes valid (e.g. the input/output type parameters are widened),
-    // the tsc check will fail loudly here.
+    // Input types are disjoint (ConversationTurn[] vs { call, result }), so
+    // the @ts-expect-error below proves the compiler enforces the split; if
+    // the assignment ever becomes valid, tsc fails here.
     const ctxTransform: ContextTransform = {
       name: "ctx",
       version: "1",
@@ -234,11 +231,9 @@ describe("ContextTransform vs ToolResultTransform assignability", () => {
   });
 
   test("Compactor and ContextTransform share input/output types", () => {
-    // Compactor and ContextTransform are both
-    // ContextStrategy<ConversationTurn[], ConversationTurn[]>, so any
-    // value typed as one is also typed as the other. The reactor
-    // enforces their role distinction at the registration layer, not
-    // through the type system.
+    // Both are ContextStrategy<ConversationTurn[], ConversationTurn[]>, so
+    // either satisfies the other's type; the reactor enforces the role
+    // distinction at registration, not in the type system.
     const compactor: Compactor = {
       name: "summarize-tail",
       version: "1",
@@ -1218,10 +1213,8 @@ describe("ApprovalSnapshot", () => {
 // ---------------------------------------------------------------------------
 
 describe("BoundedApprovalSnapshot", () => {
-  // Build a snapshot whose serialized form is exactly `targetBytes`. The
-  // padding is ASCII, so one character is one UTF-8 byte and one unescaped
-  // serialized character, letting us land on an exact byte count and pin the
-  // cap's boundary (a `<=` vs `<` off-by-one is the likeliest bug).
+  // Build a snapshot whose serialized form is exactly `targetBytes`: ASCII
+  // padding makes one character one UTF-8 byte, pinning the cap's boundary.
   const snapshotOfSize = (targetBytes: number) => {
     const base = {
       name: "t",
@@ -1253,11 +1246,8 @@ describe("BoundedApprovalSnapshot", () => {
   });
 
   test("caps on UTF-8 bytes, not UTF-16 code units", () => {
-    // A snapshot padded with a 3-byte character is under the cap counted in
-    // code units (String.length) but over it counted in UTF-8 bytes. The cap
-    // must measure bytes, so it rejects this; a `.length`-based cap would
-    // wrongly accept it. Guards the byte semantics against a refactor that
-    // drops the explicit "utf8" byte measure.
+    // A 3-byte character stays under the cap counted in code units but over
+    // it in UTF-8 bytes; the cap must measure bytes, so this rejects.
     const base = {
       name: "t",
       description: "d",
@@ -1265,10 +1255,8 @@ describe("BoundedApprovalSnapshot", () => {
       arguments: {},
     };
     const baseBytes = Buffer.byteLength(JSON.stringify(base), "utf8");
-    // Each "€" is 3 UTF-8 bytes but 1 UTF-16 code unit. Choose a count that
-    // pushes bytes just over the cap while code units stay well under it. The
-    // "+ 1" keeps the byte total strictly above the cap when the remainder
-    // divides evenly.
+    // Each "€" is 3 UTF-8 bytes but 1 UTF-16 code unit; the "+ 1" keeps the
+    // byte total strictly above the cap when the remainder divides evenly.
     const euroCount =
       Math.ceil((APPROVAL_SNAPSHOT_MAX_BYTES - baseBytes) / 3) + 1;
     base.inputSchema.pad = "€".repeat(euroCount);
@@ -1284,11 +1272,10 @@ describe("BoundedApprovalSnapshot", () => {
 
 describe("isMessageTransportError", () => {
   test("accepts a condition-bearing error the class did not construct", () => {
-    // The reason the guard is structural: a tool package is published as a
-    // bundle with its workspace imports inlined, so the consumer classifying a
-    // failure holds its own copy of MessageTransportError and an `instanceof`
-    // check against the host's copy answers false. This foreign class stands in
-    // for that second copy.
+    // A tool package is published as a bundle with imports inlined, so the
+    // classifying consumer holds its own copy of MessageTransportError and
+    // `instanceof` against the host's answers false. This foreign class stands
+    // in for that second copy.
     class ForeignTransportError extends Error {
       readonly condition = "NONEXISTENT";
     }
@@ -1320,27 +1307,23 @@ describe("isMessageTransportError", () => {
   });
 });
 
-// isConversationType answers from a set of members written out by hand, and
-// nothing in InterchangeType forces an entry there: a member added to the union
-// is not a conversation type until someone lists it in that set, which is what
-// the predicate's own docstring says. The consequence of the missing edit is
-// silent -- a conversational message would route as structured mail -- so the
-// classification below is held to the union at runtime.
+// isConversationType answers from a hand-written set, and nothing forces an
+// entry when a member is added to the union — the miss is silent (a
+// conversational message would route as structured mail). The comparison
+// below holds the classification to the union at runtime.
 //
-// The members come from the validator rather than from a second list written
-// here: `type.enumerated` compiles to unit nodes, and `select("unit")` yields
-// them. A member added to the union therefore reaches this comparison with no
-// entry and is reported, and answering the report is the same decision the
-// enumerated set exists to force. Deriving membership from the `conversation.`
-// name prefix here would make that decision instead of asking for it.
+// Membership is introspected from the validator (`type.enumerated` compiles
+// to unit nodes; `select("unit")` yields them) rather than copied, so a new
+// member reaches the comparison with no entry and is reported. Deriving
+// membership from the `conversation.` name prefix here would make the
+// decision instead of asking for it.
 
 type ConversationMembership = ReadonlyMap<InterchangeType, boolean>;
 
 /**
- * Whether each member of InterchangeType is a conversation type. The set behind
- * isConversationType is not exported, so this is a second description of the
- * same fact rather than a copy of it, and the predicate is the only handle the
- * comparison below has on the first one.
+ * Whether each member of InterchangeType is a conversation type. The set
+ * behind isConversationType is not exported, so this is a second description
+ * of the same fact, and the predicate is the only handle on the first.
  */
 const CONVERSATION_MEMBERSHIP: ConversationMembership = new Map([
   ["conversation.message", true],
@@ -1417,10 +1400,8 @@ describe("the conversation-type subset of InterchangeType", () => {
 
   test("the comparison reports a member left out and a member answered wrongly", () => {
     // The check is worth its line only if it fails when the two descriptions
-    // part, and the classification is the half a test can perturb without
-    // touching the union or the set. This one is local to the test: the dropped
-    // entry stands for a member added to the union and not classified, and the
-    // flipped entry for a member the two descriptions disagree about.
+    // part; the classification is the half a test can perturb without touching
+    // the union or the set.
     const perturbed = new Map(CONVERSATION_MEMBERSHIP);
     perturbed.delete("conversation.leave");
     perturbed.set("system.health", true);

@@ -1,18 +1,16 @@
 #!/usr/bin/env bun
 
-// Re-key existing plaintext credential secrets to the encrypted-at-rest form.
-//
-// Run ONCE, against a STOPPED hub, during the deploy that introduces credential
-// encryption-at-rest. With the hub down there is no write to race an un-re-keyed
-// row, so the strict read path never trips on legacy plaintext mid-migration.
+// Re-key existing plaintext credential secrets to the encrypted-at-rest
+// form. Run ONCE, against a STOPPED hub, during the deploy that
+// introduces credential encryption-at-rest; with the hub down there is no
+// write to race an un-re-keyed row, so the strict read path never trips on
+// legacy plaintext mid-migration. Idempotent — already-encrypted rows are
+// skipped — so it is safe to re-run or resume after a partial failure.
 //
 //   set -a; . .env; . .env.hub; set +a
 //   bun run --conditions=intx-src bin/rekey-credential-secrets.ts
 //
-// It reads the same DB_* and CREDENTIAL_ENCRYPTION_KEY the hub uses, and is
-// idempotent -- already-encrypted rows are skipped -- so it is safe to re-run
-// or resume after a partial failure. On a database created after encryption
-// landed, every row is already encrypted and it does nothing.
+// Reads the same DB_* and CREDENTIAL_ENCRYPTION_KEY the hub uses.
 
 import { setup, getLogger } from "@intx/log";
 import { createDB, rekeyCredentialSecrets } from "@intx/db";

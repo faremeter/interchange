@@ -2,7 +2,6 @@
 // alongside the primary contextDir. The primary contextDir comes
 // from agent-common's shared helper; the rewound sibling lives one
 // directory over and is unique to this example, so it stays here.
-
 import { resolve } from "node:path";
 
 import { defaultContextDir } from "@intx/example-agent-common";

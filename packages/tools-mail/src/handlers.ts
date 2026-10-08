@@ -1,14 +1,7 @@
 // Per-tool handler factories for the mail tools. Each factory takes
 // the bound MessageTransport and returns a closed-over ToolHandler.
-//
-// Keeping the factories at this granularity (one per tool, pure
-// (MessageTransport) → ToolHandler) is deliberate: the package's
-// public surface in index.ts resolves the transport once at handler-init
-// and wires the handlers in a single place. The factories themselves
-// carry no resolver vocabulary, so a future per-tool composition can
-// reuse them unchanged.
-//
-// (MESSAGE.md § Mail Tools)
+// One factory per tool keeps the public surface in index.ts a single
+// wiring point. (MESSAGE.md § Mail Tools)
 
 import { scope, type, type Type } from "arktype";
 import { getLogger } from "@intx/log";
@@ -82,13 +75,9 @@ const MessageIdReference = type("string")
       "a message identifier, so free of carriage return and line feed, and not blank",
   });
 
-// A recipient becomes the To field body by the same route a subject becomes
-// the Subject one, so the header layer can carry neither a CR nor an LF in it,
-// and a blank recipient names nobody. Refused here because a value no transport
-// can carry is the caller's to fix: reaching the transport with it earns
-// `send_failed`, which says the submission was rejected and the outcome is
-// unknown. Whether an address resolves is still the transport's to answer, and
-// an unresolvable one is a `send_failed` for that reason.
+// A recipient becomes the To field body, so it carries no CR or LF and a
+// blank one names nobody. Refused here because reaching the transport
+// with it earns `send_failed`, which says the outcome is unknown.
 const RecipientAddress = type("string")
   .matching(NAMING_HEADER_VALUE_PATTERN)
   .configure({
@@ -96,10 +85,9 @@ const RecipientAddress = type("string")
       "a recipient address, so free of carriage return and line feed, and not blank",
   });
 
-// A tool-facing attachment: plain text unless `encoding` says otherwise. The
-// model never has to hand-encode base64 for a text file -- `content` is the
-// text itself, and `encoding` only exists to opt into base64 (or to force it
-// for a text-like type the caller already has base64-encoded).
+// A tool-facing attachment: plain text unless `encoding` says otherwise.
+// `content` is the text itself; `encoding` opts into base64, or forces it
+// for a text-like type the caller already has base64-encoded.
 const AttachmentToolInput = type({
   name: "string",
   contentType: "string",
@@ -277,12 +265,10 @@ function inheritedNameResult(
   return errorResult(callId, `${found} must be removed`, code);
 }
 
-// `NONEXISTENT` is RFC 5530's condition for a mailbox that is not there, and a
-// transport raises it before it attempts the operation. `CANNOT` is its
-// condition for an operation the transport refused outright, which a retry of
-// the same call does not address. Every other condition, and a rejection naming
-// none at all, leaves the outcome unknown and carries `operationCode`, worded
-// by `describe`.
+// `NONEXISTENT` is RFC 5530's condition for a mailbox that is not there;
+// `CANNOT` for an operation the transport refused outright, which a retry
+// does not address. Every other rejection leaves the outcome unknown and
+// carries `operationCode`, worded by `describe`.
 function transportFailureResult(
   callId: string,
   cause: unknown,
@@ -372,15 +358,12 @@ function decodeStrictUTF8(bytes: Uint8Array): string | undefined {
 
 /**
  * The `attachments` field of a `mail_read` response, or nothing when the
- * message carries none: enough for the model to know an attachment arrived
- * and how to fetch it with a MIME part path, without inlining the
- * (possibly large) payload.
+ * message carries none.
  *
  * Part numbering is the parsed IMAP path stamped on each attachment by
- * `@intx/mime` `extractAttachments` — the same sibling numbering
- * `extractPartByPath` uses, including skipped inline html/text siblings.
- * Do not recompute `1.${index+2}` here: that only matches writer-shaped
- * mail with no extra parts.
+ * `@intx/mime` `extractAttachments` -- the same numbering
+ * `extractPartByPath` uses. Do not recompute `1.${index+2}` here: that
+ * only matches writer-shaped mail with no extra parts.
  */
 function attachmentsField(message: InboundMessage) {
   if (message.attachments === undefined || message.attachments.length === 0) {
@@ -570,7 +553,6 @@ export function makeMailReplyHandler(transport: MessageTransport): ToolHandler {
 
     const messageRef = args.ref;
 
-    // Fetch the parent message to retrieve threading headers.
     let parentHeaders;
     try {
       parentHeaders = await transport.fetchHeaders(messageRef, signal);
@@ -598,18 +580,15 @@ export function makeMailReplyHandler(transport: MessageTransport): ToolHandler {
 
     if (parentHeaders.messageId !== undefined) {
       outbound.inReplyTo = parentHeaders.messageId;
-      // The full RFC 5322 References chain for a reply is the parent's own
-      // References plus the parent's Message-Id. The parent is in hand here
-      // (fetched above for its threading headers), so build the complete
-      // ancestry rather than leaving the transport to derive a single-element
-      // chain from inReplyTo alone.
+      // The full RFC 5322 References chain is the parent's own References
+      // plus the parent's Message-Id, which is in hand here (fetched above
+      // for its threading headers).
       outbound.references = [
         ...(parentHeaders.references ?? []),
         parentHeaders.messageId,
       ];
     }
 
-    // Carry forward the subject if available.
     if (parentHeaders.subject !== undefined) {
       outbound.subject = parentHeaders.subject;
     }
@@ -688,7 +667,6 @@ export function makeMailSearchHandler(
 
     const limited = refs.slice(0, limit);
 
-    // Fetch summary headers for each result.
     const summaries = await Promise.all(
       limited.map(async (ref) => {
         try {
@@ -705,18 +683,15 @@ export function makeMailSearchHandler(
           const message =
             cause instanceof Error ? cause.message : String(cause);
           logger.warn`mail_search could not read the headers of ${mailbox} uid ${String(ref.uid)}: ${message}`;
-          // Carried on the summary rather than dropped: a summary whose header
-          // fields are absent is what a message carrying no headers looks like,
-          // so a discarded failure reads as ordinary mail. The other results
-          // are still answers, which is why one failure does not fail the call.
+          // Carried on the summary rather than dropped: a discarded failure
+          // reads as ordinary mail, and the other results are still answers.
           return { ref, headersError: message };
         }
       }),
     );
 
-    // `matched` and `truncated` are what tell a mailbox holding exactly `limit`
-    // matches from one holding hundreds: the slice above is the same array in
-    // both cases.
+    // `matched` and `truncated` tell a mailbox holding exactly `limit`
+    // matches from one holding hundreds.
     return {
       callId: call.id,
       content: {
@@ -747,10 +722,8 @@ export function makeMailReadHandler(transport: MessageTransport): ToolHandler {
     const parts = args.parts ?? "payload";
 
     // A rejection naming no condition leaves it open whether the message is
-    // there at all, and `fetchFull` and `fetchPart` reject that way both for a
-    // message that is gone and for one that is there but cannot be read back.
-    // Re-read the headers to find out: a reference the headers still answer
-    // for names a message that exists, so the failure is `presentCode`.
+    // there. Re-read the headers to find out: a reference the headers still
+    // answer for names a message that exists, so the failure is `presentCode`.
     const readFailure = async (
       cause: unknown,
       presentCode: MailToolErrorCode,
@@ -838,7 +811,6 @@ export function makeMailReadHandler(transport: MessageTransport): ToolHandler {
       };
     }
 
-    // Specific MIME part path (e.g. "1.3").
     let part;
     try {
       part = await transport.fetchPart(messageRef, parts, signal);
@@ -1021,15 +993,9 @@ export function makeMailWaitHandler(
       let checks = Promise.resolve();
 
       // `firstMatch` classifies its own transport failures, so what reaches
-      // here is the watch install refusing -- it is awaited inside this chain,
-      // so its rejection lands here -- or a defect in this package. The two
-      // readings are kept apart by the condition: a cause naming one is an
-      // operational outcome the caller can act on, and `internal_error` would
-      // tell a caller whose mailbox went away to report a bug. Handing the
-      // cause straight to `transportFailureResult` would invert the error
-      // instead, because it routes a cause naming no condition to the
-      // per-operation code, which would report a genuine defect here as an
-      // ordinary search failure.
+      // here is the watch install refusing, or a defect in this package. A
+      // cause naming a condition is an operational outcome the caller can
+      // act on; anything else is `internal_error`.
       const onCheckFailure = (cause: unknown) => {
         if (isMessageTransportError(cause)) {
           settle(searchFailureResult(call.id, cause));
@@ -1092,9 +1058,9 @@ export function makeMailFlagHandler(transport: MessageTransport): ToolHandler {
 
     const set = args.set ?? [];
     const clear = args.clear ?? [];
-    // Reject an empty mutation at the boundary: a call with neither direction
-    // does nothing, and firing an empty flag write would still round-trip to
-    // the supervisor as a pointless commit.
+    // Reject an empty mutation at the boundary: a call with neither
+    // direction does nothing, and firing an empty flag write would still
+    // round-trip to the supervisor as a pointless commit.
     if (set.length === 0 && clear.length === 0) {
       return errorResult(
         call.id,
@@ -1120,13 +1086,10 @@ export function makeMailFlagHandler(transport: MessageTransport): ToolHandler {
         await transport.clearFlags(args.ref, clear, signal);
       }
     } catch (cause) {
-      // A rejection has three readings: the uid names no message, the
-      // supervisor refused the mutation, or it applied the mutation and lost
-      // the reply when the control channel went down. Nothing here separates
-      // the first from the other two, and IMAP does not report it either --
-      // RFC 9051 section 6.4.8 makes a UID STORE against an absent uid a
-      // silent no-op, so there is no condition for the transport to have
-      // raised. The weakest of the three is therefore what this answers.
+      // Three readings: the uid names no message, the supervisor refused the
+      // mutation, or it applied it and lost the reply. IMAP does not report
+      // the first -- RFC 9051 § 6.4.8 makes a UID STORE against an absent
+      // uid a silent no-op -- so the weakest reading is what this answers.
       return transportFailureResult(
         call.id,
         cause,

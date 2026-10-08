@@ -1,34 +1,16 @@
 // Deterministic JSON serialization for deploy-hash inputs.
 //
-// `canonicalizeForHash` produces stable bytes from a value tree that
-// participates in the deploy hash (notably `DirectorRef.config` and the
-// `AgentDefinition` envelope). The output is the encoded form of a
-// canonical JSON document: object keys NFC-normalized then sorted,
-// strings normalized to NFC, no whitespace. Non-JSON values (Date, Map,
-// Set, function, undefined, symbol, NaN, +/-Infinity) are rejected so
-// the hash cannot silently absorb a value the JSON receiver could not
-// reproduce.
+// `canonicalizeForHash` produces stable bytes from a value tree: object
+// keys NFC-normalized then sorted, strings normalized to NFC, no
+// whitespace. Non-JSON values (Date, Map, Set, function, undefined,
+// symbol, NaN, +/-Infinity) and cycles are rejected so the hash cannot
+// silently absorb a value the JSON receiver could not reproduce.
 //
-// The implementation builds a normalized JS value tree first, then
-// `JSON.stringify`s it. The intermediate tree lets the cycle check and
-// type rejections share a single recursive walk.
-//
-// Key-ordering caveat. The walk sorts NFC-normalized keys
-// lexicographically before assigning them into the intermediate plain
-// object. `JSON.stringify` then walks the object's own keys in the
-// engine's iteration order, which per ECMA-262
-// (OrdinaryOwnPropertyKeys) lists integer-indexed string keys first in
-// ascending numeric order, then the remaining keys in insertion order.
-// For purely string-keyed maps the emitted bytes follow the algorithm's
-// lex sort; for integer-keyed maps (string keys like "1", "2", "10")
-// the engine re-orders the integer prefix numerically, so the emitted
-// bytes do not match a strict lex sort of the same keys
-// ("1","10","2"). The behavior is deterministic across every JS engine
-// that implements OrdinaryOwnPropertyKeys (i.e. every engine since
-// ES2020), so deploy-hash equality across producers is preserved. A
-// future engine that changed this rule would change the canonical
-// bytes; if that becomes a concern, replace `JSON.stringify` with a
-// hand-rolled emitter that walks the sorted-key list directly.
+// Key-ordering caveat: `JSON.stringify` emits integer-indexed string
+// keys first in numeric order (ECMA-262 OrdinaryOwnPropertyKeys), so
+// integer-like keys are not emitted in strict lex order. Deterministic
+// across every engine since ES2020, so deploy-hash equality holds; a
+// future engine that changed the rule would change the canonical bytes.
 
 type JsonLike =
   | null
@@ -93,9 +75,7 @@ function normalize(
     throw new CanonicalizationError("bigint is not valid JSON", path);
   }
 
-  // Objects: arrays, plain records, or rejected built-ins. After the
-  // primitive checks above, the only remaining narrowed type is
-  // `object`.
+  // Objects: arrays, plain records, or rejected built-ins.
   const obj: object = value;
 
   if (seen.has(obj)) {
@@ -146,21 +126,14 @@ function normalize(
     }
 
     // After the proto check, `obj` is a plain Record<string, unknown>.
-    // Index it through a generic record type to drop symbol keys (which
-    // Object.keys also drops).
+    // Index it through a generic record type to drop symbol keys.
     const record: Record<string, unknown> = Object.fromEntries(
       Object.entries(obj),
     );
-    // Normalize keys to NFC before sorting and before indexing the
-    // output. Two failure modes ride on this ordering: (a) if two
-    // distinct raw keys normalize to the same NFC form, silently
-    // overwriting one with the other would drop data and the deploy
-    // hash would no longer be a faithful function of the input; (b)
-    // sorting raw keys and then normalizing produces an output key
-    // order that is not the canonical NFC-sorted order, so two
-    // producers (one pre-normalizing, one not) would hash the same
-    // logical value to different bytes. Normalize first, raise on any
-    // NFC collision, then sort.
+    // Normalize keys to NFC before sorting and indexing: (a) two raw
+    // keys normalizing to the same NFC form would silently drop data;
+    // (b) sorting raw keys then normalizing would not produce the
+    // canonical NFC-sorted order. Normalize first, raise on collision.
     const byNFC = new Map<string, string>();
     for (const rawKey of Object.keys(record)) {
       const nfcKey = rawKey.normalize("NFC");
@@ -190,19 +163,14 @@ function normalize(
 }
 
 /**
- * Produce stable bytes for a value tree. The output is the UTF-8
- * encoded form of a canonical JSON document with sorted object keys,
- * NFC-normalized strings, and no whitespace. Throws
- * `CanonicalizationError` on any non-JSON value or cycle.
- *
- * Equality of two outputs implies equality of the canonical structural
- * form of the inputs; consumers may safely hash the output to compare
- * value identity across local-dev and production bundles.
+ * Produce stable bytes for a value tree: the UTF-8 encoded form of a
+ * canonical JSON document with sorted keys, NFC-normalized strings,
+ * and no whitespace. Throws `CanonicalizationError` on any non-JSON
+ * value or cycle.
  */
 export function canonicalizeForHash(value: unknown): Uint8Array {
   const normalized = normalize(value, [], new WeakSet());
-  // JSON.stringify with no replacer and no space arg produces the
-  // canonical form modulo key ordering, which `normalize` has already
-  // resolved by constructing plain records with sorted keys.
+  // `normalize` has already resolved key ordering by constructing
+  // plain records with sorted keys.
   return encoder.encode(JSON.stringify(normalized));
 }

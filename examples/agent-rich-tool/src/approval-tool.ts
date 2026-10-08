@@ -1,10 +1,9 @@
 // A "rich" tool that opens an approval gate. The handler returns a
 // ToolResult whose `pendingMarker` carries a correlation ID; the
 // reactor registers a gate keyed by that ID and waits for a matching
-// inbound message to arrive before the operation is treated as
-// completed. The model sees the tool's `content` (so it can tell the
-// user "I have requested approval") but the gate is invisible to the
-// model — it lives on the reactor's pending-operations table.
+// inbound message before the operation is treated as completed. The
+// model sees the tool's `content` but not the gate -- the gate lives
+// on the reactor's pending-operations table.
 
 import { tool, type AgentTool } from "@intx/agent";
 import type { ToolResult } from "@intx/types/runtime";

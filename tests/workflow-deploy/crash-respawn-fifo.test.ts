@@ -3,33 +3,17 @@
 // Proves the INTR-193 acceptance requirement end to end: a workflow-process
 // child SIGKILLed mid-run is respawned by the supervisor WITHOUT external
 // intervention, the stranded mail is replayed, and the deployment recovers
-// with FIFO preserved -- all inside the SAME sidecar process (this is
-// crash-respawn, not the boot-restore path that a full sidecar restart
-// exercises).
-//
-// Shape: deploy a `step1 -> awaitSignal(go) -> step2` workflow, fire three
-// mails, and drive the first mail's run to the mid-flight `SignalAwaited`
-// pause (past `RunStarted`, before `RunCompleted`) -- the deterministic
-// "mid-processing" point. Mail 0 owns the deployment's one stable run;
-// mails 1 and 2 queue behind it. SIGKILL just the workflow-process child
-// (not the sidecar). The in-process supervisor observes `handle.exited`,
-// waits its respawn backoff, replays mail 0's stranded `processing/` entry
-// back to `inbox/`, and spawns a fresh child that resumes the parked run
-// from its committed events. Delivering the awaited signal drives the run
-// to `RunCompleted`; mails 1 and 2 then consume as terminal rejections.
+// with FIFO preserved -- all inside the SAME sidecar process (crash-respawn,
+// not the boot-restore path a full sidecar restart exercises).
 //
 // The proof that CRASH-RESPAWN (not boot-restore, not redeploy) recovered
-// the deployment is a conjunction: the sidecar process stays alive, a new
-// workflow-child pid appears under it, and the run reaches `RunCompleted`
-// after the post-respawn signal. Mail 0 reaching `consumed/` is the proof
-// that the replay ran -- an un-replayed `processing/` entry is orphaned
-// (the dead child's dispatch loop never reaches its `markConsumed`) and
-// would never re-consume.
+// the deployment: the sidecar process stays alive, a new workflow-child pid
+// appears under it, and the run reaches `RunCompleted` after the post-respawn
+// signal. Mail 0 reaching `consumed/` proves the replay ran -- an
+// un-replayed `processing/` entry is orphaned and would never re-consume.
 //
-// Harness justification: SPAWN-REAL. Real hub, real sidecar subprocess,
-// real workflow-process child, mock inference. The crash is a genuine
-// SIGKILL of the child process; recovery rides the production respawn path.
-// This discharges the crash-replay follow-up the FIFO mail test deferred.
+// Harness: SPAWN-REAL. The crash is a genuine SIGKILL of the child process;
+// recovery rides the production respawn path.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
@@ -249,13 +233,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const killedPids = killWorkflowHostChild(env);
       expect(killedPids.length).toBeGreaterThanOrEqual(1);
 
-      // The SIDECAR process itself is untouched -- this is an in-process
-      // respawn, not a boot-restore. `exitCode` is null while running.
-      expect(env.sidecar.proc.exitCode).toBeNull();
-
       // The supervisor respawns without intervention: a fresh workflow-child
       // pid (NOT one we killed -- a killed pid lingers briefly as a zombie)
       // appears under the same sidecar within the respawn backoff window.
+      expect(env.sidecar.proc.exitCode).toBeNull();
       await waitFor(
         () =>
           listWorkflowHostChildren(env).some(
@@ -277,10 +258,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // never terminates.
       //
       // Only the per-attempt timeout means "not terminal yet, inject again".
-      // Any other failure -- a substrate read error, a malformed event -- is a
-      // real fault, and with no deadline on this loop, retrying through it
-      // would hide it until the test budget expired and report a hang instead
-      // of the fault. So it surfaces here with the read's error as its cause.
+      // Any other failure is a real fault, and with no deadline on this loop,
+      // retrying through it would hide it until the test budget expired and
+      // report a hang instead of the fault. So it surfaces here with the
+      // read's error as its cause.
       //
       // The loop injects a signal each iteration, so it cannot become a
       // `waitFor` predicate; `env.retrying` is what puts a wedge inside it on
@@ -324,8 +305,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // `workflow_run_terminal` rejections once the run is terminal. Mail
       // 0's own rejection is intentionally not asserted: after the replay,
       // whether its re-dequeue observes the run still live (parked) or
-      // already terminal is a benign race against signal delivery, and
-      // either way it reaches the terminal event exactly once.
+      // already terminal is a benign race against signal delivery.
       const consumedEntries = await waitForConsumedEntries(
         env,
         workflowRunRepoId,

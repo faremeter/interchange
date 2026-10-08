@@ -170,7 +170,7 @@ describe("createConnectorRouter", () => {
           }),
         ),
       );
-      // Now: replyTo=second, cc=[user]. The original user returns.
+      // Now replyTo=second, cc=[user]; the original user returns.
       router.commit(
         router.route(
           continuationByReferences("<root@example.com>", {
@@ -182,8 +182,8 @@ describe("createConnectorRouter", () => {
 
       const snap = router.snapshot();
       expect(snap?.replyTo).toBe("user@example.com");
-      // user is now the most recent speaker; second is the only other
-      // participant. user must not appear in cc.
+      // user is now the most recent speaker, so it must not appear in
+      // cc; second is the only other participant.
       expect(snap?.cc).toEqual(["second@example.com"]);
     });
 
@@ -433,12 +433,11 @@ describe("createConnectorRouter", () => {
   });
 
   describe("replyTo normalization", () => {
-    // These tests bypass createInboundMessage because its `from` validator
-    // requires a bare addr-spec, but on the production fetch path
-    // (mail-memory's buildMessageHeaders) the `from` header is copied
-    // verbatim from the wire and may contain a display name. The router
-    // is the layer that has to handle that, so the test exercises it
-    // with wire-shaped values.
+    // These tests bypass createInboundMessage because its `from`
+    // validator requires a bare addr-spec, but on the production fetch
+    // path (mail-memory's buildMessageHeaders) the `from` header is
+    // copied verbatim from the wire and may contain a display name;
+    // the router is the layer that has to handle that.
     function inboundWith(
       fromHeader: string,
       messageId: string,
@@ -521,14 +520,14 @@ describe("createConnectorRouter", () => {
   });
 
   describe("message carrying no originator", () => {
-    // A message with no `From` at all reaches the router on the production
-    // fetch path: buildMessageHeaders omits the field when the wire message
-    // carried none. Such a message names no address a reply could go to, so
-    // the router must derive none. Naming a stand-in instead would record it
-    // as a thread participant and address the thread's replies to it. The
-    // decision is the router's own -- `passthrough`, not a throw a caller has
-    // to translate -- so each test below pins the returned kind and drives the
-    // harness's own route-then-commit sequence to pin the resulting state.
+    // A message with no `From` at all reaches the router on the
+    // production fetch path: buildMessageHeaders omits the field when
+    // the wire message carried none. Such a message names no address a
+    // reply could go to, so the router must derive none; naming a
+    // stand-in would record it as a thread participant. The decision is
+    // the router's own -- `passthrough`, not a throw a caller has to
+    // translate -- so each test below pins the returned kind and drives
+    // the route-then-commit sequence to pin the resulting state.
     function inboundWithNoFrom(
       messageId: string,
       opts?: { references?: string[] },
@@ -558,8 +557,8 @@ describe("createConnectorRouter", () => {
 
       router.commit(decision);
 
-      // No thread exists to reply on, rather than one whose reply address
-      // the router chose.
+      // No thread exists to reply on, rather than one whose reply
+      // address the router chose.
       expect(router.snapshot()).toBeNull();
       expect(() => router.composeReply()).toThrow(NoActiveConnectorThreadError);
     });
@@ -577,8 +576,8 @@ describe("createConnectorRouter", () => {
 
       router.commit(decision);
 
-      // The thread still names its real speaker: the message that could not
-      // be attributed neither became replyTo nor joined cc.
+      // The thread still names its real speaker: the message that could
+      // not be attributed neither became replyTo nor joined cc.
       expect(router.snapshot()).toEqual(before);
       expect(router.composeReply()).toEqual({
         to: "user@example.com",
@@ -589,11 +588,10 @@ describe("createConnectorRouter", () => {
     });
 
     test("an absent originator passes through where an unparseable one throws", () => {
-      // The two share an outcome at the caller -- the harness delivers the
-      // message and leaves the thread unadvanced either way -- but they reach
-      // it differently, and only the throw is a failure. Pinning all three
-      // shapes in one closure keeps a change that collapses them together
-      // from passing.
+      // The two share an outcome at the caller -- deliver the message
+      // and leave the thread unadvanced -- but only the throw is a
+      // failure. Pinning all three shapes in one closure keeps a change
+      // that collapses them together from passing.
       const absent = createConnectorRouter();
       expect(absent.route(inboundWithNoFrom("<orphan@example.com>")).kind).toBe(
         "passthrough",
@@ -629,9 +627,10 @@ describe("createConnectorRouter", () => {
   });
 
   describe("message carrying no message id", () => {
-    // A message with no `Message-ID` still names an address to reply to, so
-    // the thread opens. What it denies is an anchor: no later message can
-    // match it as a continuation, so the next one re-anchors the thread.
+    // A message with no `Message-ID` still names an address to reply
+    // to, so the thread opens. What it denies is an anchor: no later
+    // message can match it as a continuation, so the next one
+    // re-anchors the thread.
     function inboundWithNoMessageId(opts?: {
       from?: string;
       inReplyTo?: string;
@@ -682,8 +681,9 @@ describe("createConnectorRouter", () => {
 
     test("a continuation naming no id still threads against the root", () => {
       // The reply drain only resolves a References chain when `inReplyTo` is
-      // present, so dropping it here costs the outbound reply both threading
-      // headers and starts a new thread in every participant's client.
+      // present, so dropping it here costs the outbound reply both
+      // threading headers and starts a new thread in every participant's
+      // client.
       const router = createConnectorRouter();
       router.commit(router.route(startMessage({ subject: "Invoice" })));
 
@@ -722,13 +722,12 @@ describe("createConnectorRouter", () => {
     });
 
     test("a blank In-Reply-To does not continue an anchorless thread", () => {
-      // The empty id is the case that has to hold, not merely a non-matching
-      // one: an anchorless thread holds no `lastMessageId`, and a message
-      // whose `In-Reply-To` header was written blank carries an empty id.
-      // Compared as values the two are equal, so a continue would push the
-      // real correspondent into `cc`. The value reaches the router through
-      // the wire, not through `createInboundMessage`, which rejects an empty
-      // `inReplyTo`.
+      // An anchorless thread holds no `lastMessageId`, and a message
+      // whose `In-Reply-To` header was written blank carries an empty
+      // id; compared as values the two are equal, so a continue would
+      // push the real correspondent into `cc`. The value reaches the
+      // router through the wire, not through `createInboundMessage`,
+      // which rejects an empty `inReplyTo`.
       const router = createConnectorRouter();
       router.commit(router.route(inboundWithNoMessageId()));
 
@@ -746,10 +745,10 @@ describe("createConnectorRouter", () => {
     });
 
     test("an anchorless thread is not an absorbing state", () => {
-      // Before the re-anchor rule an anchorless thread could never match
-      // `isContinuation`, so every later message routed `passthrough` -- the
-      // INBOX never drained and the first sender kept the reply address for
-      // the life of the agent.
+      // Before the re-anchor rule an anchorless thread could never
+      // match `isContinuation`, so every later message routed
+      // `passthrough` -- the INBOX never drained and the first sender
+      // kept the reply address for the life of the agent.
       const router = createConnectorRouter();
       router.commit(router.route(inboundWithNoMessageId()));
 
@@ -774,8 +773,8 @@ describe("createConnectorRouter", () => {
     });
 
     test("onReplySent anchors the thread so later replies continue it", () => {
-      // The agent replying is the ordinary way an anchorless thread acquires
-      // an anchor: the reply's own id becomes `lastMessageId`.
+      // The agent replying is the ordinary way an anchorless thread
+      // acquires an anchor: the reply's own id becomes `lastMessageId`.
       const router = createConnectorRouter();
       router.commit(router.route(inboundWithNoMessageId()));
       router.onReplySent({

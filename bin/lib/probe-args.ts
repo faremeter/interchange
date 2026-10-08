@@ -1,8 +1,6 @@
-// Argument parsing for bin/probe.ts, split out so the parse logic — the
-// index-mutating value reader, the model-class and capability validation, the
-// google-only model-class rule — is unit-testable without running the CLI's
-// paid capture loop. bin/probe.ts owns only the network side; this owns the
-// contract between the command line and that side.
+// Argument parsing for bin/probe.ts, split out so the parse logic is
+// unit-testable without running the CLI's paid capture loop. bin/probe.ts
+// owns the network side; this owns the command-line contract.
 
 import {
   CAPABILITIES,
@@ -14,8 +12,8 @@ export type ModelClass = NonNullable<PluginCreateOptions["modelClass"]>;
 export const MODEL_CLASSES: readonly ModelClass[] = ["text", "image"];
 
 // google-genai is the only provider whose request shape depends on a model
-// class; for every other provider a class is meaningless and passing one is a
-// mistake worth rejecting rather than silently ignoring.
+// class; for every other provider a class is meaningless and passing one is
+// a mistake worth rejecting.
 const MODEL_CLASS_PROVIDER = "google-genai";
 
 export interface ProbeArgs {

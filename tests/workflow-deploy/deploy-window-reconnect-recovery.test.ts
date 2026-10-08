@@ -1,5 +1,5 @@
 // An allocation-authenticated reconnect does not depend on the deployment
-// public-key projection. The provisioner token already binds the worker to the
+// public-key projection: the provisioner token already binds the worker to the
 // anchor and generation, so a reconnect remains routable even if that derived
 // projection is temporarily absent.
 //
@@ -64,11 +64,9 @@ const DEPLOYMENT_ID = "run_dep10ec0ffee0ec0ffee0ec0ffee0ec0";
 const STEP_ID = "step1";
 const AGENT_ID = "agent-deploy-window-recovery";
 
-// The definition's own tenant, the caller principal that creates the
-// definition asset, and the `workflow`-kind asset the frozen definition
-// projects over. The install/approve freeze and the anchor `workflow_run`
-// insert both write against these, so they must exist in the real DB before
-// the deploy runs.
+// The tenant, caller principal, and `workflow`-kind definition asset the
+// install/approve freeze and anchor `workflow_run` insert write against; they
+// must exist in the real DB before the deploy runs.
 const TENANT_ID = "tnt_deploy_window_recovery";
 const CALLER_PRINCIPAL_ID = "prn_deploy_window_recovery";
 const DEFINITION_ASSET_ID = "ast_deploy_window_recovery_wf";

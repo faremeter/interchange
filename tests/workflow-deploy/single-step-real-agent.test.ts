@@ -1,25 +1,19 @@
-// Single-step real-agent round-trip integration test.
-//
-// The proof that the spawned workflow-process child runs a REAL agent
-// for a step, not the placeholder stub. Deploys a one-step workflow BY
-// SOURCE-REF (bundle a source entry module into a hub asset, probe it,
-// approve+freeze it against a real DB, deploy the source-ref frame) against
-// the real hub + real sidecar subprocess + mock inference fixture, fires the
+// Single-step real-agent round-trip integration test: the proof that the
+// spawned workflow-process child runs a REAL agent for a step, not the
+// placeholder stub. Deploys a one-step workflow BY SOURCE-REF against the
+// real hub + real sidecar subprocess + mock inference fixture, fires the
 // deployment's mail trigger, and asserts the step's committed output carries
 // the agent's deterministic inference reply produced by `agent.send` -- NOT
 // the old stub value `req.agent.id`.
 //
-// The mock inference server returns a canned assistant reply built from
-// the tool names it was handed (`I see these tools: <names>`); with an
-// empty tool set the reply is the stable prefix `I see these tools: `.
-// That deterministic reply is the test-provider seam this phase drives
-// the real agent against, since real inference in CI is impractical.
-//
-// The test additionally asserts the per-step agent storage/workspace
-// materialized under the sidecar data dir, rooted per run/step in a
-// `workflow-step-state/` subtree that is a sibling of the workflow-run
-// repo's git directory (where the run-event log lives), so the per-step
-// store cannot clobber the run-event tree.
+// The mock inference server returns a canned assistant reply built from the
+// tool names it was handed; with an empty tool set the reply is the stable
+// prefix `I see these tools: `. That deterministic reply is the test-provider
+// seam this phase drives the real agent against. The test additionally
+// asserts the per-step agent storage/workspace materialized under the sidecar
+// data dir, rooted per run/step in a `workflow-step-state/` subtree sibling
+// to the workflow-run repo's git directory, so the per-step store cannot
+// clobber the run-event tree.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -70,11 +64,9 @@ const AGENT_ID = "agent-step1";
 // reply with trailing whitespace trimmed.
 const EXPECTED_REPLY = "I see these tools:";
 
-// The definition's own tenant, the caller principal that creates the
-// definition asset, and the `workflow`-kind asset the frozen definition
-// projects over. The install/approve freeze and the anchor `workflow_run`
-// insert both write against these, so they must exist in the real DB before
-// the deploy runs.
+// The tenant, caller principal, and `workflow`-kind definition asset the
+// install/approve freeze and anchor `workflow_run` insert write against; they
+// must exist in the real DB before the deploy runs.
 const TENANT_ID = "tnt_single_step_real_agent";
 const CALLER_PRINCIPAL_ID = "prn_single_step_real_agent";
 const DEFINITION_ASSET_ID = "ast_single_step_real_agent_wf";
@@ -177,9 +169,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const workflowRunRepoId = handle.workflowRunRepoId;
 
-      // The source-ref frame round-trips through the real sidecar subprocess
-      // (index the pack, check out the pinned subtree, register the address),
-      // so routability is asynchronous. Wait for it before firing the trigger.
+      // The source-ref frame round-trips through the real sidecar subprocess (index
+      // the pack, check out the pinned subtree, register the address); routability is async, so wait before firing the trigger.
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),

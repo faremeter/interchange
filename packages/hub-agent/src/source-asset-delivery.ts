@@ -1,7 +1,7 @@
 // Sidecar-side delivery of a workflow closure's source assets.
 //
-// A `WorkflowSourceAssetMount` carries a git pack for one hub asset. How that
-// pack is materialized depends on how the closure references the asset:
+// A `WorkflowSourceAssetMount` carries a git pack for one hub asset. How
+// that pack is materialized depends on how the closure references the asset:
 //   - a tarball-format entry reads a `.tgz` blob from a plain-file checkout
 //     (`applyAssetPack`), keyed by an `assetId -> mountPath` map; and
 //   - a source-format entry checks a subtree out of the git objects, so the
@@ -29,18 +29,15 @@ const logger = getLogger(["sidecar", "source-asset-delivery"]);
 const SAFE_ASSET_ID = /^[a-zA-Z0-9_.-]+$/;
 
 /**
- * Index a delivered asset pack into `gitDir` and RETAIN the object store, so a
- * source subtree can be checked out from it. Builds into a sibling temp `.git`
- * and RENAMES it into place, so the durable store is complete-or-absent: a crash
- * mid-materialization leaves only the temp, never a partial `gitDir` that the
- * dir-exists check `resolveDeploymentAssetMounts` runs on restore would trust.
- * The rename is same-filesystem (the temp is a sibling under `gitDir`'s parent).
+ * Index a delivered asset pack into `gitDir` and RETAIN the object store, so
+ * a source subtree can be checked out from it. Builds into a sibling temp
+ * `.git` and RENAMES it into place, so the durable store is
+ * complete-or-absent: a crash mid-materialization leaves only the temp, never
+ * a partial `gitDir` that the dir-exists check on restore would trust.
  *
- * On a rename conflict (a stale `gitDir` from a torn prior attempt) the freshly
- * built store wins: the existing dir is removed and the temp renamed over it, so
- * a re-delivery at a new commit never keeps the old content. A secondary rm
- * failure is logged so it does not silently mask state; the primary error is
- * rethrown.
+ * On a rename conflict (a stale `gitDir` from a torn prior attempt) the
+ * freshly built store wins: the existing dir is removed and the temp renamed
+ * over it, so a re-delivery at a new commit never keeps the old content.
  */
 export async function indexAssetPackIntoGitDir(args: {
   pack: Uint8Array;
@@ -74,10 +71,10 @@ export async function indexAssetPackIntoGitDir(args: {
   try {
     await fsp.rename(tempDir, gitDir);
   } catch (err) {
-    // Only a "destination already exists" failure means a torn prior attempt we
-    // may supersede; any other rename error (EXDEV, EACCES, ENOSPC, EIO) must
-    // NOT destroy a possibly-good prior store -- clean up only the fresh temp
-    // and surface it.
+    // Only a "destination already exists" failure means a torn prior attempt
+    // we may supersede; any other rename error (EXDEV, EACCES, ENOSPC, EIO)
+    // must NOT destroy a possibly-good prior store -- clean up only the fresh
+    // temp and surface it.
     if (!isDestinationExistsError(err)) {
       await cleanupTemp();
       throw err;
@@ -125,11 +122,10 @@ export function assetReferenceFormats(
 
 /** The absolute gitDir a source asset's objects are indexed into. */
 export function sourceAssetGitDir(gitDirRoot: string, assetId: string): string {
-  // Reject an all-dots assetId (".", "..", ...) before the join. SAFE_ASSET_ID
-  // permits "." as a character, so a bare ".." would otherwise escape the
-  // per-asset dir (`path.join(root, "..")` is root's parent) and "." would
-  // resolve to the shared root itself. Mirrors `applyAssetPack`'s all-dots
-  // segment guard.
+  // Reject an all-dots assetId (".", "..", ...) before the join: SAFE_ASSET_ID
+  // permits "." as a character, so a bare ".." would escape the per-asset dir
+  // and "." would resolve to the shared root. Mirrors `applyAssetPack`'s
+  // all-dots segment guard.
   if (!SAFE_ASSET_ID.test(assetId) || /^\.+$/.test(assetId)) {
     throw new Error(
       `source-asset delivery: unsafe assetId ${JSON.stringify(assetId)}`,

@@ -1,9 +1,7 @@
 import type { MediaRef } from "@intx/inference-discovery/catalog";
 
-// Single source of truth for the extension → MIME type mapping used by
-// both the inline media path (vision-input, document-input) and the
-// Files API upload path. Adding a new extension here is the only place
-// it needs to land for both call sites to pick it up.
+// Extension → MIME mapping for both the inline media path (vision-input,
+// document-input) and the Files API upload path.
 const EXTENSION_TO_MEDIA_TYPE: Readonly<Record<string, string>> = {
   jpg: "image/jpeg",
   jpeg: "image/jpeg",

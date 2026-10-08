@@ -41,11 +41,10 @@ export function createInMemoryScheduler(
       const handle = setTimeout(() => {
         if (disposed) return;
         void commitTimerFired(opts, runId, timerId).catch((cause) => {
-          // The scheduler's commit chain is shared with the runtime
-          // body's; an error here means the log is corrupt or a
-          // concurrent writer raced us. Surface as an unhandled
-          // rejection rather than swallowing -- the runtime's
-          // waiting consumer would otherwise hang forever.
+          // The scheduler's commit chain is shared with the runtime body's;
+          // an error here means the log is corrupt or a concurrent writer
+          // raced us. Surface as an unhandled rejection rather than
+          // swallowing -- the waiting consumer would otherwise hang forever.
           throw cause instanceof Error
             ? cause
             : new Error(

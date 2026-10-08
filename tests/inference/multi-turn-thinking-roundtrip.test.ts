@@ -1,20 +1,10 @@
-// End-to-end multi-turn proof against the captured Anthropic
-// `function-calling-with-thinking-streaming` corpus. The test
-// chains turn-1's response through the harness, takes the
-// finalized assistant turn, builds turn-2's request from it via
-// the production request builder, and asserts the rebuilt body
-// carries every wire-required field byte-identical to the
-// captured turn-2 request.json — most importantly the thinking
-// block's cryptographic signature, which Anthropic rejects with
-// `messages.N.content.M.thinking.signature: Field required` if it
-// drifts.
-//
-// The corpus has thinking@0, text@1, tool_use@2 in the assistant
-// response. The post-task-22 per-index harness preserves that
-// ordering through the final turn. The post-task-17 request
-// builder echoes the thinking signature back. This test is the
-// integration proof that those two pieces line up against real
-// captured wire bytes.
+// End-to-end multi-turn proof against the captured
+// `function-calling-with-thinking-streaming` corpus: replay turn-1
+// through the harness, rebuild turn-2's request from the finalized
+// assistant turn, and assert the body is byte-identical to the
+// captured turn-2 request.json — above all the thinking block's
+// signature (Anthropic rejects a drifted one with
+// `messages.N.content.M.thinking.signature: Field required`).
 
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
@@ -97,10 +87,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 describe("multi-turn integration: function-calling-with-thinking-streaming", () => {
   test("turn-1 → turn-2 round-trip carries the thinking signature byte-identical", async () => {
-    // 1. Load turn-1's captured response.sse and turn-1's request.json
-    //    (to seed the initial user turn for the harness's request
-    //    building — we won't actually rebuild turn-1's request here,
-    //    just consume its response).
+    // 1. Load turn-1's captured response.sse + request.json (only the
+    //    response is consumed).
     const turn1Sse = await fs.readFile(
       path.join(CORPUS_ROOT, "exchanges/0/response.sse"),
     );
@@ -153,9 +141,8 @@ describe("multi-turn integration: function-calling-with-thinking-streaming", () 
     }
     const reconstructed: AssistantTurn = done.data.turn;
 
-    // 4. Sanity: the reconstructed turn has the expected block
-    //    structure (thinking → text → tool_call). This is the
-    //    function-calling-with-thinking-streaming corpus shape.
+    // 4. Sanity: the reconstructed turn has the corpus's
+    //    thinking → text → tool_call structure.
     const kinds = reconstructed.content.map((b) => b.type);
     expect(kinds).toEqual(["thinking", "text", "tool_call"]);
 
@@ -173,10 +160,9 @@ describe("multi-turn integration: function-calling-with-thinking-streaming", () 
     expect(typeof thinkingBlock.signature).toBe("string");
     expect((thinkingBlock.signature ?? "").length).toBeGreaterThan(0);
 
-    // 5. Build turn-2's request body via the production builder.
-    //    The wire's turn-2 request has [user, assistant, user-with-
-    //    tool_result]. Mirror that with the reconstructed assistant
-    //    turn in the middle slot.
+    // 5. Build turn-2's request via the production builder: the wire
+    //    shape is [user, assistant, user-with-tool_result], with the
+    //    reconstructed assistant turn in the middle.
     const adapter = createAnthropicAdapter(TEST_SOURCE);
     const turns: ConversationTurn[] = [
       {
@@ -200,9 +186,8 @@ describe("multi-turn integration: function-calling-with-thinking-streaming", () 
     const req = adapter.buildRequest(
       turns,
       "claude-haiku-4-5-20251001",
-      // The captured turn-2 request carries `thinking: { type: enabled,
-      // budget_tokens: ... }` from the original request options;
-      // reproduce that so the rebuilt body matches structurally.
+      // Reproduce the captured turn-2 request's thinking options so
+      // the rebuilt body matches structurally.
       {
         thinking: { enabled: true, budgetTokens: 4096 },
         tools: [
@@ -222,11 +207,9 @@ describe("multi-turn integration: function-calling-with-thinking-streaming", () 
       },
     );
 
-    // 6. Decode the rebuilt body and walk into the assistant
-    //    message's thinking block. Assert the signature matches the
-    //    captured turn-2 wire's signature byte-identical — this is
-    //    the load-bearing invariant Anthropic enforces on every
-    //    follow-up turn that includes a prior thinking block.
+    // 6. Assert the rebuilt thinking signature matches the captured
+    //    turn-2 wire's byte-identical — the invariant Anthropic
+    //    enforces on follow-up turns.
     const rebuilt: unknown = JSON.parse(req.body);
     if (!isRecord(rebuilt)) throw new Error("rebuilt body is not an object");
     const rebuiltMessages = rebuilt["messages"];
@@ -276,9 +259,8 @@ describe("multi-turn integration: function-calling-with-thinking-streaming", () 
     expect(rebuiltThinking["signature"]).toBe(capturedThinking["signature"]);
     expect(rebuiltThinking["thinking"]).toBe(capturedThinking["thinking"]);
 
-    // 7. Tool_use round-trip — id, name, and input must match
-    //    byte-identical too. The id is what links the assistant
-    //    turn's tool_use to the next user turn's tool_result.
+    // 7. Tool_use id/name/input must match byte-identical; the id
+    //    links the assistant tool_use to the next tool_result.
     const rebuiltToolUse = rebuiltContent
       .filter(isRecord)
       .find((b) => b["type"] === "tool_use");
@@ -292,9 +274,7 @@ describe("multi-turn integration: function-calling-with-thinking-streaming", () 
     expect(rebuiltToolUse["name"]).toBe(capturedToolUse["name"]);
     expect(rebuiltToolUse["input"]).toEqual(capturedToolUse["input"]);
 
-    // Reference turn1ReqUnknown to keep it from being dead — we
-    // loaded it as a sanity check that the corpus is structurally
-    // consistent with what we feed the harness above.
+    // Reference turn1ReqUnknown so the sanity-loaded corpus stays live.
     expect(turn1ReqUnknown["messages"]).toBeDefined();
   });
 });

@@ -164,12 +164,10 @@ describe("EventCollector", () => {
   });
 
   test("refusal content blocks insert a refusal part carrying the reason", async () => {
-    // RefusalBlock landed in the ContentBlock union as part of the
-    // structured-outputs work; the collector's switch must handle
-    // it explicitly or the refusal text silently disappears from
-    // session persistence. Pin a dedicated `refusal` part kind so
-    // session readers can distinguish a policy decline from
-    // ordinary assistant text or an HTTP error.
+    // A dedicated `refusal` part kind keeps a policy decline distinct from
+    // ordinary `text` (schema-conformant content) and from `error` (the HTTP
+    // call failed or the protocol mismatched), so session readers can render
+    // it differently.
     await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
     await collector.onEvent(
       event("inference.done", 5, {
@@ -492,12 +490,9 @@ describe("EventCollector", () => {
   });
 
   test("full reactor cycle produces correct sequence with per-turn rows", async () => {
-    // Simulate: inference turn 1 (text + tool call) ->
-    // tool result -> inference turn 2 (text) -> reactor.done
-    //
-    // Each inference.start creates a new turn. The second inference.start
-    // finalizes the first turn as failed (via the orphan-guard path) and
-    // starts a fresh one.
+    // Simulate: inference turn 1 (text + tool call) -> tool result ->
+    // inference turn 2 (text) -> reactor.done. Each inference.start creates
+    // a new turn; the second one finalizes the first and starts fresh.
 
     // Turn 1
     await collector.onEvent(event("inference.start", 2, { model: "claude-3" }));

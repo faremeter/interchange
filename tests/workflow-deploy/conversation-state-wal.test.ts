@@ -1,19 +1,10 @@
-// Unit tests for the warm-agent durable conversation store's two-tier
-// WAL + checkpoint layout (Phase D1). These cover the three properties the
-// D1 plan calls out:
-//
-//   (a) bounded WAL: writing N > K turns keeps the live WAL <= K entries
-//       between checkpoints, and a checkpoint folds at the K boundary;
-//   (b) exact restore: reconstruct the EXACT turn list + metadata after a
-//       mix of checkpoint + WAL-tail (N = K + a few);
-//   (c) anti-regression for the O(N^2) bug: each per-turn WAL append
-//       payload is ONE turn's delta, never the whole conversation -- the
-//       property whose absence produced the measured ~60 ms/msg growth.
-//
-// The tests drive a REAL `createRepoStore` workflow-run substrate and a
-// REAL isogit local store (the production path), so the bucket/checkpoint
-// commits, the preserve-prefix merges, and the working-tree reconstruction
-// are all exercised end to end -- not mocked.
+// Unit tests for the durable conversation store's two-tier WAL + checkpoint
+// layout (Phase D1): (a) bounded WAL -- live WAL stays <= K between
+// checkpoints and a checkpoint folds at the K boundary; (b) exact restore of
+// turn list + metadata across a checkpoint + WAL-tail mix; (c) anti-regression
+// for the O(N^2) bug -- each per-turn WAL append carries ONE turn's delta,
+// never the whole conversation. Drives a real `createRepoStore` workflow-run
+// substrate and isogit local store (the production path), not mocks.
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import fs from "node:fs";
@@ -52,9 +43,8 @@ import {
 
 const WORKFLOW_RUN_REF = "refs/heads/main";
 const AGENT_KEY = "step-1";
-// Must mirror the production constant in conversation-state.ts. Asserted
-// indirectly by the bounded-WAL test below: a drift here would surface as
-// a checkpoint that folds at the wrong boundary.
+// Mirrors the production constant in conversation-state.ts; drift would fold
+// checkpoints at the wrong boundary and the bounded-WAL test below catches it.
 const CHECKPOINT_INTERVAL = 64;
 
 const PRINCIPAL: WorkflowRunWorkflowProcessPrincipal = {
@@ -71,9 +61,8 @@ const CheckpointMetaShape = type({
   turnCount: "number",
 });
 
-// Mirror of the on-disk per-boundary WAL entry shape (boundary seq + the
-// boundary's new-turn delta array + metadata). Validating at the read
-// boundary keeps the test honest about the layout without an unchecked `as`.
+// Mirror of the on-disk WAL entry shape; validated at the read boundary so the
+// test sees the real layout instead of an unchecked `as`.
 const WalEntryShape = type({
   seq: "number",
   turns: "unknown[]",
@@ -216,11 +205,9 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
   });
 
   test("a per-boundary WAL append payload is only the new-turn delta, not the whole conversation", async () => {
-    // This is THE anti-regression test for the O(N^2) bug: the old
-    // whole-blob mirror re-serialized every prior turn on every message.
-    // After D1, each per-boundary WAL entry carries only that boundary's
-    // new turns (here exactly one) -- so its size is independent of how many
-    // turns precede it.
+    // Anti-regression for the O(N^2) bug: the old whole-blob mirror
+    // re-serialized every prior turn on each message; each WAL entry now
+    // carries only that boundary's new turns (here exactly one).
     const store = await makeStore(h, localDir);
 
     const built: ConversationTurn[] = [];
@@ -235,8 +222,8 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
       await store.storage.commit({ message: "turn" });
       await store.mirrorToSubstrate();
 
-      // The WAL entry just written for boundary i carries exactly that
-      // boundary's one new turn and not any prior turn.
+      // Boundary i's WAL entry carries exactly its one new turn, not any prior
+      // turn.
       const entry = readWalEntry(h.agentStateDir, i);
       const validated = WalEntryShape(entry);
       if (validated instanceof type.errors) {
@@ -245,15 +232,14 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
         );
       }
       expect(validated.seq).toBe(i);
-      // The entry's turns array is the DELTA (one new turn) -- never the
-      // full conversation. A regression to the O(N) whole-blob payload would
-      // make this array length grow with i.
+      // One new turn, never the full conversation; a regression to the
+      // whole-blob payload would make this length grow with i.
       expect(validated.turns.length).toBe(1);
       expect(validated.turns[0]).toEqual(turn);
     }
 
-    // The serialized size of the latest entry is within a small constant of
-    // the first entry's size: it does not grow with the turn count.
+    // Size does not grow with turn count: latest entry within a small constant
+    // of the first.
     const first = fs.statSync(
       path.join(walBucketDir(h.agentStateDir, 0), "0.json"),
     ).size;
@@ -264,11 +250,11 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
   });
 
   test("a turnless boundary still durably persists advanced metadata", async () => {
-    // The regression the per-turn keying caused: a mirror boundary with NO
-    // new turns dropped its metadata, so a respawn restored STALE metadata.
-    // onRunBoundary -> mirrorToSubstrate runs in step-invoker's finally even
-    // when the send throws, so a turnless-but-metadata-mutating boundary is
-    // reachable. Each boundary must commit its metadata UNCONDITIONALLY.
+    // Regression guard: a mirror boundary with no new turns used to drop its
+    // metadata, so a respawn restored stale values. mirrorToSubstrate runs in
+    // step-invoker's finally even when the send throws, so a turnless
+    // metadata-mutating boundary is reachable; each boundary must commit its
+    // metadata unconditionally.
     const store = await makeStore(h, localDir);
 
     // Boundary 1: one turn, baseline metadata (tokenUsage.input=10).
@@ -281,8 +267,8 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
     await store.storage.commit({ message: "turn" });
     await store.mirrorToSubstrate();
 
-    // Boundary 2: NO new turns, but metadata advances (tokenUsage.input
-    // 10->99, pendingOperations 0->1). The turn list is unchanged.
+    // Boundary 2: no new turns, but metadata advances (input 10->99,
+    // pendingOperations 0->1); the turn list is unchanged.
     const pendingOp: PendingOperation = {
       correlationId: "corr-1",
       kind: "approval",
@@ -297,8 +283,8 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
     await store.storage.commit({ message: "metadata-only" });
     await store.mirrorToSubstrate();
 
-    // Two WAL entries exist: boundary 0 (one turn) and boundary 1 (zero
-    // turns, advanced metadata).
+    // Two WAL entries: boundary 0 (one turn) and boundary 1 (zero turns,
+    // advanced metadata).
     expect(countWalEntries(h.agentStateDir)).toBe(2);
     const turnlessEntry = WalEntryShape(readWalEntry(h.agentStateDir, 1));
     if (turnlessEntry instanceof type.errors) {
@@ -306,9 +292,9 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
     }
     expect(turnlessEntry.turns.length).toBe(0);
 
-    // A fresh store (a respawn) reconstructs the LATEST metadata, not the
-    // stale boundary-1 values. This is the assertion that would have caught
-    // the dropped-metadata defect.
+    // A fresh store (a respawn) reconstructs the latest metadata, not the
+    // stale boundary-1 values -- the assertion that would have caught the
+    // dropped-metadata defect.
     const reconstructed = await reconstructDurableConversation(
       h.agentStateDir,
       AGENT_KEY,
@@ -336,8 +322,8 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
 
       const totalCommitted = i + 1;
       const liveWal = countWalEntries(h.agentStateDir);
-      // The live WAL never exceeds K: it grows turn by turn until it hits
-      // K, then compaction folds it to empty.
+      // Live WAL never exceeds K: grows turn by turn, then compaction folds
+      // it to empty.
       expect(liveWal).toBeLessThanOrEqual(CHECKPOINT_INTERVAL);
 
       const checkpointMetaPath = path.join(
@@ -345,12 +331,12 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
         "checkpoint.meta.json",
       );
       if (totalCommitted < CHECKPOINT_INTERVAL) {
-        // No checkpoint has folded yet; everything is in the WAL.
+        // No checkpoint yet; everything is in the WAL.
         expect(fs.existsSync(checkpointMetaPath)).toBe(false);
         expect(liveWal).toBe(totalCommitted);
       } else if (totalCommitted === CHECKPOINT_INTERVAL) {
-        // The K-th turn triggers compaction: the WAL truncates to empty and
-        // the checkpoint folds exactly K turns.
+        // The K-th turn triggers compaction: WAL truncates to empty, the
+        // checkpoint folds exactly K turns.
         expect(liveWal).toBe(0);
         const meta = readCheckpointMeta(h.agentStateDir);
         expect(meta.checkpointSeq).toBe(CHECKPOINT_INTERVAL);
@@ -369,9 +355,9 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
     const built: ConversationTurn[] = [];
     for (let i = 0; i < n; i += 1) {
       // Distinct content + model per turn so an off-by-one or reordering in
-      // the fold/replay would change the reconstructed list. Assistant
-      // turns carry a `model`; user turns omit the optional field entirely
-      // (exactOptionalPropertyTypes forbids an explicit `undefined`).
+      // the fold/replay changes the reconstructed list. Assistant turns carry
+      // a `model`; user turns omit the field (exactOptionalPropertyTypes
+      // forbids an explicit `undefined`).
       const turn: ConversationTurn =
         i % 2 === 0
           ? {
@@ -395,8 +381,8 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
       await store.mirrorToSubstrate();
     }
 
-    // Sanity: the conversation now spans a folded checkpoint plus a WAL
-    // tail, the exact mix the restore must stitch.
+    // The conversation now spans a folded checkpoint plus a WAL tail, the
+    // exact mix the restore must stitch.
     expect(fs.existsSync(path.join(h.agentStateDir, "checkpoint.json"))).toBe(
       true,
     );
@@ -414,8 +400,8 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
     expect(reconstructed.connectorState).toBeNull();
     expect(reconstructed.pendingOperations).toEqual([]);
 
-    // A fresh store (modelling a respawn with an empty local FS) restores
-    // the same conversation into its previously-empty local store -- the
+    // A fresh store (a respawn with an empty local FS) restores the same
+    // conversation into its previously-empty local store -- the
     // cross-respawn continuity guarantee, now through checkpoint + WAL.
     const freshLocalDir = path.join(h.baseDir, "respawn-local");
     const fresh = await makeStore(h, freshLocalDir);
@@ -469,17 +455,16 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
 
   test("a turn appended during the WAL write is not skipped by the next mirror", async () => {
     // Regression guard: mirrorToSubstrate slices its new-turn delta from the
-    // reactor's live array BEFORE the appendWalEntry await, then advances the
-    // mirrored turn count AFTER it. peekTurns returns that array by reference,
-    // so a turn the reactor appends DURING the await must be counted as the
-    // count actually persisted -- not the post-await live length -- or the
-    // next mirror slices past it and drops it from the WAL permanently.
+    // reactor's live array BEFORE the appendWalEntry await and advances the
+    // mirrored count AFTER it. peekTurns returns that array by reference, so a
+    // turn appended DURING the await must count as persisted -- not as the
+    // post-await live length -- or the next mirror slices past it and drops it
+    // from the WAL permanently.
     const liveTurns: ConversationTurn[] = [userTurn("a")];
     let injected = false;
 
-    // Wrap the substrate so the first WAL append (boundary 0) appends a turn
-    // to the reactor's live array mid-write, reproducing the concurrent
-    // append in the between-slice-and-count window.
+    // Wrap the substrate so the first WAL append appends a turn to the
+    // reactor's live array mid-write, reproducing the concurrent append.
     const writeTreePreservingPrefix: RepoStore["writeTreePreservingPrefix"] = (
       principal,
       repoId,
@@ -516,8 +501,8 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
       agentKey: AGENT_KEY,
     });
 
-    // Boundary 0: the local store holds [a]; during its WAL append the
-    // wrapper appends b to the reactor's live array.
+    // Boundary 0: local store holds [a]; during its WAL append the wrapper
+    // appends b to the reactor's live array.
     await store.storage.writeTurns(liveTurns);
     await store.storage.writeMetadata({
       pendingOperations: [],
@@ -527,11 +512,10 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
     await store.mirrorToSubstrate();
     expect(injected).toBe(true);
 
-    // Boundary 1: the reactor has since persisted [a, b] locally. The mirror
-    // must pick up b. The pre-fix code counted b as already mirrored at
-    // boundary 0 (reading the live array length after the await) and sliced
-    // past it here, so boundary 1's WAL entry was an empty delta and b was
-    // lost from the durable log.
+    // Boundary 1: the mirror must pick up b. The pre-fix code counted b as
+    // already mirrored at boundary 0 (reading the live length after the await)
+    // and sliced past it here, so boundary 1's entry was an empty delta and b
+    // was lost.
     await store.storage.writeTurns(liveTurns);
     await store.storage.writeMetadata({
       pendingOperations: [],
@@ -556,18 +540,13 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
   });
 
   test("overlapping mirror runs serialize onto distinct boundaries and lose no turns", async () => {
-    // The dormant race this guards against: the awaited onRunBoundary mirror
-    // and the fire-and-forget onStateChanged mirror share the mirrored-count
-    // state with no serialization. Two overlapping runs both read the same
-    // boundary seq AND the same mirroredTurnCount, so they collide on one
-    // boundary and double-advance the turn count -- and a following mirror
-    // then slices past a genuinely new turn and drops it from the log.
-    //
-    // The barrier makes the interleave deterministic: the first WAL append is
-    // held until a would-be-concurrent second mirror has had time to reach
-    // its own append. Without serialization the second append runs on the
-    // stale counts; with it the second mirror does not start until the first
-    // advances them.
+    // Dormant race guard: the awaited onRunBoundary mirror and the
+    // fire-and-forget onStateChanged mirror share the mirrored-count state
+    // with no serialization, so overlapping runs can collide on one boundary
+    // and double-advance the count, letting a following mirror slice past a
+    // genuinely new turn. The barrier makes the interleave deterministic: the
+    // first WAL append is held until a would-be-concurrent second mirror
+    // reaches its own append.
     let releaseFirstAppend!: () => void;
     const firstAppendHeld = new Promise<void>((resolve) => {
       releaseFirstAppend = resolve;
@@ -605,7 +584,7 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
       agentKey: AGENT_KEY,
     });
 
-    // The local store holds [a, b]; fire two overlapping mirrors of it.
+    // The local store holds [a, b]; fire two overlapping mirrors.
     const ab = [userTurn("a"), userTurn("b")];
     await store.storage.writeTurns(ab);
     await store.storage.writeMetadata({
@@ -619,21 +598,18 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
       store.mirrorToSubstrate(),
     ]);
     // Let a would-be-concurrent second mirror reach its append before the
-    // first is released. Under serialization the second has not started, so
-    // only the first append is held here.
-    //
-    // The duration is load-bearing and must stay a sleep: it IS the interleave
-    // window this test measures. Under the correct implementation nothing
-    // happens during it, so there is no state to wait for -- a predicate would
-    // hold immediately and the second append would land after the release,
-    // where it can no longer collide.
+    // first is released; under serialization the second has not started, so
+    // only the first append is held. The sleep IS the interleave window this
+    // test measures, so it is load-bearing: under the correct implementation
+    // nothing happens during it, and a predicate would hold immediately and
+    // let the second append land after the release, where it can no longer
+    // collide.
     await new Promise((resolve) => setTimeout(resolve, 40));
     releaseFirstAppend();
     await both;
 
-    // A following mirror carries a genuinely new turn. If the overlapping
-    // pair over-counted the mirrored turn count, this mirror slices past `c`
-    // and drops it from the durable log.
+    // If the overlapping pair over-counted the mirrored turn count, this
+    // mirror slices past `c` and drops it from the durable log.
     const abc = [...ab, userTurn("c")];
     await store.storage.writeTurns(abc);
     await store.storage.writeMetadata({
@@ -654,17 +630,16 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
   test("a mirror re-entered by restore's connector-state change cannot clobber a concurrent boundary", async () => {
     // Restore-reentrancy guard. restoreFromSubstrate calls
     // connectorRouter.restore(), which fires onStateChanged synchronously when
-    // the restored connector state differs from the router's initial null --
-    // and onStateChanged enqueues a (turnless) mirror. That reentrant mirror
-    // shares the mirrored-count state with restore and with the next real
-    // mirror. Unless restore runs on the same serialization tail (and
-    // establishes the counts before the connector restore), the reentrant
-    // append and a following real mirror can land on the SAME boundary seq,
-    // and the turnless one can overwrite the real turn.
+    // the restored connector state differs from the router's initial null, and
+    // onStateChanged enqueues a (turnless) mirror sharing the mirrored-count
+    // state. Unless restore runs on the same serialization tail (establishing
+    // the counts before the connector restore), the reentrant append and a
+    // following real mirror can land on the SAME boundary seq and the turnless
+    // one can overwrite the real turn.
     //
     // Seed two durable boundaries, the second carrying a non-null connector
-    // state -- exactly the future condition (a non-null connector state) under
-    // which this otherwise-dormant path activates.
+    // state -- exactly the condition under which this otherwise-dormant path
+    // activates.
     const seed = await makeStore(h, localDir);
     await seed.storage.writeTurns([userTurn("a")]);
     await seed.storage.writeMetadata({
@@ -692,12 +667,11 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
     // A fresh store restores those two boundaries; a barrier holds the first
     // WAL append (the reentrant turnless mirror) until a real `c` mirror is
     // enqueued behind it. Every boundary seq the substrate writes is recorded
-    // (parsed from the append's commit message) so a same-seq clobber fails
-    // loud even if a future change masks the turn-loss symptom.
+    // (parsed from the commit message) so a same-seq clobber fails loud even
+    // if a future change masks the turn-loss symptom.
     const seqsWritten: number[] = [];
-    // Substrate writes that have RETURNED, as opposed to the entries recorded
-    // in `seqsWritten` on the way in. The reentrant mirror is fire-and-forget,
-    // so this is how the assertions below know its append landed.
+    // Substrate writes that have RETURNED (the reentrant mirror is
+    // fire-and-forget, so this is how the assertions know its append landed).
     let writesCompleted = 0;
     let releaseFirstAppend!: () => void;
     const firstAppendHeld = new Promise<void>((resolve) => {
@@ -763,23 +737,18 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
     const cMirror = store.mirrorToSubstrate();
 
     // Let a would-be-concurrent `c` mirror reach and pass its own append
-    // before the reentrant one is released.
-    //
-    // The duration is load-bearing and must stay a sleep: it IS the interleave
-    // window this test measures. Under the correct implementation the `c`
-    // mirror is queued behind the parked reentrant one and does nothing during
-    // it, so there is no state to wait for.
+    // before the reentrant one is released. The sleep IS the interleave window
+    // this test measures, so it is load-bearing: under the correct
+    // implementation the `c` mirror is queued behind the parked reentrant one
+    // and does nothing during it, so there is no state to wait for.
     await new Promise((resolve) => setTimeout(resolve, 40));
     releaseFirstAppend();
     await cMirror;
-    // The reentrant mirror is fire-and-forget, so await its append landing on
-    // the substrate rather than a delay. Exactly two writes run through the
-    // wrapper: `runMirror` appends one WAL entry per boundary unconditionally
-    // (turnless boundaries included), and the live WAL never reaches
-    // CHECKPOINT_INTERVAL here, so neither mirror adds a compaction write.
-    // `heldOnce` proves the first entered and `await cMirror` proves the
-    // second completed, so the count reaches two once the released reentrant
-    // write returns.
+    // Await the fire-and-forget reentrant append landing on the substrate.
+    // Exactly two writes run through the wrapper: `runMirror` appends one WAL
+    // entry per boundary unconditionally (turnless boundaries included) and
+    // the live WAL never reaches CHECKPOINT_INTERVAL here, so neither mirror
+    // adds a compaction write.
     await waitUntil(() => writesCompleted >= 2);
 
     const reconstructed = await reconstructDurableConversation(

@@ -3,10 +3,10 @@
 // every tool dispatch, and writing the conversation to disk in the session
 // capture format.
 //
-// Recorded sessions later feed `createReplayHarness` so the orchestration
-// regressions only surface when turns chain (cross-turn body construction,
-// dispatch wiring, conversation length growth) can be re-run against
-// frozen wire and frozen tool I/O.
+// Recorded sessions later feed `createReplayHarness` so orchestration
+// regressions that only surface when turns chain (cross-turn body
+// construction, dispatch wiring, conversation length growth) can be re-run
+// against frozen wire and frozen tool I/O.
 
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -33,9 +33,9 @@ import {
 } from "@intx/inference-discovery/catalog";
 import { isDelayedEnvelope, type ToolHandler } from "./tool-handler";
 
-// Fail-open credential resolver for the recording harness. The fetch override
-// returns synthetic bytes and never sends the injected secret anywhere, so a
-// request that emits a credential sentinel just needs SOME material rather than
+// Fail-open credential resolver for the recording harness. The fetch
+// override returns synthetic bytes and never sends the injected secret
+// anywhere, so a credential sentinel just needs SOME material rather than
 // the production fail-closed throw. A caller that supplies its own
 // `readMaterial` takes precedence.
 const DEFAULT_TEST_READ_MATERIAL: CredentialMaterialResolver = () => ({
@@ -44,25 +44,25 @@ const DEFAULT_TEST_READ_MATERIAL: CredentialMaterialResolver = () => ({
 
 /**
  * The recording harness's fetch override has the same signature as the
- * production `Dependencies["fetch"]`. Tests pass a stub that returns
- * synthetic provider wire bytes; production recording scripts omit this
- * field and let the harness call real `globalThis.fetch`.
+ * production `Dependencies["fetch"]`. Tests pass a stub returning synthetic
+ * provider wire bytes; production recording scripts omit this field and let
+ * the harness call real `globalThis.fetch`.
  */
 export type RecordingFetchLike = Dependencies["fetch"];
 
 export interface CreateRecordingHarnessOpts {
-  /** Absolute path to the session directory. Created if it does not exist. */
+  /** Absolute path to the session directory. Created if missing. */
   outputDir: string;
   /**
    * Provider/model/baseURL the recording targets. Written verbatim into
-   * the top-level `session.json`. The replay harness consumes this to
-   * construct the `InferenceSource` passed to `runInference`.
+   * the top-level `session.json`; the replay harness consumes it to build
+   * the `InferenceSource` for `runInference`.
    */
   source: CaptureManifest["source"];
   /**
-   * Hard ceiling on how many fetch calls the harness will wrap before
-   * throwing `SessionRecordingBudgetExceededError`. Guards against
-   * runaway reactor loops silently racking up provider charges.
+   * Hard ceiling on wrapped fetch calls before throwing
+   * `SessionRecordingBudgetExceededError`. Guards against runaway reactor
+   * loops silently racking up provider charges.
    */
   maxExchanges: number;
   /** Header names redacted from each captured request. Case-insensitive. */
@@ -70,15 +70,15 @@ export interface CreateRecordingHarnessOpts {
   /** Header names redacted from each captured response. Case-insensitive. */
   redactResponseHeaders: readonly string[];
   /**
-   * Test seam: when supplied, used in place of `globalThis.fetch`. Must
-   * be paired with `bypassCIGuardForTests: true`; supplying one without
-   * the other throws at construction.
+   * Test seam: when supplied, used in place of `globalThis.fetch`. Must be
+   * paired with `bypassCIGuardForTests: true`; supplying one without the
+   * other throws at construction.
    */
   fetch?: RecordingFetchLike;
   /**
-   * Test seam: skip the inference-discovery CI guard at construction
-   * time. Must be paired with a `fetch` override; supplying one without
-   * the other throws.
+   * Test seam: skip the inference-discovery CI guard at construction.
+   * Must be paired with a `fetch` override; supplying one without the
+   * other throws.
    */
   bypassCIGuardForTests?: boolean;
   /** Override for the `capturedAt` timestamp written to `session.json`. */
@@ -89,10 +89,9 @@ export interface RecordingHarness {
   /** Dependencies object to pass into production `runInference` calls. */
   readonly deps: Dependencies;
   /**
-   * Register a real tool handler. The recording harness calls it
-   * whenever the reactor emits `inference.tool_call.end`, observes the
-   * args and the returned value, and writes both to
-   * `dispatches/<index>-<toolName>.json`.
+   * Register a real tool handler. The recording harness calls it on
+   * `inference.tool_call.end`, observes the args and returned value, and
+   * writes both to `dispatches/<index>-<toolName>.json`.
    */
   onTool(name: string, handler: ToolHandler): void;
   /**
@@ -104,8 +103,8 @@ export interface RecordingHarness {
   ): AsyncIterable<InferenceEvent>;
   /**
    * Write `session.json`. Required for the directory to be a complete
-   * session capture. Callers wrap in try/finally so an aborted
-   * recording still produces a (truncated but readable) session.
+   * session capture. Callers wrap in try/finally so an aborted recording
+   * still produces a (truncated but readable) session.
    */
   finalize(): Promise<void>;
 }
@@ -177,9 +176,8 @@ function headersToRecord(
     return out;
   }
   for (const [k, v] of Object.entries(headers)) {
-    // Record-style headers reach this branch. Same non-string
-    // rejection applies — the captured file is strictly string-
-    // valued and we will not silently coerce.
+    // Record-style headers reach this branch. Same non-string rejection
+    // applies — the captured file is strictly string-valued.
     if (typeof v !== "string") {
       throw new Error(
         `Session recording: header "${k}" has non-string value ` +
@@ -225,18 +223,18 @@ async function extractRequest(
 
   if (body === null || body === undefined || body === "") {
     // Empty string is treated as "no body" too — undici rejects an
-    // empty-string body on GET/HEAD, and there's no behavior the
-    // empty string forwards that `null` does not.
+    // empty-string body on GET/HEAD, and `null` forwards the same
+    // behavior.
     bodyForSend = null;
     bodyForCapture = { kind: "raw", bytes: new Uint8Array(), contentType };
   } else if (typeof body === "string") {
     bodyForSend = body;
     if (contentType.startsWith("application/json")) {
-      // Recording is meant to be observation, not validation. A
-      // malformed JSON body is something the production code would
-      // happily forward to the network — surfacing it as a recording
-      // failure would change the program's behavior under recording.
-      // Fall back to raw capture when JSON.parse rejects.
+      // Recording is observation, not validation. A malformed JSON body
+      // is something production would happily forward to the network;
+      // surfacing it as a recording failure would change the program's
+      // behavior under recording. Fall back to raw capture on
+      // JSON.parse rejection.
       try {
         const parsed: unknown = JSON.parse(body);
         bodyForCapture = { kind: "json", body: parsed };
@@ -289,16 +287,16 @@ async function bufferResponseBody(
   if (kind === "sse") {
     return { captured: { kind: "sse", bytes }, reconstructed: bytes };
   }
-  // A malformed JSON response is something the production adapter
-  // would surface from its own parser. The recording wrapper should
-  // not crash differently than production would; fall back to SSE-
-  // shaped raw capture when JSON.parse rejects so the response bytes
-  // still make it to disk verbatim.
+  // A malformed JSON response is something the production adapter would
+  // surface from its own parser; the recording wrapper should not crash
+  // differently than production would. Fall back to SSE-shaped raw
+  // capture when JSON.parse rejects so the bytes still reach disk
+  // verbatim.
   const text = new TextDecoder().decode(bytes);
   try {
-    // Parse only to classify the body: a JSON response is written to
-    // response.json, a parse failure falls through to the SSE-shaped raw
-    // capture below. The decoded value itself is not retained.
+    // Parse only to classify the body: JSON writes to response.json,
+    // a parse failure falls through to the raw SSE-shaped capture. The
+    // decoded value is not retained.
     JSON.parse(text);
     return {
       captured: { kind: "json", bytes },
@@ -461,21 +459,17 @@ export function createRecordingHarness(
 
   // Tool dispatch capture. Handlers run for real; their args and return
   // values are written to disk. Sync and promise-returning handlers are
-  // supported; the `{ result, virtualDelayMs }` delayed-envelope shape
-  // accepted by `setupHarness` is rejected here, because virtual delays
-  // are a test-harness construct that has no meaning during a real
+  // supported; the `{ result, virtualDelayMs }` delayed-envelope shape is
+  // rejected here, because virtual delays have no meaning during a real
   // recording.
   const handlers = new Map<string, ToolHandler>();
   let dispatchCount = 0;
-  // Each `captureDispatch` returns a promise we cannot block the
-  // iterator on (the production runInference would deadlock waiting
-  // for the iterator to advance). We park each promise in
-  // `inFlightDispatches` for `finalize` to await. The promises also
-  // attach a `.catch` that stashes the first failure into
-  // `firstDispatchError` so the iterator's yield path and
-  // `finalize` can surface the rejection to the caller — without
-  // the catch, Bun/Node would raise the rejection as unhandled
-  // before either await point could observe it.
+  // Each `captureDispatch` returns a promise we cannot block the iterator
+  // on (production runInference would deadlock waiting for the iterator
+  // to advance). Promises park in `inFlightDispatches` for `finalize` to
+  // await, and attach a `.catch` stashing the first failure into
+  // `firstDispatchError` so the rejection surfaces at an await point
+  // rather than as an unhandled rejection.
   const inFlightDispatches: Promise<void>[] = [];
   let firstDispatchError: unknown = null;
 
@@ -495,9 +489,9 @@ export function createRecordingHarness(
     handler: ToolHandler,
   ): Promise<void> => {
     const ret: unknown = handler(args);
-    // `Promise.resolve` unwraps both real promises and PromiseLike
-    // values, and is a no-op for plain values — covers all three
-    // handler return shapes (sync, async, native promise) in one path.
+    // `Promise.resolve` unwraps real promises and PromiseLike values and
+    // is a no-op for plain values — one path covers all three handler
+    // return shapes.
     const resolved: unknown = await Promise.resolve(ret);
     if (isDelayedEnvelope(resolved)) {
       throw new Error(
@@ -538,11 +532,9 @@ export function createRecordingHarness(
           }
           const index = dispatchCount++;
           // Attach `.catch` immediately so the rejection lands in
-          // `firstDispatchError` rather than escaping as an
-          // unhandled rejection. The original promise still goes
-          // into `inFlightDispatches` so `finalize` awaits its
-          // settlement; the catch produces a settled-void promise
-          // that follows the same lifecycle.
+          // `firstDispatchError` rather than escaping as unhandled. The
+          // original promise still goes into `inFlightDispatches` so
+          // `finalize` awaits its settlement.
           const tracked = captureDispatch(index, name, args, handler).catch(
             (err: unknown) => {
               if (firstDispatchError === null) firstDispatchError = err;
@@ -566,28 +558,26 @@ export function createRecordingHarness(
   };
 
   const finalize = async (): Promise<void> => {
-    // Write the session manifest FIRST so that even if a downstream
-    // step throws — a dispatch write failing, the budget guard
-    // tripping — the directory on disk has a loadable session.json.
-    // The replay loader treats a missing session.json as a hard
-    // error, and we'd rather hand an interrupted recording back to
-    // the user as a partially-loadable artifact than a black hole.
+    // Write the session manifest FIRST so that even if a downstream step
+    // throws — a dispatch write failing, the budget guard tripping — the
+    // directory on disk has a loadable session.json. The replay loader
+    // treats a missing session.json as a hard error, so an interrupted
+    // recording is still handed back as a partially-loadable artifact.
     const capturedAt = (now ?? (() => new Date()))().toISOString();
     await writeCaptureManifest(outputDir, {
       schemaVersion: "2",
       source,
       // Provenance is owned by the fetch seam: a supplied `fetch` override
-      // means the bytes came from the synthetic wire DSL, its absence means a
-      // real provider endpoint. Read it here rather than accepting a separate
-      // origin input that could contradict the seam.
+      // means the bytes came from the synthetic wire DSL, its absence a
+      // real provider endpoint. Read it here rather than accepting a
+      // separate origin input that could contradict the seam.
       origin: fetchOverride !== undefined ? "synthetic" : "live",
       capturedAt,
     });
     if (inFlightDispatches.length > 0) {
-      // The tracked promises have a catch attached that stashes any
-      // rejection into `firstDispatchError`; `Promise.all` here
-      // therefore never rejects, it just resolves once every
-      // captureDispatch has settled.
+      // The tracked promises have a catch that stashes rejections into
+      // `firstDispatchError`; `Promise.all` never rejects, it just
+      // resolves once every captureDispatch has settled.
       await Promise.all(inFlightDispatches);
     }
     if (firstDispatchError !== null) {

@@ -41,8 +41,7 @@ const SOURCE: InferenceSource = {
 };
 
 function stubContextStore(): ContextStore {
-  // Env-validation tests reject before the agent touches the store; the
-  // stub never has any of its methods called.
+  // Env-validation tests reject before the agent touches the store.
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub, never invoked on the validation path
   return {} as ContextStore;
 }
@@ -130,9 +129,8 @@ describe("createAgent env validation", () => {
       },
     });
 
-    // The type system already rejects this call -- def requires MailEnv,
-    // env is BaseEnv. Widen the def at the call site to exercise the
-    // runtime presence check, which is the whole point of the test.
+    // The type system rejects this call (def requires MailEnv, env is
+    // BaseEnv); widen at the call site to exercise the runtime check.
     const env = baseEnv("/tmp/agent-env-test-mail");
 
     let caught: unknown;
@@ -155,11 +153,8 @@ describe("createAgent env validation", () => {
 
 describe("createAgent lock release on construction failure", () => {
   // The lock acquired against env.workdir must be released on every
-  // failure path during construction. Otherwise a later createAgent
-  // against the same workdir throws AgentContextLockError indefinitely
-  // until the process exits. The narrow try/catch shape this test
-  // pins guards against the regression where only the early tool /
-  // source / director resolution path released the lock.
+  // construction failure, or a later createAgent on the same workdir
+  // throws AgentContextLockError until the process exits.
   function failingToolFactory() {
     return defineTool({
       id: "@intx-test/agent/failing",
@@ -190,8 +185,8 @@ describe("createAgent lock release on construction failure", () => {
     }
     expect(first).toBeInstanceOf(Error);
 
-    // The lock must be releasable; a second createAgent against the
-    // same workdir hits the same failure and not AgentContextLockError.
+    // A second createAgent on the same workdir must hit the same
+    // failure, not AgentContextLockError.
     let second: unknown;
     try {
       await createAgent(def, baseEnv(tmpdir));
@@ -205,18 +200,10 @@ describe("createAgent lock release on construction failure", () => {
 });
 
 describe("createAgent tool-rollback dispose handling", () => {
-  // When a later tool factory throws (e.g. duplicate-name
-  // DuplicateToolError), the agent disposes every bundle it has
-  // already constructed so resources allocated at factory time do not
-  // leak. The dispose contract is async, so a rejecting disposer must
-  // not escape as an unhandled promise rejection -- the rollback path
-  // discards the disposer's return value but has to wire any rejection
-  // through a swallow handler. `void promise` would leave the
-  // rejection in flight, which the surrounding synchronous try/catch
-  // cannot observe and the runtime surfaces as
-  // `unhandledRejection` -- producing the very noise the swallow
-  // comment promises to prevent and, under a strict
-  // `unhandledRejection: 'throw'` policy, crashing the process.
+  // When a later tool factory throws (e.g. DuplicateToolError), the
+  // agent disposes every already-constructed bundle so factory-time
+  // resources do not leak. A rejecting async disposer must not escape
+  // as an unhandled promise rejection.
 
   test("absorbs an async disposer's rejection during rollback", async () => {
     let observedRejection: unknown = null;
@@ -225,10 +212,9 @@ describe("createAgent tool-rollback dispose handling", () => {
     };
     process.on("unhandledRejection", onUnhandled);
     try {
-      // Two factories that collide on tool name `dup`. The first
-      // ships an async dispose that rejects after a microtask; the
-      // second triggers the duplicate-name throw that drives the
-      // rollback through the first's dispose.
+      // Two factories colliding on tool name `dup`: the first ships an
+      // async dispose that rejects after a microtask; the second
+      // triggers the duplicate-name throw that drives the rollback.
       const firstFactory = defineTool({
         id: "@intx-test/agent/first",
         definitions: [{ name: "dup" }],
@@ -283,18 +269,14 @@ describe("createAgent tool-rollback dispose handling", () => {
       } catch (err) {
         caught = err;
       }
-      // The original construction failure is what the caller sees;
-      // the disposer's rejection is absorbed.
+      // The caller sees the original failure; the disposer's
+      // rejection is absorbed.
       expect(caught).toBeInstanceOf(Error);
       if (!(caught instanceof Error)) throw new Error("unreachable");
       expect(caught.name).toBe("DuplicateToolError");
 
-      // One macrotask boundary is enough: the runtime reports an
-      // unhandled rejection when the microtask queue drains, so a
-      // rejection escaping the rollback above would already have
-      // reached the handler by the time this resolves. Verified against
-      // this runtime with a `void`-discarded rejection of the same
-      // shape as the disposer's.
+      // One macrotask boundary is enough: an unhandled rejection
+      // would reach the handler by the time this resolves.
       await new Promise((resolve) => setTimeout(resolve, 0));
       expect(observedRejection).toBeNull();
     } finally {
@@ -303,13 +285,11 @@ describe("createAgent tool-rollback dispose handling", () => {
   });
 
   test("disposes constructed bundles when a post-resolveTools step throws", async () => {
-    // The intra-resolveTools rollback handles failures inside the
-    // tool-walk loop. A later createAgent step (resolveDirector here,
-    // exercised via a registry whose default factory throws) leaves
-    // the bundles `resolveTools` already built unreferenced: the
-    // caller never reaches the returned agent, so the per-`ToolBundle`
-    // "caller owns lifetime" contract has no caller to honor it.
-    // The outer try/finally in createAgent must dispose them.
+    // The intra-resolveTools rollback covers failures inside the
+    // tool-walk; a later createAgent step (resolveDirector here,
+    // exercised via a throwing default factory) leaves the bundles
+    // `resolveTools` built unreferenced, so the outer try/finally must
+    // dispose them.
     let disposeCalls = 0;
     const probingFactory = defineTool({
       id: "@intx-test/agent/probing",
@@ -370,15 +350,12 @@ describe("createAgent tool-rollback dispose handling", () => {
 
 describe("createAgent send() on reactor suspend", () => {
   // A director that parks the reactor on a gate every time it sees an
-  // inbound message. Without a resume path the reactor stays parked, so
-  // send() would hang unless handleEvent settles the active send on
-  // `reactor.gate.blocked`. `correlationId` is threaded through so the
-  // reject-vs-resolve branch is exercised by the same director.
+  // inbound message. Without a resume path send() would hang unless
+  // handleEvent settles the active send on `reactor.gate.blocked`.
   //
-  // Each park mints a fresh gateId (`gate-suspend-test-N`) so two
-  // messages against the same agent do not collide on a single gate --
-  // the gate manager rejects a duplicate registration, which would
-  // otherwise brick the reactor loop on the second park.
+  // Each park mints a fresh gateId so two messages against the same
+  // agent do not collide on a single gate (the gate manager rejects
+  // duplicate registration).
   function makeSuspendingDirector(opts: {
     correlationId: string | undefined;
     distinctPerPark?: boolean;
@@ -599,21 +576,12 @@ describe("createAgent send() on reactor suspend", () => {
   });
 
   test("a send after a prior bare-deliver park resolves against its own park", async () => {
-    // A bare `deliver()` (no active send) parks the reactor and fires
-    // `reactor.gate.blocked` while no send is in flight; a later send()
-    // then parks on its own gate. The send must resolve against ITS OWN
-    // correlation, not the earlier bare park's. Distinct per-park ids
-    // (`corr-N`) make that attribution observable: the bare deliver
-    // parks as `corr-1`, the send parks as `corr-2`, so a result of
-    // `corr-2` proves the send did not ride the first park's stale
-    // event.
-    //
-    // This pins the observable end-to-end attribution, not the
-    // `activeCycle !== null` guard in handleEvent directly: that guard
-    // is belt-and-suspenders, because the send queue sets its active
-    // cycle synchronously with delivery and a settle is a no-op when no
-    // send is active, so a bare park cannot reach a queued send in the
-    // first place.
+    // A bare `deliver()` parks the reactor while no send is in flight;
+    // a later send() parks on its own gate and must resolve against ITS
+    // OWN correlation. Distinct per-park ids (`corr-N`) make that
+    // attribution observable: the bare deliver parks as `corr-1`, the
+    // send as `corr-2`, so a `corr-2` result proves the send did not
+    // ride the first park's stale event.
     const director = makeSuspendingDirector({
       correlationId: "corr",
       distinctPerPark: true,

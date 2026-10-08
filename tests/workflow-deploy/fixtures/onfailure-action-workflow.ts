@@ -2,11 +2,10 @@
 // `action` whose handler throws, carrying `onFailure` to a handler action. The
 // deployed child resolves each handler from the closure's interchange.actions
 // module; the throwing handler makes the unit fail permanently, so the runtime
-// routes to the onFailure handler instead of failing the run. The normal
-// dependent is pruned on the failure path.
-//
-// No handler declares an `effect`, so the deploy needs no effect grant -- it
-// exercises the resolve + invoke + route path, not grant derivation.
+// routes to the onFailure handler instead of failing the run (the normal
+// dependent is pruned on the failure path). No handler declares an `effect`, so
+// the deploy needs no effect grant -- it exercises the resolve + invoke + route
+// path, not grant derivation.
 
 export type OnFailureActionFixtureParams = {
   /** The mail trigger's `to` address the deployment routes on. */

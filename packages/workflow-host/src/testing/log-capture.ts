@@ -1,24 +1,21 @@
-// Capture LogTape records for one test file, so a test can await a log line
-// instead of polling for it.
+// Capture LogTape records for one test file, so a test can await a log
+// line instead of polling for it.
 //
-// Some decisions announce themselves only in the log. A guard that returns
-// without touching any observable state leaves the record as the sole
-// evidence it ran, and a test that wants to assert on such a decision has no
-// other signal to await. Waiting on the record is what "Synchronizing on
-// State, Not Time" in CONVENTIONS.md asks for, and it replaces a poll whose
-// deadline had to be guessed against whatever the code under test was
-// waiting on.
+// Some decisions announce themselves only in the log. A guard that
+// returns without touching any observable state leaves the record as the
+// sole evidence it ran, and a test that wants to assert on such a
+// decision has no other signal to await. Waiting on the record is what
+// "Synchronizing on State, Not Time" in CONVENTIONS.md asks for, and it
+// replaces a poll whose deadline had to be guessed.
 //
-// The capture is per-call, not module-level. The unit pass gives a worker one
-// module registry for every file it runs, so a module-level record array
+// The capture is per-call, not module-level: the unit pass gives a
+// worker one module registry per file, so a module-level record array
 // would accumulate another file's records and a module-level waiter list
 // would let another file's log line resolve this file's wait.
-// `createChangeNotifier` and `createSupervisorReaper` are factories for the
-// same reason.
 //
-// `configureSync` is process-global, so `install` saves the configuration it
-// replaces and `restore` puts it back. Wire the three lifecycle methods to
-// `beforeAll`, `afterAll`, and `beforeEach`.
+// `configureSync` is process-global, so `install` saves the
+// configuration it replaces and `restore` puts it back. Wire the three
+// lifecycle methods to `beforeAll`, `afterAll`, and `beforeEach`.
 
 import { configureSync, getConfig } from "@intx/log";
 
@@ -64,19 +61,20 @@ export type LogCapture = {
    * Carries no deadline: a record that never arrives is caught by the lane
    * timeout, per "Synchronizing on State, Not Time" in CONVENTIONS.md.
    *
-   * `needle` must identify the record uniquely within its own test. Matching
-   * on a message some other test also emits is what makes this a barrier in
-   * name only: `reset` clears the records a previous test logged, but it
-   * cannot exclude the ones still arriving from work that test left running,
-   * and nothing in a record says which test caused it. A wait satisfied by
-   * such a straggler returns before the awaited work has happened, and the
-   * assertion behind it reads pre-barrier state and passes. Where two tests
-   * exercise the same path, vary an input the record carries -- see the
-   * crash-reason token in `substrate-write.test.ts`.
+   * `needle` must identify the record uniquely within its own test.
+   * Matching on a message some other test also emits makes this a
+   * barrier in name only: `reset` clears the records a previous test
+   * logged, but it cannot exclude the ones still arriving from work
+   * that test left running, and nothing in a record says which test
+   * caused it. A wait satisfied by such a straggler returns before the
+   * awaited work has happened, and the assertion behind it reads
+   * pre-barrier state and passes. Where two tests exercise the same
+   * path, vary an input the record carries -- see the crash-reason
+   * token in `substrate-write.test.ts`.
    *
-   * A test that triggers fire-and-forget work owes the next test the same
-   * courtesy: await that work's own completion record before returning, so
-   * it cannot straggle across the boundary in the first place.
+   * A test that triggers fire-and-forget work owes the next test the
+   * same courtesy: await that work's own completion record before
+   * returning, so it cannot straggle across the boundary.
    */
   waitForRecord(needle: string): Promise<CapturedLogRecord>;
   /** As `waitForRecord`, restricted to records at the `error` level. */
@@ -156,7 +154,8 @@ export function createLogCapture(): LogCapture {
             };
             captured.push(entry);
             // Hand the record to anyone waiting for it. Take only the
-            // matching waiters, leaving the rest armed for their own needles.
+            // matching waiters, leaving the rest armed for their own
+            // needles.
             for (const waiter of waiters.splice(0)) {
               if (matches(entry, waiter.needle, waiter.level)) {
                 waiter.resolve(entry);

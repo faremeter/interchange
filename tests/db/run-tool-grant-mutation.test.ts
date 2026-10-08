@@ -3,10 +3,9 @@
 // (approve-always) or `deny` (reject-always). The mutation is guarded to only
 // change a grant currently gated `ask`, so it resolves the checkpoint in the
 // operator's chosen direction and can never override an existing `allow`/`deny`
-// or touch a tool the run does not already hold.
-//
-// Real DB: the mutation is a targeted UPDATE on the run principal's grant rows,
-// so it is exercised against a migrated Postgres schema rather than a mock.
+// or touch a tool the run does not already hold. Exercised against a migrated
+// Postgres schema because the mutation is a targeted UPDATE on the run
+// principal's grant rows.
 
 import {
   afterAll,

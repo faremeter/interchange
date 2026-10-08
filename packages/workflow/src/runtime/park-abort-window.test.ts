@@ -1,8 +1,7 @@
 // The window between the pre-park durable flush and the bridge that carries
-// the outer abort into the park.
-//
-// An in-process child runs with its parent's signal as its local abort, so a
-// parent teardown landing in this window is reachable in production.
+// the outer abort into the park. An in-process child runs with its parent's
+// signal as its local abort, so a parent teardown landing in this window is
+// reachable in production.
 
 import { describe, test, expect } from "bun:test";
 
@@ -20,8 +19,8 @@ const gateWorkflow = defineWorkflow({
   steps: { g: awaitSignal({ name: "approve" }) },
 });
 
-// Far enough out that the timer cannot fire during the run, so an observed
-// timeout outcome would mean the park misreported rather than raced.
+// Far enough that the timer cannot fire during the run, so an observed
+// timeout would mean the park misreported rather than raced.
 const UNREACHABLE_TIMEOUT_MS = 60_000;
 
 const timedGateWorkflow = defineWorkflow({
@@ -49,10 +48,10 @@ describe("an abort landing during the pre-park flush", () => {
     expect(result.terminalStatus).toBe("failed");
   });
 
-  // A timed gate races the signal against a scheduler timer, so the abort has
-  // to unwind two legs rather than one. Here the failure mode is not a hang
-  // but a wrong outcome: a park that reports a timeout routes the gate onward
-  // through `onTimeout` instead of tearing the run down.
+  // A timed gate races the signal against a scheduler timer, so the abort must
+  // unwind two legs rather than one; the failure mode here is a wrong outcome,
+  // not a hang: a park reporting a timeout routes the gate through `onTimeout`
+  // instead of tearing the run down.
   test("fails a timed gate as aborted rather than reporting a timeout", async () => {
     const teardown = new AbortController();
     const runId = "run-timed-flush-window";

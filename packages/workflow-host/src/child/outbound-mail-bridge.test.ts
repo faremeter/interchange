@@ -61,8 +61,8 @@ async function rejectedCondition(
 
 /**
  * A `ChildMailboxMutationBridge` that records every submitted mutation and
- * resolves immediately, so a transport test asserts the routed write without a
- * live supervisor.
+ * resolves immediately, so a transport test asserts the routed write without
+ * a live supervisor.
  */
 function createRecordingMutationBridge(
   result: MailboxMutationResult = {},
@@ -90,8 +90,7 @@ function createRecordingMutationBridge(
 
 /**
  * A call bridge that records every submitted call and answers with `respond`.
- * The transport tests assert what was forwarded and what came back. They do
- * not open a mailbox.
+ * The transport tests assert what was forwarded and what came back.
  */
 function createRecordingCallBridge(
   respond: (
@@ -161,9 +160,9 @@ async function flushMicrotasks(): Promise<void> {
 }
 
 /**
- * Capture the `outbound.message` frames a bridge emits without standing
- * up the real Ed25519-signed sender. The `seq` accessor is unused by the
- * bridge but required by the `ControlChannelSender` shape.
+ * Capture the `outbound.message` frames a bridge emits without standing up
+ * the real Ed25519-signed sender. The `seq` accessor is unused by the bridge
+ * but required by the `ControlChannelSender` shape.
  */
 function createCapturingSender(): ControlChannelSender & {
   sent: Extract<ControlPayload, { type: "outbound.message" }>["data"][];
@@ -385,6 +384,7 @@ describe("createSupervisorBackedTransport", () => {
   // Search and watch both forward the mailbox name and surface whatever the
   // supervisor answered. The child does not treat INBOX as special and does
   // not invent a condition of its own.
+
   test("search and watch surface the supervisor refusal for every mailbox", async () => {
     const callBridge = refusingCallBridge(
       "CANNOT",

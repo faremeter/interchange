@@ -8,35 +8,31 @@ export type CatalogPlugin =
   | "google-genai";
 
 export type DiscoverySource = {
-  // The discovery support-matrix provider name (e.g. "opencode-zen"), not the
-  // catalog provider name or the plugin.
+  // Support-matrix provider name (e.g. "opencode-zen"), not the catalog
+  // provider or plugin.
   provider: string;
-  // The exact wire model id the matrix probed (e.g. "kimi-k3").
+  // Exact wire model id the matrix probed (e.g. "kimi-k3").
   model: string;
 };
 
 export type CatalogOfferingSpec = {
-  // References a CatalogModelSpec.canonicalName.
+  // A CatalogModelSpec.canonicalName.
   model: string;
-  // Lower is preferred first when several deployments serve one model.
+  // Lower sorts first when several deployments serve one model.
   priority: number;
-  // The (provider, model) whose wire capabilities this offering's baked
-  // `capabilities` are drawn from in the discovery support matrix, or null when
-  // this exact tuple has not been probed. Kept alongside the baked list as
-  // provenance: the guard recomputes from this tuple and asserts the baked
-  // value still matches.
+  // The (provider, model) tuple whose matrix wire set this offering's baked
+  // `capabilities` is drawn from, or null when the tuple was never probed.
+  // Provenance: the guard test re-bakes from this and asserts no drift.
   discoverySource: DiscoverySource | null;
-  // Model capabilities the discovery matrix cannot prove (long-context,
-  // prompt-caching), curated by hand. Kept as provenance for the baked list.
+  // Hand-curated capabilities the matrix cannot prove (long-context,
+  // prompt-caching). Provenance for the baked list.
   curatedCapabilities: Capability[];
-  // The resolved capabilities this offering advertises: the matrix wire set for
-  // `discoverySource` (empty when null) followed by `curatedCapabilities`,
-  // baked to a literal so importing the catalog pulls no discovery rig. The
-  // guard test re-bakes from the provenance above and fails if this drifts.
+  // The advertised capabilities: the matrix wire set for `discoverySource`
+  // (empty when null) followed by `curatedCapabilities`, baked to a literal so
+  // importing the catalog pulls no discovery rig. The guard re-bakes and fails
+  // if this drifts.
   capabilities: Capability[];
-  // Per-deployment adapter accommodations, explicit on every offering even when
-  // empty. See OPENAI_REASONING_QUIRKS for why the opencode-zen reasoning
-  // offerings carry explicit reasoning quirks.
+  // Per-deployment adapter accommodations; explicit even when empty.
   quirks: Record<string, unknown>;
 };
 
@@ -47,27 +43,18 @@ export type CatalogProviderSpec = {
   offerings: CatalogOfferingSpec[];
 };
 
-// Several models are offered by more than one provider: `kimi-k3` across the
-// Fireworks / Moonshot / OpenRouter relays, `kimi-k2.6` across those three plus
-// the two OpenCode Zen relays, and `kimi-k2.7-code` across the two OpenCode Zen
-// relays. Distinct
-// priorities give source resolution a deterministic order across the
-// deployments of a shared model. The anthropic and google-genai adapters carry
-// no accommodations, so those offerings ship an empty quirks bag. OpenAI Direct
-// serves gpt-5.x, which rejects `max_tokens`, so it carries
-// OPENAI_FIRSTPARTY_QUIRKS. The openai-compatible relay offerings that advertise
-// reasoning carry OPENAI_REASONING_QUIRKS; gpt-5.4-mini, which advertises only
-// structured output, ships an empty bag. xAI Direct serves the grok models on
-// the same openai-compatible wire: its reasoning offerings carry
-// OPENAI_REASONING_QUIRKS, and grok-4.20-0309-non-reasoning, which surfaces no
-// reasoning, ships an empty bag.
-// Shared capability bags for the model families the catalog serves. Each
-// offering's baked `capabilities` is the matrix wire set for its discovery
-// source followed by its curated tags; the families below repeat the same wire
-// set across many offerings, so the lists live here once and each offering
-// references its family bag (or a spread appending the curated `long-context`
-// tag). The guard test still re-bakes every offering from its provenance tuple
-// and fails if any of these bags drifts from the discovery matrix.
+// Several models are served by more than one provider; distinct priorities
+// give resolution a deterministic order across deployments of a shared model.
+// Anthropic and google-genai carry no adapter accommodations, so their
+// offerings ship an empty quirks bag. OpenAI Direct serves gpt-5.x, which
+// rejects `max_tokens`, so it carries OPENAI_FIRSTPARTY_QUIRKS. The
+// openai-compatible relay offerings that advertise reasoning carry
+// OPENAI_REASONING_QUIRKS; the non-reasoning gpt-5.4-mini and
+// grok-4.20-0309-non-reasoning ship empty bags.
+// Shared capability bags. Each offering's baked `capabilities` is its matrix
+// wire set plus curated tags; the families below repeat the same wire set
+// across many offerings, so each list lives here once and offerings reference
+// the bag (or a spread appending curated `long-context`).
 const OPENAI_FIRSTPARTY_CAPABILITIES: Capability[] = [
   "plain-text",
   "plain-text-streaming",

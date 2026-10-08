@@ -355,8 +355,9 @@ describe("SenderKeyCache", () => {
       },
     });
     // Symmetric with a held key: the fault is cleared only after the removal
-    // lands, so a failed removal leaves the corrupt file on disk AND the refusal
-    // in memory rather than resurrecting the fault on the next restart.
+    // lands, so a failed removal leaves the corrupt file on disk AND the
+    // refusal in memory rather than resurrecting the fault on the next
+    // restart.
     await expect(cache.evict("corrupt@example.com")).rejects.toThrow(
       "unlink failed",
     );

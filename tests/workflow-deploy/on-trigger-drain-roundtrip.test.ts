@@ -14,15 +14,9 @@
 //   - TOLERATE + mid-step body (a long sleep): the container is awaiting the
 //     body terminal, so the failed teardown reaches runOnTrigger's terminal
 //     policy (not the relay abort path above). A cancel-mode drain sheds this
-//     mid-step `tolerate` section to RunFailed -- a deployed smoke test that it
-//     settles, not hangs/completes/stays alive. (This does NOT isolate the live
-//     `abort.aborted` terminal-policy disjunct: under a cancel-mode drain
-//     `parkOnSignalResult`'s own `shouldAbortForDrain` guard would end a
-//     pre-fix re-arm too. The live disjunct is proven directly by the in-memory
-//     on-trigger-tolerate-abort test, whose operator cancel with a `wait`
-//     section reaches the re-arm without that guard.)
+//     mid-step `tolerate` section to RunFailed.
 //
-// Harness justification: SPAWN-REAL.
+// Harness: SPAWN-REAL.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 

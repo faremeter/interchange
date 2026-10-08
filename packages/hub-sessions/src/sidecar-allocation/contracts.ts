@@ -21,10 +21,9 @@ export type DestroySidecarRequest = {
   readonly generation: number;
   readonly sidecarId: string;
   /**
-   * Optional provider handle recorded after ensure returns. A Hub crash can
-   * occur after capacity is created but before this value is persisted, so
-   * destroy must always be able to identify the capacity from allocationId,
-   * generation, and sidecarId alone.
+   * Optional provider handle recorded after ensure returns; destroy must also
+   * work from allocationId, generation, and sidecarId alone, since a Hub crash
+   * can precede persisting this value.
    */
   readonly externalRef?: string;
 };
@@ -41,9 +40,9 @@ export type SidecarOperationFailure = typeof SidecarOperationFailure.infer;
 
 /**
  * Acceptance means the requested infrastructure exists, not that it is ready.
- * Rejection means no infrastructure exists for this generation (ensure-only;
- * destroy rejections below carry no such guarantee); a provisioner must throw
- * when it cannot determine whether the request took effect.
+ * Rejection means no infrastructure exists for this generation (destroy
+ * rejections carry no such guarantee); a provisioner must throw when it cannot
+ * determine whether the request took effect.
  */
 export const EnsureSidecarResult = type({
   kind: "'accepted'",
@@ -67,16 +66,16 @@ export interface SidecarProvisioner {
   readonly bindingFingerprint: string;
   readonly capabilities: readonly SidecarCapabilityDeclaration[];
   /**
-   * Converges infrastructure for this generation. Implementations must be
-   * idempotent and reject generations older than one they have observed.
-   * Honour the request signal where possible. A late completion must still
-   * respect a concurrent destroy's fence, even if cancellation was ignored.
+   * Converges infrastructure for this generation: idempotent, rejects
+   * generations older than one it has observed, honours the request signal
+   * where possible, and a late completion still respects a concurrent destroy's
+   * fence even if cancellation was ignored.
    */
   ensure(request: EnsureSidecarRequest): Promise<EnsureSidecarResult>;
   /**
    * Idempotently destroys the allocation and fences older ensure calls so a
-   * delayed request cannot recreate infrastructure after destruction. It must
-   * succeed without an externalRef; that value is only an optional optimization.
+   * delayed request cannot recreate infrastructure after destruction; must
+   * succeed without an externalRef, which is only an optional optimization.
    */
   destroy(request: DestroySidecarRequest): Promise<DestroySidecarResult>;
 }

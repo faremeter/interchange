@@ -6,9 +6,9 @@
 // agents, and forwarding mail.delivered notifications back to
 // subscribers.
 //
-// The orchestrator depends on a narrow `HubSessionRouterFacade` rather
-// than the full SidecarRouter, so tests can drive subscriber behavior
-// with a small stub and an isolated emitter.
+// Depends on a narrow `HubSessionRouterFacade` rather than the full
+// SidecarRouter, so tests can drive subscriber behavior with a small
+// stub and an isolated emitter.
 
 import { eq } from "drizzle-orm";
 import { type } from "arktype";
@@ -100,19 +100,17 @@ export function createHubSessionOrchestrator(
       // single self-anchored workflow_run row, keyed by address. Persist it
       // there as the deployment's published identity. Reconnect routing is
       // allocation-authenticated, so this projection is not connection
-      // authority. Only the deployment-level address owns a row, so a stray
+      // authority; only the deployment-level address owns a row, so a stray
       // per-step ack updates nothing.
       await db
         .update(workflowRun)
         .set({ publicKey })
         .where(eq(workflowRun.address, agentAddress));
 
-      // The key is now durable. Wake any mail the run parked while pre-ack so it
-      // is delivered with the sender key co-delivered, closing the window where
-      // a run sends before its key is recorded. The write above happens-before
-      // this settle, so a re-drive resolves the recorded key. The address is the
-      // run's own deploy address, byte-identical to the sender address its mail
-      // was sent under.
+      // The key is now durable. Wake any mail the run parked while pre-ack so
+      // it is delivered with the sender key co-delivered, closing the window
+      // where a run sends before its key is recorded. The write above
+      // happens-before this settle, so a re-drive resolves the recorded key.
       router.noteSenderDeploySettled(agentAddress, { recorded: publicKey });
     }),
   );

@@ -5,26 +5,22 @@
 // supervisor incarnation are moved back to `inbox/` ahead of the
 // dispatch loop's first dequeue. A fresh `mail.inbound` that enqueues
 // during that replay window must not ship to the child ahead of the
-// orphan once the replay completes. The dispatch loop's first
-// iteration awaits the spawn-time `replayDone` before its first
-// `dequeueToProcessing`; this test pins that contract by gating the
+// orphan once the replay completes. This test pins that by gating the
 // replay, injecting a fresh mail during the gated window, and
 // asserting the orphan reaches the child first.
 //
 // H-S3 (shutdown races ahead of replay): `shutdownInternal` must
-// await `state.replayDone` before tearing the bindings down.
-// Without that await, a shutdown that lands during the replay window
-// would let the substrate write outlive the supervisor and a
-// subsequent boot could observe a partially-applied replay. This
-// test pins the contract by gating the replay, calling `shutdown()`,
-// asserting it does not settle while the gate is held, and then
-// releasing the gate and asserting `shutdown()` completes.
+// await `state.replayDone` before tearing the bindings down, or a
+// shutdown landing during the replay window would let the substrate
+// write outlive the supervisor and a subsequent boot could observe a
+// partially-applied replay. Pinned by gating the replay, calling
+// `shutdown()`, asserting it does not settle while the gate is held,
+// then releasing the gate.
 //
-// The replay is gated through an inboxPrimitives wrapper: the test
-// returns a custom `replayProcessingToInbox` that awaits a
-// test-controlled promise before delegating to the in-memory
-// implementation, and exposes a `release()` callback the test fires
-// to let the replay proceed.
+// The replay is gated through an inboxPrimitives wrapper: a custom
+// `replayProcessingToInbox` awaits a test-controlled promise before
+// delegating to the in-memory implementation, plus a `release()`
+// callback the test fires to let the replay proceed.
 
 import { describe, test, expect } from "bun:test";
 import fs from "node:fs/promises";
@@ -88,11 +84,10 @@ type MemoryAddressState = {
 
 /**
  * Memory inbox primitives with a test-controllable gate on
- * `replayProcessingToInbox`. The gate is a manually-released
- * promise; `replayProcessingToInbox` awaits it before performing
- * the in-memory move. The harness also exposes `snapshot()` so the
- * test can directly inspect the queue partitioning while the gate
- * is held.
+ * `replayProcessingToInbox` (a manually-released promise the replay
+ * awaits before the in-memory move). The harness also exposes
+ * `snapshot()` so the test can inspect the queue partitioning while
+ * the gate is held.
  */
 function createGatedInboxPrimitives(): {
   primitives: InboxPrimitives;
@@ -257,12 +252,11 @@ function createGatedInboxPrimitives(): {
 
 /**
  * Pre-seed an orphaned `processing/` entry on the workflow-run
- * substrate. The test calls this BEFORE `spawn()`; the supervisor's
- * spawn-time `replayProcessingToInbox` is supposed to move the entry
- * back to `inbox/` before the dispatch loop's first dequeue. We
- * route through `enqueueInbox` + `dequeueToProcessing` so the seed
- * uses the same primitives the supervisor exercises -- a structural
- * miss surfaces here rather than via a divergent fixture.
+ * substrate, BEFORE `spawn()`; the supervisor's spawn-time
+ * `replayProcessingToInbox` is supposed to move it back to `inbox/`
+ * before the dispatch loop's first dequeue. Routed through
+ * `enqueueInbox` + `dequeueToProcessing` so the seed uses the same
+ * primitives the supervisor exercises.
  */
 async function seedOrphanedProcessing(
   primitives: InboxPrimitives,
@@ -279,8 +273,9 @@ async function seedOrphanedProcessing(
     messageId,
     receivedAt,
     mailAuditRef: { store: "memory", path: `audit/${messageId}` },
-    // Decodable mail bytes: the dispatch loop decodes and commits them
-    // before forwarding the trigger.fire for the recovered orphan.
+    // Decodable mail bytes: the dispatch loop decodes and commits
+    // them before forwarding the trigger.fire for the recovered
+    // orphan.
     rawMessage: base64Encode(
       new TextEncoder().encode(`Message-ID: ${messageId}\r\n\r\nbody`),
     ),
@@ -314,15 +309,10 @@ type Harness = {
 };
 
 /**
- * Boot a supervisor wired against gated inbox primitives. The caller
- * is responsible for seeding ORPHAN before `spawn()` is invoked --
- * the seed must land on the substrate via `gatedInbox.primitives`
- * BEFORE `boot()` runs (the supervisor reads the primitives by
- * reference, so seeding either before or after the wiring works
- * provided the seed completes before the spawn-time replay does).
- *
- * `boot()` does NOT drive the child's `ready` -- the caller does
- * that, since the H-S1 test wants to interleave gated-replay
+ * Boot a supervisor wired against gated inbox primitives. The
+ * caller is responsible for seeding the ORPHAN before `spawn()`
+ * runs its replay. `boot()` does NOT drive the child's `ready` --
+ * the caller does, since H-S1 wants to interleave gated-replay
  * inspections with the post-ready flow.
  */
 async function boot(opts: { prefix: string }): Promise<
@@ -459,22 +449,18 @@ async function sendReady(
 
 describe("supervisor spawn-time replay FIFO contract", () => {
   test("H-S1: a fresh mail that lands during the spawn-time replay window cannot ship to the child ahead of an orphaned processing/ entry", async () => {
-    // Boot the supervisor with the replay gated. The orphan must be
-    // seeded BEFORE `spawn()` invokes `replayProcessingToInbox` --
-    // because the gate awaits a promise the replay itself blocks on,
-    // we seed via the same memory primitives before the boot returns
-    // control to the test. The seed runs synchronously against the
-    // in-memory state map; the supervisor's spawn-time replay (now
-    // pending behind the gate) will reclaim it on release.
+    // Boot with the replay gated and seed the orphan through the same
+    // memory primitives before the boot returns control; the
+    // supervisor's spawn-time replay (pending behind the gate) will
+    // reclaim it on release.
     const ORPHAN_ID = "orphan-msg-id";
     const ORPHAN_RECEIVED_AT = 1_000;
     const harness = await boot({ prefix: "hs1-fifo-" });
-    // Pre-seed the orphan against the gated primitives' memory state.
     // The supervisor has already invoked the spawner by now (boot
     // waits for the spawner env to be observed), and the spawn-time
-    // replay is queued behind the gate; the seed simply mutates the
-    // in-memory state map under the address so the replay's eventual
-    // iteration over `processing/` picks ORPHAN up.
+    // replay is queued behind the gate; the seed mutates the in-memory
+    // state map so the replay's eventual iteration over `processing/`
+    // picks ORPHAN up.
     await seedOrphanedProcessing(
       harness.gatedInbox.primitives,
       harness.bindings.repoStore,
@@ -483,8 +469,8 @@ describe("supervisor spawn-time replay FIFO contract", () => {
       ORPHAN_ID,
       ORPHAN_RECEIVED_AT,
     );
-    // Confirm the seed lives in `processing/` -- if this fails,
-    // we never had a real orphan to race against.
+    // Confirm the seed lives in `processing/` -- if this fails, there
+    // was never a real orphan to race against.
     {
       const snap = harness.gatedInbox.snapshot(harness.deploymentMailAddress);
       expect(snap.processing).toEqual([ORPHAN_ID]);
@@ -497,11 +483,9 @@ describe("supervisor spawn-time replay FIFO contract", () => {
     await sendReady(harness.childSender, harness.childPublicKey, 7777);
     await harness.spawnPromise;
 
-    // While the replay is still gated, inject a fresh mail. The
-    // mail bus dispatch synchronously fans the message into
-    // `onMailMessage`, which schedules `enqueueInboundMail` off the
-    // event loop. Wait until the fresh mail lands in `inbox/` so the
-    // race condition is fully armed before we inspect.
+    // While the replay is still gated, inject a fresh mail and wait
+    // until it lands in `inbox/` so the race is fully armed before we
+    // inspect.
     const freshMessage = new TextEncoder().encode("fresh@example.com");
     harness.mailBus.deliver(harness.deploymentMailAddress, freshMessage);
     await waitUntil(
@@ -514,8 +498,8 @@ describe("supervisor spawn-time replay FIFO contract", () => {
     // and the fresh mail is in `inbox/`. The dispatch loop's first
     // `dequeueToProcessing` MUST NOT have run yet -- without the
     // `await replayGate` guarding it, the loop would have already
-    // dequeued the fresh mail (the only entry currently in `inbox/`)
-    // and forwarded it to the child as a `trigger.fire`.
+    // dequeued the fresh mail (the only entry in `inbox/`) and
+    // forwarded it as a `trigger.fire`.
     const gatedSnap = harness.gatedInbox.snapshot(
       harness.deploymentMailAddress,
     );
@@ -525,9 +509,9 @@ describe("supervisor spawn-time replay FIFO contract", () => {
     const freshId = gatedSnap.inbox[0];
     if (freshId === undefined) throw new Error("freshId undefined");
 
-    // Also assert nothing has been forwarded to the child yet --
-    // any `trigger.fire` on the wire here would prove the dispatch
-    // loop skipped past the gate.
+    // Also assert nothing has been forwarded to the child yet -- any
+    // `trigger.fire` on the wire here would prove the dispatch loop
+    // skipped past the gate.
     {
       const triggers = readPayloadsOfType(
         harness.supervisorToChild.flushed(),
@@ -536,18 +520,17 @@ describe("supervisor spawn-time replay FIFO contract", () => {
       expect(triggers).toEqual([]);
     }
 
-    // Release the gate. The replay moves ORPHAN_ID from `processing/`
-    // back into `inbox/`; the dispatch loop's first `dequeueToProcessing`
-    // runs against an inbox that now contains both messages, and the
-    // FIFO sort (receivedAt ascending) ships ORPHAN_ID first because
-    // its receivedAt (1_000) precedes the fresh mail's wall-clock
-    // receivedAt by many orders of magnitude.
+    // Release the gate. The replay moves ORPHAN_ID back into `inbox/`;
+    // the dispatch loop's first dequeue runs against an inbox that now
+    // contains both messages, and the FIFO sort (receivedAt ascending)
+    // ships ORPHAN_ID first because its receivedAt (1_000) precedes
+    // the fresh mail's by many orders of magnitude.
     harness.gatedInbox.release();
     await harness.gatedInbox.replaySettled();
 
-    // Wait for the first `trigger.fire`. Its messageId identifies which
-    // claim-check entry won the FIFO race even though both entries share the
-    // deployment's stable runId.
+    // Wait for the first `trigger.fire`; its messageId identifies
+    // which claim-check entry won the FIFO race even though both
+    // entries share the deployment's stable runId.
     await waitForUpstreamPayloads(harness.supervisorToChild, "trigger.fire", 1);
     const triggers = readPayloadsOfType(
       harness.supervisorToChild.flushed(),
@@ -559,10 +542,10 @@ describe("supervisor spawn-time replay FIFO contract", () => {
     expect(firstTrigger.data.runId).toBe("run_deployment-x");
     expect(firstTrigger.data.messageId).toBe(ORPHAN_ID);
 
-    // Keep the stable run live and park it on its next input. This releases the
-    // orphan's dispatch wait while preserving the one-run-per-deployment
-    // invariant: the fresh mail must resume this run as a signal, not fire a
-    // second top-level run.
+    // Keep the stable run live and park it on its next input. This
+    // releases the orphan's dispatch wait while preserving the
+    // one-run-per-deployment invariant: the fresh mail must resume
+    // this run as a signal, not fire a second top-level run.
     await harness.childSender.send({
       type: "park.notify",
       data: {
@@ -624,10 +607,10 @@ describe("supervisor spawn-time replay FIFO contract", () => {
     // a partially-applied replay.
     //
     // Asserting on phase `starting` specifically eliminates the
-    // confounder where `await prior.dispatchLoop` would also
-    // happen to block on the gated replay (because the loop's first
-    // step also awaits the same gate). In `starting` the loop is
-    // null, so the contract under test is uniquely load-bearing.
+    // confounder where `await prior.dispatchLoop` would also block
+    // on the gated replay (the loop's first step awaits the same
+    // gate). In `starting` the loop is null, so the contract under
+    // test is uniquely load-bearing.
     const ORPHAN_ID = "orphan-msg-id";
     const ORPHAN_RECEIVED_AT = 1_000;
     const harness = await boot({ prefix: "hs3-shutdown-await-" });
@@ -652,10 +635,9 @@ describe("supervisor spawn-time replay FIFO contract", () => {
     // promises settle in, not the wall-clock instant of each: two
     // settles inside the same millisecond read the same
     // `Date.now()`, and a `>=` comparison on equal readings holds
-    // whichever way round they actually happened, so the ordering
-    // evidence this test rests on was passable with the order
-    // inverted. An empty `settleOrder` while the gate is still held
-    // proves the shutdown path is blocked on `replayDone`.
+    // whichever way round they actually happened. An empty
+    // `settleOrder` while the gate is still held proves the
+    // shutdown path is blocked on `replayDone`.
     const settleOrder: string[] = [];
     const shutdownPromise = harness.supervisor.shutdown().then(() => {
       settleOrder.push("shutdown");
@@ -670,10 +652,9 @@ describe("supervisor spawn-time replay FIFO contract", () => {
     // before its `await prior.replayDone`: the dispatch loop is
     // null, no drain accumulator exists, and the child kill that
     // rejects `spawnPromise` runs in the `finally` AFTER that await.
-    // So no positive signal is orderable ahead of the settle we are
-    // denying. Overshooting the 20ms under load only gives shutdown
-    // more opportunity to settle, which strengthens the check
-    // instead of making it spurious.
+    // Overshooting the 20ms under load only gives shutdown more
+    // opportunity to settle, which strengthens the check instead of
+    // making it spurious.
     await new Promise((r) => setTimeout(r, 20));
     expect(settleOrder).toEqual([]);
     expect(harness.gatedInbox.released()).toBe(false);

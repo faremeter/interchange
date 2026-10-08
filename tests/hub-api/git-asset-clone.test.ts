@@ -1,12 +1,8 @@
-// End-to-end clone of an asset repo against the real `/usr/bin/git`.
-//
-// Three scenarios:
-//   1. Anonymous clone fails with 401 + `WWW-Authenticate: Basic`.
-//   2. Authorized clone succeeds; the resulting working tree passes
-//      `git fsck --strict --no-dangling`.
-//   3. The genesis commit reports a verifiable signature under
-//      `git log --show-signature` against an allowed-signers entry
-//      built from the public key embedded in the SSHSIG envelope.
+// End-to-end clone of an asset repo against the real `/usr/bin/git`:
+// anonymous clone fails with 401 + `WWW-Authenticate: Basic`; an
+// authorized clone passes `git fsck --strict --no-dangling`; and the
+// genesis commit verifies under `git log --show-signature` against an
+// allowed-signers entry built from the SSHSIG envelope's public key.
 
 import { describe, test, expect, afterEach } from "bun:test";
 import fs from "node:fs/promises";
@@ -110,9 +106,8 @@ function extractOpenSshPublicKey(armored: string): string {
 }
 
 /**
- * Rewrite an `http://host:port/...` URL to embed the supplied basic-auth
- * credentials so git can issue an authenticated request without having
- * to read a credential off a TTY.
+ * Embed basic-auth credentials in a URL so git can authenticate without
+ * reading a credential off a TTY.
  */
 function withBasicAuth(
   url: string,

@@ -140,10 +140,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     // Report whether `promise` has settled, without consuming it. The lock
     // waits below watch for a state that only exists while the other side is
-    // still in flight, so that side settling is the signal that the state will
-    // never appear -- which is exactly the fencing regression each test pins.
-    // Both outcomes are handled here, so this second handler cannot turn a
-    // rejection the test still awaits into an unhandled one.
+    // still in flight, so that side settling is the signal the state will
+    // never appear -- the fencing regression each test pins. Both outcomes are
+    // handled here, so this second handler cannot turn a rejection the test
+    // still awaits into an unhandled one.
     function settleReporter(promise: Promise<unknown>): () => boolean {
       let settled = false;
       const mark = (): void => {
@@ -154,11 +154,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
     }
 
     // Wait until backend `pid` is blocked by another backend. The lock state
-    // lives in PostgreSQL, not in this process, so a query is the only way to
-    // read it; the 10ms is the interval between reads and decides nothing,
-    // because the loop ends on observed state rather than on a budget. The
-    // block persists until the caller releases the holder, so a slow poll
-    // cannot sample past it.
+    // lives in PostgreSQL, so a query is the only way to read it; the 10ms is
+    // the interval between reads and decides nothing, because the loop ends on
+    // observed state rather than on a budget. The block persists until the
+    // caller releases the holder, so a slow poll cannot sample past it.
     async function waitForBlockedBackend(
       pid: number,
       blockedSideSettled: () => boolean,

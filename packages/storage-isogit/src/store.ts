@@ -77,19 +77,16 @@ const PendingOperationSchema = type({
 
 // The persisted schema and the in-memory PendingOperation type are two
 // separate declarations kept in lockstep. arktype passes undeclared keys
-// through at runtime, so dropping `suspendedCall?` from the schema would not
-// surface as a runtime failure. Projecting the field off the schema's
+// through at runtime, so dropping `suspendedCall?` from the schema would
+// not surface as a runtime failure. Projecting the field off the schema's
 // inferred type makes the declaration load-bearing: the indexed access
-// errors under `tsc` if the schema stops carrying the field, and the return
-// annotation pins its persisted type to `ToolCall`.
+// errors under `tsc` if the schema stops carrying the field.
 const _persistedSuspendedCall = (
   op: typeof PendingOperationSchema.infer,
 ): ToolCall | undefined => op.suspendedCall;
 void _persistedSuspendedCall;
 
-// Same lockstep guard for the approval snapshot: the persisted schema must
-// keep carrying `approvalSnapshot` so a rehydrated pending operation still
-// exposes it. The projection errors under `tsc` if the schema drops the field.
+// Same lockstep guard for the approval snapshot.
 const _persistedApprovalSnapshot = (
   op: typeof PendingOperationSchema.infer,
 ): ApprovalSnapshot | undefined => op.approvalSnapshot;
@@ -131,15 +128,12 @@ function parseMetadata(raw: unknown): MetadataData {
 
 /**
  * Walk the first-parent commit chain from HEAD, newest-first, stopping at
- * `limit` entries or at the first parent that is not present on disk.
- *
- * `git.log` throws `NotFoundError` the moment it reaches a missing commit,
- * which is the steady state under `tip-only` GC: the collector prunes
- * ancestry, leaving the tip's older parents absent. The durable conversation
- * lives in the working-tree files at the tip, not in this history, so the
- * commit log is a best-effort time-travel surface — degrade to the surviving
- * slice rather than throwing into a caller (e.g. the agent's `checkpoints`
- * tool). Any non-absence read error still surfaces.
+ * `limit` entries or at the first parent absent on disk. Under `tip-only`
+ * GC that absence is the steady state — the collector prunes ancestry —
+ * so degrade to the surviving slice rather than throwing into a caller
+ * (e.g. the agent's `checkpoints` tool). The durable conversation lives
+ * in the working-tree files at the tip, not in this history. Any
+ * non-absence read error still surfaces.
  */
 async function tolerantLog(
   runtime: StorageRuntime,
@@ -206,11 +200,7 @@ function assertSafeSegment(value: string, label: string): void {
   }
 }
 
-/**
- * Validate a callId for use in a filesystem path and return the sanitized
- * form used as the filename. Rejects path traversal (`..`, `/`) outright;
- * other unsafe characters are replaced with `_`.
- */
+// Sanitize a callId into a safe filename; rejects path traversal outright.
 function sanitizeCallId(callId: string): string {
   if (callId.includes("..") || callId.includes("/")) {
     throw new Error(
@@ -290,14 +280,12 @@ function parseTurns(text: string): ConversationTurn[] {
 
 /**
  * isomorphic-git-backed implementation of ContextStore and AuditStore.
- *
- * Conversation state lives in `turns.jsonl`; per-cycle prompt/response/manifest
- * data lives in `prompt.jsonl`, `response.jsonl`, and `manifest.jsonl`. Pending
- * operations, token usage, and connector state are serialized into
- * `metadata.json`. Audit records are written as individual JSON files under
- * `state/audit/{sessionId}/`. All files are tracked by the git repository at
- * `dir`. The caller is responsible for calling `initAgentRepo(dir)` before
- * constructing.
+ * Conversation state lives in `turns.jsonl`; per-cycle data in
+ * `prompt.jsonl`, `response.jsonl`, `manifest.jsonl`; pending operations,
+ * token usage, and connector state in `metadata.json`; audit records as
+ * individual JSON files under `state/audit/{sessionId}/`. All files are
+ * tracked by the git repository at `dir`. Call `initAgentRepo(dir)`
+ * before constructing.
  */
 /**
  * Extra reads the durable WAL mirror needs beyond `ContextStore`, kept
@@ -352,7 +340,7 @@ export class IsogitStore
   }
 
   // Reclaim after a write while the per-directory lock is still held, per
-  // the configured policy. A no-op when no policy was supplied.
+  // the configured policy; a no-op when no policy was supplied.
   private async maybeGC(): Promise<void> {
     if (this.gcPolicy === undefined) return;
     await maybeGCUnderLock(this.runtime, this.dir, this.gcPolicy);
@@ -684,9 +672,8 @@ export class IsogitStore
       this.runtime.path.join(this.dir, TURNS_FILE),
       encodeJsonlLines(turns),
     );
-    // Advance the in-memory marker only after the durable write succeeds.
-    // peekTurns must never surface an array that failed to persist -- a
-    // write failure leaves it pointing at the last array that did.
+    // Advance the in-memory marker only after the durable write succeeds:
+    // peekTurns must never surface an array that failed to persist.
     this.lastTurns = turns;
   }
 
@@ -695,10 +682,9 @@ export class IsogitStore
   }
 
   /**
-   * Write `metadata.json` containing pending operations, token usage, and the
-   * currently-buffered connector state. The reactor calls this once per cycle
-   * before issuing the working-tree commit so the file is staged atomically
-   * with the per-cycle conversation data.
+   * Write `metadata.json` containing pending operations, token usage, and
+   * the currently-buffered connector state, staged atomically with the
+   * per-cycle conversation data on the next commit.
    */
   async writeMetadata(
     metadata: {

@@ -19,9 +19,7 @@ export const tenant = pgTable(
     // Unique on `lower(domain)`, not the raw column: an inbound mail `From` is
     // lowercased when parsed, so a sender address must map to exactly one
     // tenant. A case-sensitive unique would let case-variant domains coexist and
-    // let a case-variant registration shadow another tenant's senders. The
-    // creation boundary lowercases the domain; this index enforces it for every
-    // write path.
+    // let a case-variant registration shadow another tenant's senders.
     domain: text("domain").notNull(),
     parentId: text("parent_id"),
     config: jsonb("config"),
@@ -34,8 +32,8 @@ export const tenant = pgTable(
     // Constrains `slug`, and only `slug`, to a single DNS label: RFC 1035
     // section 2.3.1 as relaxed by RFC 1123 section 2.1, the same grammar the
     // `TenantSlug` validator applies at the create route, enforced here for
-    // every write path including the ones that bypass that route. `domain`
-    // carries no grammar constraint and nothing here relates the two columns.
+    // every write path. `domain` carries no grammar constraint and nothing here
+    // relates the two columns.
     check(
       "tenant_slug_dns_label_check",
       sql`${t.slug} ~ '^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$' and length(${t.slug}) <= 63`,

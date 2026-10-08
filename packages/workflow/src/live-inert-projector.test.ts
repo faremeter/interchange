@@ -788,20 +788,12 @@ describe("closed step schema accepts every real Primitive variant", () => {
 // The primitive kind set is enumerated twice, and nothing in the type system
 // reconciles the two: `Primitive["kind"]` is a TypeScript union in this
 // package, while the wire `WorkflowStep.kind` is an arktype string-literal
-// union in `@intx/types`, which sits below this package in the dependency
-// graph and so cannot name the live union. This test IS the reconciliation.
-//
-// What it defends: every kind the wire admits has a live primitive behind it,
-// and every live primitive can cross the wire. Readers on both sides rely on
-// that. `@intx/workflow-deploy`'s inert body reader is the sharpest case -- it
-// validates a step's kind against the WIRE enum and dispatches it into a table
-// whose compiler-forced keys are the LIVE union, so its exhaustiveness is
-// exhaustiveness over what the wire admits only while the two sets agree.
-//
-// The corpus assertion above also touches the kind set, but incidentally: it
-// checks that the fixtures exercise all ten kinds, not that the two
-// enumerations agree. A kind added to one side and forgotten on the other
-// would leave that assertion passing.
+// union in `@intx/types`, which sits below this package and cannot name the
+// live union. This test IS the reconciliation: every kind the wire admits has
+// a live primitive behind it, and every live primitive can cross the wire.
+// `@intx/workflow-deploy`'s inert body reader is the sharpest case -- it
+// dispatches against the wire enum into a table whose compiler-forced keys are
+// the live union, so its exhaustiveness holds only while the two sets agree.
 // ---------------------------------------------------------------------------
 
 describe("live and wire primitive kind enumerations", () => {

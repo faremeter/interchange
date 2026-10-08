@@ -25,12 +25,10 @@ afterEach(() => {
     rmSync(root, { recursive: true, force: true });
 });
 
-// The `packages` array is placed under `packages/pN`; `extra` places a
-// manifest at an explicit workspace-relative dir (e.g. `apps/ui`,
-// `tests/lib`) so the description check — which enumerates every member the
-// root `workspaces` globs declare — can be exercised across all member
-// kinds. A root manifest with those globs is always written, since
-// `checkWorkspaceDescriptions` derives its member set from it.
+// `packages` entries go under `packages/pN`; `extra` places a manifest at an
+// explicit workspace-relative dir so the description check is exercised across
+// all member kinds. A root manifest with the workspace globs is always
+// written, since the check derives its member set from it.
 function makeWorkspace(
   packages: PackageSpec[],
   extra: Record<string, PackageSpec> = {},
@@ -58,8 +56,7 @@ function makeWorkspace(
   return root;
 }
 
-// Create empty files under `packages/pN` so a `sideEffects` glob has
-// something to match on disk.
+// Create empty files so a `sideEffects` glob has something to match on disk.
 function seedPackageFiles(root: string, index: number, relPaths: string[]) {
   for (const rel of relPaths) {
     const path = join(root, "packages", `p${index}`, rel);
@@ -128,9 +125,8 @@ test("any package may declare its own non-false sideEffects", async () => {
 });
 
 test("a sideEffects array of only unshipped paths is flagged", async () => {
-  // `./src/*` matches on disk at lint time but is absent from the published
-  // tarball (files ships `dist`), so a source-only declaration would be
-  // silently tree-shaken. At least one entry must be under a shipped path.
+  // A source-only declaration would be tree-shaken from the published
+  // tarball; at least one entry must be under a shipped path.
   const root = makeWorkspace([canonical("@x/a", ["./src/index.ts"])]);
   seedPackageFiles(root, 0, ["src/index.ts"]);
   const { violations } = await checkWorkspaceMetadata(root);
@@ -217,9 +213,8 @@ test("checkBuiltSideEffects passes when every glob matches an emitted file", asy
 });
 
 test("checkBuiltSideEffects flags a glob matching no emitted file", async () => {
-  // The manifest declares the intended path, but the build emitted a typo'd
-  // name — so the declared glob resolves to nothing in the built tree, the
-  // exact case the lint-time `files`-coverage escape cannot catch.
+  // The build emitted a typo'd name, so the declared glob resolves to nothing
+  // in the built tree — the case lint-time `files` coverage cannot catch.
   const root = makeWorkspace([canonical("@x/log", ["./dist/register.js"])]);
   seedPackageFiles(root, 0, ["dist/registr.js"]);
   const { violations } = await checkBuiltSideEffects(root);
@@ -277,8 +272,7 @@ test("checkBuiltSideEffects throws on a malformed sideEffects", async () => {
       publishConfig: { access: "public" },
     },
   ]);
-  // Well-formedness is the lint gate's job; reaching this check with a
-  // malformed value means that gate did not run, so it must surface loudly.
+  // Malformed input means the lint gate did not run; surface it loudly.
   await expect(checkBuiltSideEffects(root)).rejects.toThrow(/malformed/);
 });
 
@@ -286,8 +280,7 @@ test("checkBuiltSideEffects throws on an absent sideEffects", async () => {
   const pkg = canonical("@x/a");
   delete pkg["sideEffects"];
   const root = makeWorkspace([pkg]);
-  // An absent declaration is the literal "checkWorkspaceMetadata did not run
-  // first" precondition the throw defends, so it must surface, not be skipped.
+  // An absent declaration is the exact precondition the throw defends.
   await expect(checkBuiltSideEffects(root)).rejects.toThrow(/malformed/);
 });
 

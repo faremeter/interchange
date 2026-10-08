@@ -1,18 +1,14 @@
-// Anthropic SSE wire DSL.
-//
-// Each helper emits a single SSE event encoded as UTF-8 bytes the existing
-// `createAnthropicAdapter()` in `@intx/inference/providers/anthropic`
-// will parse without error. The DSL never touches adapter internals; it
-// produces the same byte shape Anthropic's real `/v1/messages` stream would.
+// Anthropic SSE wire DSL. Each helper emits one SSE event as UTF-8 bytes the
+// `createAnthropicAdapter()` in `@intx/inference/providers/anthropic` parses
+// without error — the same byte shape Anthropic's real `/v1/messages` stream
+// emits.
 
 const encoder = new TextEncoder();
 
 /**
- * Encode a JSON-serializable payload as an Anthropic-style SSE event. The
- * adapter's `parseResponse` only looks at the `data:` payload, but real
- * Anthropic streams prefix each event with an `event:` line — emitting both
- * keeps the bytes faithful to production and lets future stricter parsers
- * keep working.
+ * Encode a payload as an Anthropic-style SSE event: `event:` line plus
+ * `data:` payload, as real Anthropic streams emit. The adapter's
+ * `parseResponse` reads only the `data:` payload.
  */
 function encodeSSE(eventName: string, data: unknown): Uint8Array {
   return encoder.encode(
@@ -21,17 +17,12 @@ function encodeSSE(eventName: string, data: unknown): Uint8Array {
 }
 
 /**
- * Options for `messageStart`. When `usage` is omitted the event is emitted
- * with no `message.usage` object — exactly the shape Anthropic uses for the
- * `message_start` event when it elects not to forward initial usage. With
- * `usage`, the adapter emits one `inference.usage` event.
+ * Options for `messageStart`. When `usage` is omitted no `message.usage`
+ * object is emitted (Anthropic's shape when it does not forward initial
+ * usage). With `usage`, the adapter emits one `inference.usage` event.
  */
 export type AnthropicMessageStartOpts = {
-  /**
-   * Usage block embedded in `message.usage`. Provider-specific cache fields
-   * (`cache_read_input_tokens`, `cache_creation_input_tokens`) map to
-   * `cacheRead` / `cacheWrite` in the harness's `TokenUsage`.
-   */
+  /** Usage block in `message.usage`; cache fields map to `cacheRead`/`cacheWrite`. */
   usage?: {
     inputTokens?: number;
     outputTokens?: number;
@@ -44,10 +35,7 @@ export type AnthropicMessageStartOpts = {
   id?: string;
 };
 
-/**
- * Emit a `message_start` SSE event. With a `usage` block, the adapter emits
- * one `inference.usage` event. Without one, it emits nothing.
- */
+/** Emit a `message_start` SSE event. */
 export function messageStart(opts: AnthropicMessageStartOpts = {}): Uint8Array {
   const message: Record<string, unknown> = {
     id: opts.id ?? "msg_test",
@@ -75,9 +63,9 @@ export function messageStart(opts: AnthropicMessageStartOpts = {}): Uint8Array {
 }
 
 /**
- * Options for `contentBlockStart`. `kind` selects the block shape; the
- * adapter only acts on `tool_use` blocks (emitting `inference.tool_call.start`)
- * but emits text blocks too so multi-block transcripts can be reproduced.
+ * Options for `contentBlockStart`. The adapter acts only on `tool_use`
+ * blocks (`inference.tool_call.start`); text/thinking blocks are emitted for
+ * faithful multi-block transcripts.
  */
 export type AnthropicContentBlockStartOpts =
   | { index: number; kind: "text"; text?: string }
@@ -85,11 +73,7 @@ export type AnthropicContentBlockStartOpts =
   | { index: number; kind: "tool_use"; id: string; name: string }
   | { index: number; kind: "raw"; contentBlock: Record<string, unknown> };
 
-/**
- * Emit a `content_block_start` SSE event. The `raw` variant accepts an
- * arbitrary `contentBlock` payload for adversarial tests that need to model
- * unknown block kinds.
- */
+/** Emit a `content_block_start` SSE event. `raw` takes an arbitrary payload. */
 export function contentBlockStart(
   opts: AnthropicContentBlockStartOpts,
 ): Uint8Array {
@@ -115,11 +99,7 @@ export function contentBlockStart(
   });
 }
 
-/**
- * Options for `contentBlockDelta`. The kinds correspond to the deltas the
- * adapter handles: text, thinking, the cryptographic signature that
- * follows a thinking block, and `input_json_delta` for tool args.
- */
+/** Options for `contentBlockDelta`; kinds mirror the deltas the adapter handles. */
 export type AnthropicContentBlockDeltaOpts =
   | { index: number; kind: "text_delta"; text: string }
   | { index: number; kind: "thinking_delta"; thinking: string }
@@ -127,11 +107,7 @@ export type AnthropicContentBlockDeltaOpts =
   | { index: number; kind: "input_json_delta"; partialJson: string }
   | { index: number; kind: "raw"; delta: Record<string, unknown> };
 
-/**
- * Emit a `content_block_delta` SSE event. The `raw` variant accepts an
- * arbitrary `delta` payload (including unknown `type` values) for
- * malformed/adversarial scenarios.
- */
+/** Emit a `content_block_delta` SSE event. `raw` takes an arbitrary payload. */
 export function contentBlockDelta(
   opts: AnthropicContentBlockDeltaOpts,
 ): Uint8Array {
@@ -181,10 +157,7 @@ export type AnthropicMessageDeltaOpts = {
   outputTokens?: number;
 };
 
-/**
- * Emit a `message_delta` SSE event. The adapter forwards `usage.output_tokens`
- * as an `inference.usage` event; `stop_reason` is informational.
- */
+/** Emit a `message_delta` SSE event; the adapter forwards `usage.output_tokens` as `inference.usage`. */
 export function messageDelta(opts: AnthropicMessageDeltaOpts = {}): Uint8Array {
   const delta: Record<string, unknown> = {};
   if (opts.stopReason !== undefined) delta["stop_reason"] = opts.stopReason;
@@ -209,28 +182,20 @@ export function ping(): Uint8Array {
 }
 
 /**
- * Wire-level escape hatch. Emits the supplied string as-is (no `event:`
- * or `data:` framing added). Use this when a test needs to model bytes the
- * structured helpers cannot express — split SSE events, malformed framing,
- * or experimental event types not yet covered by a helper.
- *
- * If a particular adversarial pattern recurs, add a helper instead of
- * sprinkling `raw()` calls across tests.
+ * Wire-level escape hatch: emits the string as-is, no `event:`/`data:`
+ * framing, for byte shapes the structured helpers cannot express (split
+ * events, malformed framing, new event types). Prefer a helper if a pattern
+ * recurs.
  */
 export function raw(rawSSE: string): Uint8Array {
   return encoder.encode(rawSSE);
 }
 
 /**
- * Convenience: emit an Anthropic thinking block (start + delta +
- * optional signature_delta + stop). The adapter forwards each
- * `thinking_delta` as an `inference.thinking.delta`; when `signature`
- * is supplied, the trailing `signature_delta` becomes an
- * `inference.block.signature` and the harness attaches it to the
- * final ThinkingBlock.
- *
- * `index` defaults to 0; supply a higher index when interleaving thinking
- * with other content blocks (e.g., text at index 1 after thinking at 0).
+ * Convenience: emit a thinking block (start + delta + optional
+ * `signature_delta` + stop). Deltas forward as `inference.thinking.delta`;
+ * a trailing signature becomes `inference.block.signature` on the final
+ * ThinkingBlock. `index` defaults to 0.
  */
 export function thinkingBlock(
   text: string,
@@ -251,12 +216,9 @@ export function thinkingBlock(
 }
 
 /**
- * Convenience: emit a complete tool_use content block (start + JSON args
- * delta + stop). `argsJSON` is the serialized arguments string; pass an
- * intentionally malformed string to model bad-JSON cases.
- *
- * `index` defaults to 0; supply a higher index when other content blocks
- * appear before the tool call.
+ * Convenience: emit a complete tool_use block (start + args delta + stop).
+ * `argsJSON` is the serialized arguments string; pass malformed JSON to
+ * model bad-JSON cases. `index` defaults to 0.
  */
 export function toolUseBlock(
   id: string,
@@ -275,11 +237,7 @@ export function toolUseBlock(
   ];
 }
 
-/**
- * Convenience: emit a complete text content block (start + delta + stop)
- * at the supplied index. The adapter emits one `inference.text.delta`
- * carrying `text` as the token.
- */
+/** Convenience: emit a complete text block; the adapter emits one `inference.text.delta`. */
 export function textBlock(text: string, index = 0): Uint8Array[] {
   return [
     contentBlockStart({ index, kind: "text", text: "" }),
@@ -288,12 +246,7 @@ export function textBlock(text: string, index = 0): Uint8Array[] {
   ];
 }
 
-/**
- * Convenience: emit a complete malformed-JSON tool_use sequence. The adapter
- * still surfaces `tool_call.start` and `tool_call.delta` events; the
- * downstream harness's JSON.parse later sees an unparseable argument buffer
- * and falls back to `{ _raw: ... }`. Useful for testing recovery paths.
- */
+/** Convenience: a tool_use block with unterminated JSON args; the harness's `JSON.parse` falls back to `{ _raw: ... }`. */
 export function malformedToolUseBlock(
   id: string,
   name: string,
@@ -303,11 +256,9 @@ export function malformedToolUseBlock(
 }
 
 /**
- * Convenience: emit a `content_block_delta` event whose `delta.type` is
- * unknown ("garbage_delta"). The adapter's validator accepts any `string`
- * for `delta.type`, so the event parses cleanly; the switch statement
- * then falls through every known `delta.type` branch and the adapter
- * emits no events. Useful for testing forward-compat.
+ * Convenience: emit a `content_block_delta` with an unknown `delta.type`.
+ * The validator accepts any string type, so the event parses; the adapter
+ * then emits nothing (forward-compat test).
  */
 export function unknownDelta(index = 0): Uint8Array {
   return contentBlockDelta({
@@ -318,16 +269,10 @@ export function unknownDelta(index = 0): Uint8Array {
 }
 
 /**
- * Convenience: emit a complete redacted_thinking content block. Captured
- * Anthropic streams deliver each redacted block as a one-shot inside
- * `content_block_start` carrying an opaque `data` blob — no thinking_delta
- * stream for redacted blocks. Real streams may open multiple redacted
- * blocks before text; call this helper once per block with distinct
- * `index` values. The block must echo back verbatim on follow-up turns
- * or the API rejects the request.
- *
- * `index` defaults to 0; supply a higher index when interleaving with
- * other content blocks.
+ * Convenience: emit a redacted_thinking block, delivered as a one-shot
+ * `content_block_start` with an opaque `data` blob (no delta stream).
+ * Must echo back verbatim on follow-up turns or the API rejects the
+ * request. `index` defaults to 0.
  */
 export function redactedThinkingBlock(data: string, index = 0): Uint8Array[] {
   return [
@@ -341,13 +286,9 @@ export function redactedThinkingBlock(data: string, index = 0): Uint8Array[] {
 }
 
 /**
- * Convenience: emit a complete server_tool_use content block. Anthropic
- * uses this for server-side tools (code_execution, web_search, etc.).
- * Wire pattern mirrors `tool_use`: start with empty input, stream the
- * input as JSON via `input_json_delta`, then stop. `name` selects which
- * server-side tool (e.g., `"code_execution"`).
- *
- * `index` defaults to 0.
+ * Convenience: emit a server_tool_use block (Anthropic's server-side tool
+ * shape: code_execution, web_search, etc.). Same wire pattern as `tool_use`
+ * with an empty input object. `index` defaults to 0.
  */
 export function serverToolUseBlock(
   id: string,
@@ -370,11 +311,7 @@ export function serverToolUseBlock(
   ];
 }
 
-/**
- * Inner result shape for `codeExecutionToolResultBlock`. Mirrors
- * Anthropic's `code_execution_result` payload as captured in
- * `sessions/anthropic/.../code-execution/exchanges/0/response.json`.
- */
+/** Inner result shape for `codeExecutionToolResultBlock`, mirroring Anthropic's `code_execution_result` payload. */
 export type AnthropicCodeExecutionResult = {
   stdout?: string;
   stderr?: string;
@@ -384,14 +321,10 @@ export type AnthropicCodeExecutionResult = {
 };
 
 /**
- * Convenience: emit a complete code_execution_tool_result content block.
- * Anthropic delivers this as a one-shot inside `content_block_start`
- * with the full `code_execution_result` payload baked in — no delta
- * stream. `toolUseId` correlates the result back to the preceding
- * `server_tool_use` block's id.
- *
- * `index` defaults to 0; in a normal code-execution response the
- * server_tool_use is at index N and the result follows at index N+1.
+ * Convenience: emit a code_execution_tool_result block, delivered as a
+ * one-shot `content_block_start` with the full payload (no delta stream).
+ * `toolUseId` correlates back to the preceding `server_tool_use` id.
+ * `index` defaults to 0.
  */
 export function codeExecutionToolResultBlock(
   toolUseId: string,
@@ -413,16 +346,10 @@ export function codeExecutionToolResultBlock(
 }
 
 /**
- * Convenience: emit a complete text content block carrying inline
- * citations. Anthropic's citation wire shape is a text block initialized
- * with an empty `citations: []` array, followed by `text_delta` events
- * for the body, then one `content_block_delta` per citation with
- * `delta.type === "citations_delta"`. Each citation's inner shape varies
- * by source (e.g., `web_search_result_location` for web_search,
- * `char_location` / `page_location` / `content_block_location` for
- * document-based citations); pass them in already-shaped.
- *
- * `index` defaults to 0.
+ * Convenience: emit a text block with inline citations: start with an
+ * empty `citations: []`, stream the body via `text_delta`, then one
+ * `citations_delta` per citation (shapes vary by source; pass them
+ * already-shaped). `index` defaults to 0.
  */
 export function textBlockWithCitations(
   text: string,

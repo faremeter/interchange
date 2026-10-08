@@ -28,14 +28,12 @@ import {
   seedWorkflowRun,
 } from "@intx/test-harness/seed";
 
-// Exercises the blob endpoint against a real migrated schema. The blob route
+// Exercises the blob endpoint against a real migrated schema. The route
 // derives its authorization subject from the mail's owning routable: an
-// instance's mail carries its indexed runId, while a folded run's mail
-// carries a null runId and keys on its session, so the run id is recovered
-// by joining workflow_run to agent_session on the shared principal. That join
-// and the authorization it feeds only run against a real database -- the
-// mock-capture harness in instances.test.ts stubs the sessionMail writes and
-// cannot exercise them.
+// instance's mail carries its indexed runId, a folded run's mail carries a
+// null runId and keys on its session, so the run id is recovered by joining
+// workflow_run to agent_session on the shared principal. That join only runs
+// against a real database.
 
 const TENANT_ID = "tnt_blob";
 const ACTOR_PRINCIPAL_ID = "prn_actor";
@@ -55,9 +53,9 @@ const ORPHAN_SESSION_ID = "ses_orphan";
 
 const enc = new TextEncoder();
 
-// A minimal multipart/mixed message whose first part is fetchable at path "1".
-// extractPartByPath returns that part's bytes verbatim (headers and body), so a
-// distinctive body lets a test confirm the right bytes came back.
+// A minimal multipart/mixed message whose first part is fetchable at path
+// "1"; extractPartByPath returns that part's bytes verbatim, so a
+// distinctive body confirms the right bytes came back.
 function multipartRaw(partOneBody: string): Uint8Array {
   return enc.encode(
     [

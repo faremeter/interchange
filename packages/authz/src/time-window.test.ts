@@ -14,7 +14,7 @@ function makeCtx(date: Date): ConditionContext {
   };
 }
 
-// Helper: create a Date at a specific UTC time.
+// Helper: a Date at a specific UTC time.
 function utc(hour: number, minute: number): Date {
   return new Date(Date.UTC(2026, 3, 16, hour, minute, 0));
 }

@@ -1,8 +1,6 @@
-// Dev-only fixtures layered onto @intx/inference-catalog when seeding the local
-// database. The published catalog deliberately excludes credential material and
-// pricing — today's prices are dev-fakes — so the seed owns them here and joins
-// them to the catalog's providers and offerings by name. Keeping them out of
-// the package is what lets the package be a clean public contract.
+// Dev-only fixtures layered onto @intx/inference-catalog when seeding the
+// local database: the published catalog excludes credential material and
+// pricing, so the seed owns them here and joins them by name.
 
 export type CredentialFixture = {
   credentialName: string;
@@ -52,9 +50,8 @@ export const credentialFixtures: Record<string, CredentialFixture> = {
 // Dev pricing as decimal strings, matching the API's string money fields.
 export type PriceFixture = { input: string; output: string };
 
-// Keyed by catalog provider name, then model canonical name — the same
-// (provider, model) identity the catalog offering and the seeded offering row
-// carry.
+// Keyed by (provider, model), the same identity the catalog offering and the
+// seeded offering row carry.
 export const priceFixtures: Record<string, Record<string, PriceFixture>> = {
   "Anthropic Direct": {
     "claude-sonnet-5": { input: "0.000003", output: "0.000015" },
@@ -90,12 +87,10 @@ export const priceFixtures: Record<string, Record<string, PriceFixture>> = {
   },
 };
 
-// Offerings intentionally seeded without pricing, keyed by provider name to the
-// model canonical names. Dev pricing is a fake fixture, so a model can ship
-// without one — but absence must be declared here, not inferred: the seed
-// requires every offering to be either priced or explicitly listed here (never
-// neither, never both), so a dropped or mistyped price on a priced model still
-// aborts the seed rather than silently skipping its pricing row.
+// Offerings seeded without pricing, keyed by provider name then model. Absence
+// must be declared here, not inferred: the seed requires every offering to be
+// priced or explicitly listed (never neither, never both), so a dropped price
+// on a priced model aborts the seed rather than silently skipping its row.
 export const unpricedOfferings: Record<string, readonly string[]> = {
   "Anthropic Direct": [
     "claude-fable-5",

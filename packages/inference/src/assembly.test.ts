@@ -24,11 +24,9 @@ import type {
 
 import type { AuditRecord } from "@intx/types/audit";
 
-// Built-in-backed dependencies shared across the assembly tests. The
-// assembly used to default `deps` internally; now that the field is
-// required, the canonical built-in default is supplied explicitly. These
-// tests drive tool execution rather than real inference, so the bound
-// `globalThis.fetch` is never reached.
+// Built-in-backed dependencies shared across the assembly tests. These tests
+// drive tool execution, not real inference, so `globalThis.fetch` is never
+// reached.
 const defaultDeps = createDefaultDependencies();
 
 // ---------------------------------------------------------------------------
@@ -212,8 +210,7 @@ function allowAuthorize(): Promise<AuthzCallResult> {
   });
 }
 
-// A recording before-tool extension that captures every call and the order in
-// which it ran relative to peers via the shared trace array.
+// Records its invocation in the shared trace array.
 function makeRecordingExtension(
   name: string,
   trace: string[],
@@ -226,7 +223,7 @@ function makeRecordingExtension(
   };
 }
 
-// A recording tool-result transform that captures the order of invocation.
+// Records its invocation order in the shared trace array.
 function makeRecordingTransform(
   name: string,
   trace: string[],
@@ -264,10 +261,8 @@ function collectEvents(): {
 
 describe("createReactorAssembly", () => {
   test("default size-cap transform is the first tool-result transform when no caller transforms are provided", async () => {
-    // We observe the size-cap transform via its side effect: a large tool
-    // result spills to ContextStore.writeBlob. With no caller transforms,
-    // the helper-supplied size-cap is the only transform and the spill must
-    // appear in the blob store.
+    // Observed via side effect: an over-cap result spills to
+    // ContextStore.writeBlob, so the spill must appear in the blob store.
     const contextStore = makeContextStore();
     const events = collectEvents();
     const big = "x".repeat(200);
@@ -295,9 +290,9 @@ describe("createReactorAssembly", () => {
   });
 
   test("caller's toolResultTransforms run after the default size-cap transform (order preserved)", async () => {
-    // Drive an over-cap result. The caller's first transform should observe
-    // an already-truncated payload (size-cap ran first), and both caller
-    // transforms should run in the order supplied.
+    // Drive an over-cap result: the caller's first transform must observe an
+    // already-truncated payload (size-cap ran first), and both caller
+    // transforms run in the order supplied.
     const trace: string[] = [];
     const seen: string[] = [];
     const captureTransform: ToolResultTransform = {
@@ -346,16 +341,14 @@ describe("createReactorAssembly", () => {
     await waitForDone(events.events);
 
     expect(trace).toEqual(["capture", "tail"]);
-    // The captured prefix is from `big`, confirming the caller transform
-    // saw the size-cap's truncated marker (which begins with the kept
-    // characters from `big`).
+    // The captured prefix is from `big`, confirming the caller transform saw
+    // the size-cap's truncated marker.
     expect(seen[0]).toBe("yyyyy");
   });
 
   test("custom sizeCapMaxChars flows into the size-cap transform", async () => {
-    // Drive an over-cap result with maxChars=10 and assert the spilled blob's
-    // bytes equal the original content (size-cap always spills the full
-    // payload when it caps).
+    // maxChars=10 over a 50-char payload; size-cap always spills the full
+    // payload when it caps.
     const contextStore = makeContextStore();
     const events = collectEvents();
     const payload = "z".repeat(50);
@@ -383,8 +376,8 @@ describe("createReactorAssembly", () => {
   });
 
   test("with authorize set, an authz before-tool extension is composed in front of caller's beforeToolExtensions", async () => {
-    // No caller extensions: a deny authorize should still block the call by
-    // virtue of the assembly-built authz extension running first.
+    // No caller extensions: a deny authorize blocks the call by virtue of
+    // the assembly-built authz extension running first.
     const contextStore = makeContextStore();
     const events = collectEvents();
     const auditStore = makeRecordingAuditStore();
@@ -422,11 +415,8 @@ describe("createReactorAssembly", () => {
   });
 
   test("with authorize + caller's beforeToolExtensions, authz runs first; caller's extensions follow in order", async () => {
-    // The authz extension allows; the recording extension records that it
-    // saw the call. If authz had been ordered after the recording extension,
-    // a deny would still block — but we want to verify ordering specifically,
-    // so we use allow and assert the recording extension still ran (proves
-    // authz didn't block) and we observe the order via the trace.
+    // Use an allow authorize and assert the recording extension still ran
+    // (authz didn't block) and the trace order pins the composition.
     const contextStore = makeContextStore();
     const events = collectEvents();
     const trace: string[] = [];
@@ -434,8 +424,8 @@ describe("createReactorAssembly", () => {
 
     let authzRan = false;
     const authorize = (): Promise<AuthzCallResult> => {
-      // Authz runs synchronously here; appending before the await guarantees
-      // ordering relative to the caller-ext (which appends in beforeTool).
+      // Appending before the await guarantees ordering relative to
+      // caller-ext's beforeTool append.
       authzRan = true;
       trace.push("authz");
       return Promise.resolve({
@@ -498,8 +488,8 @@ describe("createReactorAssembly", () => {
     await waitForDone(events.events);
 
     const batches = auditStore.getCommitted();
-    // Director checkpoints then done — flush happens at checkpoint and again
-    // at shutdown. The shutdown flush finds an empty buffer and skips.
+    // Director checkpoints then done — flush at checkpoint, and the shutdown
+    // flush finds an empty buffer and skips.
     expect(batches.length).toBe(1);
     expect(batches[0]?.length).toBe(1);
     expect(batches[0]?.[0]?.callId).toBe("c6");
@@ -707,9 +697,8 @@ describe("createReactorAssembly", () => {
   });
 
   test("without authorize, the reactor's beforeToolExtensions is exactly the caller's array", async () => {
-    // Observable assertion: a caller-supplied extension that blocks should
-    // produce a blocked tool result, and no authz-supplied extension should
-    // be interposed (we'd otherwise see two extension invocations).
+    // A caller-supplied block must surface as a blocked tool result with no
+    // authz extension interposed (which would add a second invocation).
     const contextStore = makeContextStore();
     const events = collectEvents();
     const trace: string[] = [];
@@ -747,12 +736,9 @@ describe("createReactorAssembly", () => {
   });
 
   test("forwards doomLoopThreshold to the reactor", async () => {
-    // The forward is a conditional spread: a broken forward silently drops the
-    // value and the reactor falls back to its default of 3. This test runs
-    // exactly two identical tool turns, so it trips only if the supplied
-    // threshold of 2 actually reached the reactor -- the default of 3 would
-    // not trip in two turns. Reactor-level tests inject ReactorConfig directly
-    // and cannot cover this seam.
+    // Two identical tool turns trip only the supplied threshold of 2; the
+    // reactor default of 3 would not trip in two turns. Reactor-level tests
+    // inject ReactorConfig directly and cannot cover this seam.
     const events = collectEvents();
 
     // Loops the same tool call, capped at two executions so a dropped

@@ -5,13 +5,13 @@ import { dirname, join } from "node:path";
 
 import { checkWorkspace } from "./check-deps";
 
-// Each fixture is a throwaway workspace on disk: a root package.json carrying
-// the catalog and a `workspaces` array derived from the members it declares,
-// plus those members with their manifests, source files, and optional
-// tsconfig. checkWorkspace enumerates members through the root `workspaces`
-// globs and runs the static checks (phantom imports + catalog convergence)
-// against them; files under `bin`/`tests` that are not members are checked
-// against the root manifest.
+// Each fixture is a throwaway workspace on disk: a root package.json
+// carrying the catalog and a `workspaces` array derived from the members
+// it declares, plus those members with their manifests, source files, and
+// optional tsconfig. checkWorkspace enumerates members through the root
+// `workspaces` globs and runs the static checks (phantom imports +
+// catalog convergence) against them; files under `bin`/`tests` that are
+// not members are checked against the root manifest.
 
 type MemberSpec = {
   manifest: Record<string, unknown>;
@@ -45,12 +45,11 @@ function makeWorkspace(spec: WorkspaceSpec): string {
   roots.push(root);
   // The root manifest declares exactly the members the fixture writes, as
   // literal `workspaces` entries — the same single source of truth
-  // `checkWorkspace` reads via `readWorkspaceManifestPaths`. Literal entries
-  // (rather than `<dir>/*` globs) mirror how the real root lists `tests/lib`
-  // and let a fixture place a non-member directory beside a member — e.g. a
-  // non-member `tests/db` next to member `tests/lib` — the shape that
-  // matters for the root-scripts exclusion. A memberless fixture gets `[]`,
-  // which the enumerator accepts (it just finds no members).
+  // `checkWorkspace` reads via `readWorkspaceManifestPaths`. Literal
+  // entries (rather than `<dir>/*` globs) mirror how the real root lists
+  // `tests/lib` and let a fixture place a non-member directory beside a
+  // member — the shape that matters for the root-scripts exclusion. A
+  // memberless fixture gets `[]`, which the enumerator accepts.
   const workspaces = Object.keys(spec.members ?? {});
   writeFile(
     root,
@@ -370,9 +369,9 @@ test("a workspace member under tests/ is checked against its own manifest, not t
       },
     },
   });
-  // Exactly one violation, in the member shape. Without the member-subtree
-  // exclusion the root-scripts scan would add a second, root-shaped
-  // violation for the same import.
+  // Exactly one violation, in the member shape. Without the
+  // member-subtree exclusion the root-scripts scan would add a second,
+  // root-shaped violation for the same import.
   expect(v).toEqual([
     '@x/harness: imports "member-undeclared" (tests/lib/h.ts) but does not declare it in package.json',
   ]);

@@ -2516,8 +2516,8 @@ describe("reconciliation ownership", () => {
         }
         await tick();
 
-        // The abandoned queued callback must not initialize or publish readiness
-        // when the old connection write finally returns. A fresh claim may retry.
+        // The abandoned queued callback must not initialize or publish
+        // readiness when the old connection write finally returns.
         expect(ready).toEqual([other.id]);
         expect(await reconciler.reconcileNext()).toBe(true);
         expect(ready).toEqual([other.id, current.id]);
@@ -3323,30 +3323,21 @@ describe("reconciliation ownership", () => {
         }),
       }),
       operationTimeoutMs: 10,
-      // The lease is scaffolding here, and it sets a real deadline against a
-      // real timer: the heartbeat schedules its first renewal one third of
-      // the lease after it starts, and that renewal must land before the
-      // lease itself elapses or the reconciliation aborts as lease-lost. The
-      // slack is the remaining two thirds -- twenty milliseconds at a lease
-      // of thirty, which a loaded machine spends on scheduling delay alone,
-      // and then nothing reaches `calls`. Three hundred keeps the same ratio
-      // and makes that slack two hundred milliseconds, while the deadline
-      // this test is about stays at ten.
+      // The lease must outlive the heartbeat's first renewal (one third of the
+      // lease after start) by enough slack for a loaded machine; with thirty
+      // milliseconds that slack is twenty, which scheduling delay alone spends.
       leaseDurationMs: 300,
       onReady: async (_allocation, { signal }) => {
-        // The subject is that initialization may outlast the operation
-        // deadline while lease renewals keep the claim alive. The renewals
-        // run through the store double, so it reports the second one and
-        // this awaits that report rather than polling for it.
+        // Initialization outlasts the operation deadline while lease renewals
+        // keep the claim alive; the store double reports the second renewal.
         await secondRenewal.promise;
         signal.throwIfAborted();
         calls.push("initialized");
       },
     });
     await reconciler.reconcileNext();
-    // Two renewals were reported before initialization returned, and both
-    // fell after the ten-millisecond operation deadline -- so "initialized"
-    // here is initialization surviving that deadline, not merely running.
+    // Both renewals fell after the deadline, so this success is initialization
+    // surviving it, not merely running.
     expect(calls).toEqual(["initialized", "ready"]);
   });
 
@@ -3398,10 +3389,8 @@ describe("reconciliation ownership", () => {
     try {
       await renewalEntered.promise;
       // The renewal never reports, so the lease expires and the controller
-      // aborts. `runSidecarOperation` races the initialization against that
-      // abort, so `reconcileNext` returns on it without waiting for the hung
-      // renewal or the pending preparation -- and awaiting it is what
-      // establishes that the abort was carried all the way out.
+      // aborts; `runSidecarOperation` races initialization against that abort,
+      // so awaiting `reconcileNext` establishes the abort was carried out.
       // `signal.aborted` says only that the abort was raised.
       await work;
       expect(signal?.aborted).toBe(true);
@@ -3410,10 +3399,8 @@ describe("reconciliation ownership", () => {
       renewal.resolve(true);
       preparation.resolve(true);
     }
-    // Both late arrivals are queued by the two lines above, the renewal's
-    // continuation first. The hook's report is queued behind its own
-    // resumption, so this await sits after every effect either could have
-    // had, and the empty `calls` is the late success being ignored.
+    // Both late arrivals are queued above, the renewal's continuation first;
+    // the empty `calls` is the late success being ignored.
     await resumed.promise;
     expect(signal?.aborted).toBe(true);
     expect(calls).toEqual([]);
@@ -3823,9 +3810,8 @@ describe("reconciliation ownership", () => {
         initialized.resolve(true);
         await first;
       }
-      // A late connect schedules an immediate follow-up however the
-      // initialization went: the follow-up redeploys a replaced worker and
-      // is a no-op when the worker is unchanged.
+      // A late connect schedules an immediate follow-up however initialization
+      // went: it redeploys a replaced worker and is a no-op when unchanged.
       expect(calls).toEqual(["retry"]);
       await reconciler.reconcileNext();
       expect(calls).toEqual(["retry", "ready"]);

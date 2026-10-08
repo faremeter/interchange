@@ -28,14 +28,13 @@ export type RequestBuilder = (
 //
 // The parser may return an empty array for events it doesn't care about
 // (e.g., Anthropic's ping events). It MAY throw `ProtocolMismatchError`
-// when the upstream chunk violates the provider's protocol (malformed
-// JSON, schema validation failure, out-of-order events); the harness's
-// stream-error catch converts that into an `inference.error` with
-// category `"protocol_mismatch"` via `classifyStreamError`. No other
-// throw type is permitted, and adapter-returned `inference.error` or
-// `inference.done` events are silently dropped — the harness owns
-// emission of those terminal types and the only path through which
-// adapter-detected failures can surface is `ProtocolMismatchError`.
+// when the upstream chunk violates the provider's protocol (malformed JSON,
+// schema validation failure, out-of-order events); the harness's stream-error
+// catch converts that into an `inference.error` with category
+// `"protocol_mismatch"` via `classifyStreamError`. No other throw type is
+// permitted, and adapter-returned `inference.error` or `inference.done`
+// events are silently dropped — the harness owns emission of those terminal
+// types.
 export type ResponseParser = (sseData: string) => InferenceEvent[];
 
 // A JSON response parser converts a complete non-streaming response body (a
@@ -43,21 +42,19 @@ export type ResponseParser = (sseData: string) => InferenceEvent[];
 // the streaming `ResponseParser` produces. It exists for providers that answer
 // with a buffered JSON body instead of an SSE stream.
 //
-// It returns the SAME `InferenceEvent` vocabulary as `parseResponse` —
-// text/thinking/refusal deltas, tool_call.*, usage, citation, safety_rating,
-// image_output, code_execution.* — re-expressing the whole response in the
-// harness's delta/marker protocol (e.g. the entire assistant text as a single
-// text.delta). It is not a new "whole message" event shape: the harness runs
-// the returned events through the same accumulator as the SSE path, and that
-// switch silently drops event types it does not model, so an invented event
-// shape yields a silently-empty turn.
+// It returns the SAME `InferenceEvent` vocabulary as `parseResponse`,
+// re-expressing the whole response in the harness's delta/marker protocol
+// (e.g. the entire assistant text as a single text.delta). It is not a new
+// "whole message" event shape: the harness runs the returned events through
+// the same accumulator as the SSE path, and that switch silently drops event
+// types it does not model, so an invented event shape yields a silently-empty
+// turn.
 //
 // Every delta event MUST carry an `index` — the harness's `requireIndex`
 // throws otherwise, exactly as on the SSE path — and the parser synthesizes
 // indices the same way its SSE sibling does. It MUST emit `inference.usage`
 // from the body's usage object, or the harness synthesizes zero token counts.
-// Like `ResponseParser` it MAY throw only `ProtocolMismatchError`; no other
-// throw type is permitted.
+// Like `ResponseParser` it MAY throw only `ProtocolMismatchError`.
 export type JSONResponseParser = (body: string) => InferenceEvent[];
 
 // An adapter pairs a request builder with a response parser. Registration
@@ -88,8 +85,8 @@ export type ProviderAdapter = {
 // slim `LastCycleSource` descriptor that rides on every usage event, whereas
 // quirks are deployment configuration supplied at instantiation. The bag is
 // opaque to everything above the factory; interpreting and validating it is
-// the factory's own responsibility. It is optional: an absent bag means the
-// adapter's default behavior, so callers that have no quirks omit it.
+// the factory's own responsibility. Optional: an absent bag means the
+// adapter's default behavior.
 export type AdapterFactory = (
   source: LastCycleSource,
   quirks?: unknown,
@@ -115,9 +112,6 @@ export type AdapterRegistry = {
  * memoizes the adapter instance. That per-call freshness is load-bearing:
  * the response parser holds per-request state, so a cached adapter would
  * leak that state across inference calls and across failover attempts.
- *
- * @param factories - Map of provider identifier to adapter factory
- * @returns A registry exposing membership and per-call resolution
  */
 export function createAdapterRegistry(
   factories: Readonly<Record<string, AdapterFactory>>,

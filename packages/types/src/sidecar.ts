@@ -1,11 +1,9 @@
 // Websocket wire protocol for hub↔sidecar communication.
 //
 // One websocket connection per sidecar↔hub pair. All traffic is multiplexed
-// as JSON frames with a `type` discriminator. The sidecar initiates the
-// connection; the hub is the server.
-//
-// Mail bytes are base64-encoded in JSON frames. Binary frames would be more
-// efficient but JSON is simpler to debug and inspect.
+// as JSON frames with a `type` discriminator; the sidecar initiates the
+// connection and the hub is the server. Mail bytes are base64-encoded in
+// JSON frames — simpler to debug and inspect than binary frames.
 
 import { type } from "arktype";
 import { GrantWalkSnapshot } from "./grant-snapshot";
@@ -26,82 +24,62 @@ import { WorkflowDefinitionSource } from "./workflow-sources";
 // Frame array-length ceilings
 // ---------------------------------------------------------------------------
 //
-// Hostile-absurdity upper bounds on the unbounded `string[]` fields of the wire
-// frames below. They bound element COUNT, not byte size: a peer that sends a
-// `string[]` of millions of tiny elements costs little in bytes but forces the
-// receiver to allocate, iterate, dedup, or map over an absurd count. A total
-// payload byte limit is the weakest defense exactly here -- many one-character
-// elements are a huge count at a small byte cost -- so element-count caps are
-// the right tool for `string[]`. The object-typed frame arrays are out of scope
-// for these caps: their elements each carry many bytes, so an absurd count of
-// them is far costlier on the wire, and a payload-size limit is the right
-// backstop for that byte-heavy dimension. An over-count frame fails this parse
-// and routes through the existing invalid-frame drop+log path; no handler change
-// is needed.
+// Hostile-absurdity upper bounds on the unbounded `string[]` frame fields.
+// They cap element COUNT, not byte size: millions of one-character elements
+// cost little in bytes but force the receiver to allocate and iterate over an
+// absurd count. Object-typed arrays are exempt — their elements carry many
+// bytes each, so a payload-size limit is the right backstop there. An
+// over-count frame fails this parse and drops through the invalid-frame path.
 
-// A sidecar's reported agent addresses. The register/reconnect handler already
-// gates each reported address against the allocation's single minted workflow
-// address, so the legitimate count is ~1; this is a generous absurdity backstop.
+// A sidecar's reported agent addresses; the handler gates each against the
+// allocation's single minted workflow address, so ~1 is legitimate. Generous
+// absurdity backstop.
 export const MAX_AGENT_ADDRESSES_FRAME = 512;
 
-// A sidecar's reported cached sender addresses. This MUST stay well above the
-// `MAX_RESYNC_SENDER_ADDRESSES` handler cap (currently 2048 in the hub-sessions
-// sidecar-handler): that cap drives a graceful "resync the first N, log the
-// overflow" degrade rather than dropping the frame, so a schema ceiling at or
-// below it would turn the degrade into a hard reconnect outage -- the whole
-// register frame would fail this parse and drop, and the sidecar could not
-// reconnect. The `@intx/types` package must not import from `@intx/hub-sessions`,
-// so the coupling is a documented invariant guarded by a test in that package.
+// A sidecar's reported cached sender addresses. MUST stay well above the
+// hub-sessions `MAX_RESYNC_SENDER_ADDRESSES` handler cap (2048): that cap
+// drives a graceful "resync the first N" degrade, and a schema ceiling at or
+// below it would turn the degrade into a hard reconnect outage. The coupling
+// is a documented invariant guarded by a test (types must not import from
+// hub-sessions).
 export const MAX_CACHED_SENDER_ADDRESSES_FRAME = 65536;
 
-// A mail frame's recipient / To / Cc address lists. `recipients` is the routing
-// set; `to`/`cc` are audit-only header metadata. A modest ceiling far above any
-// real recipient list.
+// A mail frame's recipient / To / Cc address lists. `recipients` is the
+// routing set; `to`/`cc` are audit-only header metadata.
 export const MAX_MAIL_ADDRESSES_FRAME = 1024;
 
-// A workflow probe result's flattened grant strings (the deduped union of every
-// step's grants). No enforced workflow step-count or per-step grant-count cap
-// exists to derive this from, so it is a reasonable absurdity ceiling rather
-// than a computed bound.
+// A workflow probe result's flattened grant strings (the deduped union of
+// every step's grants); a reasonable absurdity ceiling, not a computed bound.
 export const MAX_PROBE_GRANTS_FRAME = 8192;
 
-// A credentials-update frame's revoked credential ids. A modest ceiling far
-// above any real credential set.
+// A credentials-update frame's revoked credential ids; a modest ceiling far
+// above any real set.
 export const MAX_CREDENTIAL_REVOCATIONS_FRAME = 1024;
 
 // ---------------------------------------------------------------------------
 // Frame payload byte limits
 // ---------------------------------------------------------------------------
 //
-// Byte-size ceilings on the control socket, complementary to the element-count
-// ceilings above. One layer owns each dimension: the hub sidecar websocket's
-// maxPayloadLength owns the whole-frame byte size, and the mail body cap owns
-// one mail's rawMessage.
+// Byte-size ceilings on the control socket, complementary to the
+// element-count ceilings: the websocket's maxPayloadLength owns the
+// whole-frame byte size, and the mail body cap owns one mail's rawMessage.
 
 // The largest rawMessage (base64-encoded MIME) a `mail.outbound` frame may
-// carry. A shared-policy ceiling: it holds the SAME number as `@intx/hub-api`'s
-// `MAX_MAIL_BODY_BYTES`, which caps the inbound HTTP mail route's whole request
-// body, so the frame path and the HTTP path enforce the same body ceiling. The
-// two measure different quantities -- an HTTP whole request body vs the frame's
-// rawMessage alone -- so they are deliberately separate constants held equal by
-// a guard test rather than one constant conflating two policies.
-// Enforced symmetrically: the hub drops an over-cap received frame (the DoS
-// backstop) and the sidecar refuses to send one.
+// carry. Equal to `@intx/hub-api`'s `MAX_MAIL_BODY_BYTES` so both paths
+// enforce the same ceiling; separate constants held equal by a guard test.
+// Enforced symmetrically: the hub drops an over-cap frame and the sidecar
+// refuses to send one.
 export const MAX_MAIL_OUTBOUND_BODY_BYTES = 44 * 1024 * 1024;
 
-// Headroom above the largest legit received frame for its base64/JSON framing
-// and its (separately count-capped) address arrays, so `maxPayloadLength` never
-// closes the socket on a legitimate mail frame whose rawMessage sits at the body
-// cap.
+// Headroom for base64/JSON framing plus the count-capped address arrays, so
+// `maxPayloadLength` never closes the socket on a legit mail frame at the cap.
 const FRAME_OVERHEAD_BYTES = 20 * 1024 * 1024;
 
-// The ceiling wired as the hub sidecar websocket's `maxPayloadLength`. Bun
-// closes the connection on a RECEIVED message larger than this, so it must clear
-// the largest legit received frame -- the `mail.outbound` frame, whose
-// rawMessage is bounded by `MAX_MAIL_OUTBOUND_BODY_BYTES`, plus framing
-// overhead. maxPayloadLength gates incoming messages only; it does NOT limit
-// what the hub sends, so the hub->sidecar inline-asset deploy does not factor
-// into this number.
+// The hub sidecar websocket's `maxPayloadLength`; Bun closes the connection
+// on a received message larger than this, so it must clear the largest legit
+// received frame (`mail.outbound` at the body cap plus framing overhead). It
+// gates incoming messages only, so the hub->sidecar inline-asset deploy does
+// not factor in.
 export const MAX_SIDECAR_FRAME_BYTES =
   MAX_MAIL_OUTBOUND_BODY_BYTES + FRAME_OVERHEAD_BYTES;
 
@@ -111,8 +89,7 @@ export const MAX_SIDECAR_FRAME_BYTES =
 
 /**
  * Sent on first connect when the sidecar has no existing agents in its data
- * directory. Identifies the sidecar and declares it ready to receive
- * agent.deploy frames.
+ * directory; declares it ready to receive agent.deploy frames.
  */
 export const RegisterFrame = type({
   type: "'register'",
@@ -121,12 +98,9 @@ export const RegisterFrame = type({
   agentAddresses: type("string")
     .array()
     .atMostLength(MAX_AGENT_ADDRESSES_FRAME),
-  // The rotatable (non-run) sender addresses this sidecar holds cached keys
-  // for. The hub re-resolves each current key and re-pushes it on a
-  // `sender.key.refresh`, so a user-principal rotation that landed while the
-  // sidecar was disconnected reaches its cache. Additive-optional and omitted
-  // when empty: a sidecar with no cached senders (or a pre-upgrade one) sends
-  // no field, and the hub treats absence as "nothing to refresh".
+  // Rotatable (non-run) sender addresses this sidecar holds cached keys for,
+  // so a rotation that landed while disconnected reaches its cache on
+  // reconnect. Additive-optional, omitted when empty.
   "cachedSenderAddresses?": type("string")
     .array()
     .atMostLength(MAX_CACHED_SENDER_ADDRESSES_FRAME),
@@ -145,11 +119,7 @@ export const ReconnectFrame = type({
   agentAddresses: type("string")
     .array()
     .atMostLength(MAX_AGENT_ADDRESSES_FRAME),
-  // The rotatable (non-run) sender addresses this sidecar holds cached keys
-  // for; see `RegisterFrame`. Carried on both frames because the register vs
-  // reconnect choice turns on workflow-address presence, not sender-cache
-  // presence -- a sidecar that restored no workflow substrate still reports its
-  // cached senders on a register frame. Additive-optional, omitted when empty.
+  // Same as `RegisterFrame.cachedSenderAddresses`; omitted when empty.
   "cachedSenderAddresses?": type("string")
     .array()
     .atMostLength(MAX_CACHED_SENDER_ADDRESSES_FRAME),
@@ -157,9 +127,8 @@ export const ReconnectFrame = type({
 export type ReconnectFrame = typeof ReconnectFrame.infer;
 
 /**
- * Acknowledges a successful agent deployment. Includes the agent's Ed25519
- * public key (hex-encoded) for published identity and content provenance.
- * Reconnect authority comes from the allocation credential.
+ * Acknowledges a successful agent deployment, carrying the agent's
+ * hex-encoded Ed25519 public key for identity and content provenance.
  */
 export const AgentDeployAckFrame = type({
   type: "'agent.deploy.ack'",
@@ -180,12 +149,8 @@ export type AgentErrorFrame = typeof AgentErrorFrame.infer;
 
 /**
  * A message from a local agent. When `delivered` is absent or false the hub
- * should route the message to its recipients. When `delivered` is true the
- * message was already delivered locally and is forwarded for audit/projection
- * only — the hub must not re-route it.
- *
- * Structured metadata (senderAddress, messageId, to, cc) is available for
- * audit and projection purposes without parsing the raw MIME bytes.
+ * routes it to its recipients; when true it was already delivered locally and
+ * is forwarded for audit/projection only.
  */
 export const MailOutboundFrame = type({
   type: "'mail.outbound'",
@@ -213,15 +178,9 @@ export const AgentEventFrame = type({
 export type AgentEventFrame = typeof AgentEventFrame.infer;
 
 /**
- * Notifies the hub that the agent's connector-thread state has changed.
- * The sidecar emits this when the harness's connector router commits a
- * start/continue decision, when an outbound reply advances the
- * lastMessageId, and when load-time restore brings persisted state into
- * memory. The hub uses the cached state to set threading headers on
- * user-originated mail so the harness routes it as `continue` rather
- * than `passthrough`.
- *
- * `connectorState` is `null` when no active thread exists.
+ * Notifies the hub that the agent's connector-thread state changed, so the
+ * hub can set threading headers on user-originated mail (routing it as
+ * `continue` rather than `passthrough`).
  */
 export const ConnectorStateChangedFrame = type({
   type: "'connector.state.changed'",
@@ -232,8 +191,8 @@ export type ConnectorStateChangedFrame =
   typeof ConnectorStateChangedFrame.infer;
 
 /**
- * Keepalive ping sent by the sidecar. The hub responds with a pong frame.
- * If the hub stops receiving pings, it considers the sidecar dead.
+ * Keepalive ping sent by the sidecar so the hub can detect a dead sidecar;
+ * answered with a pong frame.
  */
 export const PingFrame = type({ type: "'ping'" });
 export type PingFrame = typeof PingFrame.infer;
@@ -258,8 +217,8 @@ export const SessionErrorFrame = type({
 export type SessionErrorFrame = typeof SessionErrorFrame.infer;
 
 /**
- * Acknowledges that an agent has been fully undeployed: the deployment's
- * workflow child stopped, state pushed (best-effort), and directory deleted.
+ * Acknowledges that an agent has been fully undeployed: workflow child
+ * stopped, state pushed (best-effort), directory deleted.
  */
 export const AgentUndeployAckFrame = type({
   type: "'agent.undeploy.ack'",
@@ -269,17 +228,14 @@ export const AgentUndeployAckFrame = type({
 export type AgentUndeployAckFrame = typeof AgentUndeployAckFrame.infer;
 
 /**
- * Registers a control-signal correlation as a workflow agent step suspends.
- * The fields on this frame all converge at the sidecar's suspend emit point;
- * the hub uses them to co-write the `signal_correlation` routing row and the
- * `approval` row in one transaction, so the eventual resolver can route a
- * delivered decision back to the parked run and flip its approval.
+ * Registers a control-signal correlation as a workflow agent step suspends;
+ * the hub co-writes the `signal_correlation` routing row and the `approval`
+ * row in one transaction so a delivered decision resolves back to the parked
+ * run.
  *
  * `signalName` is deliberately NOT on the wire: it is a pure function of
  * `correlationId` (`signalName(correlationId)` in `./signals`), so the hub
- * computes it rather than trusting a value the sidecar could disagree on.
- * `anchorRunId` is the anchor run the parked run belongs to; `agentAddress`
- * is the anchor run's routable address the hub resolves tenancy from.
+ * computes it rather than trusting the sidecar.
  */
 export const SignalCorrelationRegisterFrame = type({
   type: "'signal.correlation.register'",
@@ -289,9 +245,7 @@ export const SignalCorrelationRegisterFrame = type({
   agentAddress: "string",
   kind: SignalKind,
   // Approver-facing snapshot of the suspended tool call, size-capped at this
-  // trust boundary. Required: the ask rail is the only producer of this frame
-  // and always carries a snapshot, so a snapshot-absent frame fails this parse
-  // at the receiver (logged and dropped, never co-written as a null row).
+  // trust boundary and always required.
   snapshot: BoundedApprovalSnapshot,
 });
 export type SignalCorrelationRegisterFrame =
@@ -302,15 +256,9 @@ export type SignalCorrelationRegisterFrame =
 // ---------------------------------------------------------------------------
 
 /**
- * Hub acknowledges a `signal.correlation.register`: the routing + approval
- * co-write for this correlationId is durable (whether this frame inserted the
- * rows or found them already present). It lets the sidecar's link stop
- * retrying a register whose frame may have been lost on an open socket or
- * evicted from the bounded send queue. Keyed on correlationId alone -- every
- * producer of the register (the initial park, the respawn/reconnect re-emit, a
- * link retry) carries the same correlationId and drives the same idempotent
- * co-write, so the ack asserts the one fact that matters: a row exists for this
- * correlation.
+ * Hub acknowledges a `signal.correlation.register`: the co-write for this
+ * correlationId is durable (inserted now or found already present), so the
+ * sidecar stops retrying.
  */
 export const SignalCorrelationRegisterAckFrame = type({
   type: "'signal.correlation.register.ack'",
@@ -321,29 +269,18 @@ export type SignalCorrelationRegisterAckFrame =
   typeof SignalCorrelationRegisterAckFrame.infer;
 
 /**
- * A message to deliver to a local agent's INBOX. The hub routes inbound
- * mail (from UI users, from agents on other sidecars) to the correct
- * sidecar connection.
+ * A message to deliver to a local agent's INBOX, routed by the hub from UI
+ * users or other sidecars.
  *
- * `messageId` is the hub-minted id of this delivery, carried so the sidecar
- * can acknowledge durable receipt (`mail.inbound.ack`) keyed on the SAME id
- * the hub tracks -- no per-side re-derivation. It is the id the hub minted at
- * ingress (also the message's `Message-ID` header), so a redelivery replays
- * identical bytes and the downstream `RunStarted` dedup (consumedMessageIds)
- * makes at-least-once effectively-once. Present only on hub-originated mail
- * that participates in the ack/retry handshake (workflow trigger mail, session
- * conversation mail); agent-to-agent relayed mail omits it.
+ * `messageId` is the hub-minted id this delivery's ack keys on — the same id
+ * minted at ingress (also the message's `Message-ID` header) — so a
+ * redelivery replays identical bytes and the `RunStarted` dedup makes
+ * at-least-once effectively-once. Present only on hub-originated mail;
+ * agent-to-agent relayed mail omits it.
  *
- * `authenticatedSender` is the hub-verified sender ADDRESS of this message.
- * The hub assigns it at the frame's construction site from a value it has
- * itself verified -- the ownership-gated sender of a relayed mail, the
- * address persisted at enqueue for a durable dispatch, or the triggering
- * principal's address for hub-originated mail -- NEVER from the message's
- * own (spoofable) MIME `From`. The recipient's signature check takes the
- * sender of record from this hub-verified value rather than the forgeable
- * `From`, resolves the sender's key from its local cache, verifies the
- * signature, and gates delivery on the resulting admission outcome per the
- * recipient's inbound-mail policy.
+ * `authenticatedSender` is the hub-verified sender ADDRESS, never the
+ * message's own spoofable MIME `From`; the recipient's signature check uses
+ * it as the sender of record.
  */
 export const MailInboundFrame = type({
   type: "'mail.inbound'",
@@ -355,14 +292,10 @@ export const MailInboundFrame = type({
 export type MailInboundFrame = typeof MailInboundFrame.infer;
 
 /**
- * Sidecar acknowledges durable receipt of a `mail.inbound`: the message is in
- * the agent's on-disk inbox. The hub holds each delivered mail in a pending
- * map and retries until this ack lands (or reconnect-redelivers it), so a
- * message dropped in the connected/reconnecting window is not silently lost.
- * Keyed on the hub-minted `messageId` the `mail.inbound` carried, so the ack
- * clears exactly the pending entry it resolves; the ack is only sent AFTER the
- * durable inbox write resolves (a non-ack IS the retry signal). At-least-once
- * delivery is made effectively-once by the `RunStarted`/signal dedup guards.
+ * Sidecar acknowledges durable receipt of a `mail.inbound` (the message is in
+ * the on-disk inbox). The hub retries until this ack lands or re-delivers on
+ * reconnect; sent only after the durable inbox write resolves. At-least-once
+ * is made effectively-once by the `RunStarted`/signal dedup guards.
  */
 export const MailInboundAckFrame = type({
   type: "'mail.inbound.ack'",
@@ -372,21 +305,14 @@ export const MailInboundAckFrame = type({
 export type MailInboundAckFrame = typeof MailInboundAckFrame.infer;
 
 /**
- * Deliver a workflow-run signal to a multi-step deployment's
- * supervisor. The hub forwards the frame to the sidecar that hosts the
- * deployment named by `agentAddress` (the deployment-level mail
- * address). The sidecar's hub-link routes the frame into the matching
- * supervisor's `deliverSignal`, which sends a `signal.deliver` control
- * IPC frame to the workflow-process child. The child commits the
- * `SignalReceived` event through its own substrate -- the single
- * writer of the workflow-run repo on the sidecar side -- so the
- * pack-push pipeline that propagates the commit to the hub never sees
- * a concurrent writer at the same ref.
+ * Deliver a workflow-run signal to a multi-step deployment's supervisor,
+ * which relays it as a `signal.deliver` control frame to the workflow-process
+ * child; the child commits `SignalReceived` through its own substrate — the
+ * single writer of the workflow-run repo — so the pack-push pipeline never
+ * sees a concurrent writer at the same ref.
  *
- * `signalId` is supplied by the producer so the workflow-run state
- * machine's dedup index (`observedSignalIds`) rejects a duplicate
- * delivery cleanly; a fresh value per call is the producer's
- * responsibility.
+ * `signalId` feeds the run's dedup index (`observedSignalIds`); a fresh value
+ * per call is the producer's responsibility.
  */
 export const SignalDeliverFrame = type({
   type: "'signal.deliver'",
@@ -400,8 +326,7 @@ export type SignalDeliverFrame = typeof SignalDeliverFrame.infer;
 
 /**
  * A sender address bound to the public key the hub vouches for. `publicKey`
- * is the hex-encoded raw 32-byte Ed25519 key. `address` is the full
- * domain-qualified sender address.
+ * is the hex-encoded raw 32-byte Ed25519 key.
  */
 export const SenderIdentity = type({
   address: "string",
@@ -411,24 +336,12 @@ export type SenderIdentity = typeof SenderIdentity.infer;
 
 /**
  * Deliver a run's authorization grants to a multi-step deployment's
- * supervisor. The hub forwards the frame to the sidecar that hosts the
- * deployment named by `agentAddress` (the deployment-level mail
- * address). The sidecar's hub-link routes the frame into the matching
- * deployment's wiring, which writes the grants to `runs/<runId>/grants.json`
- * inside the deployment's `workflow-run` repo -- sibling to the run's
- * `runs/<runId>/events/` subtree.
+ * supervisor, which writes them to `runs/<runId>/grants.json` in the
+ * deployment's `workflow-run` repo.
  *
- * `stepGrants` carries the same `WireGrantRule` shape the `agent.deploy`
- * frame's `config.grants` ships, so the run's grants ride the same
- * validated grant encoding as the deploy-time step grants rather than a
- * new one.
- *
- * `senderIdentities` carries the resolved public keys of the run's
- * authorized senders, co-delivered on the same `run.grants` barrier as the
- * authorization grant so a recipient can bind each sender address to the
- * key the hub vouches for. A sender with no resolvable key is omitted rather
- * than carried as null, so every entry has a concrete key. The field is
- * optional: a producer that does not co-deliver keys omits it entirely.
+ * `stepGrants` carries the same `WireGrantRule` shape as the deploy frame's
+ * `config.grants`; `senderIdentities` co-delivers each authorized sender's
+ * resolved public key (a sender with no resolvable key is omitted).
  */
 export const RunGrantsFrame = type({
   type: "'run.grants'",
@@ -440,25 +353,14 @@ export const RunGrantsFrame = type({
 export type RunGrantsFrame = typeof RunGrantsFrame.infer;
 
 /**
- * Re-push the current public key the hub vouches for a cached sender, keyed by
- * the sender's `address`. `publicKey` is the hex-encoded raw 32-byte Ed25519
- * key, exactly as `SenderIdentity` carries it. The sidecar overwrites its cached
- * key for `address` and touches nothing else -- no grants, no per-run state.
+ * Re-push the public key the hub vouches for a cached sender, keyed by
+ * `address`; the sidecar overwrites its cached key and touches nothing else.
+ * Sent once per rotatable sender reported on (re)connect, so a rotation that
+ * landed while the sidecar was disconnected reaches it.
  *
- * The hub sends one per rotatable sender the sidecar reported on (re)connect,
- * after re-resolving the sender's current key: a user-principal rotation that
- * happened while the sidecar was disconnected lands on the sidecar this way.
- *
- * It is a dedicated frame rather than a reuse of two shapes it resembles.
- * Not `SenderIdentity` (whose shape it currently matches): that type is a fact
- * embedded in `run.grants`, so composing it would couple this command's wire
- * contract to a grants-owned type. Not `run.grants`: a rotated key is
- * address-keyed and cross-run, whereas grants are run-keyed, and routing this
- * through the grants barrier would poison a healthy idle run on a transient
- * cache-write fault and do a per-run durable write for a change that alters no
- * grants. One address per frame keeps each key's cache write independently
- * fallible -- a fault on one sender never fails the refresh of another -- which
- * is the property a batched frame would give up.
+ * A dedicated frame rather than a reuse of `run.grants` (run-keyed, so a
+ * cross-run key update through it would poison an idle run); one address per
+ * frame keeps each cache write independently fallible.
  */
 export const SenderKeyRefreshFrame = type({
   type: "'sender.key.refresh'",
@@ -468,18 +370,14 @@ export const SenderKeyRefreshFrame = type({
 export type SenderKeyRefreshFrame = typeof SenderKeyRefreshFrame.infer;
 
 /**
- * Evict a cached sender key, keyed by the sender's `address`. The sidecar
- * durably removes its cached key for `address` and touches nothing else. The
- * hub sends it during reconnect reconciliation for a reported cached sender it
- * re-resolves to NO durable key -- a sender whose principal was deleted while
- * the sidecar was disconnected -- so the sidecar stops verifying that sender's
- * mail against a key the hub no longer vouches for.
+ * Evict a cached sender key, keyed by `address`; the sidecar durably removes
+ * it and touches nothing else. Sent during reconnect reconciliation when a
+ * reported cached sender re-resolves to NO durable key (principal deleted
+ * while disconnected), so the sidecar stops verifying that sender's mail.
  *
- * A dedicated sibling of `sender.key.refresh` rather than a mode on it: that
- * frame's doc argues against a mode-dependent shape, and a refresh always
- * carries a key whereas an evict never does, so a shared frame would make
- * `publicKey` conditionally present. One address per frame keeps each eviction
- * independently fallible, the same property the refresh frame preserves.
+ * A dedicated sibling of `sender.key.refresh` (refresh always carries a key,
+ * evict never does); one address per frame keeps each eviction independently
+ * fallible.
  */
 export const SenderKeyEvictFrame = type({
   type: "'sender.key.evict'",
@@ -488,24 +386,14 @@ export const SenderKeyEvictFrame = type({
 export type SenderKeyEvictFrame = typeof SenderKeyEvictFrame.infer;
 
 /**
- * Deliver a workflow-host drain control payload to a multi-step
- * deployment's supervisor. The hub forwards the frame to the sidecar
- * that hosts the deployment named by `agentAddress` (the
- * deployment-level mail address). The sidecar's hub-link routes the
- * frame into the matching supervisor's `drain`, which sends a `drain`
- * control IPC frame to the workflow-process child and arms one
- * `drainTimeout` accumulator per in-flight run. Cancel-mode in-flight
- * steps abort on the child side as the controller's signal flips;
- * wait-mode steps continue. Each accumulator commits a signed
- * `CancelRequested{origin: "supervisor-drain"}` against the
- * workflow-run repo through the supervisor's substrate when the
- * deadline expires.
+ * Deliver a workflow-host drain control payload to a multi-step deployment's
+ * supervisor, which sends a `drain` control frame to the workflow-process
+ * child and arms one `drainTimeout` accumulator per in-flight run; each
+ * commits a signed `CancelRequested{origin: "supervisor-drain"}` against the
+ * workflow-run repo when its deadline expires.
  *
- * `deadlineMs` is the wire-level policy hint the child echoes in its
- * logs. The supervisor's accumulator is driven by its own bindings'
- * `drainTimeoutMs` -- a per-deployment operator setting -- not by this
- * value; the wire field exists so the child's log reflects the
- * caller's intent.
+ * `deadlineMs` is a wire-level hint the child echoes in its logs; the
+ * accumulator runs on the supervisor's own `drainTimeoutMs` setting.
  */
 export const DrainDeliverFrame = type({
   type: "'drain.deliver'",
@@ -519,25 +407,18 @@ import {
   WorkflowProjectionWithSources,
 } from "./wire-workflow";
 // Re-export the wire-step/projection contracts that moved to `./wire-workflow`
-// so existing `@intx/types/sidecar` consumers keep resolving them here. Each
-// name is an arktype schema, so the single re-export carries both its value and
-// its inferred type.
+// so existing `@intx/types/sidecar` consumers keep resolving them here.
 export { WorkflowStep } from "./wire-workflow";
 export { WorkflowProjectionDefinition, WorkflowProjectionWithSources };
 
 /**
- * The decrypted credential material and per-handle binding descriptors
- * delivered to a running agent so its tools can use provider-backed
- * credentials. Secrets are decrypted hub-side and ride this payload on the
- * live channel ONLY -- the deploy frame at launch, a `credentials.update`
- * frame on rotation, and the child's in-memory cell. They are NEVER written to
- * disk (they do not ride the git-committed grants file) and NEVER copied into
- * any snapshot, event, or state -- redaction is by construction, mirroring how
- * an `InferenceSource`'s `apiKey` stays off every egress type.
+ * Decrypted credential material and per-handle binding descriptors delivered
+ * to a running agent. Secrets ride the live channel ONLY (deploy frame,
+ * `credentials.update`, the child's in-memory cell): never written to disk
+ * and never copied into snapshots, events, or state.
  *
- * `materials` is keyed by `credentialId` (a credential can back several handles,
- * so its secret is stored once); `bindings` maps each declared tool handle to
- * the credential that backs it and the consumer identity allowed to use it.
+ * `materials` is keyed by `credentialId` (a secret is stored once);
+ * `bindings` maps each tool handle to its credential and allowed consumer.
  */
 export const CredentialMaterialEntry = type({
   credentialId: "string",
@@ -562,16 +443,11 @@ export const CredentialDelivery = type({
 export type CredentialDelivery = typeof CredentialDelivery.infer;
 
 /**
- * The source-ref pin: where a code-sourced (npm) workflow definition's bytes
- * come from (`source`) plus the frozen dependency closure the hub resolved for
- * that pin (`closure`, concrete versions + integrity SRIs). The two ALWAYS
- * travel together -- the sidecar re-materializes the exact `closure` from
- * `source` and re-evaluates the pinned code -- so they are one co-required
- * object rather than two independently-optional fields (a "source without
- * closure" state could not be re-materialized and re-evaluated, and evaluating
- * the pinned code from the closure is the only channel the sidecar has to the
- * runnable definition). This is the same shape `WorkflowProbeRequestFrame`
- * co-requires.
+ * The source-ref pin: where a code-sourced workflow definition's bytes come
+ * from (`source`) plus the frozen dependency closure the hub resolved
+ * (`closure`, concrete versions + integrity SRIs). The two ALWAYS travel
+ * together — the sidecar re-materializes the closure and re-evaluates the
+ * pinned code — the same shape `WorkflowProbeRequestFrame` co-requires.
  */
 export const SourceRefPin = type({
   source: WorkflowDefinitionSource,
@@ -581,24 +457,13 @@ export type SourceRefPin = typeof SourceRefPin.infer;
 
 /**
  * The frozen, fully-serializable record of a code-sourced workflow approval,
- * persisted at prepare time and rehydrated to deploy the exact same definition
- * later. It is the recovery input for a provisioned workflow: the probe runs
- * once on probe-scoped capacity, its result is frozen here, and a ready
- * allocation deploys THIS bundle verbatim with no re-probe.
+ * persisted at prepare time and rehydrated to deploy the exact same
+ * definition later: the recovery input for a provisioned workflow.
  *
- * Every field is inert, secret-free data. `source`/`entry` name where the
- * definition's bytes come from and the entry module the probe evaluated;
- * `projection` is the inert wire projection the freeze hashed; `closure` is the
- * frozen dependency closure the pin resolved to; `approvedWireHash` is the freeze
- * anchor; `approvedGrants` is the approved surface -- the walk's grant-shape
- * strings plus the definition's declared grant requirements, each an
- * `ApprovalItem` (partitioned by kind into an `ApprovalSet` on the deploy
- * hand-off, via `approvalSetFromItems`). The persisted form stays this flat
- * list: rows written before the requirement kind existed hold plain strings,
- * and a string is an `ApprovalItem`, so they still parse. Per-step
- * inference sources are deliberately NOT frozen
- * here -- they carry credential secrets and are re-resolved from the launch
- * spec's offering ids at deploy time.
+ * Every field is inert, secret-free data. `approvedGrants` stays a flat list
+ * so pre-requirement rows (plain strings) still parse — a string is an
+ * `ApprovalItem`. Per-step inference sources are deliberately not frozen:
+ * they carry credential secrets and are re-resolved at deploy time.
  */
 export const FrozenApprovalBundle = type({
   source: WorkflowDefinitionSource,
@@ -613,11 +478,9 @@ export type FrozenApprovalBundle = typeof FrozenApprovalBundle.infer;
 /**
  * A hub asset delivered inline in a source-ref frame so the sidecar can
  * materialize a closure entry whose bytes live in that asset. `pack` is the
- * base64-encoded git packfile the hub produced for the asset (`createPack`
- * output); the sidecar checks out `commitSha` from it as plain files under
- * `mountPath`, then the loader resolves each `kind:"asset"` closure entry
- * against that mount. `assetId` matches the `source.assetId` the closure
- * entries name.
+ * base64-encoded git packfile (`createPack` output); the sidecar checks out
+ * `commitSha` as plain files under `mountPath`, and the loader resolves
+ * `kind:"asset"` closure entries against that mount.
  */
 export const WorkflowSourceAssetMount = type({
   assetId: "string",
@@ -630,75 +493,53 @@ export type WorkflowSourceAssetMount = typeof WorkflowSourceAssetMount.infer;
 
 /**
  * A full workflow deploy frame. The deploy lineage is source-ref only: the
- * runnable definition is the pinned code closure the sidecar re-materializes and
- * evaluates from `sourceRef`, so the frame carries NO inline `definition`. It
- * pins each step's inference sources and the hub-approved wire hash the child
- * re-verifies its closure evaluation against, plus the source-ref-specific
- * extras. The sources-cover-stepOrder coverage narrow that a projection carries
- * runs on the sidecar against the closure-derived definition
- * (`validateWorkflowProjection`), since the frame holds no definition to cover.
- *
- * This is deliberately NOT built on `WorkflowProjectionWithSources`: that shape
- * (definition + sources + approved hash) is the approval/probe projection and
- * stays intact for the probe surface and for each `referencedDefinitions` body,
- * which still carry their own inert definition.
+ * runnable definition is the pinned code closure the sidecar re-materializes
+ * and evaluates from `sourceRef`, so the frame carries NO inline
+ * `definition`. Deliberately NOT built on `WorkflowProjectionWithSources`,
+ * which stays the approval/probe projection (each `referencedDefinitions`
+ * body still carries its own inert definition).
  */
 export const AgentDeployWorkflow = type({
   // Per-step inference-source failover chains, one per step in the closure's
-  // `stepOrder`. Threaded to the workflow-process child so it resolves inference
-  // at step invocation without a hub round-trip.
+  // `stepOrder`.
   sources: { "[string]": InferenceSource.array().atLeastLength(1) },
-  // The hub-approved wire hash of the frozen projection -- the freeze anchor the
-  // hub gate wrote. The sidecar feeds it to the child as `DEFINITION_HASH`, which
-  // the child re-verifies its closure evaluation against. Optional on the wire
-  // because the frame schema does not force it; enforcement lives at runtime
-  // instead -- the production hub builder always stamps it and the sidecar fails
-  // closed if it is absent.
+  // The hub-approved wire hash of the frozen projection (the freeze anchor),
+  // fed to the child as `DEFINITION_HASH` to re-verify its closure
+  // evaluation. Optional on the wire; the production hub always stamps it and
+  // the sidecar fails closed if absent.
   "approvedWireHash?": "string > 0",
-  // Extracted trigger bodies -- onTrigger sections and childWorkflow children,
-  // lifted transitively. Each entry carries the body's inert definition, its own
-  // per-step inference-source pins, and its approved wire hash. The sidecar seals
-  // each body's sources into the per-run record and delivers the plaintext to the
-  // run child through the spawn env, so a body child -- in-process, its env lost
-  // across a restart -- resolves inference durably without holding the cipher
-  // key; the body definition itself is resolved in-memory from the parent's
-  // re-verified closure. Optional: only a deploy that carries an inline onTrigger
-  // section or childWorkflow child populates it.
+  // Extracted trigger bodies (onTrigger sections and childWorkflow children,
+  // lifted transitively), each with its inert definition, per-step source
+  // pins, and approved wire hash; the sidecar seals the bodies' sources into
+  // the per-run record so an in-process body child resolves inference without
+  // holding the cipher key. Optional: only deploys with such bodies.
   "referencedDefinitions?": WorkflowProjectionWithSources.array(),
-  // Initial credential material for the deployment's tools, decrypted hub-side
-  // and delivered on the deploy frame so it is resident before any step runs
-  // (closing the race where a tool resolves a credential before a push lands).
-  // Run-global: a credential's secret is stored once, keyed by credentialId.
-  // Optional -- a deploy whose definition binds no credentials omits it.
+  // Initial credential material for the deployment's tools, resident before
+  // any step runs. Run-global: a secret is stored once, keyed by
+  // credentialId. Optional.
   "credentials?": CredentialDelivery,
-  // The source-ref pin (`source` + frozen `closure`) the sidecar re-materializes
-  // and evaluates the pinned code from. Required: source-ref is the only deploy
-  // lineage, and without the pin the sidecar has no definition to run.
+  // The source-ref pin the sidecar re-materializes and evaluates from.
+  // Required: without it the sidecar has no definition to run.
   sourceRef: SourceRefPin,
   // Source assets a `kind:"asset"` closure entry reads from, delivered inline
-  // (as on the probe) so the sidecar checks them out into its durable
-  // per-deployment source store before materializing the pin. Optional: only
-  // an asset-sourced deploy carries it; a registry-sourced pin fetches its
-  // tarballs over HTTP and delivers none.
+  // so the sidecar checks them out into its source store before
+  // materializing the pin. Optional: only an asset-sourced deploy carries it.
   "assets?": WorkflowSourceAssetMount.array(),
 });
 export type AgentDeployWorkflow = typeof AgentDeployWorkflow.infer;
 
 /**
- * Deploy an agent to this sidecar. The sidecar spawns a supervised
- * workflow-process child to host the deployment.
+ * Deploy an agent to this sidecar, spawning a supervised workflow-process
+ * child to host the deployment.
  *
  * The deploy router discriminates two shapes by field presence without
  * consulting `config`:
- *   - `workflow` set: a workflow deployment (single-step head or multi-step)
- *     that spawns the supervised workflow-process child.
- *   - `provisionStep` true: a no-spawn per-step provision of a multi-step
- *     deploy -- the sidecar initializes the step's agent-state repo and
- *     records the hub key so the follow-up deploy pack applies and verifies,
- *     but spawns nothing. The deployment-level `workflow` frame (sent once
- *     after every step is provisioned) spawns the child.
- * A frame carrying neither is rejected -- there is no in-process
- * fall-through. `workflow` and `provisionStep` are mutually exclusive.
+ *   - `workflow` set: a workflow deployment that spawns the child.
+ *   - `provisionStep` true: a no-spawn per-step provision — the sidecar
+ *     initializes the step's agent-state repo and records the hub key so the
+ *     follow-up deploy pack applies; the deployment-level `workflow` frame
+ *     spawns the child once every step is provisioned.
+ * A frame carrying neither is rejected; the two are mutually exclusive.
  */
 export const AgentDeployFrame = type({
   type: "'agent.deploy'",
@@ -712,9 +553,8 @@ export const AgentDeployFrame = type({
 export type AgentDeployFrame = typeof AgentDeployFrame.infer;
 
 /**
- * Remove an agent from this sidecar. The sidecar shuts the deployment's
- * supervisor down, pushes state to the hub (best-effort), deletes the agent
- * directory, and responds with agent.undeploy.ack.
+ * Remove an agent from this sidecar: supervisor shut down, state pushed
+ * (best-effort), agent directory deleted, then agent.undeploy.ack.
  */
 export const AgentUndeployFrame = type({
   type: "'agent.undeploy'",
@@ -744,7 +584,7 @@ export const WorkflowControlAckFrame = type({
   requestId: "string",
   "error?": "string",
   /**
-   * A stopped worker's ref tips, read after its child exited. The Hub
+   * A stopped worker's ref tips, read after its child exited; the Hub
    * confirms the stop only once it holds the same tips.
    */
   "refTips?": WorkflowRunRefTips,
@@ -752,20 +592,18 @@ export const WorkflowControlAckFrame = type({
 export type WorkflowControlAckFrame = typeof WorkflowControlAckFrame.infer;
 
 /**
- * Keepalive pong sent by the hub in response to a ping frame.
- * If the sidecar stops receiving pongs, it considers the hub dead.
+ * Keepalive pong sent by the hub in response to a ping frame; the sidecar
+ * considers the hub dead if pongs stop arriving.
  */
 export const PongFrame = type({ type: "'pong'" });
 export type PongFrame = typeof PongFrame.infer;
 
 /**
- * Push an updated inference-source list to a running single-step
- * deployment. The sidecar routes it to the deployment's supervisor, which
- * delivers it to the warm agent and swaps its sources in place. `sources`
- * is non-empty (validated at this boundary, mirroring the deploy frame's
- * per-step source arrays). Element 0 is the active source; the producer
- * sets `defaultSource` to its id -- that equality is producer-enforced,
- * not checked here. Responds with session.ack or session.error.
+ * Push an updated inference-source list to a running single-step deployment;
+ * the supervisor delivers it to the warm agent, which swaps its sources in
+ * place. `sources` is non-empty (mirroring the deploy frame's per-step
+ * arrays), element 0 is the active source, and `defaultSource` names it.
+ * Responds with session.ack or session.error.
  */
 export const SourcesUpdateFrame = type({
   type: "'sources.update'",
@@ -777,15 +615,12 @@ export const SourcesUpdateFrame = type({
 export type SourcesUpdateFrame = typeof SourcesUpdateFrame.infer;
 
 /**
- * Push refreshed credential material to a running deployment. Mirrors
- * `SourcesUpdateFrame`: the sidecar routes it to the deployment's supervisor,
- * which forwards it to the child's in-memory cell. The child MERGES `delivery`
- * (materials upsert by credentialId, bindings by consumer-and-handle) and drops
- * each credentialId in `revoke` plus any binding referencing it. Removal is
- * explicit through `revoke` -- omitting a material does not evict it, because
- * the cell has several independently-scoped producers and a wholesale swap
- * would let one evict another's credentials. A pure revocation carries an empty
- * `delivery` and the revoked ids in `revoke`.
+ * Push refreshed credential material to a running deployment; the supervisor
+ * forwards it to the child's in-memory cell. The child MERGES `delivery`
+ * (materials upsert by credentialId, bindings by consumer-and-handle) and
+ * drops each `revoke`d credentialId plus any binding referencing it.
+ * Removal is explicit — omitting a material does not evict it; a pure
+ * revocation carries an empty `delivery`.
  */
 export const CredentialsUpdateFrame = type({
   type: "'credentials.update'",
@@ -802,35 +637,21 @@ export type CredentialsUpdateFrame = typeof CredentialsUpdateFrame.infer;
 // Pack transport (bidirectional)
 // ---------------------------------------------------------------------------
 //
-// Git pack data is streamed between hub and sidecar over the existing JSON
-// WebSocket. Chunks are base64-encoded (matching the mail convention above).
-// A transfer is a sequence of repo.pack.push frames followed by a
-// repo.pack.done, correlated by transferId. The receiver responds with
-// repo.pack.ack or repo.pack.reject.
+// Git pack data streams over the existing JSON WebSocket: base64 chunks as
+// repo.pack.push frames, ended by repo.pack.done, correlated by transferId,
+// answered with repo.pack.ack or repo.pack.reject.
 //
-// Each pack frame carries two complementary addressing fields:
+// Each frame carries two complementary addressing fields: `agentAddress`
+// (the destination agent on the receiving sidecar) and `repoId` (the source
+// repo at the hub; for `kind: "agent-state"` its id is the run address, so
+// both fields carry the same value).
 //
-//   - `agentAddress` identifies the destination agent on the receiving
-//     sidecar. The sidecar manages per-agent state and uses this field to
-//     route the pack to the correct workspace. For agent-state packs the
-//     sidecar applies the pack onto the agent's deploy/state tree.
-//
-//   - `repoId` identifies the source repo at the hub. The hub maps `repoId`
-//     to the originating entry in its kind-keyed RepoStore. For
-//     `repoId.kind === "agent-state"`, `repoId.id` is the run address
-//     (the deploy/state repo and the destination agent are the same), so
-//     the two fields carry the same value. Future kinds (e.g. assets) use
-//     `repoId` to name a non-agent source while `agentAddress` continues
-//     to address the destination agent.
-//
-// Flow control: deferred. Agent deploy trees are small enough that the sender
-// can push all chunks without windowing. If this becomes a problem, a credit-
-// based mechanism can be added later.
+// Flow control is deferred: agent deploy trees are small enough to push all
+// chunks without windowing.
 
 /**
  * Tag identifying a kind of repository in the hub's kind-keyed RepoStore.
- * Lives in `@intx/types` because the wire-level pack frames reference it;
- * the substrate package re-exports it for handler authors.
+ * Lives in `@intx/types` because the wire-level pack frames reference it.
  */
 export const RepoKind = type.enumerated(
   "agent-state",
@@ -842,10 +663,9 @@ export const RepoKind = type.enumerated(
 export type RepoKind = typeof RepoKind.infer;
 
 /**
- * Operations a principal may invoke against a repo in the RepoStore.
- * Lives in `@intx/types` so storage layers (e.g. `@intx/db`) can validate
- * persisted action vocabularies without depending on the substrate
- * package. The substrate re-exports it for handler authors.
+ * Operations a principal may invoke against a repo in the RepoStore. Lives
+ * in `@intx/types` so storage layers can validate persisted action
+ * vocabularies without depending on the substrate package.
  */
 export const RepoAction = type.enumerated(
   "init",
@@ -857,9 +677,8 @@ export const RepoAction = type.enumerated(
 export type RepoAction = typeof RepoAction.infer;
 
 /**
- * Hub-side identity of a repository in the RepoStore. Pack frames carry
- * this alongside `agentAddress` so the hub can map a pack back to the
- * originating repo independently of which sidecar/agent it is destined for.
+ * Hub-side identity of a repository in the RepoStore, carried alongside
+ * `agentAddress` so the hub maps a pack back to the originating repo.
  */
 export const RepoId = type({
   kind: RepoKind,
@@ -868,11 +687,9 @@ export const RepoId = type({
 export type RepoId = typeof RepoId.infer;
 
 /**
- * A chunk of git pack data. The sender splits the packfile into chunks of at
- * most 64 KiB (before base64 encoding) and sends them in order.
- *
- * `seq` is monotonically increasing per transferId, starting at 0. The
- * receiver must reject the transfer if a gap is detected.
+ * A chunk of git pack data, split into chunks of at most 64 KiB (before
+ * base64 encoding) and sent in order. `seq` increases by one per chunk
+ * starting at 0; the receiver rejects the transfer on a gap.
  */
 export const PackPushFrame = type({
   type: "'repo.pack.push'",
@@ -886,13 +703,12 @@ export type PackPushFrame = typeof PackPushFrame.infer;
 
 /**
  * Signals the end of a pack transfer. The receiver applies the pack and
- * updates `ref` to point at `commitSha`. If the post-apply HEAD does not
- * match `commitSha`, the receiver must reject with reason "sha_mismatch".
+ * updates `ref` to `commitSha`, rejecting with "sha_mismatch" if the
+ * post-apply HEAD does not match.
  *
- * When `mountPath` is set, the receiver materializes the pack at
- * `workspace/<mountPath>/` instead of the hardcoded agent deploy tree.
- * Absent for agent-state deploy/state flows and workflow-run restoration.
- * The receiver distinguishes those paths by `repoId.kind`.
+ * With `mountPath` set, the receiver materializes the pack at
+ * `workspace/<mountPath>/` instead of the hardcoded agent deploy tree
+ * (distinguished by `repoId.kind`).
  */
 export const PackDoneFrame = type({
   type: "'repo.pack.done'",
@@ -934,111 +750,40 @@ export const PackRejectFrame = type({
   agentAddress: "string",
   repoId: RepoId,
   transferId: "string",
-  // Validated as a plain string, NOT the closed `PackRejectReason` enum, on
-  // purpose. A reject carrying a reason value a newer peer added must still pass
-  // `HubFrame` validation and reach the reject handler (which latches the
-  // transfer) rather than failing validation and being dropped -- a dropped
-  // reject leaves the transfer neither acked nor rejected, stalling it until the
-  // next disconnect. Producers still classify and construct through
-  // `PackRejectReason`, so a known reason is what actually gets sent today; the
-  // reader treats any reason as a terminal reject (surfaces it, latches).
+  // A plain string, NOT the `PackRejectReason` enum: a reason a newer peer
+  // added must still pass `HubFrame` validation and reach the reject handler
+  // (which latches the transfer) rather than being dropped and stalling it.
+  // Producers still construct through the enum; the reader treats any reason
+  // as a terminal reject.
   reason: "string",
-  // Optional human-readable cause carried alongside the machine reason, so the
-  // sender's operator sees WHY (e.g. "symlink at X is not supported") instead of
-  // only the coarse reason. Absent on rejects that have no extra detail.
+  // Optional human-readable cause alongside the machine reason.
   "detail?": "string",
 });
 export type PackRejectFrame = typeof PackRejectFrame.infer;
 
 /**
- * Categories of deploy-apply failure surfaced by the sidecar's
- * tool-package loader. Each value maps one-to-one to a distinct point in
- * the apply pipeline; a single category fires per failed attempt.
+ * Categories of deploy-apply failure surfaced by the sidecar's tool-package
+ * loader; each maps one-to-one to a point in the apply pipeline:
  *
- *   tarball.missing          — a manifest entry's asset-sourced tarball
- *                              is not present at the recorded path.
- *   asset.mount.missing      — a `kind: "asset"` manifest entry names
- *                              an `assetId` that the deploy pack's
- *                              `deploy/asset-mounts.json` does not
- *                              cover. Indicates a mismatch between the
- *                              resolver's view of attached assets and
- *                              the materialization fan-out, not a
- *                              missing file on disk.
- *   integrity.mismatch       — fetched tarball bytes do not match the
- *                              manifest's pinned SRI integrity.
- *   registry.fetch.failed    — the configured registry refused or
- *                              dropped the request for a tarball.
- *   registry.unknown         — the manifest entry references a registry
- *                              name not present in the sidecar's
- *                              registry config.
- *   registry.auth.failed     — the registry rejected the sidecar's
- *                              credentials.
- *   tarball.extract.failed   — tar extraction failed or the extracted
- *                              tree was malformed.
- *   git.materialization.failed
- *                            — a git-sourced entry could not be
- *                              materialized from its checked-out
- *                              subtree, or reached a loader that does
- *                              not materialize git sources.
- *   manifest.invalid         — the manifest itself did not validate
- *                              at the loader boundary (JSON.parse
- *                              failure or arktype schema failure).
- *                              Peer-dependency violations are caught
- *                              earlier by the hub's resolver and
- *                              surface as a launch failure rather
- *                              than this frame.
- *   package.entry.missing    — a top-level package's package.json had
- *                              no `interchange.tools` field.
- *   package.entry.invalid    — the resolved `interchange.tools` module
- *                              exported nothing that looked like an
- *                              AnnotatedToolFactory.
- *   factory.construct.failed — a factory invocation threw, or required
- *                              a capability key the env did not provide.
- *   tool.name.duplicate      — a tool name is registered more than
- *                              once in the apply's loaded set. The
- *                              cross-bundle case (two pinned packages
- *                              share a bundle id, producing colliding
- *                              prefixed tool names) is rejected at
- *                              apply time, before the caller commits.
- *                              The intra-bundle case (one package
- *                              exports two definitions sharing a raw
- *                              name) surfaces at first agent
- *                              construction with the same category
- *                              instead of apply rejection: the loader
- *                              cannot see `bundle.definitions` without
- *                              invoking the factory, and the `BaseEnv`
- *                              the factory needs is constructed by the
- *                              workflow child's step build env AFTER
- *                              the commit. Both paths carry the same
- *                              category so the operator-facing failure
- *                              shape is uniform regardless of which
- *                              check fired; only the channel
- *                              (apply.error frame vs runtime construct
- *                              failure) differs.
- *   apply.swap.failed        — DEPRECATED, no longer emitted. The apply
- *                              protocol stages each deploy into a stable
- *                              per-deploy-id directory and commits via a
- *                              single `active-deploy-id` file write, so
- *                              there is no filesystem rename that can
- *                              fail. The value is retained in the enum
- *                              for wire compatibility: during a rolling
- *                              upgrade an older sidecar can still emit
- *                              it, and dropping the member would make a
- *                              newer hub's frame validator reject that
- *                              frame.
- *   apply.previous-rotation.failed
- *                            — every loaded factory validated and the
- *                              new deploy was staged, but persisting the
- *                              instance's `active-deploy-id` file (the
- *                              commit) degraded: the id was written
- *                              through the no-fsync / dirty-marker
- *                              fallback ladder rather than durably
- *                              flushed. The new deploy is logically
- *                              live, so `previousDeployId` on this
- *                              failure carries the NEW deploy id rather
- *                              than the pre-apply one. The next boot
- *                              reconciles the recorded id from the dirty
- *                              marker.
+ *   tarball.missing — asset-sourced tarball absent at its recorded path.
+ *   asset.mount.missing — `kind:"asset"` entry names an `assetId` the
+ *     deploy's `deploy/asset-mounts.json` does not cover.
+ *   integrity.mismatch — fetched bytes do not match the pinned SRI.
+ *   registry.* — the registry refused, is not configured, or rejected the
+ *     credentials (fetch.failed / unknown / auth.failed).
+ *   tarball.extract.failed — extraction failed or produced a malformed tree.
+ *   git.materialization.failed — a git-sourced entry could not be
+ *     materialized, or reached a loader that does not materialize git.
+ *   manifest.invalid — the manifest failed JSON.parse or arktype validation.
+ *   package.entry.missing / package.entry.invalid — package.json lacked
+ *     `interchange.tools`, or the module exported no AnnotatedToolFactory.
+ *   factory.construct.failed — a factory threw or needed a missing capability.
+ *   tool.name.duplicate — a tool name registered twice (cross-bundle at
+ *     apply time, intra-bundle at first agent construction).
+ *   apply.swap.failed — DEPRECATED; retained for wire compatibility.
+ *   apply.previous-rotation.failed — the `active-deploy-id` commit degraded
+ *     (no-fsync / dirty-marker fallback); the deploy is logically live and
+ *     `previousDeployId` carries the NEW deploy id.
  */
 export const DeployApplyErrorCategory = type.enumerated(
   "tarball.missing",
@@ -1060,9 +805,8 @@ export const DeployApplyErrorCategory = type.enumerated(
 export type DeployApplyErrorCategory = typeof DeployApplyErrorCategory.infer;
 
 /**
- * Hub requests the sidecar to push its current agent state. The sidecar
- * responds by sending pack.push frames followed by pack.done using the
- * same transferId.
+ * Hub requests the sidecar to push its current agent state: pack.push frames
+ * followed by pack.done on the same transferId.
  */
 export const SyncRequestFrame = type({
   type: "'sync.request'",
@@ -1076,35 +820,22 @@ export type SyncRequestFrame = typeof SyncRequestFrame.infer;
 // ---------------------------------------------------------------------------
 //
 // A probe asks a connected sidecar to inspect a code-sourced workflow WITHOUT
-// deploying it: materialize the frozen dependency closure, evaluate the entry
-// module to a live `WorkflowDefinition`, project it to its inert needs
-// surface, and return that projection plus the derived grant set and content
-// hash. The request/result/error trio is correlated by `requestId`, entirely
-// independent of the address maps -- a token-authed sidecar can serve a probe
-// in its pre-deploy state, with no agent deployed and no routable address.
+// deploying it: materialize the frozen closure, evaluate the entry module,
+// project it, and return the projection plus the derived grant set and
+// content hash. Correlated by `requestId`; a token-authed sidecar can serve a
+// probe with no agent deployed.
 
 /**
- * Hub asks a connected sidecar to probe a code-sourced workflow. Correlated by
- * `requestId`; the sidecar answers with `workflow.probe.result` on success or
- * `workflow.probe.error` on failure, both carrying the same `requestId`.
+ * Hub asks a connected sidecar to probe a code-sourced workflow, correlated
+ * by `requestId` and answered with `workflow.probe.result` or
+ * `workflow.probe.error` on the same id.
  *
- * The frame carries everything the sidecar's probe child needs to run the
- * probe with no further hub round-trip:
- *   - `source` names where the definition's bytes come from (a registry, a
- *     package-registry asset, or a git asset).
- *   - `closure` is the frozen dependency closure the hub already resolved --
- *     concrete versions and integrity SRIs -- so the child materializes the
- *     exact tree the hub pinned.
- *   - `entry` is the `interchange.workflow` module path within the package
- *     whose evaluation produces the `WorkflowDefinition`.
- *   - `assets` (optional) delivers the hub assets a `kind:"asset"` closure
- *     entry reads from, inline. Delivery is inline rather than a separate
- *     streamed transfer (as the deploy path uses) because the probe is a
- *     single-shot request that already buffers the whole frame -- streaming
- *     would only add a transfer-vs-probe correlation state a one-shot has no
- *     use for. The sidecar caps the total inline payload and fails loud past
- *     it; a git-sourced asset that grows past that cap is the trigger to
- *     revisit streaming.
+ * The frame carries everything the probe child needs with no further hub
+ * round-trip: `source` (registry, package-registry asset, or git asset),
+ * `closure` (the frozen dependency closure), `entry` (the
+ * `interchange.workflow` module path), and optional inline `assets`. Inline
+ * delivery suits a single-shot request that already buffers the whole frame;
+ * the sidecar caps the total inline payload.
  */
 export const WorkflowProbeRequestFrame = type({
   type: "'workflow.probe.request'",
@@ -1117,25 +848,17 @@ export const WorkflowProbeRequestFrame = type({
 export type WorkflowProbeRequestFrame = typeof WorkflowProbeRequestFrame.infer;
 
 /**
- * A connected sidecar's answer to a `workflow.probe.request`: the inert
- * needs-surface projection of the probed workflow, the inert grant set derived
- * from it, and the content hash of the projection. Correlated to the request
- * by `requestId`.
+ * A connected sidecar's answer to a `workflow.probe.request`, correlated by
+ * `requestId`: the inert needs-surface projection, the derived inert grant
+ * set, and the projection's content hash.
  *
- * `projection` is the same closed `WorkflowProjectionDefinition` a deploy frame
- * carries. `grants` is the deployment-wide inert grant surface -- the deduped,
- * sorted union of every step's grant strings -- for pre-deploy operator
- * inspection. `wireHash` is the hex SHA-256 of the projection's canonical JSON
- * (`computeWireDefinitionHash` in `@intx/types/wire-definition-hash`), the
- * deployment's content-addressed handle.
+ * `grants` is the deduped, sorted union of every step's grant strings, for
+ * pre-deploy operator inspection. `wireHash` is the hex SHA-256 of the
+ * projection's canonical JSON (`computeWireDefinitionHash`).
  *
- * `grantWalkSnapshot` is the UN-flattened capability walk the flattened
- * `grants` is derived from: the per-step grant declarations (each step's grant
- * strings plus its tool-grant `grantEffects` map) and the definition's full,
- * unfiltered `grantRequirements`. It carries the per-step grouping and the
- * effect data that `grants` discards, so a later persist step can record the
- * complete grant walk rather than only its flattened union. The flattened
- * `grants` stays alongside it because the operator-approval gate consumes it.
+ * `grantWalkSnapshot` is the un-flattened capability walk `grants` derives
+ * from (per-step declarations, effect data, full grantRequirements), so a
+ * later persist step records the complete walk, not just the union.
  */
 export const WorkflowProbeResultFrame = type({
   type: "'workflow.probe.result'",
@@ -1148,9 +871,9 @@ export const WorkflowProbeResultFrame = type({
 export type WorkflowProbeResultFrame = typeof WorkflowProbeResultFrame.infer;
 
 /**
- * A connected sidecar reports that a `workflow.probe.request` failed --
- * materialization, evaluation, projection, or hashing threw. Correlated to the
- * request by `requestId`; `error` describes the failure.
+ * A connected sidecar reports that a `workflow.probe.request` failed
+ * (materialization, evaluation, projection, or hashing threw), correlated by
+ * `requestId`.
  */
 export const WorkflowProbeErrorFrame = type({
   type: "'workflow.probe.error'",

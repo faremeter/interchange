@@ -3,38 +3,29 @@
 // whose body definition holds a single `map` step, plus the two toolless
 // top-level steps on the loop's converged and exhausted arms.
 //
-// This is the rung where two id transformations compose. `runMap` runs its
-// inner step under a scoped id `<mapStepId>[<index>]`, and every deploy-asset
-// lookup recovers the base id with `baseStepId`; the map itself sits inside a
+// This is the rung where two id transformations compose: `runMap` runs its
+// inner step under a scoped id `<mapStepId>[<index>]` (every deploy-asset
+// lookup recovers the base id with `baseStepId`), and the map sits inside a
 // loop body, whose ids reach the deployment's flat namespace only because the
 // executable-step walk descends into loop bodies. A per-item tool call
-// therefore has to resolve `<mapStepId>[<index>]` back to a body step id that
-// something put in the snapshot. Neither the top-level map fan-out fixture nor
-// the plain loop-body tool fixture exercises that composition.
+// therefore has to resolve `<mapStepId>[<index>]` back to a body step id in
+// the snapshot; neither the top-level map fan-out fixture nor the plain
+// loop-body tool fixture exercises that composition.
 //
 // The two top-level steps stay toolless on purpose: they can produce no
 // `tool_result`, so a `tool_result` anywhere in the captured inference traffic
-// can only have originated in a map iteration inside the loop body.
+// can only have originated in a map iteration inside the loop body. The loop
+// converges after exactly two iterations (`input` seeds `currentInput = 0`;
+// `keepGoing` turns false at 1); while/carry read only the carry state, so
+// convergence is deterministic regardless of the body's output.
 //
-// The entry module exports BOTH `workflow` and the loop `while`/`carry`
-// functions, so the deployment points `interchange.loops` at the same bundled
-// entry and the loop fns resolve by export name.
-//
-// The loop converges after exactly two iterations: `input` seeds
-// `currentInput = 0`; `keepGoing(output, currentInput)` stays true at 0 and
-// turns false at 1; `nextCount` increments. while/carry read only the carry
-// state, so convergence is deterministic regardless of the body's output. Each
-// iteration fans out over `MAP_ITEM_COUNT` literal items.
-//
-// STEP ID DISTINCTNESS. `LOOP_BODY_MAP_STEP_ID` must differ from every entry in
-// `TOP_LEVEL_STEP_IDS`, and anyone changing these ids must keep them disjoint.
-// The per-step tables a body step resolves against -- the credentials snapshot,
-// the pinned inference-source map, and the deploy-tree address resolver -- are
-// keyed by `baseStepId(stepId)` in ONE flat namespace shared between the top
-// level and the loop body. A body step id equal to a top-level step id
-// therefore resolves to the TOP-LEVEL step's entry, and the round-trip below
-// would pass against the wrong step's tools and prove nothing. The ids here are
-// deliberately unlike one another for that reason.
+// STEP ID DISTINCTNESS. `LOOP_BODY_MAP_STEP_ID` must differ from every entry
+// in `TOP_LEVEL_STEP_IDS`. The per-step tables a body step resolves against --
+// the credentials snapshot, the pinned inference-source map, and the
+// deploy-tree address resolver -- are keyed by `baseStepId(stepId)` in ONE
+// flat namespace shared between the top level and the loop body, so a body
+// step id equal to a top-level step id resolves to the TOP-LEVEL step's entry
+// and the round-trip below would pass against the wrong step's tools.
 
 import path from "node:path";
 

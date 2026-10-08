@@ -32,10 +32,10 @@ const OPENAI_TOOL_NAME_LIMIT: ToolNameLimit = {
 // protocol default, so a source that supplies no quirks gets no accommodation
 // and must opt into lenient behavior explicitly.
 export const OpenAIQuirks = type({
-  // When true, emit `reasoning_content` on every assistant message even when
-  // the turn carried no thinking (kimi requires it whenever thinking is
-  // enabled). Defaults to false: the field is emitted only on turns that
-  // actually have thinking.
+  // Emit `reasoning_content` on every assistant message even when the turn
+  // carried no thinking (kimi requires it whenever thinking is enabled).
+  // Defaults to false: the field is emitted only on turns that actually have
+  // thinking.
   "forceAssistantReasoningContent?": "boolean",
   // Which delta fields to read reasoning tokens from, in precedence order.
   // Constrained to the fields the chunk schema declares so the type cannot
@@ -137,13 +137,12 @@ function buildRequest(
   };
 }
 
-// Translate the internal `responseFormat` union to OpenAI's
-// `response_format` field. The three kinds map one-to-one to OpenAI's
-// `text` / `json_object` / `json_schema` types; in `json-schema` mode
-// the caller's `name`, `schema`, and (optional) `strict` ride through
-// verbatim. Strict mode is the path that produces structured `refusal`
-// responses when the model declines a request -- the response-side
-// parser handles those refusal chunks below.
+// Translate the internal `responseFormat` union to OpenAI's `response_format`
+// field. The three kinds map one-to-one to OpenAI's `text` / `json_object` /
+// `json_schema` types; in `json-schema` mode the caller's `name`, `schema`,
+// and (optional) `strict` ride through verbatim. Strict mode is the path that
+// produces structured `refusal` responses when the model declines a request —
+// the response-side parser handles those refusal chunks below.
 function toOpenAIResponseFormat(
   format: NonNullable<InferenceOptions["responseFormat"]>,
 ): Record<string, unknown> {
@@ -182,9 +181,9 @@ function toOpenAIMessage(
         b.type === "tool_result",
     );
     if (toolResults.length > 0) {
-      // One tool role message per result. The OpenAI Chat Completions schema
-      // for `role: "tool"` only permits role/tool_call_id/content — there is
-      // no `is_error` field — so error status is encoded inside `content`.
+      // One tool role message per result. The Chat Completions schema for
+      // `role: "tool"` only permits role/tool_call_id/content — there is no
+      // `is_error` field — so error status is encoded inside `content`.
       return toolResults.map((r) => {
         const text = r.content
           .filter((c): c is { type: "text"; text: string } => c.type === "text")
@@ -217,15 +216,13 @@ function toOpenAIMessage(
   }
 
   if (msg.role === "assistant") {
-    // Detect block types that cannot survive the OpenAI assistant
-    // message shape and surface the failure rather than silently
-    // dropping them. Code execution blocks are first-class semantic
-    // content; their loss would corrupt cross-provider conversations.
-    // RefusalBlocks are this adapter's own output (delta.refusal
-    // accumulates into one) but the round-trip back through history
-    // is not modeled — a silent drop would erase the refusal text on
-    // any continuation request, so the marshaling fails loudly
-    // alongside code_execution.
+    // Detect block types that cannot survive the OpenAI assistant message
+    // shape and surface the failure rather than silently dropping them. Code
+    // execution blocks are first-class semantic content; their loss would
+    // corrupt cross-provider conversations. RefusalBlocks are this adapter's
+    // own output (delta.refusal accumulates into one) but the round-trip back
+    // through history is not modeled — a silent drop would erase the refusal
+    // text on any continuation request, so the marshaling fails loudly.
     for (const block of msg.content) {
       if (
         block.type === "code_execution_request" ||
@@ -252,9 +249,9 @@ function toOpenAIMessage(
         b.type === "tool_call",
     );
 
-    // safety_rating-only assistant turns become a textual content
-    // string so the turn is not a hollow `{content: null}` message
-    // that confuses multi-turn Chat Completions history.
+    // safety_rating-only assistant turns become a textual content string so
+    // the turn is not a hollow `{content: null}` message that confuses
+    // multi-turn Chat Completions history.
     const textContent = [
       ...textBlocks.map((b) => b.text),
       ...safetyBlocks.map((b) => formatSafetyRatingText(b)),
@@ -328,11 +325,11 @@ function toOpenAIContentPart(block: ContentBlock): unknown {
         };
       }
       if (source.kind === "url") {
-        // OpenAI's image_url accepts a public URL verbatim alongside
-        // the data-URL form. The MediaSource's mimeType is not
-        // propagated on the wire — OpenAI infers content type from
-        // the URL response. The internal mimeType requirement still
-        // keeps the caller honest about what they have in hand.
+        // OpenAI's image_url accepts a public URL verbatim alongside the
+        // data-URL form. The MediaSource's mimeType is not propagated on the
+        // wire — OpenAI infers content type from the URL response. The
+        // internal mimeType requirement still keeps the caller honest about
+        // what they have in hand.
         return {
           type: "image_url",
           image_url: {
@@ -341,16 +338,14 @@ function toOpenAIContentPart(block: ContentBlock): unknown {
         };
       }
       if (source.kind === "file-reference") {
-        // OpenAI's Chat Completions endpoint accepts images only via
-        // `image_url: { url }` (data URL or public URL). It does not
-        // accept opaque uploaded-file references the way Anthropic's
-        // `{ type: "file", file_id }` does. A `file-reference`
-        // handle minted by some other provider (an Anthropic file_id,
-        // a Gemini fileUri) is meaningless to OpenAI; the adapter
-        // would have to round-trip the bytes through base64 to be
-        // useful, which is a caller-level choice, not an adapter one.
-        // Surface the constraint loudly with the apparent reference
-        // so an operator triaging the failure sees what was sent.
+        // Chat Completions accepts images only via `image_url: { url }`
+        // (data URL or public URL), not opaque uploaded-file references the
+        // way Anthropic's `{ type: "file", file_id }` does. A `file-reference`
+        // handle minted by another provider (an Anthropic file_id, a Gemini
+        // fileUri) is meaningless to OpenAI; round-tripping the bytes through
+        // base64 would be a caller-level choice, not an adapter one. Surface
+        // the constraint loudly with the apparent reference so an operator
+        // triaging the failure sees what was sent.
         throw new Error(
           `OpenAI Chat Completions does not accept file-reference image ` +
             `sources; the API only takes base64 data URLs or public URLs ` +
@@ -368,9 +363,9 @@ function toOpenAIContentPart(block: ContentBlock): unknown {
     case "document": {
       // Grounded on packages/inference-discovery-openai/sessions/openai/
       // gpt-5.5/document-input/exchanges/0: Chat Completions takes
-      // { type: "file", file: { filename, file_data } } with file_data
-      // as a data URI. MediaSource has no filename field, so base64
-      // inputs synthesize a deterministic name from mimeType.
+      // { type: "file", file: { filename, file_data } } with file_data as a
+      // data URI. MediaSource has no filename field, so base64 inputs
+      // synthesize a deterministic name from mimeType.
       const source = block.source;
       if (source.kind === "base64") {
         return {
@@ -382,9 +377,9 @@ function toOpenAIContentPart(block: ContentBlock): unknown {
         };
       }
       if (source.kind === "file-reference") {
-        // Only meaningful when `reference` is an OpenAI Files API
-        // file_id. Handles minted by other providers will 400; that
-        // is correct — the adapter does not translate across providers.
+        // Only meaningful when `reference` is an OpenAI Files API file_id.
+        // Handles minted by other providers will 400; that is correct — the
+        // adapter does not translate across providers.
         return {
           type: "file",
           file: { file_id: source.reference },
@@ -401,29 +396,26 @@ function toOpenAIContentPart(block: ContentBlock): unknown {
       throw new Error(`unreachable: unknown MediaSource kind`);
     }
     case "citation":
-      // Citation blocks are server-emitted attribution metadata for
-      // content the model already produced; they're not part of the
-      // active conversation state the next turn needs to make sense
-      // of. OpenAI's Chat Completions has no input wire shape for
-      // citations either, so re-uploading them on a follow-up turn
-      // would be ignored at best. Drop them when serializing history
-      // to OpenAI; a downstream consumer that wants to preserve them
-      // across provider switches reads the finalized turn's content[]
-      // directly. See INFERENCE.md § Cross-Provider Message
+      // Citation blocks are server-emitted attribution metadata for content
+      // the model already produced; they're not part of the active
+      // conversation state the next turn needs. Chat Completions has no input
+      // wire shape for citations either, so re-uploading them on a follow-up
+      // turn would be ignored at best. Drop them when serializing history; a
+      // downstream consumer that wants to preserve them reads the finalized
+      // turn's content[] directly. See INFERENCE.md § Cross-Provider Message
       // Transformation for the general policy on history-drop fields.
       return "";
     case "safety_rating":
-      // Assistant history rewrites safety_rating via
-      // formatSafetyRatingText before this multimodal path. A
-      // safety_rating on a user multimodal turn has no input wire
-      // shape; return empty rather than throw so mixed user content
-      // can still marshal (same silent skip as citation).
+      // Assistant history rewrites safety_rating via formatSafetyRatingText
+      // before this multimodal path. A safety_rating on a user multimodal
+      // turn has no input wire shape; return empty rather than throw so mixed
+      // user content can still marshal (same silent skip as citation).
       return "";
     case "code_execution_request":
     case "code_execution_result":
       // Code execution blocks are first-class semantic content; silently
-      // dropping them would lose the model's tool invocation entirely.
-      // OpenAI has no first-class code execution surface today.
+      // dropping them would lose the model's tool invocation entirely. OpenAI
+      // has no first-class code execution surface today.
       throw new Error(
         `OpenAI adapter does not handle ${block.type} content blocks.`,
       );
@@ -431,19 +423,19 @@ function toOpenAIContentPart(block: ContentBlock): unknown {
       // Thinking blocks are not forwarded to OpenAI endpoints.
       return "";
     case "redacted_thinking":
-      // Redacted thinking blocks are opaque by design; the cross-
-      // provider mapping is meaningless on OpenAI's surface.
+      // Redacted thinking blocks are opaque by design; the cross-provider
+      // mapping is meaningless on OpenAI's surface.
       return "";
     case "tool_call":
     case "tool_result":
       // These are handled separately in toOpenAIMessage.
       return "";
     case "refusal":
-      // RefusalBlocks are output-only (delta.refusal accumulates into
-      // one). Echoing one back inside a user-role content array has
-      // no defined OpenAI wire shape; fail at the marshaling
-      // boundary rather than silently emit `null` part bytes that
-      // would round-trip as an unrecognized fragment.
+      // RefusalBlocks are output-only (delta.refusal accumulates into one).
+      // Echoing one back inside a user-role content array has no defined
+      // OpenAI wire shape; fail at the marshaling boundary rather than
+      // silently emit `null` part bytes that would round-trip as an
+      // unrecognized fragment.
       throw new Error("OpenAI adapter does not handle refusal content blocks.");
   }
 }
@@ -455,11 +447,11 @@ function toOpenAIContentPart(block: ContentBlock): unknown {
 const EMPTY_PARTIAL: PartialMessage = { text: "" };
 
 // Fireworks (and likely other OpenAI-compatible deployments) emits
-// `name: null` and `arguments: null` on tool-call delta fragments AFTER
-// the start delta. arktype rejects `null` against `"string"` and would
-// drop the whole chunk silently — taking the argument fragments with
-// it. Accept `string | null` here and treat null the same as the field
-// being absent at the consumer site.
+// `name: null` and `arguments: null` on tool-call delta fragments AFTER the
+// start delta. arktype rejects `null` against `"string"` and would drop the
+// whole chunk silently — taking the argument fragments with it. Accept
+// `string | null` here and treat null the same as the field being absent at
+// the consumer site.
 const OpenAIToolCallDelta = type({
   "index?": "number",
   "id?": "string | null",
@@ -475,10 +467,10 @@ const OpenAIChunkDelta = type({
   "reasoning_content?": "string | null",
   "reasoning?": "string | null",
   // Strict-mode structured-outputs refusal: when the model declines a
-  // JSON-schema request on policy grounds, the delta carries the
-  // refusal text in this field instead of `content`. Some
-  // OpenAI-compatible relays strip it before forwarding; the parser
-  // emits refusal events only when the field is present.
+  // JSON-schema request on policy grounds, the delta carries the refusal
+  // text in this field instead of `content`. Some OpenAI-compatible relays
+  // strip it before forwarding; the parser emits refusal events only when
+  // the field is present.
   "refusal?": "string | null",
   "tool_calls?": OpenAIToolCallDelta.array(),
 });
@@ -504,23 +496,21 @@ const OpenAIChunk = type({
   "usage?": OpenAIChunkUsage.or("null"),
 });
 
-// Per-request state for the OpenAI parser. OpenAI's Chat Completions
-// has no wire-level content_block index — reasoning_content, content,
-// and tool_calls all appear as fields on the same delta chunk
-// without per-block positional indices. The harness's per-index
-// routing nevertheless requires distinct indices for distinct
-// content blocks at distinct positions, so the parser assigns block
-// indices on first observation in arrival order, threaded through
-// this shared counter. Tool calls share the same counter to avoid
-// colliding with text/thinking indices: a tool_call that arrives
-// before any text gets the next free block index, NOT zero, so the
-// later text doesn't try to land on top of it.
+// Per-request state for the OpenAI parser. Chat Completions has no wire-level
+// content_block index — reasoning_content, content, and tool_calls all appear
+// as fields on the same delta chunk without per-block positional indices. The
+// harness's per-index routing nevertheless requires distinct indices for
+// distinct blocks at distinct positions, so the parser assigns block indices
+// on first observation in arrival order, threaded through this shared
+// counter. Tool calls share the same counter to avoid colliding with
+// text/thinking indices: a tool_call that arrives before any text gets the
+// next free block index, NOT zero, so the later text doesn't try to land on
+// top of it.
 //
-// `tcDelta.index` (OpenAI's position in `tool_calls[]`) is a
-// tool-call-local index, distinct from a content-block index. The
-// indexer maintains a `toolCallBlockIndex` map from tcDelta.index to
-// the block index assigned at first observation; subsequent deltas
-// for the same tcDelta.index reuse it.
+// `tcDelta.index` (OpenAI's position in `tool_calls[]`) is a tool-call-local
+// index, distinct from a content-block index. The indexer maintains a
+// `toolCallBlockIndex` map from tcDelta.index to the block index assigned at
+// first observation; subsequent deltas for the same tcDelta.index reuse it.
 type OpenAIBlockIndexer = {
   nextIndex: number;
   textIndex: number | null;
@@ -567,9 +557,8 @@ function getOrAssignToolCallIndex(
 
 // Maps OpenAI's wire usage object onto the internal TokenUsage, reading the
 // cached-token and reasoning-token detail sub-objects. Shared by both
-// streaming usage branches (usage on a choices-empty chunk and usage riding a
-// choice-bearing chunk) and the non-streaming parseJSONResponse, whose usage
-// objects carry the same field names.
+// streaming usage branches and the non-streaming parseJSONResponse, whose
+// usage objects carry the same field names.
 function toInferenceUsage(usage: typeof OpenAIChunkUsage.infer): TokenUsage {
   return {
     input: usage.prompt_tokens ?? 0,
@@ -588,14 +577,13 @@ function parseResponse(
 ): InferenceEvent[] {
   // parseSSE strips the `[DONE]` sentinel before yielding payloads, so
   // anything that reaches us here is supposed to be a JSON chunk. A
-  // JSON.parse failure or an arktype rejection means the upstream
-  // emitted bytes that violate the OpenAI streaming protocol — a
-  // protocol mismatch, not a transport flake. Surface it through the
-  // harness's stream-error catch via ProtocolMismatchError so the
-  // resulting inference.error carries category "protocol_mismatch"
-  // and the offending data in error.raw, instead of silently dropping
-  // the chunk and leaving the agent to guess why a tool call arrived
-  // with empty arguments.
+  // JSON.parse failure or an arktype rejection means the upstream emitted
+  // bytes that violate the OpenAI streaming protocol — a protocol mismatch,
+  // not a transport flake. Surface it through the harness's stream-error
+  // catch via ProtocolMismatchError so the resulting inference.error carries
+  // category "protocol_mismatch" and the offending data in error.raw,
+  // instead of silently dropping the chunk and leaving the agent to guess
+  // why a tool call arrived with empty arguments.
   let parsed: unknown;
   try {
     parsed = JSON.parse(sseData);
@@ -647,14 +635,13 @@ function parseResponse(
   // `reasoning_content ?? reasoning` short-circuit) and is filtered by the
   // length gate below.
   //
-  // OpenAI's Chat Completions ships reasoning and content as separate
-  // logical content blocks without a wire-level block index. The parser
-  // assigns indices on first observation in arrival order via the
-  // per-request `indexer`: whichever kind streams first lands at 0, the
-  // other (if it appears) at 1. This satisfies the harness's per-index
-  // routing contract — distinct kinds get distinct indices and the
-  // harness's collision detection between block kinds at the same index
-  // never fires from a normal OpenAI response.
+  // Chat Completions ships reasoning and content as separate logical content
+  // blocks without a wire-level block index. The parser assigns indices on
+  // first observation in arrival order via the per-request `indexer`:
+  // whichever kind streams first lands at 0, the other (if it appears) at 1.
+  // This satisfies the harness's per-index routing contract — distinct kinds
+  // get distinct indices and the harness's collision detection between block
+  // kinds at the same index never fires from a normal OpenAI response.
   let reasoning: string | null | undefined;
   for (const field of reasoningFieldNames) {
     const value =
@@ -689,11 +676,11 @@ function parseResponse(
     });
   }
 
-  // Strict-mode structured-outputs refusal. Allocate a content-block
-  // index via the same shared counter that text/thinking/tool_call use
-  // so a refusal that arrives interleaved with text (e.g. partial
-  // content emitted before the refusal kicks in) lands on its own
-  // block index rather than colliding with text.
+  // Strict-mode structured-outputs refusal. Allocate a content-block index
+  // via the same shared counter that text/thinking/tool_call use so a refusal
+  // that arrives interleaved with text (e.g. partial content emitted before
+  // the refusal kicks in) lands on its own block index rather than colliding
+  // with text.
   const { refusal } = delta;
   if (typeof refusal === "string" && refusal.length > 0) {
     events.push({
@@ -712,12 +699,10 @@ function parseResponse(
   if (toolCallDeltas !== undefined) {
     for (const tcDelta of toolCallDeltas) {
       const toolCallSlot = tcDelta.index ?? 0;
-      // The harness's per-index map keys on content-block index, not
-      // OpenAI's `tool_calls[]` slot. Map this tool call's slot to a
-      // content-block index that doesn't collide with text/thinking:
-      // first observation of each unique `tcDelta.index` allocates a
-      // fresh content-block index from the shared `nextIndex`
-      // counter; subsequent deltas for the same slot reuse it.
+      // Map this tool call's slot to a content-block index that doesn't
+      // collide with text/thinking: first observation of each unique
+      // `tcDelta.index` allocates a fresh content-block index from the shared
+      // `nextIndex` counter; subsequent deltas for the same slot reuse it.
       const blockIndex = getOrAssignToolCallIndex(indexer, toolCallSlot);
       // Normalize null → undefined: Fireworks emits literal null on every
       // delta after the first; we treat that the same as the field being
@@ -732,24 +717,22 @@ function parseResponse(
       // Different providers shape these deltas differently:
       //   - OpenAI emits id + name + empty arguments in the first delta,
       //     then arguments-only deltas (no id, no name) for the body.
-      //   - Fireworks (kimi-k2.6) emits id + index on EVERY delta, with
-      //     name populated only on the first and arguments fragments on
-      //     subsequent deltas. The non-first deltas carry name: null
-      //     (normalized to undefined above) rather than omitting the
-      //     field outright.
+      //   - Fireworks (kimi-k2.6) emits id + index on EVERY delta, with name
+      //     populated only on the first and arguments fragments on subsequent
+      //     deltas. The non-first deltas carry name: null (normalized to
+      //     undefined above) rather than omitting the field outright.
       // Treat the two signals independently. A single delta may legitimately
       // carry both a start signal (id + non-null name) and an argument
       // fragment; both must be emitted.
       //
-      // `data.callId` is the OpenAI-provided id when present
-      // (`tcDelta.id`); when absent on continuation deltas, the
-      // adapter synthesizes a per-stream placeholder from
-      // `toolCallSlot` so the harness's id-keyed accumulator can
-      // merge fragments until the real id resolves at finalize time.
-      // `data.index` is the content-block index allocated above —
-      // namespaced into the same counter as text/thinking indices so
-      // a tool_call arriving before any text doesn't collide with a
-      // later text block at the same numeric index.
+      // `data.callId` is the OpenAI-provided id when present (`tcDelta.id`);
+      // when absent on continuation deltas, the adapter synthesizes a
+      // per-stream placeholder from `toolCallSlot` so the harness's id-keyed
+      // accumulator can merge fragments until the real id resolves at
+      // finalize time. `data.index` is the content-block index allocated
+      // above — namespaced into the same counter as text/thinking indices so
+      // a tool_call arriving before any text doesn't collide with a later
+      // text block at the same numeric index.
       if (id !== undefined && name !== undefined) {
         events.push({
           type: "inference.tool_call.start",
@@ -764,15 +747,13 @@ function parseResponse(
       }
       if (argFragment !== undefined && argFragment.length > 0) {
         // The delta's `callId` is a per-stream placeholder used by the
-        // harness to resolve fragments to the real id minted on the
-        // start event. Use `String(blockIndex)` rather than
-        // `String(toolCallSlot)` so the placeholder matches the key
-        // the harness registers in `indexToCallId` on start —
-        // otherwise a non-zero, non-contiguous `tcDelta.index`
-        // (single tool at slot 3, or parallel tools at slots 0/3)
-        // would land its fragments under a key the harness never
-        // registered, and the harness's accumulator would silently
-        // drop them.
+        // harness to resolve fragments to the real id minted on the start
+        // event. Use `String(blockIndex)` rather than `String(toolCallSlot)`
+        // so the placeholder matches the key the harness registers in
+        // `indexToCallId` on start — otherwise a non-zero, non-contiguous
+        // `tcDelta.index` (single tool at slot 3, or parallel tools at slots
+        // 0/3) would land its fragments under a key the harness never
+        // registered, and the accumulator would silently drop them.
         events.push({
           type: "inference.tool_call.delta",
           seq,
@@ -787,8 +768,9 @@ function parseResponse(
     }
   }
 
-  // finish_reason is checked but we emit nothing — the harness handles cleanup.
-  // (Keeping the reference here documents the field is intentionally unused.)
+  // finish_reason is checked but we emit nothing — the harness handles
+  // cleanup. (Keeping the reference here documents the field is
+  // intentionally unused.)
   void choice.finish_reason;
 
   // Usage at end of stream (stream_options: { include_usage: true }).
@@ -809,9 +791,9 @@ function parseResponse(
 //
 // The non-streaming Chat Completions endpoint returns the whole assistant
 // message in one JSON body. parseJSONResponse re-expresses it as the same
-// InferenceEvent vocabulary parseResponse emits from the stream, so a
-// replayed non-streaming capture feeds the harness accumulator identically to
-// its streaming sibling. See parseResponse for the streaming counterpart.
+// InferenceEvent vocabulary parseResponse emits from the stream, so a replayed
+// non-streaming capture feeds the harness accumulator identically to its
+// streaming sibling. See parseResponse for the streaming counterpart.
 // ---------------------------------------------------------------------------
 
 // A complete non-streaming tool call carries its id, type, and function name
@@ -900,16 +882,16 @@ function parseJSONResponse(
 
   const events: InferenceEvent[] = [];
 
-  // Walk the message fields in the SAME order the streaming parser processes a
-  // delta chunk (reasoning -> content -> refusal -> tool_calls) through the
+  // Walk the message fields in the SAME order the streaming parser processes
+  // a delta chunk (reasoning -> content -> refusal -> tool_calls) through the
   // same getOrAssign* helpers. For OpenAI this reproduces the streaming
   // arrival-order index assignment: reasoning models flush reasoning before
   // answer text, refusal is exclusive with content, and text/thinking/refusal
   // each collapse to a single cached slot — so a complete message's field
   // order matches the order the stream would have assigned indices. Empty
   // fields must NOT claim an index (every getOrAssign call stays behind a
-  // non-empty gate, as on the streaming path), or the decoded turn would carry
-  // a phantom block the stream never produced.
+  // non-empty gate, as on the streaming path), or the decoded turn would
+  // carry a phantom block the stream never produced.
   let reasoning: string | null | undefined;
   for (const field of reasoningFieldNames) {
     const value =
@@ -961,11 +943,11 @@ function parseJSONResponse(
 
   for (const [position, toolCall] of (message.tool_calls ?? []).entries()) {
     // Genuine OpenAI non-streaming responses omit `index` on tool_calls[]
-    // (only the streaming deltas carry it, and the opencode-zen backends
-    // include it on the array too). Key the block-index slot on the array
-    // position when the wire index is absent, so parallel tool calls get
-    // distinct slots instead of all collapsing onto slot 0 and colliding in
-    // the harness's per-index accumulator.
+    // (only streaming deltas carry it, and the opencode-zen backends include
+    // it on the array too). Key the block-index slot on the array position
+    // when the wire index is absent, so parallel tool calls get distinct
+    // slots instead of all collapsing onto slot 0 and colliding in the
+    // harness's per-index accumulator.
     const blockIndex = getOrAssignToolCallIndex(
       indexer,
       toolCall.index ?? position,
@@ -1009,7 +991,7 @@ function parseJSONResponse(
 }
 
 function extractRetryAfterMs(headers: Headers): number | undefined {
-  // OpenAI's non-standard millisecond header takes priority
+  // OpenAI's non-standard millisecond header takes priority.
   const retryMs = headers.get("retry-after-ms");
   if (retryMs !== null) {
     const ms = Number(retryMs);
@@ -1077,10 +1059,10 @@ export function createOpenAIAdapter(
     maxTokensField: parsedQuirks.maxTokensField ?? "max_tokens",
   };
 
-  // Per-request indexer state. Adapter instances are created per
-  // request (see `adapter.ts`), so each call to `createOpenAIAdapter`
-  // gets a fresh counter for assigning block indices to reasoning vs.
-  // content streams in arrival order.
+  // Per-request indexer state. Adapter instances are created per request
+  // (see `adapter.ts`), so each call to `createOpenAIAdapter` gets a fresh
+  // counter for assigning block indices to reasoning vs. content streams in
+  // arrival order.
   const indexer: OpenAIBlockIndexer = {
     nextIndex: 0,
     textIndex: null,

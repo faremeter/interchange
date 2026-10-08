@@ -19,12 +19,12 @@ export type VisibleModel = { row: ModelRow; origin: Origin };
 export type VisibleProvider = { row: ModelProviderRow; origin: Origin };
 
 /**
- * A catalog offering resolved in a tenant's context. The `offering`
- * supplies priority, capabilities, and deployment tags; `model` and
- * `provider` are the entries *visible to the resolving tenant* for the
- * offering's `(canonicalName, providerName)` identity — so a child that
- * shadows a provider sees inherited offerings routed through its own
- * provider configuration, not the ancestor's.
+ * A catalog offering resolved in a tenant's context. The `offering` supplies
+ * priority, capabilities, and deployment tags; `model` and `provider` are the
+ * entries *visible to the resolving tenant* for the offering's
+ * `(canonicalName, providerName)` identity -- so a child that shadows a
+ * provider sees inherited offerings routed through its own provider
+ * configuration, not the ancestor's.
  */
 export type ResolvedOffering = {
   offering: ModelOfferingRow;
@@ -35,13 +35,11 @@ export type ResolvedOffering = {
 
 /**
  * Lists the models visible to a tenant, walking the ancestor chain
- * leaf-to-root. The first row to claim a `canonicalName` wins (a
- * descendant shadows an ancestor). A winning row marked `disabled`
- * suppresses the name for the tenant and its descendants, so it is
- * omitted from the result.
- *
- * Scoping derives entirely from the ancestor chain; the denormalized
- * `tenantId` on referencing rows is never the scoping authority.
+ * leaf-to-root. The first row to claim a `canonicalName` wins (a descendant
+ * shadows an ancestor). A winning row marked `disabled` suppresses the name
+ * for the tenant and its descendants, so it is omitted. Scoping derives
+ * entirely from the ancestor chain; the denormalized `tenantId` on referencing
+ * rows is never the scoping authority.
  */
 export async function listVisibleModels(
   db: DB["db"],
@@ -107,23 +105,17 @@ function offeringKey(canonicalName: string, providerName: string): string {
  * Lists the offerings visible to a tenant.
  *
  * An offering's cross-tenant identity is `(model canonicalName, provider
- * name)`, not its row ids — a child that shadows a model or provider must
+ * name)`, not its row ids -- a child that shadows a model or provider must
  * shadow the inherited offerings for that pairing. So each offering's
- * `modelId`/`providerId` are dereferenced to their canonical identity
- * (across every tenant in the chain, since the referents may be inherited)
- * and the chain is walked leaf-to-root with that identity as the key:
- * first wins, `disabled` suppresses.
+ * `modelId`/`providerId` are dereferenced to their canonical identity (across
+ * every tenant in the chain) and the chain is walked leaf-to-root with that
+ * identity as the key: first wins, `disabled` suppresses.
  *
  * Visibility then cascades from the model/provider passes: an offering
  * survives only if both its model `canonicalName` and provider `name` are
- * themselves visible. Disabling a provider therefore removes every
- * inherited offering against it, even offerings the disabling tenant never
- * touched. The cascade is applied after the model and provider passes
- * complete, never interleaved.
- *
- * The returned `model`/`provider` are the entries *visible to the
- * resolving tenant* (resolved by canonicalName/name), so shadowed
- * configuration applies to inherited offerings.
+ * themselves visible. The returned `model`/`provider` are the entries visible
+ * to the resolving tenant, so shadowed configuration applies to inherited
+ * offerings.
  */
 export async function listVisibleOfferings(
   db: DB["db"],
@@ -144,7 +136,7 @@ export async function listVisibleOfferings(
   // Dereference offering referents to their canonical identity. The
   // referents may live on any tenant in the chain (an offering can be
   // inherited), so the id maps span every tenant, including rows that are
-  // themselves shadowed or disabled — the maps answer "what does this id
+  // themselves shadowed or disabled -- the maps answer "what does this id
   // name", and the cascade below decides visibility.
   const modelNameById = new Map<string, string>();
   const providerNameById = new Map<string, string>();
@@ -187,8 +179,8 @@ export async function listVisibleOfferings(
     if (canonicalName === undefined || providerName === undefined) continue;
     const visibleModel = visibleModels.get(canonicalName);
     const visibleProvider = visibleProviders.get(providerName);
-    // Cascade: the offering survives only if its model and provider are
-    // both visible (a disabled model or provider removes its offerings).
+    // Cascade: the offering survives only if its model and provider are both
+    // visible (a disabled model or provider removes its offerings).
     if (visibleModel === undefined || visibleProvider === undefined) continue;
     resolved.push({
       offering: row,

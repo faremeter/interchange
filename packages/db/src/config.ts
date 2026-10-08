@@ -8,13 +8,13 @@ export const DBConfig = type({
   database: "string",
   "ssl?": "boolean",
   "max?": "number.integer > 0",
-  // PostgreSQL statement deadline in milliseconds. Defaults to 60 seconds.
+  // PostgreSQL statement deadline in milliseconds (default 60s).
   "statementTimeoutMs?": "0 < number.integer <= 2147483647",
-  // Postgres schema name. When set, the connection's `search_path` is
-  // pinned to this schema and migrations apply into it. This is the
-  // mechanism the integration-test harness uses to give each spawned
-  // hub a dedicated, droppable schema. When unset, the connection uses
-  // postgres' default `search_path` (which begins with `public`).
+  // Postgres schema name. When set, the connection's `search_path` is pinned
+  // to this schema and migrations apply into it — the integration-test
+  // harness uses it to give each spawned hub a dedicated, droppable schema.
+  // When unset, the connection uses postgres' default `search_path` (which
+  // begins with `public`).
   "schema?": "string",
 });
 

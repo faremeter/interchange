@@ -1,15 +1,13 @@
 // Drain controller and four-observation-point tests.
 //
-// The runtime body observes drain at exactly four sites: main loop
-// entry, retry-between-attempts inside runStep, waitForTimer, and
-// runAwaitSignal. Each site reads `shouldAbortForDrain(drain, stepId)`
-// and aborts the step's local controller when the drain signal has
-// fired AND the step's declared `drainBehavior` is `"cancel"`. A
-// `"wait"`-behavior step ignores drain.
+// The runtime body observes drain at exactly four sites: main loop entry,
+// retry-between-attempts inside runStep, waitForTimer, and runAwaitSignal.
+// Each site reads `shouldAbortForDrain(drain, stepId)` and aborts the step's
+// local controller when the drain signal has fired AND the step's declared
+// `drainBehavior` is `"cancel"`. A `"wait"`-behavior step ignores drain.
 //
-// These tests construct a custom env so the test can flip a
-// controllable drain controller mid-flight and assert behavior at
-// each observation point.
+// These tests construct a custom env so the test can flip a controllable drain
+// controller mid-flight and assert behavior at each observation point.
 
 import { describe, test, expect } from "bun:test";
 
@@ -62,9 +60,8 @@ function createControllableDrain(
   const controller = new AbortController();
   // `shouldAbortForDrain` returns early while the signal is unfired, so it
   // reaches `behaviorFor` only after the drain has fired. Every call here is
-  // therefore an observation of a fired drain at one of the four points, which
-  // is the event a test needs to wait for -- including the wait-mode case,
-  // where the runtime observes the drain and deliberately does nothing, so
+  // an observation of a fired drain at one of the four points -- including the
+  // wait-mode case, where the runtime observes the drain and does nothing, so
   // no event reaches the log to wait on instead.
   const waiters: ((stepId: string) => void)[] = [];
   return {
@@ -91,13 +88,12 @@ function createControllableDrain(
 /**
  * A scheduler that records what the runtime arms and fires nothing by itself.
  *
- * The two tests below whose subject is what happens *while* a run sits in a
- * timer wait cannot use the real scheduler: with it, the run leaves the wait
- * once the duration elapses, so whether the drain lands inside the wait is
- * decided by how quickly the test reaches the trigger. Holding the timer
- * unfired holds the run at the observation point for as long as the test
- * needs, and the test fires the timer itself when it wants the run to
- * proceed.
+ * The two tests whose subject is what happens *while* a run sits in a timer
+ * wait cannot use the real scheduler: with it, the run leaves the wait once
+ * the duration elapses, so whether the drain lands inside the wait is decided
+ * by how quickly the test reaches the trigger. Holding the timer unfired pins
+ * the run at the observation point; the test fires the timer itself when it
+ * wants the run to proceed.
  */
 function createManualScheduler(): {
   factory: (repoStore: RepoStore, clock: () => Date) => Scheduler;
@@ -409,14 +405,13 @@ describe("observation point #1: main loop entry", () => {
     const seen = drain.observed();
     drain.trigger();
     // A fixed pause cannot establish that the run is still in flight: it
-    // guarantees a minimum only, and under load it overshoots into whatever
-    // happens next. Awaiting the observation establishes that the runtime
-    // read the fired drain -- no more than that, since the latch resolves on
-    // any behaviorFor call and this discards the step id it returns. That it
-    // is THIS step's observation, and that the run is still parked, comes
-    // from the definition under test: an awaitSignal cannot advance until the
-    // deliver below, so the parked runAwaitSignal site is the only thing that
-    // can be asking.
+    // guarantees a minimum only, and under load it overshoots. Awaiting the
+    // observation establishes that the runtime read the fired drain -- no more
+    // than that, since the latch resolves on any behaviorFor call and this
+    // discards the step id. That it is THIS step's observation, and that the
+    // run is still parked, comes from the definition under test: an
+    // awaitSignal cannot advance until the deliver below, so the parked
+    // runAwaitSignal site is the only thing that can be asking.
     await seen;
     await env.signalChannel.deliver("go", null);
     const result = await run.complete;
@@ -452,12 +447,12 @@ describe("observation point #2: retry-between-attempts in runStep", () => {
     // enters waitForTimer, so the second marker is the boundary this test
     // wants: the first attempt has failed and the backoff is armed.
     //
-    // Reaching the marker is not enough on its own. With the real scheduler
+    // Reaching the marker is not enough on its own: with the real scheduler
     // the run leaves the wait when the declared backoff elapses, so whether
-    // the drain arrives during the backoff is decided by whether the test
-    // gets there first -- a worker slower than the backoff sees the second
-    // attempt launch and fails on a count. The scheduler here fires nothing,
-    // so the run stays in the wait until this test acts.
+    // the drain arrives during the backoff is decided by whether the test gets
+    // there first -- a worker slower than the backoff sees the second attempt
+    // launch and fails on a count. This scheduler fires nothing, so the run
+    // stays in the wait until this test acts.
     await waitForEvent(
       env.repoStore,
       runId,
@@ -522,9 +517,9 @@ describe("observation point #3: waitForTimer", () => {
     await waitForEvent(env.repoStore, runId, (e) => e.kind === "TimerSet");
     // The step's declared 30ms would otherwise decide this test: with the
     // real scheduler a run that reaches the trigger late has already slept,
-    // completed, and satisfied the assertion below without a drain ever
-    // being read. Nothing fires here until this test fires it, so the run is
-    // still in the sleep when the drain lands.
+    // completed, and satisfied the assertion below without a drain ever being
+    // read. Nothing fires here until this test fires it, so the run is still
+    // in the sleep when the drain lands.
     await timers.nextArmed();
     const seen = drain.observed();
     drain.trigger();

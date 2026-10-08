@@ -9,7 +9,6 @@ export {
 
 /**
  * Claim a fresh, single-owner LightningFS IndexedDB storage API.
- *
  * Construction clears prior contents for `name`. Create this once per name
  * and pass the returned API to every consumer in the page or worker.
  */

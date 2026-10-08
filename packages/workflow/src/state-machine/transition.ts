@@ -13,8 +13,7 @@
 //
 // Cancellation wins over failure: once `cancelling`, a subsequent
 // `RunFailed` is rejected. Cancellation also keeps already-terminal step
-// phases intact (a step that completed before cancellation cascaded
-// stays completed).
+// phases intact.
 //
 // Signal delivery is FIFO single-consumer with run-lifetime dedup by
 // `signalId`. A `SignalReceived` whose name has no awaiter is queued
@@ -209,9 +208,8 @@ function handleStepStarted(state: RunState, e: StepStarted): RunState {
   // StepStarted marks the very first time a step enters the run. Later
   // attempts re-enter via AttemptScheduled + TimerFired rather than a
   // fresh StepStarted, so a step that already has state must not see
-  // another StepStarted. Without this guard a misbehaving runner
-  // could resurrect a terminal step entry or silently reset the
-  // attempt counter.
+  // another StepStarted -- a misbehaving runner could otherwise resurrect
+  // a terminal step entry or silently reset the attempt counter.
   if (state.steps.has(e.stepId)) {
     throw new TransitionError(
       "step-already-started",
@@ -275,13 +273,11 @@ function handleAttemptScheduled(
 ): RunState {
   const step = requireStep(state, e, e.stepId);
   // AttemptScheduled rejects against a completed, routed, or cancelled step:
-  // those terminal phases must not be resurrected into awaiting-timer
-  // by a stray retry event. A `routed` step settled its failure to a
-  // handler and is not retry-eligible, so it belongs with completed and
-  // cancelled here. The legitimate retry path goes through StepFailed
+  // those terminal phases must not be resurrected into awaiting-timer by a
+  // stray retry event. The legitimate retry path goes through StepFailed,
   // which leaves the step in `failed` (also terminal under
-  // `isTerminalStepPhase`) but is explicitly the retry-eligible
-  // terminal; the handler permits that transition by name.
+  // `isTerminalStepPhase`) but is explicitly the retry-eligible terminal;
+  // the handler permits that transition by name.
   if (
     step.phase === "completed" ||
     step.phase === "routed" ||
@@ -354,12 +350,12 @@ function handleSignalAwaited(state: RunState, e: SignalAwaited): RunState {
   }
   const steps = new Map(state.steps);
   // Carry the control-plane park kind through to the reduced state VERBATIM so
-  // recovery can tell an `"input"` park from an `"approval"` one. It is absent
-  // for a plain `awaitSignal` gate and for a legacy park committed before the
-  // input kind; recovery reads that absence through `controlParkKindOf`, the
-  // single point that interprets a reserved-channel absence as a legacy
-  // approval. The reducer does not itself default -- it must not stamp
-  // `"approval"` onto a plain gate that is not one.
+  // recovery can tell an `"input"` park from an `"approval"` one. Absent for a
+  // plain `awaitSignal` gate and for a legacy park committed before the input
+  // kind; recovery reads that absence through `controlParkKindOf`, the single
+  // point that interprets a reserved-channel absence as a legacy approval. The
+  // reducer does not itself default -- it must not stamp `"approval"` onto a
+  // plain gate that is not one.
   const awaitingSignal: {
     name: string;
     timeoutAt?: string;
@@ -447,9 +443,8 @@ function handleSignalReceived(state: RunState, e: SignalReceived): RunState {
  *
  * Race with `SignalReceived`: the abandon and a delivery can be committed
  * concurrently for the same await. If the delivery won -- the step is no longer
- * `awaiting-signal` -- the abandon is a no-op (advance the seq, leave the step
- * as the signal left it). If the await is still live, retire it: clear the
- * awaiter and drop the step to `in-flight`.
+ * `awaiting-signal` -- the abandon is a no-op. If the await is still live,
+ * retire it: clear the awaiter and drop the step to `in-flight`.
  *
  * Scope is strict. It touches ONLY a matching `signal-relay` park: an approval
  * or input park, or a name mismatch, is a producer bug or a mis-target and is
@@ -497,9 +492,8 @@ function handleTimerSet(state: RunState, e: TimerSet): RunState {
   };
   pendingTimers.set(e.timerId, pending);
   // A `TimerSet` bound to a step that is currently in-flight (the
-  // sleep primitive's awaiting transition; the retry path's failed
-  // step is not in-flight at this point) transitions the step to
-  // `awaiting-timer`. The TimerFired handler reverses the transition.
+  // sleep primitive's awaiting transition) transitions the step to
+  // `awaiting-timer`; the TimerFired handler reverses the transition.
   // Without this move, a sleeping step is indistinguishable from one
   // doing active compute -- the drain policy and operator UIs cannot
   // tell when a workflow is parked on a timer.
@@ -611,11 +605,9 @@ function handleChildSpawned(state: RunState, e: ChildSpawned): RunState {
   // ChildSpawned for an existing childRunId is a double-insertion, not a
   // re-observed transition, so it is rejected rather than allowed to
   // clobber the child's terminalStatus/cancelRequested (which would
-  // resurrect a finished child into the cancel cascade). The guard is the
-  // invariant, not any assumption about freshly minted ids: a re-emitted
-  // ChildSpawned for an already-known child -- which a loop's
-  // deterministic per-iteration child id produces on resume -- is rejected
-  // rather than allowed to overwrite the existing child.
+  // resurrect a finished child into the cancel cascade). A re-emitted
+  // ChildSpawned -- which a loop's deterministic per-iteration child id
+  // produces on resume -- is rejected for the same reason.
   if (state.children.has(e.childRunId)) {
     throw new TransitionError(
       "child-already-spawned",

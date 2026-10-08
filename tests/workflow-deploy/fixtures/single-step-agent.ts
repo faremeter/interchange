@@ -1,10 +1,5 @@
 // Source-entry builder for the tool-less single-step workflow fixture (F1):
-// one mail-triggered `step({ agent })` whose agent carries no tools. The
-// returned string is a `@intx/*`-importing entry module; `bundleWorkflowEntry`
-// inlines it to a self-contained `.mjs` the sidecar evaluates in-child.
-//
-// Parameterised by step id, system prompt, and the mail trigger address so a
-// caller pins the run's address to the deployment it is exercising. The agent
+// one mail-triggered `step({ agent })` whose agent carries no tools. The agent
 // and workflow ids default to stable fixture-local values; a caller that
 // deploys more than one instance in a single sidecar overrides them to keep the
 // definitions distinct.

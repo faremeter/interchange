@@ -1,25 +1,7 @@
-// Authz-based BeforeToolExtension.
-//
-// Creates an extension that authorizes tool calls against a policy before
-// execution. The caller provides a pre-bound authorize function that
-// encapsulates store, principal, tenant, and condition registry details.
-//
-// Effects:
-//   allow  → tool proceeds
-//   deny   → tool blocked
-//   ask    → tool suspended (parked awaiting an external approval decision)
-//   null   → tool blocked (fail-closed: no grants matched)
-//
-// The action is always "invoke" — all tool calls are invocations. If
-// additional action granularity is needed later, the action becomes a
-// parameter.
-//
-// Signal propagation into the authorize function is deferred — the caller
-// can capture the signal in their closure if cancellation is needed.
-//
-// The onDecision callback must not throw. If it does, the exception is
-// logged but swallowed so it cannot interfere with the authorization
-// decision or mask the original error.
+// Authz-based BeforeToolExtension. Authorizes tool calls against a pre-bound
+// authorize function (store, principal, tenant, and condition registry are
+// the caller's domain). Effects: allow proceeds, deny blocks, ask suspends
+// pending approval, null blocks fail-closed. Action is always "invoke".
 
 import type {
   ApprovalSnapshot,
@@ -29,10 +11,8 @@ import type {
 } from "@intx/types/runtime";
 import type { Effect } from "@intx/types/authz";
 
-// Default deadline for an approval suspension when the caller does not supply
-// one. Matches the reactor's DEFAULT_GATE_TIMEOUT_MS (one hour); the value is
-// duplicated rather than imported to avoid a dependency from the pure-policy
-// extension onto the reactor module.
+// Default approval deadline; duplicated from the reactor's
+// DEFAULT_GATE_TIMEOUT_MS to avoid a dependency onto the reactor module.
 const DEFAULT_APPROVAL_TIMEOUT_MS = 3_600_000;
 
 export type AuthzMatchedGrant = {
@@ -76,12 +56,9 @@ export type AuthzExtensionOptions<Ctx = unknown> = {
    */
   approvalTimeoutMs?: number;
   /**
-   * Tool definitions the extension can be asked to authorize, used to build the
-   * approver-facing snapshot at the `ask` branch. Presence is a contract: when
-   * supplied, every tool this extension authorizes must appear here, and an
-   * `ask` for a tool that does not is a wiring defect that throws. Omitted
-   * entirely, the extension produces no snapshot — a mode for callers that
-   * never register a suspension with the hub.
+   * Tool definitions used to build the approver-facing snapshot at an `ask`.
+   * When supplied, every authorizable tool must appear here (a miss throws).
+   * Omitted, no snapshot is produced.
    */
   toolDefinitions?: readonly ToolDefinition[];
 };
@@ -109,36 +86,26 @@ function safeOnDecision(
   try {
     callback(decision);
   } catch {
-    // onDecision must not throw. If it does, swallow the exception so
-    // it cannot interfere with the authorization decision or mask the
-    // original error from authorize().
+    // Swallow: an onDecision throw must not mask the authorize() error.
   }
 }
 
 export function createAuthzExtension<Ctx = unknown>(
   opts: AuthzExtensionOptions<Ctx>,
 ): BeforeToolExtension {
-  // The reactor does not know workflow concepts; per-call context is the
-  // caller's domain. The third arg is plumbing here -- if the caller
-  // needs to attach context (workflow step, tenant id, request id), they
-  // do so by closure on the authorize function. The empty object is the
-  // safe default at this layer.
+  // Per-call context is the caller's domain; callers attach it by closure on
+  // the authorize function. The empty object is the safe default here.
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the inference layer has no domain knowledge to construct a Ctx; callers that need a populated context use closure capture on the authorize function (see @intx/workflow's AuthorizeContext)
   const emptyContext = Object.freeze({}) as Ctx;
 
-  // One-shot bypass tokens, keyed on ToolCall.id. A token authorizes a single
-  // re-dispatch of an already-approved call to skip the `ask` gate it would
-  // otherwise re-hit. Held in memory only, within the resumed reactor cycle
-  // that grants and consumes it: a durable allow would outlive the cycle and
-  // defeat the one-shot intent, and a crash between grant and consume simply
-  // re-drives from the durable log and re-grants.
+  // One-shot bypass tokens keyed on ToolCall.id: a re-dispatched approved
+  // call skips its `ask` gate once. Memory-only — a durable allow would
+  // outlive the cycle, and a crash re-drives from the durable log anyway.
   const approvedOnce = new Set<string>();
 
-  // Name → definition lookup for building the approval snapshot at the `ask`
-  // branch. `undefined` (not merely empty) means the caller wired no tool
-  // definitions and wants no snapshot; a defined map means every authorizable
-  // tool must be present, so a lookup miss is a wiring defect that throws. The
-  // sentinel keeps those two contracts distinguishable at the lookup site.
+  // Name → definition lookup for the approval snapshot. `undefined` means no
+  // snapshot is wanted; a defined map must contain every authorizable tool,
+  // so a lookup miss throws.
   const toolDefinitionsByName =
     opts.toolDefinitions !== undefined
       ? new Map(opts.toolDefinitions.map((def) => [def.name, def]))
@@ -173,10 +140,8 @@ export function createAuthzExtension<Ctx = unknown>(
         throw cause;
       }
 
-      // An `ask` effect suspends the call rather than blocking it, so it is
-      // neither cleanly blocked nor allowed: the decision records
-      // `blocked: false` with no block reason. Only `deny`/null (fail-closed)
-      // are blocks.
+      // `ask` suspends rather than blocks: only deny/null produce a block
+      // reason; ask records blocked: false.
       const blockReason =
         result.effect === "deny" || result.effect === null
           ? formatBlockReason(result.effect, resource, action)
@@ -196,10 +161,8 @@ export function createAuthzExtension<Ctx = unknown>(
       };
       safeOnDecision(opts.onDecision, decision);
 
-      // A one-shot token only authorizes bypassing an `ask` gate. If the
-      // resolved effect is anything else, the grant changed underneath the
-      // token: drop it and let the normal path decide, rather than silently
-      // allowing a call the policy no longer parks.
+      // A token only bypasses an `ask` gate; if the effect changed, drop it
+      // and let the normal path decide.
       if (approvedOnce.has(call.id) && result.effect !== "ask") {
         approvedOnce.delete(call.id);
       }
@@ -209,28 +172,23 @@ export function createAuthzExtension<Ctx = unknown>(
       }
 
       if (result.effect === "ask") {
-        // A prior approval authorized this exact call to run once. Consume the
-        // token (delete-on-read) and allow it through instead of suspending,
-        // so a re-dispatched approved call does not re-park on its own gate.
+        // A prior approval authorized this call once: consume the token and
+        // allow it instead of re-parking on the same gate.
         if (approvedOnce.has(call.id)) {
           approvedOnce.delete(call.id);
           return { type: "allow" };
         }
 
-        // Mint the correlationId once here so it is the single source of
-        // identity for both the gate and the persisted operation. The
-        // reactor persists the operation, so this id survives a restart.
+        // Single correlation id shared by the gate and the persisted
+        // operation; the reactor persists it, so it survives a restart.
         const correlationId = crypto.randomUUID();
         const timeoutAt =
           Date.now() + (opts.approvalTimeoutMs ?? DEFAULT_APPROVAL_TIMEOUT_MS);
         const gateId = `pending-${correlationId}`;
 
-        // Build the approver-facing snapshot when tool definitions are wired.
-        // A wired extension must have a definition for every tool it can
-        // authorize, so a miss is a wiring defect rather than a fallback. An
-        // unwired extension produces no snapshot: such callers never register
-        // the suspension with the hub, so the downstream required-snapshot
-        // validator never sees them.
+        // Build the approver-facing snapshot when tool definitions are wired;
+        // a miss is a wiring defect. Unwired extensions never register the
+        // suspension with the hub, so no snapshot is needed.
         let approvalSnapshot: ApprovalSnapshot | undefined;
         if (toolDefinitionsByName !== undefined) {
           const def = toolDefinitionsByName.get(call.name);

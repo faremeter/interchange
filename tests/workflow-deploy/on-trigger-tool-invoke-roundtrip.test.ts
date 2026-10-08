@@ -1,36 +1,23 @@
 // An agent step inside an `onTrigger` section body INVOKES a real tool, and the
 // invocation lands in its turn.
 //
-// The sibling `on-trigger-agent-body.test.ts` proves a body agent RUNS: a
-// tool-less body step reaches real inference and commits the model reply. This
-// proves the stronger property the operator is actually promised -- that a body
-// agent can CALL a tool and feed the result back into a follow-up turn, the
-// same `tool_use` -> execute -> `tool_result` -> reply loop a top-level step and
-// a childWorkflow child both run.
+// The sibling `on-trigger-agent-body.test.ts` proves a body agent RUNS (a
+// tool-less body step reaches real inference and commits the model reply);
+// this proves the stronger property the operator is actually promised -- that
+// a body agent can CALL a tool and feed the result back into a follow-up turn.
 //
 // The failure this pins is SILENT. The body agent's tool survives the whole
-// deploy path: the capability walk collects its `tool:<name>` grant, the gate
-// rejects the deploy with `grants_not_approved` if the operator withholds it,
-// and the frozen projection carries it. At run time the body step invoker
-// builds its env with tool materialization skipped, so the provider is handed
-// an EMPTY tool list. No step fails, no error is raised, and no log line is
-// emitted at any level -- the operator's approval decision simply has no
+// deploy path (capability walk, gate, frozen projection), but at run time the
+// body step invoker builds its env with tool materialization skipped, so the
+// provider is handed an EMPTY tool list -- no step fails, no error is raised,
+// no log line is emitted; the operator's approval decision simply has no
 // effect. A test asserting "no error occurred" would pass today and prove
 // nothing, so the assertion here is POSITIVE: the tool's own return text must
 // appear as a `tool_result` in the captured inference traffic.
 //
-// The env runs exactly one workflow, and an `onTrigger` container runs no agent
-// of its own. The body agent is therefore the ONLY agent in this deployment, so
-// a `tool_result` in ANY captured inference request can only have originated in
-// the body's tool execution.
-//
-// Harness justification: SPAWN-REAL. Real hub, real sidecar subprocess, real
-// workflow-process child driving `runOnTrigger` with the production
-// suspendable-child seam, and a real agent inside the body via the body-only
-// invoker, driven against the mock inference fixture (real inference in CI is
-// impractical). The mock is configured to drive a `tool_use` on the first
-// request that exposes the tool, so a correctly wired body runs the inline
-// `mail_send` tool for real and re-inferences with its result.
+// Harness: SPAWN-REAL (real hub, sidecar subprocess, workflow-process child,
+// body-only invoker), driven against the mock inference fixture. The mock
+// drives a `tool_use` on the first request that exposes the tool.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 

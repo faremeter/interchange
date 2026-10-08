@@ -1,6 +1,5 @@
-// API version pin recommended by Anthropic for first-party clients. New
-// versions opt in to wire-shape changes; we pin so captures stay stable
-// across upstream rollouts and only move under a deliberate bump here.
+// API version pin: new versions opt in to wire-shape changes, so pinning
+// keeps captures stable across upstream rollouts.
 export const ANTHROPIC_VERSION = "2023-06-01";
 
 export const API_KEY_HEADER = "x-api-key";

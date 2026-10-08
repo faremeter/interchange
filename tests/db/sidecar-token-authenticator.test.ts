@@ -19,15 +19,14 @@ import { seedTenants, seedWorkflowRun } from "@intx/test-harness/seed";
 
 const TENANT_ID = "tnt-sidecar-auth";
 
-// The mock-DB unit test proves the authenticator's control flow, but it
-// never exercises the real `bytea` lookup: the token hash is written to
-// and read back from Postgres through the customType encoder, and the
-// query matches on that stored digest. A flipped byte on the write, a
-// mangled encode/decode, or a `bytea` equality that Postgres does not
-// evaluate the way drizzle builds it would all pass the mock and fail
-// here. These cases drive the shipped `createSidecarTokenAuthenticator`
-// against a real migrated schema to defend that write->read round-trip
-// and the token-derived identity property.
+// The mock-DB unit test proves the authenticator's control flow, but it never
+// exercises the real `bytea` lookup: the token hash is written to and read
+// back from Postgres through the customType encoder, and the query matches on
+// that stored digest. A flipped byte on the write, a mangled encode/decode, or
+// a `bytea` equality Postgres does not evaluate the way drizzle builds it
+// would all pass the mock and fail here. These cases drive the shipped
+// `createSidecarTokenAuthenticator` against a real migrated schema to defend
+// that write->read round-trip and the token-derived identity property.
 describe.skipIf(!harnessDbEnvAvailable())(
   "sidecar token authenticator (real DB)",
   () => {
@@ -47,8 +46,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     // Seed a sidecar identity the same way provisioning does: store the
-    // SHA-256 digest of the token as the `bytea` hash. `url` is not read
-    // by the authenticator; a placeholder satisfies its NOT NULL.
+    // SHA-256 digest of the token as the `bytea` hash. `url` is not read by
+    // the authenticator; a placeholder satisfies its NOT NULL.
     async function seedSidecar(opts: {
       id: string;
       token: string;

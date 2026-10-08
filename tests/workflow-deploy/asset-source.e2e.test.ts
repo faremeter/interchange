@@ -1,17 +1,12 @@
 // Asset-sourced end-to-end: install a code-sourced workflow package published
 // as a tarball inside a hub `package-registry` ASSET, probe it, approve+freeze
 // it, deploy it BY SOURCE-REF, and assert the deployed workflow runs to
-// completion.
-//
-// This is the asset analog of the registry walking skeleton: it drives the same
-// two production entrypoints (installAndApproveWorkflowDefinition,
-// deployCodeSourcedWorkflow) but sources the definition's bytes from a hub asset
-// instead of an npm registry, so the hub delivers the asset inline on the probe
-// and deploy frames and the sidecar checks it out into its durable
-// per-deployment source store rather than fetching tarballs over HTTP. The
-// durable store's restore-from-disk path (re-materializing the closure on a
-// sidecar restart from the pin alone) is unit-covered by
-// `packages/workflow-host/src/deploy/workflow-host-wiring-source-assets.test.ts`.
+// completion. The asset analog of the registry walking skeleton: same two
+// production entrypoints, but the hub delivers the asset bytes inline on the
+// probe and deploy frames and the sidecar checks them out into its durable
+// per-deployment source store instead of fetching tarballs over HTTP (the
+// store's restore-from-disk path is unit-covered by
+// `packages/workflow-host/src/deploy/workflow-host-wiring-source-assets.test.ts`).
 
 import { promises as fs } from "node:fs";
 import os from "node:os";
@@ -341,7 +336,6 @@ describe.skipIf(!harnessDbEnvAvailable())("asset-sourced workflow e2e", () => {
     }
     expect(approved.projection.id).toBe("wf_asset_skeleton");
     expect(approved.projection.stepOrder).toEqual([STEP_ID]);
-    // The closure's single top-level entry is asset-sourced.
     expect(approved.closure.topLevel).toEqual([
       { name: PACKAGE_NAME, version: PACKAGE_VERSION },
     ]);
@@ -449,12 +443,10 @@ describe.skipIf(!harnessDbEnvAvailable())("asset-sourced workflow e2e", () => {
       { diagnostics: env.sidecarDiagnostics },
     );
 
-    // 3) Fire the mail trigger and assert the run reaches RunCompleted. This is
-    // the load-bearing assertion: it proves asset-sourced closure resolution,
-    // the probe's inline asset delivery + host-side checkout, the hub gate +
-    // freeze, the source-ref deploy carrying the asset inline, the sidecar's
-    // durable-store checkout + frozen-closure apply, and the child re-verify all
-    // composed into one run.
+    // 3) Fire the mail trigger and assert the run reaches RunCompleted (the
+    // load-bearing assertion: asset-sourced closure resolution, inline asset
+    // delivery, gate + freeze, source-ref deploy, and child re-verify
+    // compose into one run).
     await fireMailTrigger(env, deploymentMailAddress, {
       messageId: "<asset-skeleton-e2e@integration.interchange>",
     });

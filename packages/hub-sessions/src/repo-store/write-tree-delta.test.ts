@@ -1,15 +1,11 @@
-// OID-equivalence guard for the delta write path (writeTreeDelta) added
-// alongside the claim-check narrowing. A delta ({puts, deletes} carried
-// against the parent tree, reusing untouched entries by oid) MUST commit
-// the byte-identical tree that a full-replace writeTree of the same
-// logical final state produces. SHA-1 tree hashing is deterministic
-// given identical content and structure, so equal commit-tree oids prove
-// the delta path never diverges from canonical git across the move
-// shapes: enqueue-add, dequeue-move (delete+put), markConsumed-move,
-// empty->first-entry, prune-to-empty, a standalone exact-file-delete, and
-// a cascade-delete that empties a directory and its parent. It also pins
-// the ambiguity (put and delete of the same path, or a put under a
-// deleted subtree) and out-of-scope guards that fail loud.
+// OID-equivalence guard for the delta write path (writeTreeDelta). A
+// delta (puts/deletes carried against the parent tree, reusing untouched
+// entries by oid) MUST commit the byte-identical tree a full-replace
+// writeTree of the same final state produces; equal commit-tree oids
+// prove the delta never diverges from canonical git across the move
+// shapes: enqueue-add, dequeue-move, markConsumed-move, empty->first,
+// prune-to-empty, exact-file-delete, and cascade-delete. Also pins the
+// put/delete ambiguity and out-of-scope guards that fail loud.
 
 import { test, expect, afterAll, beforeAll } from "bun:test";
 import fs from "node:fs";

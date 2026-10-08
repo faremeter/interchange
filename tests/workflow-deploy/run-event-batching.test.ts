@@ -1,39 +1,33 @@
-// B2 run-event commit batching — the correctness gate.
+// B2 run-event commit batching -- the correctness gate.
 //
 // The runtime used to commit each run-event (RunStarted, StepStarted,
 // StepCompleted, RunCompleted) as a SEPARATE durable
-// `writeTreePreservingPrefix` commit (four per synchronous single-step
-// run). B2 buffers the events emitted within one synchronous execution
-// segment and flushes the buffer in ONE `appendBatch` at a flush
-// boundary. A flush boundary is the segment boundary (a suspension or
-// the terminal event) AND the agent-invoke durability barrier: an
-// agent step's `StepStarted` is flushed durably BEFORE the
-// non-idempotent `env.invokeStep` runs, so a crash mid-invocation
-// leaves a durable marker the recovery path settles rather than
-// re-invoking the agent. A synchronous single-step agent run is
-// therefore TWO commits -- the barrier flush [RunStarted, StepStarted]
-// and the terminal flush [StepCompleted, RunCompleted] -- not one.
-// This is a persistence-TIMING change only.
+// `writeTreePreservingPrefix` commit (four per synchronous single-step run).
+// B2 buffers the events within one synchronous execution segment and flushes
+// in ONE `appendBatch` at a flush boundary -- the segment boundary (a
+// suspension or the terminal event) AND the agent-invoke durability barrier:
+// an agent step's `StepStarted` is flushed durably BEFORE the non-idempotent
+// `env.invokeStep` runs, so a crash mid-invocation leaves a durable marker
+// the recovery path settles rather than re-invoking the agent. A synchronous
+// single-step agent run is therefore TWO commits -- the barrier flush
+// [RunStarted, StepStarted] and the terminal flush [StepCompleted,
+// RunCompleted] -- a persistence-TIMING change only.
 //
-// These tests are the gate: they prove exactly-once, crash-recovery,
-// and resume are equivalent to the per-event behaviour, against the
-// REAL production durable substrate (`createRepoStore` +
-// `workflowRunKindHandler`) and the REAL runtime adapter
+// These tests prove exactly-once, crash-recovery, and resume are equivalent
+// to the per-event behaviour, against the REAL production durable substrate
+// (`createRepoStore` + `workflowRunKindHandler`) and the REAL runtime adapter
 // (`createWorkflowRunRepoStore`, whose `appendBatch` writes N
-// `events/<seq>.json` blobs in one merge) and the REAL self-discovery
-// (`discoverInFlightRuns`). The adapter is wrapped only to COUNT the
-// durable writes and to inject a deterministic crash; every durable
-// write still flows through the production substrate and its
-// append-only / seq-contiguity / terminal-lock validator.
+// `events/<seq>.json` blobs in one merge) and REAL self-discovery
+// (`discoverInFlightRuns`). The adapter is wrapped only to COUNT durable
+// writes and inject a deterministic crash; every write still flows through
+// the production substrate's append-only / seq-contiguity / terminal-lock
+// validator.
 //
-// What these tests deliberately do NOT re-cover: the supervisor IPC,
-// the terminal-write markConsumed coupling, and the
-// consumed/<messageId>.json exactly-once index. Those live on the
-// production supervisor path and are already exercised unchanged by
+// NOT re-covered here: the supervisor IPC, the terminal-write markConsumed
+// coupling, and the consumed/<messageId>.json exactly-once index -- those
+// live on the production supervisor path and are already exercised by
 // single-step-full-lifecycle, single-step-conversation-durability, and
-// multistep-signal in this same suite -- batching is transparent to
-// them because the terminal RunCompleted is still one of the blobs in
-// the (now batched) merge the supervisor sniffs.
+// multistep-signal; batching is transparent to them.
 
 import { describe, test, expect, afterAll, beforeAll } from "bun:test";
 import fs from "node:fs";

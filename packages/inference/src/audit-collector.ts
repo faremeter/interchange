@@ -113,14 +113,13 @@ export function createAuditCollector(sessionId: string): AuditCollector {
         return;
       }
 
-      // Blocked call: no tool.start was emitted. Build the record from
-      // the buffered decision and the tool.done event.
+      // Blocked call: no tool.start was emitted. Build the record from the
+      // buffered decision and the tool.done event.
       const decision = decisions.get(result.callId);
       if (decision === undefined) {
         // Orphaned tool.done: no tool.start or authz decision was recorded.
         // Emit a degraded record rather than crashing the session — the audit
         // system is observational infrastructure and must not veto execution.
-
         logger.warn`Orphaned tool.done for callId "${result.callId}": no tool.start or authz decision was recorded`;
         completed.push({
           callId: result.callId,

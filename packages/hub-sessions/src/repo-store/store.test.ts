@@ -59,9 +59,7 @@ function createTestHandler(opts?: {
     kind: "agent-state",
     directoryPrefix: "repos-under-test",
     validatePush({ topLevelTreePaths }): ValidatePushResult {
-      // Ignore the readBlob argument: this fixture only ever needs path-level
-      // checks. Real handlers that need blob contents (e.g. skillKindHandler)
-      // exercise readBlob in their own dedicated tests.
+      // Path-level checks only; blob-content handlers test readBlob elsewhere.
       if (allowFn === undefined) {
         return { ok: true };
       }
@@ -254,10 +252,8 @@ describe("RepoStore", () => {
   });
 
   test("writeTree with clearPrefix on a first write clears nothing and does not error", async () => {
-    // clearIndexPrefix narrows git.statusMatrix to the cleared prefix.
-    // A first write to a fresh repo has no tracked entries under the
-    // prefix, so the narrowed statusMatrix must return an empty matrix
-    // (clear nothing) rather than erroring on a non-existent subtree.
+    // A first write has no tracked entries under the cleared prefix, so the
+    // narrowed statusMatrix must return empty instead of erroring.
     const dataDir = await makeTempDir("repo-store-clear-first-");
     const handler = createTestHandler();
     const store = createRepoStore({
@@ -292,9 +288,8 @@ describe("RepoStore", () => {
   });
 
   test("writeTree clearPrefix targeting a never-written prefix is a no-op clear", async () => {
-    // The narrowed statusMatrix is asked for a prefix that exists in
-    // neither the index nor the tree (a sibling subtree was written, but
-    // not this one). It must return empty and leave the sibling intact.
+    // The cleared prefix exists in neither the index nor the tree; the
+    // narrowed statusMatrix must return empty and leave the sibling intact.
     const dataDir = await makeTempDir("repo-store-clear-absent-");
     const handler = createTestHandler();
     const store = createRepoStore({
@@ -377,10 +372,8 @@ describe("RepoStore", () => {
     const REF_B = "refs/heads/beta";
     const ROUNDS = 3;
 
-    // Each ref owns a disjoint nested top-level prefix and replaces its
-    // whole subtree every round, so a ref switch reconciles a non-trivial
-    // subtree each time. Both the interleaved run and the serial baseline
-    // below stage identical bytes through this, so equal content must
+    // Each ref replaces a disjoint top-level subtree every round, so equal
+    // bytes across the interleaved run and the serial baseline below must
     // yield equal tree oids unless a ref switch contaminates the tree.
     const roundWrite = (topPrefix: string, round: number) => ({
       files: {
@@ -413,21 +406,18 @@ describe("RepoStore", () => {
       bTrees.push(await treeOf(b.commitSha));
     }
 
-    // Direct contamination check: each ref's tip tree carries ONLY its own
-    // top-level prefix. A switch that left stale cross-ref index entries
-    // would union the other ref's subtree into this commit's tree.
+    // Each ref's tip tree must carry only its own top-level prefix; stale
+    // cross-ref index entries would union the other ref's subtree in.
     const aTip = await git.resolveRef({ fs, dir, ref: REF_A });
     const bTip = await git.resolveRef({ fs, dir, ref: REF_B });
     expect(await readTreePaths(dir, await treeOf(aTip))).toEqual(["alpha"]);
     expect(await readTreePaths(dir, await treeOf(bTip))).toEqual(["beta"]);
 
-    // Equivalence to a serial single-ref baseline: writing only one ref's
-    // sequence into a fresh repo never switches refs, so its tree is
-    // contamination-free by construction. Equal tree oids prove the
+    // Serial single-ref writes never switch refs, so their trees are
+    // contamination-free by construction; equal tree oids prove the
     // interleave reconstructed each ref's tree exactly. Tree oids are
-    // asserted rather than commit oids because the signer injects
-    // wall-clock and timezone into the commit, so commit oids are not
-    // reproducible across writes.
+    // asserted rather than commit oids, which embed wall-clock and
+    // timezone and so are not reproducible.
     const serialTrees = async (topPrefix: string): Promise<string[]> => {
       const baseDataDir = await makeTempDir("repo-store-ref-switch-base-");
       const baseHandler = createTestHandler();
@@ -521,11 +511,10 @@ describe("RepoStore", () => {
     expect(await rejectStore.resolveRef(principal, repoId, REF)).toBeNull();
   });
 
-  // Build a pack carrying one commit whose root tree holds a single symlink or
-  // submodule entry, and receivePack it into a fresh store. Returns the store
-  // and the receivePack promise so the caller can assert rejection + a
-  // still-absent ref. The handler accepts everything, so a rejection can only
-  // come from the substrate's admission gate, not the kind handler.
+  // Build a pack whose root tree holds one symlink or submodule entry and
+  // receivePack it into a fresh store. Returns the store and the receivePack
+  // promise for the caller to assert rejection + a still-absent ref; the
+  // handler accepts everything, so rejection means the admission gate fired.
   async function pushSingleEntryTree(
     prefix: string,
     spec:
@@ -1039,11 +1028,9 @@ describe("RepoStore", () => {
       }),
     ).rejects.toThrow(/^path_violation/);
 
-    // The previous attempt's writeFileEntry staged
-    // deploy/rejected.md before validation refused. A working
-    // rollback drops the staged file from disk and the index so the
-    // next legitimate writeTree commits exactly the files it
-    // declares — no leftover content carried over.
+    // The rejected attempt staged deploy/rejected.md; a working rollback
+    // drops it from disk and the index so the next writeTree commits only
+    // the files it declares.
     allowNext = true;
     const commit = await store.writeTree(principal, repoId, REF, {
       files: { "deploy/accepted.md": "second attempt" },
@@ -1076,16 +1063,11 @@ describe("RepoStore", () => {
   });
 
   test("writeTree rollback restores ref-existing files that the rejected push overwrote", async () => {
-    // A rejected push must not destroy content the target ref already
-    // held. The earlier rollback implementation unconditionally
-    // unlinked every staged path on validation failure; for paths that
-    // already lived at the ref (e.g. a top-level file the new push
-    // overwrote) that turned a validation refusal into silent data
-    // loss. This pins the restore-on-rollback behaviour: an accepted
-    // first push seeds a file at the ref, a rejected second push
-    // attempts to overwrite that same file, and after the validation
-    // failure the original ref content must still be on disk and in
-    // the index.
+    // A rejected push must not destroy content the ref already held: the
+    // earlier rollback unlinked every staged path, turning a validation
+    // refusal into silent data loss for files the push overwrote. This
+    // pins the restore-on-rollback behaviour — the original ref content
+    // must still be on disk and in the index after the failure.
     const dataDir = await makeTempDir("repo-store-writetree-restore-ref-");
     let allowNext = true;
     const handler: TestHandler = {
@@ -1133,11 +1115,8 @@ describe("RepoStore", () => {
     );
     expect(onDisk).toBe("original content at ref");
 
-    // A subsequent legitimate writeTree should land cleanly and the
-    // resulting commit's tree should hold the original content at
-    // top-level.txt — confirming the rejected push neither destroyed
-    // the file on disk nor left the index in a torn state that a
-    // follow-up commit would propagate.
+    // A subsequent writeTree lands cleanly with the original content still
+    // at top-level.txt, confirming neither disk nor index was left torn.
     allowNext = true;
     const commit = await store.writeTree(principal, repoId, REF, {
       files: { "other.txt": "unrelated next push" },
@@ -1439,9 +1418,8 @@ describe("RepoStore", () => {
 
     const targetDir = await makeTempDir("repo-store-serial-target-");
     const events: string[] = [];
-    // Each push parks inside validatePush until the test releases it, so the
-    // first push holds the repo for as long as the test wants rather than for
-    // a fixed delay the second push has to arrive inside of.
+    // Each push parks in validatePush until the test releases it, so the
+    // first push holds the repo as long as the test wants.
     const parked: (() => void)[] = [];
     const slowHandler: TestHandler = {
       kind: "agent-state",
@@ -1482,9 +1460,8 @@ describe("RepoStore", () => {
       firstSha,
     );
 
-    // Release each push only once it has parked. A store that ran the two in
-    // parallel would park both before either release, which the event order
-    // below reports as two adjacent "validate" entries.
+    // Release each push only once parked; parallel execution would park both
+    // before either release, reported below as adjacent "validate" entries.
     await waitUntil(() => parked.length >= 1);
     parked[0]?.();
     await waitUntil(() => parked.length >= 2);
@@ -1545,11 +1522,8 @@ describe("RepoStore", () => {
           observedMaxConcurrent,
           activeConcurrent,
         );
-        // A barrier, not a delay: each handler holds the push until BOTH have
-        // entered, so the second one arrives however long it takes. The delay
-        // this replaces closed the window after 100ms, and a push that
-        // reached the handler later than that left the counter at 1 and
-        // failed a store that was in fact parallel.
+        // A barrier, not a delay: each handler holds the push until both
+        // have entered, so the second arrives however long it takes.
         if (activeConcurrent === 2) reportBothInFlight();
         await bothInFlight;
         activeConcurrent -= 1;
@@ -1572,13 +1546,10 @@ describe("RepoStore", () => {
       targetStore.receivePack(principal, repoB, REF, packB, shaB, null),
     ]);
 
-    // Both handlers were in flight at once, which is the property: the
-    // counter rises to 2 only if the second push entered before the first
-    // released. Exact equality also rules out serialization, which would
-    // leave it at 1, so no elapsed-time bound is needed to tell the two
-    // apart -- and a bound would only add a dependency on how fast the
-    // machine happens to be. A store that serialized the two repos never
-    // releases the barrier at all, which the lane timeout reports as a hang.
+    // The counter reaches 2 only if the second push entered before the
+    // first released, ruling out serialization without an elapsed-time
+    // bound; a store that serialized the repos never releases the barrier
+    // and the lane timeout reports a hang.
     expect(observedMaxConcurrent).toBe(2);
   });
 
@@ -1938,15 +1909,12 @@ describe("RepoStore", () => {
       from: "head",
     });
 
-    // Schedule the abort on the next tick, then await next(). The
-    // pending waiter should resolve to {done: true} cleanly — no
-    // throw, no hang.
+    // Abort on the next tick so the pending next() resolves done cleanly.
     setTimeout(() => ac.abort(), 10);
     const done = await iter.next();
     expect(done.done).toBe(true);
 
-    // A second next() after abort is also done; the iterator stays
-    // closed without rethrowing.
+    // A later next() stays closed without rethrowing.
     const again = await iter.next();
     expect(again.done).toBe(true);
   });
@@ -1969,13 +1937,11 @@ describe("RepoStore", () => {
       bufferLimit: 2,
     });
 
-    // Prime the iterator so the replay phase runs (and the seq
-    // cache is seeded) before we start filling the buffer.
+    // Prime the iterator (seeding the seq cache) so the first commit
+    // satisfies the pending waiter, not a buffer slot; the next three
+    // commits fill the buffer and overrun it.
     const drainPromise = iter.next();
 
-    // The first commit's event satisfies the pending waiter set up
-    // by drainPromise — it does not occupy a buffer slot. The next
-    // three commits fill the buffer to its limit and then overrun.
     const first = await store.writeTree(principal, repoId, REF, {
       files: { "a.md": "1" },
       message: "one",
@@ -2081,15 +2047,10 @@ describe("RepoStore", () => {
     ).toThrow(/^authorize_denied/);
   });
 
-  // The per-commit walk's parent traversal asserts every commit has at
-  // most one parent so an intermediate-state validation always reads
-  // against the single ancestor's tree. No kind handler today produces
-  // merge commits; the assert exists to catch any future writer that
-  // accidentally does. This test pins the assertion shape so a future
-  // change to receivePack cannot quietly start accepting multi-parent
-  // commits — under the new behaviour the pack-walk would have no
-  // canonical "the predecessor" to consult, and every kind handler that
-  // depended on a single-parent chain would silently drift.
+  // The per-commit walk asserts at most one parent so validation always
+  // reads against the single ancestor's tree. This pins the assertion so
+  // a future receivePack change cannot quietly accept multi-parent
+  // commits, which would leave the walk without a canonical predecessor.
   test("receivePack rejects a pack carrying a merge commit with pack_walk_multi_parent", async () => {
     const sourceDir = await makeTempDir("repo-store-merge-source-");
     const sourceHandler = createTestHandler({
@@ -2121,10 +2082,8 @@ describe("RepoStore", () => {
       oid: parentA,
     });
     // Author the merge directly through isomorphic-git so the substrate
-    // never sees a multi-parent commit on the source side. The merge
-    // reuses one parent's tree wholesale because the per-commit walk
-    // only inspects the parent chain — the tree content is incidental
-    // to the assertion being pinned here.
+    // never sees a multi-parent commit on the source side; the tree
+    // content is incidental to the parent-chain assertion.
     const mergeSha = await git.commit({
       fs,
       dir: sourceRepoDir,
@@ -2195,30 +2154,18 @@ describe("RepoStore", () => {
     expect(targetHandler.onRefUpdatedCalls).toHaveLength(0);
   });
 
-  // A workflow-run pack whose oldest new commit declares a parent
-  // SHA the receiver does not have in its object store — and that
-  // the pack itself does not carry — leaves the substrate with no
-  // way to reconstruct the prior tree the kind handler validates
-  // append-only invariants against. Silently collapsing to "no
-  // prior" is unsafe: a handler enforcing append-only against a
-  // missing prior entry accepts only a genuinely new path; a path
-  // that contradicts a prior-tree entry the handler cannot read
-  // would slip through unchecked. The substrate refuses workflow-run
-  // packs with a dangling parent outright; the production
-  // workflow-run `createPack` ships the full parent chain, so the
-  // branch is unreachable on the production path.
-  //
-  // The substrate keeps the silent-degrade behavior for other kinds
-  // (e.g. agent-state) whose deploy-shape packs intentionally omit
-  // the parent chain and whose handlers do not read prior bytes;
-  // gating the rejection on `repoId.kind === "workflow-run"` is what
-  // keeps the agent-state state-push flow working through the same
-  // substrate primitive.
+  // A workflow-run pack whose newest commit declares a parent the
+  // receiver lacks leaves no prior tree to validate append-only
+  // invariants against; collapsing to "no prior" would let an overwrite
+  // of an unreadable prior entry slip through. The substrate refuses
+  // such packs outright (production `createPack` ships the full parent
+  // chain), while other kinds keep the silent-degrade behavior: their
+  // deploy-shape packs omit the parent chain and their handlers do not
+  // read prior bytes.
   test("receivePack rejects a workflow-run pack with a dangling parent", async () => {
     const wfRepoId: RepoId = { kind: "workflow-run", id: "subject" };
-    // Permissive test handler stamped as the workflow-run kind so
-    // the substrate's kind-aware dangling-parent check fires without
-    // pulling in the real workflow-run handler.
+    // Permissive workflow-run handler so the kind-aware dangling-parent
+    // check fires without pulling in the real one.
     const permissiveWorkflowRun = (): TestHandler => {
       const onRefUpdatedCalls: RefUpdateRecord[] = [];
       return {
@@ -2242,11 +2189,9 @@ describe("RepoStore", () => {
       authorize: allowAll,
     });
 
-    // Build three commits on the source so the third commit's parent
-    // is the second commit. The synthesised pack below carries the
-    // third commit's reachable objects with the second commit object
-    // deliberately excluded, so the third commit's `parent` field
-    // references a SHA the receiver cannot resolve.
+    // The synthesized pack carries the third commit's reachable objects
+    // with the second commit excluded, so its `parent` references a SHA
+    // the receiver cannot resolve.
     await sourceStore.writeTree(principal, wfRepoId, REF, {
       files: { "runs/r1/events/0.json": "v1" },
       message: "v1",
@@ -2306,14 +2251,10 @@ describe("RepoStore", () => {
     expect(targetHandler.onRefUpdatedCalls).toHaveLength(0);
   });
 
-  // A workflow-run pack transfer cancelled by a reconnect never lands
-  // an ack. The send-side "last shipped tip" must therefore advance on
-  // the ack, not when the pack is built: an un-acked build has to leave
-  // the tip where it was so the next rebuild re-ships the un-acked
-  // commit. If the tip advanced at build time, the rebuild would walk
-  // its incremental chain back only as far as the un-acked commit and
-  // omit that commit's own object from the pack, stranding the receiver
-  // with a dangling parent it can never resolve.
+  // A cancelled transfer never lands an ack, so the "last shipped tip"
+  // must advance on the ack, not the build: an un-acked build leaves the
+  // tip where it was so the next rebuild re-ships the un-acked commit
+  // instead of stranding the receiver with a dangling parent.
   test("createPack advances the packed tip on commitPackedTip, not at build time, so a cancelled transfer re-ships the un-acked commit", async () => {
     const makePermissiveWorkflowRunHandler = (): TestHandler => {
       const onRefUpdatedCalls: RefUpdateRecord[] = [];
@@ -2340,9 +2281,8 @@ describe("RepoStore", () => {
       authorize: allowAll,
     });
 
-    // First commit and its pack. This transfer is the one a reconnect
-    // cancels: the build succeeds but no ack ever lands, so the tip is
-    // never committed for it.
+    // First commit and its pack; this is the transfer a reconnect cancels,
+    // so no ack ever lands and the tip is never committed.
     const { commitSha: firstSha } = await sourceStore.writeTree(
       principal,
       wfRepoId,
@@ -2352,10 +2292,8 @@ describe("RepoStore", () => {
     const firstBuild = await sourceStore.createPack(principal, wfRepoId, REF);
     expect(firstBuild.commitSha).toBe(firstSha);
 
-    // The reconnect cancels the transfer without an ack, then the
-    // coalescing retry loop commits a second event and rebuilds. The
-    // rebuild must re-include the un-acked first commit because the tip
-    // was never committed.
+    // The cancelled transfer is followed by a second commit and rebuild;
+    // the rebuild must re-include the un-acked first commit.
     const { commitSha: secondSha } = await sourceStore.writeTree(
       principal,
       wfRepoId,
@@ -2365,12 +2303,10 @@ describe("RepoStore", () => {
     const rebuild = await sourceStore.createPack(principal, wfRepoId, REF);
     expect(rebuild.commitSha).toBe(secondSha);
 
-    // A fresh receiver that has never seen the first commit must accept
-    // the rebuilt pack: it carries the full chain from genesis, so no
-    // commit references a parent the receiver cannot resolve. Under a
-    // build-time tip advance the rebuild's chain would stop at
-    // `firstSha` and omit it, and this receive would reject with
-    // `pack_walk_dangling_parent` on the second commit's parent.
+    // A fresh receiver must accept the rebuilt pack: it carries the full
+    // chain from genesis. Under a build-time tip advance the chain would
+    // stop at `firstSha` and the receive would reject with a dangling
+    // parent on the second commit.
     const rebuildTargetDir = await makeTempDir("repo-store-ack-tip-rebuild-");
     const rebuildTargetHandler = makePermissiveWorkflowRunHandler();
     const rebuildTargetStore = createRepoStore({
@@ -2392,12 +2328,9 @@ describe("RepoStore", () => {
       secondSha,
     );
 
-    // Committing the tip on the ack lets the next build ship only the
-    // commits added since: after `commitPackedTip(secondSha)`, a third
-    // commit's pack walks back to `secondSha` and stops, so the pack
-    // no longer carries the already-acked history. A receiver that
-    // already holds the chain up to the second commit accepts this
-    // incremental pack.
+    // After `commitPackedTip(secondSha)`, a third commit's pack walks back
+    // to `secondSha` and stops, so it carries only the un-acked history
+    // and a receiver holding the chain up to `secondSha` accepts it.
     sourceStore.commitPackedTip(wfRepoId, REF, secondSha);
     const { commitSha: thirdSha } = await sourceStore.writeTree(
       principal,
@@ -2470,9 +2403,8 @@ describe("RepoStore", () => {
       message: "seed",
     });
 
-    // Diverge the working tree from the object store: delete the
-    // materialized checkout while leaving `.git` intact. A working-tree
-    // read would now miss the event; a committed read must not.
+    // Delete the materialized checkout while leaving `.git` intact: a
+    // working-tree read would miss the event, a committed read must not.
     const dir = path.join(dataDir, handler.directoryPrefix, repoId.id);
     await fs.promises.rm(path.join(dir, "runs"), {
       recursive: true,

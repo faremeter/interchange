@@ -1,23 +1,19 @@
-// Deployed loop-body-awaitSignal crash-survival integration test.
+// Deployed loop-body-awaitSignal crash-survival integration test: the deployed
+// capstone for INTR-478 -- a loop whose BODY parks on an `awaitSignal` survives
+// a sidecar PROCESS crash and resumes. A loop iteration runs through the
+// suspendable-child seam, so the body's `awaitSignal` proxies up onto the loop
+// container as a signal-relay await. After crash + restart, the fresh process's
+// boot-time restore re-spawns the deployment and re-seeds the parked run;
+// `runLoop` re-derives its cursor, re-establishes the container's signal relay
+// (planLoopResume), and the injected signal resolves the parked iteration
+// through to RunCompleted with effects applied once.
 //
-// The deployed capstone for INTR-478: a loop whose BODY parks on an
-// `awaitSignal` survives a sidecar PROCESS crash and resumes. A loop iteration
-// runs through the suspendable-child seam, so the body's `awaitSignal` proxies
-// up onto the loop container as a signal-relay await. After crash + restart,
-// the fresh process's boot-time restore re-spawns the deployment and re-seeds
-// the parked run; `runLoop` re-derives its cursor, re-establishes the
-// container's signal relay (planLoopResume), and the injected signal resolves
-// the parked iteration through to RunCompleted with effects applied once.
-//
-// This lifts the runtime-proven loop-suspend-resume behavior
-// (packages/workflow/src/runtime/loop-suspend-resume.test.ts, an in-memory
+// This lifts the runtime-proven loop-suspend-resume behavior (an in-memory
 // crash model) onto the real sidecar-kill/restore/reconnect path already proven
 // for a top-level awaitSignal (crash-restart-reconnect-resumes.test.ts).
 //
-// Harness justification: SPAWN-REAL. Real hub, real sidecar subprocess, real
-// workflow-process child, mock inference. The crash is a genuine kill of the
-// sidecar subprocess; the restart is a fresh sidecar against the dead process's
-// SIDECAR_DATA_DIR, so survival rides the production boot-time restore path.
+// Harness: SPAWN-REAL. The crash is a genuine kill of the sidecar subprocess;
+// the restart is a fresh sidecar against the dead process's SIDECAR_DATA_DIR.
 
 import fs from "node:fs";
 
@@ -75,9 +71,8 @@ let restartedSidecar: SidecarHandle | undefined;
 const restartTempDirs: string[] = [];
 
 beforeAll(async () => {
-  // A file-scope beforeAll fires even when describe.skipIf skips the
-  // suite bodies, so it needs its own guard or a missing DB env throws
-  // here. See the two-shape rule in tests/lib/db-harness.ts.
+  // A file-scope beforeAll fires even when describe.skipIf skips the suite
+  // bodies, so it needs its own guard or a missing DB env throws here.
   if (!harnessDbEnvAvailable()) return;
   h = await createTestDb();
   await h.db.insert(tenantTable).values({

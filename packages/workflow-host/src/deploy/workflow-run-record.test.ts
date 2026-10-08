@@ -359,13 +359,12 @@ describe("workflow run record store", () => {
   });
 
   test("rejects a source-ref record missing sourceRef / a pin half / approvedWireHash", () => {
-    // The whole safety argument for deleting the restore loop's hand-rolled
-    // source-ref guard is that the union rejects EVERY malformed source-ref
-    // record at the scan boundary -- so check each required piece on its own,
-    // not just the all-missing shape (a future combinator swap could keep
-    // all-missing rejecting while silently admitting a partial record). The
-    // `SourceRefPin` co-requires its `source` + `closure`, so a half-populated
-    // pin must be rejected too, not just an absent one.
+    // The union must reject EVERY malformed source-ref record at the scan
+    // boundary -- so check each required piece on its own, not just the
+    // all-missing shape (a future combinator swap could keep all-missing
+    // rejecting while silently admitting a partial record). `SourceRefPin`
+    // co-requires `source` + `closure`, so a half-populated pin must be
+    // rejected too.
     const rejects = (r: unknown): boolean =>
       WorkflowRunRecord(r) instanceof type.errors;
 
@@ -403,9 +402,9 @@ describe("workflow run record store", () => {
     const dataDir = await makeDataDir();
     const anchorRunId = "rotated-1";
 
-    // A source rotation overwrites the existing record in place. The
-    // atomic write must replace it cleanly, leaving only the record and
-    // no `.tmp` staging file behind.
+    // A source rotation overwrites the existing record in place. The atomic
+    // write must replace it cleanly, leaving only the record and no `.tmp`
+    // staging file behind.
     await writeWorkflowRunRecord(dataDir, anchorRunId, SINGLE_STEP, CIPHER);
     await writeWorkflowRunRecord(dataDir, anchorRunId, MULTI_STEP, CIPHER);
 

@@ -103,10 +103,9 @@ describe("catalogCapabilitiesFor over the production support matrix", () => {
   });
 
   test("projects gpt-5.5's captured flows and omits reasoning-content", () => {
-    // gpt-5.5 on api.openai.com Chat Completions returns no reasoning field,
-    // so reasoning-content is unsupported (not misled) and never projected —
-    // the highest-value assertion here, since a naive read would assume a
-    // frontier model exposes its reasoning trace.
+    // gpt-5.5 returns no reasoning field on this wire, so reasoning-content is
+    // unsupported (not misled) and never projected — a naive read would assume
+    // a frontier model exposes its reasoning trace.
     const result = catalogCapabilitiesFor("openai", "gpt-5.5");
     expect(result).toContain("function-calling");
     expect(result).toContain("vision-input");

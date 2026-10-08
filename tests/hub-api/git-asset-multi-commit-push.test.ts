@@ -1,8 +1,7 @@
-// Multi-commit push: a real `git push` carrying multiple commits in
-// a single pack stream exercises the substrate's `git.indexPack`
-// path with realistic delta references. The receive-pack pipeline
-// must accept whatever pack stock git produces; the test confirms
-// the resulting refs are reachable and `git fsck` is clean.
+// Multi-commit push: one `git push` carrying several delta-related commits
+// in a single pack exercises the substrate's `git.indexPack` path. The
+// receive-pack pipeline must accept whatever pack stock git produces; the
+// test confirms the resulting refs are reachable and `git fsck` is clean.
 
 import { describe, test, expect, afterEach } from "bun:test";
 import fs from "node:fs/promises";
@@ -86,9 +85,8 @@ describe.skipIf(!harnessHubEnvAvailable())("multi-commit push", () => {
       cwd: repoDir,
     });
 
-    // Build a chain of commits that touch the same skill subtree with
-    // small edits. Successive edits give stock git a natural delta to
-    // express in the pack — that's the path the substrate's indexer
+    // Build a chain of commits editing the same skill subtree, giving stock
+    // git a natural delta to express in the pack -- the path the indexer
     // must accept.
     const skill = "evolving";
     await fs.mkdir(path.join(repoDir, skill), { recursive: true });

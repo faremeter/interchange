@@ -1,36 +1,28 @@
 // Hub-side install/approve orchestration and gate for a code-sourced workflow
-// definition.
-//
-// This is the production glue that turns a code-sourced workflow install into
-// an approved, frozen definition WITHOUT executing any author code on the hub.
-// Everything here operates over the inert projection and grant set the sidecar
-// returns from a probe:
+// definition: turns a code-sourced install into an approved, frozen definition
+// without executing any author code on the hub. Everything here operates over
+// the inert projection and grant set the sidecar returns from a probe:
 //
 //   1. Resolve the frozen dependency closure for the definition's pin.
-//   2. Probe the sidecar for the definition's inert needs-surface projection,
-//      its advisory grant set, and the content hash the sidecar shipped.
-//   3. RECOMPUTE the wire hash over the RECEIVED projection as tamper-evidence:
-//      a shipped hash that differs from the hub recompute is rejected, fail
-//      closed, no coercion.
+//   2. Probe the sidecar for the inert projection, advisory grant set, and the
+//      content hash it shipped.
+//   3. Recompute the wire hash over the RECEIVED projection as tamper-evidence;
+//      a mismatch is rejected, fail closed.
 //   4. Reject a projection declaring a trigger type the runtime does not
-//      implement, so a deployment that could only ever sit inert never gets
-//      approved.
-//   5. Reject a projection carrying a step the grant walk left no record for,
-//      so no deployment can schedule a step whose grants nobody approved.
-//   6. Gate the advisory grant set AND the definition's declared grant
-//      requirements against the approval policy: an operator `ApprovalSet`
-//      requires every grant the probe surfaced and every requirement it
-//      declared to be approved or the gate fails, while `approve-probed`
-//      approves exactly what the probe surfaced.
-//   7. Freeze the approved wire hash onto the definition version row, keyed by
-//      the definition's selector, and return the frozen approved grant set.
+//      implement, so a deployment that could only sit inert is never approved.
+//   5. Reject a projection carrying a step the grant walk left no record for.
+//   6. Gate the advisory grant set AND the declared grant requirements against
+//      the approval policy: an operator `ApprovalSet` requires every one to be
+//      approved or the gate fails; `approve-probed` approves exactly what the
+//      probe surfaced.
+//   7. Freeze the approved wire hash onto the definition version row.
 //
 // The frozen approved set is the single source of truth for the definition's
-// grants: the deploy path materializes deploy grants as a SUBSET of it (never a
-// fresh walk), so a workflow can never acquire at deploy or run time a grant it
-// did not have frozen at approval. The wire hash is that freeze's anchor -- the
-// grant set is a deterministic projection of the exact content the hash
-// addresses, so pinning the hash pins the set.
+// grants: the deploy path materializes deploy grants as a subset of it, never a
+// fresh walk, so a workflow can never acquire a grant it did not have frozen at
+// approval. The wire hash anchors the freeze: the grant set is a deterministic
+// projection of the exact content the hash addresses, so pinning the hash pins
+// the set.
 
 import { type } from "arktype";
 import { and, eq } from "drizzle-orm";
@@ -78,27 +70,24 @@ type WorkflowProbeRouter = {
 };
 
 // The version `ensureWorkflowDefinitionForAsset` projects for a fresh
-// definition, and therefore the row the approval freeze targets. Kept in step
-// with the ensure helper: if that helper ever projects a different initial
-// version, this must follow.
+// definition and therefore the row the approval freeze targets. If the helper
+// ever projects a different initial version, this must follow.
 const FROZEN_VERSION = "1";
 
 /**
  * The frozen record an approval writes: the definition's asset selector, the
- * approved wire hash (the freeze anchor), the approved surface, and the
- * grant-walk snapshot the run path materializes grants from. The approved
- * surface is a deterministic projection of the content the hash addresses and
- * rides the deploy hand-off in memory; the snapshot is persisted onto the
- * version row so a run derives its grants from the frozen walk without
- * re-reading and re-walking the workflow's `workflow.json`.
+ * approved wire hash (the freeze anchor), and the grant-walk snapshot the run
+ * path materializes grants from. The snapshot is persisted onto the version
+ * row so a run derives its grants without re-reading `workflow.json`; the
+ * approved surface rides the deploy hand-off in memory as a deterministic
+ * projection of the content the hash addresses.
  *
- * `approvedGrants` carries both kinds of approved item: the walk's grant-shape
- * strings and the definition's declared grant requirements. The requirements
- * belong in the same record because the run path mints real grant rows from
- * them, so an account of the approval that listed only the walk strings would
- * under-report the authority the definition will actually carry. It is the flat
- * `ApprovalItem` list rather than the gate's partitioned `ApprovalSet` because
- * this record is the input to persistence, and the persisted form is flat.
+ * `approvedGrants` carries both the walk's grant strings and the declared
+ * grant requirements, because the run path mints real grant rows from the
+ * requirements too -- an account listing only the walk strings would
+ * under-report the authority the definition carries. It is the flat
+ * `ApprovalItem` list, not the gate's partitioned `ApprovalSet`, because the
+ * persisted form is flat.
  */
 export type FrozenApproval = {
   readonly assetId: string;
@@ -109,8 +98,8 @@ export type FrozenApproval = {
 
 /**
  * Persists a frozen approval and returns the definition it was recorded
- * against. Bound to a `DBExecutor` in production via
- * `createDbFrozenApprovalWriter`; a test double records the call.
+ * against. Production binding is `createDbFrozenApprovalWriter`; a test double
+ * records the call.
  */
 export type PersistFrozenApprovalFn = (
   approval: FrozenApproval,
@@ -119,10 +108,9 @@ export type PersistFrozenApprovalFn = (
 /**
  * The outcome of gating and freezing a probe result. `ok: true` is the frozen
  * approval the deploy hand-off consumes. The `ok: false` arms name the five
- * fail-closed paths: a shipped hash that does not match the hub recompute
- * (tamper-evidence), advisory grants the operator did not approve, declared
- * grant requirements the operator did not approve, a trigger type the runtime
- * does not implement, and an executable step the grant walk left no record for.
+ * fail-closed paths: tampered hash, unapproved advisory grants, unapproved
+ * declared grant requirements, an unimplemented trigger type, and an
+ * executable step the grant walk left no record for.
  */
 export type ProbeGateResult =
   | {
@@ -130,11 +118,7 @@ export type ProbeGateResult =
       readonly definitionId: string;
       readonly approvedWireHash: string;
       readonly approvedSurface: ApprovalSet;
-      /**
-       * The inert wire projection the freeze hashed. Rides the ok-arm so the
-       * deploy hand-off carries the exact content the frozen hash addresses,
-       * never a re-projection of a registry that may have moved since approval.
-       */
+      /** The inert wire projection the freeze hashed, so the deploy hand-off never re-projects a registry that may have moved. */
       readonly projection: WorkflowProjectionDefinition;
     }
   | {
@@ -151,11 +135,7 @@ export type ProbeGateResult =
   | {
       readonly ok: false;
       readonly reason: "grant_requirements_not_approved";
-      /**
-       * The declared requirements the operator's approval does not cover, in
-       * the order the probe declared them. Named in full so the operator can
-       * see exactly which authority the definition asked to delegate.
-       */
+      /** The declared requirements the approval does not cover, in probe order. */
       readonly unapprovedGrantRequirements: readonly GrantRequirement[];
     }
   | {
@@ -169,12 +149,7 @@ export type ProbeGateResult =
       readonly reason: "steps_without_grant_record";
       /** Every executable step the grant-walk snapshot accounts for nothing at. */
       readonly stepsWithoutGrantRecord: readonly StepWithoutGrantRecord[];
-      /**
-       * One sentence naming every miss. A deploy that trips this is a defect in
-       * the deploy path rather than in the author's workflow, so the sentence
-       * carries what whoever maintains that path needs: the step, the position,
-       * and the record that was absent.
-       */
+      /** One sentence naming every miss: the step, its position, and the record that was absent. */
       readonly message: string;
     };
 
@@ -186,48 +161,43 @@ export type StepWithoutGrantRecord = {
   /** The executable step id with no approved grants behind it. */
   readonly stepId: string;
   /**
-   * The chain of step ids the executable walk reached `stepId` through,
-   * outermost first and `stepId` itself last. Two nested bodies may
-   * legitimately carry the same step id, so the chain -- not the id alone --
-   * is what names the position in the closure.
+   * The chain of step ids the walk reached `stepId` through, outermost first.
+   * Two nested bodies may carry the same step id, so the chain -- not the id
+   * alone -- names the position in the closure.
    */
   readonly reachedThrough: readonly string[];
   /**
-   * The top-level step whose snapshot record was supposed to account for
-   * `stepId`. The capability walk folds every nested body's grants into the
-   * record of the top-level step that carries the body, so this names the
-   * `perStep` key the absent record would have had.
+   * The top-level step whose record was supposed to account for `stepId`. The
+   * capability walk folds every nested body's grants into the record of the
+   * top-level step that carries the body, so this is the `perStep` key the
+   * absent record would have had.
    */
   readonly recordStepId: string;
 };
 
 /**
- * Build the production persistence step of the freeze. Records identity through
- * the selector-keyed ensure helper (a definition keyed by `(assetId,
- * wireHash)`) and writes the approved wire hash and the grant-walk snapshot onto
- * that definition's version row in one transaction. The grant SET is not written
- * to a version-row column -- the approved wire hash already pins the content the
- * grants project from -- so it travels with the returned frozen approval; the
- * snapshot is written because the run path reads it back to materialize grants.
+ * Production persistence for the freeze: ensure the selector-keyed definition
+ * row exists and stamp the approved wire hash and grant-walk snapshot onto its
+ * version row in one transaction. The grant set is not written -- the hash pins
+ * the content the grants project from -- so it travels with the returned frozen
+ * approval; the snapshot is written because the run path reads it back.
  */
 export function createDbFrozenApprovalWriter(
   db: DBExecutor,
 ): PersistFrozenApprovalFn {
   return async ({ assetId, approvedWireHash, grantSnapshot }) => {
-    // Ensure-then-stamp is one freeze: a crash between the two would persist a
-    // version row with a NULL `approvedWireHash`, which the schema treats as
-    // the legitimate "not yet approved" state -- indistinguishable from an
-    // un-approved definition. Wrap both writes in one transaction so the freeze
-    // is all-or-nothing.
+    // Ensure-then-stamp is one freeze: a crash between the two would leave a
+    // version row with a NULL `approvedWireHash`, indistinguishable from a
+    // definition that was never approved. One transaction keeps the freeze
+    // all-or-nothing.
     return db.transaction(async (tx) => {
       const { definitionId } = await ensureWorkflowDefinitionForAsset(tx, {
         assetId,
         wireHash: approvedWireHash,
       });
       // `FROZEN_VERSION` is hand-coupled to the version the ensure helper
-      // projects; if that coupling ever drifts, the update would silently stamp
-      // zero rows and no hash would persist. Assert exactly one row so a drift
-      // fails loud instead of open.
+      // projects; a drift would silently stamp zero rows. Assert exactly one so
+      // a drift fails loud.
       const stamped = await tx
         .update(workflowDefinitionVersion)
         .set({ approvedWireHash, grantSnapshot })
@@ -249,23 +219,20 @@ export function createDbFrozenApprovalWriter(
 }
 
 /**
- * Approve exactly the grant surface the probe reports, without a pre-walked
- * operator `ApprovalSet` to gate against. Under this mode the gate skips the
- * per-grant and per-requirement membership checks and freezes exactly what the
- * probe advertised.
- *
- * This is the code-sourced analogue of the live-authored self-approve: the hub
- * has no live definition to pre-walk, so the probe's advertised grants ARE the
- * declared surface. It does NOT relax tamper-evidence -- the wire-hash check
+ * Approve exactly the grant surface the probe reports, with no operator
+ * `ApprovalSet` to gate against: the gate skips the per-grant and per-
+ * requirement membership checks and freezes exactly what the probe advertised.
+ * The hub has no live definition to pre-walk, so the probe's advertised grants
+ * ARE the declared surface. Does NOT relax tamper-evidence: the wire-hash check
  * still runs and can still fail closed.
  */
 export type ApproveProbedGrants = { readonly kind: "approve-probed" };
 
 /**
- * How the gate turns the probe's advertised surface into an approved one.
- * Either an explicit operator `ApprovalSet` -- every advertised grant and every
- * declared grant requirement must appear in it or the gate fails closed -- or
- * `approve-probed`, which approves exactly the surface the probe reported.
+ * How the gate turns the probe's advertised surface into an approved one: an
+ * operator `ApprovalSet` (every advertised grant and declared requirement must
+ * appear in it or the gate fails closed) or `approve-probed`, which approves
+ * exactly the surface the probe reported.
  */
 export type ProbeApprovalPolicy = ApprovalSet | ApproveProbedGrants;
 
@@ -277,18 +244,17 @@ function isApproveProbed(
 
 /**
  * Trigger types the definition vocabulary declares but the runtime does not
- * implement. `schedule` is reserved: no cron parser and no scheduler exist, so
- * a schedule-triggered deployment would hash, deploy, and then never fire --
- * no error, no log, no failed run. Admitting one at the gate is the only way a
- * deployment reaches that state, so the gate refuses it.
+ * implement. `schedule` is reserved: no cron parser or scheduler exists, so a
+ * schedule-triggered deployment would deploy and then never fire -- no error,
+ * no log, no failed run. The gate is the only place such a deployment can be
+ * stopped, so it refuses them.
  */
 const UNIMPLEMENTED_TRIGGER_TYPES: ReadonlySet<string> = new Set(["schedule"]);
 
 // A projected trigger, typed only to its discriminant. `triggers` rides the
-// wire projection as `unknown[]` on purpose (the wire envelope does not own
-// the trigger vocabulary), so the discriminant is read through a validator
-// rather than an assertion. An entry that carries no string `type` is not a
-// trigger this gate has an opinion about and is left to the deploy path.
+// wire projection as `unknown[]` (the wire envelope does not own the trigger
+// vocabulary), so the discriminant is read through a validator, not an
+// assertion. An entry without a string `type` is left to the deploy path.
 const ProjectedTriggerType = type({ type: "string" });
 
 /**
@@ -318,19 +284,10 @@ type ExecutableReach = StepWithoutGrantRecord;
  * Every step the deployment can execute, walked over the frozen inert
  * projection under `EXECUTABLE_STEP_DESCENT`, each carrying the chain it was
  * reached through and the top-level step whose grant record accounts for it.
- *
- * The descent is the canonical one rather than a local re-derivation on
- * purpose. Sharing `EXECUTABLE_STEP_DESCENT` with the capability walk makes the
- * two sides agree on ONE thing: which primitive kinds are descended into, so a
- * newly-added container kind cannot become reachable here while staying
- * invisible to the walk. It does NOT make the two agree about grants. This
- * function sees only step positions; whether the walk folded the right grants
- * into a record is not observable from the inert projection and is not checked
- * anywhere on this path.
- *
- * The position each step was reached at is the walk's own `path`, for the same
- * reason. The head of that path is the top-level step the entry descends from,
- * which is exactly the `perStep` key the capability walk folds its grants into.
+ * The descent is the canonical one shared with the capability walk so a newly
+ * added container kind cannot become reachable here while staying invisible to
+ * it; this function sees only step positions -- whether the walk folded the
+ * right grants into a record is not observable from the inert projection.
  */
 function collectExecutableReaches(
   projection: WorkflowProjectionDefinition,
@@ -348,18 +305,12 @@ function collectExecutableReaches(
 }
 
 /**
- * Every executable step the grant-walk snapshot carries no record for.
- *
- * A step's approved-grant record is the snapshot entry keyed by the top-level
- * step it descends from: the capability walk collects one record per top-level
- * step and folds into it the grants of every step that step can run.
- *
- * This is a PRESENCE check and nothing more. An absent record is decisive --
- * it leaves every step of that subtree with no approved grants at all, which
- * is the hole this catches. A present record is not evidence the other way:
- * nothing here opens the record to confirm it actually carries the grants the
- * steps beneath it need. A record present but under-filled passes this check
- * and still refuses those tool calls at run time.
+ * Every executable step the grant-walk snapshot carries no record for. A step's
+ * approved-grant record is the snapshot entry keyed by the top-level step it
+ * descends from. A PRESENCE check and nothing more: an absent record is
+ * decisive (the whole subtree has no approved grants), while a present record
+ * is not evidence -- an under-filled record passes here and still refuses the
+ * steps' tool calls at run time.
  */
 function collectStepsWithoutGrantRecord(
   projection: WorkflowProjectionDefinition,
@@ -390,11 +341,7 @@ export type GateAndFreezeArgs = {
   readonly assetId: string;
   /** The sidecar's inert probe answer: projection, advisory grants, shipped hash. */
   readonly probeResult: WorkflowProbeResult;
-  /**
-   * The approval policy. An `ApprovalSet` gates the advisory set and the
-   * declared grant requirements against the operator-approved items;
-   * `approve-probed` approves exactly the surface the probe reported.
-   */
+  /** The approval policy: `ApprovalSet` gates both surfaces; `approve-probed` approves the probe's surface. */
   readonly approvals: ProbeApprovalPolicy;
   /** Persistence step for the freeze; `createDbFrozenApprovalWriter` in production. */
   readonly persist: PersistFrozenApprovalFn;
@@ -405,19 +352,14 @@ export type GateAndFreezeArgs = {
  * inert projection and grant set -- no author code runs here and the capability
  * walk is never re-run.
  *
- * Fails closed on the three security-load-bearing checks before it writes
- * anything: the recomputed wire hash must match the hash the sidecar shipped
- * (tamper-evidence), every advisory grant must be operator-approved, and every
- * declared grant requirement must be operator-approved. It also refuses a
- * projection whose triggers include a reserved-but-unimplemented type -- not a
- * security check, but the layer a pinned closure cannot carry a stale copy of,
- * so it is where a workflow that could only sit inert is caught -- and one
- * whose executable closure reaches a step the grant walk left no record for --
- * the layer holding both halves of the probe answer at once, and a presence
- * check on those records rather than a check that any record's contents are
- * sufficient.
- * Only then does it freeze the recomputed hash onto the version row and return
- * the approved grant set.
+ * Fails closed on the three security-load-bearing checks before writing
+ * anything: the recomputed wire hash must match the shipped hash
+ * (tamper-evidence), and every advisory grant and declared grant requirement
+ * must be operator-approved. It also refuses a projection with a
+ * reserved-but-unimplemented trigger type (a workflow that could only sit
+ * inert) or an executable step the grant walk left no record for. Only then
+ * does it freeze the recomputed hash onto the version row and return the
+ * approved grant set.
  */
 export async function gateAndFreezeProbeResult(
   args: GateAndFreezeArgs,
@@ -440,14 +382,13 @@ export async function gateAndFreezeProbeResult(
     };
   }
 
-  // Reject a trigger type nothing implements. This runs on the projection
-  // rather than on the author's definition because `defineWorkflow` is bundled
-  // INTO the pinned workflow closure: a closure published before the authoring
-  // check carries its own frozen copy and never sees it. The projection's
-  // `triggers` are produced by the hub's live->inert projector, so this is the
-  // one trigger surface a stale closure cannot carry past. Placed after the
-  // wire-hash check so tamper-evidence still decides first -- the projection
-  // must be the one the sidecar hashed before its content is reasoned about.
+  // Reject a trigger type nothing implements. This runs on the projection, not
+  // on the author's definition, because `defineWorkflow` is bundled INTO the
+  // pinned closure: a stale closure carries its own frozen copy and never sees
+  // an authoring-time check. The projection's `triggers` come from the hub's
+  // live->inert projector, so this is the one trigger surface a stale closure
+  // cannot carry past. Placed after the wire-hash check so tamper-evidence
+  // still decides first.
   const unimplementedTriggerTypes = collectUnimplementedTriggerTypes(
     probeResult.projection.triggers,
   );
@@ -460,29 +401,23 @@ export async function gateAndFreezeProbeResult(
   }
 
   // Totality: every step the deployment can execute must have an approved-grant
-  // record behind it. The two halves of a probe answer are produced
-  // independently -- the projection by the hub's live->inert projector, the
-  // grant-walk snapshot by the sidecar's capability walk over the live
-  // definition -- and nothing until now compared them. A step the walk skipped
-  // still projects, still deploys, and is still scheduled; its tool calls are
-  // then refused for lack of any grant, and the tool runner turns that refusal
-  // into an error tool result rather than a failure, so the run completes
-  // having done none of the work. This is the check that makes that
-  // unreachable: it is total over the closure and it runs on every deploy,
-  // rather than depending on some test happening to invoke a tool from the
-  // affected step.
+  // record behind it. The projection and the grant-walk snapshot are produced
+  // independently (hub projector vs sidecar capability walk), and nothing until
+  // now compared them: a step the walk skipped still projects, deploys, and is
+  // scheduled, and its refused tool calls surface as error tool results, so the
+  // run completes having done none of the work. Total over the closure, on
+  // every deploy.
   //
-  // Placed after the trigger check and before the operator-policy checks
-  // below. A deploy that trips this is a defect in the deploy path, not a
-  // decision the operator can make differently, so it must not be reported
-  // behind an unapproved-grant message an operator would act on instead.
+  // Placed after the trigger check and before the operator-policy checks: a
+  // deploy that trips this is a defect in the deploy path, not an operator
+  // decision, so it must not hide behind an unapproved-grant message an
+  // operator would act on instead.
   //
   // DO NOT move this assertion earlier in this package's history. The record it
-  // requires is a claim that the approval covers everything the step can run,
-  // and that claim was not kept for a step inside a loop body or a section body
-  // until the deploy and runtime producers were made total over the executable
-  // closure. Asserted before those producers, the gate would have been
-  // enforcing a guarantee the rest of the system did not honour.
+  // requires -- that approval covers everything a step can run -- was not kept
+  // for steps inside loop or section bodies until the deploy and runtime
+  // producers were made total over the executable closure; asserted earlier,
+  // the gate would enforce a guarantee the rest of the system did not honour.
   const stepsWithoutGrantRecord = collectStepsWithoutGrantRecord(
     probeResult.projection,
     probeResult.grantWalkSnapshot,
@@ -496,10 +431,9 @@ export async function gateAndFreezeProbeResult(
     };
   }
 
-  // Gate the advisory grant set. Under an `ApprovalSet` every grant the probe
-  // surfaced must appear in the operator's approved set; any miss fails the
-  // gate closed. Under `approve-probed` there is no set to gate against -- the
-  // probe's surface IS the approved set -- so nothing is ever unapproved.
+  // Gate the advisory grant set. Under an `ApprovalSet` every surfaced grant
+  // must appear in the operator's approved set; under `approve-probed` the
+  // probe's surface IS the approved set, so nothing is ever unapproved.
   const unapprovedGrants = isApproveProbed(approvals)
     ? []
     : probeResult.grants.filter((grant) => !approvals.grants.has(grant));
@@ -507,14 +441,13 @@ export async function gateAndFreezeProbeResult(
     return { ok: false, reason: "grants_not_approved", unapprovedGrants };
   }
 
-  // Gate the DECLARED grant requirements. These ride the walk snapshot rather
-  // than the flattened `grants`, and the walk never surfaces them, so the
-  // filter above cannot see them -- yet the run path materializes each one into
-  // a real grant row on the run principal, and a wildcard row reaches gates no
-  // walk-derived row can address. They therefore need the operator's decision
-  // on exactly the same terms the advertised grants do. Under `approve-probed`
-  // the probe's surface IS the approved surface, so there is nothing to gate
-  // against and the requirements ride into the approval below.
+  // Gate the DECLARED grant requirements. These ride the walk snapshot, not the
+  // flattened `grants`, so the filter above cannot see them -- yet the run path
+  // materializes each one into a real grant row on the run principal, and a
+  // wildcard row reaches gates no walk-derived row can address. They therefore
+  // need the operator's decision on the same terms as the advertised grants.
+  // Under `approve-probed` there is nothing to gate against and the
+  // requirements ride into the approval below.
   const declaredRequirements = probeResult.grantWalkSnapshot.grantRequirements;
   const unapprovedGrantRequirements = isApproveProbed(approvals)
     ? []
@@ -531,9 +464,8 @@ export async function gateAndFreezeProbeResult(
 
   // Freeze: the approved surface is exactly what the workflow advertised (all
   // of it now operator-approved), pinned to the recomputed hash. Persisting the
-  // hash is the freeze; the approved surface is returned for the deploy
-  // hand-off. The declared requirements join the walk's grant strings in that
-  // surface under both policies, so the record the hand-off and any audit read
+  // hash is the freeze; the surface is returned for the deploy hand-off with
+  // the declared requirements joined to the walk's grant strings, so the record
   // describes every kind of authority the freeze will mint.
   const approvedGrants: readonly ApprovalItem[] = [
     ...probeResult.grants,
@@ -560,11 +492,7 @@ type InstallAndApproveCommonArgs = {
   readonly entry: string;
   /** The `workflow`-kind asset the frozen definition projects over. */
   readonly assetId: string;
-  /**
-   * The approval policy threaded to the gate: an operator `ApprovalSet` to gate
-   * the advisory set against, or `approve-probed` to approve exactly the
-   * surface the probe reports.
-   */
+  /** The approval policy threaded to the gate. */
   readonly approvals: ProbeApprovalPolicy;
   /** The sidecar router carrying the probe transport. */
   readonly router: WorkflowProbeRouter;
@@ -587,9 +515,9 @@ export type InstallAndApproveRegistryArgs = InstallAndApproveCommonArgs & {
 
 /**
  * Install a definition published as a tarball inside a hub `package-registry`
- * asset. The caller mints the asset-read closures (`readBlob`/`listBlobs`) and
- * `resolveAttachment`; this glue never imports the asset service, so hub-service
- * ownership stays at the caller.
+ * asset. The caller mints the asset-read closures and `resolveAttachment`; this
+ * glue never imports the asset service, so hub-service ownership stays at the
+ * caller.
  */
 export type InstallAndApproveAssetTarballArgs = InstallAndApproveCommonArgs & {
   readonly source: WorkflowDefinitionAssetSource;
@@ -605,20 +533,17 @@ export type InstallAndApproveAssetTarballArgs = InstallAndApproveCommonArgs & {
 
 /**
  * Install a definition whose package lives as a git subtree of a hub asset at a
- * pinned commit. The caller binds a `SourceTreeReads` to that commit and
- * supplies the npm `registryConfig` for the external deps; there is no
- * `name@range` pin (the member is selected from `source.package.packageName`).
- * `resolveAttachment` delivers the same git pack the tarball arm does, so the
- * sidecar checks the subtree out of it.
+ * pinned commit. The caller binds `SourceTreeReads` to that commit and supplies
+ * the npm `registryConfig`; there is no `name@range` pin (the member is
+ * selected from `source.package.packageName`). `resolveAttachment` delivers the
+ * same git pack the tarball arm does, so the sidecar checks the subtree out of
+ * it.
  */
 export type InstallAndApproveAssetSourceArgs = InstallAndApproveCommonArgs & {
   readonly source: WorkflowDefinitionAssetSource;
   /** Git-tree reads pinned to `source.package.commitSha`. */
   readonly reads: SourceTreeReads;
-  /**
-   * The registry name external deps are stamped with in the frozen closure.
-   * Must be a name the sidecar's registry map is keyed by (its npm registry).
-   */
+  /** The registry name external deps are stamped with in the frozen closure; must key the sidecar's registry map. */
   readonly registryName: string;
   /** URL and credentials for the npm registry external deps resolve against. */
   readonly registryConfig: RegistryConfig;
@@ -653,13 +578,12 @@ function isAssetTarballInstallArgs(
 }
 
 /**
- * The frozen hand-off `installAndApproveWorkflowDefinition` produces. It carries
- * the gate outcome plus the two values the source-ref deploy frame needs and
- * must NOT recompute at deploy: the inert `projection` the freeze hashed and the
- * frozen dependency `closure` the pin resolved to. Re-resolving either at deploy
- * would reintroduce the non-determinism the freeze eliminates -- a registry that
- * moved between approve and deploy would pin different bytes and project
- * differently, failing the child re-verify -- so both ride from approve verbatim.
+ * The frozen hand-off `installAndApproveWorkflowDefinition` produces: the gate
+ * outcome plus the inert `projection` the freeze hashed and the frozen
+ * dependency `closure` the pin resolved to. The deploy frame must NOT recompute
+ * either -- a registry that moved between approve and deploy would pin
+ * different bytes and project differently, failing the child re-verify -- so
+ * both ride from approve verbatim.
  */
 export type InstallAndApproveResult = {
   readonly approval: ProbeGateResult;
@@ -668,18 +592,13 @@ export type InstallAndApproveResult = {
 };
 
 /**
- * The install/approve orchestration entrypoint the end-to-end flow drives:
- * resolve the frozen closure, probe the sidecar, then gate and freeze the
- * result. This is production glue, not test-only wiring.
- *
- * The operator-approval decision is an input (`approvals`): the caller supplies
- * either the `ApprovalSet` the operator approved, which the gate holds the
- * advisory set to, or `approve-probed` to approve exactly the surface the probe
- * reports.
- *
- * Returns the gate outcome alongside the inert projection and the frozen
- * closure so the deploy hand-off consumes them verbatim rather than re-probing
- * or re-resolving.
+ * The install/approve orchestration entrypoint: resolve the frozen closure,
+ * probe the sidecar, then gate and freeze the result. Production glue, not
+ * test-only wiring. The operator-approval decision is an input: an `ApprovalSet`
+ * the gate holds the advisory set to, or `approve-probed` to approve exactly
+ * the surface the probe reports. Returns the gate outcome alongside the inert
+ * projection and frozen closure so the deploy hand-off consumes them verbatim
+ * rather than re-probing or re-resolving.
  */
 export async function installAndApproveWorkflowDefinition(
   args: InstallAndApproveArgs,

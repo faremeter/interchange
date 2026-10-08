@@ -29,13 +29,12 @@ async function isGitRepo(
  * Per-call options for `initRepo`.
  *
  *   - `signer`: enables a hub-authored signed genesis (gpgsig header
- *     populated via the callback). When omitted, the genesis is
- *     authored as the harness identity and unsigned.
- *   - `gitignore`: overrides the body written to `.gitignore` in the
- *     genesis tree. When omitted, the default `keys/\n` body is used,
- *     keeping the historical behaviour for every existing caller.
- *     The asset-route REST handler ships a richer body that includes
- *     OS/editor cruft, common build output, and `keys/`.
+ *     populated via the callback). When omitted, the genesis is authored
+ *     as the harness identity and unsigned.
+ *   - `gitignore`: overrides the `.gitignore` body written into the
+ *     genesis tree. When omitted, the default `keys/\n` body is used; the
+ *     asset-route handler ships a richer body (OS/editor cruft, build
+ *     output, `keys/`).
  */
 export type InitRepoOpts = {
   signer?: CommitSigner;
@@ -43,12 +42,10 @@ export type InitRepoOpts = {
 };
 
 /**
- * Initialize a git repository with a .gitignore and an empty initial commit.
- * Idempotent: safe to call on a directory that already contains a git repo.
- *
- * Used by the hub for repos that don't need sidecar-specific scaffolding.
- * isomorphic-git requires at least one commit before branching operations
- * work, so the initial commit is always created.
+ * Initialize a git repository with a `.gitignore` and an empty initial
+ * commit. Idempotent: safe on a directory that already contains a git
+ * repo. isomorphic-git requires at least one commit before branching
+ * operations work, so the initial commit is always created.
  */
 export async function initRepo(
   runtime: StorageRuntime,
@@ -80,13 +77,12 @@ export async function initRepo(
 }
 
 /**
- * Initialize a sidecar-side agent repository with the state/ directory
- * structure. Creates a single initial commit containing only `.gitignore`;
- * subsequent reactor cycles overwrite the per-cycle files (`turns.jsonl`,
- * `prompt.jsonl`, `response.jsonl`, `manifest.jsonl`, `metadata.json`) at the
- * repository root and commit them via `commit({ message })`.
+ * Initialize a sidecar-side agent repository: creates the `state/`
+ * directory and a single initial commit containing only `.gitignore`;
+ * subsequent reactor cycles overwrite the per-cycle files at the repo
+ * root and commit them via `commit({ message })`.
  *
- * Idempotent: safe to call on a directory that already contains a git repo.
+ * Idempotent: safe on a directory that already contains a git repo.
  */
 export async function initAgentRepo(
   runtime: StorageRuntime,

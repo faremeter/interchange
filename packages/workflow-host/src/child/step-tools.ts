@@ -35,11 +35,9 @@ import {
 const logger = getLogger(["sidecar", "workflow-child", "step-tools"]);
 
 /**
- * Cache and registry caps the per-step tool loader needs. Resolved at
- * the sidecar boot edge from the existing `SIDECAR_CACHE_*` /
- * `SIDECAR_REGISTRY_*` config keys and threaded into the child through
- * the substrate config, so the child's per-step materialization is
- * bounded by those boot-edge-resolved caps.
+ * Cache and registry caps the per-step tool loader needs, resolved at the
+ * sidecar boot edge and threaded through the substrate config so the child's
+ * per-step materialization is bounded by those caps.
  */
 export interface StepToolCacheConfig {
   readonly cacheMaxBytes: number;
@@ -47,11 +45,11 @@ export interface StepToolCacheConfig {
 }
 
 /**
- * Materialized tool runtime for one step's agent. Carried from
- * `buildEnv` (which knows the step's identity) to the `agentFactory`
- * (which knows the agent definition + env) via a symbol-keyed slot on
- * the per-step env so the two callbacks of `createWorkflowStepInvoker`
- * can cooperate without widening the portable adapter's surface.
+ * Materialized tool runtime for one step's agent. Carried from `buildEnv`
+ * (which knows the step's identity) to the `agentFactory` (which knows the
+ * agent definition + env) via a symbol-keyed slot on the per-step env, so
+ * the two step-invoker callbacks cooperate without widening the portable
+ * adapter's surface.
  */
 export interface StepToolMaterialization {
   readonly factories: readonly {
@@ -64,29 +62,22 @@ export interface StepToolMaterialization {
 
 /**
  * Derive the per-step tool-mark floor grants from a step's materialized
- * tool factories. Each loaded factory carries its static
- * `definitions` (name + optional `approval` mark) verbatim from the tool
- * package; every declared tool contributes a `tool:<name>` / `invoke`
- * grant whose effect is the tool's floor (`ask` for an approval-gated
- * tool, `allow` otherwise), computed through the same
- * `toolApprovalEffect` mapping the deploy-time capability walk uses so a
- * pinned tool floors identically hub-side and sidecar-side.
+ * tool factories. Each loaded factory carries its static `definitions`
+ * (name + optional `approval` mark); every declared tool contributes a
+ * `tool:<name>` / `invoke` grant whose effect is the tool's floor (`ask`
+ * for an approval-gated tool, `allow` otherwise), computed through the
+ * same `toolApprovalEffect` mapping the deploy-time capability walk uses.
  *
  * The hub's capability walk reads only INLINE `agent.toolFactories`, so a
- * tool that ships as a pinned package loads in the child and never
- * produces a `tool:<name>` grant on the run principal. These derived rows
- * supply that missing floor: they join the per-step grants the authz path
- * evaluates as ADDITIONAL rows, so `evaluateGrants` precedence still
- * resolves an explicit `deny` (priority 2) over the derived `ask`/`allow`
- * -- the floor only raises the minimum authority to the tool's mark, it
- * never overrides a declared denial.
+ * pinned package tool loads in the child and never produces a `tool:<name>`
+ * grant on the run principal. These derived rows supply that missing floor
+ * as ADDITIONAL rows: `evaluateGrants` precedence still resolves an
+ * explicit `deny` over the derived `ask`/`allow`.
  *
- * The grant `id` is deterministic (`floor:tool:<name>`) rather than
- * random: `evaluateGrants` never dedupes or joins on `id` (it ranks by
- * specificity then effect), so a stable id keeps the rows reproducible
- * without a generator, and a floor row that coincides with a
- * hub-supplied `tool:<name>` row resolves by effect precedence regardless
- * of the ids.
+ * The grant `id` is deterministic (`floor:tool:<name>`): `evaluateGrants`
+ * never dedupes or joins on `id`, so a stable id keeps the rows
+ * reproducible, and a floor row that coincides with a hub-supplied
+ * `tool:<name>` row resolves by effect precedence regardless of the ids.
  */
 export function deriveToolMarkFloorGrants(
   factories: readonly {
@@ -114,19 +105,17 @@ export function deriveToolMarkFloorGrants(
 }
 
 /**
- * Symbol-keyed slot the `buildEnv` callback sets on the env it returns
- * and the `agentFactory` reads. Object spread (`{ ...envBase,
- * authorize }`) inside the step-invoker adapter copies own enumerable
- * symbol-keyed properties, so the slot survives the spread that
- * produces the env handed to `agentFactory`.
+ * Symbol-keyed slot the `buildEnv` callback sets on the env it returns and
+ * the `agentFactory` reads. Object spread (`{ ...envBase, authorize }`)
+ * inside the step-invoker adapter copies own enumerable symbol-keyed
+ * properties, so the slot survives the spread into the env handed to
+ * `agentFactory`.
  */
 const STEP_TOOLS = Symbol("intx.sidecar.step-tools");
 
-// The per-step env carries one private symbol-keyed slot the
-// buildEnv/agentFactory pair cooperate over. The slot is read/written
-// through `Reflect.get`/`Reflect.set` so neither site needs a type
-// assertion: `BaseEnv` is an interface without a symbol index
-// signature, so a structural cast would otherwise be required.
+// The slot is read/written through `Reflect.get`/`Reflect.set` so neither
+// site needs a type assertion: `BaseEnv` is an interface without a symbol
+// index signature, so a structural cast would otherwise be required.
 function setStepToolSlot(
   env: object,
   materialization: StepToolMaterialization,
@@ -164,9 +153,7 @@ function isStepToolMaterialization(
  * capability from: the live material cell, the step's grants, and the
  * provider registry. Set by `buildEnv` alongside the tool slot, read by
  * `createToolBearingAgentFactory`. Absent for a build that threaded no
- * credential context (a unit test using the bare factory) -- then no
- * credentials capability is assembled and bundles keep the base capabilities
- * bag.
+ * credential context -- then no credentials capability is assembled.
  */
 const STEP_CREDENTIAL_WIRING = Symbol("intx.sidecar.step-credential-wiring");
 
@@ -204,8 +191,7 @@ function isStepCredentialWiring(value: unknown): value is StepCredentialWiring {
  * Attach a step's credential wiring to the per-step env so the tool-bearing
  * `agentFactory` can assemble each bundle's `credentials` capability. Called
  * by `buildEnv` for a step whose build threaded a credential context; omitted
- * otherwise, which leaves the slot unset and the credentials capability
- * unassembled.
+ * otherwise, which leaves the slot unset and the capability unassembled.
  */
 export function attachStepCredentialWiring(
   env: Omit<BaseEnv, "authorize">,
@@ -217,10 +203,10 @@ export function attachStepCredentialWiring(
 /**
  * Read the base `RuntimeCapabilities` bag `buildEnv` set on the per-step env
  * (`env.capabilities`, currently `mail.transport`). `BaseEnv` does not type
- * the key -- it is a runtime-only widening the step env carries -- so it is
- * read reflectively and validated. Throws when a bundle has a credentials
- * capability to layer but the env carries no base bag: that is a wiring
- * inconsistency (the same `buildEnv` sets both), not a condition to paper over.
+ * the key -- it is a runtime-only widening -- so it is read reflectively and
+ * validated. Throws when a bundle has a credentials capability to layer but
+ * the env carries no base bag: that is a wiring inconsistency (the same
+ * `buildEnv` sets both), not a condition to paper over.
  */
 function requireCapabilitiesBag(env: BaseEnv): RuntimeCapabilities {
   const value: unknown = Reflect.get(env, "capabilities");
@@ -240,13 +226,13 @@ function requireCapabilitiesBag(env: BaseEnv): RuntimeCapabilities {
 
 /**
  * Attach a step's materialized tool runtime to the per-step env so the
- * tool-bearing `agentFactory` can consume it. Called by `buildEnv`
- * after `materializeStepTools` resolves.
+ * tool-bearing `agentFactory` can consume it. Called by `buildEnv` after
+ * `materializeStepTools` resolves.
  *
- * The parameter is `Omit<BaseEnv, "authorize">` because `buildEnv`
- * yields exactly that shape (the step-invoker adapter adds `authorize`
- * before the env reaches `agentFactory`); the symbol slot survives the
- * adapter's `{ ...envBase, authorize }` spread.
+ * The parameter is `Omit<BaseEnv, "authorize">` because `buildEnv` yields
+ * exactly that shape (the step-invoker adapter adds `authorize` before the
+ * env reaches `agentFactory`); the symbol slot survives the adapter's
+ * `{ ...envBase, authorize }` spread.
  */
 export function attachStepTools(
   env: Omit<BaseEnv, "authorize">,
@@ -258,16 +244,16 @@ export function attachStepTools(
 /**
  * Re-wrap a loaded tool factory so its bundle's `dispose` (when present)
  * is captured via `onDispose`, forwarding the loader's `id`, `requires`,
- * and `definitions` so the result is a real `AnnotatedToolFactory`, not a
- * hand-shaped lookalike. The static `definitions` declaration is
- * forwarded verbatim: this wrapper does not rename tools, so the names
- * the deploy-time walk enumerates must survive the re-wrap unchanged.
+ * and `definitions` so the result is a real `AnnotatedToolFactory`. The
+ * static `definitions` declaration is forwarded verbatim: this wrapper
+ * does not rename tools, so the names the deploy-time walk enumerates
+ * must survive the re-wrap unchanged.
  *
  * When `credentials` is supplied, the bundle's factory sees a per-bundle
  * capabilities bag: the step's base bag layered with THIS package's
- * consumer-scoped `credentials` capability, so the bundle resolves only the
- * handles its own package is authorized for. When it is absent (the package
- * declares and binds no credential), the base bag is passed through unchanged.
+ * consumer-scoped `credentials` capability, so the bundle resolves only
+ * the handles its own package is authorized for. When absent, the base
+ * bag passes through unchanged.
  *
  * Exported so the definitions-preservation contract is testable in
  * isolation; the production path calls it from
@@ -298,10 +284,11 @@ export function rewrapStepToolFactory(
 
 /**
  * Produce a copy of `factoryEnv` whose `capabilities` bag is the base bag
- * layered with this bundle's consumer-scoped `credentials` capability. Object
- * spread copies own enumerable properties -- including the runtime-only
- * `capabilities` key `BaseEnv` does not type and the private tool slot -- so
- * every other env surface survives; only `capabilities` is replaced.
+ * layered with this bundle's consumer-scoped `credentials` capability.
+ * Object spread copies own enumerable properties -- including the
+ * runtime-only `capabilities` key `BaseEnv` does not type and the private
+ * tool slot -- so every other env surface survives; only `capabilities` is
+ * replaced.
  */
 function layerCredentialsOntoEnv(
   factoryEnv: BaseEnv,
@@ -325,13 +312,12 @@ function layerCredentialsOntoEnv(
  * `buildEnv` via `attachStepTools`), augments the step's
  * `AgentDefinition` with the loaded tool factories (wrapped to capture
  * each bundle's disposer), constructs the plugin chain on `env.plugins`,
- * builds the agent, and wraps
- * `agent.close()` so every plugin instance and tool bundle is disposed
- * when the step's agent closes.
+ * builds the agent, and wraps `agent.close()` so every plugin instance
+ * and tool bundle is disposed when the step's agent closes.
  *
- * When the env carries no materialized tools (the `buildEnv` did not
- * run materialization, e.g. a unit test using the bare factory), the
- * factory falls back to `createAgent(def, env)` unchanged.
+ * When the env carries no materialized tools (e.g. a unit test using the
+ * bare factory), the factory falls back to `createAgent(def, env)`
+ * unchanged.
  */
 export function createToolBearingAgentFactory(): <EnvReq extends BaseEnv>(
   def: AgentDefinition<EnvReq>,
@@ -350,9 +336,7 @@ export function createToolBearingAgentFactory(): <EnvReq extends BaseEnv>(
     // when the step carries credential wiring (a bare test build carries none,
     // yielding an empty map). Every factory in a package shares the one
     // capability; a package that declares a handle no binding resolves fails
-    // the launch here, loudly, rather than at the tool's first resolve. This
-    // can throw (reconcile fail-closed, malformed delivery) before any handle
-    // is shaped, so nothing is orphaned on that path.
+    // the launch here, loudly, rather than at the tool's first resolve.
     const credentialWiring = getStepCredentialWiring(env);
     const credentialCapabilities =
       credentialWiring === undefined
@@ -362,11 +346,11 @@ export function createToolBearingAgentFactory(): <EnvReq extends BaseEnv>(
             credentialWiring,
           );
 
-    // Wrap each loaded tool factory so its bundle's `dispose` (when
-    // present) is captured. Dedupe by closure identity: a factory whose
-    // bundle returns the same `dispose` on every invocation must not be
-    // torn down once per push. Each package's credentials capability joins
-    // the same teardown set so its shaped handles are released with the agent.
+    // Wrap each loaded tool factory so its bundle's `dispose` (when present)
+    // is captured. Dedupe by closure identity: a factory whose bundle returns
+    // the same `dispose` on every invocation must not be torn down once per
+    // push. Each package's credentials capability joins the same teardown set
+    // so its shaped handles are released with the agent.
     const capturedDisposers = new Set<() => unknown>();
     for (const capability of credentialCapabilities.values()) {
       capturedDisposers.add(() => capability.dispose());
@@ -381,14 +365,13 @@ export function createToolBearingAgentFactory(): <EnvReq extends BaseEnv>(
       ),
     );
 
-    // Run every captured disposer -- each credentials capability and each tool
-    // bundle -- guarding each so one failure does not strand the rest. Used on
-    // the success teardown AND on the construction-failure rollbacks below: the
-    // credentials capabilities are built before the plugin chain, so a plugin
-    // or agent build that throws must still release them (an http handle holds
-    // nothing, but a future key-file/socket handle would leak otherwise).
-    // Bundle disposers are idempotent, so re-running one `createAgent` already
-    // disposed on its own failure path is safe.
+    // Run every captured disposer -- each credentials capability and each
+    // tool bundle -- guarding each so one failure does not strand the rest.
+    // Used on the success teardown AND on the construction-failure rollbacks
+    // below (the credentials capabilities are built before the plugin chain,
+    // so a plugin or agent build that throws must still release them).
+    // Bundle disposers are idempotent, so re-running one after `createAgent`
+    // already disposed on its own failure path is safe.
     const runCapturedDisposers = async (): Promise<unknown[]> => {
       const failures: unknown[] = [];
       for (const dispose of capturedDisposers) {
@@ -402,13 +385,10 @@ export function createToolBearingAgentFactory(): <EnvReq extends BaseEnv>(
       return failures;
     };
 
-    // Rebuild the def with the materialized tool factories. The
-    // serialized `def.toolFactories` carry only `{ id, requires }`
-    // metadata (the workflow projection strips closures on the wire),
-    // so the runnable factories come from materialization, not the
-    // incoming def. `defineAgent` owns the contravariance escape for
-    // the `BaseEnv`-typed loader factories (see its `EnvRequiredByAll`
-    // machinery).
+    // Rebuild the def with the materialized tool factories. The serialized
+    // `def.toolFactories` carry only `{ id, requires }` metadata (the workflow
+    // projection strips closures on the wire), so the runnable factories come
+    // from materialization, not the incoming def.
     const toolDef = defineAgent({
       id: def.id,
       systemPrompt: def.systemPrompt,
@@ -422,15 +402,11 @@ export function createToolBearingAgentFactory(): <EnvReq extends BaseEnv>(
       ...(def.tags !== undefined ? { tags: def.tags } : {}),
     });
 
-    // Instantiate plugin factories one at a time so each successive
-    // factory sees the prior plugins' instances on `env.plugins`:
-    // posix's bundle reads `env.plugins` and threads ToolPlugin-shaped
-    // values into `createPosixTools`; the LSP plugin factory is what
-    // populates them.
-    //
-    // On a midway factory throw, every plugin instance already
-    // constructed releases what it acquired (the LSP plugin starts a
-    // subprocess) before the construction error propagates, so a
+    // Instantiate plugin factories one at a time so each successive factory
+    // sees the prior plugins' instances on `env.plugins` (posix's bundle reads
+    // `env.plugins`; the LSP plugin factory populates them). On a midway
+    // factory throw, every plugin instance already constructed releases what
+    // it acquired before the construction error propagates, so a
     // partial-success chain never leaks an LSP subprocess.
     const pluginInstances: unknown[] = [];
     let chainEnv: BaseEnv = env;
@@ -444,9 +420,9 @@ export function createToolBearingAgentFactory(): <EnvReq extends BaseEnv>(
         };
       }
     } catch (err) {
-      // Release the credentials capabilities (built above, before the plugin
-      // chain) and any bundle disposers captured so far, then the plugin
-      // instances this module owns.
+      // Release the credentials capabilities (built before the plugin chain)
+      // and any bundle disposers captured so far, then the plugin instances
+      // this module owns.
       await runCapturedDisposers();
       await disposeAll(pluginInstances, "plugin construction rollback");
       throw err;
@@ -456,8 +432,8 @@ export function createToolBearingAgentFactory(): <EnvReq extends BaseEnv>(
     try {
       agent = await createAgent(toolDef, chainEnv);
     } catch (err) {
-      // `createAgent` disposes the tool bundles it constructed on its
-      // own failure path, but the credentials capabilities and the plugin
+      // `createAgent` disposes the tool bundles it constructed on its own
+      // failure path, but the credentials capabilities and the plugin
       // instances are this module's to own -- tear them down so a failed
       // agent build does not leak a shaped handle or the LSP subprocess.
       await runCapturedDisposers();
@@ -469,13 +445,12 @@ export function createToolBearingAgentFactory(): <EnvReq extends BaseEnv>(
       // Captured disposers first (each credentials capability, then the tool
       // bundles -- posix's bundle dispose chains through to the LSP plugin's
       // `dispose`), then the plugin instances directly. Disposing the LSP
-      // plugin twice is safe: `lsp.dispose()` clears its client set and the
-      // posix bundle's dispose is idempotent. Running both guarantees the LSP
-      // subprocess is torn down even for a plugin no tool bundle consumed.
-      // Both loops run every disposer and collect failures rather than
-      // throwing mid-loop, so one failing disposer never strands the rest.
-      // A leaked or failing LSP subprocess must surface, not be swallowed:
-      // any collected failure fails the close, so the caller sees it.
+      // plugin twice is safe (`lsp.dispose()` clears its client set; the
+      // posix bundle's dispose is idempotent), and running both guarantees
+      // the LSP subprocess is torn down even for a plugin no tool bundle
+      // consumed. Both loops run every disposer and collect failures rather
+      // than throwing mid-loop, so one failing disposer never strands the
+      // rest, and any failure fails the close so the caller sees it.
       const failures = [
         ...(await runCapturedDisposers()),
         ...(await disposeAll(pluginInstances, "step teardown")),
@@ -491,12 +466,10 @@ export function createToolBearingAgentFactory(): <EnvReq extends BaseEnv>(
 }
 
 /**
- * Return an `Agent` whose `close()` runs the original close and then
- * the supplied teardown. The teardown runs AFTER the agent's own close
- * so the reactor has stopped issuing tool calls before the tool/plugin
- * resources are released. `close()` is idempotent at the agent layer;
- * this wrapper guards its own teardown so a double `close()` does not
- * double-dispose.
+ * Return an `Agent` whose `close()` runs the original close and then the
+ * supplied teardown -- after the reactor has stopped issuing tool calls.
+ * `close()` is idempotent at the agent layer; this wrapper guards its own
+ * teardown so a double `close()` does not double-dispose.
  */
 function wrapAgentClose(agent: Agent, teardown: () => Promise<void>): Agent {
   let tornDown = false;
@@ -528,8 +501,8 @@ async function disposeAll(
     const dispose = pluginDispose(instance);
     if (dispose === undefined) continue;
     try {
-      // `await` accepts non-promise values verbatim, so this works
-      // whether the disposer is sync or async.
+      // `await` accepts non-promise values verbatim, so this works whether
+      // the disposer is sync or async.
       await dispose();
     } catch (cause) {
       logger.error`step plugin dispose failed during ${context}: ${cause instanceof Error ? cause.message : String(cause)}`;

@@ -1,17 +1,9 @@
 // Per-run fresh-database provisioner for the browser end-to-end harness.
-//
-// Unlike `db-harness.ts`, which gives each test an isolated *schema*
-// inside the shared `interchange` database, this module provisions a
-// fresh, uniquely-named *database* per run: create, migrate, grant, and
-// drop on teardown. The browser harness spawns a hub against the
-// returned database name and needs the whole database to itself.
-//
-// Database lifecycle (CREATE/DROP DATABASE) is owned by the maintenance
-// connection, exactly as `bin/db-reset` relies on: the connection omits
-// an explicit role so postgres.js inherits the ambient superuser
-// identity, and the migration role is never granted cluster-wide
-// create-database rights. Only the host/port come from `.env`; the
-// identity comes from the ambient libpq environment.
+// Unlike `db-harness.ts` (an isolated schema per test), this module
+// creates a fresh uniquely-named *database* per run: create, migrate,
+// grant, and drop on teardown. CREATE/DROP DATABASE runs on the
+// maintenance connection (ambient superuser identity, no explicit role)
+// exactly as `bin/db-reset` relies on; only host/port come from `.env`.
 
 import path from "node:path";
 
@@ -37,17 +29,11 @@ export type ProvisionedDatabase = {
 };
 
 /**
- * Drop a provisioned database by name. Reloads host/port from `.env` via
- * `loadHarnessDbConfig` and connects to the maintenance `postgres`
- * database under the ambient superuser identity, exactly as
- * `provisionDatabase` does when it creates the database. Terminates any
- * remaining backends against the target, then drops it with `FORCE`,
- * retrying a bounded number of times so a connection that is still
- * winding down cannot leave the database orphaned.
- *
- * Both `provisionDatabase`'s returned `teardown` and the standalone
- * provisioning CLI's `down` command route through here, so there is a
- * single drop implementation with two entry points.
+ * Drop a provisioned database by name via the maintenance connection:
+ * terminate remaining backends, then `DROP DATABASE ... WITH (FORCE)`,
+ * retrying a bounded number of times so a winding-down connection cannot
+ * orphan the database. Shared by `provisionDatabase`'s `teardown` and
+ * the provisioning CLI's `down` command.
  */
 export async function dropProvisionedDatabase(name: string): Promise<void> {
   const base = loadHarnessDbConfig();
@@ -84,10 +70,9 @@ export async function dropProvisionedDatabase(name: string): Promise<void> {
 }
 
 /**
- * Provision a fresh, uniquely-named postgres database: create it under
- * the maintenance (superuser) connection, grant the migration and hub
- * roles what each needs, apply the migrations into `public`, and return
- * a handle whose `teardown` drops the database again.
+ * Create a fresh, uniquely-named postgres database, grant the migration
+ * and hub roles what each needs, migrate into `public`, and return a
+ * handle whose `teardown` drops it again.
  */
 export async function provisionDatabase(): Promise<ProvisionedDatabase> {
   const base = loadHarnessDbConfig();
@@ -103,8 +88,7 @@ export async function provisionDatabase(): Promise<ProvisionedDatabase> {
 
   // Maintenance client: host/port from `.env`, identity inherited from
   // the ambient libpq environment (no `user`/`password`), mirroring
-  // `bin/db-reset`. `database` selects which database the connection
-  // targets, which is load-bearing for the schema-level grant below.
+  // `bin/db-reset`.
   const openMaintenance = (targetDatabase: string) =>
     postgres({
       host: base.host,
@@ -130,9 +114,9 @@ export async function provisionDatabase(): Promise<ProvisionedDatabase> {
   // randomly-named database in the cluster.
   try {
     // Grants must precede migration. The schema-level grant is
-    // per-database, so it must run on a connection to the NEW database;
-    // without `GRANT ALL ON SCHEMA public`, `runMigrations` fails with
-    // "permission denied for schema public" on fresh PG15+.
+    // per-database, so it must run on a connection to the new database;
+    // without it, `runMigrations` fails with "permission denied for
+    // schema public" on fresh PG15+.
     const adminNewDb = openMaintenance(database);
     try {
       await adminNewDb.unsafe(

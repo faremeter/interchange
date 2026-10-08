@@ -1,52 +1,26 @@
 #!/usr/bin/env bun
 /* eslint-disable no-console */
 
-// Publish-metadata guard for the workspace.
+// Publish-metadata guard for the workspace. Four fields must be right:
 //
-// Three fields must be present and correct on every package published to
-// npm, or the tarball misbehaves:
-//
-//   - `files`: an allowlist, so only compiled output and legal text ship
-//     — never source, tests, tsconfig, or `.tsbuildinfo`. It is
-//     `["dist", "README.md", "LICENSE"]`; `LICENSE` is copied into each
-//     package at publish time, and npm silently omits it when absent.
+//   - `files`: an allowlist (`["dist", "README.md", "LICENSE"]`) so only
+//     compiled output and legal text ship — never source, tests,
+//     tsconfig, or `.tsbuildinfo`. `LICENSE` is copied into each package
+//     at publish time; npm silently omits it when absent.
 //   - `publishConfig.access: "public"`: scoped packages default to
-//     restricted; without this an `@intx/*` publish is not installable by
-//     outside consumers.
-//   - `sideEffects`: each publishable package declares its own — `false`
-//     so bundlers may tree-shake, or a list of the modules that install
-//     something at import time so those survive tree-shaking. Whether a
-//     module has an import-time side effect is a fact about that package's
-//     own source, known only to its author, so the guard validates that
-//     the declaration is present and well-formed rather than computing it
-//     from a central list of package names. A package that forgets to
-//     declare it fails the gate loudly instead of being silently forced to
-//     `false` and tree-shaken away. Each declared glob must also name a
-//     module that exists on disk or ships via `files`, so a typo or an
-//     unshipped path is caught rather than shipped as a dead declaration.
-//
-// Those three are publish-tarball concerns, so they apply only to the
-// non-private packages under `packages/` (the ones that ship). A fourth
-// requirement has a different scope:
-//
-//   - `description`: a non-empty summary. npm shows it in search results
-//     and on the package page, and it documents the package for anyone
-//     reading the manifest. Every workspace member should carry one —
-//     private members included — so this check enumerates all members the
-//     root `workspaces` globs declare, not just the publishable packages.
+//     restricted; without it an `@intx/*` publish is not installable.
+//   - `sideEffects`: author-declared — `false` or the modules that
+//     install something at import time. The guard validates presence,
+//     well-formedness, and that each glob names a module that exists on
+//     disk or ships via `files`; it cannot compute the value itself.
+//   - `description`: non-empty summary, required on every workspace
+//     member (private included) because npm shows it in search results.
 //
 // This module is both the one-time transform that sets the tarball fields
-// and the check that keeps them, mirroring `exports-shape`. It runs in
-// `make lint`, so a package added later without the fields fails the gate
-// rather than shipping a broken or oversized tarball. `files` and
-// `publishConfig` are mechanical — the transform computes and sets them —
-// but `sideEffects` and `description` are author-owned: `--fix` seeds a
-// missing `sideEffects` with the safe `false` default and never overwrites
-// a real declaration, and it never authors a `description`. So `--fix`
-// sets the mechanical fields, seeds a missing `sideEffects`, and then fails
-// loudly on any member still carrying a malformed `sideEffects` or missing
-// a `description` rather than reporting a success a later check-mode run
-// would contradict.
+// and the check that keeps them (runs in `make lint`). `--fix` sets the
+// mechanical fields and seeds a missing `sideEffects` with `false`, but
+// never overwrites a real declaration and never authors a `description`;
+// anything still wrong after `--fix` fails loudly.
 
 import { join } from "node:path";
 import { type } from "arktype";
@@ -66,16 +40,15 @@ const EXTRA_FILES: Record<string, string[]> = {
   "@intx/inference-discovery": ["media"],
 };
 
-/** The canonical `files` allowlist for a package by name: compiled output,
- *  any package-root runtime data it reads, then the readme and license. */
+/** The canonical `files` allowlist for a package: compiled output, any
+ *  package-root runtime data it reads, then readme and license. */
 export function expectedFiles(name: string): string[] {
   return ["dist", ...(EXTRA_FILES[name] ?? []), "README.md", "LICENSE"];
 }
 
 // A well-formed `sideEffects` declaration: `false` (tree-shakeable), or a
-// non-empty list of non-empty glob strings naming the modules that install
-// something at import time. An empty array is rejected — "nothing has side
-// effects" is spelled `false`, not `[]`.
+// non-empty list of non-empty glob strings. An empty array is rejected —
+// "nothing has side effects" is spelled `false`, not `[]`.
 const sideEffectsSchema = type("false | string[]").narrow((value, ctx) => {
   if (value === false) return true;
   if (value.length === 0)
@@ -112,19 +85,16 @@ function globMatches(dir: string, glob: string): boolean {
 
 // Validate a package's declared `sideEffects` globs against what it ships.
 // A glob is satisfied when it matches a file on disk or its root segment is
-// a directory the package ships via `files`; the latter accepts a `./dist/*`
-// entry even though `dist` is unbuilt at check time (this runs in `make
-// lint`, before any dist emit). The array as a whole must also name at least
+// a directory the package ships via `files`; the latter accepts a
+// `./dist/*` entry even though `dist` is unbuilt at check time (this runs
+// in `make lint`, before any dist emit). The array must also name at least
 // one shipped module — a declaration of only source paths would be absent
 // from the published tarball and silently tree-shaken — which `anyShipped`
 // reports.
 //
 // Because `dist` is unbuilt here, this guard cannot confirm the emitted
-// filenames themselves: a glob whose root ships (like `./dist/foo.js`)
-// passes even if `foo.js` is never emitted. Confirming an emitted filename
-// needs a built tree, which a lint-time guard does not have;
-// `checkBuiltSideEffects` performs that confirmation against the tree
-// `buildDist` leaves behind.
+// filenames themselves; `checkBuiltSideEffects` performs that confirmation
+// against the tree `buildDist` leaves behind.
 function resolveSideEffectGlobs(
   dir: string,
   files: unknown,
@@ -200,18 +170,17 @@ export async function checkWorkspaceMetadata(
 }
 
 // Confirm each package's declared `sideEffects` globs against a tree where
-// `dist` has been emitted (after `buildDist`). Unlike the lint-time check in
-// `checkWorkspaceMetadata`, there is no `files`-coverage escape: with `dist`
-// built, every non-`false` glob must match at least one real file, so a typo
-// in an emitted path (`./dist/registr.js` for `./dist/register.js`) is caught
-// rather than shipped as a dead declaration a consumer's bundler silently
-// tree-shakes.
+// `dist` has been emitted (after `buildDist`). Unlike the lint-time check,
+// there is no `files`-coverage escape: every non-`false` glob must match a
+// real file, so a typo in an emitted path (`./dist/registr.js` for
+// `./dist/register.js`) is caught rather than shipped as a dead
+// declaration.
 //
-// Presence and well-formedness of `sideEffects` are `checkWorkspaceMetadata`'s
-// constraint, enforced before any dist emit; this check owns only the emitted
-// filename. A malformed or absent declaration reaching here means that gate
-// did not run and pass first, so it throws rather than silently skipping a
-// package it cannot check.
+// Presence and well-formedness of `sideEffects` are
+// `checkWorkspaceMetadata`'s constraint, enforced before any dist emit;
+// this check owns only the emitted filename. A malformed or absent
+// declaration reaching here means that gate did not run first, so it
+// throws rather than silently skipping a package.
 export async function checkBuiltSideEffects(
   repoRoot: string,
 ): Promise<MetadataReport> {
@@ -310,10 +279,9 @@ if (import.meta.main) {
     for (const name of changed) console.log(`  set metadata on ${name}`);
     console.log(`publish-metadata: updated ${changed.length} package(s)`);
     // `--fix` cannot author a `description` or repair a malformed
-    // `sideEffects` — both are author-owned. Anything still wrong after the
-    // fix is a real failure, so surface it and exit non-zero rather than
-    // reporting a success that the check-mode run in `make lint` would
-    // contradict.
+    // `sideEffects` — both are author-owned. Anything still wrong is a real
+    // failure, so surface it and exit non-zero rather than reporting a
+    // success the check-mode run in `make lint` would contradict.
     const metadata = await checkWorkspaceMetadata(repoRoot);
     const descriptions = await checkWorkspaceDescriptions(repoRoot);
     const violations = [...metadata.violations, ...descriptions.violations];

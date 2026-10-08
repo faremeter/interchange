@@ -115,8 +115,7 @@ function targetForReadyAllocation(
 /**
  * Drives Hub-owned workflow triggers onto provisioned sidecars. The database
  * row is the delivery authority: websocket acceptance never deletes the raw
- * payload, and a generation replacement requeues every row that has not been
- * settled by the workflow-run Git claim-check.
+ * payload, and a generation replacement requeues every unsettled row.
  */
 export function createWorkflowDispatchService({
   dispatchStore,
@@ -273,10 +272,9 @@ export function createWorkflowDispatchService({
         );
       } else {
         // A deliverable mail dispatch always carries the sender persisted at
-        // enqueue (the workflow_run_dispatch mail-sender check enforces it).
-        // A null here means the row bypassed that invariant, so fail loudly
-        // rather than deliver with no authenticated sender or fall back to the
-        // MIME From.
+        // enqueue (the mail-sender check enforces it); a null here means the
+        // row bypassed that invariant, so fail loudly rather than fall back to
+        // the MIME From.
         if (dispatch.senderAddress === null) {
           throw new Error(
             `mail dispatch ${dispatch.id} has no persisted authenticated sender`,

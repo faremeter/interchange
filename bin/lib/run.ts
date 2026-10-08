@@ -1,7 +1,5 @@
 // A synchronous "run this command or throw with its output" helper shared by
-// the packaging scripts. The captured stdout and stderr are surfaced on a
-// non-zero exit so a failing subprocess (a 404 from npm, a pack error) is
-// diagnosable rather than a bare exit code.
+// the packaging scripts; captured stdout and stderr surface on a non-zero exit.
 
 /** Build a `run(cmd, cwd)` that throws — with the command's captured output —
  *  on a non-zero exit, tagging the error with `prefix`. */

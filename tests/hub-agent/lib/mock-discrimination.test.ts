@@ -1,24 +1,21 @@
 // Fast guard for the property the approval capstone rests on: the
-// `approvalToolCall` mock discriminates strictly on the presence of a REAL
-// tool_result block in history. It re-issues the tool_use whenever history
-// lacks a tool_result -- including the broken-rail shape, where the approval
-// decision was appended as a bare user turn with no result -- and replies only
-// once a real tool_result block (the adapter wire shape) is present.
+// `approvalToolCall` mock re-issues the tool_use whenever history lacks a REAL
+// tool_result block (including the broken-rail shape, where the approval
+// decision was appended as a bare user turn) and replies only once one is
+// present.
 //
-// If a future edit ever latched the mock or loosened the result detection so it
-// could reply WITHOUT a tool_result, the run could complete without the tool
-// running and the expensive integration capstone would silently go vacuous
-// while still passing. This probe catches that in isolation (<1s, no DB, no
-// hub, no sidecar), so it lives in the fast unit suite next to the fixture.
+// If a future edit loosened the result detection so the mock could reply
+// without a tool_result, the capstone would silently go vacuous while still
+// passing. This probe catches that in isolation (<1s, no DB, no hub, no
+// sidecar), so it lives in the fast unit suite.
 
 import { test, expect } from "bun:test";
 
 import { startMockInference, type InferenceMessage } from "./deploy-flow-env";
 
-// The plain tool name. The mock decodes each request's tool names before
-// matching, and `decodeToolName` is the identity on a name that carries no
-// `IX_` marker, so the probe sends the plain form the adapter would send for
-// this name and the mock still matches it.
+// Plain tool name: the mock decodes names before matching, and `decodeToolName`
+// is the identity on a name with no `IX_` marker, so the probe sends the plain
+// form the adapter would send.
 const TOOL = "@intx/tools-mail/sidecar-bundle:mail_send";
 const PREFIX = "done: ";
 const RESULT_TEXT = "wrote approval-tool-ran.txt";
@@ -57,8 +54,7 @@ test("approvalToolCall replies only when a real tool_result is in history", asyn
     expect(fresh).not.toContain(PREFIX);
 
     // (2) Broken-rail shape: the approval decision arrives as a bare user turn
-    // after the assistant's tool_use, with NO tool_result. Must STILL re-issue,
-    // never reply -- this is the exact history the old resume rail produced.
+    // with NO tool_result. Must STILL re-issue, never reply.
     const brokenRail = await ask(port, [
       { role: "user", content: "go" },
       {
@@ -70,8 +66,8 @@ test("approvalToolCall replies only when a real tool_result is in history", asyn
     expect(brokenRail).toContain("tool_use");
     expect(brokenRail).not.toContain(PREFIX);
 
-    // (3) A user turn that merely mentions the words "tool_result" as text must
-    // NOT trigger a reply: only a real tool_result BLOCK counts.
+    // (3) A user turn merely mentioning "tool_result" as text must NOT trigger
+    // a reply: only a real tool_result block counts.
     const textOnly = await ask(port, [
       { role: "user", content: "go" },
       { role: "user", content: "the tool_result is pending" },
@@ -79,9 +75,8 @@ test("approvalToolCall replies only when a real tool_result is in history", asyn
     expect(textOnly).toContain("tool_use");
     expect(textOnly).not.toContain(PREFIX);
 
-    // (4) Fixed-rail shape: a real tool_result block (adapter wire shape) is in
-    // history. Now, and only now, the mock replies -- reflecting the result
-    // text so the capstone can assert the resumed reply carries the tool output.
+    // (4) Fixed-rail shape: a real tool_result block is in history. Now, and
+    // only now, the mock replies, reflecting the result text.
     const fixedRail = await ask(port, [
       { role: "user", content: "go" },
       {

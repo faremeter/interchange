@@ -62,8 +62,8 @@ const PRINCIPAL: WorkflowRunWorkflowProcessPrincipal = {
 // capability walk emits it as a grant the child body declares -- a parent
 // grant for it survives the cap.
 const DECLARED_RESOURCE = "inference.source:anthropic:m";
-// The child body declares nothing that covers this, so a parent grant for it
-// is dropped from the child's inherited set.
+// The child body declares nothing covering this, so a parent grant for it is
+// dropped from the child's inherited set.
 const UNDECLARED_RESOURCE = "tool:parent-only";
 
 const tempDirs: string[] = [];
@@ -151,7 +151,7 @@ function childDefinition(id: string): WorkflowDefinition {
   });
 }
 
-// Grant evaluator that delegates the decision to `@intx/authz` against the
+// Grant evaluator delegating the decision to `@intx/authz` against the
 // credentials snapshot's grants alone. Unlike the production adapter it does
 // NOT merge any per-step tool-mark floor grants, so a decision here reflects
 // only the capped grant set the child inherited.

@@ -1,22 +1,10 @@
-// End-to-end clone of an agent-state per-run repo against the
-// real `/usr/bin/git`.
-//
-// The per-run repo is materialised lazily by the sidecar's
-// first state pack. These tests cover the read path BEFORE any pack
-// has landed: the route layer resolves the folded run by id, the
-// advertise layer emits the `capabilities^{}` empty-repo record,
-// and `git clone` succeeds with an empty working tree.
-//
-// We bypass the API-driven launch flow (which requires a connected
-// sidecar + a resolvable credential requirement) and insert the folded
-// `workflow_run` row + the creator-seed agent-state grant directly
-// against the hub's schema. The schema is the same one the spawned
-// hub runs against; both processes share the postgres database, so
-// the inserts are visible to the running hub immediately.
-//
-// Note on the wire-format gaps documented at the dispatch level:
-//   - Shallow clone is not advertised; `git clone --depth=1` returns
-//     empty. Not exercised here.
+// End-to-end clone of an agent-state per-run repo against the real
+// `/usr/bin/git`, covering the read path BEFORE the sidecar's first state
+// pack lands: the route resolves the folded run by id, the advertise layer
+// emits the `capabilities^{}` empty-repo record, and `git clone` succeeds
+// with an empty working tree. The launch flow is bypassed (it needs a
+// connected sidecar); the folded `workflow_run` row and creator-seed
+// grant are inserted directly against the hub's schema.
 
 import { describe, test, expect, afterEach } from "bun:test";
 import fs from "node:fs/promises";
@@ -68,12 +56,10 @@ async function startHubTracked(): Promise<HubHandle> {
 }
 
 /**
- * Direct insert of a folded `workflow_run` row (instance-shaped: a routing
- * address and no deployment) + the `agent-state:<runId>` creator-read grant.
- * Bypasses the launch endpoint which depends on a connected sidecar + a
- * resolvable credential requirement.
- *
- * Returns the synthetic run id; the caller uses this id in the smart-HTTP URL.
+ * Insert a folded `workflow_run` row (routing address, no deployment) plus
+ * the `agent-state:<runId>` creator-read grant, bypassing the launch
+ * endpoint (which needs a connected sidecar). Returns the run id for the
+ * smart-HTTP URL.
  */
 async function seedRunRow(
   schema: string,
@@ -117,10 +103,9 @@ async function seedRunRow(
     }
     const address = `${runId}@${tenantDomainRow.domain}`;
 
-    // A folded launch run: `deployment_id` NULL and a routing address, so the
-    // route's instance-shape gate resolves it. `principal_id` is the invoker;
-    // the route does not consult it, verifying only tenant binding and the
-    // bearer-token principal's grant.
+    // A folded launch run: deployment_id NULL with a routing address, so the
+    // instance-shape gate resolves it. principal_id is the invoker; the route
+    // verifies only tenant binding and the bearer principal's grant.
     await sql`insert into workflow_run (id, tenant_id, definition_id, principal_id, address, status)
               values (${runId}, ${tenant.tenantId}, ${definitionId}, ${creatorPrincipalId}, ${address}, 'running')`;
 
@@ -191,16 +176,10 @@ describe.skipIf(!harnessHubEnvAvailable())("agent-state per-run clone", () => {
   }, 90_000);
 
   test("admin (tenant owner *:*) clones the per-run repo", async () => {
-    // The tenant owner role is granted `*:*`; the route layer
-    // authz check passes on `agent-state:<id>` `read` via that
-    // catch-all. This scenario exercises the admin grant path
-    // distinctly from the creator seed grant by minting a token
-    // whose only authority is the owner's `*:*` grant — but in
-    // this fixture the creator IS the owner, so the two paths
-    // overlap. A separate admin-only flow without owner status
-    // would require additional tenant member orchestration; here we
-    // confirm the admin-grant code path returns 200 by exercising
-    // the same `*:*` chain.
+    // The tenant owner role is granted `*:*`, so the route's authz check
+    // passes on `agent-state:<id>` read via that catch-all. In this fixture
+    // the creator IS the owner, so the creator and admin grant paths
+    // overlap; the token's only authority is the owner's `*:*` grant.
     const hub = await startHubTracked();
     const user = await signUpUser(hub.url);
     const tenant = await createTenant(hub.url, user);
@@ -231,14 +210,10 @@ describe.skipIf(!harnessHubEnvAvailable())("agent-state per-run clone", () => {
   }, 90_000);
 
   test("non-tenant token is denied at advertise", async () => {
-    // A second user signs up and creates their own tenant; the
-    // bearer middleware binds the token to that other tenant. Used
-    // against the original tenant's instance URL, the middleware
-    // rejects with 403 tenant_mismatch — the cleanest "this
-    // principal has no business reading that repo" surface this
-    // test file can produce without orchestrating fine-grained
-    // member roles. Stock `git clone` surfaces 403 as
-    // `http 403`/`forbidden` in stderr.
+    // A second user's token binds to their own tenant; against the original
+    // tenant's URL the bearer middleware rejects with 403 tenant_mismatch,
+    // the cleanest cross-tenant denial this file can produce without
+    // orchestrating member roles.
     const hub = await startHubTracked();
     const userA = await signUpUser(hub.url);
     const tenantA = await createTenant(hub.url, userA);

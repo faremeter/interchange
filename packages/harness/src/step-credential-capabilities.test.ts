@@ -7,8 +7,8 @@ import type { ToolCredentialDeclaration } from "@intx/types/package-json";
 import { createCredentialProviderRegistry } from "./credential-providers";
 import { buildCredentialCapabilities } from "./step-credential-capabilities";
 
-// A provider that records every shape context it is handed, so a test can
-// reach the `readCurrentMaterial` closure a shaped handle reads through.
+// Records every shape context it is handed, so a test can reach the
+// `readCurrentMaterial` closure a shaped handle reads.
 function trackingProvider(): {
   provider: CredentialProvider;
   shapes: CredentialShapeContext[];
@@ -58,8 +58,8 @@ const ORIGIN = "https://api.example.com";
 describe("buildCredentialCapabilities", () => {
   test("a credential granted to one package cannot be resolved by another (confused deputy)", async () => {
     const track = trackingProvider();
-    // The same credential is bound for both packages, but only pkg-a holds the
-    // credential:c1/use grant scoped to its consumer.
+    // The same credential is bound for both packages; only pkg-a holds
+    // the credential:c1/use grant scoped to its consumer.
     const cell = {
       current: {
         bindings: [
@@ -106,8 +106,8 @@ describe("buildCredentialCapabilities", () => {
       throw new Error("expected a capability for both packages");
     }
 
-    // pkg-a's grant authorizes it; pkg-b binds the same credential but holds no
-    // grant for it, so Gate 2 refuses -- the credential does not leak sideways.
+    // pkg-a's grant authorizes it; pkg-b binds the same credential but
+    // holds no grant, so Gate 2 refuses -- no sideways leak.
     await expect(capA.resolve("shared")).resolves.toMatchObject({
       kind: "http",
     });
@@ -298,11 +298,10 @@ describe("buildCredentialCapabilities", () => {
   });
 
   // The grants thunk must be read only when a package actually needs a
-  // capability. This pins the self-discovery-resume fix: a toolless resume
-  // precedes the grants barrier, so resolving grants for it would fault on a
-  // snapshot that is not present yet. The "no capability" test above passes a
-  // benign `() => []`, so it stays green whether grants resolve lazily or
-  // eagerly -- these two use a throwing thunk to catch a laziness regression.
+  // capability. This pins the self-discovery-resume fix: a toolless
+  // resume precedes the grants barrier, so resolving grants for it would
+  // fault on a snapshot that is not present yet. These two tests use a
+  // throwing thunk to catch a laziness regression.
   const throwingGrants = (): readonly GrantRule[] => {
     throw new Error("resolveGrants must not be called for a step needing none");
   };

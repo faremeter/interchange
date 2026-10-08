@@ -26,15 +26,13 @@ import {
 } from "@intx/test-harness/db-harness";
 import { seedAsset, seedPrincipal, seedTenants } from "@intx/test-harness/seed";
 
-// Exercises GET /workflows/deployments against a real migrated schema. The list
-// enumerates each deployment's anchor run -- the workflow_run whose id equals
-// its deployment_id -- and synthesizes the deployment shape from the run and
-// its definition. Only
-// a real database exercises the `id = deployment_id` identity predicate (which
-// excludes child and folded runs), the deliberate absence of a run-status
-// filter (a torn-down deployment still lists as "deployed", preserving the old
-// projection's contract), and the definition inner-join that resolves the
-// deployment's asset.
+// Exercises GET /workflows/deployments against a real migrated schema. The
+// list enumerates each deployment's anchor run (the workflow_run whose id
+// equals its deployment_id) and synthesizes the deployment shape from the
+// run and its definition: the `id = deployment_id` identity predicate
+// (excluding child and folded runs), the absence of a run-status filter (a
+// torn-down deployment still lists as "deployed"), and the definition
+// inner-join that resolves the deployment's asset.
 
 const TENANT_ID = "tnt_wfl";
 const ACTOR_PRINCIPAL_ID = "prn_actor";
@@ -114,7 +112,7 @@ function createMockEventCollectors(): EventCollectorRegistry {
 
 // The deploy surface mounts only when the asset service and repo store are
 // both present; the list route reads neither, so these stubs exist only to
-// satisfy the mount gate and throw if any route unexpectedly reaches them.
+// satisfy the mount gate.
 function createStubAssetService(): AssetService {
   return {
     createAsset: () => notImpl("createAsset"),
@@ -211,8 +209,8 @@ function buildApp(): ReturnType<typeof createApp> {
   });
 }
 
-// A deployment's anchor run -- the workflow_run whose id equals the
-// deployment id. The list reads the run, not the projection.
+// A deployment's anchor run: the workflow_run whose id equals the
+// deployment id; the list reads the run, not a projection.
 async function seedAnchor(opts: {
   id: string;
   createdAt: Date;

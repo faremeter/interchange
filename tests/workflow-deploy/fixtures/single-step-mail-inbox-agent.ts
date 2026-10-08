@@ -10,12 +10,7 @@
 // The bundle resolves `mail.transport` from `env.capabilities` (the host
 // assembles that bag in the sidecar step-env builder), so the agent's inbound
 // mail tools read the deployment's committed substrate INBOX once the sidecar
-// wires the transport's inbound surface. `bundleWorkflowEntry` inlines the
-// bundle into the self-contained `.mjs` the sidecar evaluates in-child.
-//
-// Parameterised by the step id, the agent's system prompt, the mail trigger
-// address, and the agent/workflow ids so a caller pins the run's address and
-// keeps multiple deployments in one sidecar distinct.
+// wires the transport's inbound surface.
 
 export type SingleStepMailInboxFixtureParams = {
   /** The step's key in the workflow's `steps` map. Defaults to `step1`. */

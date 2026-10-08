@@ -1,16 +1,13 @@
 // `AgentDefinition` -- the portable, hashable data that names what an
-// agent is. Together with `defineAgent`, it produces a deploy unit:
-// hashing the definition yields a deploy hash, walking the definition
-// surfaces the capability and credential grants downstream tooling
-// can require approval for at deploy time, and resolving it against a
-// runtime env (`createAgent(def, env)`) yields a running Agent.
+// agent is. Hashing it yields a deploy hash; walking it surfaces the
+// capability and credential grants downstream tooling can require
+// approval for at deploy time; resolving it against a runtime env
+// (`createAgent(def, env)`) yields a running Agent.
 //
-// `AgentDefinition` deliberately holds no instance state. It is data
-// passed around by callers and consumed by downstream tooling (deploy
-// scaffolding, metadata registries, admin surfaces). Everything that
-// is per-instance (the active inference source, the storage handle,
-// the authorize callback, the audit sink, the directors registry)
-// lives in the env supplied at `createAgent` time.
+// `AgentDefinition` deliberately holds no instance state: everything
+// per-instance (active inference source, storage handle, authorize
+// callback, audit sink, director registry) lives in the env supplied
+// at `createAgent` time.
 
 import type { ToolPackagePin } from "@intx/types/tool-packages";
 
@@ -20,13 +17,10 @@ import type { DirectorRef } from "./director-types";
 
 /**
  * Per-source preference describing which providers and models this
- * agent prefers, in order. The field is **hash-only** -- it
- * participates in deploy-time hashing and grant computation but is
- * not consulted for runtime source selection. The agent uses
- * `env.source` for the active inference call. Downstream tooling that
- * resolves preferences against available credentials sets the active
- * `env.source`. Reordering or mutating this field changes the deploy
- * hash; consumers must treat it as immutable across a deployment.
+ * agent prefers, in order. Hash-only: it participates in deploy-time
+ * hashing and grant computation but is not consulted for runtime
+ * source selection (the active `env.source` is). Treat as immutable
+ * across a deployment.
  */
 export interface InferencePreference {
   readonly provider: string;
@@ -39,15 +33,13 @@ export interface InferencePreference {
  *
  * `EnvReq` is the intersection of every contributor's env requirements
  * (`BaseEnv` plus whatever each tool factory and the director declare
- * via `requires`). Use `EnvRequiredByAll` (below) to compute it from a
- * factory tuple; `defineAgent` does this for you.
+ * via `requires`). Use `EnvRequiredByAll` to compute it from a factory
+ * tuple; `defineAgent` does this for you.
  *
- * Note on the type-level enforcement: a single `ToolFactory<any>` in
- * `toolFactories` collapses `EnvRequiredByAll` to `any`, silently
- * stripping the type-level requirements of every other factory in the
- * same definition. The runtime `validateEnv` (presence-only) is the
- * load-bearing safety guarantee; the type level is best-effort
- * guidance for authors who type their factories tightly.
+ * Type-level caveat: a single `ToolFactory<any>` in `toolFactories`
+ * collapses `EnvRequiredByAll` to `any`, silently stripping every
+ * other factory's requirements. The runtime `validateEnv` is the
+ * load-bearing safety guarantee; the type level is best-effort.
  */
 export interface AgentDefinition<EnvReq extends BaseEnv = BaseEnv> {
   readonly id: string;
@@ -57,15 +49,12 @@ export interface AgentDefinition<EnvReq extends BaseEnv = BaseEnv> {
   readonly toolFactories: readonly AnnotatedToolFactory<EnvReq>[];
   /**
    * Tool-package names whose `definePlugin` factories this agent uses
-   * (`["@intx/tools-lsp"]`). Unlike a tool factory -- which the agent
-   * imports and places in `toolFactories`, so it is agent-visible -- a
-   * plugin package contributes NO agent-visible factory: its plugin
-   * factory reaches the agent only through `env.plugins`, wired by the
-   * host. This explicit per-agent list is therefore the only way per-step
-   * plugin scoping and the plugin's contributed tool grants can be known
-   * from the definition alone. The field is part of the hashed wire
-   * surface (the live->inert projector carries it), so a tampered plugin
-   * set fails re-verify. Absent when the agent uses no plugins.
+   * (`["@intx/tools-lsp"]`). A plugin package contributes NO
+   * agent-visible factory: its plugin factory reaches the agent only
+   * through `env.plugins`, so this explicit list is the only way
+   * per-step plugin scoping and plugin tool grants can be known from
+   * the definition alone. Part of the hashed wire surface, so a
+   * tampered plugin set fails re-verify. Absent when unused.
    */
   readonly plugins?: readonly string[];
   readonly capabilities: readonly string[];
@@ -73,25 +62,16 @@ export interface AgentDefinition<EnvReq extends BaseEnv = BaseEnv> {
     readonly sources: readonly InferencePreference[];
   };
   /**
-   * Free-form metadata the agent itself does not consume. The agent's
-   * runtime does not read this field on any path; it is a passthrough
-   * surface for downstream consumers -- classifiers grouping
-   * definitions, audit consumers filtering on deployment cohort,
-   * tooling rendering a definition catalog. The shape is
-   * `Record<string, string>` deliberately rather than a richer type:
-   * tags are human/operator-supplied identifiers, not structured
-   * data, and any consumer that wants to interpret a tag's content
-   * does so by name agreement with the producer rather than by
-   * shape contract. Producers that need structured per-definition
-   * data should add their own field on a subtype rather than nesting
-   * encoded JSON in a tag value.
+   * Free-form metadata the agent itself does not consume; a passthrough
+   * for downstream consumers (classifiers, audit filtering, catalogs).
+   * `Record<string, string>` deliberately: tags are operator-supplied
+   * identifiers, not structured data; producers needing structured data
+   * should add their own field on a subtype.
    */
   readonly tags?: Readonly<Record<string, string>>;
   /**
-   * Tool-package pins the sidecar materializes for this agent, carried on the
-   * definition so a folded workflow asset is self-contained rather than
-   * depending on pins supplied only at deploy time. Plain-data mirror of the
-   * pins the deploy-tree tool channel consumes.
+   * Tool-package pins the sidecar materializes for this agent, carried
+   * on the definition so a folded workflow asset is self-contained.
    */
   readonly toolPackagePins?: readonly ToolPackagePin[];
 }
@@ -111,30 +91,14 @@ type EnvRequiredBy<F> = F extends AnnotatedToolFactory<infer E> ? E : never;
  * Intersection of env requirements across a tuple of annotated tool
  * factories, narrowed to extend `BaseEnv`.
  *
- * Function parameters are contravariant under TypeScript's strict mode,
- * so the tuple's element constraint must be `AnnotatedToolFactory<any>`
- * rather than `AnnotatedToolFactory<BaseEnv>`. A factory typed
- * `AnnotatedToolFactory<MailEnv>` is **not** assignable to
- * `AnnotatedToolFactory<BaseEnv>` (it accepts only `MailEnv`, not every
- * `BaseEnv`), but it is assignable to `AnnotatedToolFactory<any>`. The
- * runtime `validateEnv` is the load-bearing safety guarantee; the
- * type level is best-effort guidance.
- *
- * **Author-facing footgun.** A single `AnnotatedToolFactory<any>` in
- * the tuple collapses the intersection to `any` and silently strips
- * the type-level env requirements of every other factory in the same
- * `defineAgent` call. Third-party factories typed `<any>` -- whether
- * by oversight or by deliberate escape -- erase the compile-time
- * check that the env shape covers their declared `requires`. The
- * runtime `validateEnv` will still blame the missing keys at
- * construction, but the author loses the editor-time feedback that
- * makes env-DI cheap to use. When importing third-party tool
- * factories, prefer ones whose env shape is explicit, and treat an
- * `<any>` factory the same way you would treat an `any`-typed
- * variable elsewhere in the codebase: an opt-out of the type system,
- * not a default.
- *
- * See the note on `AgentDefinition` above.
+ * Function parameters are contravariant under strict mode, so the
+ * tuple's element constraint must be `AnnotatedToolFactory<any>`: a
+ * factory typed `AnnotatedToolFactory<MailEnv>` is not assignable to
+ * `AnnotatedToolFactory<BaseEnv>`. A single `<any>` factory in the
+ * tuple collapses the intersection to `any` and silently strips the
+ * other factories' requirements -- treat it as an opt-out of the type
+ * system, not a default. The runtime `validateEnv` is the load-bearing
+ * safety guarantee.
  */
 export type EnvRequiredByAll<
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TypeScript cannot express "factory whose env is some subtype of BaseEnv" without contravariant escape; see comment above
@@ -143,9 +107,8 @@ export type EnvRequiredByAll<
 
 /**
  * Configuration accepted by `defineAgent`. Mirrors `AgentDefinition`
- * but takes `tools` as the input field name (matching the spec's
- * authoring-time shape) and infers `EnvReq` from the supplied
- * factories.
+ * but takes `tools` as the input field name and infers `EnvReq` from
+ * the supplied factories.
  */
 export interface DefineAgentConfig<
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- contravariant escape per the explanation on EnvRequiredByAll above

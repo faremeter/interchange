@@ -19,9 +19,9 @@ describe("notify.open against a server that stops draining stdin", () => {
   // `openFile` awaits its didOpen/didChange notification writes. A write
   // resolves on the pipe flush, so a server that completes the handshake and
   // then stops reading stdin leaves the write pending once the OS pipe buffer
-  // fills. Every other awaited protocol operation in client.ts is wrapped in
-  // `withTimeout`; these three are not, so the caller has no bound. This test
-  // pins that bound: the call must settle rather than hang.
+  // fills. `sendDocumentNotification` wraps these writes in
+  // `NOTIFY_TIMEOUT_MS`, so the caller sees a rejection rather than a hang;
+  // this test pins that.
   test("settles instead of hanging once the pipe buffer fills", async () => {
     dir = await mkdtemp(join(tmpdir(), "lsp-stalled-open-"));
     const filePath = join(dir, "big.ts");
@@ -38,9 +38,8 @@ describe("notify.open against a server that stops draining stdin", () => {
     clients.push(client);
 
     // Fill the pipe. Early calls resolve; once the buffer is full the write
-    // parks, and the client's notification bound is what turns that into a
-    // rejection instead of a hang. The first rejection is the proof, so stop
-    // there -- every further call would just wait out the bound again.
+    // parks and the notification bound turns that into a rejection. The
+    // first rejection is the proof, so stop there.
     let outcome: "rejected" | "hung" | undefined;
     for (let i = 1; i <= 40 && outcome === undefined; i++) {
       outcome = await Promise.race([
@@ -48,9 +47,8 @@ describe("notify.open against a server that stops draining stdin", () => {
           () => undefined,
           () => "rejected" as const,
         ),
-        // Only has to outlast the client's bound, so it sits well clear of it
-        // rather than tuned close: the invariant is that the call settles at
-        // all, not that it settles by any particular moment.
+        // Only has to outlast the client's bound, so it sits well clear of
+        // it: the invariant is that the call settles at all.
         new Promise<"hung">((r) => setTimeout(() => r("hung"), 20_000)),
       ]);
     }

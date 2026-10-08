@@ -5,8 +5,8 @@
 //
 // By default this is a DRY RUN: it verifies the tree is in a publishable
 // state, builds the compiled tarballs, proves they install and load, and
-// prints the plan without uploading anything. Only `bin/publish --execute`
-// runs `bun publish`, and only under the release credentials.
+// prints the plan without uploading anything. Only `bin/publish
+// --execute` runs `bun publish`, and only under the release credentials.
 //
 // The guards exist because the live 0.1.x packages shipped broken: they
 // were published from a tree whose sibling versions were not yet the
@@ -22,19 +22,13 @@
 //     literal is the 0.1.x shape — it can lag the release — so it aborts.
 //
 // The published tarballs keep the repo-internal `intx-src` exports
-// condition, which is inert for any consumer that does not explicitly pass
-// `--conditions=intx-src` (no external consumer does). Rather than mutate
-// tracked package manifests mid-publish to strip it — which would
+// condition, which is inert for any consumer that does not explicitly
+// pass `--conditions=intx-src` (no external consumer does). Rather than
+// mutate tracked package manifests mid-publish to strip it — which would
 // reintroduce the very "publish from a tree that isn't the committed
 // tree" hazard that broke 0.1.x — the load smoke below asserts that
-// default-condition resolution lands on `dist/`, not `src/`. That proves
-// the condition stays inert on every dry run.
-//
-// The smoke test loads every package under each available runtime (Node,
-// Bun, and Deno) and asserts they all load, and that default-condition
-// resolution lands on `dist/`, never the inert `intx-src` source. A load
-// failure under any asserted runtime, or a runtime resolving to `src/`,
-// fails the matrix rather than hiding behind a fallback.
+// default-condition resolution lands on `dist/`, not `src/`, on every dry
+// run, under each available runtime (Node, Bun, Deno).
 //
 // `--execute` publishes leaf-first so a dependency is on the registry
 // before any dependent. Partial-failure recovery is a known gap to close
@@ -74,10 +68,10 @@ import {
 
 const run = makeRun("publish");
 
-/** Fail fast, before the expensive dist build, if `bun.lock` is stale: pack
- *  one internal package and confirm `bun pm pack` rewrote its `@intx/*`
- *  dependencies to the release version. This exercises the actual pack-time
- *  rewrite rather than reimplementing bun.lock parsing. */
+/** Fail fast, before the expensive dist build, if `bun.lock` is stale:
+ *  pack one internal package and confirm `bun pm pack` rewrote its
+ *  `@intx/*` dependencies to the release version. This exercises the
+ *  actual pack-time rewrite rather than reimplementing bun.lock parsing. */
 function assertLockfileFresh(targets: Target[], version: string): void {
   const rep = targets.find((t) => t.internalDeps.length > 0);
   if (rep === undefined) return;
@@ -167,12 +161,12 @@ function availableRuntimes(): Runtime[] {
 
 // Loads one import specifier (a package root or an exports subpath) under
 // Node, Bun, or Deno: resolves it under default conditions, asserts the
-// resolution lands on dist/ (never the inert intx-src -> src), then imports
-// it. Deno exposes `process` via its node-compat layer, so one program serves
-// all three. @intx/log's console-sink side effect is a top-level import in its
-// entry, so a successful root import runs it; there is no separate side-effect
-// probe because a Node loader cannot tree-shake that import, so such a check
-// could never fail independently of the load already asserted here.
+// resolution lands on dist/ (never the inert intx-src -> src), then
+// imports it. Deno exposes `process` via its node-compat layer, so one
+// program serves all three. @intx/log's console-sink side effect is a
+// top-level import in its entry, so a successful root import runs it;
+// there is no separate side-effect probe because a Node loader cannot
+// tree-shake that import.
 const LOAD_CHECK = `
 const pkg = process.argv[2];
 try {
@@ -289,10 +283,10 @@ async function main(repoRoot: string, execute: boolean): Promise<void> {
     // Emit compiled dist for every target.
     await buildDist(repoRoot);
 
-    // With dist emitted, confirm every declared sideEffects glob resolves to a
-    // real file — catching an emitted-path typo the lint-time metadata guard
-    // cannot see before the build. Fails here, before packing, while dist is
-    // fresh; the finally still tears it down.
+    // With dist emitted, confirm every declared sideEffects glob resolves
+    // to a real file — catching an emitted-path typo the lint-time
+    // metadata guard cannot see. Fails here, before packing, while dist
+    // is fresh; the finally still tears it down.
     const builtSideEffects = await checkBuiltSideEffects(repoRoot);
     if (builtSideEffects.violations.length > 0) {
       throw new Error(
@@ -300,7 +294,8 @@ async function main(repoRoot: string, execute: boolean): Promise<void> {
       );
     }
 
-    // Stage the LICENSE the files allowlist expects (not committed per-package).
+    // Stage the LICENSE the files allowlist expects (not committed
+    // per-package).
     for (const t of ordered) {
       const dest = join(t.dir, "LICENSE");
       cpSync(license, dest);
@@ -315,10 +310,11 @@ async function main(repoRoot: string, execute: boolean): Promise<void> {
     );
     console.log(`packed ${tarballCount} tarballs`);
 
-    // Install optional peer deps so a peer-gated subpath (e.g. @intx/log/hono)
-    // imports instead of failing on a missing transitive module. npm does not
-    // install optional peers with the tarball set, so the smoke stands in for
-    // a consumer that opted into the gated integration.
+    // Install optional peer deps so a peer-gated subpath (e.g.
+    // @intx/log/hono) imports instead of failing on a missing transitive
+    // module. npm does not install optional peers with the tarball set,
+    // so the smoke stands in for a consumer that opted into the gated
+    // integration.
     const optionalPeers = new Map<string, string>();
     for (const t of ordered) {
       for (const p of t.optionalPeers) optionalPeers.set(p.name, p.range);
@@ -344,8 +340,9 @@ async function main(repoRoot: string, execute: boolean): Promise<void> {
           `publish: ${detail}; refusing to --execute without verifying them`,
         );
       }
-      // Dry run tolerates a missing runtime, but says so loudly rather than
-      // reporting a green that silently skipped part of the guarantee.
+      // Dry run tolerates a missing runtime, but says so loudly rather
+      // than reporting a green that silently skipped part of the
+      // guarantee.
       console.warn(`WARNING: ${detail} — those runtimes were NOT verified`);
     }
     console.log(`load smoke (runtimes: ${runtimes.join(", ")}):`);

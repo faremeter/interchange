@@ -39,11 +39,10 @@ export type DeployContent = {
   /**
    * Optional. `assetId` → workspace-relative mount path for every
    * asset id referenced by a `kind: "asset"` entry in
-   * `toolPackageManifest`. When present, written to
-   * `deploy/asset-mounts.json`; the sidecar's loader reads it back via
-   * `readDeployTree` and resolves asset-sourced tarballs against it.
-   * Empty maps and absent values produce no file on disk — both shapes
-   * read back as an empty mount table.
+   * `toolPackageManifest`. Written to `deploy/asset-mounts.json`; the
+   * sidecar's loader reads it back via `readDeployTree` and resolves
+   * asset-sourced tarballs against it. Empty maps and absent values
+   * produce no file on disk.
    */
   assetMounts?: ReadonlyMap<string, string>;
 };
@@ -72,10 +71,10 @@ export type AgentRepoStore = {
    * pack objects and updates the ref without materializing a working
    * tree.
    *
-   * `repoId.kind` must be `"agent-state"`. The `repoId.id` is used as
-   * the run address internally. Stamps an
-   * `AgentStateSidecarPrincipal` so the agent-state kind handler
-   * authorizes the receivePack as a per-agent sidecar write.
+   * `repoId.kind` must be `"agent-state"`; `repoId.id` is used as the
+   * run address internally. Stamps an `AgentStateSidecarPrincipal` so
+   * the agent-state kind handler authorizes the receivePack as a
+   * per-agent sidecar write.
    */
   receiveAgentStatePack(
     repoId: RepoId,
@@ -121,14 +120,14 @@ export type AgentRepoStore = {
 
 /**
  * Repo kinds eligible for write-path object GC. Deliberately EXCLUDES
- * "workflow-run". The warm-agent mailbox physically expunges `<uid>.eml`
- * blobs from the live tree; the raw bytes then persist only through the
- * parent commit in git history, and they survive a push ONLY because a
- * `workflow-run` repo's objects are never GC'd. Adding "workflow-run"
- * here -- above all with a retention other than "keep-history" -- would
- * make an expunged message's bytes prunable and silently destroy the
- * mailbox audit trail. The mailbox subtree contract in `workflow-run-kind`
- * documents this dependency; `agent-repo.test.ts` pins it. Do not add
+ * "workflow-run": the warm-agent mailbox physically expunges `<uid>.eml`
+ * blobs from the live tree, so the raw bytes survive ONLY through the
+ * parent commit in git history -- and only because a `workflow-run`
+ * repo's objects are never GC'd. Adding "workflow-run" here (above all
+ * with a retention other than "keep-history") would make an expunged
+ * message's bytes prunable and silently destroy the mailbox audit
+ * trail. The mailbox subtree contract in `workflow-run-kind` documents
+ * this dependency; `agent-repo.test.ts` pins it. Do not add
  * "workflow-run" without replacing physical expunge with a tip-reachable
  * retain-bytes scheme first.
  */
@@ -168,12 +167,10 @@ export function createAgentRepoStore(config: {
     }
   };
 
-  // The substrate's signingCallback bridges the agent-repo store's
-  // raw Ed25519 keypair to the storage layer's per-payload SSHSIG
-  // signer. Skill asset genesis commits and agent-state deploy
-  // commits both flow through this signer so that signed commits
-  // round-trip through the smart-HTTP layer and verify under
-  // `git log --show-signature` and `git verify-commit`.
+  // The substrate's signingCallback bridges the agent-repo store's raw
+  // Ed25519 keypair to the storage layer's per-payload SSHSIG signer, so
+  // skill genesis and agent-state deploy commits round-trip through the
+  // smart-HTTP layer and verify under `git verify-commit`.
   const signer = async (payload: string) =>
     createSSHSignature(payload, signingKey.privateKey, signingKey.publicKey);
 

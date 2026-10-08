@@ -40,26 +40,14 @@ export function generateId(kind: IDKind): string {
 }
 
 /**
- * Derive the DETERMINISTIC principal id a workflow run's principal is
- * minted under, keyed on `(tenantId, runId)`. Both the external trigger
- * route and the mail-triggered run path derive the id this way, so a run
- * has ONE principal id regardless of how many times its birth is
- * attempted.
+ * Deterministic principal id for a workflow run's principal, keyed on
+ * `(tenantId, runId)` so every birth attempt lands on the same row. The
+ * `principal` table's `unique(tenantId, kind, refId)` makes the insert an
+ * `onConflictDoNothing` no-op; a random id would orphan the grant rows
+ * that reference it.
  *
- * Determinism is load-bearing for idempotency: a run's `runId` is the
- * deployment's mail address (stable across a redelivery AND across every
- * trigger of the deployment), and the `principal` table's
- * `unique(tenantId, kind, refId=runId)` makes the insert an
- * `onConflictDoNothing` no-op on every attempt after the first. A RANDOM
- * id would leave that no-op pointing the fresh id nowhere while the grant
- * rows referenced it, breaking the principal foreign key. Deriving the id
- * from the run means the second attempt reuses the id already written, so
- * the grant rows resolve against the principal that is actually present.
- *
- * The id is `prn_` + the first 16 bytes of `SHA-256(tenantId "\0" runId)`
- * as hex, matching the shape `generateId("principal")` produces. The NUL
- * separator keeps the two fields unambiguous so no `(tenantId, runId)`
- * pair collides with another by concatenation.
+ * `prn_` + the first 16 bytes of `SHA-256(tenantId "\0" runId)` as hex;
+ * the NUL separator keeps the pair unambiguous.
  */
 export async function deriveRunPrincipalId(
   tenantId: string,
@@ -75,12 +63,9 @@ export async function deriveRunPrincipalId(
 }
 
 /**
- * Prefixes for the two flavours of git bearer-token secret. Personal
- * access tokens (`PAT_PREFIX`) belong to a user; service tokens
- * (`SVC_PREFIX`) are minted under a tenant on behalf of a principal.
- * The single source of truth: both the mint endpoint and the bearer
- * middleware import these so the secret shape cannot drift between
- * the issuer and the validator.
+ * Git bearer-token secret prefixes: user tokens (`PAT_PREFIX`) vs
+ * tenant-minted service tokens (`SVC_PREFIX`). Mint endpoint and bearer
+ * middleware both import these, so the shapes cannot drift.
  */
 export const PAT_PREFIX = "itx_pat_";
 export const SVC_PREFIX = "itx_svc_";

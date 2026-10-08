@@ -11,8 +11,7 @@
 // reuses the same principal row and does not re-mint, so an active-only pass
 // would leave a pre-existing `invited`/`suspended` principal keyless and turn it
 // into a keyless ACTIVE principal the moment it is activated. `agent` is a
-// legacy/inert kind that is never keyed at creation either, so it is skipped to
-// keep the populations consistent.
+// legacy/inert kind that is never keyed at creation either, so it is skipped.
 //
 // Idempotent: a principal that already holds an active key is skipped, so the
 // pass is safe to re-run or resume after a partial failure. Each principal is
@@ -45,7 +44,7 @@ export async function backfillPrincipalKeys(
   // The left join is scoped to the active key, so `activeKeyId` is null exactly
   // when the principal has no active key -- a principal holding only a retired
   // key counts as keyless and is re-keyed. The active-key unique index makes at
-  // most one active row per principal, so each principal appears once.
+  // most one active row per principal.
   const rows = await db
     .select({ principalId: principal.id, activeKeyId: principalKey.id })
     .from(principal)

@@ -1,35 +1,27 @@
-// Regression test for C5: cancel() in the early-lifecycle window
-// before the runtime body commits `RunStarted` must resolve the
-// `complete` promise to a `cancelled` terminal status. Prior to the
-// fix, the state machine rejected `CancelRequested` from
-// `phase=pending` with a `TransitionError(code="phase")`, leaving the
+// Regression test for C5: cancel() in the early-lifecycle window before the
+// runtime body commits `RunStarted` must resolve `complete` to a `cancelled`
+// terminal. Prior to the fix, the state machine rejected `CancelRequested`
+// from `phase=pending` with a `TransitionError(code="phase")`, leaving the
 // caller staring at an unhandled rejection.
 //
-// The fix has three load-bearing pieces, each of which this test
-// pins by observable behavior:
+// The fix has three load-bearing pieces, each pinned here by observable
+// behavior:
 //
-//   1. `handleCancelRequested` in `state-machine/transition.ts` admits
-//      `phase=pending` in addition to `phase=running`. (Without this,
-//      the cancel commit lands a TransitionError, which the cancel
-//      caller surfaces.)
-//   2. `commit-chain.ts` validates the transition before appending so
-//      the early `CancelRequested` reaches `cancelling` cleanly and
-//      the subsequent body-side `RunStarted` is rejected with
-//      `code=phase` rather than appended out of order.
-//   3. `executeRunBody` in `runtime/run.ts` tolerates the
-//      `TransitionError(code="phase")` thrown when its `RunStarted`
-//      commit races a cancel that already transitioned the run to
-//      `cancelling`; it reloads and falls into the cancellation
+//   1. `handleCancelRequested` admits `phase=pending` in addition to
+//      `phase=running`.
+//   2. `commit-chain.ts` validates the transition before appending, so the
+//      early `CancelRequested` reaches `cancelling` cleanly and the
+//      subsequent body-side `RunStarted` is rejected with `code=phase`.
+//   3. `executeRunBody` tolerates the `TransitionError(code="phase")` thrown
+//      when its `RunStarted` commit races a cancel that already transitioned
+//      the run to `cancelling`; it reloads and falls into the cancellation
 //      cleanup branch instead of crashing the run-body promise.
 //
-// The test forces the production-shaped race by gating the body's
-// first `repoStore.read` so the cancel's `CancelRequested` commit
-// reaches the chain BEFORE the body's `RunStarted` commit. Without
-// this gate the body's first await tends to resolve first and the
-// commit chain processes RunStarted before CancelRequested -- a
-// legitimate ordering, but one that lets the bug under test hide
-// because cancel then admits cleanly from `phase=running`. Pinning
-// the production-shaped race is the whole point of the regression.
+// The test forces the production-shaped race by gating the body's first
+// `repoStore.read` so the cancel's `CancelRequested` commit reaches the chain
+// BEFORE the body's `RunStarted` commit. Without the gate the body's first
+// await tends to resolve first and the chain processes RunStarted before
+// CancelRequested -- a legitimate ordering that lets the bug hide.
 
 import { describe, test, expect } from "bun:test";
 
@@ -70,16 +62,12 @@ function singleStepWorkflow(): WorkflowDefinition {
 }
 
 /**
- * Wrap an in-memory repo store so the body's first `read` is gated
- * behind an external `release` callback. The cancel path's own
- * `read` (which also goes through the wrapper) is allowed to proceed
- * because we only gate the FIRST caller; the test releases the gate
- * after the cancel has completed its `CancelRequested` commit.
- *
- * This deterministically pins the race the bug lived in: cancel
- * lands first, transitioning the run to `cancelling`; the body's
- * subsequent `RunStarted` commit hits the state machine's
- * `RunStarted in phase cancelling` rejection (code=phase).
+ * Wrap an in-memory repo store so the body's first `read` is gated behind an
+ * external `release` callback. The cancel path's own `read` (also through the
+ * wrapper) is allowed to proceed because only the FIRST caller is gated; the
+ * test releases the gate after the cancel has completed its `CancelRequested`
+ * commit. This deterministically pins the race: cancel lands first, so the
+ * body's subsequent `RunStarted` commit hits the state machine's rejection.
  */
 function gatedRepoStore(): {
   store: RepoStore;
@@ -144,22 +132,21 @@ describe("C5 regression: cancel before first StepStarted", () => {
     const env = buildEnv(store, invokeStep);
 
     const run = runtimeRun(def, env);
-    // The body's first `read` (inside executeRunBody's seed restore)
-    // is now waiting on the gate. Issue cancel; the cancel's
-    // `reloadState` calls store.read but the gate only blocks the
-    // FIRST read, which the body already consumed. So cancel's read
-    // resolves immediately and its CancelRequested commit reaches
-    // the per-runId chain first.
+    // The body's first `read` (inside executeRunBody's seed restore) is now
+    // waiting on the gate. Issue cancel; the cancel's `reloadState` also calls
+    // store.read, but the gate only blocks the FIRST read, which the body
+    // already consumed, so cancel's read resolves and its CancelRequested
+    // commit reaches the per-runId chain first.
     const cancelPromise = run.cancel("supervisor-operator", "early cancel");
-    // Yield a couple of microtasks so cancel's reload + commit are
-    // queued before we release the body.
+    // Yield a couple of microtasks so cancel's reload + commit are queued
+    // before we release the body.
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
-    // Now release the body. Its RunStarted commit will reach the
-    // chain after CancelRequested has already landed; the chain
-    // rejects it with `code=phase` and executeRunBody's catch absorbs
-    // the rejection and reloads into the cancellation cleanup branch.
+    // Now release the body. Its RunStarted commit reaches the chain after
+    // CancelRequested has landed; the chain rejects it with `code=phase` and
+    // executeRunBody's catch absorbs the rejection and reloads into the
+    // cancellation cleanup branch.
     releaseBodyFirstRead();
 
     let result;

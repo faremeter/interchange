@@ -5,32 +5,26 @@
 // reads the parent's `runs/<parentRunId>/grants.json` as the ceiling, re-walks
 // the child body, and writes only the parent grants the child declares to the
 // child's own `runs/<childRunId>/grants.json`. This test drives that
-// composition end to end -- a real parent workflow deployed BY SOURCE-REF
-// (bundle a source entry module into a hub asset, probe it, approve+freeze it
-// against a real DB, deploy the source-ref frame) whose spawn step fires a
-// child through the real sidecar subprocess -- and asserts BOTH files land on
-// the sidecar's on-disk workflow-run repo: the parent's carrying the grants the
-// trigger delivered verbatim, the child's carrying only the capped subset.
+// composition end to end -- a real parent workflow deployed BY SOURCE-REF whose
+// spawn step fires a child through the real sidecar subprocess -- and asserts
+// BOTH files land on the sidecar's on-disk workflow-run repo.
 //
 // The trigger delivers two grants: one for a resource the child body declares
 // (its inference source) and one for a resource it does not (`effect:fs:write`).
-// The declared grant survives into the child's file (the positive control,
-// proving the wiring delivered grants at all); the undeclared one is dropped
-// (the cap, the escalation this closes).
+// The declared grant survives into the child's file (the positive control);
+// the undeclared one is dropped (the cap, the escalation this closes).
 //
 // What this ADDS over the unit coverage. Which grants survive the cap is
-// proven in `packages/workflow-deploy/src/child-grant-filter.test.ts`. The
-// factory's injection of that filter -- the definition it hands the
-// collector, the array it persists, write-once, and fail-closed when the
-// parent grants file is absent -- is proven in
-// `packages/workflow-host/src/child/workflow-substrate-factory-child-grants.test.ts`,
-// which calls `createSidecarRunChild` with hand-seeded grants. This test
-// proves the WIRING composes: that a real mail trigger's delivered grants reach
-// `runs/<parentRunId>/grants.json` through the supervisor, and that the real
+// proven in `packages/workflow-deploy/src/child-grant-filter.test.ts`; the
+// factory's injection of that filter in
+// `packages/workflow-host/src/child/workflow-substrate-factory-child-grants.test.ts`.
+// This test proves the WIRING composes: a real mail trigger's delivered grants
+// reach the parent's grants file through the supervisor, and the real
 // child-spawn adapter caps them against the child body during an honest
 // parent->child spawn. The fail-closed negative is not reproducible here --
-// every mail-triggered run materializes a grants file, so an absent parent file
-// cannot arise through the trigger path -- and stays covered at the unit level.
+// every mail-triggered run materializes a grants file, so an absent parent
+// file cannot arise through the trigger path -- and stays covered at the unit
+// level.
 //
 // SCOPE. The grants-file write happens at spawn time, BEFORE the child step
 // runs, so this test asserts only the spawn-time capped write. Whether the

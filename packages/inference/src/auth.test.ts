@@ -1,10 +1,7 @@
-// Credential-sentinel substitution. Adapters declare which credential
-// shape they want by placing one of the exported sentinel strings as
-// the header value; `injectCredentials` walks the header map and
-// rewrites exact-match values with the secret the resolver returns for
-// the source's `credentialId`. The harness uses this in place of the
-// previous per-header hardcoded branches so adding a new provider
-// requires no harness change.
+// Credential-sentinel substitution: adapters mark headers with a sentinel
+// string, and injectCredentials rewrites exact matches to the secret the
+// resolver returns for the source's credentialId. New providers need no
+// harness change.
 
 import { describe, expect, test } from "bun:test";
 
@@ -74,10 +71,7 @@ describe("injectCredentials", () => {
   });
 
   test("replaces sentinels regardless of header name (new providers need no harness change)", () => {
-    // The whole point of sentinel-based replacement: a brand-new
-    // provider that uses, say, `x-goog-api-key` works without
-    // touching this function. The exact header name is irrelevant
-    // to the substitution logic.
+    // The exact header name is irrelevant to the substitution logic.
     const out = injectCredentials(
       { "x-goog-api-key": CREDENTIAL_SENTINEL },
       SOURCE,
@@ -87,10 +81,8 @@ describe("injectCredentials", () => {
   });
 
   test("substring matches are not replaced (exact match only)", () => {
-    // A header value that *contains* the sentinel literal as a
-    // substring -- but isn't exactly equal to it -- is left alone.
-    // Partial replacement would be surprising and no legitimate
-    // adapter constructs composite values around the sentinel.
+    // Values containing the sentinel as a substring are left alone; no
+    // legitimate adapter composites values around it.
     const wrapped = `prefix ${CREDENTIAL_SENTINEL} suffix`;
     const out = injectCredentials(
       { "x-weird-header": wrapped },
@@ -111,10 +103,7 @@ describe("injectCredentials", () => {
   });
 
   test("handles multiple sentinels of mixed shapes in one request", () => {
-    // Pathological but well-defined: an adapter that wants both
-    // a verbatim credential header and a Bearer header (some
-    // vendors do this for legacy + modern endpoints) gets both
-    // replacements applied in one pass.
+    // Both replacement shapes applied in one pass; some vendors want both.
     const out = injectCredentials(
       {
         "x-api-key": CREDENTIAL_SENTINEL,

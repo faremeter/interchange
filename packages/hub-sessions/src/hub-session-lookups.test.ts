@@ -1,11 +1,7 @@
-// parseAgentId is the @intx/hub-sessions wrapper around the @intx/types
-// parseRunAddress parser. The wrapper exists to throw on invalid
-// input rather than return null, and to preserve the raw address in
-// the error message for diagnostic context. These tests pin the
-// wrapper's behavior so a future change to the delegation (e.g.,
-// reverting to a local splitter, or shifting to a stricter contract)
-// has to update them deliberately. The underlying parser is tested in
-// packages/types/src/agent-address.test.ts.
+// `parseAgentId` is the @intx/hub-sessions wrapper around the @intx/types
+// `parseRunAddress` parser: it throws on invalid input instead of returning
+// null and preserves the raw address for diagnostics. The underlying parser
+// is tested in packages/types/src/agent-address.test.ts.
 
 import { describe, test, expect } from "bun:test";
 

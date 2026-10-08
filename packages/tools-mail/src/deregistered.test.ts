@@ -1,16 +1,13 @@
 // What the mail tools report for a handle the transport refuses outright.
 //
 // A scoped handle whose address registration is gone is refused before any
-// mailbox is touched. It raises RFC 5530's `CANNOT`, and reissuing the same call
-// does not address it -- which is what separates it from the `*_failed` codes:
-// those say the transport was reached and the outcome is unknown, and MESSAGE.md
-// tells a caller as much.
-//
+// mailbox is touched. It raises RFC 5530's `CANNOT`, and reissuing the same
+// call does not address it -- which is what separates it from the `*_failed`
+// codes: those say the transport was reached and the outcome is unknown.
 // These assertions run against a real in-memory transport rather than a mock,
-// because the value under test is what a caller actually receives from the pair
-// -- the condition the transport raises and the code the classifier derives from
-// it. A mock could assert the classifier alone and would keep passing if the
-// transport stopped naming the condition.
+// because the value under test is what a caller actually receives from the
+// pair -- the condition the transport raises and the code the classifier
+// derives from it.
 
 import { describe, expect, test } from "bun:test";
 import { generateKeyPair, createEd25519Crypto } from "@intx/crypto";
@@ -32,9 +29,8 @@ const signal = new AbortController().signal;
 
 // mail_wait is the one tool here that declares a deadline, and it must answer
 // the refusal rather than the deadline. Capturing the callback without firing
-// it leaves the handler no deadline to reach, so a case that does not settle on
-// the refusal hangs, and the test runner's own budget charges that as a
-// failure.
+// it leaves the handler no deadline to reach, so a case that does not settle
+// on the refusal hangs, which the test runner's budget charges as a failure.
 const heldDeadline: WaitScheduler = {
   setTimeout() {
     return () => undefined;
@@ -140,8 +136,9 @@ describe("a handle the transport refuses outright", () => {
 
   test("does not report the mailbox as the thing to change", async () => {
     // `invalid_mailbox` is the other code raised before the operation, and it
-    // is the wrong answer here: it tells a caller to name a different mailbox,
-    // and every mailbox name fails the same way while the registration is gone.
+    // is the wrong answer here: it tells a caller to name a different
+    // mailbox, and every mailbox name fails the same way while the
+    // registration is gone.
     const transport = await deregisteredTransport();
 
     const result = await makeMailSearchHandler(transport)(

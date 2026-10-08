@@ -50,7 +50,7 @@ export const modelProvider = pgTable(
     // A provider authenticates via exactly one of credential or wallet (the
     // check constraint below enforces the XOR). onDelete is "restrict" so a
     // credential or wallet cannot be deleted out from under a provider that
-    // depends on it — the provider must be repointed or removed first.
+    // depends on it.
     credentialId: text("credential_id").references(() => credential.id, {
       onDelete: "restrict",
     }),
@@ -90,10 +90,9 @@ export const modelOffering = pgTable(
     // populated by the discovery-support-matrix seeding work.
     capabilities: text("capabilities").array().notNull().default([]),
     // Opaque per-deployment bag of provider-specific adapter accommodations
-    // (e.g. OpenAI's forceAssistantReasoningContent). Interpreted and
-    // validated only at the adapter factory, which alone knows the provider
-    // shape. NULL means the factory receives no bag and applies its default
-    // behavior.
+    // (e.g. OpenAI's forceAssistantReasoningContent). Interpreted and validated
+    // only at the adapter factory, which alone knows the provider shape. NULL
+    // means the factory receives no bag and applies its default behavior.
     quirks: jsonb("quirks"),
     // Own-row disable. Inherited-row suppression is resolved separately.
     disabled: boolean("disabled").notNull().default(false),
@@ -129,9 +128,8 @@ export const modelPricing = pgTable(
     perImageFee: text("per_image_fee"),
     perAudioFee: text("per_audio_fee"),
     // Append-only. A price change inserts a new row with a later
-    // effective_from; rows are never edited in place, so cost attribution at
-    // a past timestamp stays accurate. withTimezone anchors the as-of
-    // comparison across writers.
+    // effective_from; rows are never edited in place, so cost attribution at a
+    // past timestamp stays accurate.
     effectiveFrom: timestamp("effective_from", {
       withTimezone: true,
     }).notNull(),

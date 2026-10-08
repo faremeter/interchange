@@ -3,45 +3,30 @@
 // The reachability gate for the CORE signal-relay capability: a deployed
 // onTrigger section whose body parks on an author `awaitSignal` gate has that
 // gate serviced by delivering the signal to the DEPLOYMENT (parent) run id --
-// the body, a child run, never receives a signal directly. It proves the whole
-// path end-to-end on the real deploy stack: the body's author gate surfaces up
-// through the suspendable-child seam, the section proxies it as a signal-relay
-// await on the container, a signal delivered to the parent run resolves that
-// await, and the section relays it back down into the body, which continues.
+// the body, a child run, never receives a signal directly. The body's author
+// gate surfaces up through the suspendable-child seam, the section proxies it
+// as a signal-relay await on the container, a signal delivered to the parent
+// resolves that await, and the section relays it back down into the body.
 //
-// The workflow is deployed BY SOURCE-REF (bundle a source entry module into a
-// hub asset, probe it, approve+freeze it against a real DB, deploy the
-// source-ref frame): a single-step workflow whose one step is an `onTrigger`
-// section subscribed to the deployment mail address, with a NON-AGENT body -- a
-// single `awaitSignal({ name })` gate with no timeout. (Body agent-step
-// execution is exercised by the tool-invoke round-trips; this case is non-agent
-// by nature, so the body IS an awaitSignal, exercising exactly the capability
-// under test.)
+// The workflow is deployed BY SOURCE-REF: a single-step workflow whose one step
+// is an `onTrigger` section subscribed to the deployment mail address, with a
+// NON-AGENT body -- a single `awaitSignal({ name })` gate with no timeout.
 //
-//   1. Fire mail #1 -> the container run starts and spawns the body
-//      `section__0`, which parks on `awaitSignal({ name: "proceed" })`. The
-//      section proxies that gate UP as a signal-relay `SignalAwaited` on the
-//      container over the SAME author name; the container is now awaiting
-//      "proceed" and section__0 is parked (not complete).
-//   2. Deliver "proceed" to the PARENT deployment run id (the container), the
-//      way an operator would via the signals path. The container's await
-//      resolves, the section relays the signal down into the body, the body's
-//      gate completes, section__0 completes, and the section re-arms on its
-//      input park for the next event.
+//   1. Fire mail #1 -> the container run spawns `section__0`, which parks on
+//      `awaitSignal({ name: "proceed" })`; the section proxies that gate UP as
+//      a signal-relay `SignalAwaited` over the SAME author name.
+//   2. Deliver "proceed" to the PARENT deployment run id: the container's
+//      await resolves, the section relays the signal down into the body, and
+//      `section__0` completes; the section re-arms on its input park.
 //
 // Load-bearing assertions: the container carries a signal-relay `SignalAwaited`
-// for the author name (the proxied gate) and a `SignalReceived` for it (the
-// delivery to the PARENT); `section__0` completes ONLY after the delivery (the
-// relay reached the child body); the long-lived container never self-completes
-// and re-arms on an input park.
+// for the author name and a `SignalReceived` for it (the delivery to the
+// PARENT); `section__0` completes ONLY after the delivery; the container never
+// self-completes.
 //
-// Harness justification: SPAWN-REAL. Real hub, real sidecar subprocess, real
-// workflow-process child driving `runOnTrigger` with the production
-// suspendable-child seam. No inference (the body is pure runtime). The signal
-// is delivered through the sidecar router's `signal.deliver` (the delivery step
-// the hub-api /signals route performs after its authz + reserved-name guards,
-// which are covered by that route's own unit tests). This is a deploy-level
-// test of the signal-relay capability C built.
+// Harness: SPAWN-REAL (real hub, sidecar subprocess, workflow-process child).
+// No inference (the body is pure runtime). The signal is delivered through the
+// sidecar router's `signal.deliver`.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 

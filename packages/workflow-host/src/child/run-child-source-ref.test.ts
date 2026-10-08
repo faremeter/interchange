@@ -3,12 +3,12 @@
 // A source-ref deployment's `workflow.json` is a non-executable approval
 // surface: its agents carry `modelSources`/no `inference` and its tool
 // factories are plain data, so the runtime cannot execute it. The run child
-// must instead EVALUATE the pinned code closure to a LIVE definition and run
-// THAT, re-verifying the evaluated definition by project-then-hash against the
-// hub-approved wire hash. These tests materialize a fixture closure, drive the
-// run-child load boundary in source-ref mode, and assert: a matching hash
-// evaluates the closure and runs to a terminal result (fresh AND resumed),
-// and a divergent closure fails closed before the run proceeds.
+// must instead evaluate the pinned code closure to a LIVE definition and run
+// THAT, re-verifying the evaluated definition by project-then-hash against
+// the hub-approved wire hash. These tests materialize a fixture closure,
+// drive the run-child load boundary in source-ref mode, and assert: a
+// matching hash evaluates the closure and runs to a terminal result (fresh
+// AND resumed), and a divergent closure fails closed before the run proceeds.
 
 import { describe, test, expect, afterAll } from "bun:test";
 import fsp from "node:fs/promises";
@@ -408,16 +408,14 @@ describe("source-ref run child", () => {
   test("evaluates the closure to a live definition, re-verifies a matching hash, and runs a fresh trigger to terminal", async () => {
     const baseDir = await makeTempDir("srcref-fresh-ok-base-");
     // The workflow runtime's commit chain and pending-event buffer are
-    // module-scoped maps keyed by runId (see `@intx/workflow`'s
-    // commit-chain), shared across every run in the process. Production
-    // hands each run a unique hub-assigned runId, so the keys never
-    // collide; a test that hardcodes a shared literal like "run-1" does
-    // collide with sibling tests that reuse the same literal and leave a
-    // buffered RunStarted behind (a run they never drove to terminal, so
-    // its chain is never dropped). Inheriting that stale buffer makes
-    // this fresh run's state read as already-started and stall with no
-    // schedulable primitives. A per-test unique runId keeps this run's
-    // chain isolated regardless of sibling ordering.
+    // module-scoped maps keyed by runId, shared across every run in the
+    // process. Production hands each run a unique hub-assigned runId, so the
+    // keys never collide; a test that hardcodes a shared literal like "run-1"
+    // does collide with sibling tests that reuse it and leave a buffered
+    // RunStarted behind (a run they never drove to terminal, so its chain is
+    // never dropped). Inheriting that stale buffer makes this fresh run's
+    // state read as already-started and stall. A per-test unique runId keeps
+    // this run's chain isolated regardless of sibling ordering.
     const runId = `srcref-fresh-run-${generateChannelId()}`;
     const { packageDir, approvedHash } = await materializeFixtureClosure(
       "srcref-fresh-ok-pkg-",

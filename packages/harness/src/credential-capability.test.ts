@@ -24,8 +24,8 @@ function grant(
   };
 }
 
-// A provider that records every shape context it is handed and counts disposes,
-// so the capability's threading and teardown can be asserted.
+// Records every shape context it is handed and counts disposes, so the
+// capability's threading and teardown can be asserted.
 function trackingProvider(): {
   provider: CredentialProvider;
   shapes: CredentialShapeContext[];
@@ -84,7 +84,8 @@ describe("createCredentialCapability (Gate 2)", () => {
 
     const handle = await cap.resolve("gh");
     expect(handle.kind).toBe("http");
-    // The binding's provider was chosen and handed the right origin + material.
+    // The binding's provider was chosen and handed the right origin +
+    // material.
     expect(track.shapes).toHaveLength(1);
     expect(track.shapes[0]?.origin).toBe("https://api.github.com");
     expect(track.shapes[0]?.readCurrentMaterial()).toEqual({ secret: "sk-1" });

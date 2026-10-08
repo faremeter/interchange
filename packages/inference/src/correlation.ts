@@ -1,26 +1,17 @@
-// Correlation registry and validator interface for the agent reactor.
-//
 // Correlation connects outbound async tool calls to inbound responses. The
 // reactor owns the matching; the director does not participate.
-//
-// (INFERENCE.md § Correlation)
 
 import type { InboundMessage, PendingOperation } from "@intx/types/runtime";
 
 /**
- * Validates whether an inbound message is an authentic response to a
- * registered pending operation. Consumers provide this at reactor construction
- * time to enforce sender identity and signature checks.
- *
- * The reactor performs no sender check of its own, so a composition that
- * supplies no validator resolves a pending operation for any message bearing a
- * registered correlation ID. See MESSAGE.md (Correlation Security).
+ * Validate that an inbound message is an authentic response to a registered
+ * pending operation. The reactor performs no sender check of its own;
+ * without a validator, any message bearing the registered correlation ID
+ * resolves the operation.
  */
 export interface CorrelationValidator {
-  /**
-   * Return true if `message` is a valid resolution for `pending`.
-   * False causes the message to be delivered as a regular uncorrelated event.
-   */
+  /** True if `message` resolves `pending`; false delivers it as a regular
+   *  uncorrelated event. */
   validate(
     pending: PendingOperation,
     message: InboundMessage,
@@ -28,8 +19,8 @@ export interface CorrelationValidator {
 }
 
 /**
- * Tracks pending async operations. Each entry maps a correlation ID to the
- * operation metadata and the gate that is waiting for it.
+ * Tracks pending async operations, mapping a correlation ID to the operation
+ * metadata and the gate waiting for it.
  */
 export function createCorrelationRegistry() {
   const operations = new Map<string, PendingOperation>();

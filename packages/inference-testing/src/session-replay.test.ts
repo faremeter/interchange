@@ -235,11 +235,9 @@ describe("createReplayHarness", () => {
       }
       expect(toolCall.name).toBe("weather");
 
-      // Turn 2: thread the tool_result block back into the user
-      // turn. The recording-time helper threaded a hardcoded
-      // "68F, fog" string (not `JSON.stringify(dispatch.result)`)
-      // so the replay must mirror that exact string to make the
-      // body-aware matcher fire.
+      // Turn 2: thread the tool_result back in. The recording-time helper
+      // used a hardcoded "68F, fog" string, so the replay must mirror it
+      // exactly for the body-aware matcher to fire.
       const turn2Events = await replay.runTurn({
         turns: [
           userTurn("weather in SF?"),
@@ -479,13 +477,10 @@ describe("createReplayHarness", () => {
   });
 
   test("serves captured dispatches for parallel tool_calls in streaming order", async () => {
-    // Pins the per-tool FIFO contract the replay harness uses: when
-    // two captured dispatches share a tool name, they must be served
-    // back to the reactor in the order they were observed at
-    // `inference.tool_call.end`. A future change to the production
-    // iterator that re-orders parallel tool_calls within a single
-    // message would break this — and that breakage must surface as a
-    // body divergence rather than a silently-wrong dispatch result.
+    // Pins the per-tool FIFO contract: same-name captured dispatches are
+    // served in `inference.tool_call.end` observation order. A production
+    // change that re-orders parallel tool_calls would surface here as a
+    // body divergence, not a silently-wrong result.
     const dir = await makeTmpDir();
     let exchangeIndex = 0;
     const harness = createRecordingHarness({
@@ -595,13 +590,8 @@ describe("createReplayHarness", () => {
       expect(replay.capturedDispatches[0]?.args).toEqual({ key: "A" });
       expect(replay.capturedDispatches[1]?.args).toEqual({ key: "B" });
 
-      // Drive turn 1: the body-aware matcher routes the fetch and
-      // production runInference dispatches both tools. The replay
-      // harness's per-tool FIFO must serve A's result first, then
-      // B's. If FIFO ordering ever flips, the next turn's request
-      // body would carry the wrong values for the call_a/call_b
-      // tool_result blocks — surfaced as SessionReplayMismatchError
-      // on the second runTurn.
+      // Drive turn 1. The per-tool FIFO must serve A before B; a flip
+      // would surface as SessionReplayMismatchError on the next runTurn.
       await replay.runTurn({ turns: [userTurn("look up A and B")] });
     } finally {
       replay.dispose();
@@ -623,17 +613,14 @@ describe("createReplayHarness", () => {
   });
 
   test("KNOWN tool overrun: queue exhaustion throws kind=dispatches_over_consumed", async () => {
-    // A captured tool has N dispatches; replay-time invocation N+1
-    // exhausts the per-tool queue. The queue handler throws inside
-    // the inner harness's runInference iterator and the rejection
-    // surfaces via `collectResult` — but it's already a
+    // A captured tool has N dispatches; replay-time invocation N+1 exhausts
+    // the per-tool queue. The rejection is already a
     // SessionReplayMismatchError, so runTurn re-throws it unchanged.
     const dir = await makeTmpDir();
     await recordToolRoundtripSession(dir);
 
-    // Mutate exchange 0 to emit TWO tool_calls for "weather"; the
-    // capture's dispatches/ dir still has only one entry, so the
-    // second invocation exhausts the queue.
+    // Mutate exchange 0 to emit two "weather" tool_calls; the capture still
+    // has only one dispatch entry, so the second invocation exhausts it.
     const newResponse = mergeChunks(
       wire.completeResponse("anthropic", {
         toolCalls: [
@@ -676,17 +663,13 @@ describe("createReplayHarness", () => {
   });
 
   test("UNKNOWN tool: 'no handler registered' error is translated to dispatches_over_consumed", async () => {
-    // Production runInference emits a tool_call.end for a tool name
-    // the capture has zero dispatches for. The inner harness throws
-    // its "no handler was registered" error; runTurn's regex on
-    // session-replay.ts pattern-matches the message and translates
-    // to SessionReplayMismatchError. Pin this so a wording change to
-    // the inner harness's error message surfaces as a deliberate
-    // failure here rather than as a silent regression.
+    // Production runInference emits a tool_call.end for a tool the capture
+    // has zero dispatches for; the inner harness's "no handler was
+    // registered" error translates to SessionReplayMismatchError. Pins the
+    // translation so a wording change surfaces as a deliberate failure.
     const dir = await makeTmpDir();
     await recordToolRoundtripSession(dir);
-    // Drop the captured dispatch directory entirely so the wire's
-    // tool_call.end has no corresponding onTool handler at replay.
+    // Drop the dispatch directory so the wire's tool_call.end has no handler.
     await fs.rm(path.join(dir, "dispatches"), {
       recursive: true,
       force: true,
@@ -718,9 +701,8 @@ describe("createReplayHarness", () => {
       await expect(
         replay.runTurn({ turns: [userTurn("wrong prompt")] }),
       ).rejects.toBeInstanceOf(SessionReplayMismatchError);
-      // A subsequent runTurn must fail loudly rather than try to re-
-      // register a matcher on top of the stale one from the failed
-      // attempt. The error message says so explicitly.
+      // A subsequent runTurn must fail loudly rather than re-register a
+      // matcher over the stale one from the failed attempt.
       await expect(
         replay.runTurn({ turns: [userTurn("say hi")] }),
       ).rejects.toThrow(/poisoned/);
@@ -910,9 +892,8 @@ describe("replayResponsesForParsing (anything-goes)", () => {
       },
     ]);
 
-    // A malformed body must not trip the fetchCallCount === 1 guard: the
-    // abort-only retry policy surfaces the parse failure as a single
-    // inference.error rather than a retry that re-opens the fetch.
+    // A malformed body must not re-open the fetch: the abort-only retry
+    // policy surfaces one inference.error instead.
     const results = await replayResponsesForParsing({ sessionDir: dir });
     expect(results).toHaveLength(1);
     const r = results[0];

@@ -1,7 +1,6 @@
 // In-process service for creating and populating skill-asset repos.
 //
-// Three responsibilities are layered here, mirroring the substrate's
-// own layering (DB row, repo bookkeeping, content validation):
+// Layered like the substrate (DB row, repo bookkeeping, content validation):
 //
 //   createAsset    inserts the asset row and initializes an empty
 //                  skill-kind repo via RepoStore.initRepo.
@@ -9,9 +8,8 @@
 //                  handler's validatePush before advancing the ref.
 //                  Content rejections surface as AssetValidationError.
 //
-// The factory is closure-based to match createAgentRepoStore and
-// createRepoStore. There is no class because there is no per-instance
-// mutable state — every method is a pure function over the deps.
+// Closure-based like createAgentRepoStore / createRepoStore; there is no
+// class because there is no per-instance mutable state.
 
 import fs from "node:fs";
 import { eq } from "drizzle-orm";
@@ -52,10 +50,9 @@ export type CreateAssetParams = {
   displayName?: string;
   creatorPrincipalId?: string;
   /** Forwarded verbatim to `repoStore.initRepo`. Lets the REST route
-   * layer ship a per-asset `.gitignore` body (OS/editor cruft + build
-   * artefacts + `keys/`) in the genesis tree without the service
-   * encoding policy for any one consumer. When omitted, the substrate
-   * default body applies. */
+   * layer ship a per-asset `.gitignore` body in the genesis tree
+   * without the service encoding policy for any one consumer. When
+   * omitted, the substrate default body applies. */
   initOpts?: InitRepoOpts;
 };
 
@@ -123,20 +120,16 @@ export type AssetServiceErrorReason =
   | "not_found"
   | "path_violation";
 
-// An asset name becomes a workspace mountpath segment for the asset
-// kinds a session actually mounts: a tool-package registry mounts at
-// `package-registries/<asset.name>/`. A skill is an asset kind too,
-// and its `SKILL.md` frontmatter is validated on push and indexed
-// under the pushed ref, but nothing consumes that index and no
-// session path mounts a skill asset into an agent workspace. A skill
-// asset is therefore recorded and validated, not materialized and not
-// executed. The mountpath segment validator in applyAssetPack
-// rejects anything outside a safe character set; validate at the
-// createAsset boundary so a bad name fails at creation time rather
-// than at materialization time. Names must be lowercase-kebab:
-// lowercase letters, digits, hyphens, with no leading or trailing
-// hyphen. The sole enforcement site is the createAsset check below,
-// which rejects a bad name as `invalid_name`.
+// An asset name becomes a workspace mountpath segment for the kinds a
+// session actually mounts: a tool-package registry mounts at
+// `package-registries/<asset.name>/`. A skill asset is recorded and
+// validated on push, but nothing consumes its index and no session path
+// mounts it, so it is never materialized or executed. The mountpath
+// validator in applyAssetPack rejects anything outside a safe character
+// set; validate at the createAsset boundary so a bad name fails at
+// creation time rather than at materialization time. Names are
+// lowercase-kebab: lowercase letters, digits, hyphens, no leading or
+// trailing hyphen.
 export const ASSET_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 export class AssetServiceError extends Error {
@@ -156,14 +149,12 @@ export class AssetServiceError extends Error {
 /**
  * Reject malformed `dir` arguments at the `listAssetBlobs` boundary
  * before any tree walk begins. The empty string is the documented
- * "list the root" form; anything else must be a relative path with
- * no leading slash, no trailing slash, no `..` segment, and no empty
- * segments (no `//`). This mirrors the same rules that
- * `validateClearPrefix` in the repo-store enforces on `clearPrefix`
- * arguments, surfaced here as a path-violation error so the caller
- * sees a structured rejection instead of a confusing "no directory
- * at /tarballs/" miss when an absolute or `..`-bearing input slips
- * past upstream validation.
+ * "list the root" form; anything else must be a relative path with no
+ * leading slash, no trailing slash, no `..` segment, and no empty
+ * segments (no `//`). Mirrors the rules `validateClearPrefix` in the
+ * repo-store enforces on `clearPrefix`, surfaced here as a
+ * path-violation error so the caller sees a structured rejection
+ * instead of a confusing "no directory" miss.
  */
 function assertWellFormedListDir(dir: string): void {
   if (dir === "") return;
@@ -232,22 +223,20 @@ function rowToAsset(row: typeof assetTable.$inferSelect): Asset {
 }
 
 export function createAssetService(deps: {
-  // only the drizzle handle is needed, not the connection pool — symmetric
-  // with createHubSessionLookups and its sibling services.
+  // Only the drizzle handle is needed, not the connection pool --
+  // symmetric with createHubSessionLookups and its sibling services.
   db: DB["db"];
   repoStore: RepoStore;
   /**
-   * Names that the session service treats as configured HTTP registries
+   * Names the session service treats as configured HTTP registries
    * when assembling the per-launch package-registry map. A
    * `package-registry` asset whose name collides with one of these
-   * shadows the corresponding HTTP registry at session-launch time
-   * (asset wins on name collision). Creating such an asset is almost
-   * always an operator footgun — silently rerouting the public npm
-   * registry traffic to a tenant-owned asset — so reject the creation
-   * up front rather than letting the misroute surface later. The host
-   * threads in its `httpRegistries` keys; the asset service holds them
-   * statically because the registry config is loaded at hub boot and
-   * does not change at runtime.
+   * shadows the HTTP registry at session-launch time (asset wins on
+   * name collision), which is almost always an operator footgun --
+   * silently rerouting public npm registry traffic to a tenant-owned
+   * asset -- so reject the creation up front. Threaded in statically
+   * because the registry config is loaded at hub boot and does not
+   * change at runtime.
    */
   reservedPackageRegistryNames?: ReadonlySet<string>;
 }): AssetService {
@@ -282,13 +271,11 @@ export function createAssetService(deps: {
     ) {
       // Session-launch builds the per-launch registry map by iterating
       // package-registry assets first and HTTP registries second, with
-      // an asset-wins-on-collision rule. A `package-registry` asset
-      // named after a configured HTTP registry would silently shadow
-      // that registry for every session that resolves through this
-      // tenant — almost certainly an operator misconfig, not an
-      // intended override. Reject the creation so the operator sees
-      // the collision at intent time instead of debugging an
-      // unexpected reroute later.
+      // an asset-wins-on-collision rule. An asset named after a
+      // configured HTTP registry would silently shadow that registry
+      // for every session -- almost certainly an operator misconfig,
+      // not an intended override. Reject the creation so the operator
+      // sees the collision at intent time.
       throw new AssetServiceError(
         "name_reserved",
         `createAsset rejects name ${JSON.stringify(
@@ -311,13 +298,12 @@ export function createAssetService(deps: {
     };
 
     // Init the repo before the row insert so a repo-init failure leaves
-    // no orphan row in the database. initRepo is idempotent and the
-    // generated id is locally unique, so a follow-up failure of the row
-    // insert (duplicate, FK violation, etc.) leaves at worst an empty
-    // unreferenced repo directory — harmless and reused on retry of a
-    // logically identical asset. The asset-service db handle does not
-    // expose transactions in the current narrowing, so this ordering is
-    // the safest cross-cutting fix without widening the dep surface.
+    // no orphan row. initRepo is idempotent and the generated id is
+    // locally unique, so a follow-up insert failure leaves at worst an
+    // empty unreferenced repo directory -- harmless and reused on retry.
+    // The asset-service db handle does not expose transactions in the
+    // current narrowing, so this ordering is the safest cross-cutting
+    // fix without widening the dep surface.
     //
     // Note: each failed insert with a fresh `id` does leave its own
     // orphan repo directory on disk. The directories carry no asset
@@ -352,8 +338,8 @@ export function createAssetService(deps: {
   async function populateAsset(
     params: PopulateAssetParams,
   ): Promise<{ commitSha: string }> {
-    // The asset row carries `kind`. We must read it before writing so
-    // the RepoId is shaped correctly; without it, callers could write
+    // The asset row carries `kind`; read it before writing so the
+    // RepoId is shaped correctly -- without it, callers could write
     // against the wrong kind handler.
     const row = await db.query.asset.findFirst({
       where: eq(assetTable.id, params.assetId),

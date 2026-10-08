@@ -2,29 +2,23 @@
 //
 // The proof that a deployed onTrigger section's body runs a REAL agent step.
 // An onTrigger body is a child run spawned per section event, run through the
-// cold, tool-less, body-only invoker. This drives that path end-to-end
-// on the real deploy stack: the workflow is deployed BY SOURCE-REF (bundle a
-// source entry module into a hub asset, probe it, approve+freeze it against a
-// real DB, deploy the source-ref frame) with a section subscribed to the
-// deployment mail address whose body is a single tool-less agent step. Firing
-// the trigger spawns the body child, whose agent step runs through the body
-// invoker against the mock inference fixture and commits the model's
-// deterministic reply as its output.
+// cold, tool-less, body-only invoker. This drives that path end-to-end on the
+// real deploy stack: the workflow is deployed BY SOURCE-REF with a section
+// subscribed to the deployment mail address whose body is a single tool-less
+// agent step. Firing the trigger spawns the body child, whose agent step runs
+// through the body invoker against the mock inference fixture and commits the
+// model's deterministic reply as its output.
 //
-// The mock inference server returns `I see these tools: <names>` from the tool
-// names it was handed; a tool-less agent yields the stable prefix `I see these
-// tools:`. That deterministic reply is the seam the real agent is driven
-// against (real inference in CI is impractical). The reachability assertion is
-// three-fold: the body child completes, its agent step's committed output is
-// the real reply (NOT the agent id -- the old stub value -- and NOT a
-// fabricated stub failure), and the mock provider actually
-// received an inference request, so the reply is real model output.
+// The mock inference server returns `I see these tools: <names>`; a tool-less
+// agent yields the stable prefix `I see these tools:`. The reachability
+// assertion is three-fold: the body child completes, its agent step's committed
+// output is the real reply (NOT the agent id -- the old stub value -- and NOT a
+// fabricated stub failure), and the mock provider actually received an
+// inference request.
 //
-// Harness justification: SPAWN-REAL. Real hub, real sidecar subprocess, real
-// workflow-process child driving `runOnTrigger` with the production
-// suspendable-child seam, and a real agent inside the body via the body-only
-// invoker. Body agents are tool-less by the deploy guard, so no tool trees are
-// staged; this exercises exactly the reachable body-agent path.
+// Harness: SPAWN-REAL (real hub, sidecar subprocess, workflow-process child,
+// body-only invoker). Body agents are tool-less by the deploy guard, so no tool
+// trees are staged.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
@@ -70,11 +64,9 @@ const BODY_CHILD_RUN_ID = `${SECTION_ID}__0`;
 // The mock inference server's reply for a tool-less agent (no tool names).
 const EXPECTED_REPLY = "I see these tools:";
 
-// The definition's own tenant, the caller principal that creates the
-// definition asset, and the `workflow`-kind asset the frozen definition
-// projects over. The install/approve freeze and the anchor `workflow_run`
-// insert both write against these, so they must exist in the real DB before
-// the deploy runs.
+// The tenant, caller principal, and `workflow`-kind definition asset the
+// install/approve freeze and anchor `workflow_run` insert write against; they
+// must exist in the real DB before the deploy runs.
 const TENANT_ID = "tnt_on_trigger_agent_body";
 const CALLER_PRINCIPAL_ID = "prn_on_trigger_agent_body";
 const DEFINITION_ASSET_ID = "ast_on_trigger_agent_body_wf";

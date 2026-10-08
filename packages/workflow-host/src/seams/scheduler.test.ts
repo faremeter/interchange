@@ -41,10 +41,10 @@ afterAll(async () => {
 
 function permissiveHandler(directoryPrefix: string): KindHandler {
   return {
-    // The scheduler test uses an `agent-state`-shaped repo because
-    // the workflow-run kind handler is not yet registered. The
-    // scheduler does not care about the kind discriminator -- only
-    // that the substrate accepts writes under `runs/<runId>/events/`.
+    // The scheduler test uses an `agent-state`-shaped repo because the
+    // workflow-run kind handler is not yet registered. The scheduler does
+    // not care about the kind discriminator -- only that the substrate
+    // accepts writes under `runs/<runId>/events/`.
     kind: "agent-state",
     directoryPrefix,
     validatePush(): ValidatePushResult {
@@ -92,18 +92,17 @@ function createManualTimeouts(): {
 }
 
 /**
- * The store the scheduler writes through, wrapped so a test can await the
- * scheduler's TimerFired commit instead of waiting for the blob to appear.
+ * The scheduler's write store, wrapped so a test can await the TimerFired
+ * commit instead of waiting for the blob to appear. `commitTimerFired` is
+ * the scheduler's only write and it goes through
+ * `writeTreePreservingPrefix`. The substrate materializes the working
+ * tree inside that call, before it resolves, so a resolved commit proves
+ * the blob `readTimerFiredBlobs` reads off disk is already there.
  *
- * `commitTimerFired` is the scheduler's only write and it goes through
- * `writeTreePreservingPrefix`. The substrate materializes the working tree
- * inside that call, before it resolves, so a resolved commit proves the blob
- * `readTimerFiredBlobs` reads off disk is already there.
- *
- * A rejected commit is re-surfaced to the waiter. The scheduler fires a timer
- * from a callback and can only rethrow into an unhandled rejection, so a
- * waiter on the commit alone would sit out the runner's budget over a failure
- * that had already been decided.
+ * A rejected commit is re-surfaced to the waiter: the scheduler fires a
+ * timer from a callback and can only rethrow into an unhandled
+ * rejection, so a waiter on the commit alone would sit out the runner's
+ * budget over a failure that had already been decided.
  */
 function observeSchedulerCommits(store: RepoStore): {
   repoStore: RepoStore;
@@ -254,9 +253,8 @@ describe("workflow-host scheduler", () => {
         expect(fired[0]?.timerId).toBe("t-oneshot");
         // TimerFired must land at a strictly later seq than TimerSet.
         expect(fired[0]?.seq).toBeGreaterThan(0);
-        // The envelope's body `seq` must match the filename's seq so
-        // the workflow-run kind handler's validatePush accepts the
-        // commit.
+        // The envelope's body `seq` must match the filename's seq so the
+        // workflow-run kind handler's validatePush accepts the commit.
         expect(fired[0]?.bodySeq).toBe(fired[0]?.seq);
       } finally {
         await scheduler.stop();
@@ -596,11 +594,11 @@ describe("workflow-host scheduler", () => {
       expect(scheduler.queuedTimers()).toHaveLength(0);
 
       // The cancel is the observable fact: stop() disarms the timer it
-      // queued. Waiting longer than the delay and finding no blob argued the
-      // same thing from silence, and would have argued it just as
-      // convincingly had the timer been armed but slow.
-      // Not the delay: that is `fireAt` minus the clock at arming time, so
-      // asserting it would be asserting how long the lines above took.
+      // queued. Waiting longer than the delay and finding no blob argued
+      // the same thing from silence, and would have argued it just as
+      // convincingly had the timer been armed but slow. Not the delay:
+      // that is `fireAt` minus the clock at arming time, so asserting it
+      // would be asserting how long the lines above took.
       expect(timeouts.armed()).toHaveLength(1);
       expect(timeouts.armed()[0]?.cancelled).toBe(true);
 
@@ -643,10 +641,11 @@ describe("workflow-host scheduler", () => {
         message: "RunStarted",
       });
 
-      // This test keeps the production `scheduleTimeout` -- the global timer
-      // `createWorkflowHostScheduler` falls back to -- so the arming path the
-      // host actually runs stays covered; its siblings drive the seam. The
-      // delay still decides nothing, because the wait below is on the commit.
+      // This test keeps the production `scheduleTimeout` -- the global
+      // timer `createWorkflowHostScheduler` falls back to -- so the arming
+      // path the host actually runs stays covered; its siblings drive the
+      // seam. The delay still decides nothing, because the wait below is
+      // on the commit.
       const commits = observeSchedulerCommits(store);
       const scheduler = createWorkflowHostScheduler({
         repoStore: commits.repoStore,
@@ -675,10 +674,11 @@ describe("workflow-host scheduler", () => {
           message: "TimerSet t-live",
         });
 
-        // The TimerFired commit is the proof the live subscription ingested
-        // the TimerSet and the timer fired, all without a restart. Awaiting
-        // it covers the subscribe-notify latency, the timer's delay, and the
-        // commit itself, with no number standing in for any of them.
+        // The TimerFired commit is the proof the live subscription
+        // ingested the TimerSet and the timer fired, all without a
+        // restart. Awaiting it covers the subscribe-notify latency, the
+        // timer's delay, and the commit itself, with no number standing
+        // in for any of them.
         await commits.whenCommitted();
         const fired = await readTimerFiredBlobs(
           store.getRepoDir(repoId),

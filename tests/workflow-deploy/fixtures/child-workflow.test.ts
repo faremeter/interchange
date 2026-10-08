@@ -1,14 +1,11 @@
-// The child-workflow fixture builder's tool-import hoisting invariant.
-//
-// `childWorkflowEntry` renders a self-contained entry module. When a step
-// carries an inline tool, the rendered agent references `mailSendTool(...)`, so
-// the module must import it -- and exactly when such a reference exists, at any
-// nesting depth, since `bundleWorkflowEntry` would fail on an undefined
-// `mailSendTool` or an unused import. `anyStepHasTool` and the render path are
-// mutually recursive over the same spawn tree; a divergence would drop the
+// The child-workflow fixture builder's tool-import hoisting invariant:
+// when a step carries an inline tool the rendered agent references
+// `mailSendTool(...)`, so the module must import it exactly when such a
+// reference exists, at any nesting depth. `anyStepHasTool` and the render path
+// are mutually recursive over the same spawn tree; a divergence would drop the
 // import for a deeply-nested tool and surface only as a bundling failure inside
-// an expensive deploy roundtrip. These cases pin the invariant directly and
-// cheaply, including the depth-2 path no deploy roundtrip nests a tool into.
+// an expensive deploy roundtrip. These cases pin the invariant directly,
+// including the depth-2 path no deploy roundtrip nests a tool into.
 
 import { test, expect } from "bun:test";
 

@@ -64,10 +64,9 @@ export type CreateGitTokenAuthDeps = {
  * ignored but logged) or `Authorization: Bearer`, validates the
  * `itx_pat_` / `itx_svc_` prefix shape, hashes the secret with
  * SHA-256, looks up the matching `git_token` row, and resolves the
- * principal and tenant before passing to the next middleware.
- *
- * On success, the middleware sets `principal`, `tenant`, and
- * `git-token-claims` on the request context.
+ * principal and tenant before passing to the next middleware. On
+ * success it sets `principal`, `tenant`, and `git-token-claims` on
+ * the request context.
  */
 export function createGitTokenAuth({
   db,

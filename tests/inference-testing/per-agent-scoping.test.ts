@@ -1,22 +1,8 @@
-// Pins the per-agent assertion-scoping pattern documented in the
-// @intx/inference-testing README.
-//
-// Multi-agent dispatch tests routinely want to assert "agent A made
-// tool call X" independently of "agent B made tool call Y". The
-// harness already supports this without any explicit per-agent
-// machinery: each call to `harness.runInference(...)` returns its own
-// `AsyncIterable<InferenceEvent>`. If the test collects events per
-// call into separate arrays, every matcher in `expectToolCalls` /
-// `expectToolCall(name).from(events)` is automatically scoped to the
-// agent whose events array it sees.
-//
-// This test pins that contract: two concurrent `harness.runInference`
-// calls collect into two arrays; each `expectToolCalls(...)` invocation
-// only sees the tool calls from its own agent.
-//
-// If a future harness change ever mixes events from multiple
-// `runInference` calls into a shared stream, this test breaks and
-// surfaces the regression at the source.
+// Pins the per-agent assertion-scoping pattern from the
+// @intx/inference-testing README: each `harness.runInference(...)` call
+// returns its own `AsyncIterable<InferenceEvent>`, so per-call event arrays
+// scope `expectToolCalls`/`expectToolCall(name).from(events)` to one agent.
+// Two concurrent calls must not mix events into a shared stream.
 
 import { afterEach, describe, expect, test } from "bun:test";
 
@@ -67,10 +53,7 @@ describe("per-agent assertion scoping", () => {
     const harness = setupHarness();
     activeHarness = harness;
 
-    // Two agents fire inference calls in parallel. The harness routes
-    // each to its own response stream (body-content routing — Phase 1
-    // of INTR-83 — would also work here, but for simplicity we use
-    // distinct URLs).
+    // Two agents fire inference calls in parallel, routed by distinct URLs.
     harness.scenario.replyOnce("openai", {
       toolCalls: [{ name: "agentATool", args: { value: "from-A" } }],
       headUsage: USAGE_HEAD,
@@ -84,8 +67,7 @@ describe("per-agent assertion scoping", () => {
       predicate: (req) => req.url.includes("/agent-b/"),
     });
 
-    // Each agent's tool handler runs locally; we don't care about the
-    // dispatched value, only about the events the harness emits.
+    // We care only about emitted events, not dispatch values.
     harness.scenario.onTool("agentATool", () => ({ ok: true }));
     harness.scenario.onTool("agentBTool", () => ({ ok: true }));
 
@@ -138,8 +120,7 @@ describe("per-agent assertion scoping", () => {
     expectToolCall("agentBTool").from(eventsB).toHaveBeenCalledTimes(1);
     expectToolCall("agentATool").from(eventsB).toHaveBeenCalledTimes(0);
 
-    // Neither array bleeds events from the other agent: a sanity check
-    // that the iteration didn't mix the streams.
+    // Neither array bleeds events from the other agent.
     const aToolEnds = eventsA.filter(
       (e) => e.type === "inference.tool_call.end",
     );
@@ -148,9 +129,7 @@ describe("per-agent assertion scoping", () => {
     );
     expect(aToolEnds).toHaveLength(1);
     expect(bToolEnds).toHaveLength(1);
-    // Type guards so the property accesses below typecheck. The guards
-    // also subsume the per-array length and type asserts above for a
-    // reader skimming the test.
+    // Type guards for the property accesses below.
     const aEnd = aToolEnds[0];
     const bEnd = bToolEnds[0];
     if (aEnd?.type !== "inference.tool_call.end") {
@@ -164,10 +143,9 @@ describe("per-agent assertion scoping", () => {
   });
 
   test("body-content routing scopes per-agent assertions when URLs are identical", async () => {
-    // The Phase 1 use case: N agents POST to the same URL, distinguished
-    // only by body content. The events arrays remain independent because
-    // they come from separate `runInference` iterators — body routing
-    // only determines which response stream each agent's fetch receives.
+    // N agents POST to the same URL, distinguished only by body content; the
+    // events arrays stay independent because each comes from its own
+    // `runInference` iterator.
     const harness = setupHarness();
     activeHarness = harness;
 
@@ -215,8 +193,7 @@ describe("per-agent assertion scoping", () => {
     const eventsA: InferenceEvent[] = [];
     const eventsB: InferenceEvent[] = [];
 
-    // Both agents POST to the same /chat/completions endpoint. The
-    // body carries the agent-X-marker that distinguishes them.
+    // Both agents POST to the same endpoint, distinguished by body marker.
     const collectA = (async () => {
       for await (const ev of harness.runInference({
         turns: [userTurn("agent-A-marker")],

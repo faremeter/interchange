@@ -29,10 +29,10 @@ export async function readWorkflowRunRefTips(
 }
 
 /**
- * Replay every authoritative workflow-run ref the runtime understands onto an
- * exact replacement allocation. Refs are sent sequentially and the function
- * resolves only after the worker acknowledges each one, making it a barrier
- * the deploy path can place before supervisor spawn.
+ * Replay every authoritative workflow-run ref onto an exact replacement
+ * allocation. Refs are sent sequentially and the function resolves only after
+ * the worker acknowledges each one, so it is a barrier the deploy path can
+ * place before supervisor spawn.
  */
 export async function restoreWorkflowRunToAllocation(args: {
   agentRepoStore: AgentRepoStore;

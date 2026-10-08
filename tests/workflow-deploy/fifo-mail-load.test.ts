@@ -1,21 +1,18 @@
 // FIFO mail-trigger sustained-load regression test.
 //
-// Companion to `fifo-mail.test.ts`'s 3-mail correctness case. The
-// 3-mail case pins that the supervisor's dispatch loop drains the
-// inbox in arrival order; this file pins that the first mail alone fires the
-// stable run and every post-terminal mail is rejected under sustained pressure.
+// Companion to `fifo-mail.test.ts`'s 3-mail correctness case: the 3-mail case
+// pins that the dispatch loop drains the inbox in arrival order; this file
+// pins that the first mail alone fires the stable run and every post-terminal
+// mail is rejected under sustained pressure.
 //
-// Held out of `make test`'s default run because it is a
-// sustained-pressure test: it fires a large batch of mails in quick
-// succession to exercise the dispatch loop under load, which is a
-// heavier workload than the routine integration suite carries. The
-// test runs through the dedicated `make test-load` target
-// instead; CI invokes that separately.
+// Held out of `make test`'s default run (sustained pressure: a large batch of
+// mails in quick succession); runs through the dedicated `make test-load`
+// target, which CI invokes separately.
 //
-// The runtime-coverage rationale matches the 3-mail case: the
-// supervisor's FIFO inbox dispatch loop is the only place these
-// invariants live, so a regression in the supervisor surfaces here
-// uniformly with the multistep-signal and drain-roundtrip tests.
+// The runtime-coverage rationale matches the 3-mail case: the supervisor's
+// FIFO inbox dispatch loop is the only place these invariants live, so a
+// regression surfaces here uniformly with the multistep-signal and
+// drain-roundtrip tests.
 
 import fs from "node:fs";
 
@@ -59,60 +56,38 @@ const DEPLOYMENT_ID_LOAD = "run_fifo-mail-load-1";
 const STEP_ID = "loadStep";
 const AGENT_ID = "agent-fifo-load-step";
 
-// The definition's own tenant, the caller principal that creates the
-// definition asset, and the `workflow`-kind asset the frozen definition
-// projects over. The install/approve freeze and the anchor `workflow_run`
-// insert both write against these, so they must exist in the real DB before
-// the deploy runs.
+// The tenant, caller principal, and `workflow`-kind definition asset the
+// install/approve freeze and anchor `workflow_run` insert write against; they
+// must exist in the real DB before the deploy runs.
 const TENANT_ID = "tnt_fifo_mail_load";
 const CALLER_PRINCIPAL_ID = "prn_fifo_mail_load";
 const DEFINITION_ASSET_ID = "ast_fifo_mail_load_wf";
 
-// Sustained-load FIFO assertion. The 3-mail case in
-// `fifo-mail.test.ts` pins the invariant exists, but only an
-// under-load test surfaces a regression where the dispatch loop's
-// "wait for terminal before dequeue" gate silently degrades (e.g.
-// a future change that races markConsumed against the next
-// dispatchOne).
+// Sustained-load FIFO assertion. The 3-mail case pins the invariant exists;
+// only an under-load test surfaces a regression where the dispatch loop's
+// "wait for terminal before dequeue" gate silently degrades (e.g. a future
+// change that races markConsumed against the next dispatchOne). This test
+// fires `LOAD_MAIL_COUNT` (50) mails in quick succession, asserts every one
+// lands in consumed/, and asserts the consumed envelopes' arrival timestamps
+// are non-decreasing across inbox-arrival order.
 //
-// The sustained-load target is 50 mails, and that is the active
-// `LOAD_MAIL_COUNT` setting. This test fires `LOAD_MAIL_COUNT` mails
-// in quick succession, asserts every one lands in consumed/, and
-// asserts the consumed envelopes' arrival timestamps are
-// non-decreasing across the inbox-arrival order.
+// Throughput notes. Two costs once dominated per-mail wall-clock; one remains
+// in force, the other is eliminated:
 //
-// Throughput notes. Two distinct costs once dominated per-mail
-// wall-clock; one remains in force, the other has been eliminated:
+//   1. Pack-push serialisation on the sender (still in force). The boot-edge
+//      facade (`createWorkflowRunPackPushingRepoStore`) COALESCES pushes per
+//      `(repoId, ref)`: a write returns as soon as the local commit lands, and
+//      pushes arriving while a prior push is in flight are squashed into one
+//      follow-up push. The receive-side substrate accepts multi-commit packs
+//      (it walks the pack's parent chain and runs `validatePush` per new
+//      commit in topological order).
+//   2. `validatePush` enumeration on the receive side (eliminated). It was
+//      scoped to every `runs/<runId>/events/` entry on every push (O(N^2)
+//      overall); it now touches only the run(s) a given commit touches, so
+//      per-commit cost is bounded by that run's own events (~4-5).
 //
-//   1. Pack-push serialisation on the sender (still in force).
-//      Originally every supervisor `writeTreePreservingPrefix`
-//      awaited the hub's pack-push ack before returning, so a run
-//      with K events paid K round-trips of latency in series. The
-//      boot-edge facade (`packages/workflow-host/src/deploy/workflow-run-pack-client.ts`,
-//      `createWorkflowRunPackPushingRepoStore`) COALESCES pushes
-//      per `(repoId, ref)`: a write returns as soon as the local
-//      commit lands, and pushes that arrive while a prior push is
-//      in flight are squashed into a single follow-up push that
-//      captures every intermediate commit. The receive-side
-//      substrate already accepts multi-commit packs
-//      (`packages/hub-sessions/src/repo-store/store.ts` walks the
-//      pack's parent chain and runs `validatePush` per new commit
-//      in topological order), so the on-disk semantics are
-//      preserved.
-//
-//   2. `validatePush` enumeration on the receive side (eliminated).
-//      The `workflow-run-kind` handler's `validatePush` formerly
-//      walked every `runs/<runId>/events/` entry on every push and
-//      ran `checkPriorByteEquality` per event to enforce
-//      append-only, so the per-write cost rose linearly with the
-//      repo's total event count and the total cost for N writes was
-//      O(N^2). `validatePush` is now scoped to only the run(s) a
-//      given commit touches, so per-commit cost is bounded by that
-//      run's own events (~4-5), not the repo's total event count.
-//      The quadratic receive-side floor is gone.
-//
-// With the receive-side enumeration bounded to the touched run, 50
-// mails complete well within the `make test-load` budget.
+// With the receive-side enumeration bounded to the touched run, 50 mails
+// complete well within the `make test-load` budget.
 const LOAD_MAIL_COUNT = 50;
 const LOAD_MESSAGE_IDS: readonly string[] = Array.from(
   { length: LOAD_MAIL_COUNT },
@@ -168,13 +143,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     test(`${String(LOAD_MAIL_COUNT)} mails preserve terminal rejection order under load`, async () => {
-      // Coverage-gap follow-up to the 3-mail case in
-      // fifo-mail.test.ts. A single-step workflow still routes through
-      // the supervisor's FIFO inbox dispatch loop, so the load test
-      // uses one to keep commit pressure tractable in CI. The first mail
-      // exercises inbox -> processing -> trigger.fire -> wait for terminal ->
-      // markConsumed; the rest exercise FIFO dequeue and durable terminal
-      // rejection. The invariant under test does not depend on step count.
+      // Coverage-gap follow-up to the 3-mail case in fifo-mail.test.ts.
+      // A single-step workflow still routes through the supervisor's FIFO
+      // inbox dispatch loop, so the load test uses one to keep commit
+      // pressure tractable in CI. The first mail exercises inbox -> processing
+      // -> trigger.fire -> wait for terminal -> markConsumed; the rest
+      // exercise FIFO dequeue and durable terminal rejection. The invariant
+      // under test does not depend on step count.
       const deploymentMailAddress = deriveRunAddress({
         runId: DEPLOYMENT_ID_LOAD,
         domain: DEPLOYMENT_DOMAIN,

@@ -1,39 +1,9 @@
 // @intx/tool-packaging — the single API boundary the rest of the tree
-// uses to flow tool packages through the system.
-//
-// Owns every npm-team dependency (`npm-registry-fetch`,
-// `npm-package-arg`, `npm-pick-manifest`, `semver`, `tar`, `ssri`). No
-// other package in this monorepo imports those directly — consumers
-// reach for `@intx/tool-packaging`'s clean surface instead. If the
-// underlying npm tooling ever needs to be swapped or vendored, this
-// package is the only boundary that has to change.
-//
-// Two surface areas:
-//
-//   - Hub-side (deploy assembly):
-//       createClosureResolver({ registries, scopeRouting? })
-//         → resolveClosure(pins) → ToolPackageManifest
-//
-//   - Sidecar-side (deploy apply):
-//       createTarballCache({ rootDir, maxBytes }) — content-addressable
-//       store keyed by SRI integrity.
-//       createToolLoader({ cache, registries, host, … }) — fetches,
-//       extracts, and dynamic-imports each pinned package.
-//       applyAtomic({ manifest, loader, … }) — per-deploy-id apply
-//       protocol that stages each deploy into its own never-renamed
-//       directory and maps every loader failure category onto an
-//       `ApplyAtomicFailure` the caller surfaces as a rejected apply.
-//       materializeToolPackages({ …, registries, host, assetRoot }) —
-//       validates a step manifest, applies it, and persists the active
-//       deploy id. parseToolRegistries(raw) and hostPlatform(os, cpu)
-//       are the registry-map and host-platform boundary that apply
-//       consumes.
-//       applyFrozenWorkflowClosure({ …, host, loadDefinition }) — lays
-//       out a frozen workflow closure and loads the definition through
-//       the caller-supplied loader.
-//       createWorkflowClosureMaterializer({ …, host, materializeAssets })
-//       — lays out a probe frame's frozen closure without importing
-//       author code. Asset delivery is the caller-supplied callback.
+// uses to flow tool packages through the system. Owns every npm-team
+// dependency (`npm-registry-fetch`, `npm-package-arg`,
+// `npm-pick-manifest`, `semver`, `tar`, `ssri`); no other package
+// imports those directly, so swapping or vendoring the npm tooling
+// touches only this package.
 
 export {
   type ClosureResolver,

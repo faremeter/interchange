@@ -262,7 +262,7 @@ describe("encodeMPI / decodeMPI", () => {
   });
 
   test("strips trailing zero bytes (high-order zeros in little-endian)", () => {
-    // 0x01 0x00 0x00 in little-endian = value 1; should produce same as [0x01]
+    // Little-endian 0x01 0x00 0x00 = value 1, so it encodes like [0x01].
     const mpi = encodeMPI(new Uint8Array([0x01, 0x00, 0x00]));
     expect(mpi).toEqual(new Uint8Array([0x00, 0x01, 0x01]));
   });
@@ -338,9 +338,8 @@ describe("createDetachedSignature / verifyDetachedSignature", () => {
     const armored = new TextDecoder().decode(sigBytes);
     const { armorDecode: ad, armorEncode: ae } = await import("./pgp");
     const packetData = ad(armored);
-    // Byte at index 4 in new-format packet: tag(1) + len(1) + version(1) + sigtype(1) + pk_algo(1)
-    // Tag byte = 0xc2 (1 byte), length byte (1 byte), then body starts.
-    // Body[2] = pk_algo. For new-format with body < 192: offset 2 (tag) + 1 (len) + 2 (version+sigtype) = 4
+    // Body[2] is pk_algo. Packet layout: tag(1) + len(1) + version(1) +
+    // sigtype(1) + pk_algo(1), so pk_algo sits at offset 4.
     const corrupted = new Uint8Array(packetData);
     corrupted[4] = 17; // DSA algorithm ID instead of EdDSA (22)
     const corruptedArmor = ae(corrupted);
@@ -378,8 +377,7 @@ describe("createDetachedSignature / verifyDetachedSignature", () => {
     const reassembled = new Uint8Array(64);
     reassembled.set(rPad, 0);
     reassembled.set(sPad, 32);
-    // Verify the raw reassembled signature is valid
-    // Check reconstructed signature length
+    // Verify the raw reassembled signature is valid.
     expect(reassembled.length).toBe(64);
   });
 });

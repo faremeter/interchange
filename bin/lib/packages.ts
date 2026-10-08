@@ -46,9 +46,8 @@ const rootManifestSchema = type({ workspaces: "string[]" });
  *
  *  This is the authoritative member set. Unlike {@link readWorkspacePackages}
  *  it neither filters by private status nor restricts to `packages/`, because
- *  callers that enforce a per-member invariant on every declared member — a
- *  required `description`, dependency hygiene — must see exactly the members
- *  the workspace declares, no more and no less. Deriving from root
+ *  callers that enforce a per-member invariant on every declared member must
+ *  see exactly the members the workspace declares. Deriving from root
  *  `workspaces` keeps that set in one authoritative place rather than a
  *  hardcoded directory list each caller can drift from. */
 export function readWorkspaceManifestPaths(repoRoot: string): string[] {

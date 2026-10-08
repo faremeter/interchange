@@ -31,8 +31,7 @@ export const workflowRunExecution = pgTable(
       .notNull()
       .references(() => workflowRun.id, { onDelete: "cascade" }),
     // The inbound message that drove this turn; the executionId is derived from
-    // it, but the raw messageId is retained for correlation and read-surface
-    // display.
+    // it, but the raw messageId is retained for correlation and display.
     messageId: text("message_id").notNull(),
     // A turn is born "running" and settles to "completed" or "failed" when its
     // terminal turn event lands. Unlike the run aggregate, a turn is never
@@ -51,9 +50,8 @@ export const workflowRunExecution = pgTable(
   },
   (t) => [
     // The read surface lists a run's executions in turn order; the leftmost
-    // `runId` column serves that lookup. Unique on `(runId, id)` as the
-    // race backstop the design mandates against a concurrent double-insert of
-    // the same turn.
+    // `runId` column serves that lookup. Unique on `(runId, id)` as the race
+    // backstop against a concurrent double-insert of the same turn.
     uniqueIndex("workflow_run_execution_run_id_id_idx").on(t.runId, t.id),
     index("workflow_run_execution_status_idx").on(t.status),
   ],

@@ -1,11 +1,6 @@
 // Capture-level manifest: the single manifest file at a capture directory's
-// root.
-//
-// Carries only facts that describe the capture as a whole — never a catalog
-// of its contents. Everything else (which exchanges exist, what tools
-// dispatched, in what order) is discoverable from the directory layout. A
-// catalog at the root would go stale the moment someone added or removed a
-// file; the filesystem walk cannot lie.
+// root. Carries only facts about the capture as a whole — never a catalog of
+// contents, which would go stale; the filesystem walk cannot lie.
 
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -19,25 +14,20 @@ export const CaptureManifest = type({
     provider: "string",
     model: "string",
     baseURL: "string",
-    // The adapter quirks the source was captured with, when non-default. A
-    // replay reconstructs its InferenceSource from this manifest, so a quirk
-    // that shaped the request (e.g. first-party OpenAI's max_completion_tokens
-    // field) must be recorded here or the reconstructed request would diverge.
+    // Non-default adapter quirks the source was captured with. A replay
+    // reconstructs its InferenceSource from this manifest, so a quirk that
+    // shaped the request must be recorded here or the replay would diverge.
     "quirks?": "Record<string, unknown>",
   }),
-  // Distinguishes a capture recorded against a real provider endpoint
-  // ("live") from one produced through the synthetic wire DSL ("synthetic").
-  // Each writer records the provenance it can account for: the recording
-  // harness derives it from its fetch override (a supplied override is its
-  // synthetic-DSL delivery seam), and the discovery probe rig stamps "live"
+  // Provenance: "live" is a capture against a real provider endpoint;
+  // "synthetic" came through the synthetic wire DSL. The recording harness
+  // derives it from its fetch override; the discovery rig stamps "live"
   // because its only production seam is the real network.
   origin: "'live' | 'synthetic'",
   // Present for discovery-derived captures (each is a catalog cell); absent
-  // for orchestration recordings, which are not catalog cells. Kept optional
-  // deliberately: the two populations are separated by directory location,
-  // not by this field, so the catalog — the layer that walks the discovery
-  // corpus — is where a manifest missing its capability must be rejected, not
-  // this shared type.
+  // for orchestration recordings, which are not catalog cells. Kept optional:
+  // the two populations are separated by directory location, so the catalog
+  // layer rejects a manifest missing its capability, not this shared type.
   "capability?": Capability,
   // The provider-reported model version observed at capture time, when the
   // provider surfaces one distinct from the requested `source.model`.

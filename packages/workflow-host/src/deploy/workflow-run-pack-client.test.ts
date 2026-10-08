@@ -98,13 +98,12 @@ function createRecordingUnderlyingRepoStore(
 // that already rejected.
 //
 // The loop latches a failed push in a `catch` chained on the rejection the
-// `packClient.push` double threw. Neither that double nor
-// `createRecordingUnderlyingRepoStore` performs IO, so every hop from the
-// throw to `slot.lastError` being set is a microtask, and one macrotask turn
-// drains the queue to exhaustion however deep that chain runs. There is
-// nothing to await instead: the latch has no reporter, and the one consumer
-// that does signal (`flushWorkflowRunPushes`) takes the latched error, which
-// is the value the tests using this need left in place.
+// `packClient.push` double threw; neither does IO, so every hop from the throw
+// to `slot.lastError` being set is a microtask, and one macrotask turn drains
+// the queue however deep that chain runs. There is nothing to await instead:
+// the latch has no reporter, and the one consumer that does signal
+// (`flushWorkflowRunPushes`) takes the latched error, which is the value the
+// tests using this need left in place.
 //
 // The chain is currently shallow enough that the catch lands before the
 // awaiting test resumes, so the callers below pass without this. The barrier
@@ -238,13 +237,12 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
   });
 
   test("writeTreePreservingPrefix returns before the pack push finishes", async () => {
-    // The facade is required to return from writeTreePreservingPrefix
-    // as soon as the local commit lands; the pack push runs
-    // asynchronously. This is the throughput-critical behaviour the
-    // fifo-mail load test depends on -- without it, every
-    // supervisor write pays a full hub-ack round-trip in series and
-    // the dispatch loop's per-mail wall-clock balloons to ~15-25s/mail
-    // under sustained pressure.
+    // The facade must return from writeTreePreservingPrefix as soon as the
+    // local commit lands; the pack push runs asynchronously. This is the
+    // throughput-critical behaviour the fifo-mail load test depends on --
+    // without it, every supervisor write pays a full hub-ack round-trip in
+    // series and the dispatch loop's per-mail wall-clock balloons to
+    // ~15-25s/mail under sustained pressure.
     const { store } = createRecordingUnderlyingRepoStore();
     const registry = createDeploymentAddressRegistry();
     registry.record("dep-pipeline", "agent-pipeline@example.com");
@@ -292,13 +290,12 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
   });
 
   test("a burst of writes against the same (repoId, ref) coalesces into at most 2 pushes", async () => {
-    // The coalescing invariant: while a push is in flight, follow-on
-    // writes mark the slot as dirty rather than enqueueing a new
-    // push. After the in-flight push exits, the loop runs one more
-    // push that captures whichever commits arrived during the
-    // window. This collapses N hub-ack round-trips into 2 for a
-    // burst of N back-to-back writes, which is the load-bearing
-    // throughput win for the fifo-mail load test.
+    // The coalescing invariant: while a push is in flight, follow-on writes
+    // mark the slot dirty rather than enqueueing a new push. After the
+    // in-flight push exits, the loop runs one more push that captures
+    // whichever commits arrived during the window. This collapses N
+    // hub-ack round-trips into 2 for a burst of N back-to-back writes,
+    // the load-bearing throughput win for the fifo-mail load test.
     const { store } = createRecordingUnderlyingRepoStore();
     const registry = createDeploymentAddressRegistry();
     registry.record("dep-burst", "agent-burst@example.com");
@@ -351,11 +348,10 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
   });
 
   test("a failed pipelined push surfaces on the next writeTreePreservingPrefix call", async () => {
-    // The facade swallows the failed push at fire time but latches
-    // the error on the per-(repoId, ref) chain; the next
-    // writeTreePreservingPrefix on the same (repoId, ref) re-throws
-    // it. The defensive-coding rule says errors must surface; this
-    // is how they surface from a pipelined writer.
+    // The facade swallows the failed push at fire time but latches the error
+    // on the per-(repoId, ref) chain; the next writeTreePreservingPrefix on
+    // the same (repoId, ref) re-throws it. Errors must surface; this is how
+    // they surface from a pipelined writer.
     const { store } = createRecordingUnderlyingRepoStore();
     const registry = createDeploymentAddressRegistry();
     registry.record("dep-fail", "agent-fail@example.com");
@@ -475,10 +471,10 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
   });
 
   test("markAddressUnroutable holds a push until notifyAddressRoutable resumes it", async () => {
-    // The reconnect ordering contract. A WS disconnect blocks the address:
-    // a write that lands while blocked schedules no wire push, because a
-    // push shipped on the fresh, not-yet-registered connection is dropped by
-    // the hub as "unrouted". The reconnect route announcement lifts the block,
+    // The reconnect ordering contract. A WS disconnect blocks the address: a
+    // write that lands while blocked schedules no wire push, because a push
+    // shipped on the fresh, not-yet-registered connection is dropped by the
+    // hub as "unrouted". The reconnect route announcement lifts the block,
     // and the held push ships after the hub has re-routed the address.
     const { store } = createRecordingUnderlyingRepoStore();
     const registry = createDeploymentAddressRegistry();
@@ -628,10 +624,8 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
 
   test("notifyAddressRoutable is a no-op for a slot with nothing un-shipped", async () => {
     // A clean, already-acked slot (no dirty work, no latched error) has
-    // nothing to re-ship. This pins the facade's re-drive gating: a
-    // routable-again notification for such a slot does not re-drive, so it
-    // does not call push again. Only slots with pending work or a latched
-    // failure re-drive.
+    // nothing to re-ship. This pins the facade's re-drive gating: only slots
+    // with pending work or a latched failure re-drive.
     const { store } = createRecordingUnderlyingRepoStore();
     const registry = createDeploymentAddressRegistry();
     registry.record("dep-clean", "agent-clean@example.com");
@@ -1034,12 +1028,11 @@ describe("createMultistepDrainRouter", () => {
   });
 
   test("drain.deliver for a never-registered deployment id drops cleanly without throwing", async () => {
-    // Pins the defensive contract for an inbound drain.deliver frame
-    // that names a anchorRunId the sidecar's supervisor never spawned
-    // (e.g. an in-flight frame outracing the deploy ack, or a hub-side
-    // stale-state retry). The router must not throw; the hub-link's
-    // handleDrainDeliver then logs and drops, leaving sibling
-    // deployments unaffected.
+    // Pins the defensive contract for an inbound drain.deliver frame that
+    // names an anchorRunId the sidecar's supervisor never spawned (e.g. an
+    // in-flight frame outracing the deploy ack, or a hub-side stale-state
+    // retry). The router must not throw; the hub-link logs and drops,
+    // leaving sibling deployments unaffected.
     const router = createMultistepDrainRouter();
     router.register("dep-known@integration.interchange", async () => {
       throw new Error("known handler must not be invoked");
@@ -1135,14 +1128,12 @@ describe("createMultistepSignalRouter", () => {
   });
 
   test("re-registering an address replaces the prior handler", async () => {
-    // Pins the contract that drives the "stale-cohort signal" edge
-    // case. A signal frame in flight while the deploy router re-binds
-    // the deployment address (the only legitimate path that swaps the
-    // handler today) must route to the most-recently-registered
-    // handler; the prior cohort's handler is unreachable once
-    // replaced. The router does not carry a cohortId on the wire, so
-    // "live registration wins" is the contract that captures the
-    // intent.
+    // Pins the contract that drives the "stale-cohort signal" edge case. A
+    // signal frame in flight while the deploy router re-binds the deployment
+    // address (the only legitimate path that swaps the handler today) must
+    // route to the most-recently-registered handler; the router does not
+    // carry a cohortId on the wire, so "live registration wins" is the
+    // contract that captures the intent.
     const router = createMultistepSignalRouter();
     const first: string[] = [];
     const second: string[] = [];
@@ -1182,12 +1173,11 @@ describe("createMultistepSignalRouter", () => {
   });
 
   test("signal.deliver for a never-registered deployment id drops cleanly without throwing", async () => {
-    // Pins the defensive contract for an inbound signal.deliver frame
-    // that names a anchorRunId the sidecar's supervisor never spawned
-    // (e.g. an in-flight frame outracing the deploy ack, or a hub-side
-    // stale-state retry). The router must not throw; the hub-link's
-    // handleSignalDeliver then logs and drops, leaving sibling
-    // deployments unaffected.
+    // Pins the defensive contract for an inbound signal.deliver frame that
+    // names an anchorRunId the sidecar's supervisor never spawned (e.g. an
+    // in-flight frame outracing the deploy ack, or a hub-side stale-state
+    // retry). The router must not throw; the hub-link logs and drops,
+    // leaving sibling deployments unaffected.
     const router = createMultistepSignalRouter();
     router.register("dep-known@integration.interchange", async () => {
       throw new Error("known handler must not be invoked");

@@ -165,11 +165,11 @@ test("a sibling file resolves to `.js` and a directory barrel to `/index.js`", (
 test("a compiling `.json` import resolves without aborting", () => {
   // A `resolveJsonModule` import that type-checks emits with its `.json`
   // extension, which `isRewritable` treats as already resolved. The
-  // rewriter must leave it in place, not report it unresolved. A naive
+  // rewriter must leave it in place, not report it unresolved: a naive
   // "make `.json` rewritable" change would send `./data.json` to the
   // resolver, which finds neither `./data.json.js` nor
   // `./data.json/index.js`, falsely report it unresolved, and abort the
-  // build — which the empty-`unresolved` assertion below guards against.
+  // build.
   const dir = makeTree({
     "index.js":
       'import data from "./data.json";\nexport const v = data.value;\n',

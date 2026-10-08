@@ -9,7 +9,6 @@
 // with no CryptoProvider; it succeeds once registered. We assert (a) it
 // throws BEFORE deploy, (b) succeeds AFTER deploy, (c) throws again AFTER
 // undeploy.
-
 import { describe, test, expect } from "bun:test";
 import fs from "node:fs/promises";
 import os from "node:os";

@@ -1,6 +1,6 @@
 // Updating a tenant needs `manage` on it, held through an active membership.
-// Driven against a real spawned hub through the production HTTP route; the
-// memberships beyond the tenant's creator are seeded into the hub's schema.
+// Driven against a real spawned hub; memberships beyond the creator are
+// seeded into the hub's schema.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { type } from "arktype";

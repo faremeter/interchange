@@ -5,12 +5,12 @@
 // restores to routable from the durable indexed-`.git` store alone (no frame
 // re-delivered).
 //
-// This is the source analog of `asset-source.e2e.test.ts`. Where that test
-// sources the definition's bytes from a published tarball, this one sources them
-// from the asset's git tree at a pinned commit: the hub resolves the closure by
-// reading the tree, freezes each package as a `format:"source"` entry keyed by
-// its git tree oid, delivers the asset's git pack inline, and the sidecar indexes
-// the pack into a retained `.git` and checks the pinned subtree out of it.
+// This is the source analog of `asset-source.e2e.test.ts` (which sources the
+// definition's bytes from a published tarball): the hub resolves the closure by
+// reading the asset's git tree at a pinned commit, freezes each package as a
+// `format:"source"` entry keyed by its git tree oid, delivers the asset's git
+// pack inline, and the sidecar indexes the pack into a retained `.git` and
+// checks the pinned subtree out of it.
 //
 // The restore leg is the load-bearing durable-store assertion: boot-time restore
 // re-materializes the source closure from the retained `.git` (derived from the

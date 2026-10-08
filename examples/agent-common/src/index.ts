@@ -5,8 +5,7 @@
 // just run the binary) while also accepting a `sourceOverride` that
 // tests use to bypass the env entirely. Without a common helper each
 // example would re-derive the same boilerplate and the failure mode
-// (missing env vars) would drift in wording from one example to the
-// next.
+// (missing env vars) would drift in wording.
 //
 // This package is consumed only by the other examples; it is not part
 // of the @intx public surface.

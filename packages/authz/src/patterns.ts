@@ -1,16 +1,6 @@
 /**
- * Match a target string against a glob pattern.
- *
- * Supports `*` as a wildcard that matches any sequence of characters.
- * No other glob syntax is supported (no `?`, `**`, or character classes).
- *
- * Examples:
- *   matchPattern("*", "workflow-run:run_abc")                   => true
- *   matchPattern("workflow-run:*", "workflow-run:run_abc")      => true
- *   matchPattern("workflow-run:run_abc", "workflow-run:run_abc") => true
- *   matchPattern("workflow-run:run_abc", "workflow-run:run_xyz") => false
- *   matchPattern("wallet:wal_*", "wallet:wal_123") => true
- *   matchPattern("wallet:wal_*", "wallet:xyz")     => false
+ * Match a target string against a glob pattern. Only `*` is a wildcard
+ * (any sequence, including empty); no `?`, `**`, or character classes.
  */
 export function matchPattern(pattern: string, target: string): boolean {
   if (pattern === "*") return true;

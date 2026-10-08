@@ -42,10 +42,9 @@ export type TenantEnv = Env & {
  * The canonical 401 response for a request with no authenticated session
  * user. Routes that read `c.get("user")` inline -- rather than mounting the
  * `requireAuth` middleware -- return this so the "Authentication required"
- * body lives in exactly one place instead of being re-encoded at every
- * handler. The git smart-HTTP bearer middleware keeps its own private
- * variant because it additionally stamps a `WWW-Authenticate: Basic`
- * challenge header.
+ * body lives in exactly one place. The git smart-HTTP bearer middleware
+ * keeps its own private variant because it additionally stamps a
+ * `WWW-Authenticate: Basic` challenge header.
  */
 export function unauthorizedResponse(c: Context): Response {
   return errorResponse(c, "unauthorized", "Authentication required");

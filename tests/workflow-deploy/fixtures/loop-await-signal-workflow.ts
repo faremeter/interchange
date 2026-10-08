@@ -5,10 +5,8 @@
 // up onto the loop CONTAINER as a signal-relay await; delivering the signal
 // resolves the parked iteration, and the park survives a crash + restart.
 //
-// The entry module exports BOTH `workflow` and the loop `while`/`carry`
-// functions, so the deployment points `interchange.loops` at the same bundled
-// entry and `loadWorkflowLoopFnsFromClosure` resolves the refs by export name.
-//
+// The entry exports BOTH `workflow` and the loop `while`/`carry` functions so
+// the deployment points `interchange.loops` at the same bundled entry.
 // `keepGoing` converges after the first iteration, so the loop parks exactly
 // once; a single signal delivery resumes it to convergence (`settle` runs and
 // the `onExhausted` target `escalate` is pruned).

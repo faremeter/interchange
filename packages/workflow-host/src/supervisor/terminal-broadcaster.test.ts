@@ -1,12 +1,11 @@
 // Unit coverage for the per-cohort terminal-run broadcaster.
 //
-// The recycle suite pins iterator finalisation on cohort teardown
-// but does NOT pin the actual race where a terminal event from the
-// old cohort arrives during the new cohort's spawn. The supervisor
-// wires one broadcaster per spawn cohort and the previous cohort's
-// broadcaster is disposed when the new cohort takes over. The tests
-// below
-// exercise the broadcaster's notify/dispose surface directly so the
+// The recycle suite pins iterator finalisation on cohort teardown but
+// does NOT pin the race where a terminal event from the old cohort
+// arrives during the new cohort's spawn. The supervisor wires one
+// broadcaster per spawn cohort and disposes the previous cohort's
+// broadcaster when the new cohort takes over. The tests below exercise
+// the broadcaster's notify/dispose surface directly so the
 // cross-cohort isolation is observable without standing up the full
 // supervisor.
 
@@ -30,15 +29,12 @@ const FAILED: TerminalRunEvent = {
 describe("terminal-broadcaster: in-flight event from disposed cohort", () => {
   test("a notify against the OLD cohort after dispose neither lands on the OLD cohort's iterator nor leaks into the NEW cohort", async () => {
     // Two cohorts, simulating the recycle path's installNewChild. The
-    // supervisor mints cohort A's broadcaster on spawn; the recycle
-    // path disposes cohort A and mints cohort B on installNewChild.
-    // The race: an upstream `terminal.event` frame
-    // from cohort A's child arrives during cohort B's spawn-time
-    // wiring. The supervisor's notify path routes the event through
-    // whichever broadcaster is `active` at that moment; the
-    // disposed cohort A broadcaster must not deliver to cohort B's
-    // listeners, and a stale-cohort notify must not crash either
-    // broadcaster.
+    // race: an upstream `terminal.event` frame from cohort A's child
+    // arrives during cohort B's spawn-time wiring. The notify path
+    // routes the event through whichever broadcaster is `active` at
+    // that moment; the disposed cohort A broadcaster must not deliver
+    // to cohort B's listeners, and a stale-cohort notify must not
+    // crash either broadcaster.
     const a = createTerminalBroadcaster();
     const b = createTerminalBroadcaster();
 
@@ -54,28 +50,18 @@ describe("terminal-broadcaster: in-flight event from disposed cohort", () => {
     const a_settled = await a_next;
     expect(a_settled.done).toBe(true);
 
-    // The cohort-A child, mid-teardown, emits a final terminal.event
-    // upstream. The supervisor receives it on the upstream pump and
-    // routes it through whichever broadcaster is currently active --
-    // which is now cohort B's. But the broadcaster the event was
-    // intended for is A's (disposed). A defensive notify against A
-    // must be a no-op; a notify against B for an event that did not
-    // originate from B must NOT settle B's listener (the
-    // cross-cohort leak).
-    //
-    // The broadcaster's contract: notify after dispose is a no-op.
+    // A defensive notify against A must be a no-op: the broadcaster's
+    // contract is that notify after dispose does nothing.
     expect(() => a.notify("run-x", COMPLETED)).not.toThrow();
 
-    // B's iterator must not have taken A's event: the only notify
-    // that lands on B is one the supervisor's pump explicitly routes
-    // to B (which would happen on a `terminal.event` from B's cohort,
-    // not A's). The evidence is the VALUE B settles with, not a
-    // sleep: `notify` fans out synchronously -- it calls each
-    // matching listener's `onEvent` in the same turn -- so a
-    // cross-cohort leak would already have settled `b_next` with A's
-    // COMPLETED above. Cohort B's own child then emits a
-    // distinguishable FAILED, and a listener settles exactly once, so
-    // FAILED arriving here proves A's notify never reached B.
+    // B's iterator must not have taken A's event. The evidence is the
+    // VALUE B settles with, not a sleep: `notify` fans out
+    // synchronously (it calls each matching listener's `onEvent` in
+    // the same turn), so a cross-cohort leak would already have
+    // settled `b_next` with A's COMPLETED above. Cohort B's own child
+    // then emits a distinguishable FAILED, and a listener settles
+    // exactly once, so FAILED arriving here proves A's notify never
+    // reached B.
     b.notify("run-x", FAILED);
     const b_resolved = await b_next;
     expect(b_resolved.done).toBe(false);
@@ -87,16 +73,16 @@ describe("terminal-broadcaster: in-flight event from disposed cohort", () => {
   test("a notify against the OLD cohort after dispose is a no-op even for runIds without any listener", () => {
     // Listenerless runIds are a normal case (the dispatch loop drops
     // the listener as soon as a terminal event arrives), and the
-    // supervisor's terminal.event pump still routes by runId so the
-    // notify path has to be safe for unknown runIds.
+    // terminal.event pump still routes by runId, so the notify path
+    // has to be safe for unknown runIds.
     const a = createTerminalBroadcaster();
     a.dispose();
     expect(() => a.notify("run-no-listener", COMPLETED)).not.toThrow();
   });
 
   test("dispose during an in-flight notify settles the pending iterator without crashing the broadcaster", async () => {
-    // The supervisor's recycle path may invoke `dispose()` while a
-    // pending `notify()` from the cohort's terminal.event tap is still
+    // The recycle path may invoke `dispose()` while a pending
+    // `notify()` from the cohort's terminal.event tap is still
     // mid-flight (the pump is asynchronous; a frame in the receive
     // buffer can land after the cohort abort signal flips). The
     // broadcaster's listener fan-out must remain safe in that window.
@@ -117,11 +103,11 @@ describe("terminal-broadcaster: in-flight event from disposed cohort", () => {
   });
 
   test("a new iterator on a disposed broadcaster yields done immediately", async () => {
-    // The supervisor's dispatch loop may subscribe to the cohort's
-    // broadcaster after the cohort has been disposed (a tear-down /
-    // late-subscribe race). The broadcaster's contract is to yield
-    // `done: true` immediately so the consumer wakes up rather than
-    // blocking on a notification that will never arrive.
+    // The dispatch loop may subscribe to the cohort's broadcaster
+    // after the cohort has been disposed (a tear-down / late-subscribe
+    // race). The contract: yield `done: true` immediately so the
+    // consumer wakes up rather than blocking on a notification that
+    // will never arrive.
     const a = createTerminalBroadcaster();
     a.dispose();
     const iter = a.source("run-x")[Symbol.asyncIterator]();
@@ -132,13 +118,12 @@ describe("terminal-broadcaster: in-flight event from disposed cohort", () => {
 
 describe("terminal-broadcaster: per-cohort isolation under concurrent dispose", () => {
   test("cohort A's terminal events do not appear on cohort B's iterators even when notify and dispose interleave", async () => {
-    // This is the strongest version of the race: the cohort A
-    // child's terminal event arrives at the supervisor BEFORE the
-    // cohort A broadcaster has been disposed, AND the dispatch loop
-    // for cohort B has already subscribed to cohort B's broadcaster
-    // for the same runId. The broadcasters are distinct objects; B's
-    // listener set has no overlap with A's; A's notify cannot fan out
-    // to B's listeners.
+    // The strongest version of the race: cohort A's terminal event
+    // arrives at the supervisor BEFORE cohort A's broadcaster has been
+    // disposed, AND cohort B's dispatch loop has already subscribed to
+    // cohort B's broadcaster for the same runId. The broadcasters are
+    // distinct objects; B's listener set has no overlap with A's; A's
+    // notify cannot fan out to B's listeners.
     const a = createTerminalBroadcaster();
     const b = createTerminalBroadcaster();
 
@@ -153,12 +138,10 @@ describe("terminal-broadcaster: per-cohort isolation under concurrent dispose", 
     a.dispose();
 
     // B's iterator must not have taken A's event: A's notify cannot
-    // influence B's listener set. `notify` fans out synchronously, so
-    // a leak would already have settled `b_next` with COMPLETED by
-    // this point. Disposing B finalises its pending iterator with
-    // `done: true`, and that is the positive signal ordered after the
-    // leak this test denies -- a leak surfaces here as a value
-    // instead of `done`.
+    // influence B's listener set, and `notify` fans out synchronously,
+    // so a leak would already have settled `b_next` with COMPLETED.
+    // Disposing B finalises its pending iterator with `done: true`;
+    // a leak surfaces here as a value instead of `done`.
     b.dispose();
     const b_result = await b_next;
     expect(b_result.done).toBe(true);

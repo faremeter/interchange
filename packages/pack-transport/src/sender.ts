@@ -1,11 +1,6 @@
-// Pack-send protocol owner.
-//
-// Mints transferIds, chunks the pack, emits the
-// `repo.pack.push` / `repo.pack.done` frame sequence, and resolves a
-// Promise when the matching `repo.pack.ack` arrives (or rejects on
-// `repo.pack.reject`). Both the existing hub-link agent-state push
-// path and the sidecar-side workflow-run push hook consume this
-// shape; the protocol logic lives once.
+// Pack-send protocol owner. Chunks the pack, emits the
+// `repo.pack.push` / `repo.pack.done` frames, and resolves on the
+// matching `repo.pack.ack` (or rejects on `repo.pack.reject`).
 
 import type {
   PackAckFrame,
@@ -22,12 +17,7 @@ export type PackSendFrame = PackPushFrame | PackDoneFrame;
 export type PackSendOpts = {
   agentAddress: string;
   repoId: RepoId;
-  /**
-   * Caller-supplied transfer id. Must be unique across the lifetime of
-   * this sender; the sender does not re-mint on collision. Hub-link
-   * uses an incoming `sync.request.transferId` for state-pack pushes;
-   * the workflow-run client mints fresh ids per push.
-   */
+  /** Caller-supplied transfer id; must be unique across this sender. */
   transferId: string;
   pack: Uint8Array;
   /** Workflow-run ref or deploy ref the receiver should advance. */
@@ -37,40 +27,18 @@ export type PackSendOpts = {
 };
 
 export type PackSender = {
-  /**
-   * Stream the pack as a sequence of `repo.pack.push` frames followed
-   * by a `repo.pack.done`. Resolves on the matching `repo.pack.ack`;
-   * rejects on `repo.pack.reject` carrying the reason or on
-   * `cancelAll`. The caller must route inbound ack/reject frames
-   * through `handleAck` / `handleReject` so the Promise resolves.
-   */
+  /** Emit `repo.pack.push` frames then `repo.pack.done`; resolves on the matching ack. */
   send(opts: PackSendOpts): Promise<void>;
-  /**
-   * Resolve the pending transfer matched by `frame.transferId`.
-   * Returns `true` when a transfer was matched (and the Promise
-   * resolved), `false` when no transfer is pending under that id.
-   * Callers that share a single sender across multiple pack flows use
-   * the boolean to dispatch unknown ids to a different handler.
-   */
+  /** Resolve the pending transfer for `frame.transferId`; `false` when none is pending. */
   handleAck(frame: PackAckFrame): boolean;
-  /**
-   * Reject the pending transfer matched by `frame.transferId`. Returns
-   * the same shape as `handleAck`.
-   */
+  /** Reject the pending transfer for `frame.transferId`; `false` when none is pending. */
   handleReject(frame: PackRejectFrame): boolean;
-  /**
-   * Reject every in-flight transfer with the supplied reason. Used by
-   * hub-link's `open` handler to fail any transfers that did not
-   * complete before the connection cycle.
-   */
+  /** Reject every in-flight transfer with `reason`. */
   cancelAll(reason: string): void;
 };
 
 export type PackSenderDeps = {
-  /**
-   * Frame-send sink. The caller routes the frame onto the wire; the
-   * sender does not own WebSocket access.
-   */
+  /** Frame-send sink; the sender does not own the WebSocket. */
   sendFrame: (frame: PackSendFrame) => void;
 };
 
@@ -111,11 +79,8 @@ export function createPackSender(deps: PackSenderDeps): PackSender {
           commitSha,
         });
       } catch (cause) {
-        // A synchronous throw out of `sendFrame` (closed transport,
-        // serializer error) would otherwise leave the pending entry
-        // in flight forever; the next `send` for this transferId would
-        // then reject at the "already in flight" guard above. Clean
-        // the entry up at the boundary that owns it.
+        // A throw from `sendFrame` must not leave the entry pending;
+        // clean it up so a retry under the same transferId is admitted.
         pending.delete(transferId);
         reject(
           cause instanceof Error

@@ -4,21 +4,11 @@ import type { MailboxStore, StoredMessage } from "./mailbox";
 import { executeSearch } from "./search";
 
 /**
- * RFC 5256 REFERENCES threading algorithm.
- *
- * Builds parent-child relationships from In-Reply-To and References headers.
- * The algorithm:
- * 1. For each message, collect its References chain (oldest → newest ancestor).
- * 2. Link messages into a tree using these chains.
- * 3. Create dummy containers for referenced messages not present in the set.
- * 4. Prune dummy containers with no children; promote children of childless dummies.
- * 5. Gather root-level containers with the same base subject (skipped here —
- *    we implement only the parent/child linking portion which is what this
- *    transport needs; subject-based gathering is optional for our use case).
- * 6. Sort threads at each level.
- *
- * Note: RFC 5256 also defines an ORDEREDSUBJECT algorithm. For that, messages
- * are sorted by subject and date without reference tracking.
+ * RFC 5256 REFERENCES threading algorithm: build parent-child relationships
+ * from In-Reply-To and References headers. Only the parent/child linking
+ * portion is implemented; subject-based gathering (RFC 5256 step 5) is not
+ * needed by this transport. RFC 5256 also defines an ORDEREDSUBJECT variant
+ * that sorts by subject and date without reference tracking.
  */
 
 type Container = {
@@ -54,9 +44,8 @@ export async function executeThread(
 }
 
 /**
- * RFC 5256 ORDEREDSUBJECT: sort by base subject, then date.
- * All messages with the same base subject form one thread; the first by date
- * is the root, the rest are direct children.
+ * RFC 5256 ORDEREDSUBJECT: sort by base subject, then date. The earliest
+ * message in each subject group is the root; the rest are direct children.
  */
 function orderedSubjectThread(
   mailboxName: string,
@@ -96,19 +85,9 @@ function orderedSubjectThread(
 }
 
 /**
- * RFC 5256 REFERENCES algorithm.
- *
- * Step 1: For each message, create a container. Walk its References list
- *   (and In-Reply-To if not already in References) and link containers
- *   as parent-child in left-to-right order.
- *
- * Step 2: Build the id_table mapping Message-IDs to containers.
- *
- * Step 3: Prune empty containers (those with no message).
- *
- * Step 4: Collect root containers.
- *
- * Step 5: Sort each container's children by date.
+ * RFC 5256 REFERENCES algorithm: create one container per message, link
+ * containers by References/In-Reply-To chains, prune dummies, and sort by
+ * date.
  */
 function referencesThread(
   mailboxName: string,
@@ -129,15 +108,16 @@ function referencesThread(
     return c;
   }
 
-  // Step 1 & 2: Build containers and link parent-child relationships.
+  // Build containers and link parent-child relationships.
   for (const msg of messages) {
     const container = getOrCreate(msg.envelope.messageId);
     container.message = msg;
 
-    // Build the reference list: References + In-Reply-To (deduplicated).
+    // References + In-Reply-To, deduplicated.
     const refs = buildRefList(msg.envelope.references, msg.envelope.inReplyTo);
 
-    // Link: refs[i] is parent of refs[i+1], last ref is parent of this message.
+    // Link: refs[i] is the parent of refs[i+1]; the last ref is the parent of
+    // this message.
     let prevContainer: Container | null = null;
     for (const refId of refs) {
       const refContainer = getOrCreate(refId);
@@ -154,7 +134,8 @@ function referencesThread(
       prevContainer = refContainer;
     }
 
-    // Link the last reference as parent of this message (if no circular reference).
+    // Link the last reference as parent of this message if that creates no
+    // cycle.
     if (
       prevContainer !== null &&
       container.parent === null &&
@@ -165,7 +146,7 @@ function referencesThread(
     }
   }
 
-  // Step 3: Find root containers (no parent).
+  // Find root containers (no parent).
   const roots: Container[] = [];
   for (const [, c] of idTable) {
     if (c.parent === null) {
@@ -173,12 +154,11 @@ function referencesThread(
     }
   }
 
-  // Step 4: Prune dummy containers (containers with no message).
-  // A dummy with no children is dropped.
-  // A dummy with children: the children are promoted to the dummy's parent level.
+  // Prune dummy containers (containers with no message): drop a childless
+  // dummy; promote the children of one that has children.
   const prunedRoots = pruneContainers(roots);
 
-  // Step 5: Sort and convert to Thread[].
+  // Sort and convert to Thread[].
   return containersToThreads(mailboxName, prunedRoots);
 }
 
@@ -230,12 +210,10 @@ function pruneContainers(containers: Container[]): Container[] {
 }
 
 /**
- * The sort key for a message that named no date. `Number.MAX_SAFE_INTEGER`
- * exceeds the largest time value a `Date` can hold (8.64e15), so a message
- * carrying this key sorts after every dated message. The epoch would do the
- * opposite: it is the earliest representable instant, which would hand the
- * root of an ascending-sorted thread to a message that placed itself nowhere
- * in time.
+ * Sort key for a message that named no date. `Number.MAX_SAFE_INTEGER` exceeds
+ * the largest time value a `Date` can hold (8.64e15), so undated messages sort
+ * after every dated one. The epoch would hand the root of an ascending-sorted
+ * thread to a message that placed itself nowhere in time.
  */
 const UNDATED_SORT_KEY = Number.MAX_SAFE_INTEGER;
 
@@ -249,9 +227,8 @@ function containerDate(c: Container): number {
   if (c.message !== null) {
     return messageDate(c.message);
   }
-  // A dummy container carries no date of its own, so it borrows the earliest
-  // date among its descendants. With no dated descendant it keeps
-  // `UNDATED_SORT_KEY` and sorts last, as an undated message does.
+  // A dummy container borrows the earliest date among its descendants; with
+  // none dated it keeps `UNDATED_SORT_KEY` and sorts last.
   let earliest = UNDATED_SORT_KEY;
   for (const child of c.children) {
     const d = containerDate(child);

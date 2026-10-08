@@ -3,30 +3,24 @@
 
 // Load smoke test for the published tool packages.
 //
-// The three `@intx/tools-*` packages ship a compiled `dist/sidecar-bundle.js`
-// that the interchange sidecar loads as a tool package. This proves that
-// bundle — and the real `@intx/*` dependency closure it imports — installs
-// and loads from npm-style tarballs, exactly as a consumer would get it:
+// The three `@intx/tools-*` packages ship a compiled
+// `dist/sidecar-bundle.js` the interchange sidecar loads as a tool
+// package. This proves that bundle — and the real `@intx/*` dependency
+// closure it imports — installs and loads from npm-style tarballs,
+// exactly as a consumer would get it:
 //
 //   1. Emit `dist` for the tool packages' full `@intx/*` closure.
-//   2. `bun pm pack` each into a scratch registry directory. Packing
-//      rewrites `workspace:*`/`catalog:` specifiers to concrete versions,
-//      so the tarballs carry the same dependency graph a publish would.
-//   3. `npm install` the tarball set into a scratch consumer, resolving the
-//      `@intx/*` closure from the local tarballs and the third-party leaves
-//      from the public registry.
-//   4. Import each compiled `sidecar-bundle.js` in a plain `bun` subprocess
-//      that does NOT carry `--conditions=intx-src`, so `@intx/*` resolves
-//      through `default` -> `dist` (the compiled output), exactly as a
-//      consumer or the production sidecar loader does — never the
-//      repo-internal source condition. Assert each exposes its tool or
-//      plugin factory.
+//   2. `bun pm pack` each into a scratch registry directory; packing
+//      rewrites `workspace:*`/`catalog:` specifiers to concrete versions.
+//   3. `npm install` the tarball set into a scratch consumer.
+//   4. Import each compiled `sidecar-bundle.js` in a plain `bun`
+//      subprocess WITHOUT `--conditions=intx-src`, so `@intx/*` resolves
+//      through `default` -> `dist` (compiled output), exactly as a
+//      consumer or the production sidecar loader does.
 //
-// The interchange tool loader runs under Bun, so the load is exercised
-// under Bun to mirror the real runtime.
-//
-// This is build- and network-heavy (it emits dist and installs from npm),
-// so it runs from its own `make verify-tool-load` target, not `make all`.
+// The load runs under Bun to mirror the real runtime. Build- and
+// network-heavy, so it runs from its own `make verify-tool-load` target,
+// not `make all`.
 
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -67,8 +61,9 @@ export function toolClosure(repoRoot: string): string[] {
   return [...seen].sort();
 }
 
-/** The load-assertion program run in a plain (no-`intx-src`) Bun subprocess
- *  from the scratch consumer, where the tool closure is installed. */
+/** The load-assertion program run in a plain (no-`intx-src`) Bun
+ *  subprocess from the scratch consumer, where the tool closure is
+ *  installed. */
 const LOAD_PROGRAM = `
 import { isAnnotatedPluginFactory } from "@intx/agent";
 const expected = ${JSON.stringify(EXPECTED)};

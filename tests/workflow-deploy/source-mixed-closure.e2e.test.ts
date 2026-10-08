@@ -8,10 +8,10 @@
 // evaluation time.
 //
 // This is the only source e2e that resolves an EXTERNAL registry dependency
-// alongside a workspace-local one: the mixed-origin closure and its cross-origin
-// node_modules layout are otherwise only unit-tested. The sidecar reaches the
-// external registry through `SIDECAR_TOOL_REGISTRIES`, pointed at the in-process
-// server this test stands up.
+// alongside a workspace-local one; the mixed-origin closure and its
+// cross-origin node_modules layout are otherwise only unit-tested. The sidecar
+// reaches the external registry through `SIDECAR_TOOL_REGISTRIES`, pointed at
+// the in-process server this test stands up.
 
 import { promises as fs } from "node:fs";
 import { createHash } from "node:crypto";

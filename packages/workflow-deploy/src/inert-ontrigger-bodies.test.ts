@@ -99,9 +99,9 @@ describe("enumerateInertBodies", () => {
     expect(bodies).toHaveLength(1);
     const body = bodies[0];
     expect(body?.ref).toBe("wf__sect");
-    // The body definition's id is overridden to the ref (not the authored id).
+    // The body definition's id is overridden to the ref (not the authored id);
+    // every other body field rides verbatim.
     expect(body?.definition.id).toBe("wf__sect");
-    // Every other body field rides verbatim.
     expect(body?.definition.stepOrder).toEqual(["s1", "w"]);
   });
 
@@ -177,8 +177,8 @@ describe("enumerateInertBodies", () => {
       ["spawn"],
     );
 
-    // Depth-2 refs match rewriteInlineChildWorkflowBodies applied per rung: the
-    // grandchild's enclosing id is the child's own ref.
+    // Depth-2 refs match `rewriteInlineChildWorkflowBodies` applied per rung:
+    // the grandchild's enclosing id is the child's own ref.
     const refs = enumerateInertBodies(proj)
       .map((b) => b.ref)
       .sort();
@@ -229,9 +229,9 @@ describe("enumerateInertBodies", () => {
   });
 
   test("enumerates a childWorkflow body with mixed step kinds and lifts its grandchild", () => {
-    // A child body mixing an agent step with three non-agent kinds -- a nested
-    // inline childWorkflow, a sleep, and an awaitSignal. The nested child is
-    // enumerated as its own body; the non-agent kinds do not obstruct the lift.
+    // A child body mixing an agent step with three non-agent kinds. The nested
+    // child is enumerated as its own body; the non-agent kinds do not obstruct
+    // the lift.
     const proj = projection(
       {
         spawn: inlineChildWorkflow(
@@ -264,10 +264,9 @@ describe("enumerateInertBodies", () => {
 
   test("stages a childWorkflow nested in a loop body, but NOT the loop body itself", () => {
     // A loop body runs in-process sharing the parent env, so it is never a
-    // staged asset. Its childWorkflow grandchild IS a spawned child that needs
-    // its own asset + sources, so it is lifted under the nested ref
-    // `wf__<loopStep>__<childStep>`, while the loop body ref `wf__rework` is
-    // absent from the output.
+    // staged asset. Its childWorkflow grandchild IS a spawned child needing its
+    // own asset + sources, so it is lifted under `wf__<loopStep>__<childStep>`
+    // while the loop body ref is absent from the output.
     const loopBody = {
       id: "rework-body",
       triggers: [],
@@ -306,10 +305,9 @@ describe("enumerateInertBodies", () => {
   });
 });
 
-// Collect the refs the RUNTIME mints, by applying the same rewrites the runtime
-// applies per rung: onTrigger sections lift only at the top level; childWorkflow
-// children lift at every rung; each lifted body recurses using its own ref as
-// the enclosing id (the extracted body's id is set to its ref).
+// Collect the refs the RUNTIME mints by applying the same rewrites the runtime
+// applies per rung: onTrigger sections lift only at the top level, childWorkflow
+// children at every rung, each lifted body recursing under its own ref.
 function liveBodyRefs(def: WorkflowDefinition, isTopLevel: boolean): string[] {
   const refs: string[] = [];
   const bodies = [
@@ -340,7 +338,7 @@ describe("enumerateInertBodies agrees with the runtime rewrite refs", () => {
     });
 
   // The deploy enumerator stages each body's sources.json under a ref, and the
-  // runtime reads it back by the ref its rewrite mints. If the two ever diverge
+  // runtime reads it back by the ref its rewrite mints; if the two ever diverge
   // the child fails loud on a missing source. Pin them equal at every depth.
   const fixtures: Record<string, WorkflowDefinition> = {
     "depth-2 child chain": defineWorkflow({
@@ -525,9 +523,7 @@ describe("readInertStepInference", () => {
 // runtime. What CAN be observed is the behaviour that property protects: every
 // container kind descends, a `{ ref }` body does not, a leaf yields nothing,
 // and a step whose kind is outside the closed set throws instead of reading as
-// a leaf. The last one is the whole point -- an unrecognized container read as
-// a leaf is exactly the fail-open the deploy-time totality check exists to
-// close.
+// a leaf.
 // ---------------------------------------------------------------------------
 
 const NESTED_BODY_STEPS: Record<string, unknown> = {
@@ -535,8 +531,7 @@ const NESTED_BODY_STEPS: Record<string, unknown> = {
 };
 
 // One sample step per primitive kind. The `Record<Primitive["kind"], unknown>`
-// annotation forces a sample for every kind the live union carries, so a new
-// primitive cannot be added without deciding what this reader does with it.
+// annotation forces a sample for every kind the live union carries.
 const STEP_BY_KIND: Record<Primitive["kind"], unknown> = {
   step: agentStep("anthropic", "m"),
   map: { kind: "map", step: { agent: { modelSources: [] } } },

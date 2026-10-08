@@ -1,21 +1,12 @@
-// Durable store for a run's inbound-mail parts.
-//
-// The supervisor decodes an inbound MIME message into parts (via `decodeMail`)
-// and commits each part's decoded bytes here as a real file under
-// `runs/<runId>/parts/<urlEncoded(messageId)>/<index>-<name>`, returning the
-// JSON-safe `MailPart[]` descriptors that ride in the run's trigger/signal
-// payload. A `MailPartReader` resolves a descriptor's opaque `ref` back to the
-// committed bytes for any consumer -- an agent's content-block projection, a
-// workflow tool, a child run -- through the single, environment-agnostic
-// `MailPartReader` interface.
-//
-// Modeled on the sibling `blob-substrate` adapter: same per-run handles, same
-// substrate primitives (`writeTreePreservingPrefix` to write raw bytes;
-// `openCommittedReads` to read them back from a coherent object-store snapshot
-// rather than the lagging working tree). The write happens in one commit per
-// message (write-once, atomic). The kind handler validates the subtree shape;
-// this module sanitizes untrusted names to satisfy it and reuses the handler's
-// path-component byte cap.
+// Durable store for a run's inbound-mail parts. The supervisor commits
+// each decoded part's bytes under `runs/<runId>/parts/<urlEncoded(messageId)>/<index>-<name>`
+// and returns JSON-safe `MailPart[]` descriptors riding in the trigger/signal
+// payload; a `MailPartReader` resolves a descriptor's opaque `ref` back to the
+// committed bytes. Same substrate primitives as the sibling `blob-substrate`
+// adapter: write-once atomic commit per message, reads from a coherent
+// committed snapshot. The kind handler validates the subtree shape; this module
+// sanitizes untrusted names to satisfy it and reuses the handler's path
+// component byte cap.
 
 import {
   MAX_MAIL_PART_PATH_COMPONENT_BYTES,
@@ -37,16 +28,13 @@ import type {
 
 const REF_SCHEME = "mail-part:///";
 
-// Content types whose bytes are UTF-8 text and small enough to also inline as
-// `MailPart.text`, so a selector can read them without resolving the ref.
+// Small UTF-8 text parts also inline their decoded text as `MailPart.text`.
 const INLINE_TEXT_MAX_BYTES = 1024 * 1024;
 
 const CONTROL_CHAR_MAX = 0x1f;
 const DEL_CHAR = 0x7f;
-// Unicode line/paragraph separators. JavaScript's regex `.` does NOT match
-// these, so the kind handler's `<index>-<name>` check (whose name group is
-// `.+`) rejects a filename containing them. The sanitizer must strip them to
-// keep its "satisfies the handler by construction" contract.
+// JS regex `.` does NOT match these, so the kind handler's `<index>-<name>`
+// check rejects a filename containing them; the sanitizer must strip them.
 const LINE_SEPARATOR = 0x2028;
 const PARAGRAPH_SEPARATOR = 0x2029;
 
@@ -57,10 +45,10 @@ function byteLength(value: string): number {
 }
 
 /**
- * Thrown for a DETERMINISTIC, input-shaped rejection of an inbound mail -- a
- * messageId that cannot form a usable path segment. Distinct from a transient
- * substrate write failure so the caller drops the offending mail (replaying it
- * would fail identically) rather than treating it as a retryable fault.
+ * Thrown for a DETERMINISTIC, input-shaped rejection of an inbound mail
+ * (e.g. a messageId that cannot form a path segment). Distinct from a
+ * transient substrate failure so the caller drops the mail rather than
+ * retrying it.
  */
 export class InvalidMailError extends Error {
   constructor(message: string, options?: { cause?: unknown }) {
@@ -76,10 +64,8 @@ function encodeMessageSegment(messageId: string): string {
       `mail part store: messageId ${JSON.stringify(messageId)} url-encodes to ${String(byteLength(encoded))} bytes, over the ${String(MAX_MAIL_PART_PATH_COMPONENT_BYTES)}-byte path-component limit`,
     );
   }
-  // `encodeURIComponent` leaves `.` unescaped, so "." or ".." would form a
-  // traversal segment; reject it where the messageId -> segment constraint is
-  // owned. An empty segment is unreachable for a non-empty messageId but is
-  // refused for the same reason.
+  // `encodeURIComponent` leaves `.` unescaped, so "." / ".." would form
+  // a traversal segment; reject where the constraint is owned.
   if (encoded.length === 0 || encoded === "." || encoded === "..") {
     throw new InvalidMailError(
       `mail part store: messageId ${JSON.stringify(messageId)} url-encodes to ${JSON.stringify(encoded)}, which is not a usable path segment`,
@@ -89,10 +75,9 @@ function encodeMessageSegment(messageId: string): string {
 }
 
 /**
- * Reduce an untrusted part name (a MIME filename, or a fallback) to one safe
- * path segment: path separators, NUL, and control characters become `_`. The
- * `<index>-` prefix guarantees per-message uniqueness, so a sanitization
- * collision between two parts of one message is harmless.
+ * Reduce an untrusted part name to one safe path segment: path
+ * separators, NUL, and control characters become `_`. The `<index>-`
+ * prefix guarantees per-message uniqueness, so a collision is harmless.
  */
 function sanitizePartName(name: string): string {
   let out = "";
@@ -126,9 +111,8 @@ function truncateToBytes(value: string, maxBytes: number): string {
 }
 
 /**
- * The on-disk filename for one part: `<index>-<name>`, sanitized and truncated
- * to the handler's byte cap. Satisfies the handler's `<index>-<name>` shape by
- * construction.
+ * On-disk filename for one part: `<index>-<name>`, sanitized and
+ * truncated to the handler's byte cap.
  */
 function partFilename(index: number, part: MessagePart): string {
   const prefix = `${String(index)}-`;
@@ -163,10 +147,10 @@ function mailPartRef(
 }
 
 /**
- * Parse a `mail-part:///` ref into its run id, message segment, and filename.
- * The ref is persisted in the event log and re-read on resume, so it is
- * treated as untrusted: the scheme must match, it must be exactly three
- * non-empty segments, and no segment may traverse.
+ * Parse a `mail-part:///` ref into its run id, message segment, and
+ * filename. The ref is persisted and re-read on resume, so it is
+ * untrusted: scheme must match, exactly three non-empty segments, no
+ * traversal.
  */
 function parseMailPartRef(ref: string): {
   runId: string;
@@ -199,9 +183,9 @@ function parseMailPartRef(ref: string): {
     throw new Error(malformed, { cause });
   }
   const messageSegment = segments[1] ?? "";
-  // Reject traversal on the DECODED values too: a ref could encode `..`
-  // (`%2e%2e`) or a path separator (`%2f`, `%5c`) that only reveals itself
-  // after decoding, forming a compound traversal segment like `../..`.
+  // Reject traversal on the decoded values too: `%2e%2e` / `%2f` only
+  // reveal themselves after decoding, forming a compound segment like
+  // `../..`.
   const traverses = (s: string): boolean =>
     s === "." || s === ".." || s.includes("/") || s.includes("\\");
   if ([runId, messageSegment, filename].some(traverses)) {
@@ -219,11 +203,10 @@ export type MailPartStoreOpts = {
 };
 
 /**
- * Commit a decoded message's parts and assemble the JSON-safe `Mail`. Every
- * part's bytes are written in ONE prefix-preserving commit under the message's
- * directory (write-once, atomic), and each part becomes a `MailPart` descriptor
- * carrying its metadata, an opaque `ref`, and -- for a small UTF-8 text part --
- * its decoded `text` inline.
+ * Commit a decoded message's parts and assemble the JSON-safe `Mail`.
+ * All part bytes are written in ONE prefix-preserving commit (write-once,
+ * atomic); each part becomes a `MailPart` descriptor with its metadata,
+ * an opaque `ref`, and its decoded `text` inline for small UTF-8 text.
  */
 export async function commitMail(
   opts: MailPartStoreOpts,
@@ -277,10 +260,9 @@ export async function commitMail(
       );
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
-      // A path_violation is a shape rejection of this message's own (already
-      // sanitized) content: it is deterministic, so replaying the same bytes
-      // fails identically. Surface it as InvalidMailError so the caller drops
-      // the mail rather than retrying it forever as a transient fault.
+      // A path_violation is a deterministic shape rejection of this
+      // message's own sanitized content; surface it as InvalidMailError
+      // so the caller drops the mail rather than retrying it forever.
       if (message.startsWith("path_violation: ")) {
         throw new InvalidMailError(message.slice("path_violation: ".length), {
           cause,
@@ -305,11 +287,10 @@ export type MailPartReaderOpts = {
 };
 
 /**
- * Construct the single mail-part reader for a deployment's workflow-run repo.
- * `read` resolves any run's `MailPart.ref` to the committed bytes through a
- * committed read pinned to the object store, so a cross-run read (a childflow
- * or body step resolving a parent's part) never observes the lagging working
- * tree.
+ * Construct the single mail-part reader for a deployment's workflow-run
+ * repo. Reads resolve any run's `MailPart.ref` through a pinned
+ * committed snapshot, so a cross-run read never observes the lagging
+ * working tree.
  */
 export function createMailPartReader(opts: MailPartReaderOpts): MailPartReader {
   return {

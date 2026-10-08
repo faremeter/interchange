@@ -10,14 +10,12 @@ type ParsedPrincipal = ReturnType<typeof parsePrincipalRow>;
 
 /**
  * Store for the `principal` table -- the single owner of principal creation.
- * Every principal insert in the system routes through this one factory, and
- * every principal it creates is minted an active signing key in the same
- * transaction, so a principal never exists without a key.
- *
- * Each method accepts an optional transaction handle so the principal row and
- * its key join the transaction that co-writes the principal's roles and grants.
- * When no handle is passed the store opens its own transaction, because the
- * principal insert and the key mint are two writes that must commit together.
+ * Every principal it creates is minted an active signing key in the same
+ * transaction, so a principal never exists without a key. Each method accepts
+ * an optional transaction handle so the principal row and its key join the
+ * transaction that co-writes the principal's roles and grants; when no handle
+ * is passed the store opens its own transaction, because the insert and the
+ * key mint are two writes that must commit together.
  */
 export function createPrincipalStore(
   db: DBHandle,
@@ -27,9 +25,8 @@ export function createPrincipalStore(
     /**
      * Insert a new principal and mint its signing key, failing loudly on a
      * natural-key conflict. Callers that have already established the principal
-     * is new (a fresh tenant owner, an invite past its existence pre-check) use
-     * this so a concurrent duplicate surfaces as a unique violation rather than
-     * a silent success.
+     * is new use this so a concurrent duplicate surfaces as a unique violation
+     * rather than a silent success.
      */
     async create(
       row: PrincipalInsert,

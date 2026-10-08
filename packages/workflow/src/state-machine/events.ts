@@ -61,12 +61,10 @@ export interface RunStarted extends EventBase {
    * on respawn-after-crash. Omitted for non-mail triggers.
    *
    * The state machine enforces dedup against the run-scoped
-   * `consumedMessageIds` set (a re-issued `RunStarted` for an
-   * already consumed message-id is rejected). The wider per-address FIFO
-   * invariant lives in the queue substrate: the first mail produces this
-   * RunStarted, live follow-up mail can become SignalReceived, and mail that
-   * reaches a terminal stable run is rejected without another RunStarted.
-   * The runtime body has no role in ordering the queue.
+   * `consumedMessageIds` set (a re-issued `RunStarted` for an already
+   * consumed message-id is rejected). The wider per-address FIFO
+   * invariant lives in the queue substrate; the runtime body has no role
+   * in ordering the queue.
    */
   consumedMessageId?: string;
 }
@@ -117,12 +115,12 @@ export interface SignalAwaited extends EventBase {
   /**
    * The control-plane park kind, recorded so it survives a crash/reconnect:
    * the reduced state alone cannot tell an `"input"` park (snapshot-less,
-   * never hub-registered) from an `"approval"` park, and the parked-
-   * correlation recovery must skip the former rather than throw looking for a
-   * snapshot it never had. Absent on a plain `awaitSignal` gate (not a
-   * control-plane park) and on logs written before the input kind existed --
-   * both read back as `"approval"` at the reducer, which is correct because
-   * every reserved-channel park before this change was an approval.
+   * never hub-registered) from an `"approval"` park, and parked-correlation
+   * recovery must skip the former rather than throw looking for a snapshot it
+   * never had. Absent on a plain `awaitSignal` gate and on logs written before
+   * the input kind existed -- both read back as `"approval"` at the reducer,
+   * which is correct because every reserved-channel park before this change
+   * was an approval.
    */
   parkKind?: ControlParkKind;
 }
@@ -136,12 +134,9 @@ export interface SignalReceived extends EventBase {
 
 /**
  * Retire a step's outstanding `signal-relay` await without delivering a
- * payload. An onTrigger container that proxied a body child's author-named
- * `awaitSignal` up onto its own log commits this when the body progresses by
- * another exit -- its own await timeout, or any later body event -- before the
- * external signal arrives, so a late signal does not resolve a park the body no
- * longer waits on. Distinct from `SignalReceived`: nothing is delivered, the
- * await is simply torn down.
+ * payload. Distinct from `SignalReceived`: nothing is delivered, the await
+ * is simply torn down. The transition handler in `transition.ts` documents
+ * the concurrent-delivery race and the strict scope.
  */
 export interface SignalAwaitAbandoned extends EventBase {
   kind: "SignalAwaitAbandoned";
@@ -178,12 +173,11 @@ export interface ChildSpawned extends EventBase {
   childRunId: RunId;
   /**
    * The lookup ref the parent used to resolve the child
-   * `WorkflowDefinition`. The child run's own `RunStarted` event
-   * carries the content-addressed `definitionHash`; this field is the
-   * parent-side breadcrumb that points at which child definition was
-   * requested, not the cryptographic identity of what was actually
-   * instantiated. Downstream consumers correlating parent and child
-   * audit trails should join on `childRunId`, not this ref.
+   * `WorkflowDefinition`. The child run's own `RunStarted` carries the
+   * content-addressed `definitionHash`; this field is the parent-side
+   * breadcrumb pointing at which child definition was requested, not the
+   * cryptographic identity of what was instantiated. Downstream consumers
+   * correlating parent and child audit trails should join on `childRunId`.
    */
   childDefinitionRef: string;
 }
@@ -204,8 +198,8 @@ export interface ChildCompleted extends EventBase {
    * failure. It is the durable record of the live `abort.aborted` fact the
    * suspendable-occurrence drive keys the section's "end, do not re-arm"
    * decision on, so the crash-resume classifier can make the same decision --
-   * a torn-down `tolerate` section must stay ended on resume, not resurrect.
-   * Absent (older logs, or a genuine failure) reads as a body-caused failure.
+   * a torn-down `tolerate` section must stay ended on resume. Absent (older
+   * logs, or a genuine failure) reads as a body-caused failure.
    */
   abortedTeardown?: boolean;
 }

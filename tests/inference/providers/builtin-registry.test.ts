@@ -9,11 +9,9 @@ const OPENAI_SOURCE: LastCycleSource = {
   model: "test-openai-model",
 };
 
-// A focused view of the built request: the only field these tests assert on
-// is `reasoning_content` on the first assistant message. Validating through
-// arktype keeps the parsed body typed without an unsafe access; arktype
-// retains the message's other keys, so `"reasoning_content" in message`
-// reflects the wire shape faithfully.
+// A focused view: only `reasoning_content` on the first assistant message
+// is asserted. arktype keeps the body typed; `"reasoning_content" in
+// message` reflects the wire shape faithfully.
 const AssistantMessageView = type({
   messages: type({ role: "string", "reasoning_content?": "string" }).array(),
 });
@@ -36,10 +34,8 @@ function firstMessageThroughResolve(quirks?: unknown) {
 
 describe("createBuiltinRegistry resolves quirks into the real provider factory", () => {
   test("applies an openai quirk passed through resolve", () => {
-    // forceAssistantReasoningContent:false omits reasoning_content on a turn
-    // with no thinking. Observing that omission on the adapter produced by
-    // resolve proves the quirk bag reaches the real factory through the
-    // registry — the production path the harness takes.
+    // The omission proves the quirk bag reaches the real factory through
+    // the registry — the production path the harness takes.
     const message = firstMessageThroughResolve({
       forceAssistantReasoningContent: false,
     });

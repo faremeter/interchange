@@ -2,20 +2,14 @@
 /// <reference path="./declarations.d.ts" />
 // Single source of truth for "open an npm-style tarball, find the
 // package/package.json entry, parse it as JSON, hand the parsed value
-// back". Used by the hub-side resolver (`AssetRegistrySource` builds
-// packuments from asset-stored tarballs) and the hub-sessions package
-// (the `package-registry` kind handler validates uploads before the
-// commit is accepted). Both call sites used to ship near-identical
-// streaming parsers; the duplication drifted independently.
+// back". Used by the hub-side resolver and the hub-sessions
+// `package-registry` kind handler, which used to ship near-identical
+// streaming parsers that drifted independently. Returns a
+// discriminated outcome rather than throwing so each caller can map
+// the failure classes onto its own domain error type.
 //
-// The helper returns a discriminated outcome rather than throwing so
-// each caller can construct its own domain-shaped error
-// (ManifestInvalidError on the resolver side, ValidatePushResult
-// reason string on the kind-handler side) without losing the
-// failure-class distinction.
-
-// This module is Node-bound: it streams through node:stream and the tar
-// library, which are not portable to environments without those APIs.
+// Node-bound: streams through node:stream and tar, not portable to
+// environments without those APIs.
 
 import { Readable } from "node:stream";
 
@@ -28,13 +22,9 @@ import { PackageJSON } from "@intx/types/package-json";
 
 /**
  * Outcome of extracting the top-level `package.json` entry from an
- * npm-style tarball.
- *
- * `kind: "ok"` carries a value already validated against `PackageJSON`;
- * `kind: "shape-invalid"` distinguishes "JSON parsed cleanly but did
- * not match the expected schema" from "the JSON itself was malformed"
- * (`kind: "json-error"`). Callers that ship their own domain error type
- * can map the rejected outcomes onto whatever shape they raise.
+ * npm-style tarball: validated against `PackageJSON` on `"ok"`;
+ * `"shape-invalid"` (parsed but schema-mismatched) vs `"json-error"`
+ * (malformed JSON).
  */
 export type ExtractPackageJSONOutcome =
   | { kind: "ok"; parsed: PackageJSON; raw: unknown }
@@ -46,27 +36,22 @@ export type ExtractPackageJSONOutcome =
 
 /**
  * Stream the tarball bytes through a tar parser, drain only the top-
- * level `package.json` member, JSON.parse the collected bytes, run them
- * through `PackageJSON`, and return a discriminated outcome. The bytes
- * argument may be any Uint8Array (tarball or gzipped tarball —
- * `tar.Parser` auto-detects gzip on the input stream).
+ * level `package.json` member, JSON.parse it, validate against
+ * `PackageJSON`, and return a discriminated outcome. Accepts tarball or
+ * gzipped bytes (`tar.Parser` auto-detects gzip).
  *
- * The tar entry is matched by its tail (`<segment>/package.json` with
- * exactly two segments) rather than the literal `package/package.json`
- * path because the sidecar's tarball extractor uses `strip:1` and
- * therefore accepts any first segment. Matching by tail here keeps the
- * hub's validation aligned with the sidecar's runtime contract — a
- * tarball whose top-level directory is not literally `package/` will
- * load identically in both places.
+ * The entry is matched by its two-segment tail (`<segment>/package.json`)
+ * rather than the literal `package/` path because the sidecar's
+ * extractor uses `strip:1` and accepts any first segment; matching by
+ * tail keeps the hub's validation aligned with the sidecar's contract.
  *
  * On a tar parser failure the upstream readable is destroyed so a
  * malformed archive does not leave a half-drained source buffered in
- * the parser's internal state.
+ * the parser.
  *
- * The raw parsed JSON is surfaced alongside the validated descriptor on
- * success so callers that need fields outside `PackageJSON`'s minimum
- * schema (the resolver's `readDependencyFields` consumes `dependencies`,
- * `optionalDependencies`, etc.) can read them without re-extracting.
+ * The raw parsed JSON is surfaced alongside the validated descriptor so
+ * callers can read fields outside `PackageJSON`'s minimum schema
+ * without re-extracting.
  */
 export async function extractTarballPackageJSON(
   bytes: Uint8Array,
@@ -75,16 +60,13 @@ export async function extractTarballPackageJSON(
     let resolved = false;
     let pkgJsonBuf: Uint8Array | null = null;
     const collectChunks: Uint8Array[] = [];
-    // Capture every top-level `<seg>/package.json` path we see during
-    // the walk so the kind handler can reject ambiguous archives. The
-    // hub's resolver and the sidecar's tarball extractor resolve
-    // collisions differently — the resolver via this helper captures
-    // the first occurrence, while the sidecar's `tar.extract` with
-    // `strip:1` overwrites on every subsequent path with the same
-    // stripped name. A tarball carrying multiple top-level package
-    // directories therefore validates against the first entry on the
-    // hub but loads the last entry on the sidecar; the divergence is
-    // resolved at the validation boundary by refusing the upload.
+    // Capture every top-level `<seg>/package.json` path so the kind
+    // handler can reject ambiguous archives. This helper captures the
+    // first occurrence, but the sidecar's `tar.extract` with `strip:1`
+    // overwrites on each subsequent same-named path — so a tarball with
+    // multiple top-level package directories would validate against the
+    // first entry but load the last; the validation boundary refuses
+    // the upload instead.
     const topLevelPackageJSONPaths: string[] = [];
 
     const source = Readable.from([bytes]);

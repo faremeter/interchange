@@ -1,5 +1,4 @@
-// This module is Node-bound: it spawns subprocesses through node:child_process
-// and is not portable to environments without that API.
+// Node-bound: spawns subprocesses through node:child_process.
 
 import { spawn } from "node:child_process";
 
@@ -33,10 +32,7 @@ export async function runShell(
       return;
     }
 
-    // Interleave stdout and stderr in temporal order by writing both to the
-    // same collector as data arrives. Node emits data events from both streams
-    // on the same event loop tick order that the OS delivers them, so appending
-    // to a shared array preserves temporal ordering.
+    // Append both streams to one collector to keep OS delivery order.
     child.stdout.on("data", (chunk: Uint8Array) => {
       chunks.push(new TextDecoder().decode(chunk));
     });

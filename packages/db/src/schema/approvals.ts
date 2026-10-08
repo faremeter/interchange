@@ -40,12 +40,11 @@ export const approval = pgTable(
       .default("pending"),
     // Nullable so an approval that holds indefinitely can be recorded with no
     // deadline. An agent-step suspend parks on its correlation's signal with no
-    // timeout (`parkOnSignal` is called without a `timeout`), so no `timeoutAt`
-    // reaches the sidecar frame that co-writes this row -- the deadline lives in
-    // the reactor's gate, which the hold-indefinitely suspend path never sets.
-    // A null `timeoutAt` is the hold-indefinitely case; a resolver that adds
-    // per-workflow expiry populates it when a deadline is configured. Parallels
-    // the tool-snapshot columns above, which are likewise deferred.
+    // timeout, so no `timeoutAt` reaches the sidecar frame that co-writes this
+    // row -- the deadline lives in the reactor's gate, which the
+    // hold-indefinitely suspend path never sets. A null `timeoutAt` is the
+    // hold-indefinitely case; a resolver that adds per-workflow expiry
+    // populates it when a deadline is configured.
     timeoutAt: timestamp("timeout_at"),
     resolvedAt: timestamp("resolved_at"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -54,10 +53,9 @@ export const approval = pgTable(
   (t) => [
     index("approval_tenant_status_idx").on(t.tenantId, t.status, t.createdAt),
     index("approval_anchor_run_idx").on(t.anchorRunId),
-    // Reads that list a single run's approvals (the run-scoped approval and
-    // authorization views) filter on runId; the anchor_run index above does
-    // not serve them because a child run's approvals carry a runId distinct
-    // from the deployment's anchor.
+    // Reads that list a single run's approvals filter on runId; the anchor_run
+    // index above does not serve them because a child run's approvals carry a
+    // runId distinct from the deployment's anchor.
     index("approval_run_idx").on(t.runId),
   ],
 );

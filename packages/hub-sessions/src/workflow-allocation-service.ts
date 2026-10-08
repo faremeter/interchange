@@ -766,10 +766,9 @@ export function createWorkflowAllocationService({
         `Allocation ${allocation.id} has no workflow launch specification`,
       );
     }
-    // The frozen bundle deploys verbatim -- no re-probe. Rehydrate the approval
-    // hand-off from it: the persisted flat item list is partitioned back into
-    // the gate's `ApprovalSet`, and the frozen definition id is the anchor's own
-    // (set at prepare time from this freeze).
+    // The frozen bundle deploys verbatim -- no re-probe. Rehydrate the
+    // approval hand-off: the persisted flat item list is partitioned back into
+    // the gate's `ApprovalSet`, and the frozen definition id is the anchor's.
     const bundle = spec.frozenApprovalBundle;
     const approved: InstallAndApproveResult = {
       approval: {
@@ -782,9 +781,9 @@ export function createWorkflowAllocationService({
       projection: bundle.projection,
       closure: bundle.closure,
     };
-    // Re-resolve the inference chain from the catalog at launch time -- the
-    // launch spec stores offering ids, never resolved sources, so a rotated
-    // credential is picked up here and no secret was ever persisted.
+    // Re-resolve the inference chain from the catalog at launch time: the spec
+    // stores offering ids, never resolved sources, so a rotated credential is
+    // picked up here and no secret was ever persisted.
     const resolved = await resolveSourcesByOfferingIds(
       db,
       allocation.tenantId,

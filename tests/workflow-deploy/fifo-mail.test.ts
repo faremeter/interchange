@@ -1,42 +1,30 @@
 // FIFO mail-trigger serialization round-trip integration test.
 //
-// Deploys a multi-step workflow against the workflow-deploy
-// orchestrator's multi-step branch, fires three distinct mails at the
-// deployment's trigger address in quick succession, and verifies that the
-// first fires the deployment's one stable run while the queued post-terminal
-// mails are rejected in FIFO order.
+// Deploys a multi-step workflow against the workflow-deploy orchestrator's
+// multi-step branch, fires three distinct mails at the deployment's trigger
+// address in quick succession, and verifies that the first fires the
+// deployment's one stable run while the queued post-terminal mails are
+// rejected in FIFO order.
 //
-// The supervisor's mail flow path enqueues every inbound mail into the
-// workflow-run repo's `addresses/<segment>/inbox/` FIFO via
-// `enqueueInbox`, and a per-deployment serial dispatch loop drains the
-// inbox in arrival order (filename-prefix sort on `receivedAt`),
-// forwarding the first entry to the workflow-process child as a
-// `trigger.fire`. The loop waits for the run's terminal event before
-// dequeueing the next entry; once terminal, it permanently rejects later
-// entries and records that result while moving each processing entry into
-// `consumed/<messageId>.json`. With three mails fired before the first run has
-// reached terminal, the last two are forced to queue, which pins both FIFO
-// ordering and the no-refire invariant.
+// The supervisor's mail flow enqueues every inbound mail into the workflow-run
+// repo's `addresses/<segment>/inbox/` FIFO via `enqueueInbox`, and a
+// per-deployment serial dispatch loop drains the inbox in arrival order
+// (filename-prefix sort on `receivedAt`), forwarding the first entry to the
+// workflow-process child as a `trigger.fire`. The loop waits for the run's
+// terminal event before dequeueing the next entry; once terminal, it
+// permanently rejects later entries and records that result while moving each
+// processing entry into `consumed/<messageId>.json`. With three mails fired
+// before the first run reached terminal, the last two are forced to queue,
+// pinning both FIFO ordering and the no-refire invariant.
 //
-// The deployment is intentionally multi-step (a two-step workflow
-// rather than a trivial single-step one): the FIFO invariant lives
-// only on the supervisor-driven multi-step path. The trivial-deploy
-// branch routes mail directly through the session manager and does
-// not exercise the claim-check substrate, so a "trivial workflow that
-// handles mail" would not test the FIFO surface this commit pins.
+// The deployment is intentionally multi-step: the FIFO invariant lives only on
+// the supervisor-driven multi-step path. The trivial-deploy branch routes mail
+// directly through the session manager and never exercises the claim-check
+// substrate.
 //
 // Crash-replay across a real child SIGKILL -- the respawn-time
-// `replayProcessingToInbox` that keeps FIFO across an unexpected child
-// exit -- is covered end to end in `crash-respawn-fifo.test.ts`.
-//
-// The deployment is deployed BY SOURCE-REF (bundle a source entry module into a
-// hub asset, probe it, approve+freeze it against a real DB, deploy the
-// source-ref frame). This mirrors the multistep-signal and drain-roundtrip
-// tests' shape so a regression in any of the seven hops surfaces uniformly
-// across the three.
-//
-// The pre-landed `deploy-flow-env` fixture supplies every helper this
-// file consumes; this file does not modify the fixture.
+// `replayProcessingToInbox` -- is covered end to end in
+// `crash-respawn-fifo.test.ts`.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
@@ -82,11 +70,9 @@ const MESSAGE_IDS: readonly string[] = [
   "<fifo-mail-3@integration.interchange>",
 ];
 
-// The definition's own tenant, the caller principal that creates the
-// definition asset, and the `workflow`-kind asset the frozen definition
-// projects over. The install/approve freeze and the anchor `workflow_run`
-// insert both write against these, so they must exist in the real DB before
-// the deploy runs.
+// The tenant, caller principal, and `workflow`-kind definition asset the
+// install/approve freeze and anchor `workflow_run` insert write against; they
+// must exist in the real DB before the deploy runs.
 const TENANT_ID = "tnt_fifo_mail";
 const CALLER_PRINCIPAL_ID = "prn_fifo_mail";
 const DEFINITION_ASSET_ID = "ast_fifo_mail_wf";
@@ -286,11 +272,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         expect(curr).toBeGreaterThanOrEqual(prev);
       }
 
-      // Inbox must be empty after every consumed/ entry lands.
-      // The consumed/ wait above already guarantees every
-      // dispatched run reached `markConsumed`, which removes the
-      // entry from `processing/` atomically with the consumed/
-      // write. The reads here are therefore one-shot.
+      // Inbox must be empty after every consumed/ entry lands: the
+      // consumed/ wait above already guarantees every dispatched run reached
+      // `markConsumed`, which removes the entry from `processing/` atomically
+      // with the consumed/ write. The reads here are therefore one-shot.
       const inboxEntries = await readClaimCheckDir(
         env,
         workflowRunRepoId,
@@ -309,11 +294,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
       expect(processingEntries).toEqual([]);
 
-      // Canonical event chain assertion for the one stable run:
-      // the multi-step workflow above is `step1 -> step2`, so the
-      // expected chain is `RunStarted -> StepStarted{step1} ->
-      // StepCompleted{step1} -> StepStarted{step2} ->
-      // StepCompleted{step2} -> RunCompleted`. No later mail may replace it.
+      // Canonical event chain for the one stable run: `step1 -> step2`,
+      // so the expected chain is RunStarted -> StepStarted{step1} ->
+      // StepCompleted{step1} -> StepStarted{step2} -> StepCompleted{step2} ->
+      // RunCompleted. No later mail may replace it.
       const currentEvents = await readWorkflowRunEvents(
         env,
         DEPLOYMENT_ID,

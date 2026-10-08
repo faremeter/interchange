@@ -7,8 +7,7 @@ import {
 
 /**
  * Per-address state for the in-memory transport: one `MailboxStore` per
- * mailbox, the watch callbacks registered against each mailbox, and the
- * address's `CryptoProvider`.
+ * mailbox, watch callbacks per mailbox, and the address's `CryptoProvider`.
  */
 export type AddressEntry = {
   mailboxes: Map<string, MailboxStore>;

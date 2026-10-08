@@ -1,12 +1,11 @@
 // `env.onPark` firing at a control-plane suspension.
 //
-// When a workflow agent step parks on a reserved
-// `signalName(correlationId)` channel (the suspend/resume bridge), the
-// runtime body notifies the host via `env.onPark` so the host can register
-// the correlation out-of-band. A plain `awaitSignal` gate parked on an
-// author-chosen name is NOT a control-plane suspension, so it fires no
-// notify. The emit is gated on the fresh `SignalAwaited` commit, so a single
-// park fires exactly once.
+// When a workflow agent step parks on a reserved `signalName(correlationId)`
+// channel (the suspend/resume bridge), the runtime body notifies the host via
+// `env.onPark` so the host can register the correlation out-of-band. A plain
+// `awaitSignal` gate on an author-chosen name is NOT a control-plane
+// suspension, so it fires no notify. The emit is gated on the fresh
+// `SignalAwaited` commit, so a single park fires exactly once.
 
 import { describe, test, expect } from "bun:test";
 

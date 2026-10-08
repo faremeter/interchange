@@ -3,14 +3,10 @@
 // inline body is one agent step that carries the inline `mail_send` tool.
 //
 // The sibling `on-trigger-body` builder renders a TOOL-LESS body agent, which
-// proves only that a body agent runs. This builder renders the tool-bearing
+// proves only that a body agent runs; this builder renders the tool-bearing
 // shape, so a deployed run drives the real `tool_use` -> execute ->
 // `tool_result` round-trip inside an onTrigger body -- the property an operator
 // gets when they approve the body's `tool:<name>` grant at deploy.
-//
-// The returned string is a `@intx/*`-importing entry module;
-// `bundleWorkflowEntry` inlines it (and the sibling tool module it imports by
-// absolute path) to a self-contained `.mjs` the sidecar evaluates in-child.
 
 import path from "node:path";
 

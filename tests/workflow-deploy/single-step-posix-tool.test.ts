@@ -2,24 +2,20 @@
 // spawned workflow-process child.
 //
 // Deploys a one-step workflow BY SOURCE-REF whose agent carries the inline
-// `mail_send` tool from the `mail-tool.ts` fixture (a real `defineTool`
-// module bundled into the workflow's source closure). The sidecar checks the
-// pinned subtree out of the source pack, evaluates the bundle in-child, and
-// feeds the step agent's live `AnnotatedToolFactory`s straight in. The tool's
-// runtime name is the bare `definition.name`; the probe's capability walk
-// already emitted a `tool:<name>` grant for it into the frozen snapshot, so
-// the run authorizes the call through the per-run grants the trigger delivers.
+// `mail_send` tool (a real `defineTool` module bundled into the workflow's
+// source closure). The sidecar checks the pinned subtree out of the source
+// pack, evaluates the bundle in-child, and feeds the step agent's live
+// `AnnotatedToolFactory`s straight in. The tool's runtime name is the bare
+// `definition.name`; the probe's capability walk already emitted a
+// `tool:<name>` grant for it into the frozen snapshot, so the run authorizes
+// the call through the per-run grants the trigger delivers.
 //
-// The mock inference server is configured to emit a `tool_use` turn calling
-// the inline tool on the first request, then a text reply once the tool_result
-// lands. The tool's `run` writes a sentinel file into the agent's `env.workdir`
-// -- which, for a step agent, is the per-step workspace under the sidecar data
-// dir. The test asserts that sentinel file exists, proving the tool actually
-// EXECUTED in the child's filesystem view. It also asserts the mock saw the
-// follow-up request (the tool_result round-trip) and the run reached a terminal
-// phase.
-//
-// This is the test that proves real tools run in-child for Phase 2.
+// The mock inference server emits a `tool_use` turn calling the inline tool on
+// the first request, then a text reply once the tool_result lands. The tool's
+// `run` writes a sentinel file into the agent's `env.workdir` -- for a step
+// agent, the per-step workspace under the sidecar data dir. The test asserts
+// that sentinel exists, proving the tool actually EXECUTED in the child's
+// filesystem view, plus the follow-up request round-trip and a terminal phase.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -88,11 +84,9 @@ const RUN_TOOL_GRANT: WireGrantRule = {
   principalId: null,
 };
 
-// The definition's own tenant, the caller principal that creates the
-// definition asset, and the `workflow`-kind asset the frozen definition
-// projects over. The install/approve freeze and the anchor `workflow_run`
-// insert both write against these, so they must exist in the real DB before
-// the deploy runs.
+// The tenant, caller principal, and `workflow`-kind definition asset the
+// install/approve freeze and anchor `workflow_run` insert write against; they
+// must exist in the real DB before the deploy runs.
 const TENANT_ID = "tnt_single_step_posix_tool";
 const CALLER_PRINCIPAL_ID = "prn_single_step_posix_tool";
 const DEFINITION_ASSET_ID = "ast_single_step_posix_tool_wf";
@@ -207,9 +201,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const workflowRunRepoId = handle.workflowRunRepoId;
 
-      // The source-ref frame round-trips through the real sidecar subprocess
-      // (index the pack, check out the pinned subtree, register the address),
-      // so routability is asynchronous. Wait for it before firing the trigger.
+      // The source-ref frame round-trips through the real sidecar subprocess (index
+      // the pack, check out the pinned subtree, register the address); routability is async, so wait before firing the trigger.
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),

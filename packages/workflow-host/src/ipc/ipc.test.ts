@@ -35,19 +35,16 @@ import type {} from "./index";
 import { waitUntil } from "@intx/types/testing";
 
 /**
- * Synthetic `childPublicKey` hex used to populate `ready` payloads
- * in tests whose receiver pins a fixed `publicKey` Uint8Array
- * (non-bootstrap mode). The receiver verifies signatures against the
- * key it was constructed with; the `childPublicKey` field is just
- * payload content here and never gets read out as a key. Tests that
- * exercise bootstrap mode supply a real keypair's public half.
+ * Synthetic `childPublicKey` hex used in `ready` payloads for tests whose
+ * receiver pins a fixed `publicKey` Uint8Array (non-bootstrap mode). There
+ * it is payload content only and never read out as a key; bootstrap-mode
+ * tests supply a real keypair's public half.
  */
 const TEST_CHILD_PUBKEY_HEX = "ab".repeat(32);
 
 // Build the minimal decoded `Mail` for a plain-text body: a single
 // `text/plain` part whose decoded text is inlined (its `ref` is never read
-// for text parts). This is the shape a `trigger.fire` control-frame payload
-// now carries.
+// for text parts). This is the shape a `trigger.fire` payload carries.
 function textMail(body: string): Mail {
   return {
     headers: {
@@ -197,8 +194,7 @@ describe("Control channel", () => {
       }
     })();
 
-    // The same `Mail` object is sent and asserted as received, so the
-    // round-trip equality holds on the decoded payload shape.
+    // The same `Mail` object is sent and asserted as received.
     const firedMail = textMail("test input");
     await sender.send({
       type: "ready",
@@ -288,9 +284,8 @@ describe("Control channel", () => {
   });
 
   test("round-trips a mailbox.notify for a message with no originator", async () => {
-    // A message can arrive carrying no From. The notify must still validate and
-    // reach the child watcher: rejecting the frame would strand the watcher on
-    // a message whose sender is merely unknown.
+    // A message can arrive carrying no From; rejecting the frame would
+    // strand the watcher on a message whose sender is merely unknown.
     const kp = await generateKeyPair();
     const channelId = generateChannelId();
     const stream = createMemoryNdjsonStream();
@@ -337,10 +332,8 @@ describe("Control channel", () => {
   });
 
   test("round-trips a mailbox.notify for a message with no date or id", async () => {
-    // A message can arrive carrying neither a Date nor a Message-ID. As with a
-    // missing From, the notify must still validate and reach the child
-    // watcher: rejecting the frame would strand the watcher on a message whose
-    // envelope is merely incomplete.
+    // A message can arrive with neither a Date nor a Message-ID; as with
+    // a missing From, the notify must still reach the child watcher.
     const kp = await generateKeyPair();
     const channelId = generateChannelId();
     const stream = createMemoryNdjsonStream();
@@ -402,11 +395,9 @@ describe("Control channel", () => {
       }
     })();
 
-    // Sign a structurally valid envelope whose payload is a mailbox.notify with
-    // a headers block missing the required `to` field, so the receiver's
-    // payload validation rejects it. `to` is the only required header: a
-    // message can arrive naming no originator, no date and no id, and the
-    // watcher must still be handed it.
+    // Sign a valid envelope whose mailbox.notify headers omit the required
+    // `to` field; `to` is the only required header -- a message can name no
+    // originator, date, or id and must still reach the watcher.
     const envelope: FrameEnvelope = {
       seq: 1,
       channelId,
@@ -461,13 +452,10 @@ describe("Control channel", () => {
     const first = sender.send({ type: "drain", data: { deadlineMs: 1 } });
     const second = sender.send({ type: "drain", data: { deadlineMs: 2 } });
 
-    // The lock is taken synchronously inside `send`, so the second send is
-    // parked before it assigns a seq. With the first write unresolved, a
-    // `seq` of 1 is the settled state rather than a state that has not
-    // arrived yet: the second send has not entered the critical section, so
-    // it has neither signed nor written, and it cannot until the release
-    // below. A sender that assigned seq before taking the lock would read 2
-    // here.
+    // The lock is taken synchronously inside `send`, so the second send
+    // parks before assigning a seq: with the first write unresolved, a
+    // seq of 1 is the settled state, and a sender that assigned seq
+    // before taking the lock would read 2 here.
     await waitUntil(() => writes.length >= 1);
     expect(sender.seq).toBe(1);
     expect(writes.length).toBe(1);
@@ -492,8 +480,8 @@ describe("Control channel", () => {
 
   test("a rejecting write does not wedge subsequent sends", async () => {
     // The sender releases its serialization lock in a `finally`, so a
-    // frame whose write rejects must not stall the frames behind it. The
-    // failed send still rejects to its caller; the next send proceeds and
+    // frame whose write rejects must not stall the frames behind it: the
+    // failed send still rejects to its caller, the next send proceeds, and
     // the wire order is preserved.
     const kp = await generateKeyPair();
     const channelId = generateChannelId();
@@ -968,13 +956,10 @@ describe("Event channel", () => {
       data: { model: "y" },
     });
 
-    // The lock is taken synchronously inside `send`, so the second send is
-    // parked before it assigns a seq. With the first write unresolved, a
-    // `seq` of 1 is the settled state rather than a state that has not
-    // arrived yet: the second send has not entered the critical section, so
-    // it has neither MACed nor written, and it cannot until the release
-    // below. A sender that assigned seq before taking the lock would read 2
-    // here.
+    // The lock is taken synchronously inside `send`, so the second send
+    // parks before assigning a seq: with the first write unresolved, a
+    // seq of 1 is the settled state, and a sender that assigned seq
+    // before taking the lock would read 2 here.
     await waitUntil(() => writes.length >= 1);
     expect(sender.seq).toBe(1);
     expect(writes.length).toBe(1);
@@ -999,8 +984,8 @@ describe("Event channel", () => {
 
   test("a rejecting write does not wedge subsequent sends", async () => {
     // The sender releases its serialization lock in a `finally`, so a
-    // frame whose write rejects must not stall the frames behind it. The
-    // failed send still rejects to its caller; the next send proceeds and
+    // frame whose write rejects must not stall the frames behind it: the
+    // failed send still rejects to its caller, the next send proceeds, and
     // the wire order is preserved.
     const hmacKey = generateHmacKey();
     const channelId = generateChannelId();
@@ -1162,9 +1147,9 @@ describe("Event channel", () => {
     // Resolved by onCrash, so the assertions below wait for the overrun
     // itself rather than for a window long enough to assume it happened.
     const overrunReported = Promise.withResolvers<boolean>();
-    // Holds the consumer inside the loop body so the receiver's buffer fills
-    // behind it. Released at teardown, which is what lets the loop -- and so
-    // the consumer promise -- finish and be awaited.
+    // Holds the consumer inside the loop body so the receiver's buffer
+    // fills behind it. Released at teardown, which is what lets the loop
+    // and the consumer promise finish and be awaited.
     const release = Promise.withResolvers<boolean>();
     const consumer = (async () => {
       consumerStarted = true;
@@ -1199,19 +1184,17 @@ describe("Event channel", () => {
       await emitMacedFrame(i);
     }
 
-    // Own the consumer this test started on every exit, not only the passing
-    // one. The crash ends the iterator but cannot unpark a body suspended
-    // between yields, so the release below is the only thing that lets the
-    // loop -- and the consumer promise -- finish; a failing assertion inside
-    // the `try` would otherwise strand it exactly as the unawaited original
-    // stranded a timer.
+    // Own the consumer on every exit, not only the passing one: the crash
+    // ends the iterator but cannot unpark a body suspended between yields,
+    // so the release below is the only thing that lets the loop and the
+    // consumer promise finish; a failing assertion would otherwise strand
+    // it.
     try {
-      // The overrun is the signal. The previous 50ms window had to be long
-      // enough for six frames to be read and the overrun detected, and
-      // decided the outcome: too busy a worker and the assertion read zero.
+      // The overrun is the signal; wait for it rather than assuming a
+      // fixed window was long enough for six frames to be read.
       await overrunReported.promise;
-      // The reason, not the count: the wait above resolves on any crash, and
-      // the pump stops on the first, so a seq-gap or HMAC crash arriving
+      // The reason, not the count: the wait resolves on any crash, and the
+      // pump stops on the first, so a seq-gap or HMAC crash arriving
       // instead is what this distinguishes.
       expect(crashes[0]).toMatch(/buffer overrun/);
     } finally {
@@ -1222,9 +1205,9 @@ describe("Event channel", () => {
   });
 
   test("rejects a control-shaped payload over the event channel", async () => {
-    // The two channels carry disjoint payload unions. A "control"
-    // payload sneaked over the event wire fails event validation;
-    // no event-channel consumer can act on it.
+    // The two payload unions are disjoint: a "control" payload sneaked
+    // over the event wire fails event validation; no event-channel
+    // consumer can act on it.
     const key = generateHmacKey();
     const channelId = generateChannelId();
     const stream = createMemoryFrameStream();
@@ -1335,12 +1318,10 @@ describe("Event channel", () => {
     const cut = Math.floor(wire.length / 2);
 
     stream.injectRaw(wire.subarray(0, cut));
-    // An empty buffer means the receiver took the chunk, which is what makes
-    // the assertion below meaningful -- a sleep proves only that time passed,
-    // not that the receiver ever looked. The chunk carries no terminator, so
-    // the decoder's split finds no complete line and the pump returns to
-    // reading; the only path to a delivery runs through the line loop and is
-    // unreachable until the terminator arrives.
+    // An empty buffer proves the receiver took the chunk (a sleep proves
+    // only that time passed). The chunk carries no terminator, so the
+    // decoder's split finds no complete line and no delivery is possible
+    // until the terminator arrives.
     await waitUntil(() => stream.flushed().length === 0);
     expect(received.length).toBe(0);
     stream.injectRaw(wire.subarray(cut));
@@ -1415,9 +1396,9 @@ describe("Event channel", () => {
 
 describe("Spawn-time trust-anchor bootstrap", () => {
   // Documents the exact env contract the supervisor's spawn-time
-  // construction code path must satisfy. The keys here are the only
-  // values that should appear in the env handed to the child; the
-  // supervisor's Ed25519 private key MUST NOT appear.
+  // construction code path must satisfy. These are the only keys that
+  // should appear in the env handed to the child; the supervisor's
+  // Ed25519 private key must NOT appear.
   const REQUIRED_ENV_KEYS = [
     "HOST_PUBKEY",
     "IPC_HMAC_KEY",

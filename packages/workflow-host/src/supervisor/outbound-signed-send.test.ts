@@ -11,12 +11,11 @@
 // verifies the signature as `valid` against the agent's key and reports
 // `from = <run address>`.
 //
-// Against the absence of an outbound path (the pre-4.3 supervisor mail
-// bus is INBOUND-ONLY -- register / unregister / subscribe /
-// routeInbound, no send), there is no `MailBusBindings.sendOutbound`,
-// no `outbound.message` control frame, and no supervisor handler: the
-// child has no way to drive an outbound send and this test cannot be
-// written. It is green only because 4.3 added all three.
+// This test exists only because 4.3 added the outbound path: the
+// pre-4.3 supervisor mail bus is INBOUND-ONLY (register / unregister /
+// subscribe / routeInbound, no send), with no `MailBusBindings.
+// sendOutbound`, no `outbound.message` control frame, and no supervisor
+// handler.
 
 import { describe, test, expect } from "bun:test";
 import fs from "node:fs/promises";
@@ -48,8 +47,8 @@ const RECIPIENT_ADDRESS = "recipient@integration.example";
  * No-op inbox primitives. This test exercises only the OUTBOUND path,
  * which never touches the inbox claim-check; injecting these keeps the
  * spawn-time replay and dispatch loop off the stub `RepoStore`'s
- * unimplemented `writeTreePreservingPrefix` so a crash there cannot tear
- * the control channel down before the outbound round-trip completes.
+ * unimplemented `writeTreePreservingPrefix` so a crash there cannot
+ * tear the control channel down before the round-trip completes.
  */
 function createNoopInboxPrimitives(): InboxPrimitives {
   return {
@@ -72,17 +71,18 @@ describe("supervisor-backed outbound signed send (Phase 4.3)", () => {
   test("child outbound.message -> supervisor signed send -> signed by the agent's identity", async () => {
     const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "p4-3-outbound-"));
 
-    // Host transport: the real in-memory transport the sidecar owns. The
-    // agent's CryptoProvider is registered here against its address --
-    // exactly the registration the in-process `startSession` performs and
-    // the 4.3 sidecar wiring performs at spawn. The supervisor signs the
-    // agent's outbound mail with THIS key.
+    // Host transport: the real in-memory transport the sidecar owns.
+    // The agent's CryptoProvider is registered here against its
+    // address -- exactly the registration the in-process `startSession`
+    // and the 4.3 sidecar wiring perform at spawn. The supervisor
+    // signs the agent's outbound mail with THIS key.
     const hostTransport = createInMemoryTransport();
     const agentKeyPair = await generateKeyPair();
     const agentCrypto = createEd25519Crypto(agentKeyPair);
     hostTransport.register(AGENT_ADDRESS, agentCrypto);
     // Register the recipient so the send delivers locally (no remote
-    // leg) and the test can fetch the signed bytes back out of its INBOX.
+    // leg) and the test can fetch the signed bytes back out of its
+    // INBOX.
     const recipientKeyPair = await generateKeyPair();
     hostTransport.register(
       RECIPIENT_ADDRESS,
@@ -141,8 +141,8 @@ describe("supervisor-backed outbound signed send (Phase 4.3)", () => {
       deriveStepAddress: () => AGENT_ADDRESS,
       // Single-step launched agent: its grants live in the legacy
       // agent-state repo keyed by the agent id. The stub repo's
-      // getRepoDir resolves the dir; no grants file is needed because the
-      // outbound path never reads grants.
+      // getRepoDir resolves the dir; no grants file is needed because
+      // the outbound path never reads grants.
       deriveStepRepoId: () => ({ kind: "agent-state", id: "outbound-dep" }),
       inboxPrimitives: createNoopInboxPrimitives(),
       ipcKeyPairFactory: () => Promise.resolve(supervisorIpcKeyPair),
@@ -181,10 +181,10 @@ describe("supervisor-backed outbound signed send (Phase 4.3)", () => {
     });
     await spawnPromise;
 
-    // Drive the OUTBOUND request the step agent's mail-send tool produces:
-    // a structured conversation message addressed to the recipient. The
-    // child forwards it up as `outbound.message` carrying the agent's
-    // sender address; the supervisor performs the signed send.
+    // Drive the OUTBOUND request the step agent's mail-send tool
+    // produces: a structured conversation message addressed to the
+    // recipient, forwarded up as `outbound.message` carrying the
+    // agent's sender address; the supervisor performs the signed send.
     const requestId = "om-test-1";
     await childSender.send({
       type: "outbound.message",
@@ -199,12 +199,10 @@ describe("supervisor-backed outbound signed send (Phase 4.3)", () => {
       },
     });
 
-    // Wait for the supervisor's `outbound.result` reply. The wait is driven
-    // by the stream double reporting each write and re-reading the buffer
-    // then, so nothing is re-parsed on a tick and no duration decides the
-    // outcome. `waitForUpstreamPayload` validates each frame through the
-    // canonical `SignedEnvelope` + `ControlPayload` narrows, as the local
-    // parser this replaced did.
+    // Wait for the supervisor's `outbound.result` reply, driven by the
+    // stream double reporting each write; `waitForUpstreamPayload`
+    // validates each frame through the canonical `SignedEnvelope` +
+    // `ControlPayload` narrows.
     const result = (
       await waitForUpstreamPayload(
         supervisorToChild,
@@ -223,12 +221,12 @@ describe("supervisor-backed outbound signed send (Phase 4.3)", () => {
     expect(result.result.messageId.length).toBeGreaterThan(0);
     expect(result.result.status === "delivered").toBe(true);
 
-    // The signed bytes landed in the recipient's INBOX. Fetch the full
-    // message: `fetchFull` verifies the PGP/MIME signature against the
-    // sender's registered CryptoProvider -- this is the SAME verification
-    // the in-process path relies on, so a `valid` status with `from` =
-    // the agent's address is the proof that the outbound mail was signed
-    // by the AGENT's identity, not the supervisor's principal key.
+    // The signed bytes landed in the recipient's INBOX. `fetchFull`
+    // verifies the PGP/MIME signature against the sender's registered
+    // CryptoProvider -- the SAME verification the in-process path relies
+    // on -- so a `valid` status with `from` = the agent's address proves
+    // the outbound mail was signed by the AGENT's identity, not the
+    // supervisor's principal key.
     const recipientView = hostTransport.getTransportFor(RECIPIENT_ADDRESS);
     const refs = await recipientView.search("INBOX", {});
     expect(refs.length).toBe(1);

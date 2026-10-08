@@ -3,15 +3,14 @@
 // Gap A pins the `waitForReady` -> `pumpUpstreamControl` iterator
 // handoff: an upstream control frame that arrives in the wire-level
 // buffer immediately after `ready` (before the upstream pump
-// subscribes) must still flow into `pumpUpstreamControl` and not be
-// dropped on the floor when the generator's first consumer
-// (`waitForReady`) exits.
+// subscribes) must still flow into `pumpUpstreamControl`, not be
+// dropped when the generator's first consumer (`waitForReady`) exits.
 //
 // Gap B pins the spawn-time crash vs `shutdownInternal` race: when a
 // `shutdown()` lands while `spawn()` is still awaiting the child's
 // `ready` frame, the spawn-time error (control channel ended before
 // `ready`) must surface to the awaiting `spawn()` caller and not be
-// silently swallowed by the shutdown teardown.
+// swallowed by the shutdown teardown.
 
 import { describe, test, expect } from "bun:test";
 import fs from "node:fs/promises";
@@ -205,17 +204,16 @@ async function buildBindings(opts: {
 
 describe("waitForReady -> pumpUpstreamControl iterator handoff (Gap A)", () => {
   test("a recycle.request that lands immediately after ready is delivered to the upstream pump rather than dropped", async () => {
-    // The synthetic child injects `ready` and `recycle.request` back-
-    // to-back into the supervisor's upstream control reader BEFORE the
-    // supervisor's `spawn()` consumes them. The handoff under test:
-    // `waitForReady` consumes `ready` off the receiver generator and
-    // returns; `pumpUpstreamControl` (started later in `spawn()`)
-    // continues iterating the SAME generator. If the handoff finalized
-    // the generator on `ready`, the buffered `recycle.request` frame
-    // would be silently dropped and the supervisor would never react.
-    // The assertion: the supervisor honours the request by invoking
-    // its recycle path, which spawns a fresh workflow-process child
-    // under a new channelId.
+    // The synthetic child injects `ready` and `recycle.request`
+    // back-to-back into the supervisor's upstream control reader
+    // BEFORE the supervisor's `spawn()` consumes them. The handoff
+    // under test: `waitForReady` consumes `ready` off the receiver
+    // generator and returns; `pumpUpstreamControl` (started later in
+    // `spawn()`) continues iterating the SAME generator. If the
+    // handoff finalized the generator on `ready`, the buffered
+    // `recycle.request` would be silently dropped and the supervisor
+    // would never react. The assertion: the supervisor honours the
+    // request by spawning a fresh child under a new channelId.
     const baseDir = await makeTempDir("lifecycle-races-gap-a-");
     await seedStepGrants(
       baseDir,
@@ -289,10 +287,9 @@ describe("waitForReady -> pumpUpstreamControl iterator handoff (Gap A)", () => {
     });
 
     // Wait until the supervisor has invoked the spawner. At this
-    // moment the supervisor's `wireChild` has constructed the receive
-    // generator but no consumer has subscribed -- both frames injected
-    // below sit in the reader's internal buffer until the generator
-    // pulls them.
+    // moment `wireChild` has constructed the receive generator but no
+    // consumer has subscribed -- both frames injected below sit in
+    // the reader's internal buffer until the generator pulls them.
     await waitUntil(
       () => children.length > 0 && children[0]?.channelId !== undefined,
     );
@@ -311,7 +308,7 @@ describe("waitForReady -> pumpUpstreamControl iterator handoff (Gap A)", () => {
     });
     // Inject `ready` followed IMMEDIATELY by `recycle.request`. Both
     // frames are buffered in the reader before any iterator consumer
-    // pulls. `waitForReady` will consume `ready` and exit; the
+    // pulls; `waitForReady` consumes `ready` and exits, and the
     // upstream pump must observe the buffered `recycle.request` next.
     await childSender.send({
       type: "ready",
@@ -328,10 +325,10 @@ describe("waitForReady -> pumpUpstreamControl iterator handoff (Gap A)", () => {
     await spawnPromise;
 
     // The supervisor's recycle path under origin=self spawns a fresh
-    // workflow-process child. Wait for the second spawn; if Gap A
-    // were unhealed (e.g. `for await ... return` over the receiver
-    // generator), the buffered `recycle.request` would be silently
-    // dropped and `children.length` would never reach 2.
+    // child. Wait for the second spawn; if Gap A were unhealed (e.g.
+    // `for await ... return` over the receiver generator), the
+    // buffered `recycle.request` would be silently dropped and
+    // `children.length` would never reach 2.
     await waitUntil(() => children.length >= 2);
     expect(children.length).toBeGreaterThanOrEqual(2);
     const second = children[1];
@@ -529,11 +526,11 @@ describe("shutdownInternal vs spawn-time crash (Gap B)", () => {
     // The spawner returns a handle whose control reader never yields
     // `ready`. The test starts `spawn()`, lets the supervisor reach
     // the `waitForReady` await, then calls `shutdown()`. The shutdown
-    // path kills the handle, which closes the control reader. The
-    // supervisor's `waitForReady` observes the iterator ending and
-    // throws "control channel ended before child emitted ready". That
-    // error MUST surface as a `spawn()` rejection -- not be swallowed
-    // by the shutdown teardown's catches.
+    // path kills the handle, which closes the control reader;
+    // `waitForReady` observes the iterator ending and throws "control
+    // channel ended before child emitted ready". That error MUST
+    // surface as a `spawn()` rejection -- not be swallowed by the
+    // shutdown teardown's catches.
     const baseDir = await makeTempDir("lifecycle-races-gap-b-");
     await seedStepGrants(
       baseDir,
@@ -596,8 +593,8 @@ describe("shutdownInternal vs spawn-time crash (Gap B)", () => {
     await mailBus.awaitRegistered("deployment-x@example.com");
     await waitUntil(() => spawnerInvoked);
 
-    // Concurrently trigger shutdown. The shutdown's `prior.handle.kill()`
-    // closes the control reader; the supervisor's `waitForReady`
+    // Concurrently trigger shutdown. The shutdown's
+    // `prior.handle.kill()` closes the control reader; `waitForReady`
     // throws "control channel ended before child emitted ready" and
     // unwinds out of `spawn()`. The test asserts the rejection is
     // observable -- a swallowed error would either hang `spawnPromise`

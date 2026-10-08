@@ -82,10 +82,9 @@ function cacheFor(
 const emptyCache = (): undefined => undefined;
 
 /**
- * Remove the top-level `From` header from an assembled message, leaving the
- * rest of it byte-identical. The detached signature covers only the signed
- * content part, never the top-level headers, so the result still verifies --
- * it is a validly-signed message that carries no originator at all.
+ * Remove the top-level `From` header, leaving the rest byte-identical. The
+ * detached signature covers only the signed content part, so the result
+ * still verifies.
  */
 function stripFromHeader(raw: Uint8Array): Uint8Array {
   const text = new TextDecoder().decode(raw);
@@ -100,11 +99,10 @@ function stripFromHeader(raw: Uint8Array): Uint8Array {
 }
 
 /**
- * Replace the top-level `From` header's VALUE with `value`, leaving the rest of
- * the message byte-identical. Like {@link stripFromHeader} this touches only the
- * top-level headers, which the detached signature does not cover, so the result
- * still verifies. `value` is spliced in directly after the colon, so it can
- * carry a CRLF and produce a folded header.
+ * Replace the top-level `From` header's VALUE with `value`, leaving the rest
+ * byte-identical. Like {@link stripFromHeader} this touches only top-level
+ * headers, so the result still verifies. `value` is spliced directly after
+ * the colon, so it can carry a CRLF and produce a folded header.
  */
 function replaceFromValue(raw: Uint8Array, value: string): Uint8Array {
   const text = new TextDecoder().decode(raw);
@@ -125,11 +123,10 @@ function replaceFromValue(raw: Uint8Array, value: string): Uint8Array {
 
 /**
  * Insert `line` as its own top-level header field directly after the existing
- * `From`, leaving the rest of the message byte-identical. Like
- * {@link stripFromHeader} this touches only the top-level headers, which the
- * detached signature does not cover, so the result still verifies. `line`
- * carries its own field name, so this is how a message with two `From` fields
- * is built.
+ * `From`, leaving the rest byte-identical. Like {@link stripFromHeader} this
+ * touches only top-level headers, so the result still verifies. `line`
+ * carries its own field name, so this builds a message with two `From`
+ * fields.
  */
 function insertHeaderLineAfterFrom(raw: Uint8Array, line: string): Uint8Array {
   const text = new TextDecoder().decode(raw);
@@ -146,12 +143,9 @@ function insertHeaderLineAfterFrom(raw: Uint8Array, line: string): Uint8Array {
 
 /**
  * Restate a decoded mail's originator in the spelling a verdict uses, so the
- * two are directly comparable. The asymmetry is deliberate on both sides and
- * not an accident to paper over: `InboundSignatureVerdict.messageFrom` is
- * `string | null`, while `Mail.headers.from` is `string | undefined` because a
- * mail carrying no usable originator is still mail. Only the absent case is
- * restated; a present address is carried through untouched, so a comparison
- * through this cannot make two different addresses agree.
+ * two are directly comparable: `messageFrom` is `string | null`,
+ * `Mail.headers.from` is `string | undefined`. Only the absent case is
+ * restated; a present address passes through untouched.
  */
 function asVerdictOriginator(from: string | undefined): string | null {
   return from === undefined ? null : from;
@@ -197,8 +191,6 @@ describe("verifyInboundSignature", () => {
     expect(verdict.signature).toBe("invalid");
     // The binding is evaluated whatever the signature check found, so a From
     // naming the stamped sender is `match` even where the signature failed.
-    // The message is then unhappy on one axis only, and the author's `invalid`
-    // decision is the only one the admission reads.
     expect(verdict.fromMatch).toBe("match");
     expect(verdict.messageFrom).toBe(sender);
   });
@@ -232,10 +224,9 @@ describe("verifyInboundSignature", () => {
   });
 
   test("valid signature under a forged From: valid/mismatch", async () => {
-    // The message is genuinely signed by `crypto` (the key the cache holds for
-    // the stamped `signer`), but its visible From claims a different sender. A
-    // valid signature over a borrowed display identity is the forgery this
-    // binding catches.
+    // Genuinely signed by the cached key for the stamped `signer`, but the
+    // visible From claims a different sender -- the forgery this binding
+    // catches.
     const signer = "alpha@test.interchange";
     const forgedFrom = "victim@test.interchange";
     const crypto = await makeCrypto();
@@ -257,20 +248,13 @@ describe("verifyInboundSignature", () => {
   });
 
   test("a forged From at a cache miss is a mismatch that a relaxed unknown does not admit", async () => {
-    // The whole path from bytes to decision, for the policy an author writes to
-    // accommodate a key rotation. No key is cached for the stamped sender, so
-    // the signature axis is `unknown`; the message's visible From names somebody
-    // else entirely. Nothing downstream of the gate reads the stamp, so
-    // admitting this would deliver a message every consumer attributes to the
-    // address in its From.
-    //
-    // Relaxing `unknown` does not make this admissible, because the two are
-    // separately keyed. What relaxing `unknown` cannot buy back either way is
-    // verified identity: a sender who sets the stamp and the From to the same
-    // forged address is internally consistent and gets in, as the companion
-    // test below shows. The separation removes the INVERSION -- a
-    // self-contradictory message no longer gets in where a message that
-    // honestly names nobody is refused.
+    // No key is cached for the stamped sender, so the signature axis is
+    // `unknown`; the visible From names somebody else entirely. Nothing
+    // downstream reads the stamp, so admitting this would deliver a message
+    // every consumer attributes to the address in its From. Relaxing `unknown`
+    // does not make it admissible: the axes are separately keyed, and
+    // relaxing `unknown` cannot buy back verified identity (the companion
+    // test below shows the internally-consistent forged pair getting in).
     const stamp = "attacker@remote.example";
     const forgedFrom = "ceo@victim.example";
     const crypto = await makeCrypto();
@@ -300,10 +284,8 @@ describe("verifyInboundSignature", () => {
   });
 
   test("a consistent From at a cache miss is admitted under a relaxed unknown", async () => {
-    // The companion of the case above, and what keeps the separation from
-    // closing `unknown: "admit"` altogether. The message names the sender the
-    // hub stamped, so it raises `unknown` alone and the author who relaxed
-    // `unknown` gets it. That is the statement an operator can hold: an
+    // Companion of the case above: the message names the stamped sender, so it
+    // raises `unknown` alone and the author who relaxed `unknown` gets it -- an
     // unverified but internally consistent identity claim is accepted.
     const sender = "rotating@remote.example";
     const crypto = await makeCrypto();
@@ -351,8 +333,7 @@ describe("verifyInboundSignature", () => {
 
   test("a resolver that throws degrades to error, not a crash", async () => {
     // The resolver call is inside the verify's try, so a throw is contained as
-    // a distinct `error` verdict rather than escaping and being mis-logged as a
-    // mail-path crash.
+    // a distinct `error` verdict rather than escaping as a mail-path crash.
     const sender = "alpha@test.interchange";
     const crypto = await makeCrypto();
     const raw = await signedMessage(crypto, sender);
@@ -403,10 +384,9 @@ describe("verifyInboundSignature", () => {
   });
 
   test("a cached key that cannot verify faults, rather than failing the check", async () => {
-    // Distinct from the test above: `getPublicKey` answers, it just answers
-    // with bytes no signature can be checked against. The check never runs, so
-    // the gate must not report the signature as having been checked and found
-    // wanting -- that is `invalid`, and an author can relax `invalid`.
+    // Distinct from the test above: `getPublicKey` answers with bytes no
+    // signature can be checked against. The check never runs, so the gate must
+    // not report `invalid` (which an author can relax).
     const sender = "alpha@test.interchange";
     const crypto = await makeCrypto();
     const raw = await signedMessage(crypto, sender);
@@ -430,11 +410,10 @@ describe("verifyInboundSignature", () => {
   });
 
   test("no policy admits a message whose key could not verify anything", async () => {
-    // The security property the policy document states: a message the gate
-    // could not check through is never something an author waves past. The
-    // policy here relaxes every key an author can write, including the two --
-    // `invalid` and `untrustedFrom` -- that a key fault would land on if it
-    // were reported as a failed check.
+    // The security property: a message the gate could not check through is
+    // never something an author waves past. This policy relaxes every author
+    // key, including `invalid` and `untrustedFrom` -- the two a key fault would
+    // land on if reported as a failed check.
     const sender = "alpha@test.interchange";
     const crypto = await makeCrypto();
     const raw = await signedMessage(crypto, sender);
@@ -490,10 +469,9 @@ describe("verifyInboundSignature", () => {
 
   test("an unparseable multi-address From is unparseable, not a false mismatch", async () => {
     // The check must not turn a From it cannot reduce to one addr-spec into a
-    // forgery verdict -- that would poison the corpus (and later drop
-    // legitimate mail under enforcement). extractAddrSpec rejects the two-@
-    // input; the binding is `unparseable` -- present but malformed, distinct
-    // from the benign no-From `absent` -- while the signature stands.
+    // forgery verdict -- that would poison the corpus. extractAddrSpec rejects
+    // the two-@ input; the binding is `unparseable` (present but malformed,
+    // distinct from the benign no-From `absent`) while the signature stands.
     const sender = "alpha@test.interchange";
     const crypto = await makeCrypto();
     const raw = await signedMessage(
@@ -518,11 +496,11 @@ describe("verifyInboundSignature", () => {
 
   test("an unparseable From at a cache miss is unparseable, not a mismatch", async () => {
     // The From is evaluated for every non-error status, not only valid. A
-    // present-but-unparseable From under an `unknown` signature is still
-    // `unparseable`: the gate never reduced it to an address, so it has no
-    // addr-spec to compare and must not report the `mismatch` of a From it read
-    // and found to name somebody else. The two are separately keyed, so folding
-    // them together would hand an author one decision where they have two.
+    // present-but-unparseable From under `unknown` is still `unparseable`: the
+    // gate never reduced it to an address, so it must not report the
+    // `mismatch` of a From it read and found to name somebody else. The axes
+    // are separately keyed; folding them would hand an author one decision
+    // where they have two.
     const sender = "alpha@test.interchange";
     const crypto = await makeCrypto();
     const raw = await signedMessage(
@@ -575,15 +553,12 @@ describe("verifyInboundSignature", () => {
     expect(verdict.messageFrom).toBeNull();
   });
 
-  // A `From` that is PRESENT but blank reaches the same `absent` state as one
-  // that is not there at all: the header value is empty once trimmed, so there
-  // is no originator to bind. A sender chooses this -- writing `From:` with
-  // nothing after it is a deliberate act, not a parse accident -- so it must
-  // not buy a better outcome than omitting the header, and it must not land on
-  // the `unparseable` arm either, which is keyed to a value the gate could not
-  // reduce rather than to one that holds nothing. The last row carries the
-  // value on a folded continuation line of only whitespace, so unfolding runs
-  // before the value is read.
+  // A `From` that is PRESENT but blank reaches the same `absent` state as no
+  // header at all: the value is empty once trimmed, so there is no originator
+  // to bind. It must not buy a better outcome than omitting the header, and
+  // must not land on `unparseable`, which is keyed to a value the gate could
+  // not reduce. The last row folds a whitespace-only continuation line, so
+  // unfolding runs before the value is read.
   const blankFromValues: [label: string, value: string][] = [
     ["is empty", ""],
     ["is one space", " "],
@@ -638,9 +613,8 @@ describe("verifyInboundSignature", () => {
   test("a validly signed message with no From is absentFrom, not clean", async () => {
     // The binding is `absent` -- there was nothing to bind -- but the gate
     // must not certify its most permissive outcome for a binding it never
-    // checked. The stamp does not cross the seam into the recipient's process
-    // and every downstream consumer attributes from the message's own `From`,
-    // so a signature that verified over a message naming no originator is
+    // checked. Every downstream consumer attributes from the message's own
+    // `From`, so a verified signature over a message naming no originator is
     // `absentFrom`: the gate holds a sender it cannot certify the message is
     // from.
     const sender = "alpha@test.interchange";
@@ -664,11 +638,10 @@ describe("verifyInboundSignature", () => {
   });
 
   test("relaxing untrustedFrom alone does not admit a message with no From", async () => {
-    // The two conditions are separately keyed, and this is the separation.
-    // An author relaxes `untrustedFrom` to tolerate an external correspondent's
-    // odd headers; that judgement says nothing about mail the gate resolved no
-    // originator for at all. The latter is `absentFrom`, which this policy
-    // leaves at its `reject` default.
+    // The two conditions are separately keyed. An author relaxes
+    // `untrustedFrom` to tolerate an external correspondent's odd headers;
+    // that judgement says nothing about mail the gate resolved no originator
+    // for at all. The latter is `absentFrom`, left at its `reject` default.
     const sender = "alpha@test.interchange";
     const crypto = await makeCrypto();
     const raw = stripFromHeader(await signedMessage(crypto, sender));
@@ -717,15 +690,15 @@ describe("verifyInboundSignature", () => {
 
   test("an unparseable stamped sender faults, even under a valid signature", async () => {
     // A present-and-parseable message From under a VALID signature, but the
-    // stamped authenticatedSender itself is not a bare addr-spec (a two-@
-    // string extractAddrSpec refuses). The stamp is the identity the whole
-    // verification is about, so one that cannot be parsed is a fault in the
-    // verification's own input: `error`, which is pinned to reject.
+    // stamped authenticatedSender is not a bare addr-spec (a two-@ string
+    // extractAddrSpec refuses). The stamp is the identity the verification is
+    // about, so one that cannot be parsed is a fault in its own input:
+    // `error`, pinned to reject.
     //
-    // The verdict carries a null `messageFrom` and headlines `error` even
-    // though the message's own From is perfectly readable. The stamp is parsed
-    // above the point where the visible From is read, so the gate reports no
-    // originator at all rather than one it holds and could not compare.
+    // The verdict headlines `error` even though the message's own From is
+    // perfectly readable: the stamp is parsed above the visible From, so the
+    // gate reports no originator at all rather than one it holds and could
+    // not compare.
     const badSender = "alpha@test@interchange";
     const crypto = await makeCrypto();
     const raw = await signedMessage(crypto, "alpha@test.interchange");
@@ -841,13 +814,12 @@ describe("verifyInboundSignature", () => {
   });
 
   // Two top-level `From` fields is malformed under RFC 5322 section 3.6.2,
-  // which allows one. Nothing on the delivery path refuses such a message, so
-  // the gate binds one of the two values and the decoded mail a consumer reads
-  // carries both. What must hold is that the gate binds the SAME value the
-  // consumer's `headers.from` names, in either order: if the two disagreed, an
-  // attacker could get one originator past the gate and a different one
-  // delivered. `parseHeaders` keeps the first occurrence, and both the gate and
-  // `decodeMail` read through it, which is what makes them agree.
+  // but nothing on the delivery path refuses such a message. What must hold is
+  // that the gate binds the SAME value the consumer's `headers.from` names, in
+  // either order: if they disagreed, an attacker could get one originator past
+  // the gate and a different one delivered. `parseHeaders` keeps the first
+  // occurrence, and both the gate and `decodeMail` read through it, which is
+  // what makes them agree.
   const DUP_SENDER = "alpha@test.interchange";
   const DUP_ATTACKER = "evil@attacker.example";
 
@@ -932,11 +904,11 @@ function verdict(
 
 describe("outcomeForVerdict", () => {
   // Every (signature, fromMatch) pair mapped to its outcome. match, mismatch,
-  // absent and unparseable each accompany any non-error signature status, since
-  // the From is evaluated whatever the signature check found. notEvaluated is
-  // reachable only on an `error` verdict; the notEvaluated rows below a
-  // non-error status pin the mapping of a pair the gate does not produce, which
-  // `decideInboundAdmission` separately refuses. error is dominant regardless of
+  // absent and unparseable accompany any non-error signature status, since the
+  // From is evaluated whatever the signature check found. notEvaluated is
+  // reachable only on an `error` verdict; rows below a non-error status pin
+  // the mapping of a pair the gate does not produce, which
+  // `decideInboundAdmission` separately refuses. error dominates regardless of
   // the From axis.
   const table: [
     InboundSignatureVerdict["signature"],
@@ -981,10 +953,9 @@ describe("outcomeForVerdict", () => {
 
   test("clean is headlined only by a valid signature with a matched binding", () => {
     // `clean` is the headline the gate claims on its own authority, so it may
-    // be claimed only where the binding was actually checked AND found to
-    // bind -- never for a binding the gate declined to evaluate. The headline
-    // reaches the log rather than the admission decision, and one that read
-    // `clean` for an unbound message would misreport what the gate found.
+    // be claimed only where the binding was actually checked AND found to bind
+    // -- never for a binding the gate declined to evaluate. A log line that
+    // read `clean` for an unbound message would misreport what the gate found.
     //
     // Both axes are keyed on their own unions, so adding a member to either
     // fails the type-check here rather than escaping the property untested.
@@ -1128,11 +1099,11 @@ describe("decideInboundAdmission", () => {
   }
 
   test("a relaxed signature status still admits when the From agrees with the stamp", () => {
-    // The over-correction guard. A message whose visible From names the sender
-    // the hub stamped raises nothing on the binding axis, so the author's
-    // `invalid` decision is the only one the admission reads. Were the binding
-    // to complain here, an author who relaxed `invalid` would find their
-    // decision quietly overridden by an axis that found nothing wrong.
+    // The over-correction guard. A From naming the stamped sender raises
+    // nothing on the binding axis, so the author's `invalid` decision is the
+    // only one the admission reads. Were the binding to complain here, an
+    // author who relaxed `invalid` would find their decision overridden by an
+    // axis that found nothing wrong.
     const decision = decideInboundAdmission(
       verdict("invalid", "match"),
       resolveInboundMailPolicy({ invalid: "admit" }),
@@ -1145,16 +1116,14 @@ describe("decideInboundAdmission", () => {
   // A From that contradicts the stamp is a finding under EVERY signature
   // status, keyed on its own `mismatchedFrom`. Relaxing a signature key is a
   // decision about how the originator's identity was ESTABLISHED; accepting a
-  // message that names one identity while the hub stamped another is a decision
-  // about identity itself, and the two are held separately.
+  // message that names one identity while the hub stamped another is a
+  // decision about identity itself, and the two are held separately.
   //
-  // What this does not buy: it does not make a relaxed signature key safe. A
-  // sender who sets the stamp and the From to the same forged address is
-  // internally consistent, reaches `match`, and is admitted -- that is inherent
-  // in admitting an identity no key verified. What it removes is the inversion
-  // of admitting a self-contradictory claim while refusing a message that
-  // honestly names nobody, which is backwards and which no operator could state
-  // as a policy.
+  // This does not make a relaxed signature key safe: a sender who sets the
+  // stamp and the From to the same forged address is internally consistent,
+  // reaches `match`, and is admitted -- inherent in admitting an identity no
+  // key verified. It removes the inversion of admitting a self-contradictory
+  // claim while refusing a message that honestly names nobody.
   for (const signature of ["invalid", "missing", "unknown"] as const) {
     const relaxedSignature = resolveInboundMailPolicy({ [signature]: "admit" });
 

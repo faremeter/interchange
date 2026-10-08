@@ -36,10 +36,9 @@ import {
 const REF = "refs/heads/main";
 const tempDirs: string[] = [];
 
-// The backing writes a top-level `mailbox/` subtree. The production
-// workflow-run kind handler's push-time validation of that subtree is owned by
-// the hub-replication layer, not this package; a permissive handler isolates
-// this backing's persistence contract from that validation.
+// The backing writes a top-level `mailbox/` subtree. Its push-time
+// validation is owned by the hub-replication layer, not this package; a
+// permissive handler isolates this backing's persistence contract.
 const permissiveHandler: KindHandler = {
   kind: "workflow-run",
   directoryPrefix: "workflow-runs",
@@ -85,8 +84,8 @@ type DeltaRecord = { puts: string[]; deletes: string[] };
 
 // Wrap a `RepoStore` so each `writeTreeDelta` records the exact paths its
 // `computeDelta` produced, then delegates unchanged. The wrapper decorates the
-// caller's `computeDelta` rather than re-deriving the delta, so it observes the
-// same puts/deletes the store commits, computed against the real pinned parent.
+// caller's `computeDelta`, so it observes the same puts/deletes the store
+// commits.
 function createRecordingSubstrate(
   inner: RepoStore,
   recorded: DeltaRecord[],
@@ -119,8 +118,7 @@ async function makeHandles(deploymentId: string): Promise<Handles> {
   const dataDir = await makeTempDir();
   const repoId: RepoId = { kind: "workflow-run", id: deploymentId };
   // `Principal` exposes only `kind`; concrete fields are narrowed by kind
-  // handlers. Assign through an intermediate so the excess `anchorRunId`
-  // property is not rejected by the structural check.
+  // handlers, so assign through an intermediate shape.
   const principalShape = {
     kind: "workflow-process" as const,
     anchorRunId: deploymentId,
@@ -217,8 +215,7 @@ async function senderCrypto(): Promise<Ed25519Crypto> {
  * Drop one named header's line from a message's header section, leaving every
  * other byte alone. The detached signature covers the signed-content part
  * inside the body rather than the outer headers, so the message still verifies
- * -- which makes this the raw counterpart of an envelope whose corresponding
- * field is absent.
+ * -- the raw counterpart of an envelope whose field is absent.
  */
 function stripHeader(raw: Uint8Array, name: string): Uint8Array {
   const { headerEnd } = parseHeaderSection(raw);
@@ -238,9 +235,9 @@ function stripHeader(raw: Uint8Array, name: string): Uint8Array {
 
 /**
  * The nullable envelope fields each committed message holds, in index order.
- * Reads `index.json` as JSON rather than through the store, so the assertion is
- * about the durable on-disk encoding and not about a serialize/deserialize pair
- * that could agree with each other on a value no other reader expects.
+ * Reads `index.json` as JSON rather than through the store, so the assertion
+ * is about the durable on-disk encoding, not a serialize/deserialize pair
+ * that could agree on a value no other reader expects.
  */
 const IndexEnvelopes = type({
   messages: type({
@@ -275,16 +272,16 @@ async function readIndexEnvelopes(
 
 /**
  * The `version` every committed `index.json` carries. Written as a literal
- * rather than imported from the module under test: the loader matches the
- * version exactly and carries no migration arm, so importing the production
- * constant would let both sides move together and assert nothing.
+ * rather than imported: the loader matches the version exactly and carries no
+ * migration arm, so importing the production constant would let both sides
+ * move together and assert nothing.
  */
 const COMMITTED_INDEX_VERSION = 1;
 
 /**
  * The committed `index.json`, validated only as far as its `version`.
- * Undeclared keys are ignored rather than deleted, so the parsed object still
- * carries every other index field for `rewriteIndexVersion` to spread.
+ * Undeclared keys are ignored, so the parsed object still carries every
+ * other index field for `rewriteIndexVersion` to spread.
  */
 const CommittedIndex = type({
   version: "number",
@@ -315,11 +312,10 @@ async function readCommittedIndex(handles: Handles) {
 }
 
 /**
- * Rewrite the committed `index.json` with a different `version`, carrying every
- * other field through unchanged, so a load that fails afterwards can only be
- * failing on the version. The delta puts `index.json` alone, so each
- * `<uid>.eml` carries forward by object id and the loader's blob-presence
- * check still passes.
+ * Rewrite the committed `index.json` with a different `version`, carrying
+ * every other field through unchanged, so a load that fails afterwards can
+ * only be failing on the version. The delta puts `index.json` alone, so each
+ * `<uid>.eml` carries forward by object id.
  */
 async function rewriteIndexVersion(handles: Handles, version: number) {
   const next = { ...(await readCommittedIndex(handles)), version };
@@ -397,9 +393,9 @@ describe("substrate mailbox store", () => {
     const byFrom = await executeSearch("INBOX", store, { from: "alice" });
     expect(byFrom.map((r) => r.uid)).toEqual([aliceUid]);
 
-    // The `header` predicate scans headers the envelope does not carry, so it
-    // reads each candidate's raw bytes on demand. Before the flush those bytes
-    // are the still-pending append raw; this exercises that path.
+    // The `header` predicate scans headers the envelope does not carry, so
+    // it reads each candidate's raw bytes on demand; before the flush those
+    // bytes are the still-pending append raw.
     const bySubjectHeader = await executeSearch("INBOX", store, {
       header: { field: "Subject", contains: "hello" },
     });
@@ -428,7 +424,7 @@ describe("substrate mailbox store", () => {
     });
     const uid = store.append(msg.raw, msg.envelope, []);
 
-    // The resident message model carries no raw bytes; the bytes are read on
+    // The resident message model carries no raw bytes; they are read on
     // demand and are byte-identical to the input.
     expect("raw" in (store.find(uid) ?? {})).toBe(false);
     expect(await store.readRaw(uid)).toEqual(msg.raw);
@@ -615,7 +611,7 @@ describe("substrate mailbox store", () => {
 
     // After a successful flush the bytes are dropped from memory. The pinned
     // committed-read snapshot predates the commit, so the writer store can no
-    // longer resolve them -- direct proof the raw was released, not retained.
+    // longer resolve them -- direct proof the raw was released.
     await expect(store.readRaw(uid)).rejects.toThrow(/not resolvable/);
 
     // A fresh reader opens a new snapshot that sees the committed blob and
@@ -676,8 +672,7 @@ describe("substrate mailbox store", () => {
     expect(recorded[0]?.deletes).toEqual([]);
 
     // A second append puts ONLY the new blob; uid1's blob carries forward by
-    // object id and is never re-hashed -- the O(N^2) anti-pattern this fix
-    // removes.
+    // object id and is never re-hashed.
     const second = await makeSignedMessage(crypto, {
       from: "b@example.com",
       to: ["run@dep.example.com"],
@@ -720,10 +715,9 @@ describe("substrate mailbox store", () => {
     // JSON has no `undefined`, so an envelope that carried no originator is
     // written as `null` and read back as `undefined`. Any string in either
     // position -- an empty one or a stand-in address -- would present the
-    // message to every consumer as having named a sender it never named.
-    // Both encodings sit in the same version-1 index, which is what makes the
-    // widening safe with no INDEX_VERSION bump: an index written before it
-    // holds plain strings and is the same format.
+    // message as having named a sender it never named. Both encodings sit in
+    // the same version-1 index, which is what makes the widening safe with no
+    // INDEX_VERSION bump.
     const handles = await makeHandles("dep-no-originator");
     const store = await openStore(handles);
     const crypto = await senderCrypto();
@@ -766,9 +760,8 @@ describe("substrate mailbox store", () => {
     // The same widening the originator got, for the same reason: JSON has no
     // `undefined`, so an envelope whose message named no date is written as
     // `null` and read back as `undefined`. Any string in that position -- the
-    // arrival instant included -- would place the message in a search window on
-    // a date its sender never stated. Both encodings sit in the same version-1
-    // index, which is what makes the widening safe with no INDEX_VERSION bump.
+    // arrival instant included -- would place the message in a search window
+    // on a date its sender never stated.
     const handles = await makeHandles("dep-no-date");
     const store = await openStore(handles);
     const crypto = await senderCrypto();
@@ -813,9 +806,9 @@ describe("substrate mailbox store", () => {
     // `index.json` is a durable on-disk format with no migration arm: the
     // loader matches `version` as an exact literal, so a bump rejects every
     // mailbox already on disk instead of upgrading it. That is what makes a
-    // backward-compatible widening of a field -- `from` to `string | null` --
-    // safe while the version stays put, and why a change that genuinely needs
-    // a bump needs a migration first.
+    // backward-compatible widening of a field safe while the version stays
+    // put, and why a change that genuinely needs a bump needs a migration
+    // first.
     const handles = await makeHandles("dep-index-version");
     const store = await openStore(handles);
     const crypto = await senderCrypto();
@@ -836,7 +829,7 @@ describe("substrate mailbox store", () => {
     );
 
     // Rewriting with the version already committed changes nothing, so the
-    // mailbox still loads. Without this arm a loader that refused every index
+    // mailbox still loads; without this arm a loader that refused every index
     // would satisfy the rejection arms below.
     await rewriteIndexVersion(handles, COMMITTED_INDEX_VERSION);
     const accepted = await openStore(handles);

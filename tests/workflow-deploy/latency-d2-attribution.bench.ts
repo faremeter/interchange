@@ -2,52 +2,38 @@
 //
 // Splits the unified path's per-message substrate tax across the five
 // substrate commit legs, as a function of message index, so each leg's
-// per-message OLS slope (ms added per sustained message) and floor
-// (intercept ms) can be read independently -- the same analysis 4.7/D1
-// did for the whole round-trip, now split by commit. This is the D2
-// re-attribution the rev-3 durability design (§§8-13) calls for: D1's
-// conversation-WAL change removed only ~10% of the slope, so the residual
-// ~90% must be attributed across the OTHER legs before any fix is chosen.
+// per-message OLS slope (ms added per sustained message) and floor (intercept
+// ms) can be read independently -- the D2 re-attribution the rev-3 durability
+// design calls for: D1's conversation-WAL change removed only ~10% of the
+// slope, so the residual ~90% must be attributed across the OTHER legs before
+// any fix is chosen.
 //
-// The five legs (design §10a), each a single git
-// `writeTreePreservingPrefix` commit against the growing workflow-run
-// repo, all emitted through the supervisor's off-by-default
-// `onDispatchTiming` seam to `SIDECAR_LATENCY_BENCH_FILE`:
+// The five legs, each a single git `writeTreePreservingPrefix` commit against
+// the growing workflow-run repo, all emitted through the supervisor's
+// off-by-default `onDispatchTiming` seam:
 //
-//   enqueue       inbox claim-check WRITE in onMailMessage, BEFORE
-//                 dispatch (paid OUTSIDE the 4.7 measured window).
-//   dequeue       claim-check READ (dequeueToProcessing), inside window.
-//   runevent      run-event bracket commit(s) (runs/<runId>/events/),
-//                 inside window. A message may produce SEVERAL; this bench
-//                 SUMS them per message and reports the COUNT.
-//   markconsumed  consumed/ dedup WRITE, AFTER reply-produced (paid
-//                 OUTSIDE the window).
-//   wal           D1 conversation WAL append (agent-state/...), the
-//                 control leg; should be small + flat post-D1.
+//   enqueue       inbox claim-check WRITE, BEFORE dispatch (outside the 4.7
+//                 measured window).
+//   dequeue       claim-check READ, inside window.
+//   runevent      run-event bracket commit(s), inside window (several per
+//                 message; SUMMED, count reported).
+//   markconsumed  consumed/ dedup WRITE, AFTER reply-produced (outside window).
+//   wal           D1 conversation WAL append, the control leg; should be small
+//                 + flat post-D1.
 //
-// The TRUE per-message substrate tax is the SUM of all five, including
-// the two out-of-window legs (enqueue, markconsumed) -- higher than 4.7's
-// in-window 54.5 ms/msg slope.
+// The TRUE per-message substrate tax is the SUM of all five -- higher than
+// 4.7's in-window slope.
 //
-// Plus per-commit STRUCTURAL COUNTERS (design §10b), sampled at each
-// leg's commit time: runs/ fan-out, addresses/<addr>/consumed/ fan-out,
-// loose git-object count, and .git byte size -- so we know WHY a leg
-// grows (tree-rewrite vs pack growth), not merely that it does.
+// Plus per-commit STRUCTURAL COUNTERS sampled at each leg's commit time
+// (runs/ fan-out, consumed/ fan-out, loose git-object count, .git byte size)
+// so we know WHY a leg grows, not merely that it does. Plus a discriminating
+// A/B: force a `git gc`/repack every M messages. If the slope FLATTENS with
+// forced repack, the cost is pack/loose-object growth; if not, it is the
+// per-commit root-tree rewrite scaling with runs/+consumed/ fan-out.
 //
-// Plus the §10c discriminating A/B: set SIDECAR_REPACK_EVERY_MESSAGES to
-// force a `git gc`/repack every M messages. If the slope FLATTENS with
-// forced repack, the cost is pack/loose-object growth (cheap pack/gc
-// fix); if it does NOT, the cost is the per-commit root-tree rewrite
-// scaling with runs/+consumed/ fan-out (run-model change).
-//
-// Run:
-//   bun run tests/workflow-deploy/latency-d2-attribution.bench.ts \
-//     [--messages N] [--out <dir>] [--repack-every M]
-//
-// Writes <out>/d2-leg-timing.log (raw), <out>/d2-per-message.csv (the
-// per-message per-leg matrix), and <out>/d2-results.json (the per-leg
-// OLS slopes/floors + counters). Only the UNIFIED path is instrumented
-// per-leg; the in-process baseline is already known flat (4.7/D1).
+// Run: bun run tests/workflow-deploy/latency-d2-attribution.bench.ts
+// [--messages N] [--out <dir>] [--repack-every M]. Only the UNIFIED path is
+// instrumented per-leg; the in-process baseline is already known flat.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -201,9 +187,9 @@ type PerRun = Map<Leg, LegSample>;
 function parseLegFile(file: string): Map<string, PerRun> {
   const text = fs.readFileSync(file, "utf8");
   const byRun = new Map<string, PerRun>();
-  // Pending start timestamps per (runId, leg) so each start pairs with
-  // its next end. The run-event bracket interleaves start/end pairs, so a
-  // stack per key is the robust pairing.
+  // Pending start timestamps per (runId, leg) so each start pairs with its
+  // next end; the run-event bracket interleaves start/end pairs, so a stack
+  // per key is the robust pairing.
   const pendingStarts = new Map<string, number[]>();
 
   function ensureRun(runId: string): PerRun {
@@ -317,8 +303,8 @@ async function waitForFirstRoutable(
 /**
  * Wait until a leg line for `runId` with the `markconsumed end` phase is
  * present -- the last leg of the message's dispatch, so its arrival means
- * every leg for this message has been written to the file. Paces the
- * driver one message at a time (no pipelining).
+ * every leg for this message has been written to the file. Paces the driver
+ * one message at a time (no pipelining).
  */
 async function waitForMessageComplete(
   file: string,
@@ -395,7 +381,7 @@ async function runUnifiedD2(opts: {
     });
 
     // Deploy the single warm agent BY SOURCE-REF, the same code-sourced front
-    // production drives. The helper registers the deployment on the env, so the
+    // production drives; the helper registers the deployment on the env, so the
     // fire loop resolves it by `anchorRunId` with no manual registration.
     const handle = await deployWorkflowSourceForTest(env, {
       entryModule,
@@ -572,9 +558,9 @@ async function main(): Promise<void> {
     legStats[leg] = summarizeLeg(pm, counts);
   }
 
-  // Per-message total substrate tax (sum across all five legs), and its
-  // own OLS, so the true tax slope/floor (including the two out-of-window
-  // legs) is reported as a single number.
+  // Per-message total substrate tax (sum across all five legs) with its own
+  // OLS, so the true tax slope/floor (including the two out-of-window legs)
+  // is reported as a single number.
   const totalPerMessage: number[] = [];
   for (let i = 0; i < steady.length; i += 1) {
     let total = 0;
@@ -696,13 +682,13 @@ async function main(): Promise<void> {
 
 if (import.meta.main) {
   await main();
-  // Exit explicitly instead of letting the event loop drain. A source-ref
+  // Exit explicitly instead of letting the event loop drain: a source-ref
   // deploy makes the sidecar spawn a child that outlives the sidecar kill in
-  // `env.teardown()`; the child keeps the sidecar's inherited stdout/stderr
-  // pipe open, so the fixture's pipe-reader loops never see EOF and the loop
-  // never drains. `main()` has already torn down the hub, sidecar, and
-  // database, so this exit only bypasses that orphaned pipe handle. A failure
-  // in `main()` rejects this top-level await, which exits non-zero with the
-  // stack, so the error still surfaces.
+  // `env.teardown()`, and the child keeps the sidecar's inherited
+  // stdout/stderr pipe open, so the fixture's pipe-reader loops never see EOF
+  // and the loop never drains. `main()` has already torn down the hub,
+  // sidecar, and database, so this exit only bypasses that orphaned pipe
+  // handle; a failure in `main()` rejects this top-level await, which exits
+  // non-zero with the stack, so the error still surfaces.
   process.exit(0);
 }

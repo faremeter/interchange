@@ -1,11 +1,8 @@
-// Capability advertisement compatibility against real `git`.
-//
-// Stock git's `-c protocol.version=2` invocation negotiates protocol
-// v2 with the server. For HTTP smart transports, the server may
-// refuse v2 and fall back to v0/v1. We assert that the negotiation
-// still terminates and that the advertised v0 capabilities the asset
-// route emits are accepted by the real git binary (it does not error
-// out with `unrecognized capability` or similar).
+// Smart-HTTP capability advertisement compatibility against real `git`.
+// `git -c protocol.version=2` requests protocol v2; the hub returns the
+// v0 advertisement and stock git falls back gracefully. This pins that
+// the negotiation terminates and that the advertised v0 capabilities
+// are accepted by the real git binary.
 
 import { describe, test, expect, afterEach } from "bun:test";
 import fs from "node:fs/promises";

@@ -24,12 +24,11 @@ import {
 } from "@intx/test-harness/db-harness";
 import { seedPrincipal, seedTenants } from "@intx/test-harness/seed";
 
-// The offering foreign key now references workflow_definition (its agent_id
+// The offering foreign key references workflow_definition (its agent_id
 // column holds a definition id, the API field name kept for contract
-// stability). This drives the re-pointed route against a real migrated schema:
-// create validates a definition, the response carries the definition's name as
-// agentName, and the new per-tenant definitions list backs the picker the admin
-// create form uses.
+// stability). Driven against a real migrated schema: create validates a
+// definition, the response carries the definition's name as agentName, and
+// the per-tenant definitions list backs the admin create form's picker.
 
 const TENANT_ID = "tnt_off";
 const ACTOR_PRINCIPAL_ID = "prn_actor";

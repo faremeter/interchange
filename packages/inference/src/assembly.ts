@@ -1,12 +1,7 @@
-// Reactor assembly helper.
-//
-// `createReactorAssembly` is the canonical way to construct a reactor when the
-// caller wants the standard wiring: a default size-cap tool-result transform,
-// authz as a before-tool extension, an audit collector that flushes at
-// checkpoint and shutdown boundaries, and a `BlobReader` over the supplied
-// context store. Future reactor consumers (the harness today; in-process agent
-// runtimes tomorrow) should use this helper rather than calling `createReactor`
-// directly so the wiring stays consistent across composition points.
+// Canonical reactor construction: size-cap transform, authz before-tool
+// extension, audit collector flushing at checkpoint and shutdown, and a
+// BlobReader over the context store. Consumers should use this instead of
+// calling `createReactor` directly so the wiring stays consistent.
 
 import { getLogger } from "@intx/log";
 import type { CredentialMaterialResolver } from "@intx/types";
@@ -45,15 +40,10 @@ const logger = getLogger(["interchange", "assembly"]);
 const DEFAULT_SIZE_CAP_MAX_CHARS = 10_000;
 
 /**
- * Configuration for `createReactorAssembly`. Required fields mirror
- * `ReactorConfig`. Optional fields toggle the composed extensions: the helper
- * builds an authz before-tool extension when `authorize` is supplied, builds
- * and wires an audit collector when `auditStore` is supplied, and always
- * prepends a default size-cap tool-result transform.
- *
- * The helper does NOT wrap the supplied `contextStore`; callers that need
- * additional behavior (the harness wraps for connector-thread state) layer
- * that on themselves before passing the store in.
+ * Configuration for `createReactorAssembly`. Optional fields toggle the
+ * composed extensions: `authorize` adds authz, `auditStore` adds an audit
+ * collector, and a default size-cap transform is always prepended. The
+ * `contextStore` is passed through unwrapped.
  */
 export type ReactorAssemblyConfig = {
   sessionId: string;
@@ -67,23 +57,16 @@ export type ReactorAssemblyConfig = {
   failOverToNextSource?: () => boolean;
   /** Reset `source` to the most-preferred source, in place. */
   resetToPreferredSource?: () => void;
-  /**
-   * Resolves the active source's credential secret by `credentialId` from the
-   * run's credential cell at send time. Threaded verbatim to the reactor;
-   * optional, defaulted fail-closed by the harness when omitted.
-   */
+  /** Resolves the active source's credential secret at send time. Optional;
+   *  the harness defaults fail-closed when omitted. */
   readMaterial?: CredentialMaterialResolver;
   toolRunner: ToolRunner;
   contextStore: ContextStore;
   onEvent: (event: ReactorEmittedEvent) => void;
 
   authorize?: AuthzExtensionOptions["authorize"];
-  /**
-   * Tool definitions forwarded to the authz extension so it can build the
-   * approver-facing snapshot at an `ask` suspension. Only consumed when
-   * `authorize` is also supplied. Omitting it puts the authz extension in its
-   * no-snapshot mode; the production edge always supplies the resolved set.
-   */
+  /** Tool definitions for the authz approval snapshot; only consumed with
+   *  `authorize`. The production edge always supplies the resolved set. */
   toolDefinitions?: readonly ToolDefinition[];
   auditStore?: AuditStore;
   beforeToolExtensions?: BeforeToolExtension[];
@@ -104,11 +87,9 @@ export type ReactorAssemblyConfig = {
 };
 
 /**
- * Output of `createReactorAssembly`. The `reactor` is started by the caller as
- * usual. `blobReader` is exposed so the caller can pass it to tool factories
- * that resolve `tool-output:///{callId}` URIs against the same context store
- * the reactor commits to. `auditCollector` is `undefined` when no `auditStore`
- * was supplied.
+ * Output of `createReactorAssembly`. `blobReader` resolves tool-output URIs
+ * against the same context store the reactor commits to; `auditCollector` is
+ * undefined when no `auditStore` was supplied.
  */
 export type ReactorAssembly = {
   reactor: Reactor;
@@ -117,12 +98,9 @@ export type ReactorAssembly = {
 };
 
 /**
- * Build the standard reactor wiring. This is the canonical reactor-assembly
- * path: any consumer that needs the default size-cap transform, authz, audit
- * collection, and blob reader should call this helper instead of constructing
- * a `ReactorConfig` by hand. Direct `createReactor` use is reserved for
- * reactor-internal tests and any future consumer that genuinely needs a
- * different composition.
+ * Build the standard reactor wiring (size-cap, authz, audit, blob reader).
+ * Direct `createReactor` use is reserved for reactor-internal tests and
+ * consumers needing a different composition.
  */
 export function createReactorAssembly(
   config: ReactorAssemblyConfig,
@@ -155,17 +133,13 @@ export function createReactorAssembly(
     doomLoopThreshold,
   } = config;
 
-  // Audit collector is created up-front so the authz extension can route its
-  // decisions through `onDecision`. When no auditStore is supplied, no
-  // collector is created and authz runs without decision recording.
+  // Created up-front so the authz extension can route decisions through
+  // `onDecision`; without an auditStore, authz runs without recording.
   const auditCollector: AuditCollector | undefined =
     auditStore !== undefined ? createAuditCollector(sessionId) : undefined;
 
-  // When an audit collector is present, intercept the reactor's event stream
-  // to feed it tool.start / tool.done events (the collector correlates these
-  // with authz decisions by callId). message.received is reactor-internal and
-  // is forwarded to the caller but not to the collector. Without a collector,
-  // the caller's onEvent is used directly.
+  // Feed the collector tool.start/tool.done events (correlated with authz
+  // decisions by callId); message.received goes only to the caller.
   const composedOnEvent =
     auditCollector !== undefined
       ? (event: ReactorEmittedEvent) => {
@@ -176,9 +150,8 @@ export function createReactorAssembly(
         }
       : onEvent;
 
-  // Authz is composed in front of any caller-supplied before-tool extensions
-  // so policy enforcement runs first. Without authz, the caller's list (if
-  // any) is passed through unchanged.
+  // Authz runs before caller-supplied extensions; without authz the caller's
+  // list passes through unchanged.
   const authzExtension =
     authorize !== undefined
       ? createAuthzExtension({
@@ -195,9 +168,7 @@ export function createReactorAssembly(
       ? [authzExtension, ...(callerBeforeToolExtensions ?? [])]
       : callerBeforeToolExtensions;
 
-  // The size-cap transform is always prepended so oversized payloads spill
-  // before any caller transform sees them. Caller transforms run after and
-  // can rely on the inline content already being bounded.
+  // Size-cap is always first so caller transforms see bounded inline content.
   const sizeCapTransform = createSizeCapTransform({
     maxChars: sizeCapMaxChars ?? DEFAULT_SIZE_CAP_MAX_CHARS,
     contextStore,
@@ -207,9 +178,7 @@ export function createReactorAssembly(
     ...(callerToolResultTransforms ?? []),
   ];
 
-  // Audit flush wraps the caller's lifecycle hooks: the helper's flush runs
-  // first so the records produced by the just-completed cycle are persisted
-  // before the caller's hook observes the checkpoint or shutdown boundary.
+  // Flush audit records before the caller's hooks observe the boundary.
   async function flushAudit(): Promise<void> {
     if (auditCollector === undefined || auditStore === undefined) return;
     const records = auditCollector.flush();

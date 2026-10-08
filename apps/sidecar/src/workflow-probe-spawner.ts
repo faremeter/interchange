@@ -1,8 +1,7 @@
-// Bun-backed spawn edge for the one-shot workflow probe child.
-//
-// The probe executor takes a spawner and a binary path as required
-// arguments. This module is the process that owns both: it resolves
-// `bin/workflow-probe-child` and launches it with a fresh env.
+// Bun-backed spawn edge for the one-shot workflow probe child. The probe
+// executor takes a spawner and a binary path as required arguments; this
+// module owns both, resolving `bin/workflow-probe-child` and launching it
+// with a fresh env.
 
 import { fileURLToPath } from "node:url";
 
@@ -12,7 +11,7 @@ import type {
 } from "@intx/workflow-host/probe";
 
 /**
- * Path of this package's `bin/workflow-probe-child`. Resolved at load so
+ * Path of this package's `bin/workflow-probe-child`, resolved at load so
  * the boot edge can hand the probe executor a concrete path.
  */
 export const SIDECAR_WORKFLOW_PROBE_CHILD_BINARY: string = fileURLToPath(

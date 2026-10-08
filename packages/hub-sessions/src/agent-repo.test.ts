@@ -32,11 +32,10 @@ afterAll(async () => {
 
 describe("AgentRepoStore GC scope", () => {
   test("workflow-run is excluded from GC so expunged mailbox blobs survive in history", () => {
-    // The warm-agent mailbox physically expunges <uid>.eml blobs from the
-    // live tree; the raw bytes then persist only through the parent commit,
-    // and survive ONLY because a workflow-run repo's objects are never
-    // pruned. This tripwire fails if a future change makes workflow-run
-    // GC-eligible, which would silently destroy the mailbox audit trail.
+    // The warm-agent mailbox physically expunges `<uid>.eml` blobs from the
+    // live tree, so the bytes survive only through the parent commit, and only
+    // because workflow-run objects are never pruned. This fails if a future
+    // change makes workflow-run GC-eligible, destroying the audit trail.
     const kinds: readonly string[] = DEFAULT_GC_KINDS;
     expect(kinds).not.toContain("workflow-run");
     expect(kinds).toEqual(["agent-state"]);
@@ -308,10 +307,9 @@ describe("AgentRepoStore", () => {
     const dataDir = await makeTempDir("agent-repo-wfr-");
     const store = createAgentRepoStore({ dataDir, signingKey });
 
-    // Construct a workflow-run pack carrying a `.gitignore`-only
-    // genesis tree (the workflow-run kind handler explicitly accepts
-    // this as the initial commit so deploy-time init can land before
-    // any run produces an event).
+    // Construct a workflow-run pack carrying a `.gitignore`-only genesis tree
+    // (the kind handler accepts it so deploy-time init can land before any run
+    // produces an event).
     const sourceDir = await makeTempDir("wfr-source-");
     await git.init({ fs, dir: sourceDir, defaultBranch: "main" });
     await fs.promises.writeFile(path.join(sourceDir, ".gitignore"), "");

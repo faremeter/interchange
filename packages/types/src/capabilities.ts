@@ -1,13 +1,12 @@
 import { type } from "arktype";
 
 // The capabilities the production inference runtime demonstrates on the wire,
-// and that the discovery rig probes for. This is the single source of truth for
-// the shared capability vocabulary: @intx/inference-discovery imports this list
-// and extends it, so production code never has to depend on the discovery
-// package. Each capability that has a streaming wire flow distinct from its
-// buffered one carries a paired `-streaming` variant; `function-calling` is the
-// sole base with no streaming pair (a bare tool call has no delta flow to
-// capture).
+// and the discovery rig probes for. Single source of truth for the shared
+// capability vocabulary: @intx/inference-discovery imports and extends it, so
+// production code never depends on the discovery package. Each capability
+// with a streaming wire flow distinct from its buffered one carries a paired
+// `-streaming` variant; `function-calling` is the sole base with no pair (a
+// bare tool call has no delta flow to capture).
 export const WIRE_CAPABILITIES = [
   "plain-text",
   "plain-text-streaming",
@@ -41,10 +40,10 @@ export const WIRE_CAPABILITIES = [
 ] as const;
 
 // Capabilities a model has that are not observable on the wire and cannot be
-// proven by a discovery fixture. `long-context` denotes a model advertising a
-// context window of at least ~200k tokens (a curation criterion, not a stored
-// limit); `prompt-caching` denotes provider-side prompt caching. The discovery
-// rig has no probe that could prove either, so operators curate them by hand.
+// proven by a discovery fixture: `long-context` (a curated ~200k-token
+// context-window criterion, not a stored limit) and `prompt-caching`
+// (provider-side caching). No probe can prove either, so operators curate
+// them by hand.
 export const CURATED_CAPABILITIES = ["long-context", "prompt-caching"] as const;
 
 export const CAPABILITIES = [

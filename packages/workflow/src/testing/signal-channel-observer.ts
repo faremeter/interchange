@@ -4,23 +4,17 @@
 // `SignalAwaited` and flushes it before waiting. It cannot cover a RE-PARK: a
 // run resuming from a durable log finds its step already `awaiting-signal`,
 // so `parkOnSignal` re-adopts the seed's `SignalAwaited` and skips the
-// re-emit. Nothing new reaches the log, and a log waiter resolves off the
-// seed -- before the run has re-parked -- which makes every "no second
-// SignalAwaited was minted" assertion read pre-crash state and pass for the
-// wrong reason.
-//
-// The one observable the re-park does produce is the channel registration
-// itself: `parkOnSignal`'s tail calls `awaitNext(name)`. This wraps a channel
-// to count those calls per signal name, so a test can wait for the park it
-// cares about.
+// re-emit -- nothing new reaches the log, and a log waiter would resolve off
+// the seed before the run re-parked. The one observable the re-park does
+// produce is the channel registration itself: `parkOnSignal`'s tail calls
+// `awaitNext(name)`. This wraps a channel to count those calls per signal
+// name.
 //
 // Counting, rather than reporting the next call, is the load-bearing choice.
 // A test does not control whether the run re-parks before or after it asks to
 // be told, so an edge-triggered "resolve on the next `awaitNext`" deadlocks
-// on exactly the interleaving that is most common -- the run parks first. The
-// count is level-triggered: asking for a count already reached returns.
-// `readCount`/`awaitReadCount` in `@intx/workflow-host/testing` is the same
-// pair for the same reason.
+// on the interleaving that is most common -- the run parks first. The count
+// is level-triggered: asking for a count already reached returns.
 
 import { createInMemorySignalChannel } from "../runlocal/signal-channel";
 import type { SignalChannel } from "../runtime/env";
@@ -46,19 +40,12 @@ export function createObservedSignalChannel(): ObservedSignalChannel {
   let waiters: (() => void)[] = [];
 
   function announce(): void {
-    // Clearing the list is what bounds it. Every pass of the wait loop below
+    // Clearing the list is what bounds it: every pass of the wait loop below
     // registers a resolver, and the pass that returns leaves its own resolver
-    // behind unsettled; clearing here is what discards those rather than
-    // accumulating one per park for the life of the channel. Measured over 50
-    // parks with one waiter: 1 entry with the clear, 51 without.
-    //
-    // Clearing BEFORE the wake rather than after decides neither of those. It
-    // is not what makes a re-arming waiter wait for the next park instead of
-    // the current one, and it is not what bounds the list either. Waking a
-    // settled resolver is a no-op, and the loop re-registers only after this
-    // function has finished iterating, so both orders behave identically and
-    // both hold the list at 1 -- a mutant that wakes the live list and clears
-    // afterwards passes every test in the sibling test file.
+    // behind unsettled. Clearing before the wake is not otherwise load-bearing
+    // -- waking a settled resolver is a no-op, and the loop re-registers only
+    // after this function has finished iterating, so both orders behave
+    // identically and hold the list at 1.
     const waking = waiters;
     waiters = [];
     for (const waiter of waking) waiter();
@@ -88,16 +75,13 @@ export function createObservedSignalChannel(): ObservedSignalChannel {
         );
       }
       for (;;) {
-        // Re-checking on every pass is the invariant: it is what lets a park
-        // that already happened satisfy the wait. Drop the check and await
-        // the next report instead, and the "satisfied by a park that happened
-        // BEFORE the call" test hangs -- which is the failure mode this shape
-        // exists to avoid.
-        //
-        // The ORDER of the registration and the check is not the invariant,
-        // and no comment should claim it is. The executor runs synchronously,
-        // so no `awaitNext` can land between them in either arrangement;
-        // swapping the two lines passes every test in the sibling test file.
+        // Re-checking on every pass is the invariant: it lets a park that
+        // already happened satisfy the wait. Drop the check and await the
+        // next report instead, and the "satisfied by a park that happened
+        // BEFORE the call" test hangs -- the failure mode this shape exists
+        // to avoid. The ORDER of registration and check is not load-bearing:
+        // the executor runs synchronously, so no `awaitNext` can land between
+        // them in either arrangement.
         const awaited = new Promise<void>((resolve) => {
           waiters.push(resolve);
         });

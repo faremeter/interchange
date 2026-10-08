@@ -1,20 +1,12 @@
 // Exercises both halves of the sender-key refresh feature's hub-link surface:
-//
-//   1. REPORT (on connect): the link announces the sidecar's cached rotatable
-//      senders on its register/reconnect frame, read from the
-//      `getCachedSenderAddresses` callback. Reported on BOTH frame types and
-//      omitted when empty.
-//   2. RECEIVE (`sender.key.refresh` arm in `handleMessage`): a hub-pushed
-//      key-only refresh drives the source-opaque `cacheSenderKey` write peer
-//      and touches nothing else. A cache-write fault (transient disk fault or
-//      malformed key) is logged at ERROR and swallowed, never wedging the
-//      per-connection message chain and never poisoning a run -- there is no
-//      run to poison on this address-keyed path.
-//
-// The receive path is driven through the REAL edge composition the sidecar
-// wires in `index.ts` (`(address, hex) => senderKeyCache.put(address,
-// hexDecode(hex))`) against a real `SenderKeyCache`, so the hex-decode and
-// 32-byte-length boundaries are exercised end to end rather than mocked.
+// REPORT (on connect: the link announces cached rotatable senders on both
+// frame types, omitted when empty) and RECEIVE (the `sender.key.refresh` arm
+// drives the source-opaque `cacheSenderKey` write and touches nothing else; a
+// cache-write fault is logged at ERROR and swallowed, never wedging the
+// message chain and never poisoning a run -- there is no run on this
+// address-keyed path). The receive path is driven through the REAL edge
+// composition the sidecar wires in `index.ts` against a real `SenderKeyCache`,
+// so the hex-decode and 32-byte-length boundaries are exercised end to end.
 
 import {
   describe,
@@ -121,9 +113,8 @@ afterEach(async () => {
 type ServerSend = (frame: unknown) => void;
 type HandshakeFrame = RegisterFrame | ReconnectFrame;
 
-// The sidecar sends a register or reconnect frame at handshake (plus pings and
-// pack frames later). Validate each inbound frame against the real
-// register/reconnect schemas; anything else is ignored.
+// Validate each inbound frame against the real register/reconnect schemas;
+// anything else (pings, pack frames) is ignored.
 function parseHandshake(raw: unknown): HandshakeFrame | null {
   const register = RegisterFrame(raw);
   if (!(register instanceof type.errors)) return register;
@@ -135,14 +126,9 @@ function parseHandshake(raw: unknown): HandshakeFrame | null {
 type Connection = { frame: HandshakeFrame; send: ServerSend };
 
 // Connections are addressed by the `sidecarId` their handshake carries, which
-// every test here sets to a distinct value. The previous shape kept one
-// mutable slot for whichever connection was current and treated "the slot is
-// populated" as readiness, which cannot tell this test's link from the
-// previous test's not-yet-closed one -- so a test's frames went out on the
-// prior socket and its own wait expired. Registering at the handshake rather
-// than at open is also the stronger signal: the handshake arriving proves
-// that link's message chain is live, where an open socket only proves it
-// exists.
+// every test here sets to a distinct value. Registering at the handshake is
+// the stronger signal than a socket's open: the handshake proves that link's
+// message chain is live, where an open socket only proves it exists.
 function startTestServer(): {
   server: ReturnType<typeof Bun.serve>;
   awaitConnection: (sidecarId: string) => Promise<Connection>;
@@ -235,11 +221,9 @@ beforeAll(() => {
 });
 
 // One clear per test rather than per describe. The error assertions read a
-// module-level array, so a record left by a previous test -- or by a link that
-// had not finished closing -- would otherwise be attributed to whichever test
-// read next. Two of these clears used to sit inside test bodies and two in
-// describe hooks, which made the empty-log assertion correct only by virtue of
-// running first in its describe.
+// module-level array, so a record left by a previous test -- or by a link
+// that had not finished closing -- would otherwise be attributed to whichever
+// test read next.
 beforeEach(() => {
   capturedLogs.length = 0;
 });

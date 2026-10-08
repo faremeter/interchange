@@ -11,12 +11,11 @@ describe("waitUntil", () => {
     await waitUntil(() => true);
     clearTimeout(armed);
     // The only yield in `waitUntil` is its loop body's `setTimeout`, which a
-    // predicate holding on entry never reaches -- so the returned promise
+    // predicate holding on entry never reaches — so the returned promise
     // settles on the microtask queue, and microtasks drain before any timer
-    // callback runs. Had it yielded, its own `setTimeout` would sit behind the
-    // one armed above and this flag would be set by the time the await
-    // resumed. The `0` is an ordering probe, not a duration: no delay makes a
-    // timer callback overtake the microtask queue.
+    // callback runs. Had it yielded, its own `setTimeout` would sit behind
+    // the one armed above and this flag would be set by the time the await
+    // resumed. The `0` is an ordering probe, not a duration.
     expect(armedTimerRan).toBe(false);
   });
 

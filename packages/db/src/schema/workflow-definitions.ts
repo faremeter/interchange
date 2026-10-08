@@ -15,18 +15,17 @@ import { tenant } from "./tenants";
 // workflow_definition is the first-class definition entity for the workflow
 // model: one row per deployable definition, with a version table alongside it.
 //
-// The definition body (system prompt, context/model config, tool packages) is
-// not stored on this row -- it lives in the `workflow`-kind asset the row
-// points at, and the run reads it back from there. `asset_id` is nullable at
-// the schema level, but a runnable definition points at a materialized asset.
+// The definition body is not stored on this row -- it lives in the
+// `workflow`-kind asset the row points at, and the run reads it back from
+// there. `asset_id` is nullable at the schema level, but a runnable definition
+// points at a materialized asset.
 //
 // Identity is selector-keyed on the wire-projection hash, not one definition
-// per asset: a single asset (e.g. a monorepo package) backs many definitions
-// distinguished by the content hash of their wire projection. `wire_hash` is
-// that content handle; the unique index over `(asset_id, wire_hash)` keys
-// identity so definitions sharing an asset but carrying different wire hashes
-// resolve independently. `wire_hash` is nullable so definitions predating this
-// key carry none; Postgres treats those NULLs as distinct.
+// per asset: a single asset backs many definitions distinguished by the content
+// hash of their wire projection. `wire_hash` is that content handle; the unique
+// index over `(asset_id, wire_hash)` keys identity. `wire_hash` is nullable so
+// definitions predating this key carry none; Postgres treats those NULLs as
+// distinct.
 export const workflowDefinition = pgTable(
   "workflow_definition",
   {
@@ -52,16 +51,16 @@ export const workflowDefinition = pgTable(
     wireHash: text("wire_hash"),
     name: text("name").notNull(),
     description: text("description"),
-    // Grant requirements manifest, resolved at launch into materialized grants.
-    // Validated as GrantRequirement[] at parse time.
+    // Grant requirements manifest, resolved at launch into materialized
+    // grants. Validated as GrantRequirement[] at parse time.
     grantRequirements: jsonb("grant_requirements"),
     // Model requirements manifest: the canonical model names + provider
     // preferences a definition launched as a single interactive run resolves
     // against the live tenant catalog into credential-bearing inference
     // sources, fresh each launch. Non-null marks such a definition and gates
-    // the interactive-launch path; null for a definition deployed as a workflow,
-    // which supplies its sources at deploy time. Validated as ModelRequirements
-    // at parse time.
+    // the interactive-launch path; null for a definition deployed as a
+    // workflow, which supplies its sources at deploy time. Validated as
+    // ModelRequirements at parse time.
     modelRequirements: jsonb("model_requirements"),
     // Credential bindings manifest: maps a tool package's declared credential
     // handle (package, handle) to a concrete credential resolved fresh at
@@ -102,14 +101,13 @@ export const workflowDefinitionVersion = pgTable(
       .notNull()
       .default("active"),
     // Hash of the wire bytes approved for this version, recorded at approval
-    // and read back during re-verify to detect drift. Null before approval is
-    // a legitimate state, so the column takes no NOT NULL constraint.
+    // and read back during re-verify to detect drift. Null before approval is a
+    // legitimate state.
     approvedWireHash: text("approved_wire_hash"),
-    // Serializable projection of the deploy-time capability walk, recorded
-    // at approval so a run materializes grants from it instead of re-reading
-    // and re-walking a workflow.json blob. Validated as GrantWalkSnapshot at
-    // parse time. Null before approval is a legitimate state, so the column
-    // takes no NOT NULL constraint.
+    // Serializable projection of the deploy-time capability walk, recorded at
+    // approval so a run materializes grants from it instead of re-reading and
+    // re-walking a workflow.json blob. Validated as GrantWalkSnapshot at parse
+    // time. Null before approval is a legitimate state.
     grantSnapshot: jsonb("grant_snapshot"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },

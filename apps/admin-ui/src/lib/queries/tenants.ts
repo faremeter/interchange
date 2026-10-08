@@ -24,13 +24,10 @@ import { infiniteListQuery } from "@/lib/queries/pagination";
 const transport = createBrowserTransport();
 
 // Fourth query-key segment marking the infinite (paginated) cache entry for a
-// resource, kept distinct from the flat single-fetch query that shares the same
-// prefix and still backs dropdowns/lookups. The shared prefix lets the existing
-// prefix-based mutation invalidations refresh both entries. The value must stay
-// a string that nothing else places in this slot: detail queries hold an entity
-// ID (a UUID) here and filtered lists hold a descriptor object, so "infinite"
-// can equal neither. A list later filtered by a bare string in this slot would
-// have to avoid this value.
+// resource, kept distinct from the flat single-fetch query sharing the same
+// prefix (which still backs dropdowns/lookups) so prefix-based invalidations
+// refresh both. Must be a string nothing else places in this slot: detail
+// queries hold an entity ID here and filtered lists a descriptor object.
 const INFINITE_LIST_KEY = "infinite";
 
 type TenantResponse = {

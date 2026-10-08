@@ -1,20 +1,12 @@
 // Integration coverage for compactor wiring through `createAgent`.
-//
-// The agent's job here is mechanical: thread `env.compactors` into the
-// reactor assembly, surface the registered names to the director factory
-// at construction as `agentContext.compactorNames`, and trust the
-// reactor's existing `executeCompact` to resolve the name and run the
-// compactor's `apply()`. These tests pin both halves:
-//
-//  - A registered compactor runs end-to-end when the director emits
-//    `caps.compact(name, reason)` for it, and the director sees the
-//    registered name on `agentContext.compactorNames` at construction.
-//  - An unregistered name produces the reactor's existing fatal
-//    "no compactor registered" error rather than silently dropping the
-//    action.
-//
-// The directors here are hand-written test doubles: a real LLM is not
-// needed to drive a compact action.
+// The agent's job is mechanical: thread `env.compactors` into the
+// reactor assembly, surface the registered names to the director
+// factory as `agentContext.compactorNames`, and trust the reactor's
+// `executeCompact`. The tests pin both halves: a registered compactor
+// runs end-to-end when the director emits `caps.compact(name,
+// reason)` (and the director sees the name at construction), and an
+// unregistered name produces the reactor's "no compactor registered"
+// fatal error. The directors are hand-written test doubles.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -45,8 +37,8 @@ import { noopAuditStore } from "./testing/audit-noop";
 import { permissiveAuthorize } from "./testing/authorize-allow";
 import { waitForReactorDone } from "./testing";
 
-// The compactor tests never call infer(); the URL is unreachable so any
-// accidental infer() would fail fast rather than hang.
+// The compactor tests never call infer(); the URL is unreachable so
+// an accidental infer() fails fast.
 const SOURCE: InferenceSource = {
   id: "anthropic:compactor-test",
   provider: "anthropic",
@@ -71,10 +63,9 @@ interface RecordingCompactor extends Compactor {
 }
 
 // A compactor that captures every (turns, ctx) pair its `apply()` saw
-// and replaces the conversation with a single synthetic assistant turn.
-// The single-turn output is enough for the reactor's commit cycle to
-// distinguish "compaction ran" from "compaction skipped" via the
-// resulting history length.
+// and replaces the conversation with a single synthetic assistant turn,
+// enough for the reactor's commit cycle to distinguish "compaction
+// ran" from "compaction skipped" via the resulting history length.
 function makeRecordingCompactor(name: string): RecordingCompactor {
   const calls: {
     turns: readonly ConversationTurn[];
@@ -114,16 +105,12 @@ function makeRecordingCompactor(name: string): RecordingCompactor {
 }
 
 // A test director that emits `caps.compact(name, reason)` on the first
-// inbound message and `caps.done()` on any later event. The compact
-// cycle finishes without a follow-up action from the reactor, so the
-// caller drives the director's terminal `done()` by delivering a
-// second message -- the same shape the reactor-level compact test in
-// `packages/inference/src/reactor.test.ts` uses.
-//
-// The director factory captures the `compactorNames` it received at
-// construction so the test can assert the deployer's registry
-// surfaced through to the director author the same way
-// `toolDefinitions` does.
+// inbound message and `caps.done()` on any later event; the caller
+// drives the terminal `done()` by delivering a second message (the
+// same shape the reactor-level compact test in
+// `packages/inference/src/reactor.test.ts` uses). The factory captures
+// the `compactorNames` it received so the test can assert the
+// deployer's registry surfaced to the director author.
 function defineCompactDirector(opts: {
   compactorName: string;
   reason: string;

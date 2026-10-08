@@ -51,10 +51,9 @@ const FILES_API_CAPABILITIES: ReadonlySet<Capability> = new Set<Capability>([
 
 export interface GoogleGenaiPluginOptions {
   apiKey: string;
-  // Request-shape class for models absent from the known text/image sets. A
-  // known model classifies by set membership and ignores this; an unknown model
-  // uses it, defaulting to text. Discovery of an unknown image model must set
-  // it, because the image request shape cannot be inferred from identity.
+  // Request-shape class for models absent from the known text/image sets.
+  // Known models ignore it; unknown models default to text, but an unknown
+  // image model must set it — the image shape cannot be inferred from identity.
   modelClass?: GeminiModelClass | undefined;
 }
 

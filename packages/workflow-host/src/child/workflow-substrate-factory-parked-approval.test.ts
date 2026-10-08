@@ -6,10 +6,10 @@
 //     store on disk; the read loads it, and returns undefined (without
 //     manufacturing a repo) when the store dir is absent.
 //   - WARM (single-step): the snapshot lives in the durable conversation
-//     store, mirrored to the workflow-run substrate under `agent-state/<stepId>/`.
-//     The read reconstructs it from the substrate WITHOUT going through the live
-//     registry -- proving a respawned child (whose live store is unbuilt) still
-//     recovers the snapshot.
+//     store, mirrored to the workflow-run substrate under
+//     `agent-state/<stepId>/`. The read reconstructs it from the substrate
+//     WITHOUT going through the live registry -- proving a respawned child
+//     (whose live store is unbuilt) still recovers the snapshot.
 
 import { describe, test, expect } from "bun:test";
 import fs from "node:fs/promises";
@@ -172,7 +172,7 @@ describe("readColdParkedApprovalSnapshot", () => {
 });
 
 /**
- * Read every file under `<repoDir>/<prefix>` into a path->bytes map, keyed by
+ * Read every file under `<repoDir>/<prefix>` into a path->bytes map keyed by
  * the repo-relative path, so a `writeTreePreservingPrefix` merge callback sees
  * the prior subtree the way the real substrate presents it.
  */
@@ -197,7 +197,7 @@ async function readPrefixEntries(
 }
 
 /**
- * A substrate stub that persists `writeTreePreservingPrefix` to disk under
+ * A substrate stub persisting `writeTreePreservingPrefix` to disk under
  * `getRepoDir`, so a durable-conversation mirror round-trips through the real
  * checkpoint/WAL layout the read reconstructs from. Any other method surfaces
  * as a precise failure.
@@ -306,10 +306,11 @@ describe("readWarmParkedApprovalSnapshot", () => {
   });
 });
 
-// The pending-operations readers back the resume classifier's `readParkedApprovalOps`
-// binding (the crash-mid-park recovery hook), where the snapshot readers back the
-// re-registration enumeration. Both project the same durable store; these pin the
-// enumeration variant returns every parked op, not just one matched by correlationId.
+// The pending-operations readers back the resume classifier's
+// `readParkedApprovalOps` binding (the crash-mid-park recovery hook), where the
+// snapshot readers back the re-registration enumeration. Both project the same
+// durable store; these pin that the enumeration variant returns every parked
+// op, not just one matched by correlationId.
 describe("readColdParkedPendingOperations", () => {
   test("returns every pending operation from a parked step's on-disk store", async () => {
     const dataDir = await makeTempDir();

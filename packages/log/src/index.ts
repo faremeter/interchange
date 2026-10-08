@@ -1,12 +1,10 @@
 // Install the default console sink before any caller can get a logger.
 import "./default-sink";
 
-// `@intx/log` is a narrow re-export over `@logtape/logtape`. It carries
-// only the symbols other `@intx/*` packages actually use today, plus the
-// project's `setup()` helper. Consumers that need a piece of LogTape not
-// re-exported here should import it from `@logtape/logtape` directly
-// rather than widening this surface speculatively — widen it only when
-// at least one consumer needs the symbol.
+// Narrow re-export over `@logtape/logtape`: only the symbols `@intx/*`
+// packages use today, plus the `setup()` helper. Import missing symbols
+// from `@logtape/logtape` directly; widen this only when a consumer
+// needs them.
 export {
   getLogger,
   configureSync,

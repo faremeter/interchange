@@ -5,24 +5,21 @@
 // `TransitionError(code="phase")`.
 //
 // Setup: resume against a seed log whose final event is
-// `StepCompleted` for the workflow's single step. `resumeFromLog`
-// reports phase=running with the step terminal, so `isRunDone`
-// returns true and the main loop never iterates. Control reaches
-// the post-loop branch at `run.ts` and the body issues
-// `RunCompleted`. A `cancel()` invoked immediately after
-// `runtimeRun` lands `CancelRequested` on the chain before the
-// post-loop `RunCompleted` reaches it; the chain pre-validates,
-// sees phase=cancelling, and rejects `RunCompleted` with code=phase.
+// `StepCompleted` for the workflow's single step, so the main loop
+// never iterates and control reaches the post-loop branch at
+// `run.ts`, which issues `RunCompleted`. A `cancel()` invoked
+// immediately after `runtimeRun` lands `CancelRequested` on the
+// chain first; the chain pre-validates, sees phase=cancelling, and
+// rejects `RunCompleted` with code=phase.
 //
-// Prior to the C-B fix the rejection escaped the body and the
-// `complete` promise rejected with a TransitionError. The fix
-// mirrors the C5 catch shape verbatim around the post-loop commit:
-// reload and route through the cancelling cleanup branch so the
-// run settles as `cancelled`.
+// Prior to the C-B fix the rejection escaped the body and `complete`
+// rejected with a TransitionError. The fix mirrors the C5 catch
+// shape verbatim around the post-loop commit: reload and route
+// through the cancelling cleanup branch so the run settles
+// `cancelled`.
 //
-// The pre-existing `cancel-early-lifecycle.test.ts` pins the
-// initial-RunStarted catch (C5). This test pins the structurally
-// identical post-loop catch (C-B).
+// `cancel-early-lifecycle.test.ts` pins the initial-RunStarted catch
+// (C5); this test pins the structurally identical post-loop catch (C-B).
 
 import { describe, test, expect } from "bun:test";
 

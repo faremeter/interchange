@@ -164,8 +164,8 @@ export async function listReceivedWorkflowSignals(
 /**
  * Enumerate the workflow-run claim-check's retained consumed index. The kind
  * validator guarantees this tree shape before the ref advances; the runtime
- * validator here keeps the Git-to-database projection fail-closed if that
- * invariant is ever violated.
+ * validator here keeps the projection fail-closed if that invariant is ever
+ * violated.
  */
 export async function listConsumedWorkflowDispatches(
   reads: CommittedReads,

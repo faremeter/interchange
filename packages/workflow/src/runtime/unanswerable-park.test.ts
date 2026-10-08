@@ -1,15 +1,10 @@
 // A park in a run tree with nothing upstream to answer it must fail at the
 // park, not wait.
 //
-// An untimed park waits for a signal that has to come from outside the run. In
-// a terminal child there is no such outside: the child carries no address of
-// its own, and the seam that spawned it awaits its terminal rather than
-// driving it across parks. Left alone the child waits forever, the parent
-// waits on a terminal that never comes, and no operator ever learns an
-// approval was wanted.
-//
-// A timed gate is a different case and must still work: its own timer resolves
-// it in process, so it needs nothing from upstream.
+// An untimed park needs a signal from outside the run; a terminal child has
+// no such outside, so it would wait forever and no operator would learn an
+// approval was wanted. A timed gate is a different case: its own timer
+// resolves it in process, so it needs nothing from upstream.
 
 import { describe, test, expect } from "bun:test";
 
@@ -150,8 +145,8 @@ describe("a run tree with no upstream resolver", () => {
     const result = await run.complete;
     expect(result.terminalStatus).toBe("failed");
 
-    // The refusal happens before the suspension is made durable, so nothing
-    // downstream can be left holding a correlation that will never resolve.
+    // The refusal precedes the durable suspension, so nothing downstream holds
+    // a correlation that will never resolve.
     const events = await env.repoStore.read("run-approval-park");
     expect(events.map((e) => e.kind)).not.toContain("SignalAwaited");
     const failed = events.find((e) => e.kind === "StepFailed");
@@ -164,8 +159,8 @@ describe("a run tree with no upstream resolver", () => {
     const run = runtimeRun(timedGate, env, { runId: "run-timed-gate" });
 
     const result = await run.complete;
-    // No `onTimeout` route is declared, so the gate fails on expiry -- but on
-    // its own timer, having genuinely parked, not refused at entry.
+    // No `onTimeout` route, so the gate fails on expiry -- on its own timer,
+    // having genuinely parked, not refused at entry.
     expect(result.terminalStatus).toBe("failed");
     const kinds = (await env.repoStore.read("run-timed-gate")).map(
       (e) => e.kind,
@@ -200,11 +195,9 @@ describe("a run tree that can be answered", () => {
   });
 });
 
-// A gate held one level in, inside a loop body. The body runs through the
-// suspendable seam and inherits its container's answerability, so the refusal
-// has to reach it: without that, the body parks, relays the name onto the
-// container, and the container waits on a signal nothing can send -- the
-// reported hang, one level deeper than the direct case.
+// A gate inside a loop body runs through the suspendable seam, so the refusal
+// has to reach it; otherwise the body relays the name onto a container that
+// waits on a signal nothing can send.
 const loopFns = (ref: string) =>
   ref === "keepGoing"
     ? () => false
@@ -235,9 +228,8 @@ function loopHolding(gate: ReturnType<typeof awaitSignal>): WorkflowDefinition {
 }
 
 describe("a gate nested in a loop body", () => {
-  // Driven through runLocal because a loop needs its iteration executor wired;
-  // a hand-built env without one fails the run for want of loop support, which
-  // would make these pass for the wrong reason.
+  // runLocal wires the loop iteration executor; a hand-built env without one
+  // fails for want of loop support and would pass these for the wrong reason.
   test("is refused when the run tree has no upstream resolver", async () => {
     const def = loopHolding(awaitSignal({ name: "approve" }));
     const run = runLocal(def, {
@@ -259,13 +251,12 @@ describe("a gate nested in a loop body", () => {
     const result = await run.complete;
     expect(result.terminalStatus).toBe("failed");
 
-    // The body's own message names the gate, but it is written to the
-    // iteration's log, which a runLocal handle does not expose. What the
-    // container records is the half that distinguishes a refusal from any
-    // other throw: the loop step failed on its first iteration, and the body
-    // never got far enough to relay the gate's name up. A parked body commits
-    // `SignalAwaited(approve, "signal-relay")` here before anything else can
-    // happen, so its absence is the refusal.
+    // The body's own message names the gate, but it lands in the iteration's
+    // log, which a runLocal handle does not expose. The container records the
+    // distinguishing half: the loop failed on its first iteration, and the
+    // body never got far enough to relay the gate's name up. A parked body
+    // would commit `SignalAwaited(approve, "signal-relay")` first, so its
+    // absence is the refusal.
     const failed = result.events.find((e) => e.kind === "StepFailed");
     expect(failed?.kind === "StepFailed" ? failed.stepId : "").toBe("rework");
     const message = failed?.kind === "StepFailed" ? failed.error.message : "";
@@ -297,9 +288,9 @@ describe("a gate nested in a loop body", () => {
 
     await run.cancel("supervisor-operator", "test teardown");
 
-    // The paired control for the refused case above: an answerable container
-    // really does relay the body's author name up, so the same log that must
-    // carry no `SignalAwaited` when the gate is refused carries one here.
+    // The paired control: an answerable container really does relay the body's
+    // gate name up, so the same log that carries no `SignalAwaited` when
+    // refused carries one here.
     const relayed = (await run.complete).events.find(
       (e) => e.kind === "SignalAwaited",
     );

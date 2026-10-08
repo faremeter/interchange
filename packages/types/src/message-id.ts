@@ -7,14 +7,10 @@
 // as a fresh message. This module is the single source of truth those
 // call sites import.
 //
-// A workflow run's id is NOT this value -- a deployment's one addressable
-// top-level run uses the local part of its mail address as its stable runId
-// (see `deriveWorkflowRunId`). The two ids are distinct: this one is
-// per-message, while the top-level runId is per-deployment.
-//
-// The identifier is the `Message-ID` header value when the message
-// carries one, and a sha256 of the raw bytes otherwise -- so a message
-// from a non-RFC 2822 transport still receives a deterministic id.
+// The id is the `Message-ID` header value when the message carries one,
+// and a sha256 of the raw bytes otherwise — so a message from a non-RFC
+// 2822 transport still receives a deterministic id. A workflow run's id
+// is NOT this value; see `deriveWorkflowRunId`.
 
 import { hexEncode } from "./hex";
 
@@ -22,7 +18,6 @@ const BARE_LINE_BREAK = /\r(?!\n)|(?<!\r)\n/;
 // Two line breaks back to back, of any flavour. The single-CR branch excludes a
 // CR that an LF follows, or backtracking would let one CRLF satisfy both halves.
 const BLANK_LINE = /(?:\r\n|\r(?!\n)|\n)(?:\r\n|\r(?!\n)|\n)/;
-
 /**
  * Derive the canonical Message-ID for a raw message. Returns the parsed
  * `Message-ID` header when the message names one, else the hex-encoded sha256
@@ -43,18 +38,17 @@ export async function deriveMessageId(rawMessage: Uint8Array): Promise<string> {
 
 /**
  * Parse the `Message-ID` header value from a raw message, or `null` when
- * the message carries no such header or carries a blank one.
+ * the message carries no such header or a blank one.
  *
- * The header section ends at the first blank line, whichever line-break flavour
- * wrote it, and the whole message is the section when it carries no blank line.
- * CRLF is the sole line terminator (RFC 5321 §2.3.8, §4.1.1.4), matching
- * `@intx/mime`'s decoder, which refuses a section any other break wrote -- an
- * `LF LF` separator included. Such a message names no id here and takes the
- * digest in `deriveMessageId` instead, because reading one out of text that
- * parser refuses would fold the fields after the break, and the head of the
- * body, into this identifier. Header-field unfolding follows RFC 2822 §2.2.3: a
- * continuation line begins with whitespace and appends to the prior line.
- * Header-name comparison is case-insensitive per RFC 2822 §1.2.2.
+ * The header section ends at the first blank line, whichever line-break
+ * flavour wrote it; a message with no blank line is all header. CRLF is
+ * the sole line terminator (RFC 5321 §2.3.8, §4.1.1.4), matching
+ * `@intx/mime`'s decoder, which refuses a section any other break wrote
+ * — an `LF LF` separator included — so such a message names no id and
+ * takes the digest in `deriveMessageId`. Header-field unfolding follows
+ * RFC 2822 §2.2.3 (a continuation line begins with whitespace and appends
+ * to the prior line); header names compare case-insensitively per RFC
+ * 2822 §1.2.2.
  */
 export function parseMessageIdHeader(rawMessage: Uint8Array): string | null {
   const raw = new TextDecoder("utf-8", { fatal: false }).decode(rawMessage);

@@ -1,14 +1,10 @@
 // A loop body may contain a nested loop. The inner loop resolves its body ref
-// from the SAME top-level bodies map the outer loop uses (a loop iteration
+// from the SAME top-level bodies map the outer loop uses (an iteration
 // inherits the parent env), so `enumerateInlineLoopBodies` recursing into loop
 // bodies is what makes the inner ref resolvable. This drives a two-level loop
-// end-to-end through `runLocal` and asserts the inner loop actually iterates
-// under each outer iteration.
-//
-// The fixtures assemble a nested definition by swapping a loop's body for a
-// loop-containing one (`withLoopBody`) -- a terse fixture helper. The runtime is
-// a pure structural executor over a `WorkflowDefinition`, so it runs a nested
-// definition however it was assembled.
+// through `runLocal` and asserts the inner loop iterates under each outer
+// iteration. The fixtures swap a loop's body for a loop-containing one
+// (`withLoopBody`).
 
 import { describe, test, expect } from "bun:test";
 
@@ -36,8 +32,8 @@ const leaf = defineWorkflow({
   steps: { tick: action({ handler: "tick" }) },
 });
 
-// Both loops run three iterations: the pure `while` continues while the threaded
-// carry is below 2 (carry 0,1,2 -> stop at 2), independent of the body output.
+// Both loops run three iterations: `while` continues while the carry is below
+// 2 (0,1,2 -> stop at 2), independent of the body output.
 const cont: LoopFn = (_output, currentInput) =>
   (typeof currentInput === "number" ? currentInput : 0) < 2;
 const next: LoopFn = (_output, currentInput) =>
@@ -109,8 +105,8 @@ describe("nested loop", () => {
       throw new Error(`unknown handler ${ref}`);
     };
 
-    // Outer loop body IS a single-level loop workflow, so nesting is two loops
-    // deep: outer -> inner -> leaf.
+    // Outer body is a single-level loop workflow, so nesting is two deep:
+    // outer -> inner -> leaf.
     const innerLoopBody = oneLoop("inner-wf", "inner");
     const nested = withLoopBody(
       oneLoop("nested-wf", "outer"),
@@ -126,13 +122,13 @@ describe("nested loop", () => {
     }).complete;
 
     expect(result.terminalStatus).toBe("completed");
-    // Outer converges after 3 iterations; each runs the inner loop, which itself
-    // converges after 3 iterations -- so the leaf action runs 3 * 3 = 9 times.
+    // Outer converges after 3 iterations, each running an inner loop that also
+    // converges after 3 -- so the leaf action runs 3 * 3 = 9 times.
     expect(ticks).toBe(9);
     const { outcome, iterations } = outerLoopOutcome(result.outputs.outer);
     expect(outcome).toBe("converged");
     expect(iterations).toBe(3);
-    // The inner loop converged (its onExhausted branch was pruned), so no
+    // The inner loop converged, so its onExhausted branch was pruned and no
     // escalation ran.
     expect("esc" in result.outputs).toBe(false);
   });
@@ -140,11 +136,10 @@ describe("nested loop", () => {
 
 describe("nested loop awaitSignal (in-process park)", () => {
   test("an inner-loop body signal park relays up through both containers", async () => {
-    // outer loop -> inner loop -> body `awaitSignal("go")`. A single delivery on
-    // the run's real channel must cascade DOWN two container relays to reach the
-    // body's gate: the outer container relays into the inner container's owned
-    // channel, which relays into the body's gate. The inner container surfacing
-    // its relay await to the outer (env.onSignalPark) is what makes that work.
+    // outer -> inner -> body `awaitSignal("go")`. A single delivery on the run's
+    // channel must cascade down two container relays to the body's gate; the
+    // inner container surfacing its relay await to the outer (env.onSignalPark)
+    // is what makes that work.
     const innerBody = defineWorkflow({
       id: "inner-await-body",
       trigger: { type: "manual" },
@@ -199,7 +194,7 @@ describe("nested loop awaitSignal (in-process park)", () => {
       actionResolver,
       loopFns,
     });
-    // The in-memory channel queues the delivery until the outermost relay
+    // The in-memory channel queues delivery until the outermost relay
     // subscribes, so delivering before the chain parks is fine.
     await run.signal("go", { done: true }, "sig-1");
     const result = await run.complete;
@@ -323,8 +318,8 @@ describe("nested loop routing", () => {
       throw new Error(`unknown loop fn ${ref}`);
     };
     // The inner loop never converges (`always`) and caps at 2, so it exhausts
-    // and routes to ITS onExhausted (iesc) while nested. The outer loop
-    // converges after one iteration.
+    // to ITS onExhausted (iesc) while nested; the outer converges after one
+    // iteration.
     const innerLoopWf = defineWorkflow({
       id: "inner-exhaust-wf",
       trigger: { type: "manual" },

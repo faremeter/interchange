@@ -1,10 +1,8 @@
-// The credential encryption-at-rest seam's one basic implementation.
-//
-// `createEnvKeyCredentialCipher` is a `CredentialCipher` backed by the general
-// AEAD primitive under a single operator-provided key held in process memory. A
-// future KMS or envelope-encryption plugin implements the same
-// `CredentialCipher` interface and drops in at the composition root with no
-// call-site changes.
+// The credential encryption-at-rest seam's basic implementation:
+// `createEnvKeyCredentialCipher` backs a `CredentialCipher` with the AEAD
+// primitive under one operator-provided key held in process memory. A future
+// KMS or envelope plugin implements the same interface and drops in at the
+// composition root with no call-site changes.
 
 import type { CredentialCipher } from "@intx/types";
 
@@ -32,29 +30,19 @@ export function createEnvKeyCredentialCipher(
 }
 
 /**
- * A noop `CredentialCipher`: it follows the interface but uses no key. `encrypt`
- * returns its input unchanged, so a secret is stored as plaintext. `decrypt` is
- * identity for a plaintext value but THROWS on an `enc:` ciphertext: holding no
- * key, it cannot read a value a real cipher sealed, and passing that ciphertext
- * through as plaintext would silently deliver a garbage secret. This keeps the
- * interface's decrypt contract -- decrypt never returns a still-encrypted value
- * as plaintext -- which the env-key cipher already honors.
- *
- * It is used when no real cipher is configured, in tests and local development.
- * It MUST NOT be the active cipher in production: secrets would be stored
- * unencrypted. The composition root (`apps/hub`) always supplies a real env-key
- * cipher, gated by a required `CREDENTIAL_ENCRYPTION_KEY` at boot, and the hub
- * logs a warning if it ever falls back to this one.
+ * Keyless `CredentialCipher`: `encrypt` stores plaintext as-is; `decrypt`
+ * passes plaintext through but rejects any `enc:` ciphertext, which no key
+ * could read. Used in tests and local development, never in production —
+ * the hub's composition root always supplies a real env-key cipher gated by
+ * a required `CREDENTIAL_ENCRYPTION_KEY` and warns if it falls back to this.
  */
 export function createNoopCredentialCipher(): CredentialCipher {
   return {
     encrypt: (plaintext) => Promise.resolve(plaintext),
     decrypt: (blob) => {
-      // A keyless cipher holds no key of ANY scheme, so it rejects every `enc:`
-      // ciphertext form (`isCiphertext`, loose) -- not just this module's
-      // `enc:aead:` (the strict `PREFIX` the env cipher checks). A value it can
-      // pass through must be genuine plaintext. Return a rejected promise --
-      // not a synchronous throw -- so the failure surfaces on decrypt's result.
+      // No key of any scheme, so reject every `enc:` form (loose
+      // `isCiphertext`), not just `enc:aead:`. Reject via promise, not a
+      // synchronous throw, so the failure surfaces on decrypt's result.
       if (isCiphertext(blob)) {
         return Promise.reject(
           new Error(

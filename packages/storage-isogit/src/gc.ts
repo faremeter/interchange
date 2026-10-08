@@ -26,11 +26,9 @@ type ObjectStoreEntry = {
  *
  * - `tip-only`: keep only the objects reachable from each ref tip's tree.
  *   Prior commits are dropped, leaving the tip commit with dangling parent
- *   pointers (the same shape the deploy ref already has). Smallest repo;
- *   suited to environments that treat the repo as current-state cache.
+ *   pointers (the shape the deploy ref already has). Smallest repo.
  * - `keep-history`: also keep every object reachable through the commit
- *   ancestry. Preserves the audit trail; suited to environments that treat
- *   the repo as a long-term archive.
+ *   ancestry. Preserves the audit trail.
  */
 export type RetentionPolicy = "tip-only" | "keep-history";
 
@@ -42,15 +40,12 @@ export type GCResult = {
 };
 
 /**
- * Write-path reclaim policy. A writer holding the per-directory lock samples
- * the repo's object counts after its mutation and repacks under `retention`
- * once the pack count reaches `packThreshold` OR the loose-object count
- * reaches `looseThreshold`. Both triggers matter: a hub repo accumulates
- * packs as it receives state, while a sidecar repo accumulates loose objects
- * as the reactor commits. When a reclaim runs, the `.git` byte size is
- * checked against `warnBytes` and a disk-pressure warning is emitted if it
- * is reached — surfacing runaway accumulation that survives a reclaim — so
- * the byte check rides the reclaim rather than every write.
+ * Write-path reclaim policy. A writer holding the per-directory lock
+ * repacks under `retention` once the pack count reaches `packThreshold`
+ * or the loose-object count reaches `looseThreshold` (a hub repo
+ * accumulates packs, a sidecar repo accumulates loose objects). A reclaim
+ * also checks `.git` bytes against `warnBytes` and emits a disk-pressure
+ * warning, so the byte walk rides the reclaim rather than every write.
  */
 export type GCPolicy = {
   packThreshold: number;
@@ -61,16 +56,12 @@ export type GCPolicy = {
 
 /**
  * Collect every object reachable through a commit's ancestry, tolerating
- * commits whose parents are not present on disk.
- *
- * The deploy ref is applied tip-only, so its commit carries parent pointers
- * to objects that were never transferred. Reading an absent parent throws
- * `NotFoundError`; we stop descending that branch rather than aborting the
- * whole GC, because a missing parent is the expected steady state for these
- * repos. Only that specific absence is tolerated — any other read failure
- * (corruption, a non-commit oid, I/O) surfaces, since swallowing it here
- * would drop a present, reachable subtree from the keep set and the caller
- * would then delete it.
+ * commits whose parents are not present on disk. The deploy ref is applied
+ * tip-only, so its commit carries parent pointers to objects never
+ * transferred; reading an absent parent throws `NotFoundError`, and we stop
+ * descending that branch rather than aborting the whole GC. Only that
+ * absence is tolerated — any other read failure surfaces, since swallowing
+ * it would drop a present, reachable subtree from the keep set.
  */
 async function collectHistoryObjects(
   runtime: StorageRuntime,
@@ -113,8 +104,8 @@ async function collectHistoryObjects(
 }
 
 /**
- * Every `.pack` and `.idx` file currently in the repo's pack directory.
- * Snapshotted before the consolidated pack is published so the freshly
+ * Every `.pack` and `.idx` file currently in the repo's pack directory,
+ * snapshotted before the consolidated pack is published so the freshly
  * published pair is never in the retirement set.
  */
 async function listPackFiles(
@@ -141,8 +132,8 @@ async function listPackFiles(
 
 /**
  * Snapshot every loose-object fan-out directory under `.git/objects/`.
- * Non-object children such as `pack`, `info`, and `gc-trash` are excluded by
- * the two-lowercase-hex directory-name constraint.
+ * Non-object children such as `pack`, `info`, and `gc-trash` are excluded
+ * by the two-lowercase-hex directory-name constraint.
  */
 async function listLooseObjectDirectories(
   runtime: StorageRuntime,
@@ -173,9 +164,10 @@ function gcTrashRoot(runtime: StorageRuntime, dir: string): string {
 /**
  * Delete quarantine left by a prior GC that reached its durability commit
  * point but did not finish cleanup. Quarantine is outside every path Git
- * scans for packs or loose objects. If it is present in a durable namespace,
- * the replacement pack was part of that same flushed namespace; a crash
- * before the flush restores the prior namespace without quarantine instead.
+ * scans for packs or loose objects. If it is present in a durable
+ * namespace, the replacement pack was part of that same flushed namespace;
+ * a crash before the flush restores the prior namespace without
+ * quarantine instead.
  */
 async function removeStaleGCTrash(
   runtime: StorageRuntime,
@@ -197,10 +189,11 @@ async function removeStaleGCTrash(
 
 /**
  * Retire the old object-store namespace without deleting object bodies.
- * LightningFS persists file bodies eagerly but its directory namespace only
- * at flush time. Renaming into an unscanned quarantine therefore leaves both
- * crash outcomes valid: a pre-flush reopen sees the old namespace and a
- * post-flush reopen sees the consolidated pack plus quarantined old bodies.
+ * LightningFS persists file bodies eagerly but its directory namespace
+ * only at flush time. Renaming into an unscanned quarantine therefore
+ * leaves both crash outcomes valid: a pre-flush reopen sees the old
+ * namespace and a post-flush reopen sees the consolidated pack plus
+ * quarantined old bodies.
  */
 async function quarantineSupersededObjects(
   runtime: StorageRuntime,
@@ -240,38 +233,25 @@ async function quarantineSupersededObjects(
 }
 
 /**
- * Reclaim disk in an agent git repo by repacking everything reachable from
- * its refs into a single pack and dropping the superseded packs and loose
- * objects.
+ * Repack everything reachable from the repo's refs into one pack and
+ * drop the superseded packs and loose objects. The keep set is the union
+ * of reachability over every head ref (agent repos carry two diverging
+ * heads, `main` and `deploy`; repacking one alone would discard the
+ * other's live objects). The consolidated pack is published through the
+ * same atomic staging dance receives use, so an unlocked reader never
+ * observes a torn pack; only then are the prior packs and loose-object
+ * fan-out dirs renamed into an unscanned quarantine. A flush makes the
+ * new pack and retired namespace durable together; object bodies are
+ * deleted only after that commit point, followed by a second cleanup
+ * flush.
  *
- * Compute the keep set as the union of reachability over every head ref
- * (agent repos carry two diverging heads, `main` and `deploy`, so unioning
- * is mandatory — repacking one ref's reachability alone would discard the
- * other's live objects). Pack the keep set into one self-contained pack via
- * `git.packObjects` and publish it through the same atomic staging dance
- * receives use, so a concurrent unlocked reader never observes a torn pack.
- * Only then rename the packs that predated this pass and every loose-object
- * fan-out directory into an unscanned quarantine. A flush makes the new pack
- * and retired namespace durable together; object bodies are deleted only
- * after that commit point, followed by a second cleanup flush.
- *
- * # Concurrency
- *
- * The caller MUST already hold the repo's per-directory lock
- * (`withRepoDirLock`). This is the lock-free core: writers trigger reclaim
- * inline after a commit/apply while still holding that lock, and external
- * callers not already under it use {@link runGC}, which acquires it. The
- * lock excludes concurrent writers, so the keep set computed from the refs
- * cannot be invalidated by a commit landing mid-pass. Retirement of a
- * superseded pack or loose object races only with unlocked readers, the same
- * window `unpublishPack` already accepts. Indexes are retired before their
- * packs, and every retired-but-reachable object is also in the freshly
- * published consolidated pack.
- *
- * Returns the disk usage before and after plus the reclaimed byte delta. A
- * repo with no resolvable refs is not repacked, though stale quarantine is
- * still reclaimed. Exported for use within the storage package only — it is
- * intentionally absent from the package's public barrel.
+ * Caller MUST already hold the per-directory lock (`withRepoDirLock`);
+ * external callers use {@link runGC}. Retirement races only with
+ * unlocked readers, the same window `unpublishPack` already accepts;
+ * indexes are retired before their packs, and every retired-but-reachable
+ * object is also in the fresh consolidated pack. Returns disk usage
+ * before/after plus the reclaimed delta. A repo with no resolvable refs
+ * is not repacked, though stale quarantine is still reclaimed.
  */
 export async function gcUnderLock(
   runtime: StorageRuntime,
@@ -324,7 +304,8 @@ export async function gcUnderLock(
   );
 
   // Durability commit point: deletion cannot begin until the replacement
-  // pack is published and every retired body is reachable through quarantine.
+  // pack is published and every retired body is reachable through
+  // quarantine.
   await flushRuntime(runtime);
   await runtime.fs.remove(trashDir, { recursive: true, force: true });
   await flushRuntime(runtime);
@@ -340,10 +321,10 @@ export async function gcUnderLock(
 
 /**
  * Garbage-collect the agent repo at `dir`, acquiring the repo's
- * per-directory lock for the duration. Use this from callers that are not
- * already holding the lock (e.g. the hub's substrate, which holds its own
- * higher-level lock but not the storage lock). Writers that trigger reclaim
- * while already under the lock call {@link gcUnderLock} directly.
+ * per-directory lock for the duration. Use this from callers not already
+ * holding the lock (e.g. the hub's substrate, which holds its own
+ * higher-level lock but not the storage lock); writers that trigger
+ * reclaim while already under the lock call {@link gcUnderLock} directly.
  */
 export async function runGC(
   runtime: StorageRuntime,
@@ -360,23 +341,17 @@ function warnIfOverBudget(dir: string, bytes: number, warnBytes: number): void {
 }
 
 /**
- * Apply a write-path reclaim policy to the repo at `dir`. Reclaims when the
- * pack count or the loose-object count has reached its threshold. Intended
- * to be called by a writer that has just mutated the repo and is still
- * holding the per-directory lock, so the reclaim itself runs without
- * re-entering the lock.
+ * Apply a write-path reclaim policy to the repo at `dir`, for a writer
+ * that has just mutated the repo and still holds the per-directory lock.
  *
  * The trigger samples only the object counts — two directory reads — on
- * every write; the full `.git` byte walk that feeds the disk-pressure
- * warning runs only when a reclaim does (the collector computes it for its
- * before/after delta anyway, and the failure path walks it once). So the
- * warning is evaluated at reclaim time, not on every write, and the common
- * below-threshold write pays no byte walk.
- *
- * A reclaim failure is logged, not propagated: the write that triggered this
- * has already committed, so failing the caller would falsely report the
- * write as failed. The disk-pressure warning still fires on a failed reclaim
- * — the case where accumulation is most likely runaway.
+ * every write; the full `.git` byte walk for the disk-pressure warning
+ * runs only when a reclaim does, so below-threshold writes pay no byte
+ * walk. A reclaim failure is logged, not propagated: the write that
+ * triggered this has already committed, so failing the caller would
+ * falsely report the write as failed. The disk-pressure warning still
+ * fires on a failed reclaim — the case where accumulation is most
+ * likely runaway.
  */
 export async function maybeGCUnderLock(
   runtime: StorageRuntime,
@@ -405,8 +380,9 @@ export async function maybeGCUnderLock(
 /**
  * {@link maybeGCUnderLock} for callers that do not already hold the repo's
  * per-directory lock — it acquires the lock for the duration. The hub's
- * substrate uses this from inside its own higher-level lock; sidecar writers
- * that already hold the per-directory lock call `maybeGCUnderLock` directly.
+ * substrate uses this from inside its own higher-level lock; sidecar
+ * writers that already hold the per-directory lock call
+ * `maybeGCUnderLock` directly.
  */
 export async function maybeGC(
   runtime: StorageRuntime,

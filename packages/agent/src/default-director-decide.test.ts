@@ -1,32 +1,13 @@
-// Behavioural tests for the default director's `decide()` function.
+// Behavioural tests for the default director's `decide()` function:
+// per-event-shape decisions (infer, checkpoint+execute_tools,
+// checkpoint+reply, refusal reply, checkpoint+wait, tool.done
+// batching, abort -> done, inference.error -> reply-with-error).
 //
-// These pin the per-event-shape decisions the built-in director makes
-// when fed reactor events: `message.received` -> infer, tool-call
-// turns -> checkpoint + execute_tools, text-only turns -> checkpoint
-// + reply, refusal-only turns -> reply with the refusal reason,
-// empty/whitespace turns -> checkpoint + wait, reactive-mode
-// inference.done / tool.done -> checkpoint + wait, tool.done
-// batching across multiple parallel calls, abort -> done, and
-// inference.error -> checkpoint + reply-with-error-message.
-//
-// The director is exercised directly through the factory rather than
-// through `createAgent`; the factory's `(config, env, agent)` shape
-// constructs a `ReactorDirector` whose `decide` is a pure-ish
-// function once instantiated, so the tests do not need a running
-// reactor.
-//
-// Scope note. The decision logic itself is implemented by
-// `createDefaultDirector` in `@intx/inference`. These tests pin the
-// event-shape contract from the agent's vantage point: `@intx/agent`
-// ships `defaultDirectorFactory` as a public surface, and what each
-// reactor event resolves to (infer / checkpoint+execute_tools /
-// reply / wait / done) is what consumers of `createAgent` see at the
-// boundary. `@intx/inference`'s own `default-director.test.ts`
-// covers a different slice -- policy hooks and the firing boundary
-// for `afterInferenceDone` -- and the two suites are complementary,
-// not duplicative. A refactor of the inference-side implementation
-// that broke the agent-facing event shape is caught here; an
-// inference-side hook-policy regression is caught there.
+// The director is exercised directly through the factory, so the
+// tests need no running reactor. The decision logic itself lives in
+// `createDefaultDirector` in `@intx/inference`; these tests pin the
+// event-shape contract from the agent's vantage point (its own
+// `default-director.test.ts` covers policy hooks and is complementary).
 
 import { describe, test, expect } from "bun:test";
 
@@ -137,9 +118,8 @@ function makeCapabilities(): ReactorCapabilities & {
 }
 
 function buildDirector(opts?: { mode?: "conversational" | "reactive" }) {
-  // The factory ignores env in its constructor; only `agent.systemPrompt`
-  // and `agent.toolDefinitions` are read. A bare object cast is the
-  // narrowest way to satisfy the BaseEnv contract for these tests.
+  // The factory ignores env in its constructor; a bare cast is the
+  // narrowest way to satisfy BaseEnv here.
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub, the default director ignores env in its constructor
   const env = {} as BaseEnv;
   return defaultDirectorFactory(opts ?? {}, env, {
@@ -319,13 +299,10 @@ describe("defaultDirector decide()", () => {
   });
 
   test("inference.done with a refusal-only turn replies with the refusal reason", async () => {
-    // RefusalBlock is the OpenAI strict-mode policy-decline shape:
-    // the model produced coherent output ("I cannot help with that")
-    // in the dedicated refusal field instead of content. The
-    // director's reply path must surface the refusal text to the
-    // caller, not route the turn through the empty-response branch --
-    // otherwise the human waits indefinitely for an answer the model
-    // already declined to give.
+    // RefusalBlock is the OpenAI strict-mode decline shape: the model
+    // produced coherent output in the dedicated refusal field instead
+    // of content. The reply path must surface the refusal text, not
+    // route through the empty-response branch.
     const director = buildDirector();
     const caps = makeCapabilities();
     const state = makeState();

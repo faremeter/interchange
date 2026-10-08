@@ -8,27 +8,18 @@ import {
 } from "@logtape/logtape";
 
 /**
- * Installs a default console sink when no LogTape configuration is present.
+ * Installs a default console sink when no LogTape configuration is present,
+ * so diagnostics emitted before `setup()` are not silently discarded.
  *
- * Without this, a consumer that imports `getLogger` and emits diagnostics
- * before calling `setup()` will silently discard those records. The default
- * sink routes through `console.warn`/`console.error`, which lands on stderr
- * in Node and Bun and on the devtools console in browsers, until `setup()`
- * replaces the configuration.
+ * Formatter selection follows the same dev/prod heuristic as `setup()`.
+ * Without a `process` global the runtime is treated as development; the
+ * `dev`/`prod` options cannot influence this default because no options are
+ * passed at module load.
  *
- * Formatter selection follows the same dev/prod heuristic as `setup()`. A
- * runtime without Node's `process` global uses development formatting; the
- * caller-facing `dev`/`prod` options on `setup()` cannot influence this
- * default because no options are passed at module load.
- *
- * This is normally invoked once at module load (see the bottom of this
- * file). It is also exported so tests can reinstall the default sink after
- * a `resetSync()`. Every entry point in `package.json` must side-effect
- * import this module (see `./index.ts` and `./hono.ts`); a new entry point
- * that skips that import silently regresses to the pre-default-sink
- * behavior.
- *
- * Idempotent: returns immediately if a configuration is already installed.
+ * Invoked once at module load (bottom of this file) and exported so tests
+ * can reinstall after `resetSync()`. Every package entry point must
+ * side-effect import this module (`./index.ts`, `./hono.ts`). Idempotent:
+ * returns immediately when a configuration is already installed.
  */
 export function installDefaultConsoleSink(): void {
   if (getConfig() !== null) return;
@@ -56,7 +47,5 @@ export function installDefaultConsoleSink(): void {
   });
 }
 
-// Module-load entry: every side-effect import of this file installs the
-// default sink. The export above is for tests that need to reinstall after
-// `resetSync()`.
+// Module-load entry.
 installDefaultConsoleSink();

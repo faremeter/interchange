@@ -1,14 +1,8 @@
-// End-to-end replay of the committed example session captures.
-//
-// These tests are the integration proof that recording → replay
-// round-trips through production `runInference`. Each test loads a
-// committed session, drives every captured turn through production
-// `runInference` (using the replay harness's body-aware matchers and
-// captured dispatch results), and asserts orchestration invariants
-// hold: the conversation length grows as the capture grew, dispatch
-// results land in the correct subsequent exchange request bodies, the
-// terminal event sequence for each turn validates against the shape
-// shape invariants applied by the session parser regression.
+// End-to-end replay of the committed example session captures: recording →
+// replay round-trips through production `runInference`, using the replay
+// harness's body-aware matchers and captured dispatch results. Asserts the
+// orchestration invariants the session parser regression validates (turn
+// count, dispatch placement in later request bodies, terminal event shape).
 
 import { afterEach, describe, expect, test } from "bun:test";
 import path from "node:path";
@@ -46,11 +40,9 @@ afterEach(() => {
   }
 });
 
-// Build the tool_result content array that should be threaded into the
-// next user turn. Each captured dispatch's args carry the call_id-like
-// identity (the matched `tool_call` block's id), and the result is
-// served verbatim — but `tool_result.content` only accepts the narrow
-// media block set, so we render the result to a JSON string text block.
+// Build the tool_result content for the next user turn. `tool_result.content`
+// only accepts the narrow media block set, so the result is rendered to a
+// JSON string text block.
 function toolResultBlocks(
   callIds: readonly string[],
   results: readonly unknown[],
@@ -255,25 +247,21 @@ describe("session replay integration", () => {
     expect(perTurnEvents).toHaveLength(replay.capturedExchanges.length);
     expect(remainingDispatches).toHaveLength(0);
 
-    // Cross-turn invariant: conversation length grew monotonically.
-    // The replay's body-aware matchers already enforce per-turn body
-    // equality with capture, so if any turn's reconstructed request
-    // body had failed to thread the previous tool_results, the matcher
-    // would have refused to fire and `SessionReplayMismatchError`
-    // would have surfaced from `runTurn`.
+    // Cross-turn invariant: conversation length grew monotonically. The
+    // body-aware matchers enforce per-turn body equality with capture, so a
+    // turn that failed to thread prior tool_results surfaces as
+    // SessionReplayMismatchError.
     expect(conversation.length).toBeGreaterThan(1);
   });
 });
 
-// The committed live sessions (origin "live") were recorded against real
-// provider endpoints by bin/record-live-sessions.ts, one multi-turn tool
-// conversation per adapter. Their exact bytes are non-reproducible — the model
-// chose the wording and the tool argument — so these assert the shape the
-// recorder guarantees (two turns, at least one reconstructed dispatch, a real
-// tool call) rather than literal counts or text. Replay itself is still
-// deterministic: the harness drives production runInference over the committed
-// bytes and its body-aware matchers enforce per-turn fidelity, so a round-trip
-// regression in any real adapter surfaces here as a SessionReplayMismatchError.
+// The committed live sessions (origin "live") came from
+// bin/record-live-sessions.ts, one multi-turn tool conversation per adapter.
+// Their exact bytes are non-reproducible, so these assert the recorder's
+// guaranteed shape (two turns, at least one reconstructed dispatch, a real
+// tool call) rather than literal counts or text; replay itself stays
+// deterministic, so a round-trip regression surfaces as
+// SessionReplayMismatchError.
 const PACKAGES_ROOT = path.resolve(__dirname, "..", "..", "packages");
 
 const LIVE_SESSIONS: readonly { name: string; pkg: string; brand: string }[] = [
@@ -312,8 +300,7 @@ describe("live session replay integration", () => {
       const replay = await createReplayHarness({ sessionDir });
       activeReplay = replay;
 
-      // The recorder always drives two turns — the tool call, then the answer
-      // that consumes its result — and reconstructs at least one dispatch.
+      // The recorder always drives two turns and reconstructs one dispatch.
       expect(replay.capturedExchanges).toHaveLength(2);
       expect(replay.capturedDispatches.length).toBeGreaterThanOrEqual(1);
 

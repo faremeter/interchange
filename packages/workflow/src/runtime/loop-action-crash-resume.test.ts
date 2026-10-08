@@ -6,17 +6,16 @@
 //
 // `runAction` flushes the action's `StepStarted` durably before invoking the
 // handler, and the loop body runs as a child run over the SHARED store, so a
-// faithful crash between the effect and the action's `StepCompleted` leaves the
-// child (`loop-parent-run__rework__0`) log NON-empty and non-terminal. On
-// resume, the iteration re-spawns through the suspendable-loop seam; the body's
-// `runtimeRun` adopts that durable child log, sees the action `in-flight`
-// (durable `StepStarted`, no `StepCompleted`), and settles it a terminal
-// `StepFailed` via `isCrashedInvocationStep` (the at-most-once refusal) rather
-// than re-invoking the handler. The iteration fails and the run settles
-// `failed`.
+// faithful crash between the effect and the action's `StepCompleted` leaves
+// the child (`loop-parent-run__rework__0`) log NON-empty and non-terminal.
+// On resume the iteration re-spawns through the suspendable-loop seam; the
+// body's `runtimeRun` adopts that durable child log, sees the action
+// `in-flight` (durable `StepStarted`, no `StepCompleted`), and settles it a
+// terminal `StepFailed` via `isCrashedInvocationStep` (the at-most-once
+// refusal) rather than re-invoking the handler.
 //
-// Contrast `loop-resume.test.ts`, which models an INCONSISTENT store (it drops
-// the child log while keeping the parent) and therefore exercises the
+// Contrast `loop-resume.test.ts`, which models an INCONSISTENT store (it
+// drops the child log while keeping the parent) and therefore exercises the
 // ledger-dedup re-run path production never takes.
 
 import { describe, test, expect } from "bun:test";

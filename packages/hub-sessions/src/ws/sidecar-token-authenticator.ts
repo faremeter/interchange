@@ -19,12 +19,10 @@ export type CreateSidecarTokenAuthenticatorDeps = {
 };
 
 /**
- * Builds an authenticator that verifies a sidecar's presented token
- * against the per-sidecar hash stored on the `sidecar` table. The token
- * is hashed with SHA-256 and looked up by its digest; a matching row
- * yields that row's id as the verified identity, and an unknown token
- * resolves to `null` so the handshake is rejected. The claimed
- * `sidecarId` on the frame is ignored: identity is derived from the
+ * Builds an authenticator that verifies a sidecar's presented token against
+ * the per-sidecar SHA-256 hash stored on the `sidecar` table. A matching row
+ * yields its id as the verified identity; an unknown token resolves to `null`.
+ * The claimed `sidecarId` on the frame is ignored: identity comes from the
  * token alone.
  */
 export function createSidecarCredentialResolver({

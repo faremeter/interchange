@@ -2,18 +2,15 @@
 //
 // Every id rule -- non-empty, `STEP_ID_PATTERN`, and the `__` ban -- constrains
 // the keys of ONE step record. A workflow root's record is normalized, so its
-// keys are checked; a `loop` body, a `childWorkflow` inline body, and an
-// `onTrigger` inline body are plain `WorkflowDefinition` values the parent
-// embeds, and nothing in the type system says they came from `defineWorkflow`.
-// Every body here is assembled BY HAND for that reason: a body built through
-// `defineWorkflow` was checked at its own construction and would prove nothing
-// about what the parent's walk catches.
+// keys are checked; a `loop`, `childWorkflow` inline, and `onTrigger` inline
+// body are plain `WorkflowDefinition` values the parent embeds, so each body
+// here is assembled BY HAND: a body built through `defineWorkflow` was already
+// checked and would prove nothing about the parent's walk.
 //
-// The `__` case is the one with teeth. `__` joins a step id into the ids the
-// runtime derives from it -- an inline-body ref, a loop iteration body run id,
-// an onTrigger section body run id -- and those ids key the durable store, so a
-// `__` inside a body step id is a silent shared-state collision rather than a
-// tidiness complaint.
+// The `__` case has teeth: `__` joins a step id into the ids the runtime
+// derives from it (inline-body refs, body run ids), and those ids key the
+// durable store, so a `__` inside a body step id is a silent shared-state
+// collision, not a tidiness complaint.
 
 import { describe, test, expect } from "bun:test";
 
@@ -28,11 +25,9 @@ import {
 } from "./index";
 
 /**
- * Assemble a `WorkflowDefinition` directly, bypassing `defineWorkflow`. Only
- * the record-key-to-`id` assignment is reproduced, because the primitive
- * constructors leave `id` empty and a definition that reached the runtime would
- * carry it. No validation runs, which is the whole point: this is the shape the
- * trust boundary actually has to defend against.
+ * Assemble a `WorkflowDefinition` directly, bypassing `defineWorkflow`. Only the
+ * record-key-to-`id` assignment is reproduced; no validation runs, which is the
+ * whole point -- this is the shape the trust boundary has to defend against.
  */
 function handBuiltBody(
   id: string,
@@ -142,9 +137,8 @@ describe("step-id grammar in a nested body", () => {
   }
 
   test("rejects a double underscore in a loop body nested in a loop body", () => {
-    // The grammar rides the same re-entry the rest of the suite does, so it
-    // keeps descending: an inner body's ids are checked at the outermost
-    // parent's authoring time, not only one level down.
+    // The grammar rides the same re-entry as the rest of the suite: an inner
+    // body's ids are checked at the outermost parent's authoring time.
     const inner = handBuiltBody("inner", {
       deep__step: action({ handler: "noop" }),
     });
@@ -161,15 +155,12 @@ describe("step-id grammar in a nested body", () => {
     expect(defineAroundLoopBody(outer)).toThrow(/must not contain "__"/);
   });
   test("rejects a body step whose embedded id names a different step", () => {
-    // The record key is what every id-derived table is built on -- the
-    // credentials snapshot, the deploy-time grants write, the staged body ref
-    // -- while the runtime authorizes under the primitive's own `id`. The root
-    // cannot diverge, because normalize assigns the key over the embedded id.
-    // A hand-assembled body never passes through that assignment, so it can
-    // key a step under one name and carry another, aiming the two halves at
-    // different steps. Built literally here rather than through
-    // `handBuiltBody`, which assigns the key over the id and would erase the
-    // very divergence under test.
+    // The record key builds every id-derived table (credentials snapshot,
+    // grants write, staged body ref), while the runtime authorizes under the
+    // primitive's own `id`; normalize assigns the key over the id, so a root
+    // cannot diverge. A hand-assembled body skips that assignment, so it can
+    // key a step under one name and carry another. Built literally, not via
+    // `handBuiltBody`, which would erase the divergence under test.
     const body: WorkflowDefinition = {
       id: "outer",
       triggers: [{ type: "manual" }],

@@ -565,14 +565,13 @@ export function createSidecarAllocationStore(db: DBHandle) {
       args: InitializationArgs & { readonly previousPublicKey: string | null },
     ): Promise<boolean> {
       // No signal gate: the sole caller invokes this only for a proven-unsent
-      // frame, which is reachable precisely when the attempt was cancelled.
-      // The WHERE clause is the guard. Marker equality proves no newer
-      // attempt began, and generation/status equality proves the allocation
-      // did not move on. The reconciliation lease is deliberately not
-      // required: a disconnect nulls the lease while leaving this attempt's
-      // marker behind, and only this attempt's own clear may remove it. Restore
-      // its previous key in the same transaction so absence of the marker cannot
-      // expose a live workflow as keyless or certify a different attempt.
+      // frame. The WHERE clause is the guard: marker equality proves no newer
+      // attempt began, and generation/status equality proves the allocation did
+      // not move on. The reconciliation lease is deliberately not required -- a
+      // disconnect nulls the lease while leaving this attempt's marker behind,
+      // and only this attempt's own clear may remove it. Restore the previous
+      // key in the same transaction so absence of the marker cannot expose a
+      // live workflow as keyless or certify a different attempt.
       return db.transaction(async (tx) => {
         const condition = initializationConditions(args, args.leaseId, {
           requireCurrentLease: false,

@@ -1,8 +1,7 @@
-// Base64 codec for byte strings.
-//
-// Used to ship binary mail bodies over text-only WebSocket frames.
-// Centralizing here keeps the encoding stable across the sidecar/hub
-// boundary and any other consumer that needs the same wire shape.
+// Base64 codec for byte strings, used to ship binary mail bodies over
+// text-only WebSocket frames. Centralizing here keeps the encoding stable
+// across the sidecar/hub boundary and any other consumer that needs the
+// same wire shape.
 
 // Bytes per encoding chunk. Must be a multiple of 3 so each chunk except the
 // last encodes to whole base64 groups with no padding, letting the per-chunk

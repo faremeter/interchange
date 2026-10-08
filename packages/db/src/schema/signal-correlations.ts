@@ -11,17 +11,16 @@ export const signalCorrelation = pgTable("signal_correlation", {
   // Co-written with an `approval` that references the same anchor run and
   // already cascades on its delete. A correlation whose anchor run is gone can
   // never resolve, and its co-written approval has already cascaded away, so
-  // cascading the correlation keeps the pair consistent rather than leaving a
-  // correlation pointing at a vanished anchor run.
+  // cascading the correlation keeps the pair consistent.
   anchorRunId: text("anchor_run_id")
     .notNull()
     .references(() => workflowRun.id, { onDelete: "cascade" }),
   agentAddress: text("agent_address").notNull(),
   // References the run this correlation belongs to. Cascades on the run's
   // delete: a correlation whose run is gone can never resolve, and the
-  // anchor-run cascade above already removes it when the whole deployment
-  // is torn down. The `anchor_run_id` FK stays as the lock and cascade anchor
-  // the co-write orders against.
+  // anchor-run cascade above already removes it when the whole deployment is
+  // torn down. The `anchor_run_id` FK stays as the lock and cascade anchor the
+  // co-write orders against.
   runId: text("run_id")
     .notNull()
     .references(() => workflowRun.id, { onDelete: "cascade" }),

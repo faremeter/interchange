@@ -1,35 +1,30 @@
 // Deploy-latency benchmark (NOT a CI test).
 //
-// Measures the wall-clock of one CODE-SOURCED workflow deploy, so a
-// regression in the source-ref deploy front can be observed. The measured
-// operation is `deployWorkflowSourceForTest(...)`: it bundles a workflow
-// entry module to a self-contained `.mjs`, seeds it as a `workflow`-kind
-// source asset, installs + probes + approves + freezes it against a real
-// database, emits the source-ref deploy frame, and writes the deployment's
-// anchor `workflow_run` row. The interval brackets ONLY that call --
-// nothing else in the iteration is timed.
+// Measures the wall-clock of one CODE-SOURCED workflow deploy, so a regression
+// in the source-ref deploy front can be observed. The measured operation is
+// `deployWorkflowSourceForTest(...)`: it bundles a workflow entry module to a
+// self-contained `.mjs`, seeds it as a `workflow`-kind source asset, installs +
+// probes + approves + freezes it against a real database, emits the source-ref
+// deploy frame, and writes the deployment's anchor `workflow_run` row. The
+// interval brackets ONLY that call.
 //
 // The stack is the real deploy stack stood up by `startDeployFlowEnv` (real
 // hub WebSocket server, real sidecar subprocess, mock echo inference so
-// inference cost is ~0 and does not confound the deploy timing) plus a real
-// migrated Postgres schema (`createTestDb`) the install/approve freeze and
-// the anchor `workflow_run` insert both write through. Each measured deploy
-// uses a fresh anchorRunId (hence a fresh derived mail address and source
-// asset) and a fresh definition asset id, so per-deploy state never collides
-// across iterations.
+// inference cost is ~0) plus a real migrated Postgres schema the install/
+// approve freeze and the anchor `workflow_run` insert both write through. Each
+// measured deploy uses a fresh anchorRunId and definition asset id, so
+// per-deploy state never collides across iterations.
 //
 // The FIRST (cold) iteration is discarded: the first deploy on a fresh env
 // pays one-time warm costs (sidecar link warm-up, repo-store directory
-// materialization) the steady-state samples must exclude. The remaining
-// iterations are the reported samples.
+// materialization) the steady-state samples must exclude.
 //
 // Run:
 //   bun run tests/workflow-deploy/deploy-latency.bench.ts \
 //     [--iterations N] [--out <dir>]
 //
-// Writes <out>/results.json and prints a summary to stdout. Not matched by
-// `bun test` (it is a `.bench.ts`, not a `.test.ts`), so `make test` never
-// runs it; it is type-checked by `make build` via this directory's tsconfig.
+// Writes <out>/results.json. Not matched by `bun test` (a `.bench.ts`);
+// type-checked by `make build` via this directory's tsconfig.
 
 import fs from "node:fs";
 import os from "node:os";

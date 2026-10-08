@@ -1,13 +1,7 @@
-// Tool-result size-cap transform.
-//
-// When a tool result's content exceeds `maxChars`, the full bytes are spilled
-// via `contextStore.writeBlob` and the inline result is replaced with the
-// first `maxChars` characters plus a marker pointing at the spill via a
-// `tool-output:///{callId}` URI. The agent's `read_file` tool resolves the
-// URI through its `BlobReader` capability.
-//
-// Within-cap results pass through unchanged (no blob is written) but still
-// produce a `TransformRecord` so the manifest captures every invocation.
+// Size-cap transform: over-cap results spill the full bytes via
+// `contextStore.writeBlob`; inline content becomes a truncated marker with a
+// `tool-output:///{callId}` URI. Within-cap results pass through unchanged
+// but still produce a TransformRecord.
 
 import type {
   ContextStore,

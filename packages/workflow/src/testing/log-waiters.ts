@@ -7,10 +7,8 @@
 //
 // Subscribing from seq 0 replays what is already committed before delivering
 // live events, so an event that landed before the call counts exactly as a
-// later one does -- the property a poll got from re-reading the whole log on
-// every tick. Neither waiter carries a deadline: an event that never arrives
-// is caught by the lane timeout, per "Synchronizing on State, Not Time" in
-// CONVENTIONS.md.
+// later one does. Neither waiter carries a deadline: an event that never
+// arrives is caught by the lane timeout.
 
 import type { RepoStore } from "../runtime/env";
 import type { WorkflowEvent } from "../state-machine/index";
@@ -47,16 +45,12 @@ export async function waitForNthEvent(
     // Ends the subscription whether the match arrived or the loop was left by
     // a throw, so the store is not left holding a subscriber for this waiter.
     //
-    // It reads as redundant against an in-memory store and is not. Leaving a
-    // `for await` by either exit makes the iteration protocol call the
-    // iterator's `return()`, and an implementation that honours it has already
-    // closed the subscription by the time this runs -- `createInMemoryRepoStore`
-    // does, so deleting this line changes nothing observable about that store.
-    // Honouring `return()` is not required of an iterator, and `RepoStore` is
-    // an interface: production wraps the substrate's `subscribeKind`. This line
-    // is what ends the subscription for an implementation that does not. The
-    // sibling test asserts this signal aborts, rather than asserting store
-    // state, for the same reason -- store state would look correct either way.
+    // Reads as redundant against an in-memory store and is not: `for await`
+    // exit calls the iterator's `return()`, and an implementation that honours
+    // it has already closed the subscription -- but honouring `return()` is not
+    // required of an iterator, and `RepoStore` is an interface (production
+    // wraps the substrate's `subscribeKind`). This line is what ends the
+    // subscription for an implementation that does not.
     abort.abort();
   }
   throw new Error(

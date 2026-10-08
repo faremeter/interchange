@@ -28,12 +28,8 @@ const TEST_SOURCE: LastCycleSource = {
   model: "test-openai-model",
 };
 
-// A fresh adapter per test: the OpenAI parser holds per-request
-// indexer state (text/thinking/tool_call block indices allocated in
-// arrival order) on the adapter instance, and sharing one adapter
-// across tests would leak indexer state, making per-index assertions
-// order-dependent and surprising. A test-local re-creation guards
-// against that footgun.
+// Fresh adapter per test: the parser's per-request indexer state
+// (block indices in arrival order) would leak across tests.
 let adapter: ProviderAdapter;
 beforeEach(() => {
   adapter = createOpenAIAdapter(TEST_SOURCE);
@@ -50,10 +46,8 @@ const OpenAIToolCall = type({
   function: OpenAIFunctionCall,
 });
 
-// `content` is either a plain string (text-only messages) or an array
-// of content parts (multimodal: text + image_url etc). The schema
-// accepts either shape with passthrough for parts so each test site
-// validates the specific shape it cares about.
+// `content` is a plain string (text-only) or an array of parts
+// (multimodal); the schema accepts either shape.
 const OpenAIAssistantMessage = type({
   role: "string",
   "content?": "string | null | unknown[]",
@@ -79,10 +73,8 @@ const OpenAIRequestBody = type({
   "reasoning_effort?": "'none'",
 });
 
-// Drives a sequence of wire DSL chunks (full SSE-framed Uint8Arrays) through
-// the production SSE parser and the supplied adapter's parseResponse, mirroring
-// the harness's pipeline. Returns the flattened sequence of emitted events so
-// the test site can assert on them.
+// Drives SSE-framed chunks through the production parseSSE + parseResponse
+// pipeline and returns the flattened event sequence.
 async function parseWire(
   adapterInstance: ProviderAdapter,
   chunks: Uint8Array[],
@@ -324,9 +316,8 @@ describe("OpenAI adapter: buildRequest", () => {
   });
 
   test("emits a URL image as { type: image_url, image_url: { url } } passing the URL verbatim", () => {
-    // OpenAI's image_url accepts a public URL alongside the data-URL
-    // form. The URL is passed verbatim — no data: prefix synthesis,
-    // no mimeType on the wire (OpenAI infers from the URL response).
+    // image_url accepts a public URL verbatim: no data: synthesis, no
+    // mimeType on the wire (OpenAI infers it from the URL response).
     const messages: ConversationTurn[] = [
       {
         role: "user",
@@ -368,11 +359,9 @@ describe("OpenAI adapter: buildRequest", () => {
   });
 
   test("rejects a file-reference image source with a message naming the reference", () => {
-    // OpenAI's Chat Completions doesn't accept opaque file references
-    // — only data URLs and public URLs through `image_url`. The throw
-    // names the actual reference value so an operator triaging the
-    // failure sees what was sent (a stale Anthropic file_id, a Gemini
-    // fileUri, etc.) rather than just "not supported."
+    // Chat Completions accepts only data URLs and public URLs via
+    // `image_url`; the throw names the actual reference value so an
+    // operator sees what was sent, not just "not supported".
     const messages: ConversationTurn[] = [
       {
         role: "user",
@@ -399,12 +388,9 @@ describe("OpenAI adapter: buildRequest", () => {
   });
 
   test("emits multiple base64 image content parts preserving wire order", () => {
-    // A single user turn may carry multiple image content blocks
-    // (e.g., before/after comparison). The adapter must preserve their
-    // order on the wire — a reordering bug would invert "compare
-    // these two screenshots" prompts and produce wrong answers
-    // silently. Each image lands as a distinct `image_url` content
-    // part with its own data URL.
+    // Multiple image blocks per turn must keep their order on the wire
+    // (a reordering bug would invert a "compare these" prompt); each
+    // image lands as its own `image_url` part.
     const messages: ConversationTurn[] = [
       {
         role: "user",
@@ -629,11 +615,10 @@ describe("OpenAI adapter: buildRequest", () => {
   );
 
   test("throws on a mixed-content assistant turn that includes code execution", () => {
-    // Guards the placement of the assistant-role detection loop. The
-    // loop must fire even when valid text and tool_call blocks are
-    // present alongside the code execution block — a regression that
-    // moved the check after the existing field filters would silently
-    // succeed on the simpler single-block test, but must fail here.
+    // The assistant-role detection loop must fire even when valid text
+    // and tool_call blocks sit alongside the code block; a regression
+    // that moves the check after the field filters would pass the
+    // single-block test but must fail here.
     const messages: ConversationTurn[] = [
       {
         role: "assistant",
@@ -661,11 +646,9 @@ describe("OpenAI adapter: buildRequest", () => {
   });
 
   test("throws on an assistant turn carrying a refusal content block", () => {
-    // RefusalBlocks come from this adapter's own delta.refusal
-    // parsing, but the round-trip back through OpenAI's input
-    // message shape is not modeled. Surface the failure at the
-    // marshaling boundary rather than silently drop the refusal
-    // text (which would render as content: null in the wire body).
+    // Refusals parse from delta.refusal but have no OpenAI input-message
+    // shape; fail at the marshaling boundary rather than emit
+    // content: null.
     const messages: ConversationTurn[] = [
       {
         role: "assistant",
@@ -680,10 +663,8 @@ describe("OpenAI adapter: buildRequest", () => {
   });
 
   test("throws on a user turn carrying a refusal content block", () => {
-    // Echoing a refusal into a user-role content array is even
-    // odder than the assistant case — there's no OpenAI wire shape
-    // for it at all. The user-role serializer must also fail
-    // loudly rather than emit a `null` part.
+    // User-role has no wire shape for refusals either; fail loudly
+    // rather than emit a `null` part.
     const messages: ConversationTurn[] = [
       {
         role: "user",
@@ -787,14 +768,10 @@ describe("OpenAI adapter: parseResponse", () => {
   });
 
   test("tool_call emitted before text content gets a distinct content-block index", async () => {
-    // Regression: when the OpenAI stream emits a tool_call before any
-    // text content, the parser's per-request indexer must allocate a
-    // fresh content-block index for the tool_call rather than reusing
-    // 0 — otherwise a later text delta would also land at 0 and
-    // collide with the tool_use marker in the harness's per-index map.
-    // The harness would (correctly) raise a protocol_mismatch error;
-    // the bug surfaces as the whole turn failing instead of producing
-    // [tool_call, text] in the final content[].
+    // Regression: a tool_call before any text must allocate a fresh
+    // block index, not reuse 0 — otherwise the later text delta
+    // collides in the harness's per-index map and the whole turn
+    // fails instead of yielding [tool_call, text].
     const events = await parseWire(adapter, [
       wire.openai.toolCallStart(0, "call_first", "search"),
       wire.openai.toolCallArgumentsDelta(0, '{"q":"hi"}'),
@@ -821,13 +798,10 @@ describe("OpenAI adapter: parseResponse", () => {
   });
 
   test("propagates distinct tool_calls indices to data.index across parallel tool calls", async () => {
-    // Multi-tool-call regression target: two parallel tool calls in
-    // a single response stream interleaved deltas at indices 0 and 1.
-    // The parser must propagate each delta's wire-level `index` to
-    // the emitted event's `data.index` so the harness's per-block
-    // routing resolves to the right tool. Collapsing both indices to
-    // 0 would route the second tool's argument fragments onto the
-    // first tool's accumulator.
+    // Two parallel tool calls interleave deltas at indices 0 and 1; the
+    // parser must propagate each delta's wire `index` so the harness
+    // routes fragments to the right tool. Collapsing both to 0 would
+    // merge the second tool's args onto the first's accumulator.
     const events = await parseWire(adapter, [
       wire.openai.toolCallStart(0, "call_first", "alpha"),
       wire.openai.toolCallStart(1, "call_second", "beta"),
@@ -880,10 +854,9 @@ describe("OpenAI adapter: parseResponse", () => {
   });
 
   test("usage riding a choice-bearing chunk carries cacheRead and thinking", async () => {
-    // Some OpenAI-compatible relays attach the final usage object to the
-    // last content-bearing chunk (one that still carries a choice) instead
-    // of a separate choices-empty chunk. That usage must still surface
-    // cacheRead/thinking from the detail sub-objects rather than be zeroed.
+    // Some relays attach the final usage to the last content-bearing
+    // chunk instead of a choices-empty one; the detail sub-objects
+    // (cacheRead/thinking) must still surface, not zero.
     const events = await parseWire(adapter, [
       wire.openai.raw(
         'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],' +
@@ -903,19 +876,13 @@ describe("OpenAI adapter: parseResponse", () => {
   });
 
   test("parses Fireworks-shaped tool-call deltas with null name/id on follow-up fragments", async () => {
-    // Fireworks (and other OpenAI-compatible deployments routing through
-    // opencode-zen) emits `id: null` and `function.name: null` on every
-    // tool-call delta AFTER the start delta — semantically equivalent to
-    // omitting the field, but lexically a different JSON value.
-    // The schema must accept `null` and the consumer site must normalise
-    // it to undefined, otherwise every fragment chunk fails validation
-    // and `argsBuffer` never accumulates — the exact failure mode that
-    // produced `arguments: {}` tool calls in kimi-k2.6 runs of
-    // interchange-demo-dispatch.
+    // Fireworks emits `id: null` and `function.name: null` on tool-call
+    // deltas after the start; the schema must accept null and the
+    // consumer must normalise it to undefined, or argsBuffer never
+    // accumulates (the failure mode behind `arguments: {}` in kimi-k2.6).
     //
-    // Hand-rolled via `wire.openai.raw()` because the wire DSL's typed
-    // helpers (`toolCallStart`, `toolCallArgumentsDelta`) always emit
-    // the canonical OpenAI shape, never the Fireworks variant.
+    // Hand-rolled via `wire.openai.raw()`: the typed wire DSL helpers
+    // always emit the canonical shape, never the Fireworks variant.
     const events = await parseWire(adapter, [
       wire.openai.raw(
         'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_abc","function":{"name":"read_file","arguments":""}}]}}]}\n\n',
@@ -928,9 +895,8 @@ describe("OpenAI adapter: parseResponse", () => {
       ),
     ]);
 
-    // One start (from chunk 1) plus two fragments (from chunks 2 and 3).
-    // Chunk 1's empty `arguments: ""` does not produce a fragment event
-    // because the consumer-site length check skips zero-length fragments.
+    // One start (chunk 1) plus two fragments (chunks 2-3); chunk 1's
+    // empty `arguments: ""` is skipped by the zero-length fragment check.
     const starts = events.filter((e) => e.type === "inference.tool_call.start");
     const fragments = events.filter(
       (e) => e.type === "inference.tool_call.delta",
@@ -953,12 +919,9 @@ describe("OpenAI adapter: parseResponse", () => {
   });
 
   test("emits both start and fragment from a single Fireworks first-fragment delta", async () => {
-    // Locks the dual-emission claim in the consumer-site comment: when
-    // one chunk carries BOTH a start signal (id + non-null name) and
-    // a non-empty argument fragment, both events must come out. This
-    // is what Fireworks does on the first fragment delta following the
-    // bare start — without this independent treatment, accepting null
-    // name on the second-and-later deltas alone wouldn't be enough.
+    // One chunk carrying both a start signal and a non-empty argument
+    // fragment must emit both events — what Fireworks does on the first
+    // fragment delta after the bare start.
     const events = await parseWire(adapter, [
       wire.openai.raw(
         'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_xyz","function":{"name":"search","arguments":"{\\"q\\":\\"foo\\"}"}}]}}]}\n\n',
@@ -978,9 +941,8 @@ describe("OpenAI adapter: parseResponse", () => {
   });
 
   test("returns empty for empty choices array with no usage", async () => {
-    // The `chunk()` helper always emits a non-empty choices entry unless a
-    // usage block is supplied (in which case it also adds a usage object).
-    // Emitting `{choices: []}` with no other fields requires `raw()`.
+    // `chunk()` always emits a non-empty choices entry (plus usage when
+    // supplied); `{choices: []}` alone requires `raw()`.
     const events = await parseWire(adapter, [
       wire.openai.raw('data: {"choices":[]}\n\n'),
     ]);
@@ -988,10 +950,8 @@ describe("OpenAI adapter: parseResponse", () => {
   });
 
   test("throws ProtocolMismatchError on malformed JSON in SSE payload", () => {
-    // The harness's stream-error catch maps this throw to an
-    // inference.error event with category "protocol_mismatch" via
-    // classifyStreamError. The raw payload is carried in error.raw so
-    // operators can inspect the bytes that failed to parse.
+    // The harness maps this throw to inference.error with category
+    // "protocol_mismatch"; the raw payload rides in error.raw.
     expect(() => adapter.parseResponse("not json {")).toThrow(
       ProtocolMismatchError,
     );
@@ -1009,11 +969,9 @@ describe("OpenAI adapter: parseResponse", () => {
   });
 
   test("throws ProtocolMismatchError on schema-mismatched chunk", () => {
-    // `delta.role: 42` is well-formed JSON but rejects against the
-    // OpenAIChunkDelta schema (role must be string when present).
-    // The thrown error carries the parsed object in `raw` and the
-    // arktype summary in `message` so operators reading audit logs see
-    // exactly where the wire violated the contract.
+    // `delta.role: 42` is well-formed JSON but rejects the schema; the
+    // error carries the parsed object in `raw` and the arktype summary
+    // in `message` for audit logs.
     const malformed = '{"choices":[{"delta":{"role":42}}]}';
 
     expect(() => adapter.parseResponse(malformed)).toThrow(
@@ -1066,9 +1024,8 @@ describe("OpenAI adapter: parseResponse", () => {
   });
 
   test("refusal arriving after text gets a distinct content-block index", async () => {
-    // Text streams first and allocates content-block index 0. The
-    // refusal then allocates the next free index. Distinct kinds at
-    // distinct indices match the harness's per-index routing contract.
+    // Text takes index 0; the refusal takes the next free index, matching
+    // the harness's per-index routing contract.
     const events = await parseWire(adapter, [
       wire.openai.chunk({ content: "I think" }),
       wire.openai.chunk({ refusal: "Actually I can't." }),
@@ -1372,10 +1329,9 @@ describe("OpenAI adapter: quirks", () => {
   });
 
   test("an empty-string reasoning field claims its slot and suppresses lower precedence", async () => {
-    // Matches the prior `reasoning_content ?? reasoning` short-circuit: an
-    // empty string is a present value, so it wins its precedence slot and the
-    // length gate then drops it — the lower-precedence `reasoning` is never
-    // read. "First non-empty wins" would instead surface "xyz"; it must not.
+    // Empty string is a present value: it wins the precedence slot, the
+    // length gate drops it, and `reasoning` is never read. "First
+    // non-empty wins" must not surface "xyz".
     const events = await parseWire(createOpenAIAdapter(TEST_SOURCE), [
       wire.openai.chunk({ reasoningContent: "", reasoning: "xyz" }),
     ]);
@@ -1383,10 +1339,8 @@ describe("OpenAI adapter: quirks", () => {
   });
 
   test("a null reasoning field is skipped so a lower-precedence field is read", async () => {
-    // `reasoning_content` is declared `string | null` on the wire; a null
-    // value falls through to the next configured field, matching the prior
-    // `??` null-skip. The wire DSL cannot emit an explicit null, so this drives
-    // a raw chunk.
+    // A null `reasoning_content` falls through to the next field (the
+    // `??` null-skip); the wire DSL can't emit null, so this is a raw chunk.
     const events = await parseWire(createOpenAIAdapter(TEST_SOURCE), [
       wire.openai.raw(
         `data: ${JSON.stringify({
@@ -1418,11 +1372,10 @@ const JSON_SOURCE: InferenceSource = {
   model: "test-model",
 };
 
-// Drives a response body through the real harness accumulator and returns the
-// assembled turn plus every event. The content-type selects the decode path
-// (JSON body vs SSE stream), so one helper drives both parseJSONResponse and
-// parseResponse. Asserting the decoded turn (not the raw events) is deliberate:
-// the accumulator silently drops unmodeled events and unmatched tool deltas.
+// Drives a response body through the real harness accumulator; the
+// content-type selects the JSON-vs-SSE decode path. Asserting the
+// decoded turn matters: the accumulator drops unmodeled events and
+// unmatched tool deltas.
 async function driveTurn(
   body: string,
   contentType = "application/json",
@@ -1556,9 +1509,8 @@ describe("createOpenAIAdapter — parseJSONResponse (non-streaming)", () => {
   });
 
   test("reasoning precedence: an empty reasoning_content shadows a populated reasoning", async () => {
-    // Mirrors the streaming quirk exactly: the first non-null reasoning field
-    // claims the slot and stops the search, then the non-empty length gate
-    // drops the empty value, so reasoning is emitted from neither field.
+    // Same quirk as streaming: the first non-null field claims the slot,
+    // the length gate drops the empty value, so neither field emits.
     const body = JSON.stringify({
       object: "chat.completion",
       model: "test-model",
@@ -1582,8 +1534,7 @@ describe("createOpenAIAdapter — parseJSONResponse (non-streaming)", () => {
   });
 
   test("surfaces a protocol mismatch on a non-completion body", async () => {
-    // A streaming chunk shape (object chat.completion.chunk, no usage) must
-    // not decode as a non-streaming completion.
+    // A streaming chunk shape must not decode as a non-streaming completion.
     const body = JSON.stringify({
       object: "chat.completion.chunk",
       choices: [{ index: 0, delta: { content: "x" } }],
@@ -1599,12 +1550,10 @@ describe("createOpenAIAdapter — parseJSONResponse (non-streaming)", () => {
 });
 
 describe("createOpenAIAdapter — streaming vs non-streaming parity", () => {
-  // The point of parseJSONResponse is that a replayed non-streaming capture
-  // decodes to the same turn its streaming sibling would. Drive one
-  // logically-equivalent reasoning + text + tool_call response through both
-  // decode paths and assert the turn and usage are identical. The SSE fixture
-  // is built in natural arrival order (reasoning, then content, then the tool
-  // call), which is the order the JSON field-walk reproduces.
+  // A replayed non-streaming capture must decode to the same turn as
+  // its streaming sibling; the SSE fixture is built in natural arrival
+  // order (reasoning, content, tool call), which the JSON field-walk
+  // reproduces.
   test("a reasoning + text + tool_call turn decodes identically through both paths", async () => {
     const jsonBody = JSON.stringify({
       object: "chat.completion",
@@ -1680,11 +1629,10 @@ describe("createOpenAIAdapter — streaming vs non-streaming parity", () => {
 });
 
 describe("createOpenAIAdapter — parseJSONResponse parallel tool calls", () => {
-  // Regression: genuine OpenAI non-streaming responses omit `index` on the
-  // tool_calls[] items. Two parallel calls must land on distinct block
-  // indices (via their array position), not collapse onto slot 0 and collide
-  // in the harness accumulator. The streaming form (distinct wire indices) is
-  // the parity control.
+  // Regression: non-streaming tool_calls[] items omit `index`; two
+  // parallel calls must land on distinct block indices via array
+  // position, not collapse onto slot 0. The streaming form is the
+  // parity control.
   test("two indexless parallel tool calls decode to two distinct calls", async () => {
     const jsonBody = JSON.stringify({
       object: "chat.completion",

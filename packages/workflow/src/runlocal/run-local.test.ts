@@ -1,18 +1,16 @@
 // runLocal env fidelity: a local run must model the deployed surface.
 //
-// Two invariants live here.
-//
 // A spawned `childWorkflow` inherits the env overrides its parent run was
 // given. Production builds the child's env from the parent's -- the same step
 // invoker, the same authorize (capped to the child's declared resources), the
 // same director registry -- so a local child that reverted to the permissive
 // defaults would let a strict env pass a test whose child never saw it. The
-// assertions here are positive for that reason: they require the injected
-// authorize to have been consulted and the injected invoker to have produced
-// the child's output, because a dropped override leaves a green run behind.
+// assertions are positive for that reason: they require the injected
+// authorize and invoker to have been consulted, because a dropped override
+// leaves a green run behind.
 //
-// The default stub step invoker fails closed on a non-allow decision, the same
-// posture `createEffectContext` takes for an action effect, so an
+// The default stub step invoker fails closed on a non-allow decision, the
+// same posture `createEffectContext` takes for an action effect, so an
 // authorization failure is observable locally instead of surfacing only after
 // deploy.
 

@@ -1,26 +1,19 @@
-// Authenticated encryption with associated data (AES-256-GCM).
-//
-// A general AEAD primitive over strings. It is credential-agnostic: callers
-// decide what to encrypt and what to authenticate as the `aad`. The credential
-// encryption-at-rest seam (`createEnvKeyCredentialCipher`) is built on top.
+// Authenticated encryption with associated data (AES-256-GCM), credential
+// agnostic: callers choose what to encrypt and what to authenticate as `aad`.
+// The credential encryption-at-rest seam (`createEnvKeyCredentialCipher`) is
+// built on top.
 //
 // Ciphertext format: `enc:aead:<keyid>:<base64(iv ‖ ciphertext ‖ tag)>`
-//   - `aead` names the cipher scheme this module implements (AES-256-GCM). It
-//     lets a stored blob self-identify which cipher decrypts it: a different
-//     `CredentialCipher` -- a KMS or envelope plugin -- writes a different
-//     scheme (`enc:kms:...`), and a future format change within this scheme
-//     bumps the name (e.g. `aead2`).
-//   - `keyid` is the first 4 bytes of SHA-256(key), hex -- it self-identifies
-//     which key produced the blob (without storing the key) so a key-rotation
-//     window can tell old ciphertext from new. A mismatch fails loudly.
-//   - iv: 12 random bytes. WebCrypto AES-GCM returns `ciphertext ‖ tag`
-//     concatenated and wants it that way on decrypt, so the stored blob is
-//     `iv ‖ (subtle output)` -- the 16-byte tag is never split out.
+// - `aead` names this scheme so a blob self-identifies its decryptor; other
+//   `CredentialCipher` plugins write other schemes (`enc:kms:...`).
+// - `keyid` is the first 4 bytes of SHA-256(key), hex, so a key-rotation
+//   window can tell old ciphertext from new; a mismatch fails loudly.
+// - iv is 12 random bytes. WebCrypto AES-GCM emits `ciphertext ‖ tag`
+//   concatenated, so the stored blob is `iv ‖ (subtle output)`.
 //
-// The `aad` (additional authenticated data) is authenticated, not encrypted; it
-// is not stored in the blob and must be reconstructed identically at decrypt
-// time. Binding it to a record's identity prevents transplanting a ciphertext
-// from one record to another.
+// `aad` is authenticated, not encrypted, and must be reconstructed identically
+// at decrypt time; binding it to a record's identity prevents transplanting a
+// ciphertext between records.
 
 import { base64Encode, base64Decode } from "@intx/types";
 
@@ -146,13 +139,11 @@ export async function aeadDecrypt(
 export const AEAD_KEY_BYTES = KEY_BYTES;
 
 /**
- * True when `value` is an encrypted ciphertext -- any `enc:<scheme>:` value,
- * not just this module's `enc:aead:` -- as opposed to a plaintext secret. The
- * re-key pass uses it to skip values already encrypted by ANY cipher scheme, so
- * it never double-encrypts a blob a different plugin wrote. A plaintext value
- * that happened to start with `enc:` would be skipped here and then fail the
- * strict decrypt loudly at read time, so a false positive is fail-safe rather
- * than a silent leak.
+ * True for any `enc:<scheme>:` value, not just this module's `enc:aead:`. The
+ * re-key pass uses it to skip values already encrypted by any cipher scheme,
+ * so it never double-encrypts a blob another plugin wrote. A plaintext value
+ * starting with `enc:` would be skipped here and then fail the strict decrypt
+ * loudly, so a false positive is fail-safe rather than a silent leak.
  */
 export function isCiphertext(value: string): boolean {
   return value.startsWith("enc:");

@@ -5,17 +5,12 @@
 // body (nested inside the spawned onTrigger body) to pin the loop-body agent
 // step's inference source, and the runtime must wire loop support into the
 // spawned-body child env; without either, the body child crashes at the first
-// iteration.
-//
-// The entry exports the loop `while`/`carry` functions so the deployment points
-// `interchange.loops` at the same bundled entry and `loadWorkflowLoopFnsFromClosure`
-// resolves them by export name -- exactly as the top-level loop fixture does.
-// The loop converges after three iterations (`keepGoing` reads only the carry
-// state), so the body run terminates through the loop's normal dependent
-// (`settle`) regardless of the agent's output.
+// iteration. The loop converges after three iterations (`keepGoing` reads only
+// the carry state), so the body run terminates through the loop's normal
+// dependent (`settle`) regardless of the agent's output.
 //
 // When `loopBodySpawnsGrandchild` is set, the loop body ALSO spawns a
-// `childWorkflow` grandchild each iteration. This exercises the spawned-body env
+// `childWorkflow` grandchild each iteration, exercising the spawned-body env
 // wiring that merges a loop body's childWorkflow grandchildren into the body's
 // in-memory spawn map and caps the grandchild's grants per iteration.
 

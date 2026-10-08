@@ -1,92 +1,13 @@
-// Integration-test harness for hub-API tests that need a real hub
-// subprocess plus per-test postgres-schema isolation.
+// Integration-test harness for hub-API tests: spawns a real hub
+// subprocess against a freshly migrated, per-test postgres schema and
+// returns a stop handle that drops the schema and removes the
+// hub-data tempdir. Node-bound: it spawns child processes via
+// `node:child_process`.
 //
-// This module is Node-bound: it spawns child processes via
-// `node:child_process`, so it cannot run under a non-Node runtime
-// regardless of whether it references Buffer.
-//
-// Purpose
-// -------
-// Hub-API integration tests exercise the running hub end-to-end
-// against the real database, the real route layer, and (for git
-// tests) the real system git binary. This module provides every
-// piece of scaffolding those tests share, so individual test files
-// stay focused on the behaviour they are asserting on rather than
-// on subprocess management, port allocation, env hygiene, and
-// schema teardown.
-//
-// What this module provides
-// -------------------------
-// - `startHub`: spawn the real hub server bound to a random port,
-//   pointed at a freshly migrated, dedicated postgres schema, and
-//   return a stop handle that drops the schema after the process
-//   exits.
-// - `discoverGitBinary`: locate `git` on PATH, parse its version,
-//   and enforce the `>= 2.34` floor. The version parser tolerates
-//   the vendor suffix `(Apple Git-NNN)` that ships with macOS git.
-//   `bin/check-env` enforces the same floor at repo bootstrap and
-//   reimplements the parsing in bash; both layers stay in sync by
-//   convention rather than by import.
-// - `runGit`: invoke the system git with every config-related env
-//   var redirected away from the developer's home so a user-local
-//   `.gitconfig` cannot leak into a test run.
-// - `tokenAskpassEnv`: produce a `GIT_ASKPASS` shim env block that
-//   echoes a bearer token regardless of which prompt git asks for.
-// - `installSshAllowedSigner`: write a per-repo allowed-signers
-//   file and configure the repo to verify SSH signatures against
-//   it. Required for `git log --show-signature` to render a
-//   meaningful verdict on hub-signed commits in downstream tests.
-// - The postgres connection a test should use, and the per-test
-//   schema-name generator, come from the shared `../../lib/db-harness`
-//   module (`loadHarnessDbConfig`, `harnessDbEnvAvailable`,
-//   `randomSchemaName`). The harness never falls back to invented
-//   values deep in the call graph; if a required var is missing, the
-//   loader raises.
-//
-// Lifecycle contract
-// ------------------
-// Tests follow the same shape:
-//
-//   1. `const hub = await startHub();` (or `startHubTracked()` from
-//      the test-level fixture wrapper, which auto-stops on teardown)
-//   2. Issue HTTP requests against `hub.url`, mint tokens, run git
-//      against the smart-HTTP routes, etc.
-//   3. `await hub.stop();` — stops the spawned hub, drops the
-//      per-test schema, and removes the hub-data tempdir.
-//
-// Tests MUST call `stop` on every `HubHandle` they obtain. The
-// schema row, the postgres connections, the hub-data tempdir, and
-// the spawned bun process are all owned by the handle; leaking any
-// of them leaks resources between test files.
-//
-// Per-schema isolation model
-// --------------------------
-// Each call to `startHub` provisions its own postgres schema named
-// `t_<timestamp>_<random>` (or a caller-supplied name) and runs
-// migrations against it under the migration role. The spawned hub
-// connects as the hub-app role with `PG_SCHEMA` set so its DB
-// client routes every query into that schema. Schemas are dropped
-// in `stop` and are not reused. Two concurrent tests cannot
-// collide on table state because they live in different schemas;
-// the underlying database is shared, but the schema namespace
-// keeps the rows separate.
-//
-// Env-redirection guarantees
-// --------------------------
-// `runGit` builds an env block that redirects every config-related
-// variable git consults — `HOME`, `XDG_CONFIG_HOME`,
-// `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM`, `GIT_CONFIG_NOSYSTEM`,
-// `GIT_TERMINAL_PROMPT` — to a discardable tempdir or a guard
-// sentinel. A developer's `~/.gitconfig` cannot leak into a test
-// invocation; nor can git prompt for credentials on a TTY. The
-// tempdir is removed after the invocation returns.
-//
-// Constraint discipline
-// ---------------------
-// `startHub` is the only edge in this module that knows what an
-// absent `dbSchemaName` means: a freshly generated `t_<random>`
-// name. Inner helpers never invent values. If `PG_SCHEMA` reaches
-// the spawned hub, it was deliberately set here.
+// Tests MUST call `stop` on every `HubHandle` they obtain; the
+// schema, connections, tempdir, and spawned process are all owned by
+// the handle. Each call to `startHub` provisions its own schema, so
+// concurrent tests cannot collide on table state.
 
 import { spawn, spawnSync } from "node:child_process";
 import { mkdtemp, rm, writeFile, chmod } from "node:fs/promises";
@@ -111,9 +32,8 @@ import { grantHubSchemaAccess } from "@intx/test-harness/grants";
 import { waitForHTTP } from "@intx/test-harness/http";
 
 /**
- * Required hub-side env. The harness writes these explicitly into
- * the spawned process; any missing var fails loudly here rather
- * than deep inside the hub bootstrap.
+ * Hub-side env the harness writes into the spawned process; a missing
+ * var fails loudly here rather than deep inside the hub bootstrap.
  */
 type HarnessEnv = {
   db: DBConfig;
@@ -123,14 +43,11 @@ type HarnessEnv = {
 };
 
 /**
- * Returns true when the repo has every `.env` file a spawned hub needs:
- * the database files (`.env`, `.env.migrate`) plus `.env.hub` for the
- * hub's runtime role and auth secret. Hub integration tests gate on this
- * with `describe.skipIf(...)` so a checkout without hub env still runs
- * `make all`.
- *
- * Absence-only: a file that exists but lacks a required key still
- * surfaces a loud error from `loadHarnessDbConfig`/`loadHubEnv`.
+ * True when the repo has every `.env` file a spawned hub needs
+ * (`.env`, `.env.migrate`, `.env.hub`); suites gate with
+ * `describe.skipIf(...)` so a checkout without hub env still runs
+ * `make all`. A file that exists but lacks a key still errors loudly
+ * in `loadHarnessDbConfig`/`loadHubEnv`.
  */
 export { harnessHubEnvAvailable } from "@intx/test-harness/db-harness";
 
@@ -259,9 +176,9 @@ export type RunGitResult = {
 };
 
 /**
- * Build the env block git should run under. Every variable that
- * could pull in a user-local configuration is either redirected at
- * a discardable directory or set to a guard sentinel.
+ * Env block for git runs: every config-related variable is redirected
+ * at a discardable tempdir or set to a guard sentinel, so a
+ * developer's config cannot leak into a test.
  */
 async function buildIsolatedGitEnv(
   extra: Record<string, string> | undefined,
@@ -276,9 +193,8 @@ async function buildIsolatedGitEnv(
     GIT_CONFIG_SYSTEM: "/dev/null",
     GIT_TERMINAL_PROMPT: "0",
   };
-  // PATH must reach `git` even though we use an absolute binary
-  // path; some subcommands (e.g. credential helpers, hooks) shell
-  // out and lookup their own dependencies on PATH.
+  // PATH must reach git even though we spawn the absolute binary path;
+  // subcommands (credential helpers, hooks) shell out for their own deps.
   if (process.env["PATH"] !== undefined) {
     env["PATH"] = process.env["PATH"];
   }
@@ -323,29 +239,20 @@ export async function runGit(
 // ---------------------------------------------------------------------------
 
 /**
- * Materialize an executable GIT_ASKPASS shim that prints the given
- * token to stdout for any prompt git issues. Returns an env block
- * that points GIT_ASKPASS at the shim and disables terminal
- * prompts. The shim's tempdir is leaked deliberately: it must
- * outlive the test, since git invocations can read from it
- * asynchronously after the test scope returns. Tests that need
- * teardown should track the returned `cleanupDir` via the optional
- * second-return form.
+ * Materialize an executable GIT_ASKPASS shim that echoes `token` for
+ * any prompt git issues, and return an env block pointing GIT_ASKPASS
+ * at it with terminal prompts disabled. The shim's tempdir is leaked
+ * deliberately: git can read from it asynchronously after the test
+ * scope returns.
  */
 export async function tokenAskpassEnv(
   token: string,
 ): Promise<Record<string, string>> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "harness-askpass-"));
   const shim = path.join(dir, "askpass.sh");
-  // Print the token unconditionally. The `$@` argument is ignored;
-  // we echo regardless of whether git asks for "Username" or
-  // "Password". Bearer-token usage requires "Username" to be any
-  // value and "Password" to be the token, so a constant echo works
-  // when the harness pairs this with a URL whose userinfo
-  // already contains a non-empty username (e.g. `x-access-token`).
-  // For the lone-username case, downstream tests provide a
-  // dedicated username via the URL and this shim returns the token
-  // for the password prompt.
+  // Echo the token for any prompt ("Username" or "Password"): bearer
+  // auth requires any username and the token as the password, and the
+  // harness pairs this with a URL whose userinfo carries the username.
   const body = `#!/bin/sh\nprintf '%s\\n' '${token.replace(/'/g, "'\\''")}'\n`;
   await writeFile(shim, body, { encoding: "utf-8" });
   await chmod(shim, 0o755);
@@ -360,14 +267,10 @@ export async function tokenAskpassEnv(
 // ---------------------------------------------------------------------------
 
 /**
- * Configure the given repo to verify SSH-signed commits against
- * the provided allowed-signer identity. Required when downstream
- * tests run `git log --show-signature` to inspect the verdict on
- * hub-signed commits.
- *
- * `pubKey` is the raw `ssh-ed25519 AAAA...` line as emitted by
- * `ssh-keygen -y`; we accept it as-is and only prepend the signer
- * identity column expected by OpenSSH's allowed-signers format.
+ * Configure a repo to verify SSH-signed commits against an allowed-
+ * signer entry built from `pubKey` (the raw `ssh-ed25519 AAAA...`
+ * line) plus the signer identity. Required for `git log
+ * --show-signature`.
  */
 export async function installSshAllowedSigner(
   repoDir: string,
@@ -453,9 +356,8 @@ export async function startHub(
   // connection.
   await runMigrations(migrateConfig, { schema });
 
-  // The hub-app role needs explicit grants on this schema, since
-  // the default-privileges grants apply only to the public schema.
-  // Grant the same DML + USAGE the dev `bin/db-reset` grants.
+  // The hub-app role needs explicit grants on this schema; the
+  // default-privileges grants apply only to the public schema.
   {
     const sql = postgres({
       host: migrateConfig.host,

@@ -1,9 +1,7 @@
-// Registry of active event collectors, keyed by run address.
-//
-// The hub creates a collector when an instance starts and removes it when the
-// instance ends or the sidecar disconnects. The hub session orchestrator's
-// `agent.event` listener looks up the collector by run address and
-// dispatches the event.
+// Registry of active event collectors, keyed by run address. The hub creates
+// a collector when an instance starts and removes it when the instance ends
+// or the sidecar disconnects; the hub session orchestrator's `agent.event`
+// listener looks it up by run address.
 
 import type { DB } from "@intx/db";
 import type { InferenceEvent } from "@intx/types/runtime";
@@ -110,10 +108,10 @@ export function createEventCollectorRegistry(
     statuses.delete(agentAddress);
   }
 
-  // Chain `work` onto the address's tail so per-address work runs in order and
-  // never interleaves, while the caller stays non-blocking. `onError` swallows
-  // a failure so one bad event cannot wedge the chain; `onSettled` runs after
-  // the work settles. The tail entry is reaped once no later work is queued.
+  // Chain `work` onto the address's tail so per-address work runs in order
+  // and never interleaves, while the caller stays non-blocking; `onError`
+  // swallows a failure so one bad event cannot wedge the chain, and the tail
+  // entry is reaped once no later work is queued.
   function enqueue(
     agentAddress: string,
     work: () => Promise<void>,
@@ -173,8 +171,8 @@ export function createEventCollectorRegistry(
     removeCollector(agentAddress);
 
     // Chain the abandon onto the tail so it runs AFTER any queued onEvents
-    // instead of racing them. Otherwise a queued beginTurn could create a
-    // fresh `running` turn row after the collector was finalized, orphaning it.
+    // instead of racing them; otherwise a queued beginTurn could create a
+    // fresh `running` turn row after finalization, orphaning it.
     enqueue(
       agentAddress,
       () => collector.abandon(),

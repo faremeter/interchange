@@ -16,7 +16,9 @@ export async function switchBranch(
 }
 
 /**
- * Create a new branch at HEAD and immediately switch to it.
+ * Create a new branch at HEAD and immediately switch to it. Persist the
+ * new branch before checkout overwrites the already-durable HEAD body; a
+ * reload must never leave HEAD naming an absent branch.
  */
 export async function createAndSwitchBranch(
   runtime: StorageRuntime,
@@ -24,8 +26,6 @@ export async function createAndSwitchBranch(
   name: string,
 ): Promise<void> {
   await git.branch({ fs: runtime.fs.git, dir, ref: name });
-  // Persist the new branch before checkout overwrites the already-durable
-  // HEAD body. A reload must never leave HEAD naming an absent branch.
   await flushRuntime(runtime);
   await git.checkout({ fs: runtime.fs.git, dir, ref: name });
   await flushRuntime(runtime);

@@ -117,8 +117,6 @@ describe("buildDeployInput", () => {
   });
 
   test("drops fields the selected kind does not use", () => {
-    // A registry deploy from a definition that also carries asset fields must
-    // emit only the registry source, never the stale assetId or commitSha.
     const input = buildDeployInput(
       fullDefinition({ kind: "registry" }),
       OFFERING_ID,
@@ -157,7 +155,6 @@ describe("definitionReady", () => {
     expect(definitionReady(fullDefinition({ kind: "asset-source" }))).toBe(
       true,
     );
-    // A missing pin does not block an asset-source deploy.
     expect(
       definitionReady(fullDefinition({ kind: "asset-source", pin: "" })),
     ).toBe(true);

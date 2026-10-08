@@ -1,9 +1,9 @@
 // Runtime evaluator for the path-selector DSL.
 //
-// Resolves a `Selector` against a `SelectorContext` rooted at the
-// run's trigger payload and the captured outputs of completed steps.
-// Used by the step executor to materialize a step's `input` and to
-// resolve declared `reads` against the run-state subtree.
+// Resolves a `Selector` against a `SelectorContext` rooted at the run's
+// trigger payload and the captured outputs of completed steps. Used by the
+// step executor to materialize a step's `input` and to resolve declared
+// `reads` against the run-state subtree.
 
 import {
   isFromSelector,
@@ -80,10 +80,8 @@ export function evaluate(selector: Selector, ctx: SelectorContext): unknown {
         );
       }
       for (const [key, entry] of Object.entries(value)) {
-        // Define, never `[[Set]]`: assignment sends an operand's own
-        // `__proto__` key to the accumulator's prototype setter. Spread is
-        // equally safe and was rejected -- it reads as a cosmetic rewrite of
-        // the `Object.assign` this replaces, and invites reverting.
+        // Define, never `[[Set]]`: assignment would send an operand's own
+        // `__proto__` key to the accumulator's prototype setter.
         Object.defineProperty(merged, key, {
           value: entry,
           writable: true,
@@ -126,9 +124,9 @@ function resolvePath(
           selector,
         );
       }
-      // Own elements only, matching the key branch below: an index a sparse
-      // array leaves unfilled is in range and is not an own property, so it
-      // yields the same hole the range guard above refuses.
+      // Own elements only: an index a sparse array leaves unfilled is in
+      // range but not an own property, so it yields the same hole the
+      // range guard above refuses.
       if (!Object.hasOwn(cursor, segment.index)) {
         throw new SelectorError(
           `missing index [${String(segment.index)}] in path ${path}`,

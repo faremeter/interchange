@@ -4,36 +4,33 @@ import { dirname, join } from "node:path";
 
 // Boot-graph guard for the spawned workflow-child and the probe child.
 //
-// Each child evaluates its whole module graph on every cold start. It must
-// never pull the control-plane database layer (`@intx/db` / `drizzle`) or the
-// sidecar orchestrator (`@intx/hub-agent`) into that graph: the child never
-// executes either, the database dependency is a layering violation, and
-// importing the orchestrator that spawns the child is a backwards dependency.
-// The db-free substrate is reachable via `@intx/hub-sessions/substrate` and
-// the path helpers via `@intx/hub-agent/paths`; the package barrels are not.
+// Each child evaluates its whole module graph on every cold start and must
+// never pull the control-plane database layer (`@intx/db` / `drizzle`) or
+// the sidecar orchestrator (`@intx/hub-agent`) into it: the child never
+// executes either, the db dependency is a layering violation, and importing
+// the orchestrator that spawns the child is a backwards dependency. The
+// db-free substrate is reachable via `@intx/hub-sessions/substrate`, the
+// path helpers via `@intx/hub-agent/paths`; the package barrels are not.
 //
-// This walks the child's VALUE-import graph and fails if any forbidden module
-// is reachable. `Bun.build` erases `import type` and type-only specifiers
-// before resolution (the project's `verbatimModuleSyntax` + `isolatedModules`
-// guarantee every value-syntax import that survives is a real runtime import),
-// so the captured graph is exactly what the child evaluates at runtime.
-// Dynamic `import()` edges are included too, so even a lazy import of a
-// forbidden module is caught. npm and `node:` packages are recorded but not
-// traversed; workspace (`@intx/*`) packages are resolved to their real source
-// (honoring `exports` subpaths) and walked through.
+// This walks the child's VALUE-import graph and fails if any forbidden
+// module is reachable. `Bun.build` erases `import type` and type-only
+// specifiers before resolution, so the captured graph is exactly what the
+// child evaluates at runtime; dynamic `import()` edges are included. npm
+// and `node:` packages are recorded but not traversed; workspace
+// (`@intx/*`) packages are resolved to their real source (honoring
+// `exports` subpaths) and walked through.
 
 const repoRoot = process.cwd();
 
-// The binaries the sidecar spawns. The graph walk derives its entrypoints
-// from each file's actual imports, so anything the binary loads -- in any
-// import form -- is part of the checked graph.
+// The binaries the sidecar spawns. The graph walk derives each file's
+// entrypoints from its actual imports, so anything the binary loads -- in
+// any import form -- is part of the checked graph.
 const CHILD_BINARY = "apps/sidecar/bin/workflow-child";
 const PROBE_BINARY = "apps/sidecar/bin/workflow-probe-child";
 
 // The roots each binary is expected to import. The drift guard asserts the
 // binary imports exactly these; a new root trips it so a human confirms the
-// addition (and the walk covers the new root regardless). The probe's roots
-// are its own list.
+// addition. The probe's roots are its own list.
 const EXPECTED_CHILD_ROOTS = [
   "../src/workflow-child-bindings",
   "@intx/workflow-host",
@@ -44,11 +41,10 @@ const EXPECTED_PROBE_ROOTS = [
 ];
 
 // The module specifiers the binary VALUE-imports, in every runtime form
-// (static `from`, side-effect `import`, dynamic `import()`, `require`). Bun's
-// transpiler is the same machinery the bundler uses, so it ignores comments,
-// strings, and member expressions like `Array.from(...)`, and -- crucially --
-// erases `import type` / type-only specifiers, keeping this list aligned with
-// the runtime value graph the walk below captures.
+// (static `from`, side-effect `import`, dynamic `import()`, `require`).
+// Bun's transpiler is the same machinery the bundler uses, so it ignores
+// comments, strings, and member expressions, and erases `import type` /
+// type-only specifiers.
 function binaryImportSpecifiers(binary: string): string[] {
   const raw = readFileSync(join(repoRoot, binary), "utf8");
   // The transpiler does not accept the binary's
@@ -59,9 +55,9 @@ function binaryImportSpecifiers(binary: string): string[] {
   return [...specs].sort();
 }
 
-// Resolve the binary's imports to real entrypoint files. A root that cannot
-// resolve throws here and fails the test loudly rather than yielding a graph
-// built from an incomplete root set.
+// Resolve the binary's imports to real entrypoint files. A root that
+// cannot resolve throws here and fails the test loudly rather than
+// yielding a graph built from an incomplete root set.
 function binaryEntrypoints(binary: string): string[] {
   const binDir = dirname(join(repoRoot, binary));
   return binaryImportSpecifiers(binary).map((spec) =>
@@ -70,10 +66,11 @@ function binaryEntrypoints(binary: string): string[] {
 }
 
 /**
- * Returns the package reason if a value-import specifier is forbidden in the
- * child boot graph, or null otherwise. `@intx/db` / `drizzle-orm` are banned
- * entirely; the `@intx/hub-sessions` and `@intx/hub-agent` *barrels* are banned
- * (their `/substrate` and `/paths` subpaths are the supported db-free doors).
+ * Returns the package reason if a value-import specifier is forbidden in
+ * the child boot graph, or null otherwise. `@intx/db` / `drizzle-orm` are
+ * banned entirely; the `@intx/hub-sessions` and `@intx/hub-agent`
+ * *barrels* are banned (their `/substrate` and `/paths` subpaths are the
+ * supported db-free doors).
  */
 function forbiddenReason(spec: string): string | null {
   if (spec === "@intx/db" || spec.startsWith("@intx/db/")) {
@@ -122,10 +119,10 @@ async function childValueImportGraph(entrypoints: string[]): Promise<{
             if (!spec.startsWith("@intx/")) {
               return { path: spec, external: true };
             }
-            // Workspace packages: resolve to real source so traversal continues
-            // through them (honoring `exports` subpaths like `/substrate`). A
-            // failure here would silently leave the subtree unwalked, so record
-            // it -- the test asserts there are none.
+            // Workspace packages: resolve to real source so traversal
+            // continues through them (honoring `exports` subpaths like
+            // `/substrate`). A failure here would silently leave the subtree
+            // unwalked, so record it -- the test asserts there are none.
             const fromDir = args.importer ? dirname(args.importer) : repoRoot;
             try {
               return { path: Bun.resolveSync(spec, fromDir) };

@@ -55,8 +55,8 @@ describe("authorizeAction collapses the fail-closed rule", () => {
   });
 
   test("a conditioned grant is withheld when no registry is passed", async () => {
-    // The verb never defaults a registry; evaluateGrants skips conditioned
-    // grants fail-closed, so this resolves to no matching grant.
+    // No registry defaults here; evaluateGrants skips conditioned grants
+    // fail-closed, so this resolves to no matching grant.
     const decision = await authorizeAction(
       [
         grant({

@@ -5,29 +5,15 @@
 // than partial execution — the reactor does not guess intent.
 //
 // Validation rules (INFERENCE.md § Action Validation):
-// - At most one `infer` action.
-// - At most one `done` action.
-// - At most one `reply` action.
-// - `infer` + `done` together is invalid.
-// - `reply` + `infer` together is invalid.
-// - `reply` + `execute_tools` together is invalid.
-// - `reply` + `done` together is invalid.
-// - `reply` + `suspend` together is invalid.
-// - `wait` + `infer` together is invalid.
-// - `wait` + `execute_tools` together is invalid.
-// - `wait` + `suspend` together is invalid.
-// - `wait` + `reply` together is invalid.
-// - `wait` + `done` together is invalid.
-// - `suspend` cannot appear alongside `infer` or `execute_tools`.
+// - At most one `infer`, `done`, `reply`, `wait`, `checkpoint`, `compact`.
+// - `infer` + `done`, `reply` + any of {infer, execute_tools, done, suspend},
+//   `wait` + any of {infer, execute_tools, suspend, reply, done}, and
+//   `suspend` + any of {infer, execute_tools} are invalid.
+// - `compact` is not composable with {infer, execute_tools, reply, suspend,
+//   wait, done}.
 // - `fork` is composable — may appear alongside any other action.
-// - At most one `checkpoint` action; composable with any other action.
-// - At most one `wait` action.
-// - Multiple `execute_tools` are merged into a single parallel batch.
 // - `emit` is always valid and composable.
-// - At most one `compact` action; composable with `checkpoint`, `emit`, and
-//   `fork`. Not composable with `infer`, `execute_tools`, `reply`, `suspend`,
-//   `wait`, or `done`. Context-overflow recovery runs compaction in its own
-//   cycle and re-infers on the next director invocation.
+// - Multiple `execute_tools` are merged into a single parallel batch.
 
 import type { ReactorAction, ToolCall } from "@intx/types/runtime";
 
@@ -48,7 +34,7 @@ export function validateActions(
   const list = Array.isArray(actions) ? actions : [actions];
 
   // An empty action list means "no-op, keep waiting for the next event."
-  // This is valid — the reactor loop continues to waitForEvent().
+  // Valid — the reactor loop continues to waitForEvent().
   if (list.length === 0) {
     return { ok: true, normalized: [] };
   }

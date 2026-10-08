@@ -21,13 +21,11 @@ import {
   type TestDb,
 } from "@intx/test-harness/db-harness";
 
-// Pins the exactly-one-target invariant at the POST /api/grants route layer.
-// CreateGrant carries a `.narrow` (unit-tested in packages/types) requiring a
-// grant to target exactly one of a role or a principal, mirroring the
-// grant_target_exactly_one DB CHECK. This proves the validator is actually
-// MOUNTED on the route: a both/neither body is a 400 here, not a database 500
-// from tripping the CHECK past an unguarded insert. Nothing else in the suite
-// pins that the validator converts a malformed body into a 400 on this route.
+// Pins the exactly-one-target invariant at the POST /api/grants route
+// layer: CreateGrant's `.narrow` requires a grant to target exactly one of
+// a role or a principal (mirroring the grant_target_exactly_one DB CHECK).
+// A both/neither body is a 400 here, proving the validator is mounted on
+// the route rather than tripping the CHECK as a database 500.
 
 function mockGetSession(userId: string): GetSession {
   const now = new Date("2026-01-01");
@@ -107,16 +105,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
     }
 
     // Creating a tenant assigns the creator the `owner` system role, which
-    // holds a `*`/`*` allow grant. That authorizes requireGrant("grant:*",
-    // "create") on the POST grants route, so the same mock session is an
-    // authorized grant-creator with no manual principal/grant seeding. The
-    // 201 assertion fails loudly at the bootstrap line if that seeding path
-    // ever changes, rather than surfacing later as a confusing 403.
-    //
-    // The returned `roleId` is the `member` role -- an arbitrary real role to
-    // hand the exactly-one 201 case as a grant TARGET (it satisfies the
-    // roleId foreign key). It is unrelated to the owner role that authorizes
-    // the CALLER above.
+    // holds a `*`/`*` allow grant, authorizing requireGrant("grant:*",
+    // "create") with no manual seeding. The returned `roleId` is the
+    // `member` role, an arbitrary real role to hand the 201 case as a grant
+    // target (it satisfies the roleId FK); it is unrelated to the owner
+    // role that authorizes the caller.
     async function bootstrapTenant(
       app: ReturnType<typeof makeApp>,
       slug: string,
@@ -167,14 +160,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
 
       expect(res.status).toBe(400);
-      // Pin that the 400 is the exactly-one-target narrow, not some other
-      // validation failure. Every other field is individually valid (the 201
-      // case proves it), so today only the narrow can reject this body -- but
-      // if a future field tightening (e.g. a principalId format) shifted the
-      // 400 to a different cause, a status-only assertion would keep passing
-      // while silently ceasing to test the two-target rule. Scanning the
-      // serialized body for the narrow's own marker keeps the guard honest
-      // without coupling to the validator's error-envelope shape.
+      // Pin the 400 to the exactly-one-target narrow, not some other
+      // validation failure: every other field is valid (the 201 case proves
+      // it), so scanning for the narrow's own marker keeps the guard honest
+      // if a future field tightening shifts the cause.
       expect(JSON.stringify(await res.json())).toContain("exactly one target");
     });
 
@@ -190,8 +179,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
 
       expect(res.status).toBe(400);
-      // As in the both-target case: confirm the narrow is what rejected this,
-      // not an unrelated validation error.
+      // As in the both-target case: confirm the narrow rejected this, not
+      // an unrelated validation error.
       expect(JSON.stringify(await res.json())).toContain("exactly one target");
     });
 
@@ -211,8 +200,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const created = type({ id: "string" }).assert(await res.json());
       expect(created.id).toStartWith("grt_");
 
-      // Confirm the grant actually persisted (not just that a 201 came back)
-      // and that it landed with the single role target the body asked for.
+      // Confirm the grant persisted with the single role target requested.
       const persisted = await h.db.query.grant.findFirst({
         where: (g, { eq }) => eq(g.id, created.id),
       });

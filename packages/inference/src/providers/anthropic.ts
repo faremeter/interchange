@@ -47,11 +47,10 @@ export const ADAPTIVE_THINKING_MODELS: ReadonlySet<string> = new Set([
 
 // The effort this adapter sends on the adaptive-thinking wire in production.
 // "high" is the Anthropic API default. The discovery capture rig deliberately
-// sends "max" instead: only "max" reliably elicits a thinking block to capture,
-// so the production default and the capture value are an intentional pair, not
-// drift. ADAPTIVE_THINKING_MODELS above must match across the two layers; the
-// effort values, by contrast, are meant to differ. A guard test in the
-// discovery package checks both effort values.
+// sends "max" instead: only "max" reliably elicits a thinking block to
+// capture, so the production default and the capture value are an intentional
+// pair, not drift. A guard test in the discovery package checks both effort
+// values.
 export const ADAPTIVE_THINKING_EFFORT = "high";
 
 // ---------------------------------------------------------------------------
@@ -146,13 +145,12 @@ function buildRequest(
   };
 }
 
-// Anthropic's Messages API has no native structured-outputs surface.
-// `text` is the default and a no-op. `json` and `json-schema` raise
-// here at the marshaling boundary rather than silently dropping the
-// field; the codebase prefers loud failure at the wire boundary over
-// a forward-synthesis shim (a hidden tool whose input_schema mirrors
-// the requested schema) because no other adapter shim synthesizes
-// requests the caller didn't author.
+// Anthropic's Messages API has no native structured-outputs surface. `text`
+// is the default and a no-op. `json` and `json-schema` raise here at the
+// marshaling boundary rather than silently dropping the field; the codebase
+// prefers loud failure at the wire boundary over a forward-synthesis shim (a
+// hidden tool whose input_schema mirrors the requested schema) because no
+// other adapter shim synthesizes requests the caller didn't author.
 function rejectUnsupportedResponseFormat(
   format: InferenceOptions["responseFormat"],
 ): void {
@@ -169,9 +167,9 @@ function toAnthropicMessage(
   cacheLastBlock?: boolean,
 ): Record<string, unknown> {
   const role = msg.role === "assistant" ? "assistant" : "user";
-  // safety_rating is Gemini output-only metadata. Rewrite as text so
-  // role alternation and the block reason survive Anthropic history
-  // without a native safety_rating input shape.
+  // safety_rating is Gemini output-only metadata. Rewrite as text so role
+  // alternation and the block reason survive Anthropic history without a
+  // native safety_rating input shape.
   const content = msg.content.map((block) => {
     if (block.type === "safety_rating") {
       return toAnthropicBlock({
@@ -190,15 +188,14 @@ function toAnthropicMessage(
   return { role, content };
 }
 
-// Marshal a MediaSource into Anthropic's nested `source` shape.
-// Base64 sources carry the mimeType on the wire as `media_type`.
-// File-reference and URL sources carry no mimeType: Anthropic
-// identifies file-reference content by id alone (encoded server-side
-// at upload time) and infers URL-sourced content from the response of
-// the fetch it performs. The MediaSource's mimeType is intentionally
-// dropped at this layer for both. The internal `mimeType` requirement
-// on the non-base64 variants keeps callers honest about what they
-// have in hand even when the provider doesn't need it.
+// Marshal a MediaSource into Anthropic's nested `source` shape. Base64
+// sources carry the mimeType on the wire as `media_type`. File-reference and
+// URL sources carry no mimeType: Anthropic identifies file-reference content
+// by id alone (encoded server-side at upload time) and infers URL-sourced
+// content from the response of the fetch it performs. The MediaSource's
+// mimeType is intentionally dropped at this layer for both. The internal
+// `mimeType` requirement on the non-base64 variants keeps callers honest
+// about what they have in hand even when the provider doesn't need it.
 function toAnthropicMediaSource(source: MediaSource): Record<string, unknown> {
   if (source.kind === "base64") {
     return {
@@ -226,20 +223,17 @@ function toAnthropicMediaSource(source: MediaSource): Record<string, unknown> {
 }
 
 // Map an Anthropic-streamed citation onto the internal CitationBlock.
-// `textOffset` is intentionally not populated for any variant:
-// Anthropic's offsets are document-relative (page numbers, doc char
-// offsets, doc block indices) rather than text-relative — they don't
-// correspond to UTF-16 positions in the preceding TextBlock that
-// `CitationBlock.textOffset` describes. Computing text-relative
-// offsets from `cited_text` substring search produces wrong answers
-// whenever `cited_text` is paraphrased, appears multiple times, or
-// spans wire-chunk boundaries; better to leave the field unset than
-// guess.
+// `textOffset` is intentionally not populated for any variant: Anthropic's
+// offsets are document-relative (page numbers, doc char offsets, doc block
+// indices) rather than text-relative — they don't correspond to UTF-16
+// positions in the preceding TextBlock that `CitationBlock.textOffset`
+// describes. Computing text-relative offsets from `cited_text` substring
+// search produces wrong answers whenever `cited_text` is paraphrased,
+// appears multiple times, or spans wire-chunk boundaries; better to leave
+// the field unset than guess.
 //
-// `encrypted_index` (web_search_result_location) has no echo-back
-// target in CitationBlock today and is intentionally dropped at this
-// layer. When echo-back of citation context lands, this is the layer
-// to preserve it from.
+// `encrypted_index` (web_search_result_location) has no echo-back target in
+// CitationBlock today and is intentionally dropped at this layer.
 function toCitationBlock(
   wire: typeof AnthropicCitation.infer,
   index: number,
@@ -269,8 +263,8 @@ function toCitationBlock(
     case "web_search_result_location":
       return { type: "citation", citedText, source };
     case "page_location": {
-      // Anthropic page numbers are 1-indexed and inclusive on both
-      // ends per the documented PDF citation shape.
+      // Anthropic page numbers are 1-indexed and inclusive on both ends per
+      // the documented PDF citation shape.
       const start = wire.start_page_number;
       const end = wire.end_page_number;
       if (start === undefined || end === undefined) {
@@ -341,14 +335,10 @@ function toAnthropicBlock(block: ContentBlock): Record<string, unknown> {
       };
 
     case "redacted_thinking":
-      // The opaque `data` blob must echo back verbatim on every
-      // follow-up turn that includes this block as context. Any
-      // mutation (truncation, base64-decoding-and-reencoding,
-      // whitespace normalization) produces a 400 from Anthropic with
-      // "messages.N.content.M.redacted_thinking: Field required" or
-      // a context-corruption error on subsequent turns. The
-      // RedactedThinkingBlock type carries it as `string` (opaque
-      // base64); pass through untouched.
+      // The opaque `data` blob must echo back verbatim on every follow-up
+      // turn that includes this block as context. Any mutation (truncation,
+      // base64-decoding-and-reencoding, whitespace normalization) produces a
+      // 400 from Anthropic. Pass through untouched.
       return { type: "redacted_thinking", data: block.data };
 
     case "image":
@@ -387,10 +377,10 @@ function toAnthropicBlock(block: ContentBlock): Record<string, unknown> {
       );
 
     case "refusal":
-      // Refusal blocks are an OpenAI strict-mode output shape. Echoing
-      // one back into an Anthropic request has no defined wire shape;
-      // surface the mismatch at the marshaling site rather than fall
-      // through to a silent drop.
+      // Refusal blocks are an OpenAI strict-mode output shape. Echoing one
+      // back into an Anthropic request has no defined wire shape; surface the
+      // mismatch at the marshaling site rather than fall through to a silent
+      // drop.
       throw new Error(
         "Anthropic adapter does not handle refusal content blocks; " +
           "they are emitted by OpenAI strict-mode structured outputs.",
@@ -418,14 +408,11 @@ function toAnthropicBlock(block: ContentBlock): Record<string, unknown> {
               source: toAnthropicMediaSource(c.source),
             };
           }
-          // Anthropic's tool_result.content accepts only `text` and
-          // `image` blocks today. `document` in particular is rejected
-          // at the API edge; surface the failure at the marshaling
-          // site with the specific block type so the failure shows
-          // where the wrong block type was authored, not as an opaque
-          // HTTP 400 a round-trip later. The ContentBlock union allows
-          // these so the type system can grow uniformly; the wire
-          // surface lags.
+          // Anthropic's tool_result.content accepts only `text` and `image`
+          // blocks today. `document` in particular is rejected at the API
+          // edge; surface the failure at the marshaling site with the
+          // specific block type so the failure shows where the wrong block
+          // type was authored, not as an opaque HTTP 400 a round-trip later.
           throw new Error(
             `Anthropic adapter does not handle ${c.type} content blocks ` +
               `inside tool_result.content; the API accepts only text and ` +
@@ -473,26 +460,24 @@ export type AnthropicRawEvent =
   | { kind: "skip" };
 
 // Anthropic's SSE protocol guarantees `index` on every content_block_*
-// event. Parsing it as required (not optional) means the type system
-// carries the guarantee through to every emission site below — no
-// defensive `?? 0` fallback that would silently route real protocol
-// violations to block 0 and corrupt the `blockIndexToCallId` cache the
-// parser uses to resolve input_json_delta lookups across multiple
-// tool_use blocks at distinct indices. A malformed upstream missing
-// `index` surfaces as a ProtocolMismatchError via the schema-validation
-// throw site, with the offending payload preserved in `error.raw` for
-// inspection.
+// event. Parsing it as required (not optional) means the type system carries
+// the guarantee through to every emission site below — no defensive `?? 0`
+// fallback that would silently route real protocol violations to block 0 and
+// corrupt the `blockIndexToCallId` cache the parser uses to resolve
+// input_json_delta lookups across multiple tool_use blocks at distinct
+// indices. A malformed upstream missing `index` surfaces as a
+// ProtocolMismatchError via the schema-validation throw site, with the
+// offending payload preserved in `error.raw`.
 // Anthropic's wire shape for a single citation, streamed inside a
-// `citations_delta`. The `type` discriminator selects the location
-// model:
+// `citations_delta`. The `type` discriminator selects the location model:
 //   - web_search_result_location: URL + title, no document offsets
 //   - page_location: 1-indexed page numbers (inclusive start/end)
 //   - char_location: 0-indexed character offsets into the document
 //   - content_block_location: index into the document's content blocks
-// Fields not relevant to a given variant are absent; the union is
-// flat at the wire level. `encrypted_index` (web_search) is recorded
-// only on the wire — it has no echo-back target in the internal
-// CitationBlock today, so the adapter drops it.
+// Fields not relevant to a given variant are absent; the union is flat at the
+// wire level. `encrypted_index` (web_search) is recorded only on the wire —
+// it has no echo-back target in the internal CitationBlock today, so the
+// adapter drops it.
 const AnthropicCitation = type({
   type: "string",
   "cited_text?": "string",
@@ -527,10 +512,10 @@ const ContentBlockStart = type({
   index: "number",
   // Anthropic sends either content_block (snake_case) or contentBlock
   // (camelCase). `data` is optional on the shared shape because only
-  // redacted_thinking blocks carry it; the redacted_thinking branch in
-  // the parser asserts presence and throws ProtocolMismatchError when
-  // it is missing, rather than synthesizing an empty string that would
-  // round-trip back to Anthropic as a corrupted block.
+  // redacted_thinking blocks carry it; the redacted_thinking branch in the
+  // parser asserts presence and throws ProtocolMismatchError when it is
+  // missing, rather than synthesizing an empty string that would round-trip
+  // back to Anthropic as a corrupted block.
   "content_block?": {
     type: "string",
     "id?": "string",
@@ -607,10 +592,9 @@ function parseResponse(
   // Same protocol-mismatch posture as the openai adapter: a JSON parse
   // failure or arktype rejection means the upstream emitted bytes that
   // violate the Anthropic streaming protocol. Surface through
-  // ProtocolMismatchError so the harness's stream-error catch emits
-  // an inference.error with category "protocol_mismatch" carrying the
-  // offending data in error.raw, rather than dropping the chunk
-  // silently.
+  // ProtocolMismatchError so the harness's stream-error catch emits an
+  // inference.error with category "protocol_mismatch" carrying the offending
+  // data in error.raw, rather than dropping the chunk silently.
   let parsed: unknown;
   try {
     parsed = JSON.parse(sseData);
@@ -660,12 +644,11 @@ function parseResponse(
       }
 
       if (delta.type === "signature_delta") {
-        // Anthropic emits the cryptographic signature for a thinking block
-        // in a dedicated signature_delta event after the block's
-        // thinking_delta stream. The signature must be echoed back on any
-        // follow-up turn that includes the thinking block as context —
-        // otherwise the API rejects the request with
-        // "messages.N.content.M.thinking.signature: Field required".
+        // Anthropic emits the cryptographic signature for a thinking block in
+        // a dedicated signature_delta event after the block's thinking_delta
+        // stream. The signature must be echoed back on any follow-up turn
+        // that includes the thinking block as context — otherwise the API
+        // rejects the request with "Field required".
         const signature = delta.signature ?? "";
         return [
           {
@@ -739,16 +722,13 @@ function parseResponse(
       }
 
       if (block.type === "thinking") {
-        // Anchor the thinking block in the harness's per-index map
-        // via an empty thinking.delta. Anthropic can stream a
-        // signature_delta for a thinking block whose visible text is
-        // empty (redacted-adjacent flow); without this anchor, the
-        // signature would arrive at the harness with no preceding
-        // thinking entry at the same index and the per-index router
-        // would (correctly) reject it as a protocol violation. The
-        // empty-token delta is the parser-side analogue of the wire's
-        // `content_block_start` for thinking — it carries no visible
-        // content but reserves the index.
+        // Anchor the thinking block in the harness's per-index map via an
+        // empty thinking.delta. Anthropic can stream a signature_delta for a
+        // thinking block whose visible text is empty (redacted-adjacent
+        // flow); without this anchor, the signature would arrive at the
+        // harness with no preceding thinking entry at the same index and the
+        // per-index router would (correctly) reject it as a protocol
+        // violation. The empty-token delta reserves the index.
         const { index } = event;
         return [
           {
@@ -761,11 +741,10 @@ function parseResponse(
 
       if (block.type === "redacted_thinking") {
         // Anthropic delivers redacted_thinking as a one-shot inside
-        // content_block_start (no delta stream). The opaque `data`
-        // blob must echo back verbatim on every follow-up turn —
-        // mutating or synthesizing it corrupts the conversation
-        // context. A start event missing `data` is a protocol
-        // violation, not a default-to-empty case.
+        // content_block_start (no delta stream). The opaque `data` blob must
+        // echo back verbatim on every follow-up turn — mutating or
+        // synthesizing it corrupts the conversation context. A start event
+        // missing `data` is a protocol violation, not a default-to-empty case.
         const { index } = event;
         if (block.data === undefined) {
           throw new ProtocolMismatchError(
@@ -790,21 +769,20 @@ function parseResponse(
       }
 
       // Non-tool_use, non-redacted_thinking content_block_start events
-      // (text, thinking) emit nothing here by design: each
-      // content_block_delta arrives with a typed delta (text_delta,
-      // thinking_delta, signature_delta) that the switch above
-      // discriminates on directly, so an upfront start emission would
-      // be redundant. Tool calls are the exception because their
-      // callId arrives only in the start event and must be cached
-      // against the block index for subsequent input_json_delta
-      // lookups; redacted_thinking is the exception because the block
-      // is delivered start-only with no follow-on deltas.
+      // (text, thinking) emit nothing here by design: each content_block_delta
+      // arrives with a typed delta (text_delta, thinking_delta,
+      // signature_delta) that the switch above discriminates on directly, so
+      // an upfront start emission would be redundant. Tool calls are the
+      // exception because their callId arrives only in the start event and
+      // must be cached against the block index for subsequent
+      // input_json_delta lookups; redacted_thinking is the exception because
+      // the block is delivered start-only with no follow-on deltas.
       return [];
     }
 
     case "content_block_stop": {
-      // The harness handles finalizing tool calls when it sees this — we
-      // emit nothing here; the harness knows which blocks are complete.
+      // The harness finalizes tool calls when it sees this — emit nothing
+      // here.
       return [];
     }
 
@@ -1054,10 +1032,10 @@ function parseJSONResponse(
       }
 
       default:
-        // server_tool_use, web_search_tool_result,
-        // code_execution_tool_result, and any future block type: the
-        // streaming parser emits nothing for these, so mirror that rather
-        // than diverge from a path with no passing reference yet.
+        // server_tool_use, web_search_tool_result, code_execution_tool_result,
+        // and any future block type: the streaming parser emits nothing for
+        // these, so mirror that rather than diverge from a path with no
+        // passing reference yet.
         break;
     }
   });
@@ -1080,7 +1058,7 @@ function extractRetryAfterMs(headers: Headers): number | undefined {
 }
 
 function extractPacingDelayMs(headers: Headers): number | undefined {
-  // Check all rate limit dimensions and return the longest wait needed
+  // Check all rate limit dimensions and return the longest wait needed.
   const delays: number[] = [];
 
   for (const prefix of [

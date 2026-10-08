@@ -1,19 +1,8 @@
-// Tests for the Gemini (`google-genai`) provider adapter. Coverage
-// splits into three layers:
-//
-//   - buildRequest shape assertions, including byte-for-byte
-//     fixture parity for plain-text and function-calling-multi-turn
-//   - parseResponse per-event behavior and end-to-end fixture replay
-//     of the plain-text-streaming SSE capture
-//   - a harness-level round trip via `runInference` that asserts the
-//     accumulated `PartialMessage` and final `inference.done` turn
-//     line up with the parser's emissions
-//
-// The fixtures live in the session corpus under
-// `packages/inference-discovery-google-genai/sessions/google-genai`, one
-// `exchanges/<i>/` directory per captured HTTP exchange, and were captured
-// against live Gemini endpoints; any drift between adapter output and
-// fixture is a real protocol mismatch.
+// Tests for the Gemini (`google-genai`) provider adapter: buildRequest
+// shape and fixture parity, parseResponse per-event behavior, and a
+// harness-level round trip via `runInference`. Fixtures live in
+// `packages/inference-discovery-google-genai/sessions/google-genai` and
+// were captured against live Gemini endpoints.
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -61,11 +50,8 @@ const FIXTURE_ROOT = join(
   "google-genai",
 );
 
-// Permissive top-level body schema. Each Gemini-recognized key is
-// declared as `unknown` so per-test narrowing schemas can validate
-// just the slice they care about; the alternative (a single deeply-
-// typed body schema) would pin every field shape and turn schema
-// edits into a churn surface unrelated to the assertion being made.
+// Permissive top-level body schema: each key is `unknown` so per-test
+// schemas can narrow just the slice they assert on.
 const GeminiBody = type({
   contents: "unknown",
   "systemInstruction?": "unknown",
@@ -77,10 +63,8 @@ function parseBody(body: string): typeof GeminiBody.infer {
   return GeminiBody.assert(JSON.parse(body));
 }
 
-// Captured fixture files share the same top-level body shape. Asserting
-// against the same schema as `parseBody` lets test sites compare the
-// two with `toEqual` without TypeScript widening one side back to
-// `Record<string, unknown>`.
+// Same schema as parseBody so fixture/body comparisons stay toEqual-able
+// without one side widening to `Record<string, unknown>`.
 function readFixtureJSON(...path: string[]): typeof GeminiBody.infer {
   return GeminiBody.assert(
     JSON.parse(readFileSync(join(FIXTURE_ROOT, ...path), "utf-8")),
@@ -97,10 +81,7 @@ const SystemInstruction = type({
   parts: type({ text: "string" }).array(),
 });
 
-// A fresh adapter per test: matches the openai.test.ts pattern.
-// Per-request parser state on this adapter is reset by construction,
-// so re-creating per test guarantees no test sees state leaked from a
-// prior one regardless of how the parser surface grows.
+// Fresh adapter per test so no parser state leaks between tests.
 let adapter: ProviderAdapter;
 beforeEach(() => {
   adapter = createGoogleGenAIAdapter(TEST_SOURCE);
@@ -125,11 +106,8 @@ describe("Google GenAI adapter: URL and headers", () => {
   });
 
   test("model name is encoded with encodeURIComponent", () => {
-    // Legitimate model names (alphanumerics, hyphens, periods) pass
-    // through unchanged; the escape is a defensive no-op for current
-    // catalog entries. A model value containing a URL-special
-    // character (e.g. a future model name with a `/` or `?`) is
-    // escaped at the path layer rather than producing a malformed URL.
+    // URL-special characters in a model name are escaped at the path
+    // layer rather than producing a malformed URL.
     const req = adapter.buildRequest(
       [
         {
@@ -159,9 +137,7 @@ describe("Google GenAI adapter: URL and headers", () => {
       {},
     );
     expect(req.headers["content-type"]).toBe("application/json");
-    // The harness substitutes the sentinel with InferenceSource.apiKey
-    // at send time; the adapter must emit the sentinel verbatim so the
-    // harness can find it.
+    // The harness swaps the sentinel for InferenceSource.apiKey at send time.
     expect(req.headers["x-goog-api-key"]).toBe(CREDENTIAL_SENTINEL);
   });
 });
@@ -270,11 +246,7 @@ describe("Google GenAI adapter: body shape", () => {
   });
 
   test("system turn containing a non-text block throws (matches loud-failure discipline)", () => {
-    // The rest of the adapter throws on every unsupported block kind
-    // rather than silently dropping content; the system-turn
-    // extraction holds the same discipline. A caller who puts an
-    // image into a system turn gets a clear error instead of a
-    // request shape that omits part of what they sent.
+    // Same loud-failure discipline as the other unsupported block kinds.
     const turns: ConversationTurn[] = [
       {
         role: "system",
@@ -363,9 +335,8 @@ describe("Google GenAI adapter: tools and thinking", () => {
     );
     const body = parseBody(req.body);
 
-    // Tools live under a single functionDeclarations wrapper, not as a
-    // flat list -- the wrapper is how Gemini groups multiple declarations
-    // alongside built-in tools (googleSearch, codeExecution).
+    // Tools sit under a single functionDeclarations wrapper, the shape
+    // Gemini uses to group declarations alongside built-in tools.
     expect(body.tools).toEqual([
       {
         functionDeclarations: [
@@ -395,10 +366,8 @@ describe("Google GenAI adapter: tools and thinking", () => {
   });
 
   test("thinking.enabled=false emits thinkingBudget=0 on models that allow it", () => {
-    // Gemini 2.5 flash default thinking budget is NOT zero, so
-    // disabling thinking requires an explicit zero rather than just
-    // omitting thinkingConfig. Mirrors the discovery-side
-    // plainTextStreaming capture shape.
+    // Flash's default thinking budget is non-zero, so disabling
+    // thinking needs an explicit zero.
     const req = adapter.buildRequest(
       [
         {
@@ -546,10 +515,8 @@ describe("Google GenAI adapter: responseFormat translation", () => {
   ];
 
   test("kind=text omits both responseMimeType and responseSchema", () => {
-    // Free-form text is Gemini's default; the adapter must not set
-    // responseMimeType (which would otherwise pin the output) when the
-    // caller asked for plain text. With no other generationConfig
-    // fields populated, the whole object is omitted from the request.
+    // Plain text is Gemini's default; setting responseMimeType would
+    // pin the output, so nothing is emitted.
     const req = adapter.buildRequest(conversation, "gemini-2.5-flash", {
       responseFormat: { kind: "text" },
     });
@@ -583,10 +550,8 @@ describe("Google GenAI adapter: responseFormat translation", () => {
   });
 
   test("kind=json-schema ignores OpenAI-specific name and strict fields", () => {
-    // Gemini has no responseSchema-level name or strict-mode toggle.
-    // The caller may still supply both for cross-provider portability;
-    // the adapter must not forward them and must not error on their
-    // presence.
+    // Gemini has no name/strict toggle at the responseSchema level; the
+    // adapter ignores them without erroring.
     const schema = { type: "object", properties: {} };
     const req = adapter.buildRequest(conversation, "gemini-2.5-flash", {
       responseFormat: {
@@ -675,9 +640,8 @@ describe("Google GenAI adapter: MediaSource variants", () => {
   });
 
   test("url image → fileData part with public URL as fileUri", () => {
-    // The MediaSource url variant maps to Gemini's fileData/fileUri:
-    // Gemini accepts public HTTP(S) URLs in the same field the Files
-    // API uses for uploaded-file URIs.
+    // Gemini accepts public HTTP(S) URLs in the same fileData field
+    // the Files API uses for uploaded-file URIs.
     const req = adapter.buildRequest(
       [
         {
@@ -713,22 +677,14 @@ describe("Google GenAI adapter: MediaSource variants", () => {
 // Multimodal-input round-trip parity against captured fixtures
 // ---------------------------------------------------------------------------
 //
-// The MediaSource variants are covered structurally in the block above;
-// these tests pin the BYTE-FOR-BYTE body match between what the adapter
-// produces for a `ConversationTurn` carrying a media block and what
-// was captured on the wire when the same prompt was issued against the
-// live Gemini endpoint. A regression in part ordering, optional-key
-// emission, or field naming surfaces here as a fixture mismatch.
-//
-// The base64 in each fixture is read from disk and threaded back into
-// the input turn so the test exercises the SHAPE translation, not
-// arbitrary bytes; the data round-trips through the adapter unchanged.
+// Byte-for-byte body parity: a regression in part ordering, optional-key
+// emission, or field naming surfaces as a fixture mismatch. Fixture base64
+// is read from disk and threaded back into the input turn so the data
+// round-trips through the adapter unchanged.
 
 describe("Google GenAI adapter: multimodal input fixture parity", () => {
-  // Fixture payloads are validated with arktype rather than narrowed
-  // via type assertion -- the fixtures are external data, so the
-  // runtime schema is the honest way to pull `{mimeType, data}` and
-  // `{mimeType, fileUri}` out of them.
+  // Fixtures are external data, so arktype (not type assertions) is
+  // used to pull `{mimeType, data}` and `{mimeType, fileUri}` out.
   const FixtureInlineDataPart = type({
     inlineData: { mimeType: "string", data: "string" },
   });
@@ -736,26 +692,16 @@ describe("Google GenAI adapter: multimodal input fixture parity", () => {
     fileData: { mimeType: "string", fileUri: "string" },
   });
 
-  // Drill into the second part of a fixture's first user turn. The
-  // captured fixtures all place the prompt text at parts[0] and the
-  // media part at parts[1]; reaching past either bound throws
-  // explicitly so a future capture with a different shape surfaces
-  // its mismatch at the indexing site rather than as an arktype
-  // schema error against undefined (`?.` chaining would silently
-  // forward undefined into the validator, masking the structural
-  // problem as a schema mismatch).
+  // Second part of a fixture's first user turn (text at parts[0], media
+  // at parts[1]); bounds throw loudly instead of masking via `?.`.
   function mediaPartOf(fixture: typeof GeminiBody.infer): unknown {
     const contents = GeminiContents.assert(fixture.contents);
     const firstTurn = contents[0];
     if (firstTurn === undefined) {
       throw new Error("fixture contents[] is empty");
     }
-    // The captured fixtures are all single-turn user prompts. A
-    // model-role first turn would mean the capture started from a
-    // priming response or a wholly different shape; either way it
-    // is not what this helper is designed to read, so fail loudly
-    // rather than silently return that turn's `parts[1]` and let a
-    // downstream byte-equality assertion produce a confusing diff.
+    // Fixtures are single-turn user prompts; anything else fails loudly
+    // rather than yielding a confusing byte-diff downstream.
     if (firstTurn.role !== "user") {
       throw new Error(
         `fixture first turn role is ${JSON.stringify(firstTurn.role)}; expected "user"`,
@@ -769,10 +715,8 @@ describe("Google GenAI adapter: multimodal input fixture parity", () => {
     return firstTurn.parts[1];
   }
 
-  // Read a fixture once and pull its inlineData payload out of it,
-  // returning both the parsed body and the destructured payload so
-  // a test site can equality-check the body and thread the payload
-  // back into its input turn without re-parsing the file.
+  // Read a fixture once: returns the parsed body plus the destructured
+  // inlineData payload for threading back into the input turn.
   function loadInlineDataFixture(...path: string[]): {
     fixture: typeof GeminiBody.infer;
     mimeType: string;
@@ -907,10 +851,7 @@ describe("Google GenAI adapter: multimodal input fixture parity", () => {
   });
 
   test("files-api: file-reference document round-trips byte-for-byte against fixture", () => {
-    // The Files API capture uses Gemini's `fileData/fileUri` shape
-    // (the same field the URL variant targets); the URI here is the
-    // upload endpoint's returned handle, not a public URL. The
-    // adapter does not distinguish the two on the wire -- both
+    // The URI is the Files API upload handle, not a public URL; both
     // `file-reference` and `url` MediaSources land in `fileData`.
     const fixture = readFixtureJSON(
       "gemini-2.5-flash",
@@ -981,10 +922,8 @@ describe("Google GenAI adapter: conversation-turn mapping", () => {
   });
 
   test("tool_call/tool_result round-trip matches function-calling-multi-turn fixture", () => {
-    // The full three-turn conversation as the harness would assemble
-    // it from the prior assistant turn's tool_call and the user's
-    // tool_result. The functionResponse.name comes from the callId ->
-    // name lookup built over prior turns.
+    // Three-turn conversation as the harness assembles it; the
+    // functionResponse.name comes from the callId -> name lookup.
     const turns: ConversationTurn[] = [
       {
         role: "user",
@@ -1129,9 +1068,8 @@ describe("Google GenAI adapter: conversation-turn mapping", () => {
   });
 
   test("tool_result with JSON-array text → wrapped under `result` (not promoted to response)", () => {
-    // Defensive: only JSON *objects* get used verbatim. Arrays, scalars,
-    // and null fall through to the wrap path so the wire shape is
-    // predictable regardless of what the tool returned.
+    // Only JSON objects ride verbatim; arrays/scalars/null take the
+    // wrap path so the wire shape stays predictable.
     const turns: ConversationTurn[] = [
       {
         role: "assistant",
@@ -1224,11 +1162,8 @@ describe("Google GenAI adapter: conversation-turn mapping", () => {
   });
 
   test("tool_call block on a user turn throws (role/block-pair mismatch)", () => {
-    // Internal types do not enforce role/block pairing on their own.
-    // The adapter's marshaling boundary catches a misrouted tool_call
-    // (a tool_call placed on a user turn) so a caller bug surfaces
-    // with diagnostic context rather than reaching Gemini as an
-    // opaque 400.
+    // The marshaling boundary catches a tool_call on a user turn with
+    // a diagnostic rather than an opaque Gemini 400.
     const turns: ConversationTurn[] = [
       {
         role: "user",
@@ -1249,8 +1184,7 @@ describe("Google GenAI adapter: conversation-turn mapping", () => {
   });
 
   test("tool_result block on an assistant turn throws", () => {
-    // Symmetric to the tool_call check above: tool_result lives on
-    // user turns; on an assistant turn it is a caller bug.
+    // Symmetric: tool_result on an assistant turn is a caller bug.
     const turns: ConversationTurn[] = [
       {
         role: "assistant",
@@ -1307,17 +1241,10 @@ describe("Google GenAI adapter: conversation-turn mapping", () => {
 
 describe("Google GenAI adapter: providerOptions escape hatch", () => {
   test("providerOptions with an explicit undefined drops the adapter-built field", () => {
-    // Object.assign writes undefined values through, and JSON.stringify
-    // then drops them from the wire payload. A caller passing
-    // `providerOptions: { generationConfig: undefined }` therefore
-    // erases the adapter-built generationConfig (including the
-    // thinkingConfig built from `options.thinking`). This is the
-    // standard JS spread/Object.assign semantic, but pinning it here
-    // means a future refactor that filters undefined values out (e.g.
-    // to "fix" what looks like an accidental drop) breaks this test
-    // and surfaces the behavior change loudly. The same rule applies
-    // to providerOptions on every other adapter -- the caller owns
-    // what they pass.
+    // Object.assign writes undefined through and JSON.stringify drops
+    // it, so `providerOptions: { generationConfig: undefined }` erases
+    // the adapter-built config. Pin the standard spread semantic so a
+    // future "fix" that filters undefined breaks loudly.
     const req = adapter.buildRequest(
       [
         {
@@ -1337,11 +1264,9 @@ describe("Google GenAI adapter: providerOptions escape hatch", () => {
   });
 
   test("providerOptions shallow-merges over body top-level (and clobbers generationConfig)", () => {
-    // Documented behavior: providerOptions is a shallow merge into the
-    // top level of the request body. A caller passing a structured key
-    // like `generationConfig` wholesale replaces the object the adapter
-    // built. This test pins the clobber semantics so a future
-    // "helpful" deep-merge refactor breaks it loudly.
+    // providerOptions shallow-merges into the body top level; a
+    // structured key like `generationConfig` clobbers the adapter-built
+    // object. Pinned so a "helpful" deep-merge refactor breaks loudly.
     const req = adapter.buildRequest(
       [
         {
@@ -1363,8 +1288,7 @@ describe("Google GenAI adapter: providerOptions escape hatch", () => {
     );
     const body = parseBody(req.body);
 
-    // providerOptions.generationConfig fully replaces the
-    // adapter-built one -- no thinkingConfig survives the merge.
+    // The provided generationConfig fully replaces the adapter-built one.
     expect(body.generationConfig).toEqual({ temperature: 0.7 });
     expect(body.safetySettings).toEqual([
       { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
@@ -1450,10 +1374,8 @@ async function parseWire(
   return events;
 }
 
-// Frames a single JSON object as one SSE event (one `data:` line +
-// terminating blank line). Mirrors what the Gemini endpoint emits per
-// SSE event, so synthetic events can be driven through the same
-// parseSSE -> parseResponse pipeline as the captured fixtures.
+// Frames one JSON object as one SSE event (one `data:` line + blank
+// line), matching the Gemini endpoint's framing.
 function sseFrame(obj: unknown): Uint8Array {
   return new TextEncoder().encode(`data: ${JSON.stringify(obj)}\n\n`);
 }
@@ -1484,9 +1406,8 @@ describe("Google GenAI adapter: parseResponse plain text", () => {
   });
 
   test("multiple text parts in one event emit multiple text deltas in order", async () => {
-    // A single candidate.content.parts[] with two text entries
-    // produces two text.delta events in the order parts appear,
-    // both at index 0 (single logical block for plain text).
+    // Two text parts produce two text.delta events in order, both at
+    // index 0 (one logical plain-text block).
     const events = await parseWire(adapter, [
       sseFrame({
         candidates: [
@@ -1554,10 +1475,8 @@ describe("Google GenAI adapter: parseResponse plain text", () => {
   });
 
   test("non-terminal events emit no usage (cadence is finishReason-gated)", async () => {
-    // Every Gemini SSE event carries cumulative usageMetadata, but
-    // the parser emits usage only at the terminal event. The harness's
-    // inference.done captures the final usage snapshot via the single
-    // emission; intermediate emissions would be pure noise.
+    // Usage emits only at the terminal event; intermediate emissions
+    // would be noise.
     const events = await parseWire(adapter, [
       sseFrame({
         candidates: [
@@ -1590,12 +1509,8 @@ describe("Google GenAI adapter: parseResponse plain text", () => {
   });
 
   test("plain-text-streaming fixture replay yields exactly 8 text deltas + 1 usage", async () => {
-    // The captured plain-text-streaming response.sse has 8 SSE
-    // events; the last carries finishReason: "STOP" and the
-    // cumulative usage snapshot. The parser is expected to produce
-    // exactly 8 inference.text.delta events (the new tokens from
-    // each event, in order) followed by exactly 1 inference.usage
-    // event with the cumulative counts from the final event.
+    // 8 SSE events -> 8 text.delta events (the new tokens, in order) plus
+    // one inference.usage with the final event's cumulative counts.
     const sseBytes = readFileSync(
       join(
         FIXTURE_ROOT,
@@ -1613,12 +1528,11 @@ describe("Google GenAI adapter: parseResponse plain text", () => {
     expect(textEvents).toHaveLength(8);
     expect(usageEvents).toHaveLength(1);
     expect(events.length).toBe(9);
-    // Usage is the last emission (per the inference.usage-before-
-    // inference.done contract that the harness applies).
+    // Usage is the last emission (usage-before-done contract).
     expect(events[events.length - 1]?.type).toBe("inference.usage");
 
-    // Final cumulative usage from the fixture: promptTokenCount=33,
-    // candidatesTokenCount=281, totalTokenCount=314.
+    // Final cumulative usage from the fixture: prompt=33, candidates=281,
+    // total=314.
     const usage = usageEvents[0];
     if (usage?.type !== "inference.usage") {
       throw new Error("expected inference.usage");
@@ -1818,9 +1732,8 @@ describe("Google GenAI adapter: parseResponse error surface", () => {
   });
 
   test("terminal event missing usageMetadata throws ProtocolMismatchError", () => {
-    // finishReason without usageMetadata would silently produce a
-    // zero-usage tally; surface the malformed terminal event loudly
-    // instead.
+    // A terminal event missing usageMetadata would silently zero the
+    // tally; fail loudly instead.
     const bad = JSON.stringify({
       candidates: [
         {
@@ -1856,14 +1769,9 @@ describe("Google GenAI adapter: harness round trip", () => {
   };
 
   test("plain-text-streaming fixture flows through runInference end-to-end", async () => {
-    // Replays the captured SSE response through the full harness
-    // pipeline (parseSSE + parseResponse + partial-state
-    // accumulation + inference.done emission). Asserts the
-    // accumulated PartialMessage.text matches the concatenation of
-    // every parsed text delta, and that the final inference.done
-    // carries a turn with one text block whose text is the full
-    // response and a usage that matches the wire's terminal
-    // cumulative snapshot.
+    // Replays the captured SSE response through the full harness pipeline
+    // and asserts the accumulated PartialMessage text, the final
+    // inference.done turn, and the usage match the wire capture.
     const sseBytes = readFileSync(
       join(
         FIXTURE_ROOT,
@@ -1919,10 +1827,8 @@ describe("Google GenAI adapter: harness round trip", () => {
       throw new Error("expected inference.done event");
     }
 
-    // The harness should produce a single text block whose text is
-    // the full concatenated response. The exact prefix is captured
-    // from the fixture's first SSE event so the assertion catches a
-    // regression that drops the first chunk.
+    // Single text block with the full concatenated response; the prefix
+    // comes from the fixture's first event so a dropped chunk fails.
     expect(done.data.turn.content).toHaveLength(1);
     const first = done.data.turn.content[0];
     if (first?.type !== "text") {
@@ -1931,8 +1837,7 @@ describe("Google GenAI adapter: harness round trip", () => {
     expect(first.text.startsWith("A sailboat harnesses the wind")).toBe(true);
     expect(first.text.endsWith("powered solely by the wind.")).toBe(true);
 
-    // Usage should reflect the final cumulative snapshot from the
-    // last SSE event.
+    // Usage = the final cumulative snapshot from the last SSE event.
     expect(done.data.usage).toEqual({
       input: 33,
       output: 281,
@@ -1955,12 +1860,8 @@ describe("Google GenAI adapter: harness round trip", () => {
 
 describe("Google GenAI adapter: parseResponse function-calling", () => {
   test("single functionCall part emits tool_call.start + tool_call.delta at index 0", async () => {
-    // Mirrors the function-calling-multi-turn-streaming/turn-1
-    // wire shape: one SSE event, one functionCall part, finishReason
-    // STOP, cumulative usageMetadata. The parser is expected to
-    // synthesize a callId (Gemini has no wire-level id field) and
-    // emit the args complete in a single delta (atomic; no JSON
-    // streaming).
+    // turn-1 wire shape: one event, one functionCall part. The parser
+    // synthesizes a callId (no wire-level id) and emits args atomically.
     const events = await parseWire(adapter, [
       sseFrame({
         candidates: [
@@ -2042,13 +1943,9 @@ describe("Google GenAI adapter: parseResponse function-calling", () => {
   });
 
   test("thinking text followed by functionCall-with-signature attaches the signature to the tool_call block", async () => {
-    // Mirrors function-calling-with-thinking-streaming/turn-1: a
-    // thinking text part in one event, a functionCall part with
-    // thoughtSignature in the next. A thoughtSignature is a per-part
-    // attribute authenticating the block whose part physically carries
-    // it, so the signature attaches to the freshly opened tool_call
-    // block and its event is emitted AFTER the tool_call.start/delta
-    // pair, against the tool_call block's own index.
+    // Mirrors turn-1: thinking text in one event, a signed functionCall
+    // in the next. The signature attaches to the tool_call block (the
+    // part that carries it), emitted after the tool_call.start/delta pair.
     const events = await parseWire(adapter, [
       sseFrame({
         candidates: [
@@ -2130,19 +2027,14 @@ describe("Google GenAI adapter: parseResponse function-calling", () => {
       output: 15,
       cacheRead: 0,
       cacheWrite: 0,
-      // thoughtsTokenCount=53 flows to TokenUsage.thinking. The
-      // wire-up was already present in the parser; this test pins
-      // it now that thinking is exercised.
+      // thoughtsTokenCount=53 flows to TokenUsage.thinking.
       thinking: 53,
     });
   });
 
   test("functionCall-with-signature and no preceding thinking decodes with block.signature at the tool_call index", () => {
-    // A thoughtSignature authenticates the block whose part carries it.
-    // A functionCall part carrying a signature with no thinking block
-    // ahead of it is a valid, unanchored shape: the signature attaches
-    // to the tool_call block at that part's own index and nothing
-    // throws.
+    // A signature on a functionCall part with no preceding thinking
+    // block is valid: it attaches to the tool_call at that part's index.
     const events = adapter.parseResponse(
       JSON.stringify({
         candidates: [
@@ -2176,9 +2068,7 @@ describe("Google GenAI adapter: parseResponse function-calling", () => {
   });
 
   test("text-with-signature and no preceding thinking decodes with block.signature at the text index", () => {
-    // The text carrier is symmetric with the functionCall carrier: a
-    // plain text part carrying a thoughtSignature with no thinking
-    // block ahead of it signs its own text block at that part's index.
+    // Symmetric: a signed text part signs its own text block.
     const events = adapter.parseResponse(
       JSON.stringify({
         candidates: [
@@ -2206,10 +2096,8 @@ describe("Google GenAI adapter: parseResponse function-calling", () => {
   });
 
   test("interleaved text and functionCall in one candidate allocate separate block indices", async () => {
-    // No fixture exercises this shape -- Gemini's corpus is
-    // text-only OR thinking+functionCall in practice -- but the
-    // coalescing rules support it for free. Pin the behavior so a
-    // future change to allocation doesn't drift.
+    // Not covered by the corpus (text-only OR thinking+functionCall in
+    // practice); pin it so allocation rules don't drift.
     const events = await parseWire(adapter, [
       sseFrame({
         candidates: [
@@ -2244,15 +2132,9 @@ describe("Google GenAI adapter: parseResponse function-calling", () => {
       )
       .map((e) => ({ type: e.type, index: e.data.index }));
 
-    // The text-before block gets index 0; the functionCall block
-    // gets index 1 (closing the text block); the text-after block
-    // gets index 2 (the closed-then-reopened text block is a NEW
-    // block, not a return to index 0). The rule is "consecutive
-    // same-kind parts coalesce; different-kind closes the current
-    // block and allocates a new one." Reopening with the same kind
-    // after a different-kind interruption deliberately allocates a
-    // fresh index because the wire semantics treat the spans as
-    // distinct logical blocks.
+    // text=0, functionCall=1 (closes the text block), text=2 (a NEW
+    // block, not a return to 0). Different-kind parts close the current
+    // block; the reopened span is a distinct logical block.
     expect(indicesByType).toEqual([
       { type: "inference.text.delta", index: 0 },
       { type: "inference.tool_call.start", index: 1 },
@@ -2282,10 +2164,7 @@ describe("Google GenAI adapter: parseResponse function-calling", () => {
   });
 
   test("part with multiple payload fields names every payload in the diagnostic", () => {
-    // The diagnostic must enumerate every payload that's set, not
-    // just the first one detected -- the violation is "more than one
-    // payload" and the user can only act on it if the error names
-    // both.
+    // The diagnostic must name every payload present, not just the first.
     const bad = JSON.stringify({
       candidates: [
         {
@@ -2306,10 +2185,8 @@ describe("Google GenAI adapter: parseResponse function-calling", () => {
   });
 
   test("thought: true on a non-text part throws ProtocolMismatchError", () => {
-    // arktype's open-object schema accepts `thought: true` on any
-    // part shape; `assertSinglePayload` is the boundary that rejects
-    // the flag on parts where it has no defined wire meaning. A
-    // `thought` flag on a functionCall is one such wire violation.
+    // `assertSinglePayload` rejects `thought: true` on parts where it has
+    // no wire meaning, e.g. a functionCall.
     const bad = JSON.stringify({
       candidates: [
         {
@@ -2333,14 +2210,9 @@ describe("Google GenAI adapter: parseResponse function-calling", () => {
   });
 
   test("empty-text part bearing a thoughtSignature opens a text block and signs it", async () => {
-    // Pins the empty-text carrier path: a `text: ""` part with a
-    // `thoughtSignature` still opens (or extends) a text block so the
-    // signature has its own block to authenticate. A thoughtSignature
-    // signs the block whose part carries it, so the signature lands on
-    // that freshly opened text block, NOT on the preceding thinking
-    // block. The empty-payload-but-signature-present shape is
-    // spec-permitted and not covered by the corpus, but the parser must
-    // handle it because otherwise the attestation silently evaporates.
+    // An empty `text: ""` part with a signature still opens a text block
+    // so the signature has its own block; it lands on the text block, not
+    // the preceding thinking block.
     const events = await parseWire(adapter, [
       sseFrame({
         candidates: [
@@ -2381,11 +2253,8 @@ describe("Google GenAI adapter: parseResponse function-calling", () => {
   });
 
   test("payload-free signature-only part throws (no block to authenticate)", async () => {
-    // A thoughtSignature signs the block whose part carries it. A part
-    // with no payload has no block to own the signature, so it is an
-    // unmodeled wire shape and throws regardless of what precedes it --
-    // here a preceding text block does not give a payload-free
-    // signature part anything to attach to.
+    // A payload-free signed part has no block to own the signature --
+    // unmodeled shape, throws regardless of what precedes it.
     await expect(
       parseWire(adapter, [
         sseFrame({
@@ -2415,10 +2284,8 @@ describe("Google GenAI adapter: parseResponse function-calling", () => {
   });
 
   test("executableCode-with-signature and no preceding thinking decodes with block.signature at the request index", async () => {
-    // The executableCode carrier is symmetric with the other atomic
-    // carriers: a signature riding an executableCode part with no
-    // thinking block ahead of it authenticates the freshly opened
-    // code-execution-request block at that part's own index.
+    // Symmetric carrier: a signed executableCode part signs the
+    // code-execution-request block at its own index.
     const events = await parseWire(adapter, [
       sseFrame({
         candidates: [
@@ -2461,10 +2328,8 @@ describe("Google GenAI adapter: parseResponse function-calling", () => {
   });
 
   test("codeExecutionResult part carrying a thoughtSignature throws (not signable)", async () => {
-    // A code_execution_result block carries no signature field. A
-    // thoughtSignature on a codeExecutionResult part is an unmodeled
-    // wire shape and must throw, even with a valid preceding
-    // executableCode part to pair against.
+    // codeExecutionResult blocks have no signature field; a signature on
+    // that part is an unmodeled shape and must throw.
     await expect(
       parseWire(adapter, [
         sseFrame({
@@ -2491,11 +2356,8 @@ describe("Google GenAI adapter: parseResponse function-calling", () => {
   });
 
   test("unsigned parts across kinds each open a fresh block index", async () => {
-    // Each part of a different kind closes the current block and opens a
-    // new one, so an unsigned thinking → text → thinking → functionCall
-    // sequence allocates four distinct block indices. No part carries a
-    // signature, so no `inference.block.signature` is emitted; the parser
-    // must accept the shape.
+    // Four different-kind parts allocate four distinct block indices; no
+    // signatures, so no `inference.block.signature` is emitted.
     const events = await parseWire(adapter, [
       sseFrame({
         candidates: [
@@ -2521,10 +2383,7 @@ describe("Google GenAI adapter: parseResponse function-calling", () => {
       }),
     ]);
 
-    // Block indices: thinking-A = 0, text = 1, thinking-B = 2,
-    // functionCall = 3. The four parts allocate four distinct
-    // indices because consecutive different-kind parts each close
-    // the current block.
+    // thinking-A=0, text=1, thinking-B=2, functionCall=3.
     expect(events.map((e) => e.type)).toEqual([
       "inference.thinking.delta",
       "inference.text.delta",
@@ -2628,11 +2487,9 @@ describe("Google GenAI adapter: parseResponse function-calling", () => {
     if (signature?.type !== "inference.block.signature") {
       throw new Error("expected inference.block.signature");
     }
-    // On the real Gemini wire the signature rides the follow-on
-    // functionCall part, so it authenticates the tool_call block at
-    // index 1, NOT the thinking block at index 0. Its event is emitted
-    // after the tool_call.start/delta pair, against the tool_call
-    // block's own index.
+    // On the real wire the signature rides the follow-on functionCall
+    // part, so it authenticates the tool_call at index 1, not the
+    // thinking block at 0.
     expect(signature.data.index).toBe(1);
     expect(signature.data.signature.length).toBeGreaterThan(0);
 
@@ -2674,16 +2531,9 @@ describe("Google GenAI adapter: buildRequest thinking round trip", () => {
   });
 
   test("signed tool_call rides its signature back onto the functionCall part", () => {
-    // This is the round-trip shape captured in
-    // function-calling-with-thinking-streaming/turn-2/request.json:
-    // the signature is on the functionCall part and the thinking text
-    // is signature-less. Reverse-parsing attributed that wire signature
-    // to the tool_call block, so the neutral input carries it on the
-    // tool_call block and each block rides its own signature back onto
-    // its own part. A second turn echoing the model's prior thinking
-    // requires this exact placement; mis-placing the signature would
-    // cause Gemini to reject the request as a corrupted thinking
-    // attestation.
+    // Echoes turn-2/request.json: each block rides its signature back
+    // onto its own part; mis-placing it makes Gemini reject the request
+    // as a corrupted thinking attestation.
     const req = adapter.buildRequest(
       [
         {
@@ -2722,8 +2572,7 @@ describe("Google GenAI adapter: buildRequest thinking round trip", () => {
   });
 
   test("unsigned thinking + tool_call leaves the tool_call without a thoughtSignature", () => {
-    // A thinking block without a signature stands alone -- its
-    // presence does not force a thoughtSignature on the next part.
+    // A signature-less thinking block does not force one on the next part.
     const req = adapter.buildRequest(
       [
         {
@@ -2752,9 +2601,8 @@ describe("Google GenAI adapter: buildRequest thinking round trip", () => {
   });
 
   test("signed text block rides its signature back onto the text part", () => {
-    // Gemini attaches a thoughtSignature to output parts including
-    // plain text; a TextBlock carrying that signature rides it back
-    // onto its own text part.
+    // Gemini signs plain-text parts too; the TextBlock rides the
+    // signature back onto its text part.
     const req = adapter.buildRequest(
       [
         {
@@ -2773,9 +2621,8 @@ describe("Google GenAI adapter: buildRequest thinking round trip", () => {
   });
 
   test("signed image block rides its signature back onto the inlineData part", () => {
-    // Gemini rides a thoughtSignature on the inlineData part; an
-    // ImageBlock carrying that signature rides it back onto its own
-    // inlineData part.
+    // A signed inlineData part rides the signature back onto the
+    // ImageBlock's inlineData part.
     const req = adapter.buildRequest(
       [
         {
@@ -2803,11 +2650,8 @@ describe("Google GenAI adapter: buildRequest thinking round trip", () => {
   });
 
   test("signed thinking block with no follow-on part rides its signature on the thinking part", () => {
-    // A thinking block that itself carries a signature (the rare case
-    // where Gemini signed the thought part rather than a follow-on
-    // part) rides that signature back onto its own thinking part. It
-    // needs no carrier -- each block rides its own signature -- so a
-    // turn ending on a signed thinking block builds cleanly.
+    // A thinking block that carries its own signature rides it back onto
+    // its thinking part; a turn can end on it cleanly.
     const req = adapter.buildRequest(
       [
         {
@@ -2832,10 +2676,8 @@ describe("Google GenAI adapter: buildRequest thinking round trip", () => {
   });
 
   test("two signed thinking blocks each ride their own signature on their own part", () => {
-    // With no cross-part pairing, two consecutive signed thinking
-    // blocks are legal: each rides its own signature on its own
-    // thinking part. The trailing unsigned tool_call carries no
-    // thoughtSignature.
+    // Two consecutive signed thinking blocks are legal; the trailing
+    // unsigned tool_call carries no signature.
     const req = adapter.buildRequest(
       [
         {
@@ -2865,12 +2707,9 @@ describe("Google GenAI adapter: buildRequest thinking round trip", () => {
   });
 
   test("turn-2 round-trip fixture parity for function-calling-with-thinking-streaming", () => {
-    // The harness ought to be able to reconstruct turn-2's request
-    // from a ConversationTurn list that includes the thinking +
-    // tool_call + tool_result blocks. We assert byte-equivalent
-    // parts -- a regression in the signature placement or in the
-    // thinking text would break Gemini's signed-thinking
-    // attestation on the next turn.
+    // The harness must reconstruct turn-2's request from the thinking +
+    // tool_call + tool_result blocks; byte-equivalent parts guard the
+    // signature placement.
     const FIXTURE = readFixtureJSON(
       "gemini-2.5-flash",
       "function-calling-with-thinking-streaming",
@@ -2879,11 +2718,8 @@ describe("Google GenAI adapter: buildRequest thinking round trip", () => {
       "request.json",
     );
     const fixtureParts = GeminiContents.assert(FIXTURE.contents)[1]?.parts;
-    // Narrow the two fixture parts with arktype rather than a type
-    // assertion -- the fixture file is external data and a runtime
-    // schema is the honest way to extract `thinking` text and
-    // `thoughtSignature`. A type assertion would be a compile-time
-    // lie against the actual file contents.
+    // arktype (not a type assertion) extracts `thinking` text and
+    // `thoughtSignature` from the external fixture file.
     const FixtureThinkingPart = type({
       text: "string",
       thought: "true",
@@ -2973,9 +2809,8 @@ describe("Google GenAI adapter: buildRequest thinking round trip", () => {
     );
 
     const body = parseBody(req.body);
-    // The assistant turn is the second `contents[]` element. Pin
-    // its parts byte-for-byte against the fixture; the surrounding
-    // user turns are exercised by other tests.
+    // Second `contents[]` element pinned byte-for-byte; the user turns
+    // are exercised elsewhere.
     const contents = GeminiContents.assert(body.contents);
     expect(contents[1]?.parts).toEqual(fixtureParts);
   });
@@ -3002,14 +2837,9 @@ describe("Google GenAI adapter: harness round trip with thinking + tool_call", (
   };
 
   test("function-calling-with-thinking-streaming fixture flows through runInference end-to-end", async () => {
-    // Replays the captured SSE response through the full harness
-    // pipeline and asserts the final turn carries a thinking block
-    // followed by a tool_call block that holds the signature. The
-    // captured wire signs the follow-on functionCall part, so the
-    // signature lands on the tool_call block, not the thinking block.
-    // The ordering matters: a tool_call-before-thinking content array
-    // could not be echoed back to Gemini in a follow-up turn
-    // because Gemini's wire convention is thinking-then-functionCall.
+    // Replays the captured SSE response; the final turn carries thinking
+    // then a signed tool_call. Ordering matters: Gemini's wire convention
+    // is thinking-then-functionCall for the follow-up echo.
     const sseBytes = readFileSync(
       join(
         FIXTURE_ROOT,
@@ -3145,10 +2975,8 @@ describe("Google GenAI adapter: parseResponse image output", () => {
   });
 
   test("text then inlineData then text allocates three distinct block indices", async () => {
-    // Pins the per-part block allocation for the image-output
-    // shape: consecutive text parts coalesce into index 0, the
-    // image is atomic at index 1, and trailing text reopens at
-    // index 2 (a NEW logical block, not a return to index 0).
+    // text coalesces at 0, image is atomic at 1, trailing text reopens
+    // at 2 (a new logical block, not a return to 0).
     const events = await parseWire(adapter, [
       sseFrame({
         candidates: [
@@ -3196,12 +3024,9 @@ describe("Google GenAI adapter: parseResponse image output", () => {
   });
 
   test("thinking text then inlineData with thoughtSignature attaches the signature to the image block", async () => {
-    // The inlineData carrier path mirrors the functionCall carrier
-    // path: a thoughtSignature on the inlineData part authenticates the
-    // block that part physically carries -- the newly-allocated image
-    // block -- NOT the preceding thinking block. The signature event is
-    // emitted after the image_output event so the harness's per-index
-    // router lands the signature at the image block's index.
+    // A signed inlineData part authenticates the image block it carries,
+    // not the preceding thinking block; the signature event follows the
+    // image_output so the router lands it at the image's index.
     const events = await parseWire(adapter, [
       sseFrame({
         candidates: [
@@ -3262,9 +3087,8 @@ describe("Google GenAI adapter: parseResponse image output", () => {
   });
 
   test("inlineData-with-signature and no preceding thinking decodes with block.signature at the image index", () => {
-    // A thoughtSignature on an inlineData part with no thinking block
-    // ahead of it is a valid, unanchored shape: the signature attaches
-    // to the image block at that part's own index and nothing throws.
+    // A signed inlineData part with no preceding thinking block is valid:
+    // it signs the image block at that part's index.
     const events = adapter.parseResponse(
       JSON.stringify({
         candidates: [
@@ -3297,10 +3121,8 @@ describe("Google GenAI adapter: parseResponse image output", () => {
   });
 
   test("inlineData with a non-image MIME throws ProtocolMismatchError", () => {
-    // The parser wraps inlineData as a base64 ImageBlock; an audio
-    // or document MIME would silently mistype the payload as an
-    // image. Reject at the boundary rather than produce a
-    // confidently-wrong ContentBlock.
+    // inlineData is always wrapped as a base64 ImageBlock; non-image
+    // MIME types must be rejected at the boundary, not mistyped.
     const bad = JSON.stringify({
       candidates: [
         {
@@ -3339,12 +3161,9 @@ describe("Google GenAI adapter: parseResponse image output", () => {
   });
 
   test("image-output-streaming fixture replay yields text deltas, one image_output, and usage", async () => {
-    // The captured response.sse delivers text "Here" + " you go: " in
-    // events 0-1 (coalesce into one text block at index 0), the
-    // complete image as a single inlineData part in event 2 (index 1),
-    // and a final empty-text STOP event with cumulative usage. The
-    // empty-text part emits no delta but does carry the terminal
-    // finishReason.
+    // Events 0-1 coalesce into one text block at 0; event 2 carries the
+    // image at 1; the final empty-text STOP event carries usage and the
+    // finishReason but no delta.
     const sseBytes = readFileSync(
       join(
         FIXTURE_ROOT,
@@ -3380,8 +3199,7 @@ describe("Google GenAI adapter: parseResponse image output", () => {
       throw new Error("expected base64 source on the emitted image");
     }
     expect(image.data.image.source.mimeType).toBe("image/png");
-    // The captured fixture's base64 is ~380KB. The parser passes the
-    // bytes through verbatim; elision is the logger's concern.
+    // ~380KB of base64 passes through verbatim; elision is the logger's concern.
     expect(image.data.image.source.data.length).toBeGreaterThan(100_000);
   });
 });
@@ -3407,13 +3225,9 @@ describe("Google GenAI adapter: harness round trip with image output", () => {
   };
 
   test("image-output-streaming fixture replay produces a final turn with text then ImageBlock", async () => {
-    // Proves the parser + harness wire image_output end-to-end: the
-    // final turn's content[] must contain the ImageBlock with the
-    // full base64 payload intact. Without the harness's
-    // image_output case handler, this assertion would fail with the
-    // single text block alone and the image would silently drop
-    // from replay; with the handler, both blocks land in arrival
-    // order.
+    // The final turn's content[] must carry the ImageBlock with the full
+    // base64 intact; without the harness's image_output handler the image
+    // would silently drop from replay.
     const sseBytes = readFileSync(
       join(
         FIXTURE_ROOT,
@@ -3492,11 +3306,8 @@ describe("Google GenAI adapter: harness round trip with image output", () => {
     expect(image.source.mimeType).toBe("image/png");
     expect(image.source.data.length).toBeGreaterThan(100_000);
 
-    // The harness also yields a mid-stream inference.image_output
-    // event that consumers can subscribe to without waiting for
-    // inference.done. Verifying it lands in the event stream guards
-    // against a regression where the harness's case handler is
-    // removed or silently broken.
+    // The mid-stream inference.image_output event guards the harness's
+    // image_output case handler against silent removal.
     const imageEvent = events.find((e) => e.type === "inference.image_output");
     expect(imageEvent).toBeDefined();
   });
@@ -3556,9 +3367,7 @@ describe("Google GenAI adapter: parseResponse grounding", () => {
       throw new Error("expected two inference.citation events");
     }
 
-    // Both citations carry identical citedText and textOffset --
-    // the support's segment -- but distinct sources from the
-    // chunks it references.
+    // Same citedText/offset (the support's segment), distinct sources.
     expect(first.data.index).toBe(0);
     expect(first.data.citation.citedText).toBe("John won the prize.");
     expect(first.data.citation.textOffset).toEqual({ start: 0, end: 19 });
@@ -3575,11 +3384,8 @@ describe("Google GenAI adapter: parseResponse grounding", () => {
   });
 
   test("citation events are emitted before the terminal inference.usage", async () => {
-    // Citations belong to the model's output and should precede
-    // the bookkeeping signal that closes the response. The harness
-    // relies on this ordering for the final-walk's
-    // post-block-emission interleave; a citation arriving after
-    // its block emission would land in the orphan-citation check.
+    // Citations must precede the closing signal; a citation arriving
+    // after its block would land in the orphan-citation check.
     const events = await parseWire(adapter, [
       sseFrame({
         candidates: [
@@ -3669,12 +3475,8 @@ describe("Google GenAI adapter: parseResponse grounding", () => {
   });
 
   test("non-web chunk kinds are skipped without throwing", async () => {
-    // A future grounding chunk that lacks the `web` shape has no
-    // `uri`/`title` to populate `CitationSource`. The parser
-    // silently drops it rather than synthesize a placeholder
-    // citation. Supports referencing only non-web chunks emit
-    // zero citations; supports referencing a mix emit citations
-    // only for the web-shaped chunks.
+    // Non-web grounding chunks have no uri/title and are dropped rather
+    // than synthesized into a placeholder citation.
     const events = await parseWire(adapter, [
       sseFrame({
         candidates: [
@@ -3725,9 +3527,7 @@ describe("Google GenAI adapter: parseResponse grounding", () => {
     const events = await parseWire(adapter, [sseBytes]);
 
     const citations = events.filter((e) => e.type === "inference.citation");
-    // The captured fixture's groundingSupports references multiple
-    // chunks per support, so the expanded citation count is
-    // greater than the number of supports.
+    // Multiple chunks per support -> citations outnumber supports.
     expect(citations.length).toBeGreaterThan(3);
 
     // Every citation anchors to text block index 0 (the single
@@ -3832,9 +3632,8 @@ describe("Google GenAI adapter: harness round trip with grounding", () => {
     }
 
     const blocks = done.data.turn.content;
-    // The final turn must lead with the text block, then carry
-    // citations interleaved immediately after it (the harness's
-    // emit() helper does this interleave at the matched index).
+    // The final turn leads with the text block; citations interleave
+    // immediately after it.
     const firstBlock = blocks[0];
     if (firstBlock?.type !== "text") {
       throw new Error("expected first content block to be text");
@@ -3843,14 +3642,8 @@ describe("Google GenAI adapter: harness round trip with grounding", () => {
 
     const citationBlocks = blocks.filter((b) => b.type === "citation");
     expect(citationBlocks.length).toBeGreaterThan(3);
-    // Citations interleave IMMEDIATELY after the text block they
-    // attribute. The harness's `emit()` helper runs the per-index
-    // citation append directly after a block emission, so the
-    // expected shape is `[text, citation, citation, ...]` with no
-    // intervening block of another kind. Locking this here keeps
-    // the documented "interleaved immediately after" invariant
-    // from quietly regressing if a future change introduces an
-    // unrelated block kind between the text and its citations.
+    // Citations append immediately after the attributed text block --
+    // `[text, citation, citation, ...]` with no other block between.
     for (let i = 1; i < 1 + citationBlocks.length; i++) {
       expect(blocks[i]?.type).toBe("citation");
     }
@@ -4025,13 +3818,9 @@ describe("Google GenAI adapter: parseResponse code execution", () => {
   });
 
   test("unknown outcome throws ProtocolMismatchError naming the value", () => {
-    // The codeExecutionResult must follow an executableCode part
-    // for the pairing to be valid; seed the pending request via a
-    // prior event. The parser's state machine clears
-    // `pendingExecutionRequestId` only on the success path, so a
-    // throw leaves the state mid-mutation -- each `expect(() =>
-    // ...)` call needs a fresh adapter so the second call does not
-    // see the first throw's residue.
+    // Pairing needs a prior executableCode event; the parser clears
+    // `pendingExecutionRequestId` only on success, so a throw leaves
+    // residue -- each `toThrow` needs a fresh adapter.
     function buildPendingAdapter(): ProviderAdapter {
       const a = createGoogleGenAIAdapter(TEST_SOURCE);
       a.parseResponse(
@@ -4131,9 +3920,8 @@ describe("Google GenAI adapter: parseResponse code execution", () => {
         totalTokenCount: 2,
       },
     });
-    // Fresh adapter per `toThrow` so the first call's mid-mutation
-    // throw doesn't leave residue that changes the error message on
-    // the second call.
+    // Fresh adapter per `toThrow` so the first throw's residue doesn't
+    // change the second call's error message.
     expect(() =>
       createGoogleGenAIAdapter(TEST_SOURCE).parseResponse(bad),
     ).toThrow(ProtocolMismatchError);
@@ -4182,10 +3970,8 @@ describe("Google GenAI adapter: parseResponse code execution", () => {
     expect(result.data.result.stdout).toContain("6765");
     expect(result.data.index).toBe(1);
 
-    // The follow-on text deltas land at a fresh index (2), not at
-    // index 0 -- the executableCode + codeExecutionResult pair
-    // closed the current block, and the next text is a new logical
-    // block.
+    // Follow-on text lands at a fresh index (2): the code pair closed
+    // the block, so the next text is a new logical block.
     const textIndices = events
       .filter((e) => e.type === "inference.text.delta")
       .map((e) => (e.type === "inference.text.delta" ? e.data.index : -1));
@@ -4303,22 +4089,13 @@ describe("Google GenAI adapter: harness round trip with code execution", () => {
   });
 
   test("harness accumulates code_execution.delta fragments into the final request block (synthetic adapter)", async () => {
-    // No Gemini fixture exercises code_execution.delta -- Gemini
-    // delivers `executableCode` atomically. The harness wires the
-    // delta path for providers that DO stream code in chunks;
-    // this test drives the path with a hand-built event sequence
-    // through a synthetic adapter and asserts the final block
-    // carries the concatenated code.
+    // Gemini delivers `executableCode` atomically, so no fixture covers
+    // code_execution.delta; this drives the harness's delta path with a
+    // hand-built sequence through a synthetic adapter.
     //
-    // The synthetic adapter sidesteps the JSON round-trip the SSE
-    // pipeline imposes by carrying a per-call queue in the closure
-    // and yielding one event per `parseResponse` invocation.
-    // Crafting events as static literals and pulling them from the
-    // queue preserves the full `InferenceEvent` discriminated-union
-    // typing without resorting to runtime narrowing of `unknown`
-    // through arktype (the inferred runtime type is broader than
-    // the strict TypeScript union and would not satisfy
-    // `ResponseParser`).
+    // The adapter carries a per-call queue and yields one event per
+    // parseResponse invocation, preserving the strict `InferenceEvent`
+    // union typing (arktype's inferred type is broader than the union).
     const eventQueue: InferenceEvent[] = [
       {
         type: "inference.code_execution.start",
@@ -4379,9 +4156,8 @@ describe("Google GenAI adapter: harness round trip with code execution", () => {
         body: JSON.stringify({}),
       }),
       parseJSONResponse: () => [],
-      // Each SSE frame carries a single integer index into the queue;
-      // the parser returns that event. The queue holds the strictly-
-      // typed `InferenceEvent` values, so no narrowing is required.
+      // Each SSE frame carries a queue index; the parser returns that
+      // strictly-typed event, so no narrowing is needed.
       parseResponse: (sseData) => {
         const parsed: unknown = JSON.parse(sseData);
         if (typeof parsed !== "string") {
@@ -4400,8 +4176,7 @@ describe("Google GenAI adapter: harness round trip with code execution", () => {
       },
     };
 
-    // One SSE frame per queued event; each frame's payload is just
-    // the queue index as a JSON-encoded string.
+    // One frame per queued event; the payload is the queue index.
     const sseChunks = eventQueue
       .map((_, i) => `data: ${JSON.stringify(String(i))}\n\n`)
       .join("");
@@ -4423,9 +4198,8 @@ describe("Google GenAI adapter: harness round trip with code execution", () => {
         ),
       );
 
-    // Inject the synthetic adapter on a unique provider id via the
-    // per-call dependency registry so this test doesn't disturb the
-    // built-in adapters.
+    // Unique provider id keeps the synthetic adapter from disturbing the
+    // built-ins.
     const adapters = await loadAdapterRegistry(
       [{ provider: "synthetic-code-exec", specifier: "x", export: "make" }],
       { import: () => Promise.resolve({ make: () => syntheticAdapter }) },
@@ -4466,8 +4240,7 @@ describe("Google GenAI adapter: harness round trip with code execution", () => {
     if (request?.type !== "code_execution_request") {
       throw new Error("expected code_execution_request in turn content");
     }
-    // The harness accumulated `print(` + `'hi')` into the running
-    // block; the final code is the concatenation.
+    // The harness accumulated the two deltas into the final code block.
     expect(request.code).toBe("print('hi')");
     expect(request.id).toBe("synth-1");
   });
@@ -4581,13 +4354,9 @@ describe("createGoogleGenAIAdapter — parseJSONResponse (non-streaming)", () =>
     now: () => 0,
   };
 
-  // Drives a response body through the real harness accumulator and returns the
-  // assembled turn plus every event. The content-type selects the decode path
-  // (JSON body vs SSE stream), so one helper drives both parseJSONResponse and
-  // parseResponse. Asserting the decoded turn (not the raw events) is
-  // essential here: the streaming path splits text across coalescing deltas
-  // while the JSON path delivers it in fewer parts, so only the accumulated
-  // turn matches across paths.
+  // Drives a response body through the real harness accumulator; the
+  // content-type selects the JSON-vs-SSE decode path. Only the
+  // accumulated turn matches across paths, not the raw events.
   async function driveTurn(
     body: string,
     contentType = "application/json",
@@ -4714,9 +4483,8 @@ describe("createGoogleGenAIAdapter — parseJSONResponse (non-streaming)", () =>
   });
 
   test("attaches a thoughtSignature riding a functionCall part to the tool_call block", async () => {
-    // The signature rides on the functionCall part, so it authenticates
-    // the tool_call block that part carries -- not the preceding
-    // thinking block. Exercised here within a single JSON parts array.
+    // The signed functionCall part authenticates its tool_call block,
+    // not the preceding thinking block -- here in one JSON parts array.
     const t = requireTurn(
       (
         await driveTurn(
@@ -4785,9 +4553,8 @@ describe("createGoogleGenAIAdapter — parseJSONResponse (non-streaming)", () =>
   });
 
   test("rejects a non-terminal body carrying no finishReason", async () => {
-    // A complete non-streaming body must be terminal. A candidate with parts
-    // but no finishReason is a truncated capture — the terminality guard
-    // surfaces it rather than decoding a usage-less turn.
+    // A candidate with parts but no finishReason is a truncated capture;
+    // the terminality guard surfaces it.
     const body = JSON.stringify({
       candidates: [{ content: { role: "model", parts: [{ text: "x" }] } }],
       usageMetadata: USAGE,
@@ -4890,11 +4657,9 @@ describe("createGoogleGenAIAdapter — streaming vs non-streaming parity", () =>
     return events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join("");
   }
 
-  // Split a single text block across two SSE events while the JSON body carries
-  // it as one part, plus a functionCall, and prove the accumulator reconciles
-  // both paths to identical turn content and usage. This is the case that
-  // matters: the raw event arrays legitimately differ (two coalescing deltas
-  // vs one), so only the accumulated turn matches.
+  // Split a text block across two SSE events vs one JSON part, plus a
+  // functionCall: the accumulator must reconcile both paths to identical
+  // turn content and usage even though the raw event arrays differ.
   test("split-across-events streaming and single-part JSON decode to the same turn", async () => {
     const usage = {
       promptTokenCount: 20,
@@ -4993,11 +4758,9 @@ describe("createGoogleGenAIAdapter — streaming vs non-streaming parity", () =>
     expect(jdone?.data.usage).toEqual(sdone?.data.usage);
   });
 
-  // The two mechanisms the reuse leans on most — the deferred thoughtSignature
-  // thread (signature arriving on a later part than the thinking block) and
-  // grounding-citation attribution to a text block — must reconcile across the
-  // split-vs-single boundary, not just decode correctly on the JSON path in
-  // isolation.
+  // The deferred thoughtSignature thread and grounding citations must
+  // reconcile across the split-vs-single boundary, not just decode on
+  // the JSON path alone.
   test("deferred signature and grounding reconcile across split streaming and single JSON", async () => {
     const usage = {
       promptTokenCount: 30,
@@ -5097,9 +4860,8 @@ describe("createGoogleGenAIAdapter — streaming vs non-streaming parity", () =>
     }
     expect(j.turn.content).toEqual(s.turn.content);
 
-    // Citation payloads must match (block index + data); the streaming path
-    // emits more deltas so the harness-assigned seq legitimately differs and
-    // is not compared.
+    // Citation payloads match (block index + data); the streaming path
+    // emits more deltas, so seq is not compared.
     const citations = (evs: InferenceEvent[]) =>
       evs.filter((e) => e.type === "inference.citation").map((e) => e.data);
     expect(citations(j.events)).toEqual(citations(s.events));
@@ -5107,12 +4869,9 @@ describe("createGoogleGenAIAdapter — streaming vs non-streaming parity", () =>
   });
 
   test("parseJSONResponse mints fresh parser state per call", () => {
-    // Two calls on the SAME adapter instance. The body has two blocks
-    // (thinking then text), so a leaked block-index counter — or a persisted
-    // currentBlock from the first call — would offset the second call's block
-    // indices (the thinking block would land past 0). A fresh per-call state
-    // keeps them stable. Driving through runInference cannot exercise this,
-    // since each call there builds its own adapter.
+    // Two calls on the SAME adapter: leaked block-index state from the
+    // first call would offset the second call's indices. Each call must
+    // start from fresh state.
     const parseJSON = adapter.parseJSONResponse;
     if (parseJSON === undefined) {
       throw new Error("expected the adapter to implement parseJSONResponse");

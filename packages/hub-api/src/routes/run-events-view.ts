@@ -2,7 +2,6 @@
 // shaper -- shared by the deploy/observe surface (`workflows.ts`) and the
 // run-observe surface (`runs.ts`) so the two routes cannot drift their
 // contract.
-
 import { type } from "arktype";
 
 import type { WorkflowRunEvent } from "@intx/hub-sessions";

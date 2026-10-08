@@ -1,14 +1,9 @@
 // Hermetic stack bring-up for the admin-UI browser end-to-end suite.
-//
-// Mirrors the zx orchestration model of `bin/dev.ts` — labeled
-// background processes, fetch-poll health checks, SIGTERM-then-SIGKILL
-// teardown — but scoped to a single Playwright run. It provisions a
-// fresh database (via `bin/e2e-provision.ts`, the sole `@intx/*`
-// boundary), spawns the hub against it on a per-run port, serves the
-// pre-built admin UI through `vite preview` behind the same-origin
-// `/api` proxy, and publishes the preview URL to the spec through
-// `E2E_BASE_URL`. The returned closure tears the whole stack down and
-// drops the database, leaving nothing orphaned.
+// Mirrors `bin/dev.ts`: labeled background processes, fetch-poll health
+// checks, SIGTERM-then-SIGKILL teardown. Provisions a fresh database
+// (`bin/e2e-provision.ts`), spawns the hub on a per-run port, serves the
+// pre-built admin UI via `vite preview` behind the same-origin `/api`
+// proxy, and publishes the preview URL through `E2E_BASE_URL`.
 
 import net from "node:net";
 import fs from "node:fs";
@@ -36,9 +31,8 @@ const PREVIEW_READY_TIMEOUT_MS = 30_000;
 // the live deploy spec logs in as the same user and deploys the same asset.
 const WORKFLOW_ASSET_NAME = "approval-flow";
 const WORKFLOW_ENTRY = "./workflow.mjs";
-// The seeded, tenant-owned Acme credential the live deploy references. A
-// source-ref deploy resolves the source credential by id, so it must name a
-// real credential rather than an inline key.
+// Seeded tenant-owned credential the live deploy references; a source-ref
+// deploy resolves credentials by id, so this must be a real one.
 const SEED_CREDENTIAL_NAME = "Anthropic API Key";
 const SEED_LOGIN_EMAIL = "alice@example.com";
 const SEED_LOGIN_PASSWORD = "password123";
@@ -46,11 +40,9 @@ const SEED_TENANT_SLUG = "acme";
 
 const SEED = path.join(REPO_ROOT, "bin", "seed.ts");
 
-/** Allocate a free TCP port by binding `:0` on the loopback interface and
- *  reading the assigned port before releasing it. There is an unavoidable
- *  race between release and the child process claiming the port; the
- *  suite runs a single worker, and `vite preview --strictPort` fails
- *  loudly rather than silently drifting to another port if it is lost. */
+/** Bind `:0` on the loopback interface and read the assigned port before
+ *  releasing it. A race with the child claiming the port is accepted: the
+ *  suite runs one worker and `vite preview --strictPort` fails loudly. */
 function allocatePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const server = net.createServer();
@@ -69,10 +61,8 @@ function allocatePort(): Promise<number> {
 }
 
 /** Forward a child stream to `write` one complete line at a time. A
- *  single stateful decoder (with `stream: true`) keeps multibyte
- *  characters split across chunk boundaries intact, and the buffer
- *  holds a trailing partial line until its newline arrives; whatever
- *  remains when the stream ends is flushed as a final line. */
+ *  single stateful decoder keeps multibyte characters split across
+ *  chunk boundaries intact; a trailing partial line is flushed at EOF. */
 function forwardLines(
   stream: NodeJS.ReadableStream,
   write: (line: string) => void,
@@ -180,9 +170,8 @@ function parseProvisionResult(stdout: string) {
   return result;
 }
 
-// The resources the setup acquires in order. Each is recorded on this
-// record the moment it exists, so a partial-failure cleanup can tear
-// down exactly what was acquired and nothing more.
+// Resources acquired so far; a partial-failure cleanup tears down exactly
+// what exists here and nothing more.
 type AcquiredStack = {
   database?: string;
   hubDataDir?: string;
@@ -190,10 +179,8 @@ type AcquiredStack = {
   previewProc?: ProcessPromise;
 };
 
-/** Wait for a spawned process to exit, but no longer than `ms`. The
- *  processes are spawned `nothrow`, so their ProcessPromise settles
- *  (never rejects) when the child exits; racing it against a timer
- *  bounds the wait without penalizing a child that exits quickly. */
+/** Wait for a spawned process to exit, no longer than `ms`. Processes are
+ *  spawned `nothrow`, so their promise settles when the child exits. */
 async function exitedWithin(
   proc: ProcessPromise,
   ms: number,
@@ -218,15 +205,11 @@ async function exitedWithin(
 const SIGTERM_GRACE_MS = 2000;
 
 /**
- * Tear down whatever of the stack was acquired: SIGTERM then SIGKILL any
- * spawned process still running after the grace period, drop the
- * provisioned database, and remove the temp HUB_DATA_DIR. Process kills
- * are individually swallowed because killing an already-exited process
- * is expected and benign. The database drop and directory removal are
- * each attempted independently — one failing never skips the other —
- * and any failure among them is aggregated into a thrown error so the
- * success-path caller surfaces it. The partial-failure caller wraps
- * this whole call to swallow that error and preserve the original.
+ * Tear down whatever was acquired: SIGTERM then SIGKILL survivors after
+ * the grace period, drop the provisioned database, remove HUB_DATA_DIR.
+ * Kills are swallowed (an already-exited process is benign); the drop
+ * and removal are attempted independently and failures are aggregated
+ * so the success-path caller surfaces them.
  */
 async function teardownStack(acquired: AcquiredStack): Promise<void> {
   const { previewProc, hubProc, database, hubDataDir } = acquired;
@@ -297,9 +280,8 @@ const CredentialsResponse = type({
 type CookieJar = string[];
 
 /**
- * A minimal cookie-jar `fetch` for the discovery below. It mirrors the seed's
- * own `api` helper: it carries `Set-Cookie` values forward across calls so a
- * session established by sign-in authenticates the later reads.
+ * Cookie-jar `fetch` for the discovery below: carries `Set-Cookie` values
+ * forward so a sign-in session authenticates the later reads.
  */
 async function hubFetch(
   hubURL: string,
@@ -343,11 +325,10 @@ async function hubFetch(
 }
 
 /**
- * Resolve the current `refs/heads/main` commit of the seeded workflow-source
- * asset over the asset smart-HTTP endpoint. There is no JSON surface for an
- * asset's head commit, so this authenticates a `git ls-remote` with a
- * short-lived read git-token embedded as the basic-auth password, matching the
- * seed's own push convention.
+ * Resolve the asset's current `refs/heads/main` commit over the asset
+ * smart-HTTP endpoint: no JSON surface exposes the head commit, so this runs
+ * `git ls-remote` authenticated with a short-lived read git-token as the
+ * basic-auth password, matching the seed's push convention.
  *
  * @throws if `git ls-remote` reports no `refs/heads/main` commit.
  */
@@ -393,10 +374,8 @@ async function resolveWorkflowHeadCommit(
 }
 
 /**
- * After the seed runs, discover the concrete inputs the live deploy spec needs:
- * the Acme tenant id, the seeded workflow asset's id, and that asset's head
- * commit. The ids are hub-minted (not deterministic), so they are read back
- * through the same authenticated API an operator would use.
+ * After the seed runs, discover the hub-minted ids the live deploy spec
+ * needs (tenant, workflow asset, head commit) through the authenticated API.
  */
 async function discoverSeededWorkflow(hubURL: string): Promise<{
   tenantId: string;
@@ -520,11 +499,9 @@ async function globalSetup(): Promise<() => Promise<void>> {
     );
   }
 
-  // Playwright only runs the teardown this function RETURNS, and that
-  // return does not happen until the whole stack is up. If any step
-  // below throws (most likely a readiness poll timing out) the already-
-  // acquired resources would leak, so track them as they come up and
-  // tear them down in the catch before rethrowing the original error.
+  // Playwright runs the teardown only after this returns, so if any step
+  // throws, tear down the already-acquired resources here before
+  // rethrowing the original error.
   const acquired: AcquiredStack = {};
   try {
     const [hubPort, previewPort] = await Promise.all([
@@ -585,19 +562,15 @@ async function globalSetup(): Promise<() => Promise<void>> {
     const hubURL = betterAuthBaseURL;
     await waitForHTTP(`${hubURL}/api/auth/get-session`, HUB_READY_TIMEOUT_MS);
 
-    // Seed the running hub: users, tenants, model catalog, and a deployable
-    // workflow-source asset pushed over the asset smart-HTTP route. The seed
-    // targets the hub via HUB_URL and projects its workflow definition through
-    // the same table-owning DB connection the provision step used. A non-zero
-    // exit throws.
+    // Seed the running hub (users, tenants, catalog, a deployable
+    // workflow-source asset) via HUB_URL. A non-zero exit throws.
     await $({
       cwd: REPO_ROOT,
       env: { ...dbSpawnEnv, HUB_URL: hubURL },
     })`bun --conditions=intx-src ${SEED}`;
 
-    // Read back the hub-minted tenant id, workflow asset id, and the asset's
-    // head commit, then publish them (alongside the seeded login) so the live
-    // deploy spec drives the picker against real, deployable inputs.
+    // Publish the hub-minted inputs plus the seeded login so the live deploy
+    // spec drives the picker against real, deployable inputs.
     const seeded = await discoverSeededWorkflow(hubURL);
     process.env["E2E_WORKFLOW_TENANT_ID"] = seeded.tenantId;
     process.env["E2E_WORKFLOW_ASSET_ID"] = seeded.assetId;

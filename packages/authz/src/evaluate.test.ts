@@ -394,7 +394,7 @@ describe("evaluateGrants conditions", () => {
       registry,
     });
 
-    // g1 is skipped (condition failed), g2 matches
+    // g1 is skipped (condition failed), g2 matches.
     expect(result.effect).toBe("allow");
     expect(result.matchingGrants).toHaveLength(1);
     expect(result.resolvedBy?.id).toBe("g2");

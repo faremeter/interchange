@@ -69,12 +69,10 @@ export function createInMemoryRepoStore(): RepoStore {
       appendOne(logs, notify, runId, event);
     },
     async appendBatch(runId, events) {
-      // One logical commit: validate-and-apply every event in seq
-      // order, so a batch with a same-seq idempotent re-seed at its
-      // head and fresh events after it lands coherently. The in-memory
-      // store has no separate "commit" boundary to coalesce, so the
-      // batch is simply each event applied in order; correctness
-      // (monotonicity, append-only) is identical to N single appends.
+      // One logical commit: validate-and-apply every event in seq order. The
+      // in-memory store has no separate commit boundary to coalesce, so the
+      // batch is each event applied in order; correctness (monotonicity,
+      // append-only) is identical to N single appends.
       for (const event of events) {
         appendOne(logs, notify, runId, event);
       }

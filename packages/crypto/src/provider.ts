@@ -3,19 +3,10 @@ import { signEd25519, verifyEd25519 } from "./keys";
 import { createSSHSignature } from "./sshsig";
 
 /**
- * Ed25519 implementation of CryptoProvider, backed by Web Crypto.
- *
- * Each instance is key-bound: constructed with a specific agent's Ed25519
- * key pair and holds the private key internally. `sign` uses the instance's
- * own private key without requiring a separate key parameter.
- *
- * The `sign` and `verify` methods operate on raw Ed25519 signatures (64
- * bytes), not on PGP-formatted output. PGP envelope construction is handled
- * by the transport layer using the `createDetachedSignature` and
- * `verifyDetachedSignature` functions in `sign.ts` and `verify.ts`.
- *
- * This separation allows the CryptoProvider to serve as the low-level
- * signing primitive while the message transport handles PGP framing.
+ * Web Crypto Ed25519 implementation of CryptoProvider, bound to one key
+ * pair. `sign`/`verify` use raw 64-byte Ed25519 signatures; PGP framing is
+ * handled by the transport via `createDetachedSignature`/
+ * `verifyDetachedSignature` (`sign.ts`/`verify.ts`).
  */
 export class Ed25519Crypto implements CryptoProvider {
   readonly #privateKeyBytes: Uint8Array;
@@ -37,21 +28,17 @@ export class Ed25519Crypto implements CryptoProvider {
   }
 
   /**
-   * Sign content with the instance's Ed25519 private key.
-   *
-   * Returns the raw 64-byte Ed25519 signature (r || s in native
-   * little-endian format per RFC 8032). The caller is responsible for
-   * wrapping this in PGP packet format when needed.
+   * Sign content with the instance's Ed25519 private key, returning the
+   * raw 64-byte signature (r || s, native little-endian per RFC 8032).
    */
   async sign(content: Uint8Array): Promise<Uint8Array> {
     return signEd25519(this.#privateKeyBytes, content);
   }
 
   /**
-   * Sign `payload` with the SSH signature envelope (sshsig). The returned
-   * ASCII-armored block is what `git verify-commit` expects in the commit's
-   * `gpgsig` header when the allowed_signers file lists this instance's
-   * public key.
+   * Sign `payload` with the SSH signature envelope (sshsig); the armored
+   * block is what `git verify-commit` expects in `gpgsig` when
+   * allowed_signers lists this instance's public key.
    */
   async signSSH(payload: string): Promise<string> {
     return await createSSHSignature(
@@ -89,9 +76,6 @@ export class Ed25519Crypto implements CryptoProvider {
   }
 }
 
-/**
- * Factory function for creating an Ed25519Crypto instance.
- */
 export function createEd25519Crypto(keyPair: KeyPair): Ed25519Crypto {
   return new Ed25519Crypto(keyPair);
 }

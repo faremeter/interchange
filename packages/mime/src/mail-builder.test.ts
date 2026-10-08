@@ -14,11 +14,9 @@ import type {
 const FROM = "alice@example.com";
 const TO = "agent@example.com";
 
-// Test-only escape hatches. The builders' types reject obviously invalid
-// inputs at compile time, but the defensive validation also has to surface
-// errors when callers bypass the type system (e.g. data deserialised from
-// unknown JSON). These helpers route around the type checker so the
-// runtime guards can be exercised directly.
+// Test-only escape hatches: the builders' types reject invalid inputs at
+// compile time, but the runtime guards must also fire when callers bypass
+// the type system (e.g. unknown JSON).
 function callInboundUnsafe(opts: unknown): unknown {
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- exercise runtime validation against type-violating input
   return createInboundMessage(opts as CreateInboundMessageOpts);
@@ -51,8 +49,7 @@ describe("createInboundMessage", () => {
   test("auto-generated date is a parseable ISO string", () => {
     const msg = createInboundMessage({ from: FROM, to: TO, content: "hi" });
     const { date } = msg.headers;
-    // The builder mints a date for a caller that supplies none, so an absent
-    // one here is the failure this test exists to catch.
+    // A missing date here is the failure this test exists to catch.
     if (date === undefined) throw new Error("expected a generated Date header");
     const parsed = new Date(date);
     expect(Number.isNaN(parsed.getTime())).toBe(false);
@@ -238,35 +235,31 @@ describe("createInboundMessage", () => {
     });
 
     test("builds a message with no From when from is omitted", () => {
-      // Omitting the originator is how a caller says it has none. An empty
-      // string is still rejected above: that is a caller supplying a
-      // placeholder, which is the fabrication this distinction exists to stop.
+      // Omitting the originator says it has none; an empty string stays
+      // refused as a caller-supplied placeholder.
       const msg = createInboundMessage({ to: TO, content: "x" });
       expect(msg.headers.from).toBeUndefined();
       expect(msg.headers.messageId).toMatch(/^<[^<>\s@]+@local>$/);
     });
 
     test("builds a message with no recipient when to is an empty array", () => {
-      // An empty list is how a caller says the message names no recipient it
-      // can vouch for. Inbound mail reaches this builder with an absent or
-      // unreadable `To` routinely -- the hub routes on an out-of-band address,
-      // not on the header -- and the alternative to recording none is
-      // recording one the caller chose, which reads back as the message's own.
+      // An empty list says the message names no recipient it can vouch for;
+      // inbound mail reaches this builder with an absent or unreadable `To`
+      // routinely.
       const msg = createInboundMessage({ from: FROM, to: [], content: "x" });
       expect(msg.headers.to).toEqual([]);
     });
 
     test("throws when to is an empty string", () => {
-      // The empty list above is the caller having no recipient. An empty
-      // string is a caller supplying a placeholder, which stays refused.
+      // An empty string is a caller-supplied placeholder, which stays refused.
       expect(() =>
         createInboundMessage({ from: FROM, to: "", content: "x" }),
       ).toThrow(/`to` must be a non-empty string/);
     });
 
     test("throws when cc is an empty array", () => {
-      // Only `to` carries the no-recipient state; the decoder omits an empty
-      // `cc` rather than emptying it, so an empty list here is a caller error.
+      // Only `to` carries the no-recipient state; an empty `cc` is a caller
+      // error.
       expect(() =>
         createInboundMessage({ from: FROM, to: TO, cc: [], content: "x" }),
       ).toThrow(/`cc` must contain at least one recipient address/);
@@ -756,9 +749,8 @@ describe("createOutboundMessage", () => {
   });
 });
 
-// Compile-time guards: the public return types of the builders match
-// InboundMessage / OutboundMessage exactly. Variables are unused at runtime;
-// referenced via the `_` prefix to satisfy lint.
+// Compile-time guards: the builders' return types match InboundMessage /
+// OutboundMessage exactly. Unused at runtime.
 const _inbound: InboundMessage = createInboundMessage({
   from: FROM,
   to: TO,

@@ -6,11 +6,10 @@
 // source, so pinning every step through the operator-approval gate refused the
 // first step and the deploy failed closed with "no approved inference source".
 // A step that cannot invoke inference now takes the default as an inert
-// placeholder instead, and the hub delivers no credential for it.
-//
-// This is the only fixture in this suite with no agent anywhere. The others
-// carry one whether or not they need it, which is what let the gate refuse
-// agent-free definitions unnoticed.
+// placeholder instead, and the hub delivers no credential for it. This is the
+// only fixture in this suite with no agent anywhere; the others carry one
+// whether or not they need it, which is what let the gate refuse agent-free
+// definitions unnoticed.
 //
 // Harness justification: SPAWN-REAL. A real hub server, a real sidecar
 // subprocess, and a real workflow-process child evaluating the deployed source.

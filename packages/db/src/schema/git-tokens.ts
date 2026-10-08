@@ -14,13 +14,11 @@ import { tenant } from "./tenants";
 // rely on the database to enforce shape.
 //
 // `userId` identifies the owning user and is always set. `principalId`
-// is set for tenant-bound tokens (the user acting in a specific
-// tenant) and null for personal tokens that are not scoped to a
-// principal. `tenantId` is always set for `kind: "svc"` tokens (they
-// are inherently tenant-bound); for `kind: "pat"` it is set only when
-// the user elected a tenant restriction at mint time. `kind`
-// distinguishes interactive personal access tokens (`pat`) from
-// service tokens (`svc`).
+// is set for tenant-bound tokens and null for personal tokens that are not
+// scoped to a principal. `tenantId` is always set for `kind: "svc"` tokens;
+// for `kind: "pat"` it is set only when the user elected a tenant restriction
+// at mint time. `kind` distinguishes interactive personal access tokens
+// (`pat`) from service tokens (`svc`).
 //
 // `actions` stores the canonical RepoStore action vocabulary
 // (`receivePack`, `createPack`, `resolveRef`, ...). The mint API

@@ -93,9 +93,7 @@ function findProbeRequestId(
 
 // Pull the correlation id off the outbound `workflow.probe.request` the router
 // sent to the fake sidecar, so a reply can be minted against it. `sendProbe`
-// resolves the connection on an async path, so the frame is not on the socket
-// the instant it is called: wait for the frame itself rather than for a turn
-// of the event loop to have been enough.
+// resolves the connection on an async path, so wait for the frame itself.
 async function probeRequestId(
   ws: ReturnType<typeof createMockWs>,
 ): Promise<string> {
@@ -206,9 +204,8 @@ describe("SidecarRouter workflow probe", () => {
     const grants = ["tool:send_mail", "mail.address:wf@local"];
     const wireHash = "abc123";
     // The un-flattened walk snapshot rides the frame alongside the flattened
-    // `grants`, carrying the per-step `grantEffects` map (a `tool:` grant gated
-    // behind approval) and the definition's `grantRequirements` that the
-    // flattened union discards.
+    // `grants`: it carries the per-step `grantEffects` map and the
+    // definition's `grantRequirements`, which the flattened union discards.
     const grantWalkSnapshot = {
       perStep: [
         {

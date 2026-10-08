@@ -1,19 +1,14 @@
 // Monorepo source-workflow end-to-end: install a code-sourced workflow that is
 // ONE member of a bun/npm workspaces monorepo -- `@wf/app` (the workflow)
 // depending on `@wf/lib` (a workspace-local member) via `workspace:*` -- living
-// as raw source at a pinned commit inside a hub `workflow`-kind asset. Probe it,
-// approve+freeze it, deploy it BY SOURCE-REF, then kill the sidecar, restart it
+// as raw source at a pinned commit inside a hub `workflow`-kind asset. Probe
+// it, approve+freeze it, deploy it BY SOURCE-REF, kill the sidecar, restart it
 // against the same data directory, and assert the deployment restores to
-// routable from the durable indexed-`.git` store alone.
-//
-// This exercises the monorepo-specific paths the single-package source e2e does
-// not: the hub enumerates the workspace members from the root's globs and
-// freezes BOTH `@wf/app` and `@wf/lib` as `format:"source"` closure entries; the
-// `workflow`-kind push accepts the monorepo root; and the sidecar checks both
-// members out of the delivered pack, so `@wf/app`'s bundled entry can import
-// `@wf/lib` at evaluation time. The workflow's agent system prompt IS the value
-// exported by `@wf/lib`, so a run reaching completion proves the workspace-local
-// dependency resolved from the materialized closure.
+// routable from the durable indexed-`.git` store alone. The hub enumerates the
+// workspace members from the root's globs and freezes BOTH as `format:"source"`
+// closure entries, and the agent's system prompt IS `@wf/lib`'s export, so a
+// run reaching completion proves the workspace-local dependency resolved from
+// the materialized closure.
 
 import { promises as fs } from "node:fs";
 import os from "node:os";
@@ -458,10 +453,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         { diagnostics: env.sidecarDiagnostics },
       );
 
-      // 3) Fire the trigger and assert the run completes. This proves the monorepo
-      // closure resolved BOTH members, the sidecar checked both subtrees out of
-      // the delivered pack, and `@wf/app`'s entry resolved its `@wf/lib`
-      // workspace-local import at evaluation time.
+      // 3) Fire the trigger and assert the run completes.
       await fireMailTrigger(env, deploymentMailAddress, {
         messageId: "<source-monorepo-e2e@integration.interchange>",
       });
@@ -481,10 +473,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       }
       expect(terminal.type).toBe("RunCompleted");
 
-      // 4) Restore leg: kill the sidecar and bring a fresh one up against the SAME
-      // data directory. Boot-time restore re-materializes BOTH monorepo members
-      // from the durable indexed-`.git` store alone, so the deployment re-routing
-      // is the load-bearing restore assertion.
+      // 4) Restore leg: kill the sidecar and bring a fresh one up against the
+      // SAME data directory; boot-time restore re-materializes BOTH members
+      // from the durable indexed-`.git` store alone, so re-routing is the
+      // load-bearing restore assertion.
       const restoredDataDir = env.sidecar.dataDir;
       const hubPort = env.hub.server.port;
       if (hubPort === undefined) {

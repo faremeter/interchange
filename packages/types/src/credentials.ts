@@ -30,13 +30,12 @@ const CredType = type.enumerated(...credentialTypes);
 const CredStatus = type.enumerated(...credentialStatuses);
 const CredentialSourceType = type.enumerated(...credentialRequirementSources);
 
-// A credential binding on a workflow definition maps a tool package's declared
-// credential handle -- keyed `(package, handle)` against the tool-package
-// declaration -- to a concrete credential resolved fresh at launch. `locator`
-// is which credential namespace the name is resolved in; today only `tenant`
-// exists (a tenant-owned credential, authorized by ownership). A second locator
-// that resolves a principal-owned credential -- and the delegation authority
-// axis it would need -- is future work, added with the code that consumes it.
+// A credential binding on a workflow definition maps a tool package's
+// declared credential handle -- keyed `(package, handle)` against the
+// tool-package declaration -- to a concrete credential resolved fresh at
+// launch. `locator` is which credential namespace the name is resolved
+// in; today only `tenant` exists (a tenant-owned credential, authorized
+// by ownership). A principal-owned credential locator is future work.
 export const credentialBindingLocators = ["tenant"] as const;
 export type CredentialBindingLocator =
   (typeof credentialBindingLocators)[number];

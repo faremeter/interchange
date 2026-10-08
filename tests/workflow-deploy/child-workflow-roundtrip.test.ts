@@ -5,10 +5,8 @@
 // against a real DB, deploy the source-ref frame) against the real hub +
 // sidecar subprocess + mock inference fixture, fires the parent's mail trigger,
 // and asserts the canonical parent/child event chain materializes in the
-// deployment's workflow-run repo. Child events land under
-// `runs/<childRunId>/events/` in the same workflow-run repo as the parent's
-// `runs/<parentRunId>/events/` -- the sub-namespace shape the in-process
-// `runChild` recursion produces.
+// deployment's workflow-run repo. Child events land under `runs/<childRunId>/`
+// in the same workflow-run repo as the parent's `runs/<parentRunId>/`.
 //
 // The child workflow is embedded inline in the parent (an owned import), so
 // only the parent is deployed. The deploy step lifts the inline child to an
@@ -17,8 +15,7 @@
 // (`createInMemorySpawnChild`) resolves the ref from that map with no on-disk
 // read. The in-process `runChild` (`createSidecarRunChild`) builds a
 // per-childRunId `WorkflowRuntimeEnv` and drives the child's `runtimeRun` to
-// terminal status, settling the parent's spawn step with the child's terminal
-// status.
+// terminal status, settling the parent's spawn step with that status.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
@@ -144,8 +141,8 @@ const TOOL_CHILD_DEPLOYMENT_ID = "run_child-workflow-tool-child-1";
 const TOOL_PARENT_WORKFLOW_ID = `wf_${TOOL_PARENT_DEPLOYMENT_ID}`;
 const TOOL_CHILD_WORKFLOW_ID = `wf_${TOOL_CHILD_DEPLOYMENT_ID}`;
 
-// Live-event deployment ids. The parent's ONLY step is the childWorkflow spawn,
-// so the parent runs no agent of its own -- any inference event on the
+// Live-event deployment ids. The parent's ONLY step is the childWorkflow
+// spawn, so the parent runs no agent of its own -- any inference event on the
 // deployment's stream can only have originated in the child.
 const LIVE_EVENT_PARENT_DEPLOYMENT_ID = "run_child-workflow-liveevent-parent-1";
 const LIVE_EVENT_CHILD_DEPLOYMENT_ID = "run_child-workflow-liveevent-child-1";
@@ -568,10 +565,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
     // A tool-bearing child. The child step's agent carries the inline
     // `mail_send` tool, so the child runs a REAL tool-bearing agent through the
     // source-tools arm -- not a toolless one. The mock inference echoes the
-    // exposed tool names into the reply, so the child's `StepCompleted` reply
-    // listing the tool name is the proof the child materialized its tool from
-    // the shared closure. A regression that ran the child toolless (or failed
-    // to materialize the source tool) would omit the name from the reply.
+    // exposed tool names into the reply, so a StepCompleted reply listing the
+    // tool name proves the child materialized its tool from the shared closure.
     test("a childWorkflow child runs a real tool-bearing agent", async () => {
       const parentMailAddress = deriveRunAddress({
         runId: TOOL_PARENT_DEPLOYMENT_ID,
@@ -701,12 +696,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     // A child's LIVE inference events reach the hub's agent-event stream, not
     // just the durable per-run log. The parent's only step is the childWorkflow
-    // spawn, so the parent runs no agent of its own; an `inference.*` event on
-    // this deployment's stream can only have originated in the child, threaded
-    // up through the terminal spawn seam's `onEvent`. Before that sink was
-    // wired the child's live events were silently dropped while the durable
-    // events still landed -- an omitted callback and a wired-but-dead one are
-    // indistinguishable without this guard.
+    // spawn, so an `inference.*` event on this deployment's stream can only
+    // have originated in the child, threaded up through the terminal spawn
+    // seam's `onEvent`. Before that sink was wired the child's live events
+    // were silently dropped -- an omitted callback and a wired-but-dead one
+    // are indistinguishable without this guard.
     test("a childWorkflow child's live inference events reach the hub", async () => {
       const parentMailAddress = deriveRunAddress({
         runId: LIVE_EVENT_PARENT_DEPLOYMENT_ID,

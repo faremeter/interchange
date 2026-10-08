@@ -470,10 +470,8 @@ describe("createRecordingHarness end-to-end", () => {
       bypassCIGuardForTests: true,
     });
 
-    // Drive a hand-crafted recording fetch with a malformed JSON
-    // body — production adapters never do this, but the recording
-    // wrapper is positioned as a transparent observer and must not
-    // crash on inputs the adapter would forward.
+    // The recording wrapper is a transparent observer and must not crash on
+    // malformed bodies production adapters never send.
     await harness.deps.fetch("https://example.invalid/v1/messages", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -493,13 +491,8 @@ describe("createRecordingHarness end-to-end", () => {
   });
 
   test("envelope-returning handler surfaces via the iterator, not as an unhandled rejection", async () => {
-    // Pins the contract that a recording handler returning the
-    // test-harness `{ result, virtualDelayMs }` envelope surfaces
-    // its rejection through the normal caller flow — either the
-    // `for await` iterator's eventual completion or
-    // `await finalize()`. The earlier fire-and-forget pattern let
-    // the rejection escape as unhandled before either await point
-    // could observe it.
+    // Pins that an envelope-returning handler's rejection surfaces through
+    // the iterator or `finalize()`, not as an unhandled rejection.
     const dir = await makeTmpDir();
     const harness = createRecordingHarness({
       outputDir: dir,
@@ -618,10 +611,7 @@ describe("createRecordingHarness end-to-end", () => {
       now: () => new Date("2026-05-25T12:00:00Z"),
     });
 
-    // Call finalize without ever calling runInference. The README
-    // advertises that an aborted recording produces a (truncated
-    // but readable) session — at minimum that means a loadable
-    // session.json must exist.
+    // finalize without any runInference still writes a loadable session.json.
     await harness.finalize();
 
     const parsed = await readJSONRecord(path.join(dir, "session.json"));

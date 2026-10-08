@@ -13,9 +13,8 @@ type DBHandle = DB["db"];
 export type CreatePrincipalKeyStoreDeps = {
   db: DBHandle;
   /**
-   * Seals the private key seed at rest. Production supplies a real env-key
-   * cipher under `PRINCIPAL_KEY_ENCRYPTION_KEY`; tests and local dev may supply
-   * the noop cipher, which stores the seed as plaintext.
+   * Seals the private key seed at rest: the real env-key cipher under
+   * `PRINCIPAL_KEY_ENCRYPTION_KEY`, or the noop cipher for tests and local dev.
    */
   cipher: CredentialCipher;
 };
@@ -23,16 +22,13 @@ export type CreatePrincipalKeyStoreDeps = {
 /**
  * Store for the `principal_key` table -- a principal's Ed25519 signing key.
  *
- * The hub custodies the private key: it mints, seals, and signs with it on the
- * principal's behalf. A signature therefore ATTRIBUTES an action to a principal
- * but is NOT non-repudiable against the hub operator, who holds the key. See
- * docs/AUTH.md.
+ * The hub custodies the private key: a signature attributes an action to a
+ * principal but is not non-repudiable against the hub operator, who holds the
+ * key. See docs/AUTH.md.
  *
- * The store owns the one-active-key-per-principal invariant end to end: `sign`
- * and `getPublicKey` resolve the single active row, and `generate` inserts a new
- * active key that the table's partial unique index rejects if the principal
- * already has one. The private seed never leaves this module -- `sign` decrypts,
- * signs, and discards it; no method returns private material.
+ * One active key per principal: `sign`/`getPublicKey` resolve the single active
+ * row, and `generate` relies on the table's partial unique index to reject a
+ * second. The private seed never leaves this module; no method returns it.
  */
 export function createPrincipalKeyStore({
   db,
@@ -54,11 +50,10 @@ export function createPrincipalKeyStore({
 
   return {
     /**
-     * Mint a fresh active signing key for a principal. Generates an Ed25519 key
-     * pair, seals the hex-encoded 32-byte seed with the cipher bound to the
-     * key's row and column, and inserts it. A principal that already holds an
-     * active key trips the partial unique index and this throws. Returns the
-     * hex-encoded public key; never returns private material.
+     * Mint a fresh active signing key: generate an Ed25519 pair, seal the
+     * hex-encoded seed with the row-bound cipher, insert, and return the
+     * hex-encoded public key. A second active key trips the partial unique
+     * index and throws.
      */
     async generate(principalId: string, tx?: DBExecutor): Promise<string> {
       const id = generateId("principalKey");
@@ -82,10 +77,8 @@ export function createPrincipalKeyStore({
     },
 
     /**
-     * Sign a message with the principal's active key. Decrypts the sealed seed,
-     * produces the raw 64-byte Ed25519 signature, and discards the seed. Throws
-     * when the principal has no active key. The seed stays a local that goes out
-     * of scope; it is never returned or logged.
+     * Sign with the principal's active key: decrypt the sealed seed, sign, and
+     * drop the seed. Throws when the principal has no active key.
      */
     async sign(
       principalId: string,
@@ -107,9 +100,8 @@ export function createPrincipalKeyStore({
     },
 
     /**
-     * The hex-encoded public key of a principal's active signing key. Throws
-     * when the principal has no active key rather than defaulting, so a missing
-     * key surfaces at the call site instead of downstream.
+     * The hex-encoded public key of the principal's active key. Throws when
+     * there is none, so a missing key surfaces at the call site.
      */
     async getPublicKey(principalId: string, tx?: DBExecutor): Promise<string> {
       const row = await loadActive(principalId, tx);

@@ -1,9 +1,6 @@
-// Public surface for @intx/tools-mail.
-//
-// createMailTools resolves the bound agent's MessageTransport from the
-// supplied RuntimeCapabilities once at handler-init and wires the mail
-// handlers around it. The returned MailTools satisfies the
-// ToolRunner contract the harness consumes.
+// Public surface for @intx/tools-mail. createMailTools resolves the
+// bound agent's MessageTransport from the supplied RuntimeCapabilities
+// once at handler-init and wires the mail handlers around it.
 
 import type {
   ToolDefinition,
@@ -39,10 +36,8 @@ export interface MailTools extends ToolRunner {
 }
 
 export function createMailTools(opts: MailToolsOptions): MailTools {
-  // Resolve the transport once at handler-init. The lifecycle contract is
-  // "request once at handler-init, hold the handle for the deploy
-  // lifetime"; the handler factories below close over the resolved
-  // handle and do not re-consult capabilities.
+  // Resolve the transport once at handler-init; the handler factories
+  // close over the resolved handle and do not re-consult capabilities.
   const transport = opts.capabilities.resolve("mail.transport");
 
   const handlers = new Map<string, ToolHandler>([
@@ -62,13 +57,10 @@ export function createMailTools(opts: MailToolsOptions): MailTools {
     async run(call, signal): Promise<ToolResult> {
       const handler = handlers.get(call.name);
       if (handler === undefined) {
-        // This branch is unreachable in the sidecar composition: the
-        // agent's `resolveTools` dispatches `call.name` to the owning
-        // bundle by definition.name, so only names this runner
-        // declared can ever reach `run`. It exists so callers that
-        // use createMailTools as a standalone ToolRunner (rather than
-        // through `defineMailTools`) get the package's native
-        // object-shaped error.
+        // Unreachable through the sidecar composition (the agent's
+        // `resolveTools` dispatches by definition.name), but callers that
+        // use createMailTools as a standalone ToolRunner get the package's
+        // native object-shaped error.
         return errorResult(
           call.id,
           `Unknown tool: "${call.name}"`,
@@ -86,14 +78,11 @@ export function createMailTools(opts: MailToolsOptions): MailTools {
     async dispose() {
       if (disposed) return;
       disposed = true;
-      // No-op today: the transport is owned by the host that
-      // constructed it, and the only handler with active resources
-      // (mail_wait subscribes via transport.watch and registers a
-      // setTimeout / abort listener) releases them through the
-      // per-call AbortSignal rather than through this dispose hook.
-      // dispose exists for symmetry with createPosixTools and as a
-      // seam for any future per-package resources; callers must not
-      // rely on it to cancel in-flight tool calls.
+      // No-op today: the transport is owned by the host that constructed
+      // it, and mail_wait's resources release through the per-call
+      // AbortSignal. Exists for symmetry with createPosixTools and as a
+      // seam for future per-package resources; callers must not rely on
+      // it to cancel in-flight tool calls.
     },
   };
 }

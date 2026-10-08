@@ -136,9 +136,9 @@ export function createWorkflowDispatchProjection({
       for (const accepted of acceptedDispatches) {
         const dispatch = remaining.get(accepted.messageId);
         if (dispatch === undefined) continue;
-        // Mail resuming an input gate is also recorded as SignalReceived.
-        // The Hub's message-id uniqueness spans both dispatch kinds within
-        // this anchor; RunStarted alone still cannot prove a signal delivery.
+        // Mail resuming an input gate is also recorded as SignalReceived, and
+        // message-id uniqueness spans both dispatch kinds within this anchor,
+        // so RunStarted alone still cannot prove a signal delivery.
         if (accepted.kind === "mail" && dispatch.kind !== "mail") continue;
         outcomes.set(accepted.messageId, { status: "settled" });
         remaining.delete(accepted.messageId);

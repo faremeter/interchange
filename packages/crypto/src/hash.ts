@@ -1,9 +1,6 @@
 /**
- * Compute the SHA-256 digest of a UTF-8 string, returned as raw bytes.
- *
- * Used to derive the stored hash of an opaque bearer token so the raw
- * secret is never persisted: callers hash the presented token and compare
- * the digest against the stored one.
+ * SHA-256 digest of a UTF-8 string as raw bytes. Used to store the hash of
+ * an opaque bearer token instead of the secret itself.
  */
 export async function sha256(input: string): Promise<Uint8Array> {
   return new Uint8Array(

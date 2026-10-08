@@ -3,23 +3,19 @@
 //
 // This proves both halves of the fix end to end. The deploy pin recurses into a
 // loop nested inside a spawned (onTrigger) body to pin the loop-body agent
-// step's inference source, and the runtime wires loop support (`spawnLoopIteration`
-// + `loopFns`) into the spawned-body child env. Two failure modes are ruled out:
-// pre-fix the deploy was rejected outright by the fail-closed guard, and even
-// without that guard the body child crashed at the first iteration -- first with
-// no source pinned, then with "this host does not support loops". Firing the
-// trigger spawns the body child, whose loop drives its agent body against the
-// mock inference fixture and converges, so the body child completes.
+// step's inference source, and the runtime wires loop support
+// (`spawnLoopIteration` + `loopFns`) into the spawned-body child env. Two
+// failure modes are ruled out: pre-fix the deploy was rejected outright by the
+// fail-closed guard, and even without that guard the body child crashed at the
+// first iteration -- first with no source pinned, then with "this host does not
+// support loops". Firing the trigger spawns the body child, whose loop drives
+// its agent body against the mock inference fixture and converges. The second
+// case adds a `childWorkflow` grandchild to the loop body, exercising the
+// spawned-body env wiring that merges loop-body grandchildren into the body's
+// spawn map and caps the grandchild's grants per iteration.
 //
-// The second case adds a `childWorkflow` grandchild to the loop body, exercising
-// the spawned-body env wiring that merges a loop body's childWorkflow
-// grandchildren into the body's spawn map and caps the grandchild's grants per
-// iteration.
-//
-// Harness justification: SPAWN-REAL. Real hub, real sidecar subprocess, and a
-// real workflow-process child running the onTrigger body child, whose loop
-// spawns per-iteration child runs each executing the body agent through the body
-// invoker.
+// Harness: SPAWN-REAL. The body child's loop spawns per-iteration child runs
+// each executing the body agent through the body invoker.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 

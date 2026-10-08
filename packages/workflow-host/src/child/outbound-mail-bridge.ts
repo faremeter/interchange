@@ -2,34 +2,19 @@
 // §3a).
 //
 // The workflow-process child holds no signing key for the agent's
-// identity. The supervisor is the sole mail owner: it holds the host
+// identity; the supervisor is the sole mail owner, holding the host
 // transport against which the agent's address is registered with its
-// `CryptoProvider`, and it is the only process that can emit signed mail
-// on the agent's behalf. So a step agent never calls `transport.send`
-// directly; its mail tools are backed by a transport whose outbound side
-// routes through this bridge, which forwards the structured
-// `OutboundMessage` plus the sender (agent) address up over the control
-// IPC. The supervisor performs the actual signed send and replies with
-// the `SendReceipt`.
+// `CryptoProvider`. So a step agent never calls `transport.send`
+// directly: its mail tools are backed by a transport whose outbound side
+// routes through this bridge, forwarding the structured `OutboundMessage`
+// plus the sender address up over the control IPC. The supervisor
+// performs the actual signed send and replies with the `SendReceipt`.
 //
-// Lifecycle of one outbound send:
-//
-//   1. The agent's mail tool (or the step reply path) calls the
-//      supervisor-backed transport's `send`. The transport calls
-//      `bridge.submit(senderAddress, message)`.
-//   2. `submit` mints a `requestId`, registers a pending awaiter, and
-//      emits `outbound.message` upstream carrying the JSON-projected
-//      message (attachment bytes base64-encoded).
-//   3. The supervisor receives the request, performs the signed send
-//      through the host transport (`MailBusBindings.sendOutbound`), and
-//      replies with `outbound.result` carrying the `SendReceipt` (or a
-//      structured failure).
-//   4. The bridge resolves / rejects the pending awaiter; the
-//      transport's `send` returns the receipt to the mail tool. A
-//      supervisor-side failure (unregistered sender, signing failure,
-//      transport rejection) surfaces as a rejection so the agent's
-//      mail-tool call fails loudly rather than silently dropping the
-//      send.
+// Lifecycle of one outbound send: `submit` mints a `requestId`, registers
+// a pending awaiter, and emits `outbound.message` upstream (attachment
+// bytes base64-encoded); the supervisor performs the signed send and
+// replies with `outbound.result`; the bridge resolves/rejects the
+// awaiter.
 
 import { getLogger } from "@intx/log";
 
@@ -52,9 +37,8 @@ const logger = getLogger(["workflow-host", "child", "outbound-mail-bridge"]);
  * supervisor's matching `outbound.result` lands. `handleResult` is the
  * receiver-side entry point the child's control loop invokes when the
  * downstream `outbound.result` frame arrives. `cancelAll` is the
- * cleanup hook the control loop invokes on any exit path so a pending
- * send does not leak an awaiter when the supervisor has torn the IPC
- * down.
+ * cleanup hook for any exit path so a pending send does not leak an
+ * awaiter when the supervisor has torn the IPC down.
  */
 export interface ChildOutboundMailBridge {
   submit(
@@ -111,8 +95,8 @@ export function createChildOutboundMailBridge(
           data: {
             requestId,
             senderAddress,
-            // Only `true` is a request to complete References. A false
-            // or omitted flag is the same send the supervisor leaves alone.
+            // Only `true` requests completing References; false or
+            // omitted leaves the send alone.
             ...(submitOpts?.completeReferences === true
               ? { completeReferences: true }
               : {}),
@@ -148,9 +132,8 @@ export function createChildOutboundMailBridge(
 
 /**
  * Project a runtime `OutboundMessage` into the IPC wire shape. Optional
- * fields are omitted when absent (the wire validator spells them
- * optional), and attachment bytes ride base64-encoded so the NDJSON
- * control channel stays text-safe.
+ * fields are omitted when absent, and attachment bytes ride
+ * base64-encoded so the NDJSON control channel stays text-safe.
  */
 function projectOutboundMessage(
   message: OutboundMessage,

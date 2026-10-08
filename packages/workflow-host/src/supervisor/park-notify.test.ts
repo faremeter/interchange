@@ -2,11 +2,12 @@
 //
 // A workflow-process child that parks a step on a reserved control-plane
 // channel forwards a `park.notify` frame up the control channel. The
-// supervisor's upstream-control pump stamps the deployment identity it owns
-// (`anchorRunId` + the deployment's mail address as `agentAddress`) onto the
-// child-supplied `runId`/`correlationId`/`kind` and hands the stamped
-// registration to the host's `onSuspensionRegister` sink -- the seam the
-// sidecar wires to the hub's `signal.correlation.register` frame.
+// supervisor's upstream-control pump stamps the deployment identity it
+// owns (`anchorRunId` + the deployment's mail address as
+// `agentAddress`) onto the child-supplied `runId`/`correlationId`/
+// `kind` and hands the stamped registration to the host's
+// `onSuspensionRegister` sink -- the seam the sidecar wires to the
+// hub's `signal.correlation.register` frame.
 
 import { describe, test, expect } from "bun:test";
 import fs from "node:fs/promises";
@@ -78,8 +79,8 @@ describe("supervisor park.notify arm", () => {
     });
 
     const registrations: SuspensionRegistration[] = [];
-    // `onSuspensionRegister` is the signal the supervisor already hands this
-    // test: report each arrival rather than re-reading the array on a tick.
+    // Report each arrival through a notifier rather than re-reading
+    // the array on a tick.
     const registered = createChangeNotifier();
 
     let observedEnv: Record<string, string> | undefined;
@@ -175,10 +176,11 @@ describe("supervisor park.notify arm", () => {
       throw new Error("supervisor did not invoke onSuspensionRegister");
     }
 
-    // The child-supplied fields ride through verbatim; the supervisor stamped
-    // its own deployment identity onto them. A park with no snapshot forwards
-    // no `approvalSnapshot` key at all (the omit idiom, not a present
-    // `undefined`) -- `toStrictEqual` distinguishes the two, `toEqual` does not.
+    // The child-supplied fields ride through verbatim; the supervisor
+    // stamped its own deployment identity onto them. A park with no
+    // snapshot forwards no `approvalSnapshot` key at all (the omit
+    // idiom, not a present `undefined`) -- `toStrictEqual`
+    // distinguishes the two, `toEqual` does not.
     expect(registration).toStrictEqual({
       runId: "run-parked",
       correlationId: "corr-99",
@@ -187,8 +189,9 @@ describe("supervisor park.notify arm", () => {
       agentAddress: AGENT_ADDRESS,
     });
 
-    // A second park carrying an approval snapshot forwards it onto the
-    // registration as `approvalSnapshot`, alongside the stamped identity.
+    // A second park carrying an approval snapshot forwards it onto
+    // the registration as `approvalSnapshot`, alongside the stamped
+    // identity.
     const snapshot = {
       name: "charge_card",
       description: "Charge the customer's card",

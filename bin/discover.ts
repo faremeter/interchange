@@ -68,10 +68,8 @@ function selectEntries(parsed: ParsedCLIRun): SupportEntry[] {
   const capabilitySet = new Set(parsed.capabilities);
   return SUPPORT_MATRIX.filter((entry) => {
     if (entry.provider !== parsed.provider) return false;
-    // captured and misled rows both have fixtures on disk and should
-    // be exercised by re-runs: captured to refresh, misled to retry
-    // (the documented behavior may have started materializing on the
-    // provider side since the last capture).
+    // captured and misled rows both have fixtures on disk: captured to refresh,
+    // misled to retry (the documented behavior may now materialize provider-side).
     if (entry.outcome !== "captured" && entry.outcome !== "misled") {
       return false;
     }
@@ -142,10 +140,8 @@ async function main(): Promise<number> {
       intent,
       outDir,
     });
-    // discover writes into the committed sessions/ tree, so a non-2xx must not
-    // pass silently: runCapture stops before the manifest on a non-2xx, leaving
-    // a partial bundle a later replay would choke on. Remove that partial and
-    // fail loudly rather than exit 0 with a broken session on disk.
+    // A non-2xx leaves a partial bundle (runCapture stops before the manifest)
+    // that a later replay would choke on; remove it and fail loudly.
     if (result.finalStatus < 200 || result.finalStatus >= 300) {
       rmSync(outDir, { recursive: true, force: true });
       throw new Error(

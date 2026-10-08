@@ -25,10 +25,9 @@ import {
 import { seedPrincipal, seedTenants } from "@intx/test-harness/seed";
 
 // Exercises the GET /workflows/runs list against a real migrated schema. The
-// list surfaces the tenant's top-level workflow runs -- a run that owns a
-// routing address and self-anchors (`anchorRunId === id`). Only a real database
-// exercises the definition join that surfaces a run and cursor resumption over
-// the keyset.
+// list surfaces the tenant's top-level runs -- a run that owns a routing
+// address and self-anchors (`anchorRunId === id`) -- with a definition join
+// and keyset cursor resumption that only run against a real database.
 
 const TENANT_ID = "tnt_list";
 const ACTOR_PRINCIPAL_ID = "prn_actor";
@@ -175,9 +174,8 @@ function buildApp(): ReturnType<typeof createApp> {
   });
 }
 
-// A top-level run: it owns a routing address and self-anchors
-// (`anchorRunId === id`) -- the shape the list surfaces. principalId is left
-// null -- the list never reads it.
+// A top-level run: owns a routing address and self-anchors (`anchorRunId
+// === id`); principalId is left null because the list never reads it.
 async function insertTopLevelRun(opts: {
   id: string;
   definitionKey: string;
@@ -338,9 +336,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
         definitionKey: DEF_A,
         createdAt: new Date("2025-03-02T00:00:00.000Z"),
       });
-      // A lazy child park row: it anchors on its parent (`anchorRunId !== id`)
-      // and carries no address, so it is not a top-level run. The self-FK on
-      // `anchor_run_id` forces the parent anchor to be seeded first (above).
+      // A lazy child park row anchors on its parent (`anchorRunId !== id`)
+      // and carries no address, so it is not a top-level run. The self-FK
+      // on `anchor_run_id` forces the parent to be seeded first.
       await h.db.insert(workflowRun).values({
         id: "run_child",
         tenantId: TENANT_ID,

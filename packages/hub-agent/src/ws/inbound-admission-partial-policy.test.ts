@@ -1,39 +1,18 @@
 // Relaxing ONE key must relax exactly that one condition.
 //
 // A verdict can raise a finding on each axis at once, and each axis carries its
-// own author judgement. Where a message raises two findings, relaxing one of
-// them must leave the other enforced, and the message must be rejected BY the
-// one the author did not relax. That is the property `decideInboundAdmission`
-// exists for, and the rule docs/INBOUND_MAIL_POLICY.md states.
-//
-// Nine reachable (signature, binding) pairs raise a finding on both axes, so the
-// property has eighteen (pair, relaxed-axis) directions. Ten of them are covered
-// by inbound-signature.test.ts: "relaxing unknown does not admit a message that
-// also names no originator", the three "relaxing untrustedFrom does not admit a
-// {invalid,missing,unknown} signature behind an unparseable From" cases, and the
-// six mismatched-`From` directions in its "relaxing {invalid,missing,unknown}
-// does not admit a From that contradicts the stamp" and "relaxing
-// mismatchedFrom alone" loops. This file covers all eighteen, so what it adds is
-// breadth rather than unique detection: a decision keyed on the single reduced
-// `outcomeForVerdict` headline instead of on the finding set fails those ten
-// cases too. Neither file is the only thing standing between that regression and
-// a green build, so do not read either as made redundant by the other.
-//
-// The ground that is only here:
-//   - the eight (pair, relaxed-axis) directions that suite does not reach.
-//     Among them: relaxing `absentFrom` and expecting the signature key to be
-//     the one that rejects, which it asserts for no pair at all.
-//   - admission when exactly the two raised keys are relaxed, for the six pairs
-//     over an absent or unparseable originator. That suite reaches it for the
-//     three mismatched-`From` pairs, and otherwise only through wider policies:
-//     one four-key case for invalid + unparseable, and the relax-everything
-//     table.
-//   - the ordered two-element finding set for invalid + absent and for
-//     missing + absent.
-//   - a valid signature over an unparseable originator under
-//     `{absentFrom: "admit"}`. Its twin -- no originator at all under
-//     `{untrustedFrom: "admit"}` -- that suite pins six times over in its
-//     blank-`From` loop.
+// own author judgement: where a message raises two findings, relaxing one must
+// leave the other enforced, and the message must be rejected BY the one the
+// author did not relax. Nine reachable (signature, binding) pairs raise a
+// finding on both axes, so the property has eighteen (pair, relaxed-axis)
+// directions. Ten are covered by inbound-signature.test.ts; this file covers
+// all eighteen, so a decision keyed on the single reduced `outcomeForVerdict`
+// headline instead of the finding set fails those ten cases too. The ground
+// only here: the eight directions that suite does not reach; admission when
+// exactly the two raised keys are relaxed (six pairs over an absent or
+// unparseable originator); the ordered two-element finding set for
+// invalid/missing + absent; and a valid signature over an unparseable
+// originator under `{absentFrom: "admit"}`.
 
 import { describe, expect, test } from "bun:test";
 import type { AuthorControllableOutcome } from "@intx/types/runtime";
@@ -63,8 +42,7 @@ function verdict(
 
 // Every reachable pair that raises a finding on BOTH axes, with the two
 // findings it raises. `notEvaluated` is only ever an `error` verdict's
-// placeholder, and `error` short-circuits above the finding set, so it is not
-// here.
+// placeholder, and `error` short-circuits above the finding set.
 const TWO_FINDING_PAIRS: [
   signature: InboundSignatureVerdict["signature"],
   fromMatch: InboundSignatureVerdict["fromMatch"],

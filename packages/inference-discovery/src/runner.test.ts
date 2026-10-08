@@ -8,10 +8,9 @@ import { runCapture, type FetchLike } from "./runner";
 
 const INTENT: CapabilityIntent = { prompt: "hi" };
 
-// The rig resolves a provider's adapter name and base URL from the catalog and
-// asserts the dialed origin matches, so a unit plug-in uses a real catalog
-// brand and dials that brand's endpoint. `anthropic` maps to the `anthropic`
-// adapter and `https://api.anthropic.com`.
+// The rig resolves the adapter name and base URL from the catalog and asserts
+// the dialed origin matches, so a unit plug-in uses a real brand; `anthropic`
+// maps to the `anthropic` adapter and `https://api.anthropic.com`.
 const BRAND = "anthropic";
 const BASE = "https://api.anthropic.com";
 
@@ -318,13 +317,11 @@ describe("runCapture", () => {
   });
 
   test("orders a raw upload before a JSON generate across exchanges", async () => {
-    // The files-api capture is the one shape where exchange ordering is
-    // load-bearing: the raw upload must land at exchange 0 and the JSON
-    // generate at exchange 1, because the generate request references the
-    // uploaded file. The rig numbers exchanges by generator-yield order;
-    // this pins that a raw-then-json yield sequence produces request.bin
-    // at 0 and request.json at 1, with the upload response threaded into
-    // the generate body.
+    // Files-api ordering is load-bearing: the raw upload must land at exchange
+    // 0 and the JSON generate at 1, because the generate request references
+    // the uploaded file. Exchanges are numbered by generator-yield order, so
+    // this pins request.bin at 0 and request.json at 1, with the upload
+    // response threaded into the generate body.
     const upload = new Uint8Array([0x25, 0x50, 0x44, 0x46]);
 
     function* uploadThenGenerate(opts: {

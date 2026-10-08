@@ -2,23 +2,13 @@
 //
 // Demonstrates the smallest runnable path that pulls an
 // `inference.image_output` event off the Gemini adapter's event
-// stream and writes the generated image bytes to disk. Reading
-// this file should answer:
-//
-//   - How is `runInference` wired up against `gemini-2.5-flash-image`?
-//   - What event type carries the image bytes (`inference.image_output`)?
-//   - How do the streaming-text deltas interleave with the atomic
-//     image part on the wire?
-//   - What does the final `inference.done` turn look like when its
-//     `content[]` carries an `ImageBlock`?
+// stream and writes the generated image bytes to disk.
 //
 // The example uses `runInference` directly rather than the higher-
 // level `@intx/agent` surface because `image_output` is a streaming
 // event whose payload (typically a base64 image megabyte or so)
 // belongs in a streaming consumer, not behind a single
-// `agent.send()` await. A future `@intx/agent` capability could
-// fan image events out as a side channel; this example shows what
-// to consume in the meantime.
+// `agent.send()` await.
 
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -72,8 +62,8 @@ export async function main(
 
   // `responseModalities: ["text", "image"]` is what tells the
   // image-capable model to emit `inlineData` parts alongside its
-  // text deltas. Without it, Gemini returns only text and the
-  // adapter never emits `inference.image_output`.
+  // text deltas; without it the adapter never emits
+  // `inference.image_output`.
   const deps =
     opts.fetch !== undefined
       ? { ...createDefaultDependencies(), fetch: opts.fetch }
@@ -137,9 +127,8 @@ function handleEvent(
   switch (ev.type) {
     case "inference.text.delta": {
       // Stream the running text reply to stdout so the prompt's
-      // narrative ("Here you go:") prints alongside the image
-      // save. The model typically interleaves a short caption
-      // with the image.
+      // narrative prints alongside the image save; the model
+      // typically interleaves a short caption with the image.
       process.stdout.write(ev.data.token);
       return;
     }
@@ -150,7 +139,7 @@ function handleEvent(
         // Gemini's image-output endpoint emits base64 inline
         // bytes; a file-reference or url variant would point at
         // a different model or a future endpoint shape this
-        // example does not handle. Surface rather than guess.
+        // example does not handle, so surface rather than guess.
         process.stderr.write(
           `agent-gemini-image: unsupported image source kind ` +
             `${JSON.stringify(src.kind)} (this example only writes ` +
@@ -221,9 +210,8 @@ function mimeToExtension(mime: string): string {
       return ".webp";
     default: {
       // Strip the `image/` prefix and use whatever subtype is
-      // left as the extension. A new image MIME the catalog has
-      // not added yet still produces a usable filename. An empty
-      // or prefixless mime would land us with a bare-dot
+      // left as the extension, so a new image MIME still yields a
+      // usable filename. A prefixless mime would give a bare-dot
       // filename; reject loudly instead.
       const slash = mime.indexOf("/");
       if (slash < 0 || slash === mime.length - 1) {

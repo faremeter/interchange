@@ -1,31 +1,19 @@
 /**
- * Agent-state smart-HTTP route group.
- *
- * One URL grammar exposed under a Hono sub-app:
+ * Agent-state smart-HTTP route group, read-only over HTTP.
  *
  *   /api/tenants/:tenantId/workflows/runs/:runId/state.git/...
  *     -> RepoId { kind: "agent-state", id: runId }
  *     (a folded run's runtime state, written by the sidecar's first
  *      state pack to `agents/<runId>`)
  *
- * The grammar is READ-ONLY over HTTP. Upload-pack
- * (`info/refs?service=git-upload-pack` and `POST /git-upload-pack`)
- * runs behind the same bearer middleware the asset routes use, with
- * a pre-resolved authz verdict on the constructed UserPrincipal.
- * Receive-pack
- * (`info/refs?service=git-receive-pack` and `POST /git-receive-pack`)
- * is denied at the edge with pkt-line-framed responses so a
- * `git push -v` parses the protocol-level rejection even when no
- * Authorization header is present. The receive-pack denial
- * middleware is mounted BEFORE bearer middleware in the app layer;
- * the substrate's `handleReceivePack` is NOT imported here — agent
- * state never accepts writes over HTTP.
- *
- * The resolver verifies the folded run belongs to `:tenantId` and
- * 404s otherwise. The per-run repo is lazily-materialised: on a
- * never-pushed run, `listRefs` returns the empty list and the
- * advertise layer emits the `capabilities^{}` empty-repo record so a
- * stock `git clone` succeeds against an empty tree rather than 404ing.
+ * Upload-pack runs behind the same bearer middleware as the asset
+ * routes; receive-pack is denied at the edge with pkt-line-framed
+ * responses so a `git push -v` parses the protocol-level rejection even
+ * without an Authorization header. The denial middleware mounts BEFORE
+ * bearer auth; `handleReceivePack` is never imported here. The resolver
+ * verifies the folded run belongs to `:tenantId`; a never-pushed run
+ * advertises the empty-repo record so a stock `git clone` succeeds
+ * against an empty tree rather than 404ing.
  */
 
 import { and, eq, isNull, isNotNull } from "drizzle-orm";
@@ -57,17 +45,10 @@ import {
 
 const log = getLogger(["hub", "agent-state-git"]);
 
-// ----- Receive-pack denial: pkt-line responses -----------------------
-//
-// The advertise denial body is locked to:
-//
-//   # service=git-receive-pack\n0000ERR agent-state is read-only over HTTP\n
-//
-// The leading `# service=` line and the `0000` flush packet mirror the
-// shape stock git emits for a successful advertise; the trailing
-// `ERR ...` substring is what `git push -v` surfaces as the visible
-// rejection reason. The body is emitted verbatim (not pkt-line
-// framed beyond the literal `0000` flush in the middle).
+// Advertise denial body locked to the shape stock git emits for a
+// successful advertise (`# service=` + `0000` flush), with the trailing
+// `ERR ...` the reason `git push -v` surfaces. Emitted verbatim, not
+// pkt-line framed beyond the literal `0000` flush.
 const RECEIVE_PACK_ADVERTISE_DENY_BODY =
   "# service=git-receive-pack\n0000ERR agent-state is read-only over HTTP\n";
 
@@ -266,13 +247,11 @@ async function resolveAgentStateId(
   tenantId: string,
   paramId: string,
 ): Promise<{ ok: true; id: string } | { ok: false; reason: string }> {
-  // Only a folded launch run owns state at `agents/<runId>`: it is born with a
-  // routing address and no deployment (`anchorRunId IS NULL AND address IS NOT
-  // NULL`), so its sidecar persists via the plain-address path. A deployment
-  // anchor/child run keeps its state under `workflow-runs/<slug>` instead, so
-  // the shape gate keeps those out of this route. Deliberately NOT gated on
-  // status: a stopped run's final state is exactly what a read-only clone
-  // serves, matching the legacy instance route -- do not add a `running` guard.
+  // Only a folded launch run owns state at `agents/<runId>`: born with
+  // a routing address and no deployment (`anchorRunId IS NULL AND
+  // address IS NOT NULL`). Deployment anchor/child runs keep state under
+  // `workflow-runs/<slug>`. Not gated on status: a stopped run's final
+  // state is exactly what a read-only clone serves.
   const row = await db.query.workflowRun.findFirst({
     where: and(
       eq(workflowRun.id, paramId),
@@ -301,11 +280,9 @@ async function resolveSmartHttp(
   const tenantRow = c.get("tenant");
   const principalRow = c.get("principal");
   const claims: GitTokenClaims = c.get("git-token-claims");
-  // The typed env makes this unreachable today, but if the route
-  // module is ever mounted without the bearer middleware ahead of
-  // it, surface a misconfiguration rather than a downstream
-  // TypeError. A 401 would imply the client was unauthenticated;
-  // a missing claims object means the server is misconfigured.
+  // Unreachable through the typed env; surface a misconfiguration
+  // instead of a downstream TypeError if the route is ever mounted
+  // without the bearer middleware.
   if (claims === undefined) {
     throw new Error(
       "smart-HTTP route handler invoked without bearer middleware; check the mount order in app.ts",

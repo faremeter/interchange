@@ -1,18 +1,10 @@
 // Reactor-once + env-validation assertions for the mail fixture.
-//
-// Two cases:
-//   1. Bare `BaseEnv` (no transport, no address): `createAgent` throws
-//      `AgentEnvError` whose `missing` includes "transport" and
-//      "address", and whose `contributors` includes the mail factory id.
-//   2. Transport-bearing env: `createAgent` succeeds and the reactor
-//      is wrapped exactly once (counted via a director-factory proxy,
-//      same approach as `planner.test.ts`).
-//
-// The third spec-listed case -- composition-layer instantiation
-// through `@intx/harness` -- is exercised by the harness package's own
-// tests; importing `@intx/harness` here would cycle the
-// `@intx/agent <-> @intx/harness` workspace dep, so the cross-check
-// lives there instead.
+// Two cases: a bare `BaseEnv` (no transport, no address) makes
+// `createAgent` throw `AgentEnvError` blaming the mail factory; a
+// transport-bearing env succeeds and wraps the reactor exactly once
+// (counted via a director-factory proxy, as in `planner.test.ts`).
+// The composition-layer case lives in `@intx/harness`'s own tests;
+// importing harness here would cycle the workspace dep.
 
 import { describe, test, expect } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";

@@ -27,12 +27,9 @@ function makeRepo(files: Record<string, string>): string {
   return root;
 }
 
-// A Makefile whose recipes enumerate a directory and files the way the real
-// one does; tabs are literal so the parser sees real make recipe syntax (a
-// run of tab-prefixed lines under the target header). This fixture drives the
-// generic parser tests (recipeLines, enumeratedPaths), which take explicit
-// target names, so its target names are illustrative rather than the real
-// ones.
+// A Makefile whose recipes enumerate paths the way the real one does; tabs are
+// literal so the parser sees real make recipe syntax. Target names are
+// illustrative — the generic parser tests take explicit target names.
 const MAKEFILE = [
   "test: FORCE",
   "\t$(BUN) test packages/ tests/covered-dir/",
@@ -43,11 +40,9 @@ const MAKEFILE = [
   "",
 ].join("\n");
 
-// checkTestEnumeration reads the module-level ENUMERATING_TARGETS, so its
-// fixture must use the real target names: the `test` aggregate carries no
-// recipe, and the enumerated passes live on test-unit/test-workflow/test-core
-// plus the standalone test-load. This enumerates the same paths as MAKEFILE so
-// the coverage assertions match.
+// checkTestEnumeration reads module-level ENUMERATING_TARGETS, so this fixture
+// uses the real target names (test-unit/test-workflow/test-core/test-load) and
+// enumerates the same paths as MAKEFILE.
 const SPLIT_MAKEFILE = [
   "test: test-unit test-workflow test-core",
   "",

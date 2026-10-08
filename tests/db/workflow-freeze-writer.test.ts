@@ -114,8 +114,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     test("same asset with different wire hashes yields two definitions", async () => {
       // The identity space is keyed on (assetId, wireHash), so one asset backs
-      // many definitions -- a monorepo asset installs one definition per member,
-      // each member projecting to its own wire hash.
+      // many definitions -- a monorepo asset installs one definition per
+      // member, each projecting to its own wire hash.
       const writer = createDbFrozenApprovalWriter(h.db);
       const otherHash = "b".repeat(64);
       const first = await writer({

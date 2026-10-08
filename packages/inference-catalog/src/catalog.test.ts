@@ -19,9 +19,8 @@ import { CATALOG_CAPABILITIES } from "./capability";
 import { catalogModels } from "./models";
 import { catalogProviders, type CatalogPlugin } from "./providers";
 
-// Each catalog plugin maps to the adapter quirk validator that governs the
-// shape its offerings may carry. `openai` and `openai-compatible` share the
-// OpenAI adapter, so they share its validator.
+// Plugin -> adapter quirk validator; `openai` and `openai-compatible` share
+// the OpenAI adapter.
 const quirkValidatorByPlugin: Record<CatalogPlugin, Type> = {
   anthropic: AnthropicQuirks,
   openai: OpenAIQuirks,
@@ -57,9 +56,8 @@ describe("catalog offering capabilities", () => {
     for (const offering of provider.offerings) {
       const label = `${provider.name} / ${offering.model}`;
 
-      // A wire capability hand-authored into curatedCapabilities would let a row
-      // claim it without matrix proof. Every curated entry must be a genuinely
-      // non-probeable capability.
+      // A hand-authored curated entry must be genuinely non-probeable; else a
+      // row could claim a capability without matrix proof.
       test(`${label} curated capabilities are all non-probeable`, () => {
         for (const capability of offering.curatedCapabilities) {
           expect(curatedCapabilityNames.has(capability)).toBe(true);
@@ -68,9 +66,8 @@ describe("catalog offering capabilities", () => {
 
       const source = offering.discoverySource;
       if (source !== null) {
-        // A declared discovery source that expands to nothing is a typo'd or
-        // stale tuple that should be null instead. Non-emptiness is a liveness
-        // floor only.
+        // A source that expands to nothing is a stale tuple; it should be
+        // null instead.
         test(`${label} discovery source is live in the matrix`, () => {
           expect(
             catalogCapabilitiesFor(source.provider, source.model).length,
@@ -78,10 +75,9 @@ describe("catalog offering capabilities", () => {
         });
       }
 
-      // The baked literal must equal the wire set the matrix proves for the
-      // provenance tuple, followed by the curated tags. When discovery captures
-      // a new session that changes the matrix, this fails and the catalog needs
-      // re-baking — the message prints the value to bake in.
+      // The baked literal must equal the matrix wire set for the provenance
+      // tuple plus curated tags. On matrix drift this fails and the message
+      // prints the value to bake in.
       test(`${label} baked capabilities match the discovery matrix`, () => {
         const wire = source
           ? catalogCapabilitiesFor(source.provider, source.model)
@@ -103,10 +99,8 @@ describe("catalog offering capabilities", () => {
 });
 
 describe("catalog capability vocabulary", () => {
-  // The locally-owned vocabulary must stay identical to the canonical one. If
-  // @intx/types adds or removes a capability, this fails and CATALOG_CAPABILITIES
-  // must be re-synced — the drift guard that lets the catalog own the type
-  // without a runtime dependency on @intx/types.
+  // The local vocabulary must track @intx/types; on drift, re-sync
+  // CATALOG_CAPABILITIES.
   test("CATALOG_CAPABILITIES matches @intx/types CAPABILITIES", () => {
     expect(CATALOG_CAPABILITIES.length).toBe(CAPABILITIES.length);
     expect(new Set<string>(CATALOG_CAPABILITIES)).toEqual(
@@ -116,11 +110,9 @@ describe("catalog capability vocabulary", () => {
 });
 
 describe("catalog provider base URLs", () => {
-  // Every discovery brand the catalog draws from must resolve, in
-  // @intx/inference-discovery's brand→base-URL map, to a base URL that some
-  // catalog provider carrying that brand actually serves. The two sources
-  // duplicate the base URLs deliberately (the discovery map cannot import the
-  // catalog); this catches them drifting apart.
+  // Every brand the catalog draws from must resolve in the discovery
+  // brand→base-URL map to a URL a catalog provider serves. The two maps
+  // duplicate deliberately; this catches them drifting apart.
   const brands = new Set<string>(
     catalogProviders
       .flatMap((p) => p.offerings)
@@ -143,15 +135,10 @@ describe("catalog provider base URLs", () => {
 });
 
 describe("catalog public surface", () => {
-  // The published `.d.ts` must not reference @intx/types (a build/test-only
-  // devDependency), or an external consumer inherits a dangling reference.
-  // Because `dependencies` is empty, no non-test source file importing
-  // @intx/types is a sufficient proof that the emitted declarations cannot
-  // reference it. Comments are stripped before matching — they carry no
-  // reference into the emitted output, and capability.ts legitimately discusses
-  // @intx/types in prose — then the module specifier is matched in a quoted
-  // import position (`from "@intx/types"`, `import("@intx/types")`), which is
-  // the form any real static reference takes.
+  // The published `.d.ts` must not reference @intx/types (a build-only
+  // devDependency). Since `dependencies` is empty, no non-test source file
+  // importing it proves the declarations cannot; comments are stripped before
+  // the quoted-specifier match so prose references do not trip it.
   const importSpecifier = /["']@intx\/types["']/;
   const stripComments = (source: string): string =>
     source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
@@ -168,11 +155,9 @@ describe("catalog public surface", () => {
 });
 
 describe("catalog offering models", () => {
-  // Models and offerings live in separate files (models.ts, providers.ts); this
-  // is the cross-check that keeps them aligned. Every offering must name a model
-  // the flat catalogModels list carries — otherwise the seed would drop the
-  // offering (it resolves offerings by model name) and the published `./models`
-  // subpath would omit a model an offering advertises.
+  // Cross-check between models.ts and providers.ts: every offering must name a
+  // model the catalogModels list carries, or the seed drops the offering and
+  // the `./models` subpath omits it.
   const modelNames = new Set(catalogModels.map((model) => model.canonicalName));
   for (const provider of catalogProviders) {
     for (const offering of provider.offerings) {

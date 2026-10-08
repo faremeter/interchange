@@ -5,9 +5,9 @@
 // never re-offers a `completed` loop container, so a run that crashed AFTER
 // the loop settled feeds its downstream steps the PERSISTED record verbatim
 // and never recomputes it. That window -- settled, crashed, resumed on a
-// later build of the runtime -- is the one place where the loop's output
-// shape is frozen and unrecomputable, and it is what makes any change to
-// that shape a compatibility question.
+// later build of the runtime -- is where the loop's output shape is frozen
+// and unrecomputable, and it is what makes any change to that shape a
+// compatibility question.
 //
 // The two tests below pin both halves of the answer. A log written before a
 // key was added resumes green as long as no step reads the new key, because
@@ -163,14 +163,14 @@ function buildEnv(
  * Trim a completed run's log to the instant the loop container's OWN
  * `StepCompleted` landed -- POST-settlement, so the recovered container is
  * `completed` and `nextSchedulable` will never re-offer it -- and rewrite
- * that record's inline output to `persistedOutput`, the log a previous
- * build of the runtime would have written.
+ * that record's inline output to `persistedOutput`, the log a previous build
+ * of the runtime would have written.
  *
  * Trimming anywhere earlier lands in the already-covered mid-iteration
  * window, where the container is still in flight and `runLoop` replays and
  * RECOMPUTES the output. The assertion below therefore guards the cut: the
- * tail must be the container's own completion and the run must have
- * reached its downstream step in the original pass.
+ * tail must be the container's own completion and the run must have reached
+ * its downstream step in the original pass.
  */
 function logAsPersistedBy(
   events: readonly WorkflowEvent[],

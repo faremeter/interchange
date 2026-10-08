@@ -1,31 +1,24 @@
 // Per-step `credentialsSnapshot` assembly.
 //
-// At spawn time, the supervisor reads each workflow step's grants out
-// of its `agent-state` repo and forwards the resulting per-step
-// snapshot to the workflow-process over the control IPC. The snapshot
-// never lands on disk in the child's view and is never placed in
-// spawn-time env -- the env carries only the IPC trust anchors. The
-// child receives credentials over the authenticated control channel
-// once both halves are connected.
+// At spawn time the supervisor reads each step's grants out of its
+// `agent-state` repo and forwards the per-step snapshot to the
+// workflow-process over the control IPC. The snapshot never lands on
+// disk in the child's view and never enters spawn-time env -- the env
+// carries only the IPC trust anchors.
 //
 // Each step's snapshot is pinned to a content hash so the child can
-// detect a stale snapshot (e.g. one that arrived after a `grants-
-// updated` push the child already processed). The hash is the
-// sha256 of the canonicalized JSON serialization of the snapshot's
-// per-step `grants` array -- not the git tree SHA of the underlying
-// `agent-state` repo's `grants` ref. The substrate's tree SHA is
-// implementation-coupled to the path of the file inside the repo;
-// hashing the canonical JSON gives a stable identifier the child can
-// compare across pushes without taking a dependency on the
-// substrate's git layout.
+// detect a stale snapshot (e.g. one arriving after a `grants-updated`
+// push the child already processed). The hash is the sha256 of the
+// canonical JSON of the per-step `grants` array -- not the git tree
+// SHA of the `agent-state` repo's `grants` ref, which is
+// implementation-coupled to the file's path inside the repo;
+// canonical JSON gives a stable identifier across pushes.
 //
-// Per-step address derivation (Q6.4 discovery decision):
-//   - Multi-step deployments use `<runId>-<stepId>@<domain>`.
-//   - Trivial (single-step) deployments use the deployment's own
-//     mail address as the sole step's address.
-// The derivation is supplied by the caller as a `deriveStepAddress`
-// callback so the supervisor doesn't have to encode the deployment-
-// domain into the workflow-host package.
+// Per-step address derivation (Q6.4 discovery decision): multi-step
+// deployments use `<runId>-<stepId>@<domain>`; trivial deployments
+// use the deployment's own mail address as the sole step's address.
+// Supplied as a `deriveStepAddress` callback so the supervisor does
+// not encode the deployment-domain into this package.
 
 import { type } from "arktype";
 
@@ -38,9 +31,7 @@ import type {
 
 /**
  * Path inside each step's `agent-state` repo that carries the step's
- * grants. The agent-state kind handler accepts state writes under the
- * `state/` subtree; the grants snapshot rides at
- * `state/grants.json` as a single canonical JSON document.
+ * grants: `state/grants.json` as a single canonical JSON document.
  */
 export const STEP_GRANTS_PATH = "state/grants.json";
 
@@ -63,9 +54,9 @@ const StepGrantsFile = type({
 
 export type CredentialsSnapshotStep = {
   /**
-   * Workflow step id: a `WorkflowDefinition.stepOrder` entry, or a step id
-   * from one of the definition's `loop` bodies (a loop body shares the
-   * enclosing definition's flat step-id namespace).
+   * Workflow step id: a `WorkflowDefinition.stepOrder` entry, or a
+   * step id from one of the definition's `loop` bodies (a loop body
+   * shares the enclosing definition's flat step-id namespace).
    */
   stepId: string;
   /** Mail address the step's agent presents to the bus. */
@@ -83,9 +74,8 @@ export type CredentialsSnapshot = {
 
 /**
  * Caller-supplied derivation of the per-step mail address from the
- * run id and step id. The supervisor cannot encode the
- * deployment-domain inside library code; the wiring module supplies
- * the strategy the host owns.
+ * run id and step id; the wiring module supplies the strategy the
+ * host owns.
  */
 export type DeriveStepAddress = (args: {
   runId: string;
@@ -96,9 +86,9 @@ export type DeriveStepAddress = (args: {
  * Caller-supplied override of the per-step `agent-state` repo identity
  * the supervisor reads grants from. Defaults to the
  * `<runId>-<stepId>` convention (`defaultStepRepoId`); the
- * single-step launched-agent deploy supplies a derivation that returns
- * the legacy agent-state repo so the child reads grants from the same
- * repo the legacy agent identity already keys.
+ * single-step launched-agent deploy supplies a derivation returning
+ * the legacy agent-state repo so grants are read from the same repo
+ * the legacy agent identity already keys.
  */
 export type DeriveStepRepoId = (args: {
   runId: string;
@@ -115,12 +105,11 @@ export type AssembleCredentialsSnapshotOpts = {
    * workflow passes a single entry; multi-step deployments pass every
    * step in the order the workflow asset declared.
    *
-   * This is the deployment's flat step-id namespace, which is WIDER than
-   * the definition's own `stepOrder`: a `loop` body runs in-process as a
+   * This is the deployment's flat step-id namespace, WIDER than the
+   * definition's own `stepOrder`: a `loop` body runs in-process as a
    * child run inheriting the parent's env, so a body step authorizes
-   * against this same snapshot under its own plain step id. The caller
-   * owns that widening -- it is the layer that holds the definition --
-   * and the snapshot is total over whatever it passes, because the
+   * against this same snapshot under its own plain step id. The
+   * snapshot is total over whatever the caller passes, because the
    * child's authorize treats a missing entry as unrecoverable.
    */
   stepOrder: readonly string[];
@@ -137,12 +126,10 @@ export type AssembleCredentialsSnapshotOpts = {
 };
 
 /**
- * Default mapping from `(runId, stepId)` to the agent-state
- * repo id: `<runId>-<stepId>`, isolating each step's grants in
- * its own repo. Applied to a one-step `stepOrder` it yields a single
- * such repo. The single-step launched-agent deploy overrides this
- * default (see `DeriveStepRepoId`) to reuse the legacy agent-state
- * repo.
+ * Default mapping from `(runId, stepId)` to the agent-state repo id:
+ * `<runId>-<stepId>`, isolating each step's grants in its own repo.
+ * The single-step launched-agent deploy overrides this (see
+ * `DeriveStepRepoId`) to reuse the legacy agent-state repo.
  */
 export function defaultStepRepoId(args: {
   runId: string;
@@ -156,17 +143,14 @@ export function defaultStepRepoId(args: {
 
 /**
  * Read one step's grants file from disk via the substrate's working-
- * tree directory. The substrate documents `getRepoDir` as a pure path
- * computation -- the sibling production adapters (`repo-store.ts`,
- * `spawn-child.ts`) use the same working-tree-read pattern when they
- * need synchronous access to a ref's tip without round-tripping
- * through the git object database.
+ * tree directory (`getRepoDir` is a pure path computation; the sibling
+ * production adapters use the same working-tree-read pattern).
  *
- * A missing grants file is treated as "no grants" (empty array) so
- * a step whose repo carries no grants file does not crash; a
- * malformed file does crash, because the file's presence implies
- * the deploy orchestrator intended a snapshot and a structural
- * failure is a programming bug at the boundary.
+ * A missing grants file is treated as "no grants" (empty array) so a
+ * step whose repo carries no grants file does not crash; a malformed
+ * file does crash, because its presence implies the deploy
+ * orchestrator intended a snapshot and a structural failure is a
+ * boundary bug.
  */
 async function readStepGrants(
   opts: AssembleCredentialsSnapshotOpts,
@@ -204,8 +188,8 @@ async function readStepGrants(
 /**
  * Compute the per-step content hash used to pin a credentialsSnapshot
  * push to a specific grants payload. Stable across processes because
- * the JSON.stringify pass produces the same byte string for a given
- * grants array.
+ * `JSON.stringify` produces the same byte string for a given grants
+ * array.
  */
 export async function hashGrants(grants: readonly unknown[]): Promise<string> {
   const digest = await crypto.subtle.digest(
@@ -217,11 +201,10 @@ export async function hashGrants(grants: readonly unknown[]): Promise<string> {
 
 /**
  * Assemble the per-deployment `credentialsSnapshot` from each step's
- * `agent-state` repo. The supervisor invokes this at spawn time and
- * again on every `grants-updated` mail. The result rides the
- * control IPC as a single payload; the child pins each step's grants
- * to the supplied hash so it can ignore an out-of-order push that
- * arrives after a fresher one.
+ * `agent-state` repo. Invoked at spawn time and again on every
+ * `grants-updated` mail; the child pins each step's grants to the
+ * supplied hash so it can ignore an out-of-order push that arrives
+ * after a fresher one.
  */
 export async function assembleCredentialsSnapshot(
   opts: AssembleCredentialsSnapshotOpts,

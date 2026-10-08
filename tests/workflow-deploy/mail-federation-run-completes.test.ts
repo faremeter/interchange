@@ -3,43 +3,31 @@
 // The runId contract has TWO grants writers. The hub-api trigger route is
 // covered by `mail-trigger-run-completes-real-route`; this test covers the
 // OTHER one: the sidecar's `deliverMailToRecipient`, which materializes a
-// receiving deployment's grants when a `mail.outbound` frame (an agent
-// sending mail to a workflow deployment) names it. That path derives the
-// receiving run's runId from the RECIPIENT address, stages the run's grants
-// at `runs/<recipientAddress>/grants.json`, and the supervisor's onRunStart
+// receiving deployment's grants when a `mail.outbound` frame (an agent sending
+// mail to a workflow deployment) names it. That path derives the receiving
+// run's runId from the RECIPIENT address, stages the run's grants at
+// `runs/<recipientAddress>/grants.json`, and the supervisor's onRunStart
 // barrier reads exactly that path -- so a producer that keys by the mail's
 // Message-ID leaves the barrier's path empty and the run fails closed.
 //
 // One hub, TWO sidecars, one deployment on each -- the sidecar split is
-// load-bearing. A mail send is only remote (and so only leaves as a
-// `delivered:false` frame that reaches deliverMailToRecipient) when the
-// recipient is not registered on the SENDER's own transport; co-locating both
-// deployments on one sidecar makes the send local and never exercises the path
-// under test.
-//   - Deployment B (the RECEIVER) is a completing echo agent on sidecar 2. It
-//     is NEVER triggered by the fixture, so its grants come ONLY from the
-//     sidecar's real materializer -- if that stages them under the wrong
-//     runId, B's onRunStart finds no grants file and B fails closed. B
-//     reaching RunCompleted is therefore the whole proof. Its grants come from
-//     the frozen grant snapshot the source-ref deploy's approve step wrote.
-//   - Deployment A (the SENDER) is on sidecar 1 and its agent carries the
-//     inline `mail_send` tool from the `mail-tool.ts` fixture in its transport
-//     variant; its mock inference calls it with `to: <B's address>`, so A's run
-//     forwards a real `mail.outbound` frame to the hub, which routes it through
-//     `handleMailOutbound -> deliverMailToRecipient(B)`.
+// load-bearing: a mail send is only remote (and so only leaves as a
+// `delivered:false` frame) when the recipient is not registered on the
+// SENDER's own transport. Deployment B (the RECEIVER) is a completing echo
+// agent on sidecar 2, never triggered by the fixture, so its grants come ONLY
+// from the sidecar's real materializer -- B reaching RunCompleted is the whole
+// proof. Deployment A (the SENDER) carries the inline `mail_send` tool; its
+// mock inference calls it with `to: <B's address>`.
 //
 // The REAL `createMailTriggeredRunGrantsMaterializer` (backed by a migrated
 // schema) is wired into the fixture hub's sidecar router via the
 // `materializeMailTriggeredRunGrants` option, closing the harness gap that let
 // the earlier route test assert only DB rows.
 //
-// SCOPE: this exercises the RECEIVER seam -- grant materialization + the
-// onRunStart barrier -- across a real sidecar transport on ONE hub. It is NOT
-// cross-hub coverage: the sender-to-receiver hop stays inside a single hub's
-// router, not over a hub-link between two hubs. A dedicated two-hub
-// federation-transport test is separate and non-gating; do not read this as
-// covering that hop. The harness's dependence on the placement invariant
-// below is tracked in INTR-395.
+// SCOPE: this exercises the RECEIVER seam across a real sidecar transport on
+// ONE hub. The sender-to-receiver hop stays inside a single hub's router, not
+// over a hub-link between two hubs; a dedicated two-hub federation-transport
+// test is separate and non-gating.
 
 import {
   afterAll,
@@ -99,11 +87,11 @@ const DEPLOYMENT_DOMAIN = "integration.interchange";
 // `run_` prefix is load-bearing and MUST NOT be dropped: the address SHAPE
 // selects the materialization path. deliverMailToRecipient only materializes a
 // run for a recipient whose address `isRunAddress` recognizes, and that
-// predicate keys on the `run_` prefix. A bare id (e.g. `fed-mail-receiver-1` ->
-// `fed-mail-receiver-1@...`) fails that predicate, so the mail is routed with
-// NO materialization -- and the test still goes GREEN while exercising nothing,
-// because the receiver never starts and the RunCompleted assertion is only ever
-// reached on the real path. Keep the `run_` prefix.
+// predicate keys on the `run_` prefix. A bare id (e.g. `fed-mail-receiver-1`
+// -> `fed-mail-receiver-1@...`) fails that predicate, so the mail is routed
+// with NO materialization -- and the test still goes GREEN while exercising
+// nothing, because the receiver never starts and the RunCompleted assertion is
+// only ever reached on the real path. Keep the `run_` prefix.
 const RECEIVER_ID = "run_fed-mail-receiver-1";
 const RECEIVER_TENANT_ID = "tnt_fed_mail_receiver";
 const RECEIVER_CREATOR_PRINCIPAL_ID = "prn_fed_mail_receiver_creator";

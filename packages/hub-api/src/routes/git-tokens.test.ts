@@ -144,12 +144,11 @@ function createMockDB(state: MockDBState): DB["db"] {
       },
       gitToken: {
         findFirst: async (opts?: { where?: unknown }) => {
-          // Without parsing drizzle's filter representation, we rely on
-          // the test-fixture invariant: each test setup has at most one
-          // matching row for the filters the routes actually issue
-          // (filter by id alone, or by id + tenantId). Returning the
-          // single row keeps the mock simple while exercising the
-          // route's branches.
+          // Without parsing drizzle's filter representation, rely on the
+          // test-fixture invariant: each test setup has at most one matching
+          // row for the filters the routes actually issue (filter by id alone,
+          // or by id + tenantId). Returning the single row keeps the mock
+          // simple while exercising the route's branches.
           void opts;
           return state.gitTokens[0];
         },
@@ -335,23 +334,17 @@ const tenantTokensURL = `/api/tenants/${TENANT_ID}/git-tokens`;
 const meTokensURL = `/api/me/git-tokens`;
 
 describe("SHA-256 golden digest (byte-stability lock)", () => {
-  // A git token is persisted as the raw SHA-256 digest of the
-  // on-the-wire secret. The `POST /api/me/git-tokens` mint test asserts
-  // the production-stored digest equals this file's `sha256` helper for
-  // the minted secret (`row.tokenHashSha256` vs `sha256(body.secret)`).
-  // That assertion catches asymmetric drift, but a symmetric rewrite of
-  // the hashing path (production and this helper changed in lockstep)
-  // would keep it green while silently 401-ing every issued token. This
-  // golden pins the helper's digest of a fixed input to a literal
-  // derived from an independent oracle, so a symmetric rewrite cannot
-  // slip through:
-  //
-  //   printf '%s' 'itx_pat_golden_byte_stability_v1' | shasum -a 256
-  //   printf '%s' 'itx_pat_golden_byte_stability_v1' | openssl dgst -sha256
-  //
-  // both emit the hex below. The chain golden -> this `sha256` helper ->
-  // (mint-test assertion) -> production keeps the whole digest format
-  // anchored in one file.
+  // A git token is persisted as the raw SHA-256 digest of the on-the-wire
+  // secret. The `POST /api/me/git-tokens` mint test asserts the
+  // production-stored digest equals this file's `sha256` helper for the
+  // minted secret. That assertion catches asymmetric drift, but a symmetric
+  // rewrite of the hashing path (production and this helper changed in
+  // lockstep) would keep it green while silently 401-ing every issued token.
+  // This golden pins the helper's digest of a fixed input to a literal from
+  // an independent oracle (`printf '%s' 'itx_pat_golden_byte_stability_v1' |
+  // shasum -a 256`), so a symmetric rewrite cannot slip through; the chain
+  // golden -> helper -> mint assertion -> production anchors the whole digest
+  // format in one file.
   test("hashing a fixed secret yields the independently-derived digest", async () => {
     const secret = "itx_pat_golden_byte_stability_v1";
     const expectedHex =

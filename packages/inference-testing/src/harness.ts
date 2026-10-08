@@ -54,10 +54,9 @@ import {
 } from "./tool-handler";
 
 // Fail-open credential resolver for the test harness. The stubbed `fetch`
-// never sends the injected secret anywhere, so a request that emits a
-// credential sentinel just needs SOME material rather than the production
-// fail-closed throw. A test asserting a specific injected key supplies its own
-// `readMaterial`, which takes precedence over this default.
+// never sends the injected secret anywhere, so a credential sentinel just
+// needs SOME material rather than the production fail-closed throw. A test
+// asserting a specific injected key supplies its own `readMaterial`.
 const DEFAULT_TEST_READ_MATERIAL: CredentialMaterialResolver = () => ({
   secret: "inference-test-secret",
 });
@@ -67,10 +66,9 @@ const DEFAULT_TEST_READ_MATERIAL: CredentialMaterialResolver = () => ({
  * bundles the virtual `clock` driving all scheduling, the `deps` to inject
  * into the system under test (`fetch` is stubbed; `HarnessId` is branded so
  * `assertDeps` catches cross-harness contamination), and the `scenario`
- * seam tests use to mint streams, register matchers and tool handlers, and
- * schedule abort behavior. The harness owns disposal of every simulated
- * stream it minted; tests must call `dispose()` (typically in `afterEach`)
- * to suppress bun:test "unclosed ReadableStream" warnings.
+ * seam for streams, matchers, tool handlers, and aborts. The harness owns
+ * disposal of every stream it minted; call `dispose()` (typically in
+ * `afterEach`) to suppress bun:test "unclosed ReadableStream" warnings.
  */
 export type Harness = {
   readonly clock: Clock;
@@ -79,81 +77,53 @@ export type Harness = {
   /**
    * Asserts that `candidate` was produced by this harness. Use at test
    * boundaries that take a `Dependencies` from an external source to catch
-   * cross-harness contamination (e.g., a test wiring harness A's deps
-   * through harness B's reactor).
-   *
-   * Throws `WrongHarnessError` if `candidate[HarnessId]` does not match this
-   * harness's symbol.
+   * cross-harness contamination. Throws `WrongHarnessError` on mismatch.
    */
   assertDeps(candidate: Dependencies): void;
   /**
    * Delegates to `clock.run()` and then verifies the waiting-fetch set is
-   * empty. If any fetch is still parked on a matcher at quiescence, throws
-   * `UnmatchedFetchError`. This is the third of the three scan triggers
-   * documented in the locked spec.
+   * empty, throwing `UnmatchedFetchError` otherwise. Third of the three
+   * scan triggers.
    */
   run(opts?: RunOpts): Promise<void>;
   /**
    * Delegates to `clock.advanceTo()` and then verifies the waiting-fetch
-   * set is empty, throwing `UnmatchedFetchError` if not. Mirrors `run()`'s
-   * quiescence check at a bounded virtual deadline.
+   * set is empty, throwing `UnmatchedFetchError` otherwise. Mirrors
+   * `run()`'s quiescence check at a bounded virtual deadline.
    */
   advanceTo(virtualMs: number, opts?: AdvanceOpts): Promise<void>;
   /**
-   * Cancels every pending (not-yet-fired) scheduled callback for the
-   * stream identified by `streamId` and errors that stream's controller
-   * with an `AbortError` at `clock.now()`. Used by tool handlers whose
-   * own previously-scheduled chunks should NOT land — for example, a
-   * handler that detected an upstream failure mid-response and wants to
-   * abort before the rest of the body arrives.
+   * Cancels every pending scheduled callback for the stream identified by
+   * `streamId` and errors that stream's controller with an `AbortError` at
+   * `clock.now()`. Used by tool handlers whose own previously-scheduled
+   * chunks should NOT land. Cancelled entries are tagged before the abort
+   * fires, so the test-visible body never sees them; the controller is
+   * errored synchronously on return.
    *
-   * The seq-ordering correctness argument: pending entries are tagged
-   * cancelled BEFORE the abort fires. Whether the clock pops the abort
-   * before or after the (cancelled) chunk entries, the chunk callbacks
-   * are now no-ops, so the test-visible body never sees them. The abort
-   * itself takes effect synchronously when this method returns; the
-   * stream's controller is in the errored state immediately.
-   *
-   * Throws if no stream with the given `streamId` was minted by this
-   * harness, or if the stream is already in a terminal state.
+   * Throws if no such stream was minted by this harness, or if the stream
+   * is already terminal.
    */
   abortBefore(streamId: StreamId): void;
   /**
    * Default driver for production `runInference` through the harness's
-   * `deps`. The wrapper:
+   * `deps`. The wrapper injects `deps` (callers must not pass one),
+   * auto-dispatches registered tool handlers on `inference.tool_call.end`
+   * BEFORE yielding the event (so the handler fires even if the consumer
+   * breaks out of the loop), and yields every event. A tool call with no
+   * registered handler throws synchronously from the iterator — an
+   * unscripted tool call is always a setup bug.
    *
-   * 1. Calls `@intx/inference`'s real `runInference` with `opts`
-   *    plus `harness.deps` automatically injected (callers do not — and
-   *    must not — pass `deps` themselves).
-   * 2. When the underlying iterator emits `inference.tool_call.end`,
-   *    looks up the handler registered for that tool name and dispatches
-   *    it with the parsed arguments BEFORE yielding the event. The
-   *    dispatched result is captured on the harness and is available via
-   *    `scenario.lastToolDispatch(name)`. Dispatching before the yield
-   *    guarantees the handler fires even if the consumer breaks out of
-   *    the `for await` loop on `inference.tool_call.end`.
-   * 3. Yields every `InferenceEvent` the underlying iterator emits.
-   *
-   * If no handler is registered for a tool name observed in an
-   * `inference.tool_call.end`, the wrapper throws synchronously from the
-   * iterator with a message naming the unregistered tool. This is the
-   * defensive-coding choice: a tool call the test did not script for is
-   * always a setup bug, never a runtime fallback.
-   *
-   * Escape hatch: tests that want to drive tool dispatch by hand (for
-   * dispatch-ordering or error-path assertions) can call the underlying
-   * `runInference` directly with `deps: harness.deps`. That bypasses the
-   * auto-dispatch path; the test is then responsible for calling
-   * `scenario.invokeTool` itself.
+   * Escape hatch: tests driving dispatch by hand call the underlying
+   * `runInference` directly with `deps: harness.deps`, bypassing
+   * auto-dispatch, and use `scenario.invokeTool` themselves.
    */
   runInference(
     opts: Omit<InferenceHarnessOptions, "deps">,
   ): AsyncIterable<InferenceEvent>;
   /**
    * Closes every open simulated stream and releases per-fetch resources.
-   * Safe to call multiple times; subsequent calls are no-ops. Tests should
-   * call `dispose()` in an `afterEach` to prevent bun:test from logging
-   * "unclosed ReadableStream" warnings.
+   * Safe to call multiple times; later calls are no-ops. Call in
+   * `afterEach` to prevent bun:test "unclosed ReadableStream" warnings.
    */
   dispose(): void;
 };
@@ -165,40 +135,33 @@ export type Harness = {
  */
 export type SetupHarnessOpts = {
   /**
-   * Override the clock injected into the harness. Mostly useful for tests
-   * inside this package that exercise harness/clock interactions; consumers
-   * should let `setupHarness()` create its own clock.
+   * Override the clock injected into the harness. Mostly for tests inside
+   * this package that exercise harness/clock interactions.
    */
   clock?: Clock;
   /**
    * When true, the `Scheduler` exposed via `harness.deps.scheduler` is
    * backed by the virtual clock so production inactivity / total timeouts
-   * in `@intx/inference`'s `runInference` fire at virtual time. When
-   * false (default), the scheduler is a no-op — production timers are
-   * inert during tests, which is what almost every test wants (otherwise
-   * `harness.run()` would have to advance virtual time through the 600s
-   * default total-timeout horizon on every call).
-   *
-   * Tests that specifically assert on timeout behaviour set this to
-   * true and pass explicit short thresholds via
+   * fire at virtual time. When false (default), the scheduler is a no-op —
+   * what almost every test wants (otherwise `harness.run()` would have to
+   * advance virtual time through the 600s default total-timeout horizon).
+   * Timeout tests set this true and pass explicit short thresholds via
    * `InferenceOptions.inactivityTimeoutMs` / `totalTimeoutMs`.
    */
   enableInferenceTimers?: boolean;
   /**
    * Override the adapter registry exposed via `harness.deps.adapters`.
    * Defaults to `createBuiltinRegistry()` so the harness resolves the same
-   * shipped provider set production uses. Tests exercising a custom adapter
-   * pass their own registry.
+   * shipped provider set production uses.
    */
   adapters?: AdapterRegistry;
 };
 
 /**
- * Construct a fresh harness. Each call allocates its own clock (unless one
- * is passed via `opts`), its own `HarnessId` symbol, and its own per-fetch
- * waiting set, matcher table, tool-handler registry, and open-stream
- * registry. Nothing is shared across harnesses; tests should construct one
- * harness per `it`/`test` and dispose it in `afterEach`.
+ * Construct a fresh harness: its own clock (unless one is passed), its own
+ * `HarnessId` symbol, waiting set, matcher table, tool-handler registry,
+ * and open-stream registry. Nothing is shared across harnesses; construct
+ * one per `it`/`test` and dispose it in `afterEach`.
  */
 export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
   const clock = opts.clock ?? createClock();
@@ -265,9 +228,8 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
   };
 
   // Capture list for `scenario.matchedRequests()`. Each entry is a
-  // clone taken at route time and held purely as a clone-source — the
-  // entry itself is never consumed, so `matchedRequests()` can re-clone
-  // it on every call without exhausting its body.
+  // clone taken at route time and held purely as a clone-source — never
+  // consumed, so `matchedRequests()` can re-clone on every call.
   const matchedRequestsList: HarnessRequest[] = [];
 
   const routeWaitingFetch = (
@@ -279,12 +241,10 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     const idx = waiting.indexOf(wf);
     if (idx >= 0) waiting.splice(idx, 1);
     matchedRequestsList.push(wf.request.clone());
-    // Per-call abort isolation on the matched stream: once a fetch has
-    // been bound to a stream, an abort on its signal must error ONLY
-    // that stream's controller. We attach the listener here (the
-    // pre-route abort path in `stubFetch` already handled the waiting
-    // case) so the listener targets the stream the test reader is about
-    // to consume.
+    // Per-call abort isolation on the matched stream: once a fetch binds
+    // to a stream, an abort on its signal must error ONLY that stream's
+    // controller. Attach the listener here (the pre-route abort path in
+    // `stubFetch` already handled the waiting case).
     const signal = wf.signal;
     if (signal !== undefined && !signal.aborted) {
       const handle = streamToHandle.get(stream);
@@ -298,18 +258,13 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
       }
     }
     // Stall telemetry: if this stream was minted by `scenario.stall`,
-    // record when its bound fetch's signal aborts so the test can
-    // assert directly on AbortController propagation rather than only
-    // on the downstream `inference.error` event the abort produces.
+    // record when its bound fetch's signal aborts so tests can assert on
+    // AbortController propagation directly.
     const stallReg = stallRegistrations.find((r) => r.stream === stream);
     if (stallReg !== undefined) {
       if (signal === undefined) {
-        // No signal means no abort can ever fire on this fetch. The
-        // stall handle's `aborted` stays false and `awaitAbort` never
-        // resolves; that's the honest read of the situation. A test
-        // that called stall() without a signal-bearing call is using
-        // the helper outside its intended purpose, and we will not
-        // fabricate a resolution.
+        // No signal means no abort can ever fire; `aborted` stays false
+        // and `awaitAbort` never resolves.
       } else if (signal.aborted) {
         stallReg.aborted.value = true;
         stallReg.resolveAwaitAbort();
@@ -353,49 +308,31 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     sweepSettled();
   };
 
-  // Body-aware scan plumbing.
+  // Body-aware scan plumbing: when body-aware matchers exist, the sync
+  // scan (above) considers only sync matchers; the harness then buffers
+  // the body of every still-waiting fetch (in parallel, via one
+  // `clone().text()` per fetch, cached on `WaitingFetch.bodyText`) and
+  // runs a second `scanWaitingSet` pass with `includeBodyAware: true`.
   //
-  // The sync scan (above) considers only sync matchers. When body-aware
-  // matchers exist, the harness:
-  //
-  //   1. Buffers the body of every still-waiting fetch (in parallel, via
-  //      one `clone().text()` per fetch). The result is cached on the
-  //      `WaitingFetch.bodyText` field so subsequent passes don't re-read.
-  //   2. Runs a second `scanWaitingSet` pass with `includeBodyAware: true`,
-  //      which evaluates body-aware predicates over the buffered text.
-  //
-  // The buffer-then-scan ordering is deliberate: ambiguous body-aware
-  // matches are detected over a fully-buffered waiting set, not as
-  // bodies become available one at a time. That keeps the conflict
-  // semantics identical to the sync scan's "single pass over the
-  // waiting set at the trigger point" model.
+  // Buffer-then-scan is deliberate: ambiguous body-aware matches are
+  // detected over a fully-buffered set, keeping conflict semantics
+  // identical to the sync scan's single-pass model.
   //
   // `run`/`advanceTo` drain in-flight body scans alongside in-flight
   // tool handlers before checking quiescence; a body-aware match can
-  // route a fetch (which schedules clock work — the response stream's
-  // chunks fire on the virtual clock), so the outer loop re-enters
-  // `clock.run` after the scan completes.
+  // schedule clock work, so the outer loop re-enters `clock.run`.
   const inFlightBodyScans = new Set<Promise<void>>();
   const inFlightScanErrors: unknown[] = [];
 
   // Best-effort buffering, NOT transactional. When one `clone().text()`
-  // call throws, `Promise.all` rejects and `bufferUnreadBodies` itself
-  // rejects — but the other in-flight reads' resolved writes to
-  // `wf.bodyText` still land before the outer scan promise's `.catch`
-  // pushes the error to `inFlightScanErrors`. The next `run()` /
-  // `advanceTo()` rethrows that error at the call site. Readers
-  // expecting all-or-nothing buffering semantics should know that this
-  // function leaves partially-buffered state behind on failure — fine
-  // for the one-shot harness contract (a new test creates a fresh
-  // harness), but worth flagging.
+  // throws, the other in-flight reads' writes to `wf.bodyText` still
+  // land; the error is routed through `inFlightScanErrors` and re-thrown
+  // at the next `run()`/`advanceTo()`. Partially-buffered state can
+  // remain on failure — fine for the one-shot harness contract.
   const bufferUnreadBodies = async (): Promise<void> => {
-    // Loop until no unbuffered waiting fetches remain. The loop is
-    // necessary because new fetches can arrive (via `stubFetch`) while
-    // a body read is in flight — each `await` here yields the event
-    // loop and gives `stubFetch` a chance to push fresh entries onto
-    // `waiting`. Without the loop, scan-time would observe those
-    // new entries with `bodyText === undefined` and throw an internal
-    // invariant error.
+    // Loop until no unbuffered waiting fetches remain: new fetches can
+    // arrive (via `stubFetch`) while a body read is in flight, so a
+    // single pass could leave them unbuffered for the scan.
     for (;;) {
       const needBuffer = waiting.filter(
         (wf) => !wf.settled && wf.bodyText === undefined,
@@ -404,24 +341,15 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
       await Promise.all(
         needBuffer.map(async (wf) => {
           if (wf.settled) return;
-          // Re-check inside the awaited body too: another concurrent
-          // scan may have buffered this same fetch via a parallel
-          // `clone().text()` already.
+          // A concurrent scan may already have buffered this fetch.
           if (wf.bodyText !== undefined) return;
           let text: string;
           try {
             text = await wf.request.clone().text();
           } catch (err) {
-            // The fetch may have been aborted or the harness disposed
-            // while the body read was in flight. In either case the
-            // entry is already settled and we skip silently — the
-            // matching path won't see this fetch again. Anything else
-            // is a genuine read failure (e.g., a Request whose body
-            // stream cannot be re-read) and must surface; the harness
-            // routes the throw through `inFlightScanErrors` so the
-            // next `run()` / `advanceTo()` re-throws it at the call
-            // site rather than letting it manifest as a confusing
-            // downstream `UnmatchedFetchError`.
+            // Aborted or disposed mid-read: the entry is already
+            // settled, skip silently. Anything else is a genuine read
+            // failure and must surface via `inFlightScanErrors`.
             if (wf.settled) return;
             throw err;
           }
@@ -439,8 +367,7 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     const scanPromise: Promise<void> = (async () => {
       await bufferUnreadBodies();
       if (disposed) return;
-      // Re-check after the buffer await; entries can have been settled
-      // or removed in the interim.
+      // Entries may have been settled or removed during the buffer await.
       scanWaitingSet(waiting, matcherTable, routeWaitingFetch, true);
       sweepSettled();
     })()
@@ -473,22 +400,16 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
         `Harness.scenario.whenRequestMatches: stream ${String(responseStream.streamId)} was not minted by this harness`,
       );
     }
-    // Skip frames: 0 = the Error itself, 1 = captureMatcherSource, 2 = this
-    // whenRequestMatches body, 3 = the caller. The captureMatcherSource
-    // helper counts frames AFTER the Error message line, so passing `2`
-    // here lands on the immediate caller.
+    // Skip frames: 0 = the Error itself, 1 = captureMatcherSource, 2 =
+    // this whenRequestMatches body, 3 = the caller.
     const source = captureMatcherSource(2);
     matcherTable.register(predicate, responseStream, source, opts);
     runScan();
-    // Defensive: under the matcher-predicate purity rule, a pre-existing
-    // body-aware matcher would have already routed any fetch its
-    // predicate accepts on the fetch's arrival-triggered scan, so a new
-    // sync matcher arriving later can't unblock anything by itself. The
-    // re-trigger covers cases the purity rule doesn't strictly cover —
-    // a body-aware matcher's `consumed` flag flipping between scans, or
-    // a future relaxation of the purity contract. `triggerBodyAwareScan`
-    // is a no-op when no body-aware matchers exist and idempotent
-    // otherwise, so the cost of being conservative here is nil.
+    // Defensive re-trigger: a pre-existing body-aware matcher would have
+    // already routed any accepting fetch under the purity rule, but the
+    // re-trigger covers edge cases (consumed flags flipping between
+    // scans, future purity relaxation). No-op when no body-aware
+    // matchers exist.
     triggerBodyAwareScan();
   };
 
@@ -514,21 +435,18 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     }
     const source = captureMatcherSource(2);
     matcherTable.registerBodyAware(predicate, responseStream, source, opts);
-    // Sync scan first: a sync matcher might still bind a fetch (the
-    // new body-aware matcher is skipped in the sync pass), and the
-    // sweep below keeps the waiting set tidy before the async scan
-    // reads it.
+    // Sync scan first: a sync matcher might still bind a fetch (the new
+    // body-aware matcher is skipped in the sync pass), and the sweep
+    // keeps the waiting set tidy before the async scan reads it.
     runScan();
     triggerBodyAwareScan();
   };
 
   const inFlightToolHandlers = new Set<Promise<void>>();
   // Collects rejections from in-flight tool handler promises so the
-  // quiescence loop can re-throw them deterministically. Without this,
-  // a rejection that lands between the `Promise.all` await and the next
-  // loop iteration would be lost (the handler was removed from the
-  // in-flight set by its own `finally` before Promise.all could observe
-  // it).
+  // quiescence loop can re-throw them deterministically; without this a
+  // rejection landing between the `Promise.all` await and the next loop
+  // iteration would be lost.
   const inFlightErrors: unknown[] = [];
 
   const trackInFlight = (promise: Promise<void>): void => {
@@ -624,19 +542,13 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
 
   const matchedRequests = (): HarnessRequest[] =>
     // Re-clone every stored Request on each call so the returned objects
-    // are fully independent — both from one another AND across repeat
-    // calls. The stored route-time clone is never consumed (it's only
-    // used as a source for further `.clone()` calls), so subsequent
-    // body reads against the returned Requests succeed even if a prior
-    // call already drained one.
+    // are fully independent of each other and of later calls. The stored
+    // route-time clone is never consumed.
     matchedRequestsList.map((r) => r.clone());
 
   let nextAutoCallId = 0;
-  // The `call_auto_` prefix is reserved for ids the harness mints on
-  // behalf of the friendlier `{ name, args }` shape. Tests that pin an
-  // explicit `callId` against the explicit shape must not collide with
-  // it; rejecting at registration is friendlier than the silent
-  // confusion of two tool calls sharing an id mid-stream.
+  // The `call_auto_` prefix is reserved for ids the harness mints for
+  // the `{ name, args }` shape; pinned explicit callIds must not collide.
   const AUTO_CALL_ID_PREFIX = "call_auto_";
   const normalizeToolCalls = (
     toolCalls: readonly ReplyOnceToolCall[],
@@ -677,9 +589,9 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
       ...(opts.headUsage !== undefined ? { headUsage: opts.headUsage } : {}),
       ...(opts.tailUsage !== undefined ? { tailUsage: opts.tailUsage } : {}),
     });
-    // Schedule at the next safe virtual time so callers do not have to
-    // compute `clock.now() + N` themselves and so multiple replyOnce
-    // calls in the same test never schedule into the past.
+    // Schedule at `clock.now() + 1` so callers need not compute the next
+    // safe virtual time themselves and multiple replyOnce calls never
+    // schedule into the past.
     stream.enqueueAll(chunks, { startAt: clock.now() + 1 });
     whenRequestMatches(
       opts.predicate ?? (() => true),
@@ -738,8 +650,8 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
   ): HarnessRequest => {
     // Single owned bridge between the undici-typed `new Request()` the stub
     // mints and the harness's public `HarnessRequest` (Bun's global shape).
-    // Concentrating the cast here means the waiting set, predicates, and
-    // `matchedRequests()` all speak one consistent request type downstream.
+    // Concentrating the cast here keeps the waiting set, predicates, and
+    // `matchedRequests()` on one consistent request type downstream.
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- type-only bridge between undici Request and the harness's Bun-global-shaped HarnessRequest
     const built = (
       input instanceof Request
@@ -796,17 +708,11 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
       try {
         runScan();
       } catch (err) {
-        // scanWaitingSet rejects conflicting waiting fetches itself before
-        // throwing. If this fetch wasn't part of the conflict, it remains
-        // in the waiting set unchanged. Propagate the error to whoever
-        // triggered the scan (here, the fetch caller) only if this fetch
-        // was the conflict's settler. Otherwise swallow the throw — the
-        // conflict's victims have already been rejected with the error.
+        // scanWaitingSet rejects conflicting fetches itself before
+        // throwing. If this fetch wasn't the conflict's settler, it
+        // remains in the waiting set; swallow the throw. Otherwise
+        // settle it with the error too so the caller's await rejects.
         if (!entry.settled) {
-          // We pushed this fetch in the same call and the new arrival
-          // triggered the scan that surfaced the ambiguity. Settle this
-          // fetch with the error too so the caller's await rejects rather
-          // than waiting forever.
           entry.settled = true;
           const idx = waiting.indexOf(entry);
           if (idx >= 0) waiting.splice(idx, 1);
@@ -823,32 +729,15 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     });
   };
 
-  // Scheduler exposed via deps. Behaviour depends on opts.enableInferenceTimers:
-  //
-  //   - false (default): a no-op — every `setTimeout` returns a no-op
-  //     canceller without scheduling anything. Production timers in
-  //     `runInference` are inert, which is what every test that isn't
-  //     specifically asserting timeout behaviour wants (otherwise
-  //     `harness.run()` would have to advance virtual time through the
-  //     600s default total-timeout horizon on every call).
-  //   - true: backed by the virtual clock, so the inference layer's
-  //     inactivity / total timers fire at virtual time exactly when
-  //     they would in production. Tests that exercise timeout
-  //     behaviour set this and pass explicit short thresholds.
-  // The inert scheduler's no-op canceller has nothing to cancel because
-  // its `setTimeout` never scheduled anything in the first place.
+  // Scheduler exposed via deps. With enableInferenceTimers false
+  // (default) every `setTimeout` is a no-op — production timers stay
+  // inert, which is what almost every test wants; with true, timers
+  // are backed by the virtual clock and fire at virtual time.
   const noopCanceller = (): void => {
     /* no scheduled work to cancel */
   };
-  // The inert scheduler intentionally exposes an asymmetric pair:
-  // `setTimeout` is a no-op (production timers are suppressed when
-  // `enableInferenceTimers` is left at its default `false`), but
-  // `now()` still reflects the virtual clock. A test that doesn't
-  // exercise inference timers may still advance the clock for other
-  // purposes; reading wall-clock or a frozen `0` here would silently
-  // diverge `now()` from the test's authoritative time source. The
-  // asymmetry is deliberate — every test gets a coherent time
-  // reading even when it has opted out of production-timer firing.
+  // The inert scheduler still reports the virtual clock via `now()` so
+  // tests that advance the clock for other purposes read a coherent time.
   const inertScheduler: Scheduler = {
     setTimeout: () => noopCanceller,
     now: () => clock.now(),
@@ -885,11 +774,9 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
   };
 
   clock.onSyncCallbackError((err) => {
-    // A scheduled callback threw synchronously inside `advanceTo`/`run`.
-    // Error every still-open simulated stream so the next test does not
-    // inherit dangling readers parked on a never-completing `read()`.
-    // `forceError` is idempotent; streams already terminated naturally
-    // (or errored by the throwing callback itself) are skipped.
+    // A scheduled callback threw synchronously; error every still-open
+    // stream so the next test does not inherit dangling readers.
+    // `forceError` is idempotent.
     for (const handle of openStreams) {
       handle.forceError(err);
     }
@@ -916,8 +803,8 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     const unmatched = collectUnmatched();
     if (unmatched.length === 0) return;
     // Settle every unmatched fetch with the same error so awaiters reject
-    // rather than hang. The thrown error also surfaces to the test's
-    // `await harness.run()` / `await harness.advanceTo(...)` site.
+    // rather than hang; the error also surfaces at the `run`/`advanceTo`
+    // call site.
     const err = new UnmatchedFetchError(unmatched);
     for (let i = waiting.length - 1; i >= 0; i--) {
       const wf = waiting[i];
@@ -933,10 +820,7 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
 
   const takeInFlightError = (): unknown => {
     if (inFlightErrors.length === 0) return undefined;
-    // Surface the first rejection; additional ones (rare — would require
-    // multiple in-flight handlers rejecting in the same tick) are dropped
-    // to keep the contract simple. A future slice can extend to
-    // AggregateError if real tests need it.
+    // Surface the first rejection; any additional ones are dropped.
     const [first] = inFlightErrors.splice(0, inFlightErrors.length);
     return first;
   };
@@ -947,17 +831,11 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     startWall: number,
     wallClockBudgetMs: number,
   ): Promise<void> => {
-    // Repeatedly await any in-flight promises tracked in `set`. The set's
-    // population may grow during a wait — e.g., a tool handler that
-    // schedules more clock work, or a body-aware scan that triggers a
-    // follow-up scan after routing — so the loop reads `set.size` each
-    // pass and the snapshot is re-taken before each await.
-    //
-    // The drain races each batch against a real-time timer so a promise
-    // that's blocked on a real wall-clock timer (e.g., setTimeout(...))
-    // surfaces as a ClockWallClockOverrunError instead of hanging the
-    // test. This mirrors the budget the clock itself enforces inside
-    // `clock.run()`.
+    // Await the set until empty; its population may grow during a wait
+    // (handlers scheduling more work, scans triggering follow-ups), so
+    // re-read `set.size` each pass. Race each batch against a real-time
+    // timer so a promise blocked on a real wall-clock timer surfaces as
+    // a ClockWallClockOverrunError instead of hanging the test.
     while (set.size > 0) {
       if (wallClockBudgetMs === Infinity) {
         await Promise.all([...set]);
@@ -1014,11 +892,8 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
 
   const takeBodyScanError = (): unknown => {
     if (inFlightScanErrors.length === 0) return undefined;
-    // Surface the first rejection; additional ones (rare — would require
-    // multiple body-aware scans rejecting in the same tick, e.g., two
-    // concurrent body reads both throwing) are dropped to keep the
-    // contract simple, mirroring `takeInFlightError`. A future slice
-    // can extend to AggregateError if real tests need it.
+    // Surface the first rejection; any additional ones are dropped,
+    // mirroring `takeInFlightError`.
     const [first] = inFlightScanErrors.splice(0, inFlightScanErrors.length);
     return first;
   };
@@ -1034,16 +909,11 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     startWall: number,
     wallClockBudgetMs: number,
   ): Promise<boolean> => {
-    // Drains both in-flight tool handlers and in-flight body-aware
-    // scans, in that order, surfacing the first error from either. The
-    // caller (run / advanceTo) loops until this returns `false`,
-    // meaning nothing was drained on this pass — at which point the
-    // clock is also empty and the harness can declare quiescence.
-    //
-    // Order matters: tool handlers can register more matchers (which
-    // can trigger body scans), so draining handlers first lets the
-    // subsequent body-scan drain catch their fallout in the same
-    // outer iteration.
+    // Drain in-flight tool handlers, then body-aware scans, surfacing
+    // the first error from either. Returns false when nothing was
+    // drained, at which point the clock is empty and quiescence can be
+    // declared. Handlers first: they can register matchers that trigger
+    // body scans, so the scans drain after in the same outer iteration.
     let drained = false;
     if (inFlightToolHandlers.size > 0) {
       drained = true;
@@ -1073,15 +943,12 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
         if (scanErr !== undefined) throw scanErr;
         const drained = await drainPendingWork(startWall, wallClockBudgetMs);
         if (!drained) break;
-        // Loop: handler resolution may have scheduled new heap entries or
-        // registered new matchers, and body-aware scans may have routed
-        // fetches into new chunk-firing on the clock; let `clock.run()`
-        // settle the new work before we declare quiescence.
+        // Handlers and scans may have scheduled new work; loop so
+        // `clock.run()` settles it before quiescence is declared.
       }
     } catch (err) {
-      // The harness is intended to be one-shot, but defensively clear any
-      // tracked in-flight work and queued rejections so a caller that
-      // re-uses this harness after a throw does not inherit stale state.
+      // One-shot harness: clear tracked in-flight work so a re-used
+      // harness after a throw does not inherit stale state.
       clearInFlightState();
       throw err;
     }
@@ -1092,9 +959,7 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     virtualMs: number,
     advanceOpts?: AdvanceOpts,
   ): Promise<void> => {
-    // advanceTo's wall-clock budget mirrors run()'s default. AdvanceOpts
-    // does not expose a wallClockBudgetMs knob today; the in-flight drain
-    // uses the default so stuck work still surfaces as an overrun.
+    // Wall-clock budget mirrors run()'s default; AdvanceOpts has no knob.
     const startWall = performance.now();
     try {
       for (;;) {
@@ -1164,12 +1029,10 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
         `Harness.abortBefore: stream ${String(streamId)} is already in a terminal state`,
       );
     }
-    // Cancel every pending heap entry for this stream first. The entries
-    // remain on the clock heap but the closures now check `cancelled`
-    // before doing anything, so when the clock eventually pops them they
-    // are no-ops. This is the seq-ordering workaround: we cannot inject
-    // a lower seq into the heap from outside the clock, so instead we
-    // make every later-seq entry for this stream inert.
+    // Cancel pending heap entries first: they stay on the heap but turn
+    // into no-ops when popped, so the body never sees them. This is the
+    // seq-ordering workaround — we cannot inject a lower seq into the
+    // heap from outside the clock.
     handle.cancelPending();
     handle.forceError(new DOMException("aborted", "AbortError"));
   };
@@ -1182,8 +1045,8 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     }
     openStreams.clear();
     streamIdToHandle.clear();
-    // Reject any still-waiting fetches so awaiters don't hang after
-    // dispose; dispose is a hard teardown, not a quiescence check.
+    // Reject any still-waiting fetches so awaiters don't hang; dispose
+    // is a hard teardown, not a quiescence check.
     for (const wf of waiting) {
       if (wf.settled) continue;
       wf.settled = true;
@@ -1196,8 +1059,8 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     inFlightBodyScans.clear();
     inFlightScanErrors.length = 0;
     abortAfterRegistrations.length = 0;
-    // Resolve any still-pending stall awaits so test code that awaited
-    // `stall.awaitAbort` past dispose does not deadlock the test runner.
+    // Resolve still-pending stall awaits so tests awaiting them past
+    // dispose do not deadlock the runner.
     for (const reg of stallRegistrations) {
       reg.resolveAwaitAbort();
     }

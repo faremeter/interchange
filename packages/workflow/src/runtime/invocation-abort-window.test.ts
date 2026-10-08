@@ -5,11 +5,10 @@
 // under a synthetic teardown: cancelling a run aborts the controller that
 // every per-primitive abort wraps, and the cancel's own durable write is
 // queued on the same per-run commit chain as the step's start, so it lands
-// directly behind it.
-//
-// A bridge that subscribes to the abort edge alone misses one already raised,
-// leaving the invoker a signal that can never fire. Each case below covers one
-// invocation runner, so reverting either guard fails only its own test.
+// directly behind it. A bridge that subscribes to the abort edge alone misses
+// one already raised, leaving the invoker a signal that can never fire. Each
+// case below covers one invocation runner, so reverting either guard fails
+// only its own test.
 
 import { describe, test, expect } from "bun:test";
 
@@ -53,8 +52,8 @@ const oneAction = defineWorkflow({
 
 /**
  * Resolve only when `signal` aborts, checking the level before subscribing to
- * the edge. A real invoker guards this way, so a mock that does not would
- * hang on a correctly delivered abort and hide the very fix under test.
+ * the edge. A real invoker guards this way; a mock that does not would hang
+ * on a correctly delivered abort and hide the very fix under test.
  */
 async function blockUntilAborted(
   signal: AbortSignal | undefined,
@@ -72,8 +71,8 @@ async function blockUntilAborted(
 }
 
 /**
- * The shared abort-window env, plus whichever invoker the case under test
- * needs to observe the signal it is handed.
+ * The shared abort-window env plus whichever invoker the case needs to
+ * observe the signal it is handed.
  */
 function buildEnv(
   def: WorkflowDefinition,

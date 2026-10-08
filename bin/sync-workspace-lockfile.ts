@@ -1,23 +1,23 @@
 #!/usr/bin/env bun
 /* eslint-disable no-console */
 
-// Refresh the workspace member versions recorded in `bun.lock` to a release
-// version. `bin/release` bumps every workspace package.json version, but bun
-// does not rewrite the version it records for each workspace member in
-// `bun.lock` — plain `bun install`, `--force`, and `--lockfile-only` all
-// leave it stale. `bun pm pack` derives the `workspace:*` -> concrete
-// dependency rewrite from that recorded version, so a stale lockfile would
-// publish internal dependencies pinned to the previous version: an
-// unresolvable graph on npm, the exact failure this project fixes.
+// Refresh the workspace member versions recorded in `bun.lock` to a
+// release version. `bin/release` bumps every workspace package.json
+// version, but bun does not rewrite the version it records for each
+// workspace member in `bun.lock` — plain `bun install`, `--force`, and
+// `--lockfile-only` all leave it stale. `bun pm pack` derives the
+// `workspace:*` -> concrete dependency rewrite from that recorded version,
+// so a stale lockfile would publish internal dependencies pinned to the
+// previous version: an unresolvable graph on npm.
 //
 // Deleting and regenerating the lockfile refreshes those versions but
 // re-resolves the whole third-party graph, drifting hundreds of lines
-// within semver ranges — unreviewed churn in a release commit. Instead this
-// edits only the `version` values inside the top-level `workspaces` section
-// (the sole place workspace versions live; third-party packages use a
-// different array syntax under `packages`), preserving bun's exact format
-// everywhere else. The section is located by brace-matching and the result
-// is re-parsed to confirm every workspace version is the release version.
+// within semver ranges. Instead this edits only the `version` values
+// inside the top-level `workspaces` section (the sole place workspace
+// versions live; third-party packages use a different array syntax under
+// `packages`), preserving bun's exact format everywhere else. The section
+// is located by brace-matching and the result is re-parsed to confirm
+// every workspace version is the release version.
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -30,9 +30,9 @@ interface StringScan {
   escaped: boolean;
 }
 
-/** Advance the string-scan state by one character, so a structural scan can
- *  tell whether a brace or comma sits inside a string value (where it must be
- *  ignored) or outside it. */
+/** Advance the string-scan state by one character, so a structural scan
+ *  can tell whether a brace or comma sits inside a string value (where it
+ *  must be ignored) or outside it. */
 function stepStringScan(c: string | undefined, s: StringScan): StringScan {
   if (s.inString) {
     if (s.escaped) return { inString: true, escaped: false };
@@ -138,9 +138,8 @@ export function rewriteWorkspaceVersions(
   let section = lockText.slice(sectionOpen, sectionClose + 1);
 
   // Edit each member's own `version` — the first `version` in its block,
-  // which precedes any `dependencies` object. Scoping to the block (rather
-  // than a section-wide replace) leaves a dependency that happens to be
-  // named `version` untouched.
+  // which precedes any `dependencies` object. Scoping to the block leaves
+  // a dependency that happens to be named `version` untouched.
   for (const path of members) {
     const marker = section.indexOf(`"${path}": {`);
     if (marker === -1) {

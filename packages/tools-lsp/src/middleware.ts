@@ -24,9 +24,8 @@ export function createLSPMiddleware(
     const filePath = path.isAbsolute(arg) ? arg : path.resolve(opts.cwd, arg);
 
     if (call.name === TOOL_NAMES.READ_FILE) {
-      // Fire-and-forget: warm the LSP server so it is ready for follow-up
-      // operations. The lsp tool handler does its own touchFile before
-      // dispatching, so immediate follow-up operations still work.
+      // Fire-and-forget: warm the LSP server for follow-up operations. The
+      // lsp tool handler does its own touchFile before dispatching.
       void lsp.touchFile(filePath).catch(() => undefined);
       return result;
     }

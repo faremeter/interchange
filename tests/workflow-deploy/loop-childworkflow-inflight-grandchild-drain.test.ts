@@ -1,15 +1,13 @@
-// Deployed drain of a loop body whose `childWorkflow` grandchild is IN-FLIGHT.
-//
-// Companion to loop-await-signal-drain-roundtrip (a loop body parked on its own
-// awaitSignal). Here the loop body's step is a `childWorkflow` spawn of a
-// grandchild that is mid-step on a long sleep, so at drain time the grandchild
-// is a live in-process terminal child. The drain cascade must tear the
-// grandchild down LOCALLY -- it runs under the workflow-process principal and
-// cannot sign the supervisor `CancelRequested` a control-plane cancel needs --
-// so its step fails to `RunFailed`, `createSidecarRunChild` returns, the loop
-// body's spawn step unblocks, and the whole run settles `RunFailed`. If the
-// grandchild instead self-wrote a supervisor cancel, the proxy would author it
-// as workflow-process, the kind handler would reject it, the grandchild would
+// Deployed drain of a loop body whose `childWorkflow` grandchild is IN-FLIGHT:
+// the loop body's step is a `childWorkflow` spawn of a grandchild mid-step on a
+// long sleep, so at drain time the grandchild is a live in-process terminal
+// child. The drain cascade must tear the grandchild down LOCALLY -- it runs
+// under the workflow-process principal and cannot sign the supervisor
+// `CancelRequested` a control-plane cancel needs -- so its step fails to
+// `RunFailed`, `createSidecarRunChild` returns, the loop body's spawn step
+// unblocks, and the whole run settles `RunFailed`. If the grandchild instead
+// self-wrote a supervisor cancel, the proxy would author it as
+// workflow-process, the kind handler would reject it, the grandchild would
 // wedge un-settled, and the loop body's spawn step (awaiting the grandchild
 // terminal) would HANG the run -- the defect this guards against, one level
 // below the loop iteration itself.

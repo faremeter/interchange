@@ -25,40 +25,27 @@ function builtinFactories(): Record<string, AdapterFactory> {
   };
 }
 
-/**
- * Builds a registry of the adapters this package ships with, statically linked
- * and resolved synchronously. The per-call factory invariant (a fresh adapter
- * minted on every `resolve`) lives in {@link createAdapterRegistry}.
- *
- * @returns A registry resolving the built-in providers
- */
+/** Registry of the adapters this package ships with, statically linked and
+ *  resolved synchronously. The per-call factory invariant (a fresh adapter
+ *  per `resolve`) lives in {@link createAdapterRegistry}. */
 export function createBuiltinRegistry(): AdapterRegistry {
   return createAdapterRegistry(builtinFactories());
 }
 
 /**
- * Construct runtime dependencies wired to the built-in adapter registry. This
- * is the honest zero-arg default for hosts that need the shipped provider set:
- * it binds `globalThis.fetch` and the production scheduler via
- * {@link createDependencies}. Hosts with custom adapters build a registry
- * through {@link loadAdapterRegistry} and pass it to `createDependencies`.
- *
- * @returns Dependencies resolving the built-in providers
+ * Runtime dependencies wired to the built-in adapters: binds
+ * globalThis.fetch and the production scheduler. Hosts with custom adapters
+ * build a registry via {@link loadAdapterRegistry} and pass it to
+ * {@link createDependencies}.
  */
 export function createDefaultDependencies(): Dependencies {
   return createDependencies(createBuiltinRegistry());
 }
 
 /**
- * Builds a registry of the built-in adapters merged with custom adapters loaded
- * from an operator-configured manifest. Custom adapters override built-ins
- * sharing a provider key. With an empty manifest this returns just the
- * built-ins. The per-call factory invariant lives in
- * {@link createAdapterRegistry}.
- *
- * @param manifest - Validated custom adapter manifest entries
- * @param opts - Optional injected module importer
- * @returns A registry resolving built-in and custom providers
+ * Built-in adapters merged with custom adapters loaded from an
+ * operator-configured manifest; custom adapters override built-ins on the
+ * same provider key.
  */
 export async function loadAdapterRegistry(
   manifest: AdapterManifest,

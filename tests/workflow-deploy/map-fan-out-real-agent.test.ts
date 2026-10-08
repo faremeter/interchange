@@ -10,25 +10,16 @@
 // The only other map test (`per-level-pipeline-real-agents.test.ts`) runs
 // the runtime in-memory with a test `buildEnv`, so it never drives the
 // sidecar's scoped-id lookup sites -- which is why the scoped-id bug was
-// invisible to CI. This test deploys a top-level map BY SOURCE-REF (bundle a
-// source entry module into a hub asset, probe it, approve+freeze it against a
-// real DB, deploy the source-ref frame) through the real hub + real sidecar
-// subprocess + mock inference fixture and asserts each iteration's committed
-// output is the agent's deterministic reply.
+// invisible to CI. This test deploys a top-level map BY SOURCE-REF through
+// the real hub + sidecar subprocess + mock inference fixture and asserts
+// each iteration's committed output is the agent's deterministic reply.
 //
 // The workflow is deliberately multi-step (a leading `seed` step plus the
-// `fanout` map) so the deploy stages per-step assets at a per-step address. A
-// regressed lookup throws (or materializes nothing) on the scoped id, so the
-// run would terminate `RunFailed` or the reply would omit the expected
-// content; the assertions below are the regression tripwires.
+// `fanout` map) so the deploy stages per-step assets at a per-step address; a
+// regressed lookup throws or materializes nothing on the scoped id.
 //
-// Two cases share the same fixture shape:
-//   - No tool: each iteration's reply is the empty-tool-set prefix, guarding
-//     the inference-source resolver (a regressed lookup throws -> RunFailed).
-//   - An inline tool: the per-item agent carries the inline `mail_send` tool,
-//     so each iteration's reply lists the tool, guarding the tool-deploy-tree
-//     base resolution (a regressed lookup reads the unstaged scoped address ->
-//     empty tools -> the tool is absent from the reply).
+// Two cases share the same fixture shape: no tool (guards the inference-source
+// resolver) and an inline tool (guards the tool-deploy-tree base resolution).
 // The grant scoped-id lookup keeps its unit coverage
 // (`credentials-backed-authorize.test.ts`).
 
@@ -282,8 +273,7 @@ async function deployAndRunMap(opts: {
 
   const workflowRunRepoId: RepoId = handle.workflowRunRepoId;
 
-  // The source-ref frame round-trips through the real sidecar subprocess, so
-  // routability is asynchronous. Wait for it before firing the trigger.
+  // The source-ref frame round-trips through the real sidecar subprocess; routability is async, so wait before firing the trigger.
   await waitFor(
     () => env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
     { diagnostics: env.sidecarDiagnostics },

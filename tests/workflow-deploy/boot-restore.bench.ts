@@ -7,47 +7,33 @@
 // spawns each deployment's supervisor SERIALLY; this bench quantifies the
 // per-deployment restore cost that serial spawn imposes.
 //
-// The measured operation is `SidecarDeployRouter.restoreWorkflowRuns()`
-// on the workflow host's deploy program. For each batch size N the
-// bench:
-//
+// For each batch size N the bench:
 //   1. SETUP (not timed): stands up N single-step deployments through a first
 //      router over a scratch data dir, so N `deployment.json` records plus
-//      their `assets/workflow/<id>/workflow.json` and per-step grants land on
-//      disk exactly as a live deploy would leave them.
-//   2. RESTORE (timed): builds a SECOND router with a FRESH transport (an
-//      empty registration table -- the sidecar-restart model) over the SAME
-//      data dir, then brackets `restoreWorkflowRuns()` with
-//      `performance.now()`. The child handshakes are driven concurrently (the
-//      driver blocks on each `supervisor.spawn` until its child signals
-//      `ready`), so the measured interval is the real serial restore-to-ready
-//      path: scan -> per-record re-validate -> spawn -> ready, N times.
+//      their assets and per-step grants land on disk exactly as a live deploy
+//      would leave them.
+//   2. RESTORE (timed): builds a SECOND router with a FRESH transport (the
+//      sidecar-restart model) over the SAME data dir, then brackets
+//      `restoreWorkflowRuns()` with `performance.now()`. The child handshakes
+//      are driven concurrently, so the measured interval is the real serial
+//      restore-to-ready path: scan -> re-validate -> spawn -> ready, N times.
 //   3. READINESS: confirms all N restored addresses are live via
 //      `activeAddresses()` before recording the sample.
 //
 // The subprocess spawner is a deterministic in-memory ready-driver (no real
 // `Bun.spawn`), so the sample isolates the restore driver's own per-deployment
-// cost -- scan, validation, supervisor construction, transport registration --
-// rather than OS process-spawn latency. The FIRST batch's sample is discarded
-// (cold: first isogit/module warm), matching the standalone latency gate.
+// cost rather than OS process-spawn latency. The FIRST batch's sample is
+// discarded (cold: first isogit/module warm).
 //
-// The measured interval ends when `restoreWorkflowRuns()` resolves --
-// i.e. once every supervisor has spawned and handshaked `ready`. AFTER that,
-// each supervisor's dispatch loop runs against the disk-backed stub RepoStore
-// (which mirrors the wiring test's fixture and implements only the handful of
-// methods the deploy/restore-to-ready path exercises), so its
-// `replayProcessingToInbox` / dispatch iteration logs a WRN/ERR for the
-// unimplemented `writeTreeDelta`. Those lines are post-measurement background
-// noise, not a restore failure: readiness is asserted via `activeAddresses()`
-// before the sample is recorded.
+// The measured interval ends when `restoreWorkflowRuns()` resolves. After
+// that, each supervisor's dispatch loop runs against the disk-backed stub
+// RepoStore, whose `replayProcessingToInbox` logs WRN/ERR for the unimplemented
+// `writeTreeDelta` -- post-measurement background noise, not a restore failure;
+// readiness is asserted via `activeAddresses()` before the sample is recorded.
 //
-// Run:
-//   bun run tests/workflow-deploy/boot-restore.bench.ts \
-//     [--sizes 1,5,10,20] [--out <dir>]
-//
-// Writes <out>/results.json and prints a per-N table to stdout. Not matched by
-// `bun test` (it is a `.bench.ts`, not a `.test.ts`), so `make test` never
-// runs it; it is type-checked by this directory's tsconfig.
+// Run: bun run tests/workflow-deploy/boot-restore.bench.ts [--sizes 1,5,10,20]
+// [--out <dir>]. Writes <out>/results.json. Not matched by `bun test` (a
+// `.bench.ts`); type-checked by this directory's tsconfig.
 
 import fs from "node:fs";
 import os from "node:os";
@@ -233,9 +219,9 @@ function createSpawnTestRepoStore(tempBase: string): RepoStore {
  * The injected closure materializer stub. Source-ref is the only deploy
  * lineage, so the router derives each deployment's definition through this
  * dependency on both the deploy and the restore path. Returns a valid
- * single-step `step-1` live definition (its step carries an agent so it survives
- * `projectLiveToInert`) keyed to the deployment id, so each of the N deployments
- * materializes a distinct, deterministic definition.
+ * single-step `step-1` live definition (its step carries an agent so it
+ * survives `projectLiveToInert`) keyed to the deployment id, so each of the N
+ * deployments materializes a distinct, deterministic definition.
  */
 const stubApplyFrozenWorkflowClosure: NonNullable<
   Parameters<typeof createSidecarDeployRouter>[0]["applyFrozenWorkflowClosure"]
@@ -360,11 +346,11 @@ async function buildRouter(args: {
     },
     // Source-ref is the only deploy lineage: the router derives each
     // deployment's runnable definition by materializing the pin's closure
-    // through this dependency, on both the deploy and the restore path. The stub
-    // returns a valid single-step `step-1` live definition (its step carries an
-    // agent so it survives `projectLiveToInert`) whose id is keyed to the
-    // deployment id, so each of the N deployments materializes a distinct,
-    // deterministic definition on both deploy and restore.
+    // through this dependency, on both the deploy and the restore path. The
+    // stub returns a valid single-step `step-1` live definition (its step
+    // carries an agent so it survives `projectLiveToInert`) whose id is keyed
+    // to the deployment id, so each of the N deployments materializes a
+    // distinct, deterministic definition on both deploy and restore.
     applyFrozenWorkflowClosure: stubApplyFrozenWorkflowClosure,
   });
 }

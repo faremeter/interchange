@@ -1,10 +1,7 @@
 // HTTP readiness polling shared by the hub-subprocess harness and the
-// dev orchestrator.
-//
-// A connection failure or a 5xx means "still starting"; any routable
-// response (200, 401, 404) proves the listener is up. The last probe
-// failure rides along in the timeout error so a hung start stays
-// diagnosable.
+// dev orchestrator: a connection failure or 5xx means "still starting";
+// any routable response (200, 401, 404) proves the listener is up. The
+// last probe failure rides along in the timeout error.
 
 /**
  * Poll `url` until it responds with a status below 500 or `timeoutMs`

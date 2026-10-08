@@ -36,9 +36,9 @@ import {
 const REQ_OPUS: ModelRequirement[] = [{ model: "opus" }];
 
 // These direct-call tests seed PLAINTEXT secrets, so they resolve through an
-// explicit noop cipher (which passes a plaintext value through). The two tests
-// that seed real ciphertext -- or that assert the strict decrypt rejects a
-// plaintext -- pass a real `createTestCredentialCipher()` instead.
+// explicit noop cipher (which passes a plaintext value through). The tests
+// that seed real ciphertext -- or assert the strict decrypt rejects a
+// plaintext -- pass `createTestCredentialCipher()` instead.
 const noopCipher = createNoopCredentialCipher();
 
 // Credential use is authorized by tenant ownership within the hierarchy (see
@@ -217,8 +217,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       test("fails closed when a stored secret is not a ciphertext", async () => {
         // seedBase stores a plaintext secret; a real cipher's strict decrypt
-        // rejects it rather than delivering a bad key -- the un-re-keyed-row
-        // guard.
+        // rejects it rather than delivering a bad key (the un-re-keyed-row
+        // guard).
         await seedBase();
         const cipher = createTestCredentialCipher();
         await expect(
@@ -368,12 +368,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
 
       test("refuses a credential on a tenant outside the ancestor chain", async () => {
-        // The provider references a real credential, but the credential lives
-        // on a sibling tenant outside the resolving chain. resolveCredentialById
-        // refuses it so its secret is never emitted, and the offering is
-        // skipped as credential_unresolved. The real foreign key requires the
-        // credential to exist, so an off-chain row replaces the old "no row at
-        // all" fixture.
+        // The provider references a real credential on a sibling tenant
+        // outside the resolving chain. resolveCredentialById refuses it so its
+        // secret is never emitted, and the offering is skipped as
+        // credential_unresolved. The real FK requires the credential to exist,
+        // so an off-chain row replaces the old "no row at all" fixture.
         await seedTenants(h.db, [{ id: "tnt_root" }, { id: "tnt_sibling" }]);
         await seedProvider(h.db, {
           id: "prv_x",
@@ -488,7 +487,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           tenantId: "tnt_root",
         });
         // The creator is authorized to use every catalog credential, so
-        // rotation-time re-resolution keeps emitting the secret. The
+        // rotation-time re-resolution keeps emitting the secret; the
         // authorization gate itself is exercised by a dedicated suite.
         await seedGrant(h.db, {
           id: "grt_creator_use",
@@ -498,8 +497,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
           action: "use",
         });
         // resolveInstanceModelSources reads the requirements off the
-        // definition -- so seed them there (mirroring the launch path, which
-        // also resolves off the definition, so reconnect reproduces the launch
+        // definition -- seed them there, mirroring the launch path (which also
+        // resolves off the definition, so reconnect reproduces launch
         // ordering).
         await h.db.insert(workflowDefinition).values({
           id: "wfd_1",

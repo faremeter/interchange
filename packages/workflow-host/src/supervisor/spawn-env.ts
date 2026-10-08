@@ -1,11 +1,11 @@
 // Supervisor-side producer of the workflow-process child's spawn-time env.
 //
-// Both the initial spawn and every recycle respawn route the env through
-// this single builder, so the required-key contract the child-side parser
-// (`parseSpawnTimeEnv`) enforces has exactly one producer. A divergence
-// between the two paths -- the recycle env once omitted `STEP_COUNT` and
-// broke every recycle -- is no longer expressible: the required keys are
-// built as an exactly-typed record, so omitting one is a compile error.
+// Both the initial spawn and every recycle respawn route the env
+// through this single builder, so the required-key contract the
+// child-side parser (`parseSpawnTimeEnv`) enforces has exactly one
+// producer. A divergence between the two paths is no longer
+// expressible: the required keys are built as an exactly-typed record,
+// so omitting one is a compile error.
 
 import { hexEncode } from "@intx/types";
 
@@ -13,17 +13,15 @@ import type { RequiredSpawnEnvKey } from "../child/env-bootstrap";
 
 export interface ChildSpawnEnvParts {
   /**
-   * The deployment's stable substrate env (DATA_DIR, the adapter manifest,
-   * and so on), frozen for the deployment's lifetime. Layered UNDER the
-   * dynamic env fragment (so a host revision wins) and the per-spawn anchors
-   * (so a required key is never shadowed).
+   * The deployment's stable substrate env (DATA_DIR, adapter manifest,
+   * ...), frozen for the deployment's lifetime. Layered UNDER the
+   * dynamic env fragment and the per-spawn anchors.
    */
   substrateEnv: Record<string, string>;
   /**
    * Host-supplied dynamic env fragment, recomputed for every spawn and
-   * respawn. Its keys layer OVER `substrateEnv` (so a value the host revised
-   * between spawns wins) and UNDER the required anchors. Returns `{}` when
-   * the host has no dynamic entries.
+   * respawn. Layers OVER `substrateEnv` and UNDER the required anchors.
+   * Returns `{}` when the host has no dynamic entries.
    */
   dynamicSpawnEnv: () => Record<string, string>;
   /** Supervisor-minted IPC channel id for this spawn. */
@@ -66,8 +64,8 @@ export function buildChildSpawnEnv(
   };
   return {
     ...parts.substrateEnv,
-    // Host-revised entries win over the frozen substrate env; the required
-    // anchors below still win over everything.
+    // Host-revised entries win over the frozen substrate env; the
+    // required anchors below win over everything.
     ...parts.dynamicSpawnEnv(),
     ...required,
     WARM_KEEP: parts.warmKeep ? "true" : "false",

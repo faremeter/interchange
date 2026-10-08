@@ -3,13 +3,8 @@
 // onTrigger input) through the run's grant materialization and the sidecar's
 // dispatch transport. Both the deployment Trigger route and the run mail-send
 // route drive this one path so the two surfaces cannot drift on how a run is
-// fired, authorized, or delivered.
-//
-// The function owns everything from attachment validation and the deployment's
-// anchor resolution through grant staging/commit and delivery. It returns a
-// discriminated result rather than an HTTP response so each route maps the same
-// outcome onto its own surface with one identical `c.json(result.body,
-// result.status)` line.
+// fired, authorized, or delivered. Returns a discriminated result rather than
+// an HTTP response so each route maps the same outcome onto its own surface.
 
 import { and, eq, isNotNull } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
@@ -64,13 +59,11 @@ import {
 import type { MaterializedGrantRow } from "./grant-materialization";
 import { readDurableWorkflowRunLifecycle } from "./workflow-run-lifecycle";
 
-// DoS guard on the trigger route body. Sized identically to the agent
-// mail route: above the legitimate ceiling (the 30 MB per-message
-// attachment cap is ~40 MB once base64-encoded, plus JSON and text
-// overhead) so over-business-cap requests are rejected by the handler
-// with a structured error, while genuine garbage is rejected before the
-// JSON parser allocates a giant string. Shared so both routes' 413
-// boundaries cannot drift.
+// DoS guard on the trigger route body, sized identically to the agent mail
+// route: above the legitimate ceiling (~40 MB base64 for the 30 MB attachment
+// cap) so over-business-cap requests get a structured error, while garbage is
+// rejected before the JSON parser allocates a giant string. Shared so both
+// routes' 413 boundaries cannot drift.
 export const MAX_MAIL_BODY_BYTES = 44 * 1024 * 1024;
 
 // Response for the run-trigger path. The trigger fires a mail at the
@@ -167,17 +160,11 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
     const { tenant, principal, anchorRunId, message: body } = args;
 
     // The outbound mail is signed with the caller's durable hub principal key,
-    // and its From address (`${principal.refId}@${tenant.domain}`) must resolve
-    // back to that same key when the signature is verified. Only a user
-    // principal's address resolves to its hub principal key; a run principal's
-    // address resolves to the sidecar-minted `workflow_run.public_key`, and an
-    // agent principal's address has no resolution surface, so signing here as a
-    // non-user principal would guarantee a verification mismatch. The route
-    // layer only ever admits user principals to this path, so this is an
-    // invariant assertion, not a client-facing rejection: fail loud if a wiring
-    // change ever lets another kind through, rather than silently emitting mail
-    // that verification cannot resolve. Revisit this fence if the resolver
-    // learns to resolve agent addresses.
+    // and its From address must resolve back to that same key when verified.
+    // Only a user principal's address resolves to its hub key; a run or agent
+    // principal would guarantee a verification mismatch. The route layer only
+    // admits user principals here, so this is an invariant assertion, not a
+    // client-facing rejection.
     if (principal.kind !== "user") {
       throw new Error(
         `triggerWorkflowRun: signing principal ${principal.id} has kind ` +
@@ -192,9 +179,8 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
     const runId = deriveWorkflowRunId(address);
     const topLevelRun = alias(workflowRun, "mail_top_level_run");
 
-    // Decode and validate attachments at the boundary, emitting
-    // ordered, per-index structured errors, exactly as the agent mail
-    // route does.
+    // Decode and validate attachments at the boundary, emitting ordered
+    // per-index structured errors, as the agent mail route does.
     const attachmentResult = validateAttachments(body.attachments ?? []);
     if (!attachmentResult.ok) {
       return {
@@ -206,9 +192,8 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
     const messageAttachments = attachmentResult.attachments;
 
     // Resolve the deployment's anchor run and, through its definition, the
-    // workflow asset the trigger's grants derive from. The inner join to the
-    // definition yields the asset id and the definition id in one read, off
-    // the run rather than the deployment projection.
+    // workflow asset the trigger's grants derive from, in one join off the
+    // run.
     const [anchor] = await db
       .select({
         definitionId: workflowRun.definitionId,
@@ -260,9 +245,9 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
       runId,
     );
     // A "deployed" anchor is live: mail-triggering it IS its first trigger.
-    // The durable check here only rejects "terminal" (an absent durable log is
+    // The durable check here rejects only "terminal" (an absent durable log is
     // the valid pre-start state), so the status axis must accept "deployed" or
-    // the first mail trigger of a freshly-deployed run would 409 as terminal.
+    // the first mail trigger of a fresh deployment would 409 as terminal.
     if (
       !isLiveWorkflowRunStatus(anchor.anchorStatus) ||
       (anchor.runStatus !== null &&
@@ -316,16 +301,16 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
       runId,
     );
     if (committedRunGrants !== null) {
-      // This is another trigger occurrence for the one live top-level run.
-      // Reuse its immutable authorization snapshot; recomputing from the new
-      // caller would let one run change authority between sections.
+      // Another trigger occurrence for the one live top-level run: reuse its
+      // immutable authorization snapshot; recomputing would let one run change
+      // authority between sections.
       runPrincipalId = committedRunGrants.runPrincipalId;
       stagedGrantRows = [];
       stepGrants = committedRunGrants.stepGrants;
     } else {
-      // Read the deploy-approved grant-walk snapshot frozen at approval, keyed
-      // by the deployment's definition id. A null snapshot is the "not yet
-      // approved" state; fail closed rather than derive an empty grant set.
+      // Read the deploy-approved grant-walk snapshot frozen at approval,
+      // keyed by the deployment's definition id. A null snapshot is the "not
+      // yet approved" state; fail closed rather than derive an empty grant set.
       const snapshot = await loadFrozenGrantSnapshot(db, anchor.definitionId);
       if (snapshot === null) {
         return {
@@ -362,8 +347,8 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
 
       runPrincipalId = await deriveRunPrincipalId(tenant.id, runId);
       // The external route resolves invoker grants live and passes the
-      // snapshot's FULL requirement list unfiltered, so
-      // `resolveGrantMaterialization` keeps its reject-on-insufficient-invoker
+      // snapshot's full requirement list unfiltered, keeping
+      // `resolveGrantMaterialization`'s reject-on-insufficient-invoker
       // contract.
       const declaredGrantRequirements = snapshot.grantRequirements;
       const invokerGrants = await grantStore.collectGrants(
@@ -393,12 +378,10 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
       stepGrants = staged.stepGrants;
     }
 
-    // A trigger occurrence is threading-less at the mail boundary, so no
-    // inReplyTo or references are stamped, and it carries no agent session, so
-    // the interchangeSessionId/agentId headers are left unset. The supervisor
-    // decides whether this first-fires the absent top-level log or resumes a
-    // live onTrigger input. This is the same fresh-signed-message shape the
-    // deploy-flow fixture's mail trigger assembles.
+    // A trigger occurrence is threading-less at the mail boundary (no
+    // inReplyTo/references) and carries no agent session (no agent headers
+    // stamped). The supervisor decides whether this first-fires the absent
+    // top-level log or resumes a live onTrigger input.
     const headers: MessageHeaders = {
       from,
       to: [address],
@@ -455,7 +438,7 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
           return "allocation-unavailable" as const;
         }
         // The allocation lock serializes this read with authoritative pack
-        // advancement. An absent run is still valid for its first mail.
+        // advancement; an absent run is still valid for its first mail.
         if (
           (await readRunLifecycle(anchorRunId, tenant.domain, runId)) ===
           "terminal"
@@ -549,15 +532,11 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
       return runUnavailable(runId, reserved);
     stepGrants = reserved;
 
-    // Stamp the hub-verified principal address (fromAddr, the address the
-    // message is signed and addressed under) as the authenticated sender --
-    // never the message's own MIME From. Resolve its hub-held key so the
-    // recipient can verify the signature locally against the key the hub
-    // vouches for, and co-deliver it on the run's grants barrier below so the
-    // sender's key rides the same push as the grant. Best-effort: a resolution
-    // fault degrades to a null key (logged) rather than blocking the trigger.
-    // A null key is omitted from the co-delivery, so the recipient resolves the
-    // sender to `unknown`, which its admission policy rejects by default.
+    // Stamp the hub-verified principal address as the authenticated sender --
+    // never the message's own MIME From -- and co-deliver its hub-held key on
+    // the run's grants barrier so the recipient can verify locally. Best-effort:
+    // a resolution fault degrades to a null key (logged), which the recipient's
+    // admission policy rejects by default.
     const authenticatedSenderPublicKey = await resolveFrameSenderKey(
       db,
       principalKeyStore,

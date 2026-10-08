@@ -3,22 +3,18 @@
 // RuntimeCapabilities instance and hands it to each tool package's factory;
 // the package calls `resolve` to obtain typed handles to host services.
 //
-// The map is the extension point: new capabilities are added by extending
-// RuntimeCapabilityMap inside this file. TypeScript permits module
-// augmentation of the interface from any consumer, but augmentation from
-// outside @intx/types is not the supported extension path; contribute
-// keys here so every host sees the same canonical map.
+// The map is the extension point: add capabilities by extending
+// RuntimeCapabilityMap inside this file. Augmentation from outside
+// @intx/types is not the supported extension path.
 
 import type { MessageTransport } from "./runtime";
 import type { CredentialCapability } from "./mediated-credential";
 
 /**
  * Registry of capability keys to the value types they resolve to. Keys are
- * dotted strings scoped by subsystem (e.g. `mail.transport`).
- *
- * Adding a capability: extend this interface with the new key and its value
- * type, then have a host populate it when constructing a
- * `RuntimeCapabilities`.
+ * dotted strings scoped by subsystem (e.g. `mail.transport`). Add a
+ * capability by extending this interface, then have a host populate it when
+ * constructing a `RuntimeCapabilities`.
  */
 export interface RuntimeCapabilityMap {
   /**
@@ -29,10 +25,11 @@ export interface RuntimeCapabilityMap {
 
   /**
    * Provider-backed credentials the agent's tools resolve by their declared
-   * handle. Unlike the other keys, its value is itself a sub-registry: the set
-   * of bound handles is per-deploy runtime data, not known at compile time, so
-   * the dynamic axis lives inside `CredentialCapability` while this outer map
-   * stays fixed and typed. Resolution is consumer-scoped and fail-closed.
+   * handle. Unlike the other keys, its value is itself a sub-registry: the
+   * set of bound handles is per-deploy runtime data, not known at compile
+   * time, so the dynamic axis lives inside `CredentialCapability` while
+   * this outer map stays fixed and typed. Resolution is consumer-scoped and
+   * fail-closed.
    */
   credentials: CredentialCapability;
 }
@@ -63,21 +60,20 @@ export interface RuntimeCapabilities {
 export function createRuntimeCapabilities(
   values: Partial<RuntimeCapabilityMap>,
 ): RuntimeCapabilities {
-  // Snapshot the input. The resolver's lifecycle contract is "resolved
-  // once at handler-init, held for the deploy lifetime" — later mutation
-  // of the input map by the host must not be observable here.
+  // Snapshot the input: the resolver's contract is "resolved once at
+  // handler-init, held for the deploy lifetime", so later mutation of the
+  // input map by the host must not be observable here.
   const snapshot: Partial<RuntimeCapabilityMap> = { ...values };
 
   return {
     resolve<K extends RuntimeCapabilityKey>(key: K): RuntimeCapabilityMap[K] {
       // Object.hasOwn distinguishes "host did not provide" from "host
-      // provided undefined". Both are distinct failures the host
-      // should hear about separately. No capability in
-      // RuntimeCapabilityMap currently resolves to undefined, so the
-      // second check is a defensive guard against a host accidentally
-      // wiring an undefined value to a non-nullable capability slot;
-      // adding a nullable capability in the future means revisiting
-      // this branch.
+      // provided undefined". Both are distinct failures the host should
+      // hear about separately. No capability in RuntimeCapabilityMap
+      // currently resolves to undefined, so the second check is a
+      // defensive guard against a host wiring an undefined value to a
+      // non-nullable slot; adding a nullable capability in the future
+      // means revisiting this branch.
       if (!Object.hasOwn(snapshot, key)) {
         throw new Error(
           `Runtime capability "${String(key)}" was requested but not provided by the host`,
@@ -98,19 +94,17 @@ export function createRuntimeCapabilities(
  * Compose a resolver that answers the keys in `overrides` from the override
  * map and delegates every other key to `base`.
  *
- * The host uses this to add a per-bundle capability -- the consumer-scoped
- * `credentials` handle, one instance per tool package -- onto a shared
- * per-step base bag without re-plumbing the base's keys (`mail.transport`
- * and any future shared key stay owned by the step bag). Each tool package's
- * bundle receives the same base layered with ITS OWN credentials capability,
- * so a package cannot resolve a handle scoped to a different package.
+ * The host uses this to layer a per-bundle capability — the consumer-scoped
+ * `credentials` handle, one instance per tool package — onto a shared
+ * per-step base bag without re-plumbing the base's keys. Each tool
+ * package's bundle receives the same base layered with ITS OWN credentials
+ * capability, so a package cannot resolve a handle scoped to a different
+ * package.
  *
  * `overrides` is snapshotted at construction, mirroring
- * `createRuntimeCapabilities`, so later mutation of the input is not
- * observable through `resolve`. An overridden key wired to `undefined`
+ * `createRuntimeCapabilities`. An overridden key wired to `undefined`
  * throws with the same guard as the base resolver rather than silently
- * shadowing `base` with a hole -- a host that layers an undefined value
- * has a wiring bug and must hear about it.
+ * shadowing `base` with a hole.
  */
 export function layerRuntimeCapabilities(
   base: RuntimeCapabilities,

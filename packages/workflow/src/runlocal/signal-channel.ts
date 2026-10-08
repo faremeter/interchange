@@ -1,10 +1,9 @@
 // In-process FIFO single-consumer signal channel.
 //
-// Mirrors the state machine's signal semantics: a `SignalReceived`
-// before any `SignalAwaited` is queued under the signal name and
-// consumed by the next awaiter for that name. Per-signal dedup by
-// `signalId` is enforced by the state machine; this layer only
-// tracks the dispatch queue.
+// Mirrors the state machine's signal semantics: a `SignalReceived` before any
+// `SignalAwaited` is queued under the signal name and consumed by the next
+// awaiter for that name. Per-signal dedup by `signalId` is enforced by the
+// state machine; this layer only tracks the dispatch queue.
 
 import type { SignalChannel } from "../runtime/env";
 

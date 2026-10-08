@@ -1,12 +1,10 @@
 // awaitSignal onTimeout routing. A timed gate whose timer fires routes to its
-// onTimeout target (a successor) instead of failing, pruning the normal
-// successor branch via the same skip-sentinel mechanism a gate/loop uses; a
-// delivered signal takes the normal branch and prunes the onTimeout branch. A
-// timed gate with NO onTimeout preserves the prior fail-on-timeout behavior.
-//
-// "Ran" vs "pruned" is distinguished by whether `invokeStep` was called for a
-// step's agent: a real step invokes the agent, a pruned step is completed with
-// a skip-sentinel without ever invoking.
+// onTimeout target instead of failing, pruning the normal successor branch via
+// the same skip-sentinel mechanism a gate/loop uses; a delivered signal takes
+// the normal branch and prunes the onTimeout branch. A timed gate with NO
+// onTimeout preserves the prior fail-on-timeout behavior.
+// "Ran" vs "pruned" is whether `invokeStep` was called for the step's agent:
+// a pruned step is completed with a skip-sentinel without ever invoking.
 
 import { describe, test, expect } from "bun:test";
 
@@ -159,8 +157,8 @@ describe("awaitSignal onTimeout routing", () => {
     const res = await run.complete;
 
     expect(res.terminalStatus).toBe("completed");
-    // recover ran, normal pruned, and the merge step still ran (it is reachable
-    // from the taken branch, so collectBranchClosure does not prune it).
+    // recover ran, normal pruned, and the merge step still ran: reachable
+    // from the taken branch, so collectBranchClosure does not prune it.
     expect(invoked).toContain("recover");
     expect(invoked).toContain("join");
     expect(invoked).not.toContain("normal");

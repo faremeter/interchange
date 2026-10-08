@@ -1,17 +1,13 @@
 // End-to-end attachment pipe, parameterized over every shipped adapter.
 //
-// A conversation message with an image attachment is assembled exactly as
-// the session service assembles it, delivered through the real in-memory
-// transport, parsed back by the real `fetchFull` (NOT a hand-built
-// InboundMessage), turned into a ConversationTurn by the real
-// createInboundTurn, and marshaled by each real provider adapter. The test
-// asserts the original image bytes survive all the way to each adapter's
-// wire body.
+// An image attachment is assembled like the session service does,
+// delivered through the real in-memory transport, parsed back by the real
+// `fetchFull` and `createInboundTurn`, and marshaled by each real adapter;
+// the image bytes must survive to each adapter's wire body.
 //
-// This is the only place the whole mime -> fetchFull -> turn -> adapter pipe
-// runs against real adapters at once: a future @intx/mime change that breaks
-// attachment assembly or parsing fails here for every adapter, which
-// per-adapter unit tests (mocking the upstream surface) cannot catch.
+// The only place the whole mime → fetchFull → turn → adapter pipe runs
+// against real adapters at once — per-adapter unit tests cannot catch a
+// @intx/mime regression in assembly or parsing.
 
 import { describe, test, expect, beforeAll } from "bun:test";
 import { generateKeyPair, createEd25519Crypto } from "@intx/crypto";
@@ -68,9 +64,8 @@ function conversationHeaders(): MessageHeaders {
   };
 }
 
-// Provider adapters and a token that proves the image was marshaled into the
-// provider's own image shape (Anthropic image block, OpenAI image_url,
-// Google inlineData).
+// Provider adapters plus a token proving the image reached the provider's
+// own shape (Anthropic image block, OpenAI image_url, Google inlineData).
 function source(name: string, model: string): LastCycleSource {
   return { sourceId: `e2e-${name}`, provider: name, model };
 }
@@ -105,10 +100,9 @@ const adapters: {
   },
 ];
 
-// Assemble a conversation message carrying one attachment exactly as the
-// session service does, deliver it through the in-memory transport, and
-// reconstruct the inbound message and turn with the real fetchFull and
-// createInboundTurn.
+// Assemble a message with one attachment as the session service does,
+// deliver it through the in-memory transport, and reconstruct the
+// inbound message + turn with the real fetchFull / createInboundTurn.
 async function deliverAndBuild(
   text: string,
   attachment: MessageAttachment,
@@ -195,9 +189,9 @@ describe("attachment end-to-end: assemble -> fetchFull -> turn -> adapter", () =
   }
 });
 
-// A PDF rides the same pipe as a DocumentBlock. Each adapter marshals to its
-// own wire shape (Anthropic document, Google inlineData, OpenAI file part) —
-// so this asserts provider-specific emission rather than a uniform body.
+// A PDF rides the same pipe as a DocumentBlock; each adapter marshals to
+// its own wire shape (Anthropic document, Google inlineData, OpenAI file
+// part), so this asserts provider-specific emission.
 describe("attachment end-to-end: pdf document", () => {
   const pdfBytes = new Uint8Array([
     0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34,

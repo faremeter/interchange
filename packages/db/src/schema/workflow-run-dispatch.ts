@@ -83,8 +83,8 @@ export const workflowRunDispatch = pgTable(
       t.anchorRunId,
       t.status,
     ),
-    // Dispatch outcomes are projected by a sweep that runs every second, and
-    // settled rows are kept, so it reaches deployments through this index.
+    // The projection sweep runs every second and keeps settled rows, so it
+    // reaches deployments through this index.
     index("workflow_run_dispatch_unresolved_anchor_idx")
       .on(t.anchorRunId)
       .where(
@@ -114,11 +114,10 @@ export const workflowRunDispatch = pgTable(
       "workflow_run_dispatch_pending_schedule_check",
       sql`${t.status} <> 'pending' or ${t.nextAttemptAt} is not null`,
     ),
-    // A deliverable mail dispatch must carry the hub-verified sender that
-    // its inbound frame is stamped with; signals have no sender. Abandoned
-    // and terminal (settled/failed) mail rows are exempt because they are never
-    // re-dispatched and so never reconstruct a frame -- this is what lets a
-    // migration fail legacy in-flight mail in place rather than delete it.
+    // Deliverable mail must carry the hub-verified sender its inbound frame is
+    // stamped with; signals have none. Abandoned and terminal mail rows are
+    // exempt because they are never re-dispatched -- letting a migration fail
+    // legacy in-flight mail in place rather than delete it.
     check(
       "workflow_run_dispatch_mail_sender_check",
       sql`${t.kind} <> 'mail' or ${t.status} in ('abandoned', 'settled', 'failed') or ${t.senderAddress} is not null`,

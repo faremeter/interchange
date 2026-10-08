@@ -1,15 +1,9 @@
-// `git push -v` against the per-run agent-state URL returns 403
-// at the advertise step. The denial message names "read-only" so
-// support can recognise it.
-//
-// The receive-pack denial routes are registered BEFORE the bearer
-// middleware, so the test does not need to mint a token: an
-// unauthenticated `git push -v` against the per-run URL still
-// parses the pkt-line ERR record cleanly.
-//
-// We also verify the raw advertise body shape (the locked
-// `ERR agent-state is read-only over HTTP\n` payload) via a direct
-// fetch alongside the `git push -v` inspection.
+// `git push -v` against the per-run agent-state URL returns 403 at the
+// advertise step. The receive-pack denial routes run before the bearer
+// middleware, so no token is needed: an unauthenticated push still parses
+// the pkt-line ERR record cleanly. The raw advertise body (the locked
+// `ERR agent-state is read-only over HTTP\n` payload) is verified via a
+// direct fetch alongside the push.
 
 import { describe, test, expect, afterEach } from "bun:test";
 import fs from "node:fs/promises";
@@ -50,10 +44,8 @@ async function startHubTracked(): Promise<HubHandle> {
 
 /**
  * Prepare a local non-bare repo with a single commit on
- * `refs/heads/deploy` so `git push` has a ref + content to send. We
- * never expect the push to succeed — the deny middleware rejects
- * advertise before any pack is uploaded — but git needs a real
- * source branch to dispatch a push at all.
+ * `refs/heads/deploy` so `git push` has a ref + content to send; the
+ * deny middleware rejects advertise before any pack is uploaded.
  */
 async function prepareLocalPushSource(workDir: string): Promise<void> {
   await runGit(["init", "--initial-branch=deploy", workDir], { cwd: workDir });
@@ -91,9 +83,9 @@ describe.skipIf(!harnessHubEnvAvailable())("agent-state push denied", () => {
     const user = await signUpUser(hub.url);
     const tenant = await createTenant(hub.url, user);
 
-    // The receive-pack advertise deny middleware runs ahead of the
-    // bearer middleware and the resolver, so an unauthenticated probe
-    // on a bogus instance id still yields the locked 403 body verbatim.
+    // The receive-pack advertise deny runs ahead of the bearer middleware
+    // and the resolver, so an unauthenticated probe on a bogus run id
+    // still yields the locked 403 body verbatim.
     const res = await fetch(
       `${runStateGitUrl(hub.url, tenant.tenantId, "run_doesnotexist")}/info/refs?service=git-receive-pack`,
     );
@@ -107,11 +99,9 @@ describe.skipIf(!harnessHubEnvAvailable())("agent-state push denied", () => {
     const user = await signUpUser(hub.url);
     const tenant = await createTenant(hub.url, user);
 
-    // No instance row required: the receive-pack deny runs before
-    // the bearer middleware AND before the resolver, so it 403s
-    // even on a bogus instance id. This is the desired property —
-    // even unauthenticated push attempts get a clean protocol-level
-    // rejection before any DB lookup.
+    // The receive-pack deny runs before the bearer middleware and the
+    // resolver, so even unauthenticated pushes against a bogus run id get
+    // a clean protocol-level rejection before any DB lookup.
     const workDir = await mkTemp("agent-state-push-ins-");
     await prepareLocalPushSource(workDir);
 
@@ -129,12 +119,10 @@ describe.skipIf(!harnessHubEnvAvailable())("agent-state push denied", () => {
     );
     expect(push.status).not.toBe(0);
     const combined = `${push.stdout}\n${push.stderr}`.toLowerCase();
-    // Stock git surfaces an HTTP 403 advertise denial as
-    // `the requested url returned error: 403` in stderr. The
-    // `read-only`/`agent-state` substring is best-effort: git
-    // strips most of the body unless the server emits a properly
-    // pkt-line-framed `ERR` record on the wire. The advertise body
-    // is verified separately via the direct-fetch test above.
+    // Stock git surfaces an HTTP 403 advertise denial as `the requested
+    // url returned error: 403`; the `read-only` substring is best-effort
+    // because git strips most of the body. The advertise body is verified
+    // by the direct-fetch test above.
     expect(combined).toMatch(/error: 403|http 403|forbidden/);
   }, 90_000);
 });

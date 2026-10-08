@@ -31,9 +31,8 @@ const snapshot: ApprovalSnapshot = {
 };
 
 /**
- * A durable log that reduces to a single step parked on `signalName`. Mirrors
- * the post-flush crash window a real park leaves behind: RunStarted, the
- * step's StepStarted, then the SignalAwaited that reduces the step to
+ * A durable log reducing to a single step parked on `signalName`: RunStarted,
+ * StepStarted, then the SignalAwaited that reduces the step to
  * `awaiting-signal`.
  */
 function parkedSeed(
@@ -45,8 +44,7 @@ function parkedSeed(
 }
 
 /**
- * A durable log that reduces to several concurrently-parked steps in one run:
- * RunStarted, a StepStarted per step, then a SignalAwaited per step.
+ * Same as `parkedSeed` but with several concurrently-parked steps in one run.
  */
 function parkedSeedSteps(
   runId: string,
@@ -86,9 +84,9 @@ function parkedSeedSteps(
 }
 
 /**
- * A substrate stub that resolves `getRepoDir` the way the real substrate does
- * -- `<baseDir>/<kind>/<id>` -- and surfaces any other method as a precise
- * failure. `getRepoDir` is the only method the enumeration exercises.
+ * A substrate stub resolving `getRepoDir` the way the real substrate does
+ * (`<baseDir>/<kind>/<id>`); any other method surfaces as a precise failure
+ * via the proxy. `getRepoDir` is the only method the enumeration exercises.
  */
 function createStubSubstrate(baseDir: string): SubstrateRepoStore {
   const stub: Partial<SubstrateRepoStore> = {
@@ -199,8 +197,7 @@ describe("collectParkedApprovalCorrelations", () => {
     });
 
     // Enumeration order follows directory and map iteration, so assert as a
-    // set: every parked correlation is reported exactly once, each with its
-    // snapshot.
+    // set: every parked correlation is reported exactly once.
     expect(result.map((r) => r.correlationId).sort()).toEqual([
       "corr-a1",
       "corr-a2",
@@ -236,10 +233,8 @@ describe("collectParkedApprovalCorrelations", () => {
     // An `"input"` park (a long-lived run awaiting its next mail) reduces to
     // the same `awaiting-signal` on a reserved channel as an approval, but it
     // carries no snapshot and is never hub-registered. Enumeration must skip it
-    // BEFORE the snapshot lookup -- so it does not throw even with NO
-    // loadParkedApproval binding wired. Were it not skipped, its mere presence
-    // would take the whole deployment's approval re-registration down on every
-    // reconnect.
+    // BEFORE the snapshot lookup, so it does not throw even with no
+    // `loadParkedApproval` binding wired.
     const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "parked-corr-"));
     const runsDir = path.join(baseDir, repoId.kind, repoId.id, "runs");
     const runtimeRepoStore = createInMemoryRepoStore();
@@ -273,9 +268,9 @@ describe("collectParkedApprovalCorrelations", () => {
     for (const event of seed) await runtimeRepoStore.append("run-input", event);
     const substrate = createStubSubstrate(baseDir);
 
-    // No loadParkedApproval binding: a control-plane APPROVAL park here would
-    // throw "no loadParkedApproval binding is wired". An input park is collected
-    // without a snapshot and without touching the binding.
+    // No loadParkedApproval binding: a control-plane approval park here would
+    // throw "no loadParkedApproval binding is wired". An input park is
+    // collected without a snapshot and without touching the binding.
     const result = await collectParkedApprovalCorrelations({
       substrate,
       repoId,

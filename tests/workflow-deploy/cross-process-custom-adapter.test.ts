@@ -5,31 +5,21 @@
 // env, the child deserializes and re-validates it, import()s the custom
 // adapter module child-side, and resolves a provider id that no built-in
 // supplies. A real hub + real sidecar subprocess + real forked workflow
-// child + the mock inference server exercise the exact production wiring;
-// nothing here is in-process or mocked at the resolution boundary.
+// child + the mock inference server exercise the exact production wiring.
 //
-// The workflow deploys BY SOURCE-REF (bundle a source entry module into a hub
-// asset, probe it, approve+freeze it against a real DB, deploy the source-ref
-// frame) through `deployWorkflowSourceForTest` -- the one code-sourced deploy
-// front -- rather than the retired live-authored orchestrator path.
+// The workflow deploys BY SOURCE-REF through `deployWorkflowSourceForTest`.
 //
 // POSITIVE: the manifest maps provider "custom-x" to an absolute-path .ts
 // fixture adapter (which delegates to the Anthropic adapter so it speaks the
 // mock server's wire). A one-step workflow whose source.provider is
-// "custom-x" runs to completion in the child and the echoed reply carries
-// the inbound body -- the run could only complete if the child resolved
-// "custom-x", which is impossible without the manifest crossing the fork and
-// being import()-ed child-side. The provider id is the sentinel: a
-// built-in-only registry has no "custom-x".
+// "custom-x" runs to completion in the child -- only possible if the manifest
+// crossed the fork and was import()-ed child-side.
 //
 // NEGATIVE (the security firewall): a second deployment names a provider the
 // manifest does NOT contain. The sidecar deploy router's source-admission
-// gate -- built only from the operator manifest plus the linked-in built-ins
-// -- rejects it, so the source-ref deploy frame rejects synchronously and
-// `deployWorkflowSourceForTest` throws. This proves a provider string (which
-// deploy/tenant config does control) cannot conjure an adapter: only
-// operator-supplied manifest specifiers can, and they are import()-ed, never
-// the provider key.
+// gate rejects it, so the deploy frame rejects synchronously -- a provider
+// string cannot conjure an adapter; only operator-supplied manifest
+// specifiers can, and they are import()-ed, never the provider key.
 
 import path from "node:path";
 
@@ -223,9 +213,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const deploymentMailAddress = handle.mailAddress;
       const workflowRunRepoId = handle.workflowRunRepoId;
 
-      // The source-ref frame round-trips through the real sidecar subprocess
-      // (index the pack, check out the pinned subtree, register the address),
-      // so routability is asynchronous. Wait for it before firing the trigger.
+      // The source-ref frame round-trips through the real sidecar subprocess (index
+      // the pack, check out the pinned subtree, register the address); routability is async, so wait before firing the trigger.
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),

@@ -32,11 +32,10 @@ export type WorkflowDefinitionSelector = {
 /**
  * The definition a selector names, or null when no definition has been folded
  * for that `(assetId, wireHash)` pair. This is the single expression of the
- * deployment -> definition mapping (a deployment names its asset and wire hash);
- * the run backfill and the native-run insert sites both resolve through it.
- * Null on a miss is deliberate, not an error: a deployment whose selector the
- * run-once fold never covered has no definition yet, and its runs anchor on
- * `runId` until that gap closes.
+ * deployment -> definition mapping; the run backfill and the native-run insert
+ * sites both resolve through it. Null on a miss is deliberate: a deployment
+ * whose selector the run-once fold never covered has no definition yet, and its
+ * runs anchor on `runId` until that gap closes.
  */
 export async function resolveDefinitionIdForAsset(
   db: DBExecutor,

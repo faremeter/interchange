@@ -18,11 +18,10 @@
 // Names that are already valid on the wire pass through untouched — the codec
 // only rewrites names that genuinely need it. Rewritten names carry a
 // distinctive `MARKER` prefix, and `decode` transforms only marker-prefixed
-// names, so an ordinary wire-valid name a provider echoes (a tool the model
-// named that never needed encoding, or a hallucination) is returned verbatim.
-// The marker is what makes the round-trip unambiguous: a name that is already
-// valid but happens to begin with the marker is force-encoded too, so a
-// marker prefix on the wire always denotes an encoding.
+// names, so an ordinary wire-valid name a provider echoes is returned
+// verbatim. The marker is what makes the round-trip unambiguous: a name that
+// is already valid but happens to begin with the marker is force-encoded too,
+// so a marker prefix on the wire always denotes an encoding.
 //
 // Rewriting escapes each out-of-charset character (and, so the sentinel stays
 // unambiguous, each literal `-`) as `-XX`, its uppercase two-digit hex byte:

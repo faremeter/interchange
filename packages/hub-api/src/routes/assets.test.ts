@@ -116,9 +116,8 @@ type AssetRow = {
 type DBState = {
   assets: AssetRow[];
   /** When set, the next `findFirst(asset)` returns the row whose id
-   * matches this value. The asset-routes smart-HTTP handler looks up
-   * by `(tenantId, kind, name)`, but the stub only needs to honour
-   * the route's narrow query: we pre-seed which row to return. */
+   * matches this value: the stub only honours the route's narrow
+   * query, so tests pre-seed which row to return. */
   assetLookupHint: { tenantId: string; kind: string; name: string } | null;
 };
 

@@ -2,19 +2,18 @@
 //
 // Everything a workflow moves between steps is plain JSON: the runtime
 // records it in the run's event log and resolves it through `Selector`
-// paths, so it never carries a class, a closure, or a live handle. That
-// makes every value crossing a step boundary external data as far as the
-// code reading it is concerned, which is why the loop functions and the
-// action handler validate with arktype rather than assert a shape.
+// paths, so it never carries a class, a closure, or a live handle. Every
+// value crossing a step boundary is therefore external data, which is why
+// the loop functions and the action handler validate with arktype rather
+// than assert a shape.
 
 import { type } from "arktype";
 
 /**
  * One revision pass: the tagline to work on, the length it has to reach,
  * and where the accepted tagline is published. This is both the loop's
- * seed input (`input: { literal: ... }` would pin it at authoring time;
- * this workflow takes it from the trigger payload instead) and the carry
- * state threaded from one iteration to the next.
+ * seed input (taken from the trigger payload, not pinned at authoring
+ * time) and the carry state threaded from one iteration to the next.
  */
 export const RevisionPass = type({
   tagline: "string",

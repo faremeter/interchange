@@ -1,10 +1,10 @@
 // nextSchedulable resume carve-out for an onTrigger section.
 //
 // A resumed onTrigger container is left non-terminal in the run state:
-// awaiting-signal while parked between events, or in-flight while a body
-// run is mid-flight. nextSchedulable must RE-OFFER it so runOnTrigger can
-// re-derive its position from the log; without the carve-out the section
-// reads as a generic non-terminal step, gets skipped, and the run stalls.
+// awaiting-signal while parked between events, or in-flight while a body run
+// is mid-flight. nextSchedulable must RE-OFFER it so runOnTrigger can
+// re-derive its position from the log; without the carve-out the section is
+// skipped as a generic non-terminal step and the run stalls.
 
 import { describe, test, expect } from "bun:test";
 

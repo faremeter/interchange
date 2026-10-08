@@ -206,17 +206,13 @@ describe("materializeToolPackages — manifest.invalid gate", () => {
     });
 
     test("the degraded-persist code path clears a stale dirty marker via the shared helper", async () => {
-      // The fsync'd primary persist and the no-fsync fallback persist
-      // both delegate to `clearDirtyMarker` after writing the recorded
-      // id. The fallback branch is hard to drive end-to-end without
+      // Both the fsync'd primary persist and the no-fsync fallback
+      // delegate to `clearDirtyMarker` after writing the recorded id.
+      // The fallback branch is hard to drive end-to-end without
       // injecting an `fs` failure mode that distinguishes
       // `fs.promises.open(path, "w")` from `fs.promises.writeFile(path)`
       // — they share flags and permissions on every supported FS — so
-      // the contract is pinned at the helper level: when called against
-      // an instance dir that holds a stale marker, the marker is gone
-      // afterward. The wrapper's no-fsync branch routes through this
-      // helper, which gives the boot reader the freshly-recorded id on
-      // the next boot.
+      // the contract is pinned at the helper level.
       const instanceDir = await tempDir();
       const activeIdFile = path.join(instanceDir, "active-deploy-id");
       const dirtyFile = `${activeIdFile}.dirty`;

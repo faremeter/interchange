@@ -2,21 +2,12 @@
 /**
  * MIME byte construction and parsing for Interchange messages.
  *
- * Implements exactly two message shapes per MESSAGE.md:
- *   1. Conversation: multipart/mixed (text/plain plus zero or more
- *      attachment parts) in multipart/signed
- *   2. Structured: application/vnd.interchange+json in multipart/mixed in multipart/signed
- *
- * Produces real RFC 2822 / RFC 2046 / RFC 3156 bytes. The signed content
- * part is produced in MIME canonical form (CRLF line endings) so PGP/MIME
- * verification operates on the same bytes regardless of platform.
- *
- * RFC references verified:
- * - RFC 2822 §2.1.1: lines MUST NOT exceed 998 chars; recommended 78
- * - RFC 2046 §5.1.1: boundary MUST be <= 70 chars; CRLF before each boundary
- * - RFC 3156 §5: multipart/signed; protocol="application/pgp-signature";
- *   micalg=pgp-sha512; first part = signed content; second part = signature
- * - Message-IDs: <uuid@domain> — valid per RFC 2822 §3.6.4 (dot-atom local-part)
+ * Two message shapes per docs/MESSAGE.md, both wrapped in multipart/signed:
+ * conversation (multipart/mixed of text/plain plus attachments) and
+ * structured (application/vnd.interchange+json in multipart/mixed). The
+ * signed content part is MIME canonical form (CRLF) so PGP/MIME verification
+ * sees the same bytes on every platform. RFC 2822 §2.1.1 caps a line at 998
+ * chars; RFC 3156 §5 fixes the multipart/signed shape.
  */
 
 import { type } from "arktype";
@@ -184,36 +175,12 @@ function scanSingleAddress(trimmed: string, addressLine: string): number {
 
 /**
  * Extract the bare addr-spec (local-part@domain) from a single RFC 5322
- * address value. Strips any display name and surrounding angle brackets,
- * then lowercases the result so case-insensitive comparison falls out
- * naturally.
+ * address value: strip display name and angle brackets, then lowercase so
+ * comparisons are case-insensitive.
  *
- * Accepted inputs (exactly one address):
- *   `"Display Name" <user@host>`  → `user@host`
- *   `Display Name <user@host>`    → `user@host`
- *   `<user@host>`                 → `user@host`
- *   `user@host`                   → `user@host`
- *   `  User@Host  `               → `user@host`
- *
- * Rejected (throws) inputs:
- *   - empty or whitespace-only
- *   - a value naming more than one address, however the members are separated
- *   - an input whose double quotes do not pair up
- *   - input with no `@`
- *   - input that produces an empty local-part or domain
- *   - quoted local-parts (e.g. `"a@b"@host`) — technically valid per RFC
- *     5321 §4.1.2 but rare in practice; the simple split below would
- *     misinterpret the inner `@`, so we refuse rather than guess
- *   - content after the closing `>` in an angle-bracketed form
- *     (e.g. `Name <a@b> (comment)`) — would silently fall through to a
- *     misparsed bare-form attempt, so we refuse instead
- *   - trailing content in a bare form (e.g. `a@b (comment)`) — a well-formed
- *     bare addr-spec has no internal whitespace, so we refuse rather than
- *     fold the trailing token into the domain
- *
- * Per RFC 5321 §2.4 the local-part is technically case-sensitive, but no
- * production system honors that; matching case-insensitively is the
- * correct call for routing and identity checks.
+ * Refuses: empty input, more than one address (however separated), unpaired
+ * quotes, no `@`, empty local-part or domain, quoted local-parts, and
+ * trailing content after `>` or in a bare form.
  */
 export function extractAddrSpec(addressLine: string): string {
   const trimmed = addressLine.trim();
@@ -225,9 +192,8 @@ export function extractAddrSpec(addressLine: string): string {
 
   let candidate: string;
   if (angleOpen !== -1) {
-    // Angle-bracketed form. Require the `>` to be the trailing
-    // non-whitespace character so that input like `Name <a@b> (comment)`
-    // is refused rather than re-parsed as a bare addr-spec.
+    // Require `>` to be the trailing non-whitespace character, so
+    // `Name <a@b> (comment)` is refused rather than re-parsed as bare.
     if (!trimmed.endsWith(">")) {
       throw new Error(
         `extractAddrSpec: trailing content after '>' in ${JSON.stringify(addressLine)}`,
@@ -240,11 +206,8 @@ export function extractAddrSpec(addressLine: string): string {
       );
     }
   } else {
-    // Bare form. An unquoted addr-spec carries no internal whitespace, so
-    // treat any as trailing content (e.g. `a@b (comment)`) and refuse rather
-    // than mangle the domain. Domain literals carry no internal whitespace, so
-    // the only bare inputs this rejects are malformed or quoted local-parts,
-    // both of which the function refuses by design anyway.
+    // A bare addr-spec carries no internal whitespace; treat any as trailing
+    // content and refuse rather than mangle the domain.
     if (/\s/.test(trimmed)) {
       throw new Error(
         `extractAddrSpec: trailing content in bare address ${JSON.stringify(addressLine)}`,
@@ -253,8 +216,7 @@ export function extractAddrSpec(addressLine: string): string {
     candidate = trimmed;
   }
 
-  // Reject quoted local-parts: the parser below splits on the first `@`,
-  // which would corrupt a quoted form whose local-part contains `@`.
+  // The first-`@` split below would misread a quoted local-part containing one.
   if (candidate.includes('"')) {
     throw new Error(
       `extractAddrSpec: quoted local-parts are not supported: ${JSON.stringify(addressLine)}`,
@@ -268,9 +230,7 @@ export function extractAddrSpec(addressLine: string): string {
     );
   }
 
-  // Reject any further `@` in the candidate — a well-formed addr-spec
-  // has exactly one. Multiple `@` is either a quoted form (rejected
-  // above) or simply malformed.
+  // A well-formed addr-spec has exactly one `@`.
   if (candidate.indexOf("@", atIndex + 1) !== -1) {
     throw new Error(
       `extractAddrSpec: multiple '@' in ${JSON.stringify(addressLine)}`,
@@ -341,31 +301,21 @@ function generateBoundary(): string {
 const CRLF = "\r\n";
 
 /**
- * RFC 5322 section 2.1.1 recommends no more than 78 characters per line and
- * REQUIRES no more than 998. Folding targets the recommendation: a generator
- * that aims at 998 produces lines no human and few mail clients display well,
- * and leaves nothing in hand for a relay that prepends to a header.
+ * RFC 5322 §2.1.1: lines MUST NOT exceed 998 chars, 78 recommended. Fold to
+ * 78: 998-target lines display poorly and leave no room for a relay that
+ * prepends to a header.
  */
 const FOLD_TARGET_OCTETS = 78;
 
 /**
  * Insert folding whitespace so a line stays near `FOLD_TARGET_OCTETS`.
  *
- * Folds at a space that is already in the value, which is the only place RFC
- * 5322 section 2.2.3 permits. The continuation carries exactly one leading
- * space, and that space is one space from the value. `parseHeaders` replaces
- * a fold plus every whitespace character after it with a single space, so a
- * second leading space would not survive.
- *
- * Any earlier space in the same run stays on the line being folded, even when
- * that carries the line past the target. A token with no space in it is
- * emitted whole. There is no legal fold point inside a `msg-id` or an `atom`,
- * so breaking one would corrupt it.
- *
- * A run that ends in a tab is not a fold point: the continuation can carry
- * only one leading space, so the tab would be deleted or turned into a
- * space. An earlier space that ends its own run is still a fold. Skipping
- * it to keep the tab on this line can push the line past 998.
+ * Folds only at a space in the value (the only place RFC 5322 §2.2.3
+ * permits). The continuation carries one leading space; unfolding folds the
+ * break plus following whitespace back to one space, so a second leading
+ * space would not survive. A run ending in a tab is not a fold point: the
+ * tab would be deleted or become a space. A token with no space in it is
+ * emitted whole -- there is no legal fold point inside a `msg-id` or `atom`.
  */
 function foldHeaderLine(name: string, value: string): string {
   if (value.length === 0) return `${name}:${CRLF}`;
@@ -387,11 +337,9 @@ function foldHeaderLine(name: string, value: string): string {
     return last;
   };
 
-  // `wsIndex` is whitespace in `value`. The continuation can carry only one
-  // leading space, so the fold has to be a space that ends the run. A tab
-  // after that space would be swallowed with the leading whitespace, and a
-  // tab used as the fold itself would come back as a space. When the run
-  // ends in a tab and no earlier fold remains, the whole run stays here.
+  // The fold must be a space that ends the run: a tab after it would be
+  // swallowed as leading whitespace, and a tab as the fold would come back
+  // as a space. When the run ends in a tab, the whole run stays here.
   const foldOnRun = (wsIndex: number): void => {
     const last = runLast(wsIndex);
     if (value[last] !== " ") {
@@ -414,8 +362,7 @@ function foldHeaderLine(name: string, value: string): string {
       break;
     }
 
-    // The last space in reach whose run ends in a space. A run that ends
-    // in a tab is skipped so an earlier space can still be the fold.
+    // The last space in reach whose run ends in a space; a tab-ending run is skipped.
     let breakAt = -1;
     const limit = Math.max(0, Math.min(room, value.length - index));
     for (let offset = 0; offset < limit; offset += 1) {
@@ -428,8 +375,7 @@ function foldHeaderLine(name: string, value: string): string {
       continue;
     }
 
-    // No space between here and the target, and the next character is not a
-    // space. Emit the token whole rather than inventing a fold point.
+    // No fold point in reach: emit the token whole.
     const nextSpace = value.indexOf(" ", index);
     const end = nextSpace === -1 ? value.length : nextSpace;
     out += value.slice(index, end);
@@ -441,23 +387,18 @@ function foldHeaderLine(name: string, value: string): string {
 }
 
 /**
- * Serialize a STRUCTURED header: an address list, a message id, a date, a
- * content type. Folded, never encoded -- RFC 2047 encoded-words are not
- * permitted in a structured field's tokens, so a non-ASCII address here needs
- * SMTPUTF8 and IDNA rather than an encoding this function could apply.
+ * Serialize a structured header (address list, id, date, content type).
+ * Folded, never encoded: RFC 2047 encoded-words are not permitted in
+ * structured-field tokens.
  */
 function hdr(name: string, value: string): string {
   assertNoLineBreaks(value, `${name} header`);
   return foldHeaderLine(name, value);
 }
 
-/** Bytes of UTF-8 per encoded-word.
- *
- * RFC 2047 section 2 caps an encoded-word at 75 characters. `=?UTF-8?B?` and
- * `?=` spend 12 of them, leaving 63 for base64 -- so 45 input bytes, the
- * largest multiple of 3 that fits, encode to 60 characters and keep every word
- * inside the cap. A multiple of 3 also means no word carries base64 padding
- * except the last.
+/**
+ * Bytes of UTF-8 per encoded-word. RFC 2047 §2 caps an encoded-word at 75
+ * characters; overhead leaves 63 for base64, and 45 input bytes encode to 60.
  */
 const ENCODED_WORD_PAYLOAD_BYTES = 45;
 
@@ -469,15 +410,9 @@ function isAscii(value: string): boolean {
 /**
  * Encode `value` as RFC 2047 encoded-words when it is not already ASCII.
  *
- * Base64 (`B`) rather than quoted-printable (`Q`) for every value that needs
- * encoding at all. `Q` produces a more readable wire form for a value that is
- * mostly ASCII, but it needs a per-character escape table whose omissions are
- * silent, and it offers nothing a receiver can do that `B` cannot. One code
- * path that is always correct beats two where one is prettier.
- *
- * Words are split on a CHARACTER boundary, never inside a multi-byte sequence:
- * RFC 2047 section 5 requires each encoded-word to decode independently, and a
- * sequence straddling two of them decodes to a replacement character in both.
+ * Base64 (`B`) for every value: `Q` is prettier on mostly-ASCII text but
+ * needs a per-character escape table. Words split on CHARACTER boundaries
+ * only: RFC 2047 §5 requires each encoded-word to decode independently.
  */
 function encodeHeaderText(value: string): string {
   if (isAscii(value)) return value;
@@ -488,8 +423,7 @@ function encodeHeaderText(value: string): string {
 
   while (start < bytes.length) {
     let end = Math.min(start + ENCODED_WORD_PAYLOAD_BYTES, bytes.length);
-    // Walk back off a continuation byte (10xxxxxx) so the cut lands between
-    // characters rather than inside one.
+    // Walk back off a continuation byte so the cut lands between characters.
     while (end > start && end < bytes.length) {
       const byte = bytes[end];
       if (byte === undefined || (byte & 0xc0) !== 0x80) break;
@@ -501,17 +435,13 @@ function encodeHeaderText(value: string): string {
   }
 
   // Adjacent encoded-words are joined by whitespace, which a receiver deletes
-  // (RFC 2047 section 6.2). `foldHeaderLine` then folds at those same spaces,
-  // which is why each word has to fit a line on its own.
+  // (RFC 2047 §6.2); `foldHeaderLine` folds at those same spaces.
   return words.join(" ");
 }
 
 /**
- * Serialize an UNSTRUCTURED header: text a person reads, such as `Subject`.
- *
- * Encoded before folding, because encoding is what creates the fold points: a
- * long non-ASCII subject has no spaces to fold at until it becomes a sequence
- * of encoded-words.
+ * Serialize an unstructured header (`Subject`). Encoded before folding:
+ * encoding creates the fold points for a long non-ASCII subject.
  */
 function hdrText(name: string, value: string): string {
   assertNoLineBreaks(value, `${name} header`);
@@ -519,19 +449,11 @@ function hdrText(name: string, value: string): string {
 }
 
 /**
- * Decode RFC 2047 encoded-words in a header value that was received.
- *
- * Needed for interoperability rather than for our own mail: every sender that
- * writes a non-ASCII subject encodes it, and a receiver that does not decode
- * shows an agent `=?UTF-8?B?...?=` as the subject it is supposed to read. Both
- * `B` and `Q` are decoded even though only `B` is produced here, because the
- * choice belongs to whoever sent the message.
- *
- * Whitespace BETWEEN two encoded-words is deleted and whitespace elsewhere is
- * kept, per RFC 2047 section 6.2. A word whose charset or encoding this cannot
- * handle is left exactly as it arrived: showing the encoded form is a visible
- * fault a reader can report, whereas substituting replacement characters looks
- * like the sender's own text.
+ * Decode RFC 2047 encoded-words in a received header value. Both `B` and `Q`
+ * are decoded; only `B` is produced here. Whitespace BETWEEN two words is
+ * deleted, elsewhere kept (RFC 2047 §6.2). A word whose charset or encoding
+ * cannot be handled is left as it arrived: the encoded form is a visible,
+ * reportable fault.
  */
 export function decodeHeaderText(value: string): string {
   const word = /=\?([^?]+)\?([BbQq])\?([^?]*)\?=/g;
@@ -552,8 +474,8 @@ export function decodeHeaderText(value: string): string {
       encoding === undefined ||
       payload === undefined
     ) {
-      // Unreachable: all three groups are mandatory in the pattern. Narrowed
-      // rather than asserted so a future pattern edit cannot make it a crash.
+      // Unreachable (all three groups are mandatory); narrowed so a future
+      // pattern edit cannot turn it into a crash.
       continue;
     }
     const gap = value.slice(cursor, match.index);
@@ -571,10 +493,9 @@ export function decodeHeaderText(value: string): string {
 }
 
 /**
- * Decode a base64 payload only when every character is in the alphabet and
- * the bytes re-encode to the same text. `Buffer` accepts illegal characters
- * by ignoring them, which would turn a corrupt encoded-word into different
- * text instead of leaving the word as it arrived.
+ * Decode base64 only when every character is in the alphabet and the bytes
+ * re-encode to the same text. `Buffer` accepts illegal characters by
+ * ignoring them, which would corrupt the word instead of leaving it as sent.
  */
 function decodeBase64Strict(payload: string): Uint8Array | undefined {
   if (!/^[A-Za-z0-9+/]*={0,2}$/.test(payload)) return undefined;
@@ -591,11 +512,9 @@ function decodeEncodedWord(
   encoding: string,
   payload: string,
 ): string | undefined {
-  // RFC 2231 permits a language suffix (`utf-8*en`); the charset is the part
-  // before it.
+  // RFC 2231 permits a language suffix (`utf-8*en`); drop it.
   const normalized = charset.toLowerCase().split("*")[0] ?? "";
-  // Only the charsets decoded here. An unsupported one returns undefined so the
-  // caller keeps the encoded form rather than guessing at the bytes.
+  // Unsupported charsets return undefined so the caller keeps the encoded form.
   const utf8 =
     normalized === "utf-8" ||
     normalized === "utf8" ||
@@ -631,8 +550,7 @@ function decodeEncodedWord(
     bytes = new Uint8Array(octets);
   }
 
-  // Latin-1 needs no decoder: its code points ARE its byte values, which is the
-  // one case where that identity holds.
+  // Latin-1 code points are their byte values; no decoder needed.
   if (latin1) {
     return Array.from(bytes, (byte) => String.fromCharCode(byte)).join("");
   }
@@ -640,9 +558,7 @@ function decodeEncodedWord(
   try {
     return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   } catch {
-    // Bytes that are not valid UTF-8 despite the charset saying so. Keeping the
-    // encoded form reports the sender's fault; replacement characters would
-    // read as the sender's own text.
+    // Not valid UTF-8 despite the charset; keep the encoded form to show the fault.
     return undefined;
   }
 }
@@ -660,8 +576,7 @@ function serializeMessageHeaders(
   out += hdr("Date", formatRFC2822Date(h.date));
   out += hdr("Message-ID", h.messageId);
   if (h.subject !== undefined) {
-    // The one unstructured header this assembler writes, and so the only one
-    // whose value is text a person chose rather than a token or an address.
+    // The only unstructured header this assembler writes.
     out += hdrText("Subject", h.subject);
   }
   if (h.inReplyTo !== undefined) {
@@ -719,10 +634,9 @@ function assertNoLineBreaks(value: string, field: string): void {
 }
 
 /**
- * A double quote would close the `filename="..."` form, and this serializer
- * emits no escape for an inner quote. A non-ASCII octet is the same class of
- * defect: these part headers sit inside the signed bytes and carry no
- * transfer encoding, so an 8-bit header is one a relay may rewrite.
+ * A double quote would close the `filename="..."` form, and no escape is
+ * emitted for an inner quote. These part headers sit inside the signed bytes
+ * with no transfer encoding, so 8-bit octets are one a relay may rewrite.
  */
 function assertAttachmentHeaderSafe(value: string, field: string): void {
   assertNoLineBreaks(value, field);
@@ -740,13 +654,10 @@ function assertAttachmentHeaderSafe(value: string, field: string): void {
 // Text part transfer encoding (RFC 2045 §6.7)
 // ---------------------------------------------------------------------------
 //
-// A text part is labelled `7bit` only when it IS 7-bit: every octet US-ASCII,
-// and every line inside the RFC 5322 §2.1.1 limit. Anything else is
-// quoted-printable. The distinction is load-bearing once the bytes reach a real
-// relay: a part labelled `7bit` that carries 8-bit octets is rewritten by any
-// hop that does not advertise 8BITMIME, and that rewrite changes the exact
-// bytes the PGP/MIME signature covers, so the recipient reports `invalid`.
-// Encoding here keeps the part 7-bit clean, so no hop has a reason to touch it.
+// A text part is `7bit` only when it is 7-bit; anything else is
+// quoted-printable. The label is load-bearing: a relay rewrites a `7bit`
+// part carrying 8-bit octets, changing the exact bytes the PGP/MIME
+// signature covers.
 
 /** The longest line quoted-printable permits, including the soft-break `=`. */
 const QP_MAX_LINE = 76;
@@ -759,8 +670,8 @@ function hexEscape(byte: number): string {
 }
 
 /**
- * Octets RFC 2045 §6.7 rule 2 permits literally: 33-60 and 62-126. The gap at
- * 61 is `=`, which always escapes because it introduces an escape.
+ * Octets RFC 2045 §6.7 rule 2 permits literally: 33-60 and 62-126. `=` (61)
+ * always escapes because it introduces an escape.
  */
 function isQuotedPrintableLiteral(byte: number): boolean {
   return (byte >= 33 && byte <= 60) || (byte >= 62 && byte <= 126);
@@ -768,9 +679,7 @@ function isQuotedPrintableLiteral(byte: number): boolean {
 
 /**
  * True when the bytes are already a legal `7bit` body: US-ASCII only, no bare
- * CR or LF, no NUL, and no line over the RFC 5322 limit. The caller has already
- * canonicalized line endings to CRLF, so a CR or LF outside a CRLF pair is a
- * defect rather than a line break to measure.
+ * CR or LF, no NUL, no line over the RFC 5322 limit.
  */
 function isSevenBitClean(bytes: Uint8Array): boolean {
   let lineOctets = 0;
@@ -792,21 +701,15 @@ function isSevenBitClean(bytes: Uint8Array): boolean {
 
 /**
  * Quoted-printable encode one hard line. Space and tab ride literally except
- * where they would end an encoded line. RFC 2045 §6.7 rule 3 requires an
- * escape there: a relay that strips trailing whitespace would otherwise change
- * the signed bytes. That includes the line a soft break closes, not only the
- * last line of the input.
- *
- * Soft breaks land between whole tokens, never inside an `=XX` escape, so the
- * escape cannot be split across a line. Escaping a run of spaces writes `=20`
- * onto the line the break opened, which can fill that line; the token that
- * caused the break is written only after it still fits.
+ * at a line end (RFC 2045 §6.7 rule 3): a relay that strips trailing
+ * whitespace would change the signed bytes. Soft breaks land between whole
+ * tokens, never inside an `=XX` escape.
  */
 function encodeQuotedPrintableLine(bytes: Uint8Array): string {
   let out = "";
   let column = 0;
 
-  // Leave a column for the soft-break `=`. A token is one octet or a
+  // Leave a column for the soft-break `=`; a token is one octet or a
   // three-octet hex escape, so it always fits once `column` is 0.
   const fits = (length: number): boolean =>
     column === 0 || column + length <= QP_MAX_LINE - 1;
@@ -834,8 +737,8 @@ function encodeQuotedPrintableLine(bytes: Uint8Array): string {
         column += escaped.length;
       }
     }
-    // The escaped whitespace may have filled the line it was moved onto.
-    // That line ends in `0` or `9`, so one more break opens a fresh one.
+    // The escaped whitespace may have filled the line it was moved onto;
+    // that line ends in `0` or `9`, so one more break opens a fresh one.
     if (!fits(token.length)) softBreak();
     out += token;
     column += token.length;
@@ -866,9 +769,8 @@ function encodeQuotedPrintable(text: string): string {
 }
 
 /**
- * Resolve a canonicalized text body to the transfer encoding that honestly
- * describes it, and the body in that encoding. Pass `canonical` already
- * CRLF-normalized with trailing whitespace stripped per line.
+ * Choose the transfer encoding that honestly describes a canonicalized text
+ * body (already CRLF-normalized, trailing whitespace stripped per line).
  */
 function encodeTextBody(canonical: string): {
   encoding: string;
@@ -891,10 +793,7 @@ function canonicalizeText(text: string): string {
     .join(CRLF);
 }
 
-/**
- * Encode bytes as base64, wrapped at 76 columns per RFC 2045. Returns the
- * empty string for empty input.
- */
+/** Encode bytes as base64, wrapped at 76 columns per RFC 2045. */
 function base64Lines(bytes: Uint8Array): string {
   const b64 = base64Encode(bytes);
   const lines: string[] = [];
@@ -905,14 +804,10 @@ function base64Lines(bytes: Uint8Array): string {
 }
 
 /**
- * Assemble the signed content for a conversation message.
- *
- * The shape is always multipart/mixed: one text/plain part (BODY[1.1])
- * followed by zero or more binary attachment parts (BODY[1.2..N]). The
- * shape is unconditional — there is no bare text/plain branch — so the
- * writer, the parser, and the signed-bytes contract have one form each.
- *
- * This is the exact bytes that will be hashed for the PGP/MIME signature.
+ * Assemble the signed content for a conversation message: always
+ * multipart/mixed, one text/plain part (BODY[1.1]) then attachment parts
+ * (BODY[1.2..N]) -- no bare text/plain branch, so writer, parser and the
+ * signed-bytes contract share one form.
  */
 function assembleConversationSignedPart(
   text: string,
@@ -935,8 +830,7 @@ function assembleConversationSignedPart(
   for (const att of attachments) {
     assertAttachmentHeaderSafe(att.contentType, "attachment contentType");
     assertAttachmentHeaderSafe(att.name, "attachment name");
-    // A filename is one token, so folding cannot bring it back under the
-    // limit. Refuse it here rather than emit a line a relay must break.
+    // A filename is one token; folding cannot bring it back under the limit.
     const typeLine = `Content-Type: ${att.contentType}`;
     const dispositionLine = `Content-Disposition: attachment; filename="${att.name}"`;
     if (typeLine.length > MAX_LINE_OCTETS) {
@@ -961,19 +855,14 @@ function assembleConversationSignedPart(
   return new TextEncoder().encode(body);
 }
 
-/**
- * Assemble the signed content for a structured message (multipart/mixed).
- *
- * This is the exact bytes that will be hashed for the PGP/MIME signature.
- */
+/** Assemble the signed content for a structured message (multipart/mixed). */
 function assembleStructuredSignedPart(
   json: Record<string, unknown>,
   summary?: string,
 ): Uint8Array {
   const boundary = generateBoundary();
-  // The payload is machine-read, so it is encoded rather than canonicalized:
-  // stripping trailing whitespace inside a JSON string literal would change the
-  // value, and JSON.stringify emits no bare CR or LF to normalize.
+  // Encoded, not canonicalized: stripping trailing whitespace inside a JSON
+  // string literal would change the value.
   const jsonPart = encodeTextBody(JSON.stringify(json));
 
   let body = `Content-Type: multipart/mixed; boundary="${boundary}"${CRLF}${CRLF}`;
@@ -1000,13 +889,9 @@ function assembleStructuredSignedPart(
 }
 
 /**
- * Wrap content part and PGP signature into multipart/signed per RFC 3156.
- *
- * RFC 3156 §5: The multipart/signed body MUST consist of exactly two parts.
- * The first part contains the signed data. The second part contains the
- * detached PGP signature in application/pgp-signature.
- *
- * The boundary delimiter lines use CRLF as required by RFC 2046.
+ * Wrap content and PGP signature into multipart/signed (RFC 3156 §5):
+ * signed data first, then the detached signature in
+ * application/pgp-signature.
  */
 function wrapInMultipartSigned(
   signedContentBytes: Uint8Array,
@@ -1018,10 +903,7 @@ function wrapInMultipartSigned(
 
   const enc = new TextEncoder();
 
-  // Per RFC 2046: boundary delimiter = "--" + boundary parameter.
-  // The CRLF preceding the boundary belongs to the boundary, not the part.
-  // Each part is preceded by: CRLF + "--" + boundary + CRLF
-  // The closing delimiter: CRLF + "--" + boundary + "--" + CRLF
+  // RFC 2046: each part is preceded by CRLF + "--" + boundary + CRLF.
   const body =
     `--${boundary}${CRLF}` +
     `${signedContent}` +
@@ -1039,11 +921,9 @@ function wrapInMultipartSigned(
 // ---------------------------------------------------------------------------
 
 /**
- * Assemble a complete RFC 2822 message from headers, content, and signature
- * bytes. Returns the raw message bytes for storage.
- *
- * The signature bytes must be produced by signing the signed content part
- * bytes (the result of assembleSignedContentPart below).
+ * Assemble a complete RFC 2822 message from headers, signed content, and
+ * signature bytes. The signature must be produced by signing the
+ * `assembleSignedContent` output.
  */
 export function assembleMessage(
   headers: MessageHeaders,
@@ -1073,9 +953,8 @@ export function assembleMessage(
 }
 
 /**
- * Build the signed content bytes for a message. These exact bytes are
- * what the CryptoProvider signs. The transport calls this, then signs,
- * then calls assembleMessage with both.
+ * Build the signed content bytes the CryptoProvider signs: call this, sign
+ * the result, then pass both to `assembleMessage`.
  */
 export function assembleSignedContent(
   content: ConversationContent | StructuredContent,
@@ -1095,13 +974,8 @@ const LF = 0x0a;
 
 /**
  * Refuse a header section that breaks a line with anything but CRLF (RFC 5321
- * §2.3.8, §4.1.1.4). The caller passes the section together with the blank line
- * that ends it, so neither an LF-only section nor an `LF LF` separator survives.
- *
- * Neither reading of a bare break is safe. Splitting on it resolves a field
- * from a value the sender smuggled inside one it controls; folding it collapses
- * every field after it into the value of the field that carries it, suppressing
- * each one. A non-conforming peer is owed an error rather than either parse.
+ * §2.3.8, §4.1.1.4); the blank line that ends the section is included, so
+ * neither an LF-only section nor an `LF LF` separator survives.
  */
 function assertNoBareLineBreaks(section: Uint8Array): void {
   for (let i = 0; i < section.length; i++) {
@@ -1128,25 +1002,14 @@ function lineBreakLength(raw: Uint8Array, at: number): number {
 
 /**
  * Locate the blank line that ends the header section: the first line break
- * immediately followed by another, whichever flavour either uses. Returns null
- * for a message carrying no blank line.
+ * immediately followed by another, whichever flavour either uses. Returns
+ * null for a message carrying no blank line.
  *
- * Searching for `CRLF CRLF` alone walks past a blank line written with bare
- * breaks and takes the section from a later offset, so every field before that
- * offset reads as one field body. Admitting the bare blank line as a separator
- * is the mirror of that: a sender who controls one field body ends the section
- * early and strips the fields after it. This search locates the boundary and
- * `assertNoBareLineBreaks` then refuses the section unless CRLF wrote it,
- * including the blank line itself.
- *
- * The pair is the whole test, so a body part that carries no header fields --
- * legal under RFC 2046 §5.1.1, which makes every field of a part optional --
- * offers one leading break, and its content reads as the header section. A
- * leading break is not admitted as a separator here because the message path
- * relies on this scan to step over a spurious blank line and keep the fields
- * behind it; a strict reading of a leading break would take those fields as
- * body and erase the message's originator. The two paths want opposite
- * readings of the same leading break, and this scan serves the message.
+ * Only `CRLF CRLF` may separate: admitting a bare pair lets a sender who
+ * controls one field body end the section early and strip the fields after
+ * it. `assertNoBareLineBreaks` then refuses the section unless CRLF wrote
+ * it. A leading break is not a separator: a body part with no header fields
+ * (legal under RFC 2046 §5.1.1) offers one.
  */
 function findHeaderBoundary(
   raw: Uint8Array,
@@ -1168,12 +1031,9 @@ function findHeaderBoundary(
 }
 
 /**
- * Parse the header section of a raw RFC 2822 message.
- * Returns a map of lowercase header names to their values, and the
- * byte offset where the body starts.
- *
- * Throws for a header section that CRLF did not write, the blank line ending it
- * included. A message with no blank line at all is all header section.
+ * Parse the header section of a raw RFC 2822 message: lowercase header names
+ * to values, plus the byte offset where the body starts. Throws for a section
+ * CRLF did not write. No blank line means all headers.
  */
 export function parseHeaderSection(raw: Uint8Array): {
   headers: Map<string, string>;
@@ -1182,8 +1042,8 @@ export function parseHeaderSection(raw: Uint8Array): {
 } {
   const headers = new Map<string, string>();
 
-  // The boundary is located in byte space so the returned offset is valid for
-  // Uint8Array.slice() even when headers contain multi-byte UTF-8 characters.
+  // Byte-space scan so the returned offset stays valid for Uint8Array.slice()
+  // when headers contain multi-byte UTF-8 characters.
   const boundary = findHeaderBoundary(raw);
   const headerEnd = boundary === null ? raw.length : boundary.headerEnd;
   const bodyOffset = boundary === null ? raw.length : boundary.bodyOffset;
@@ -1199,12 +1059,10 @@ export function parseHeaderSection(raw: Uint8Array): {
 }
 
 /**
- * Fold a bare CR or LF -- one not part of a CRLF -- to a space. Splitting on it
- * would let a sender who controls a field body append a field of its own.
- *
- * Both callers read a region `parseHeaderSection` has already refused a bare
- * break in, so nothing reaches this today. It stays because folding is the safe
- * outcome for a region that refusal ever stops covering, and splitting is not.
+ * Fold a bare CR or LF to a space: splitting on it would let a sender who
+ * controls a field body append a field of its own. Both callers read a
+ * region `parseHeaderSection` has already refused, so nothing reaches this
+ * today.
  */
 function foldBareLineBreaks(text: string): string {
   return text.replace(/\r(?!\n)|(?<!\r)\n/g, " ");
@@ -1219,8 +1077,7 @@ function parseHeaders(headerSection: string, out: Map<string, string>): void {
   const lines = unfolded.split(CRLF);
   for (const line of lines) {
     if (line.trim() === "") continue;
-    // A field begins with a printable name character (RFC 2822 2.2), so a
-    // leading-WSP line continues nothing and names no field.
+    // A leading-WSP line continues nothing and names no field (RFC 2822 2.2).
     if (line.startsWith(" ") || line.startsWith("\t")) continue;
     const colon = line.indexOf(":");
     if (colon === -1) continue;
@@ -1244,10 +1101,8 @@ export function extractBoundary(contentTypeValue: string): string | undefined {
 }
 
 /**
- * Parse a multipart body into individual parts.
- *
- * Each part is returned as raw bytes (headers + blank line + body) for
- * further parsing.
+ * Parse a multipart body into individual parts as raw bytes (headers + blank
+ * line + body) for further parsing.
  */
 export function parseMultipart(
   body: Uint8Array,
@@ -1279,10 +1134,8 @@ export function parseMultipart(
 
     // Part body excludes the trailing CRLF before the next boundary.
     let partEnd = nextDelimIdx;
-    // Account for the \n we searched for.
-    // We want to include only up to (but not including) the CRLF before "--boundary".
-    // nextDelimIdx points to the \n before the delimiter. The part ends before
-    // the preceding \r\n (or just \n).
+    // nextDelimIdx points at the \n before the delimiter; the part ends
+    // before the preceding \r\n (or just \n).
     if (partEnd > partStart && text[partEnd - 1] === "\r") {
       partEnd--;
     }
@@ -1307,13 +1160,8 @@ export function parseMimePart(partBytes: Uint8Array): ParsedMimePart {
 }
 
 /**
- * Extract a MIME part by dot-separated path from a multipart/signed message.
- *
- * Path "1" returns the signed content part (text/plain or multipart/mixed).
- * Path "1.1" returns the first sub-part of the signed content (JSON payload).
- * Path "2" returns the application/pgp-signature part.
- *
- * This follows IMAP FETCH section specifier semantics (RFC 9051).
+ * Extract a MIME part by dot-separated IMAP path (RFC 9051): "1" is the
+ * signed content part, "1.1" its first sub-part, "2" the signature part.
  */
 export function extractPartByPath(
   raw: Uint8Array,
@@ -1377,19 +1225,12 @@ function walkParts(
 // ---------------------------------------------------------------------------
 
 /**
- * Parse a RFC 2822 address value into structured JMAP address objects.
- *
- * Handles both "Display Name" <email@example.com> and bare email@example.com
- * forms, as well as comma-separated address lists.
+ * Parse an RFC 2822 address value (display-name form or bare) into JMAP
+ * address objects, handling comma-separated lists.
  */
 function parseAddressList(value: string): JMAPAddress[] {
   const results: JMAPAddress[] = [];
   // Split on commas that are not inside quoted strings or angle brackets.
-  // We handle the two common forms:
-  //   1. "Display Name" <email>
-  //   2. Display Name <email>
-  //   3. <email>
-  //   4. email
   const segments = splitAddressList(value);
   for (const segment of segments) {
     const addr = parseOneAddress(segment.trim());
@@ -1456,9 +1297,7 @@ function parseOneAddress(segment: string): JMAPAddress | null {
 }
 
 /**
- * Parse the MIME Date header into an ISO 8601 string.
- *
- * Returns null if the header is missing or the value cannot be parsed.
+ * Parse the Date header into an ISO 8601 string; null when missing or unparseable.
  */
 function parseDateHeader(value: string | undefined): string | null {
   if (value === undefined) return null;
@@ -1470,7 +1309,7 @@ function parseDateHeader(value: string | undefined): string | null {
 /**
  * Replace every RFC 822 comment in a header value with a single space -- not
  * nothing, or `ba(c)se64` composes a token the sender never wrote. Comments
- * nest (RFC 822 §3.4.3), and a backslash quotes the next character (§3.4.5).
+ * nest (§3.4.3); a backslash quotes the next character (§3.4.5).
  */
 function replaceCommentsWithSpace(value: string): string {
   const kept: string[] = [];
@@ -1526,11 +1365,10 @@ export function isRecognizedTransferEncoding(mechanism: string): boolean {
 }
 
 /**
- * The content type a leaf part reports, after the RFC 2045 §6.4 rule that an
- * entity under an unrecognized transfer encoding is treated as
- * application/octet-stream. A `multipart/*` wrapper is exempt: its children
- * are located from its declared type. The relabel governs what a part
- * reports, not how it is routed.
+ * The type a leaf part reports, applying RFC 2045 §6.4: an entity under an
+ * unrecognized transfer encoding is treated as application/octet-stream. A
+ * `multipart/*` wrapper is exempt -- its children are located from its
+ * declared type.
  */
 export function reportedContentType(
   declaredContentType: string,
@@ -1552,16 +1390,10 @@ export function reportedContentType(
 const BINARY_WIDEN_CHUNK_SIZE = 8192;
 
 /**
- * Widen bytes into a string of one code unit per byte. A UTF-8 decode would
- * fold multi-byte sequences and replace any byte that is not valid UTF-8, and
- * no `TextDecoder` label widens bytes either: the WHATWG Encoding Standard
- * makes "latin1" and "iso-8859-1" labels for windows-1252, which maps 27 of
- * the byte values in 0x80-0x9f to other code points.
- *
- * Widening runs a chunk at a time. One `String.fromCharCode` per byte
- * allocates a single-character string per byte plus an array to hold them,
- * which on a body of tens of megabytes costs several times the body's own
- * size in resident memory, on a caller that runs synchronously.
+ * Widen bytes into a string of one code unit per byte. No TextDecoder label
+ * widens bytes: "latin1"/"iso-8859-1" label windows-1252, which maps 27 byte
+ * values in 0x80-0x9f elsewhere. Widening runs a chunk at a time so one
+ * `String.fromCharCode` per byte does not allocate a string per byte.
  */
 function bytesToBinaryString(bytes: Uint8Array): string {
   let out = "";
@@ -1598,10 +1430,8 @@ function decodeBodyBytes(
 
   if (cte === "quoted-printable") {
     const raw = new TextDecoder("utf-8", { fatal: false }).decode(body);
-    // Decode to octets first, then read those octets as UTF-8. A
-    // quoted-printable escape names one OCTET, so a multi-byte character
-    // arrives as several escapes; reading each escape as a character instead
-    // yields one code point per octet, which renders as mojibake.
+    // Decode escapes to octets first, then read those octets as UTF-8:
+    // a multi-byte character arrives as several escapes.
     return {
       value: new TextDecoder("utf-8", { fatal: false }).decode(
         decodeQuotedPrintableBytes(raw),
@@ -1622,9 +1452,8 @@ function decodeBodyBytes(
 }
 
 /**
- * Undo quoted-printable into a string of one code unit per decoded OCTET. The
- * result is an octet sequence widened into a string, not text: a caller that
- * wants text decodes those octets under the part's charset.
+ * Undo quoted-printable into a string of one code unit per decoded OCTET;
+ * not text, which a caller decodes under the part's charset.
  */
 function decodeQuotedPrintable(text: string): string {
   return text
@@ -1693,9 +1522,8 @@ type WalkContext = {
 };
 
 /**
- * Recursively walk MIME parts, populating body values and attachment lists.
- *
- * partPath uses IMAP-style dot-separated numbering (e.g., "1", "1.1", "2.3").
+ * Recursively walk MIME parts into body values and attachment lists.
+ * `partPath` uses IMAP-style dot-separated numbering ("1", "1.1", "2.3").
  */
 function walkMimePart(
   partBytes: Uint8Array,
@@ -1731,8 +1559,8 @@ function walkMimePart(
   const decoded = decodeBodyBytes(part.body, part.headers);
   ctx.bodyValues[partPath] = decoded;
 
-  // Listed on the declared type but reported under the relabeled one: a
-  // consumer walking `textBody` would otherwise never learn the part exists.
+  // Listed under the declared type but reported under the relabeled one, so
+  // a consumer walking `textBody` still learns the part exists.
   if (declaredMime === "text/plain") {
     ctx.textBody.push({ partId: partPath, type: reportedMime });
   } else if (declaredMime === "text/html") {
@@ -1741,14 +1569,9 @@ function walkMimePart(
 }
 
 /**
- * Convert raw MIME bytes into a JMAP Email-shaped object.
- *
- * Handles text/plain, multipart/mixed, and multipart/signed message shapes.
- * For multipart/signed (RFC 3156), the signed content part (part 1) is
- * parsed for body and attachments. Signature verification is not performed.
- *
- * @param raw - Raw RFC 2822 message bytes
- * @param mailId - Opaque mail record ID used to generate blob IDs
+ * Convert raw MIME bytes into a JMAP Email-shaped object: text/plain,
+ * multipart/mixed and multipart/signed (RFC 3156). Signature verification is
+ * not performed. `mailId` generates blob IDs.
  */
 export function parseMailToEmail(raw: Uint8Array, mailId: string): JMAPEmail {
   const { headers: msgHeaders, bodyOffset } = parseHeaderSection(raw);
@@ -1765,15 +1588,13 @@ export function parseMailToEmail(raw: Uint8Array, mailId: string): JMAPEmail {
   };
 
   if (mime === "multipart/signed") {
-    // RFC 3156: part 1 is the signed content, part 2 is the signature.
-    // Parse the content part through to extract body and attachments.
+    // RFC 3156: part 1 is the signed content, part 2 the signature.
     const boundary = extractBoundary(contentType);
     if (boundary !== undefined) {
       const outerParts = parseMultipart(body, boundary);
       const contentPart = outerParts[0];
       if (contentPart !== undefined) {
-        // The content part may itself be text/plain or multipart/mixed.
-        // We assign it path "1" and walk it.
+        // The content part may be text/plain or multipart/mixed; walk it as "1".
         walkMimePart(contentPart, "1", ctx);
       }
     }
@@ -1786,8 +1607,8 @@ export function parseMailToEmail(raw: Uint8Array, mailId: string): JMAPEmail {
       });
     }
   } else {
-    // Single-part message. Reconstruct minimal part bytes so parseMimePart
-    // works; the message's own Content-Transfer-Encoding travels with the type.
+    // Reconstruct minimal part bytes so parseMimePart works; the message's
+    // own Content-Transfer-Encoding travels with the type.
     const enc = new TextEncoder();
     const cte = msgHeaders.get("content-transfer-encoding");
     const partHeaderText =
@@ -1826,17 +1647,13 @@ export function parseMailToEmail(raw: Uint8Array, mailId: string): JMAPEmail {
 }
 
 /**
- * Decode a MIME part body into raw bytes, honoring Content-Transfer-Encoding.
+ * Decode a MIME part body into raw bytes. A malformed base64 body throws; an
+ * unrecognized mechanism does not (RFC 2045 §6.4).
  *
- * Unlike `decodeBodyBytes` (which produces a JMAP string value), this returns
- * the actual bytes. A malformed base64 body throws; an unrecognized mechanism
- * does not — RFC 2045 §6.4 hands back the bytes as they came.
- *
- * Limitation: the quoted-printable branch reads the wire text as UTF-8
- * before undoing the escapes, so a raw 8-bit byte in a quoted-printable
- * body (which RFC 2045 forbids) comes out as a replacement character
- * truncated to one byte rather than the original octet. Escaped bytes
- * (`=E9`, `=C3=A9`) round-trip exactly.
+ * Limitation: the quoted-printable branch reads wire text as UTF-8 before
+ * undoing escapes, so a raw 8-bit byte in a quoted-printable body becomes a
+ * replacement character truncated to one byte. Escaped bytes round-trip
+ * exactly.
  */
 export function decodePartBytes(
   body: Uint8Array,
@@ -1859,16 +1676,10 @@ export function decodePartBytes(
 }
 
 /**
- * Extract conversation attachments from raw message bytes as
- * `MessageAttachment[]` with decoded payloads and the IMAP part path
- * of each sibling (`part`), matching `extractPartByPath` numbering.
- *
- * The conversation signed content is a multipart/mixed whose first part is
- * the text body and whose remaining attachment parts (Content-Disposition:
- * attachment) carry the binary payloads. Returns an empty array for any
- * shape without attachment parts — a bare text/plain signed part, a
- * non-multipart/signed message, or a multipart/mixed with only the text
- * part — so callers can use it unconditionally.
+ * Extract conversation attachments from raw message bytes as decoded
+ * `MessageAttachment[]`, each with the IMAP part path of its sibling (`part`)
+ * matching `extractPartByPath` numbering. Returns [] for any shape without
+ * attachment parts.
  *
  * Counterpart to `assembleConversationSignedPart`: assemble then extract
  * round-trips a `MessageAttachment[]`.
@@ -1921,9 +1732,9 @@ function isInterchangeType(s: string): s is InterchangeType {
 }
 
 /**
- * Build the typed, ergonomic `MessageHeaders` subset from a parsed header map.
- * Optional fields are included only when present (exactOptionalPropertyTypes-
- * safe). The full, lossless header set is carried separately as `rawHeaders`.
+ * Build the typed `MessageHeaders` subset from a parsed header map. Optional
+ * fields are included only when present (exactOptionalPropertyTypes-safe);
+ * the lossless header set is carried separately as `rawHeaders`.
  */
 export function buildMessageHeaders(
   headers: Map<string, string>,
@@ -1938,15 +1749,9 @@ export function buildMessageHeaders(
 
   const result: ParsedMessageHeaders = { to };
 
-  // A blank header below is recorded as an absence, not an empty value: RFC
-  // 5322 admits no empty `Date`, `Message-ID`, `In-Reply-To` or `From` body.
-  //
-  // A `Date` that does not parse is an absence too, which the parse check below
-  // covers along with the blank one. A consumer builds a `Date` from this string
-  // and compares it to a window's bounds; every comparison against an Invalid
-  // Date is false, so a value kept here places the message inside every date
-  // window, including two that exclude each other. An absence falls outside all
-  // of them.
+  // A blank or unparseable header is an absence, not a value: RFC 5322 admits
+  // no empty `Date` body, and a consumer comparing an Invalid Date to a
+  // window's bounds gets false for every window.
   const date = headers.get("date");
   if (date !== undefined && !Number.isNaN(new Date(date).getTime())) {
     result.date = date;
@@ -1981,9 +1786,7 @@ export function buildMessageHeaders(
     result.inReplyTo = inReplyTo;
   }
 
-  // Decoded, because a subject is text to read: a sender that wrote a
-  // non-ASCII one encoded it, and the agent reading this field wants the
-  // characters rather than their RFC 2047 transport form.
+  // Decoded: a subject is text to read, not RFC 2047 transport form.
   const subject = headers.get("subject");
   if (subject !== undefined) result.subject = decodeHeaderText(subject);
 
@@ -2024,11 +1827,10 @@ export function buildMessageHeaders(
 }
 
 /**
- * Parse every header line in the message's header section into a raw,
- * lossless map of lowercased name to its ordered values. Repeated headers
- * (e.g. `Received`) keep all occurrences; folded continuation lines are
- * unfolded onto the preceding header. Bounded to the header section via
- * `headerEnd` so the whole message body is never decoded here.
+ * Parse the header section into a lossless map of lowercased name to ordered
+ * values. Repeated headers keep all occurrences; folded continuations unfold
+ * onto the preceding header. Bounded by `headerEnd` so the body is never
+ * decoded here.
  */
 function parseRawHeaders(
   raw: Uint8Array,
@@ -2039,8 +1841,8 @@ function parseRawHeaders(
       raw.subarray(0, headerEnd),
     ),
   );
-  // `__proto__` and `constructor` are legal RFC 5322 field names that collide
-  // with Object.prototype members, so the accumulator is a Map.
+  // `__proto__`/`constructor` are legal field names that collide with
+  // Object.prototype members, so the accumulator is a Map.
   const out = new Map<string, string[]>();
   let current: { name: string; value: string } | null = null;
   const flush = (): void => {
@@ -2052,15 +1854,13 @@ function parseRawHeaders(
     current = null;
   };
   for (const line of text.split(CRLF)) {
-    // `headerEnd` bounds the section already, so a blank line here is a
-    // leading one, not the terminator; breaking would drop every field.
+    // A blank line here is leading (headerEnd bounds the section).
     if (line === "") continue;
     // Nothing to continue means no field (RFC 2822 2.2), not a field of its own.
     if (line.startsWith(" ") || line.startsWith("\t")) {
       if (current !== null) {
-        // The leading whitespace is the fold, and unfolding replaces that
-        // run with one space. Trailing whitespace is content: trimming it
-        // would drop a space the fold left at the end of the line.
+        // The leading whitespace is the fold; unfolding replaces that run
+        // with one space. Trailing whitespace is content and stays.
         const body = line.replace(/^[ \t]+/, "");
         current.value += ` ${body}`;
       }
@@ -2072,7 +1872,7 @@ function parseRawHeaders(
     current = { name: line.slice(0, idx), value: line.slice(idx + 1) };
   }
   flush();
-  // Null prototype for the same reason: an absent name must resolve to nothing.
+  // Null prototype: an absent name must resolve to nothing.
   const result: Record<string, string[]> = Object.create(null);
   for (const [name, values] of out) result[name] = values;
   return result;
@@ -2088,11 +1888,9 @@ function parseDisposition(
 }
 
 /**
- * Recursively collect the decoded leaf parts of a MIME part. A multipart part
- * recurses into its children; a leaf part is decoded (transfer-encoding undone)
- * into a `MessagePart`. The PGP/MIME signature part is transport plumbing, not
- * content, so it is skipped -- which unwraps the `multipart/signed` envelope
- * (its two children are the signed content and the signature) for free.
+ * Recursively collect the decoded leaf parts of a MIME part. The PGP/MIME
+ * signature part is transport plumbing, not content, so it is skipped --
+ * which unwraps the multipart/signed envelope for free.
  */
 function collectLeafParts(partBytes: Uint8Array): MessagePart[] {
   const part = parseMimePart(partBytes);
@@ -2100,9 +1898,8 @@ function collectLeafParts(partBytes: Uint8Array): MessagePart[] {
   if (mime === "application/pgp-signature") return [];
   if (mime.startsWith("multipart/")) {
     const boundary = extractBoundary(part.contentType);
-    // A multipart part with no boundary is undecodable: its children cannot
-    // be located. Silently returning [] would drop that content and break the
-    // lossless contract, so surface it as a decode failure the caller drops.
+    // A multipart part with no boundary is undecodable; silently returning
+    // [] would break the lossless contract.
     if (boundary === undefined) {
       throw new Error(
         `decodeMail: ${mime} part has no boundary parameter; cannot decode its children`,
@@ -2124,10 +1921,9 @@ function collectLeafParts(partBytes: Uint8Array): MessagePart[] {
 /**
  * Decode a raw inbound MIME message into its lossless parts: the typed header
  * subset, the full raw header map, and the flat list of decoded leaf parts
- * (the PGP/MIME signature and multipart wrappers removed). This is the
- * in-memory form; a caller commits each part's bytes to durable storage to
- * produce a JSON-safe `Mail`. Reused across the standalone and deployed
- * ingest paths so both see the same decoding.
+ * (signature and multipart wrappers removed). This is the in-memory form; a
+ * caller commits each part's bytes to durable storage to produce a
+ * JSON-safe `Mail`. Shared by the standalone and deployed ingest paths.
  */
 export function decodeMail(raw: Uint8Array): {
   headers: ParsedMessageHeaders;

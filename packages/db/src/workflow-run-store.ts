@@ -61,9 +61,9 @@ export function createWorkflowRunStore(db: DBHandle) {
      * normally no-ops. The three-part guard makes the reconcile single-shot and
      * safe: `principalId IS NULL` never overwrites a principal a concurrent
      * winner already set, and `status = 'deployed'` never resurrects a run a
-     * concurrent teardown already settled terminal (the null-principal guard
-     * alone would). `principalId` must be non-null: only the externally-
-     * triggered path anchors through here, and it always mints one.
+     * concurrent teardown already settled terminal. `principalId` must be
+     * non-null: only the externally-triggered path anchors through here, and it
+     * always mints one.
      */
     async anchorWithPrincipal(
       row: WorkflowRunInsert & { principalId: string },
@@ -94,11 +94,8 @@ export function createWorkflowRunStore(db: DBHandle) {
      * caller stamps the terminal status and `endedAt` and gets the row back; any
      * later caller matches no row and receives null, so the run is not
      * re-terminated and its `endedAt` is not overwritten. Accepting "deployed"
-     * settles a deployment torn down before its first trigger. This is a safety
-     * property, not a recovery path -- it makes a second call (a manual replay
-     * against an already-settled run) a harmless no-op; it does not by itself
-     * re-drive a flip that failed. Returns the parsed row only on the winning
-     * flip.
+     * settles a deployment torn down before its first trigger. Returns the
+     * parsed row only on the winning flip.
      */
     async markTerminal(
       runId: string,

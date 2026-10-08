@@ -1,11 +1,7 @@
-// Tests for the Gemini Files API upload helper. The bulk of the
-// coverage uses a synthetic `fetch` that returns the captured
-// `files-api-reference-streaming/upload/response.json` fixture --
-// pinning the wire-shape parsing without a live API key. A final
-// guarded test hits the real Files API when `GEMINI_API_KEY` is
-// set in the environment, providing a smoke check that the
-// captured wire shape is still current. Unguarded runs (CI, local
-// without the env var) skip the live test cleanly.
+// Tests for the Gemini Files API upload helper. A synthetic `fetch`
+// returns the captured `files-api-reference-streaming/upload/response.json`
+// fixture, pinning wire-shape parsing without a live API key; a final
+// env-gated test hits the real API when `GEMINI_API_KEY` is set.
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -18,12 +14,9 @@ import {
   type UploadGoogleGenAIFileFetch,
 } from "@intx/inference";
 
-// `RequestInit.headers` is typed as the union `HeadersInit`
-// (Headers | Record<string, string> | [string, string][]). The
-// helper always passes a Record, but the type system carries the
-// wider union at the test site; an arktype-validated narrowing
-// keeps the test honest if the helper ever changes to passing a
-// `Headers` instance.
+// `RequestInit.headers` is the union `HeadersInit`; arktype-validated
+// narrowing keeps the test honest if the helper ever passes a
+// `Headers` instance instead of a Record.
 const HeadersRecord = type("Record<string, string>");
 
 const FIXTURE_ROOT = join(
@@ -61,13 +54,11 @@ function fixtureUploadResponse(): unknown {
 
 describe("uploadGoogleGenAIFile", () => {
   test("posts to the Files API and returns the parsed file resource", async () => {
-    // Captures the request the helper would issue against the
-    // real Files API, then returns the captured upload response.
-    // Asserts both directions: the request shape matches the
-    // documented protocol (`X-Goog-Upload-Protocol: raw`, the API
-    // key on `x-goog-api-key`, the bytes as the body), and the
-    // helper's return value is the normalized shape from the
-    // captured response.
+    // Captures the request, then returns the captured upload response.
+    // Asserts both directions: the request matches the documented
+    // protocol (`X-Goog-Upload-Protocol: raw`, key on
+    // `x-goog-api-key`, bytes as body) and the return value is the
+    // normalized fixture shape.
     const recorded: { url?: string; init?: RequestInit } = {};
     const fakeFetch: UploadGoogleGenAIFileFetch = (input, init) => {
       recorded.url = typeof input === "string" ? input : input.toString();
@@ -116,11 +107,9 @@ describe("uploadGoogleGenAIFile", () => {
   });
 
   test("omits the signal property when none is supplied", async () => {
-    // Under `exactOptionalPropertyTypes`, the helper must not
-    // assign `signal: undefined` on the init object (the global
-    // fetch's RequestInit types `signal` as `AbortSignal | null`
-    // and rejects `undefined`). The omit-when-absent path is
-    // exercised every call that does not supply a signal.
+    // Under `exactOptionalPropertyTypes`, the helper must omit
+    // `signal` rather than assign `undefined` (RequestInit types it
+    // as `AbortSignal | null`).
     const recorded: { init?: RequestInit } = {};
     const fakeFetch: UploadGoogleGenAIFileFetch = (_input, init) => {
       if (init !== undefined) recorded.init = init;
@@ -237,9 +226,8 @@ describe("uploadGoogleGenAIFile", () => {
       throw new Error("expected the upload to throw on a non-JSON body");
     }
     expect(thrown.message).toMatch(/was not valid JSON/);
-    // The body snippet survives in the thrown message now that the
-    // helper reads-text-then-parses-JSON rather than calling
-    // response.json() (which would consume the stream).
+    // The helper reads text then parses JSON, so the body snippet
+    // survives in the thrown message.
     expect(thrown.message).toMatch(/not json at all/);
     expect(thrown.cause).toBeInstanceOf(Error);
   });
@@ -348,9 +336,8 @@ describe("uploadGoogleGenAIFile", () => {
   });
 
   test("string sizeBytes with trailing junk is rejected", async () => {
-    // `Number.parseInt` would silently accept "42abc" as 42; the
-    // helper's strict regex rejects anything that is not exactly
-    // a signed integer.
+    // Strict regex rejects anything that is not exactly a signed
+    // integer (parseInt would silently accept "42abc").
     const malformed = {
       file: {
         uri: "https://example/uri",
@@ -414,11 +401,9 @@ describe("uploadGoogleGenAIFile", () => {
   });
 
   test("sizeBytes string above MAX_SAFE_INTEGER is rejected (precision loss)", async () => {
-    // The Files API documents sizeBytes as int64; a string like
-    // "9007199254740993" (2^53 + 1) silently rounds when parsed
-    // into a JS number. The helper rejects values past
-    // Number.MAX_SAFE_INTEGER to keep the returned value
-    // faithful to the wire.
+    // sizeBytes is int64 on the wire; values past
+    // Number.MAX_SAFE_INTEGER would silently round in a JS number,
+    // so the helper rejects them.
     const malformed = {
       file: {
         uri: "https://example/uri",
@@ -440,9 +425,8 @@ describe("uploadGoogleGenAIFile", () => {
   });
 
   test("NUL byte in mimeType is rejected at the boundary", async () => {
-    // The CTL-byte guard generalizes beyond CR/LF; NUL bytes
-    // would otherwise reach the downstream fetch and produce a
-    // less specific error message.
+    // The guard covers all CTL bytes, not just CR/LF; a NUL would
+    // otherwise reach the fetch and produce a vaguer error.
     const fakeFetch: UploadGoogleGenAIFileFetch = () =>
       Promise.resolve(
         new Response(JSON.stringify(fixtureUploadResponse()), { status: 200 }),
@@ -459,10 +443,9 @@ describe("uploadGoogleGenAIFile", () => {
   });
 
   test("CR/LF in apiKey is rejected at the boundary", async () => {
-    // The apiKey lands on `x-goog-api-key`; the same header-value
-    // safety rule applies. Validation runs at the boundary
-    // regardless of input provenance -- the helper does not
-    // assume the caller pre-sanitized the value.
+    // The key lands on `x-goog-api-key` under the same header-value
+    // safety rule; validation runs at the boundary regardless of
+    // input provenance.
     const fakeFetch: UploadGoogleGenAIFileFetch = () =>
       Promise.resolve(
         new Response(JSON.stringify(fixtureUploadResponse()), { status: 200 }),
@@ -479,10 +462,8 @@ describe("uploadGoogleGenAIFile", () => {
   });
 
   test("CR/LF in mimeType is rejected at the boundary", async () => {
-    // The mimeType lands directly in the `Content-Type` header.
-    // An injected newline would smuggle additional headers onto
-    // the request; the helper rejects the input rather than
-    // forward it.
+    // mimeType lands in `Content-Type`; an injected newline would
+    // smuggle extra headers, so the helper rejects the input.
     const fakeFetch: UploadGoogleGenAIFileFetch = () =>
       Promise.resolve(
         new Response(JSON.stringify(fixtureUploadResponse()), { status: 200 }),
@@ -515,27 +496,18 @@ describe("uploadGoogleGenAIFile", () => {
   });
 
   // ----- Live, env-gated -----------------------------------------
-  // The block below hits the real Files API. It runs only when
-  // `GEMINI_API_KEY` is set in the environment; CI and local
-  // developer runs without the variable skip cleanly. The wire-
-  // shape fixture pinned above provides offline coverage; the
-  // gated test catches API drift (e.g. Google changes the
-  // response shape under us) against a live endpoint.
+  // Hits the real Files API only when `GEMINI_API_KEY` is set,
+  // catching API drift that the pinned fixture above cannot.
   //
-  // The test deletes the uploaded file in a `finally` block so a
-  // green run does not leak resources against the project tied to
-  // the API key. Files API resources persist for 48h and count
-  // against quotas; an undeleted upload per test run would
-  // accumulate quickly under CI.
+  // The test deletes the upload in a `finally` block: Files API
+  // resources persist 48h and count against quotas.
   const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
   test.skipIf(GEMINI_API_KEY === undefined || GEMINI_API_KEY === "")(
     "uploads the captured request.bin against the live Files API and deletes the result",
     async () => {
-      // `skipIf` evaluates the predicate at test-collection time,
-      // so this branch only runs when the env var was set. An
-      // explicit guard inside the branch narrows the type without
-      // a non-null assertion.
+      // `skipIf` evaluates at collection time; the in-branch guard
+      // narrows the type without a non-null assertion.
       const apiKey = GEMINI_API_KEY;
       if (apiKey === undefined || apiKey === "") {
         throw new Error(
@@ -558,13 +530,9 @@ describe("uploadGoogleGenAIFile", () => {
         expect(result.sizeBytes).toBe(4193);
         expect(result.state).toMatch(/^(ACTIVE|PROCESSING)$/);
       } finally {
-        // Delete the uploaded file. The helper does not expose a
-        // delete surface (out of scope -- the inference path is
-        // upload-and-reference); a one-off fetch from the test is
-        // sufficient. Best-effort: a delete failure does not
-        // re-throw because the assertions above are the test's
-        // contract and a leaked file under a successful upload is
-        // less urgent than a misleading assertion failure.
+        // Best-effort delete: the helper has no delete surface (the
+        // inference path is upload-and-reference), and a failure must
+        // not mask the assertions above.
         if (result.name !== undefined) {
           try {
             await fetch(

@@ -1,21 +1,12 @@
 /**
- * Content canonicalization for PGP/MIME signed messages.
- *
- * Per MESSAGE.md signing process: CRLF line endings, trailing whitespace
- * removed, 7-bit encoding applied. This module handles text canonicalization
- * only — binary parts (base64, quoted-printable) are handled at the MIME
- * assembly layer.
+ * Text canonicalization for PGP/MIME signing: CRLF line endings, trailing
+ * whitespace removed, 7-bit clean. Binary parts (base64, quoted-printable)
+ * are handled at the MIME assembly layer.
  */
 
 /**
- * Canonicalize text content for PGP/MIME signing.
- *
- * Rules (MESSAGE.md § Cryptographic Signing):
- *   1. Remove trailing whitespace from each line (spaces and tabs before CRLF)
- *   2. Normalize all line ending variants (CRLF, LF, CR) to CRLF
- *   3. Verify 7-bit cleanliness — throw if any byte is >= 0x80
- *
- * The output is a Uint8Array of ASCII bytes suitable for hashing.
+ * Canonicalize text for PGP/MIME signing: strip trailing whitespace,
+ * normalize CRLF/LF/CR to CRLF, and throw on any byte >= 0x80.
  */
 export function canonicalizeText(text: string): Uint8Array {
   const lines = text.split(/\r\n|\r|\n/);
@@ -34,10 +25,9 @@ export function canonicalizeText(text: string): Uint8Array {
 }
 
 /**
- * Canonicalize already-encoded bytes (e.g. base64 or quoted-printable MIME
- * body text). Only CRLF normalization and trailing whitespace stripping are
- * applied; no 7-bit check is done because transfer-encoded content is already
- * constrained to printable ASCII by the encoding.
+ * Canonicalize already-encoded bytes (base64, quoted-printable): CRLF
+ * normalization and trailing-whitespace stripping only, since transfer
+ * encoding already constrains the bytes to printable ASCII.
  */
 export function canonicalizeBytes(content: Uint8Array): Uint8Array {
   const text = new TextDecoder("utf-8").decode(content);

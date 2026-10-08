@@ -11,20 +11,14 @@ export type AuthorizeDecision =
   | { ok: false; reason: "deny" | "ask" | "no_matching_grant" };
 
 /**
- * Decide whether an action on a resource is authorized against a set of
- * already-collected grants, failing closed.
+ * Collapse already-collected grants into a fail-closed decision: anything
+ * other than `allow` -- deny, ask, or no matching grant -- withholds. Callers
+ * branch on `ok` and never re-derive the rule from a raw effect.
  *
- * This owns the single fail-closed rule: any effect other than `allow` -- an
- * explicit `deny`, an `ask`, or no matching grant at all -- withholds
- * authorization. Callers branch on `ok` and never re-derive the rule from a
- * raw effect.
- *
- * Distinct from `authorize`: that one collects grants from a store and returns
- * the raw `AuthzResult` for an HTTP caller to interpret. This verb takes
- * pre-collected grants and returns the collapsed decision. `opts` is passed to
- * `evaluateGrants` verbatim -- this middle layer never defaults a condition
- * registry, so a caller that omits one keeps the fail-closed "skip conditioned
- * grants" behavior at the edge where that choice belongs.
+ * Unlike `authorize`, this takes pre-collected grants and returns the
+ * collapsed decision. `opts` passes through to `evaluateGrants` verbatim:
+ * no registry is defaulted here, so omitting one keeps the fail-closed skip
+ * of conditioned grants at the edge where that choice belongs.
  */
 export async function authorizeAction(
   grants: GrantRule[],

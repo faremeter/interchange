@@ -1,16 +1,12 @@
 // Bounded per-consumer fan-out for the agent's reactor event stream.
 //
-// Each call to `agent.stream()` creates a fresh `StreamConsumer`. The
-// agent feeds every reactor event to every consumer; consumers buffer
-// independently. If a consumer falls more than `maxBuffer` events behind
-// it is poisoned with `StreamBackpressureError` and its iterator throws
-// on the next read — the consumer is removed but other consumers keep
-// running.
-//
-// Loud failure matches the defensive-coding rule: silently dropping
-// events would hide consumer bugs, and unbounded buffering would let a
-// stalled consumer balloon the agent's memory. The cap is configurable
-// via `streamBufferMax` on `BaseEnv`.
+// Each `agent.stream()` call creates a fresh `StreamConsumer`; the
+// agent feeds every reactor event to every consumer, and consumers
+// buffer independently. A consumer falling more than `maxBuffer`
+// events behind is poisoned with `StreamBackpressureError` and its
+// iterator throws on the next read; other consumers keep running.
+// Loud failure beats silently dropping events or unbounded buffering.
+// The cap is configurable via `streamBufferMax` on `BaseEnv`.
 
 import type { ReactorEmittedEvent } from "@intx/inference";
 
@@ -93,8 +89,8 @@ export function createStreamConsumer(maxBuffer: number): StreamConsumer {
 
   function nextResult(): Promise<IteratorResult<ReactorEmittedEvent>> {
     if (overflow !== undefined) {
-      // Drain any buffered events before throwing so the caller sees
-      // every event up to the overflow point.
+      // Drain buffered events before throwing so the caller sees every
+      // event up to the overflow point.
       if (buffer.length > 0) {
         const ev = buffer.shift();
         if (ev !== undefined) {

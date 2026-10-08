@@ -6,16 +6,15 @@
 // check-test-enumeration.ts proves the Makefile <-> filesystem half: every
 // `*.test.ts` is reachable from an enumerating target. This guard proves
 // the complementary Makefile <-> CI half: every enumerating pass (except
-// the standalone load lane) is actually invoked by a CI job, AND every job
-// is gated by the required "make all" check.
+// the standalone load lane) is actually invoked by a CI job, AND every
+// job is gated by the required "make all" check.
 //
-// The parallel-job split that made this necessary also reintroduced the
-// exact silent-drop failure check-test-enumeration.ts exists to prevent,
-// one layer up: with a single `make all` job the Makefile-to-CI mapping was
-// trivially true, but once the passes run as separate jobs a mis-wired job
-// -- one that runs `make test-unit` twice and never runs `make test-core`,
-// or a worker left out of the gate's `needs` -- goes green while a whole
-// pass silently never runs. This guard closes that gap at lint time.
+// The parallel-job split made this necessary: with a single `make all`
+// job the Makefile-to-CI mapping was trivially true, but once the passes
+// run as separate jobs a mis-wired job — one that runs `make test-unit`
+// twice and never `make test-core`, or a worker left out of the gate's
+// `needs` — goes green while a whole pass silently never runs. This guard
+// closes that gap at lint time.
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -99,8 +98,9 @@ export function checkCiTestJobs(repoRoot: string): CiJobsReport {
   const [gateId, gate] = gateEntry;
 
   // The gate must run even when a dependency fails, or a failed worker
-  // leaves the gate skipped -- the required context then never reports and
-  // the PR blocks forever. `if: always()` forces it to report a conclusion.
+  // leaves the gate skipped — the required context then never reports and
+  // the PR blocks forever. `if: always()` forces it to report a
+  // conclusion.
   const gateIf = gate.if ?? "";
   if (!gateIf.includes("always()")) {
     errors.push(

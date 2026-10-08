@@ -45,14 +45,11 @@ type Call = { method: string; args: unknown[] };
 
 /**
  * A grant-walk snapshot whose records match a projection's top-level steps.
- *
- * The capability walk emits one record per top-level step and folds every
- * nested body's grants into the record of the step that carries the body, so a
- * probe answer whose snapshot omits a top-level step describes a deployment
- * that would run steps nobody approved anything for. The probe gate refuses
- * that, which is why these fixtures cannot hand it an empty snapshot. They are
- * about the deploy hand-off rather than about grant content, so the records
- * carry the step ids the gate must account for and no grants.
+ * The capability walk folds every nested body's grants into its top-level
+ * step's record, so a snapshot omitting a top-level step describes a
+ * deployment that would run steps nobody approved; the probe gate refuses
+ * that, so these fixtures cannot hand it an empty snapshot. Records carry the
+ * step ids the gate must account for and no grants.
  */
 function snapshotForProjection(projection: WorkflowProjectionDefinition) {
   return {
@@ -796,11 +793,11 @@ describe("SessionService", () => {
   });
 
   test("launchSession writes a resolved-source session_asset row for resolver-derived packs", async () => {
-    // Build a single-tarball asset registry, fake the DB query path
-    // the session service walks (`listAssetsForTenant` walks
-    // `tenant.findFirst` + `asset.findMany`), and assert the fan-out
-    // materializes a session_asset row for the resolver-derived pack at
-    // the expected mount path and source commit.
+    // Build a single-tarball asset registry, fake the DB query path the
+    // session service walks (`listAssetsForTenant` -> `tenant.findFirst` +
+    // `asset.findMany`), and assert the fan-out materializes a session_asset
+    // row for the resolver-derived pack at the expected mount path and source
+    // commit.
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "ss-resolved-"));
     const stagingDir = path.join(dir, "tools-resolved-1.0.0");
     const pkgDir = path.join(stagingDir, "package");
@@ -1216,9 +1213,9 @@ describe("sendMultiStepDeployFrame", () => {
     // The gate-frozen hash rides the frame VERBATIM -- the source-ref arm never
     // recomputes it, so the child's re-verify over the closure matches.
     expect(sent.approvedWireHash).toBe(frozenWireHash);
-    // The frame carries no inline definition -- the wire type has no
+    // The frame carries no inline definition — the wire type has no
     // `definition` field; the sidecar derives it from the closure the pin
-    // materializes. The source-ref pin rides the frame as one co-required object.
+    // materializes.
     expect(sent.sourceRef).toEqual({ source, closure });
   });
 });
@@ -1315,11 +1312,10 @@ describe("deployCodeSourcedWorkflow", () => {
   // These unit tests assert FRAME logic plus the SHAPE of the anchor
   // workflow_run row the composed entrypoint writes (status, self-ref, born
   // null-key) and its post-ack public-key stamp -- not its persistence (the
-  // real anchor-in-a-live-DB proof, including the prepare-before-deploy ordering,
-  // lives in tests/db/workflow-allocation-service.test.ts). A capturing db
-  // records the anchor insert and the success-path public-key update, and
-  // answers the persisted-definition
-  // guard's existence query with a matching row; the fail-path tests throw
+  // live-DB proof, including the prepare-before-deploy ordering, lives in
+  // tests/db/workflow-allocation-service.test.ts). A capturing db records the
+  // anchor insert and the success-path public-key update and answers the
+  // persisted-definition guard's existence query; the fail-path tests throw
   // before reaching the insert.
   let capturedAnchorRow: Record<string, unknown> | undefined;
   let capturedAnchorUpdate: Record<string, unknown> | undefined;
@@ -1329,12 +1325,11 @@ describe("deployCodeSourcedWorkflow", () => {
       workflowDefinition: {
         findFirst: () => Promise.resolve({ id: "def-composed" }),
       },
-      // The migrated deploy resolves each pinned source's credentialId to
-      // tenant-owned material. Every source in these frame-shape tests (top
-      // level and inline body) references the single credential "secret-only",
-      // so the mock answers with one tenant-owned row (principalId null) in the
-      // deploy tenant's own chain, backed by a provider with an API origin. The
-      // noop cipher passes the plaintext secret through unchanged.
+      // Every source in these frame-shape tests references the single
+      // credential "secret-only", so the mock answers with one tenant-owned
+      // row (principalId null) in the deploy tenant's own chain, backed by a
+      // provider with an API origin; the noop cipher passes the plaintext
+      // secret through unchanged.
       credential: {
         findFirst: () =>
           Promise.resolve({
@@ -2163,10 +2158,9 @@ describe("deployCodeSourcedWorkflow", () => {
 
     const sent = sentWorkflows[0];
     if (sent === undefined) throw new Error("missing workflow projection");
-    // Frame hash == gate frozen hash: the composed entrypoint neither recomputes
-    // the hash nor re-resolves the closure, so a downstream child re-verify over
-    // the materialized closure would pass. The frame carries no inline
-    // definition; the sidecar derives it from the closure the pin materializes.
+    // Frame hash == gate frozen hash: the entrypoint neither recomputes the
+    // hash nor re-resolves the closure. No inline definition; the sidecar
+    // derives it from the closure the pin materializes.
     expect(sent.approvedWireHash).toBe(wireHash);
     // The composed entrypoint assembles the pin from its `source` arg and the
     // approve output's frozen closure into the frame's one co-required object.
@@ -2274,15 +2268,12 @@ describe("deployCodeSourcedWorkflow", () => {
       model: "placeholder-model",
     };
 
-    // Counts how many distinct credentials the deploy asked the DB to resolve,
-    // which is exactly the size of the inference credential union: the
-    // resolution loop queries once per distinct id.
-    //
-    // The stub cannot see which id it was asked for, so it answers the first
-    // lookup and refuses every later one. A union that still carried the
-    // action step's placeholder would therefore fail the deploy outright
-    // rather than quietly resolving the same row twice, which would leave the
-    // delivered-material assertions below unable to tell the two trees apart.
+    // Counts how many distinct credentials the deploy asked the DB to resolve
+    // -- the resolution loop queries once per distinct id. The stub cannot see
+    // which id it was asked for, so it answers the first lookup and refuses
+    // every later one; a union that still carried the action step's
+    // placeholder would fail the deploy outright rather than quietly resolving
+    // the same row twice.
     let credentialLookups = 0;
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub: only the definition guard, the credential/tenant/provider resolution, and the anchor writes are exercised
     const COUNTING_DB = {
@@ -2370,13 +2361,11 @@ describe("deployCodeSourcedWorkflow", () => {
   });
 
   test("delivers no credential for an inline body step that cannot invoke inference", async () => {
-    // The body rail, which over-delivers on its own today: a lifted onTrigger
-    // body's non-agent step already takes the default placeholder, so its
-    // credential already reaches the sidecar for a step that never calls.
-    //
-    // Three steps pin here -- the onTrigger container, the body's agent, and
-    // the body's action -- across both rails. Only the agent is entitled to
-    // material.
+    // The body rail over-delivers on its own today: a lifted onTrigger body's
+    // non-agent step already takes the default placeholder, so its credential
+    // already reaches the sidecar for a step that never calls. Three steps pin
+    // here -- the onTrigger container, the body's agent, and the body's
+    // action -- across both rails; only the agent is entitled to material.
     const { defineWorkflow, action, step, onTrigger } = await import(
       "@intx/workflow/definition"
     );

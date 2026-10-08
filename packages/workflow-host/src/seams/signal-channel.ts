@@ -1,26 +1,26 @@
 // Production workflow-host signal channel (Seam 3, log-tail wait).
 //
-// The signal channel is constructed per run by the host's runtime
-// wiring. Its `deliver` commits a `SignalReceived` blob to the run's
-// event log; commit-success is the dedup gate (the state machine's
+// The signal channel is constructed per run by the host's runtime wiring.
+// Its `deliver` commits a `SignalReceived` blob to the run's event log;
+// commit-success is the dedup gate (the state machine's
 // `observedSignalIds` rejects a duplicate `signalId` on the next
 // transition). `awaitNext` consults the state-machine `RunState` for
-// signals that were committed and reduced into `unconsumedSignals`
-// before the awaiter subscribed, then falls back to a per-name
-// `subscribeKind` tail of the run's events ref.
+// signals committed and reduced into `unconsumedSignals` before the
+// awaiter subscribed, then falls back to a per-name `subscribeKind` tail
+// of the run's events ref.
 //
-// Per-name FIFO across concurrent awaiters: the channel maintains an
-// awaiter queue per signal name. A single `subscribeKind` loop per
-// name pulls events from the substrate; each matching event resolves
-// the head of that queue. The loop starts on first `awaitNext` for a
-// name and tears down when the queue empties or `stop()` is called.
+// Per-name FIFO across concurrent awaiters: the channel keeps an awaiter
+// queue per signal name and one `subscribeKind` loop per name that pulls
+// events from the substrate; each matching event resolves the head of
+// that queue. The loop starts on first `awaitNext` for a name and tears
+// down when the queue empties or `stop()` is called.
 //
-// Commit-ordering invariant: `deliver` commits the `SignalReceived`
-// event blob first, then returns. Resolution of an awaiter happens
-// from the `subscribeKind` loop only after the substrate has surfaced
-// the commit. The awaiter is never resolved from inside `deliver`'s
-// call site, so resume-after-crash sees a coherent log: an awaiter
-// that resolved must have a corresponding committed `SignalReceived`.
+// Commit-ordering invariant: `deliver` commits the `SignalReceived` blob
+// first, then returns. An awaiter is resolved from the `subscribeKind`
+// loop only after the substrate has surfaced the commit -- never from
+// inside `deliver`'s call site -- so resume-after-crash sees a coherent
+// log: an awaiter that resolved must have a corresponding committed
+// `SignalReceived`.
 
 import { type } from "arktype";
 
@@ -34,17 +34,15 @@ import { subscribeKind } from "@intx/hub-sessions/substrate";
 import type { RunState, SignalChannel } from "@intx/workflow";
 
 /**
- * Substrate-shape envelope for the `SignalReceived` event blob
- * committed to `runs/<runId>/events/<seq>.json`. The validator covers
- * the single event type the signal channel both reads (live tail) and
- * writes (deliver). Fields ride at the top level so the shape is
- * symmetric with the runtime body's append shape -- a downstream
- * reader that hydrates the envelope as a state-machine `WorkflowEvent`
- * sees `signalName`/`signalId`/`payload` regardless of whether the
- * commit came from the signal channel's `deliver` or the runtime
- * body's `commit` of a SignalReceived after `awaitNext`. Non-signal
- * blobs at the same path prefix do not match the kinds filter inside
- * `subscribeKind`.
+ * Substrate-shape envelope for the `SignalReceived` event blob at
+ * `runs/<runId>/events/<seq>.json`. Covers the single event type the
+ * channel both reads (live tail) and writes (deliver). Fields ride at the
+ * top level so the shape is symmetric with the runtime body's append
+ * shape -- a downstream reader hydrating the envelope as a
+ * state-machine `WorkflowEvent` sees `signalName`/`signalId`/`payload`
+ * whether the commit came from `deliver` or from the runtime body's own
+ * SignalReceived commit after `awaitNext`. Non-signal blobs at the same
+ * path prefix do not match the kinds filter inside `subscribeKind`.
  */
 export const SignalReceivedEnvelope = type({
   type: "'SignalReceived'",
@@ -58,38 +56,37 @@ export type SignalChannelOpts = {
   /**
    * Substrate handle the channel reads from and writes to. The caller
    * wires this against the workflow-run kind handler's registered
-   * substrate -- the channel's writes land under
-   * `runs/<runId>/events/<seq>.json` and the handler's `validatePush`
-   * must accept that path layout.
+   * substrate; the channel's writes land under
+   * `runs/<runId>/events/<seq>.json`, which `validatePush` must accept.
    */
   repoStore: RepoStore;
   /**
-   * Principal the channel presents to the substrate. The substrate
-   * gates every operation behind `authorize`; the principal must be
-   * granted `writeTree` (for `deliver`) and `subscribe` (for
-   * `awaitNext`'s log tail) against the workflow-run repo.
+   * Principal the channel presents to the substrate, which gates every
+   * operation behind `authorize`; it must be granted `writeTree` (for
+   * `deliver`) and `subscribe` (for `awaitNext`'s log tail) against the
+   * workflow-run repo.
    */
   principal: Principal;
   /** Workflow-run repo this channel operates against. */
   repoId: RepoId;
   /**
-   * Events ref the channel tails and writes to. The workflow-run
-   * repo layout pins all `runs/<runId>/events/` blobs under a single
-   * moving ref. Callers typically supply `"refs/heads/main"`.
+   * Events ref the channel tails and writes to. The workflow-run repo
+   * layout pins all `runs/<runId>/events/` blobs under a single moving
+   * ref. Callers typically supply `"refs/heads/main"`.
    */
   ref: string;
   /**
-   * The run this channel belongs to. The channel filters
-   * `subscribeKind` entries on this runId so a host-wide events ref
-   * carrying multiple runs does not cross-resolve awaiters.
+   * The run this channel belongs to. Filters `subscribeKind` entries on
+   * this runId so a host-wide events ref carrying multiple runs does not
+   * cross-resolve awaiters.
    */
   runId: string;
   /**
    * Reader for the in-memory `RunState`. The runtime body owns the
-   * state; the channel reads `unconsumedSignals` (pre-await
-   * delivery / resume rehydration) and `observedSignalIds` (dedup)
-   * on every `awaitNext`. A reader rather than a snapshot keeps the
-   * channel coherent with the runtime body's latest reduction.
+   * state; the channel reads `unconsumedSignals` (pre-await delivery /
+   * resume rehydration) and `observedSignalIds` (dedup) on every
+   * `awaitNext`. A reader rather than a snapshot keeps the channel
+   * coherent with the latest reduction.
    */
   readState: () => RunState;
   /** Generator for synthesized `signalId`s when `deliver`'s caller omits one. */
@@ -113,8 +110,8 @@ type NameSubscription = {
 export type SignalChannelHandle = SignalChannel & {
   /**
    * Tear down every per-name subscription and reject every pending
-   * awaiter. Idempotent. After `stop()` the channel holds no
-   * substrate watcher handles.
+   * awaiter. Idempotent. After `stop()` the channel holds no substrate
+   * watcher handles.
    */
   stop(): Promise<void>;
 };
@@ -134,11 +131,11 @@ export function createWorkflowHostSignalChannel(
     if (queue === undefined || queue.length === 0) return null;
     const head = queue[0];
     if (head === undefined) return null;
-    // The state-machine `unconsumedSignals` is drained by the
-    // runtime body's next `SignalAwaited` reduction, not by the
-    // channel. The channel reads the head; the caller commits the
-    // SignalAwaited that consumes it. This separation keeps the
-    // channel free of state-machine mutation responsibilities.
+    // The state-machine `unconsumedSignals` is drained by the runtime
+    // body's next `SignalAwaited` reduction, not by the channel; the
+    // channel reads the head and the caller commits the SignalAwaited
+    // that consumes it. This keeps the channel free of state-machine
+    // mutation responsibilities.
     return { payload: head.payload, signalId: head.id };
   }
 
@@ -177,9 +174,7 @@ export function createWorkflowHostSignalChannel(
     // (which often calls awaitNext again on the same name) sees the
     // leaked subscription entry and short-circuits in
     // startNameSubscription, stranding the new awaiter on a dead
-    // subscribeKind loop. Removing the entry from `subscriptions` and
-    // aborting *before* resolving the awaiter keeps the per-name
-    // invariant intact across multi-round resolution cycles.
+    // subscribeKind loop.
     const teardown = (): void => {
       if (subscriptions.get(name)?.abort === abort) {
         subscriptions.delete(name);
@@ -207,18 +202,18 @@ export function createWorkflowHostSignalChannel(
           if (observed.has(entry.event.signalId)) continue;
           const next = shiftAwaiter(name);
           if (next === null) {
-            // No awaiter left -- the queue was drained between the
-            // event landing and this loop reaching it. The reduced
-            // state machine queues the event into
-            // `unconsumedSignals`; the next `awaitNext` for the same
-            // name picks it up via the state-reader path.
+            // No awaiter left -- the queue drained between the event
+            // landing and this loop reaching it. The reduced state
+            // machine queues the event into `unconsumedSignals`; the
+            // next `awaitNext` for the same name picks it up via the
+            // state-reader path.
             break;
           }
           if (awaiterCount(name) === 0) {
             // Resolving the last awaiter on this subscription. Tear
-            // down before the resolve so any awaitNext call inside
-            // the awaiter's continuation installs a fresh
-            // subscription instead of joining a dead one.
+            // down before the resolve so any awaitNext call inside the
+            // awaiter's continuation installs a fresh subscription
+            // instead of joining a dead one.
             teardown();
             next.resolve({
               payload: entry.event.payload,
@@ -232,10 +227,10 @@ export function createWorkflowHostSignalChannel(
           });
         }
       } finally {
-        // Catches the queue-drained natural break, the `stopped`
-        // bail, and any error escaping the loop. The abort path
-        // through `stopSubscription` already deleted the Map entry;
-        // the get(...)?.abort guard makes this idempotent.
+        // Catches the queue-drained natural break, the `stopped` bail,
+        // and any error escaping the loop. The abort path through
+        // `stopSubscription` already deleted the Map entry; the
+        // get(...)?.abort guard makes this idempotent.
         teardown();
       }
     })();
@@ -295,12 +290,12 @@ export function createWorkflowHostSignalChannel(
             }
             if (duplicate) return out;
             const nextSeq = maxSeq + 1;
-            // The workflow-run kind handler's `EventEnvelope`
-            // validator requires `seq: number` on every event blob;
-            // the same `nextSeq` we use to mint the filename also
-            // carries into the body so a reader that hydrates the
-            // envelope (state-machine resume, audit reads) sees a
-            // self-describing event without consulting the filename.
+            // The workflow-run kind handler's `EventEnvelope` validator
+            // requires `seq: number` on every event blob; the same
+            // `nextSeq` that mints the filename also carries into the
+            // body so a reader hydrating the envelope (state-machine
+            // resume, audit reads) sees a self-describing event without
+            // consulting the filename.
             out[`${prefix}${String(nextSeq)}.json`] = JSON.stringify({
               type: "SignalReceived",
               seq: nextSeq,
@@ -322,9 +317,9 @@ export function createWorkflowHostSignalChannel(
       if (signal !== undefined && signal.aborted) {
         throw new Error("aborted");
       }
-      // Drain the state-machine queue first. A signal that was
-      // committed before the awaiter subscribed lives in
-      // `unconsumedSignals` after log replay.
+      // Drain the state-machine queue first. A signal committed before
+      // the awaiter subscribed lives in `unconsumedSignals` after log
+      // replay.
       const queued = peekState(name);
       if (queued !== null) return queued;
 

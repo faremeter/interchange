@@ -1,32 +1,19 @@
 // Many-definitions-from-one-asset end-to-end: one bun/npm workspaces monorepo
 // source asset backs SEVERAL workflow definitions under ONE definition asset,
-// keyed on (assetId, wireHash). Two facets:
+// keyed on (assetId, wireHash).
 //
-//  - DISTINCT: two members with DIFFERENT needs-surfaces (`@wf/one` and
-//    `@wf/two`, distinct workflow ids and system prompts) install to TWO
-//    definition rows under the one definition asset, deploy independently, and
-//    each runs to completion. Each run evaluates its OWN member's source, so the
-//    two are distinguishable by the workflow id their install froze and by the
-//    system prompt that reaches inference.
+//  - DISTINCT: two members with different needs-surfaces (`@wf/one`, `@wf/two`)
+//    install to TWO definition rows, deploy independently, and each runs to
+//    completion, distinguishable by the workflow id and the system prompt that
+//    reaches inference.
 //
-//  - COLLAPSE: two members with an IDENTICAL needs-surface but a DIFFERENT
-//    `packageName` (`@wf/collapse-a` and `@wf/collapse-b`) install to ONE shared
-//    definition row -- the wire hashes match, so the (assetId, wireHash) key
-//    resolves both to the same definition. The collapse itself is proven by the
-//    equal wire hashes and the equal definition ids across the two installs.
-//    The second install's carried closure (its own packageName) and its own
-//    enumerated inline onTrigger bodies come from re-probing the SECOND
-//    member's source, independent of the row it collapses onto -- so today they
-//    echo the install input and cannot mis-carry the first member's source.
-//    Asserting them is a forward regression guard: keeping no `packageName`
-//    column means run-time code is always carried per-install from the probed
-//    source, so a future short-circuit that returned the pre-existing row's
-//    cached first projection instead of re-probing the second member would flip
-//    these assertions.
+//  - COLLAPSE: two members with an IDENTICAL needs-surface but a different
+//    `packageName` install to ONE shared row (equal wire hashes). The second
+//    install's carried closure and inline bodies are re-probed from the SECOND
+//    member's own source -- a forward regression guard against a future
+//    short-circuit that returned the pre-existing row's cached projection.
 //
-// The two facets share one seeded monorepo (four members under `packages/*`) and
-// one definition asset, so the test embodies "one asset backs many definitions"
-// directly.
+// Both facets share one seeded monorepo (four members under `packages/*`).
 
 import { promises as fs } from "node:fs";
 import os from "node:os";
@@ -86,9 +73,8 @@ const WORKFLOW_RUN_REF = "refs/heads/main";
 
 const TENANT_ID = "tnt_source_monorepo_many";
 const CALLER_PRINCIPAL_ID = "prn_source_monorepo_many_creator";
-// One definition asset backs every install below; identity is (this asset,
-// wireHash), so distinct-surface members get their own row and identical-surface
-// members share one.
+// One definition asset backs every install below; identity is (assetId,
+// wireHash).
 const DEFINITION_ASSET_ID = "ast_source_monorepo_many_wf";
 // The `workflow`-kind asset holding the monorepo source (root + four members).
 const SOURCE_ASSET_ID = "ast_source_monorepo_many_src";
@@ -119,12 +105,11 @@ const twoAddress = deriveRunAddress({
 });
 
 // Two collapse members: an IDENTICAL needs-surface (same workflow id, section,
-// agent, trigger address) but a different packageName. Their `workflow.mjs` is
-// byte-identical; only their package.json `name` differs. A fixed trigger
-// address keeps the surface -- and thus the wire hash -- identical across both;
-// routing never consults it (the collapse facet is install-only and fires no
-// trigger). The container carries an inline onTrigger body so the carried-source
-// assertion can enumerate the second member's own bodies.
+// agent, trigger address) but a different packageName (their workflow.mjs is
+// byte-identical; only package.json `name` differs). A fixed trigger address
+// keeps the wire hash identical; routing never consults it (install-only, no
+// trigger fired). The container carries an inline onTrigger body so the
+// carried-source assertion can enumerate the second member's own bodies.
 const COLLAPSE_A_PACKAGE_NAME = "@wf/collapse-a";
 const COLLAPSE_B_PACKAGE_NAME = "@wf/collapse-b";
 const COLLAPSE_WORKFLOW_ID = "wf_collapse";
@@ -504,7 +489,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         }),
         "two",
       );
-      // Both collapse members ship the SAME bundled workflow.mjs; only their
+      // Both collapse members ship the same bundled workflow.mjs; only their
       // package.json name differs.
       const collapseJs = await bundleEntry(
         scratchDir,
@@ -593,8 +578,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         approvals: distinctApprovals(twoAddress),
       });
 
-      // Distinct surfaces freeze to distinct definitions, each pinning its own
-      // member.
       expect(one.projection.id).toBe(ONE_WORKFLOW_ID);
       expect(two.projection.id).toBe(TWO_WORKFLOW_ID);
       expect(two.approval.definitionId).not.toBe(one.approval.definitionId);
@@ -605,10 +588,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
         { name: TWO_PACKAGE_NAME, version: PACKAGE_VERSION },
       ]);
 
-      // One definition asset now backs both distinct rows. Assert membership of
-      // the two ids rather than a total count, so the check does not couple to
-      // whether the collapse test (which adds a third row to the same asset) has
-      // run yet.
+      // Assert membership of the two ids rather than a total count, so the
+      // check does not couple to whether the collapse test (which adds a third
+      // row to the same asset) has run yet.
       const rowIds = new Set(
         (
           await h.db
@@ -639,11 +621,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         address: twoAddress,
       });
 
-      // Each child evaluated its OWN member's source: both members' system prompts
-      // reached inference, proving the two runs did not share one definition's
-      // code (and that each step's agent prompt overrode the deploy fallback). The
-      // anthropic provider serializes the system prompt as a `system` array of
-      // text blocks on the wire.
+      // Both members' system prompts reached inference, proving each child
+      // evaluated its OWN member's source (and that the agent prompt overrode
+      // the deploy fallback). The anthropic provider serializes the system
+      // prompt as a `system` array of text blocks on the wire.
       const systemTexts = env.inference.requests.flatMap(systemBlockTexts);
       expect(systemTexts.some((t) => t.includes(ONE_SYSTEM_PROMPT))).toBe(true);
       expect(systemTexts.some((t) => t.includes(TWO_SYSTEM_PROMPT))).toBe(true);
@@ -659,21 +640,19 @@ describe.skipIf(!harnessDbEnvAvailable())(
         approvals: collapseApprovals,
       });
 
-      // (a) The collapse itself: identical needs-surfaces yield an equal wire hash
-      // and the (assetId, wireHash) key resolves both installs to the SAME
-      // definition row. These two equalities are what discriminate the collapse --
-      // they fail if the second install forks a second row.
+      // (a) The collapse itself: equal wire hash + (assetId, wireHash) key
+      // resolve both installs to the SAME definition row; these equalities
+      // fail if the second install forks a second row.
       expect(a.projection.id).toBe(COLLAPSE_WORKFLOW_ID);
       expect(b.projection.id).toBe(COLLAPSE_WORKFLOW_ID);
       expect(b.approval.approvedWireHash).toBe(a.approval.approvedWireHash);
       expect(b.approval.definitionId).toBe(a.approval.definitionId);
 
       // (b) Forward regression guard: the second install's carried closure is
-      // re-probed from the SECOND member's own source, independent of the row it
-      // collapses onto, so today it names @wf/collapse-b (its packageName) and
-      // never @wf/collapse-a. This cannot mis-carry the first member's source at
-      // present -- it pins that a future install short-circuit which resolved
-      // source from the shared row (returning A's cached projection) would break.
+      // re-probed from the SECOND member's own source, so it names
+      // @wf/collapse-b and never @wf/collapse-a -- pins that a future install
+      // short-circuit resolving source from the shared row (returning A's
+      // cached projection) would break.
       expect(b.closure.topLevel).toEqual([
         { name: COLLAPSE_B_PACKAGE_NAME, version: PACKAGE_VERSION },
       ]);

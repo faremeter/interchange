@@ -4,9 +4,9 @@
 // forwards the SAME object to `env.invokeStep` by reference, so anything that
 // does not survive `JSON.stringify` is visible to the invoker and invisible to
 // the audit reader. A result assembled with `[[Set]]` has that shape: an
-// operand's own `__proto__` key becomes the result's prototype. This holds for
-// any result whichever branch built it, so it is asserted here rather than
-// per-branch; `selectors.test.ts` covers which branch is at fault.
+// operand's own `__proto__` key becomes the result's prototype. The property
+// holds for every branch, so it is asserted here; `selectors.test.ts` covers
+// which branch is at fault.
 
 import { describe, test, expect } from "bun:test";
 
@@ -82,8 +82,8 @@ describe("selector result canonicalization", () => {
     expect(result.terminalStatus).toBe("completed");
     assertRecord(seenByInvoker);
 
-    // The audit sink's view: the ref body is the JSON copy `recordOutput`
-    // made of the very object the invoker received.
+    // The audit sink's view: the ref body is the JSON copy recordOutput made
+    // of the very object the invoker received.
     const started = result.events.find(
       (e) => e.kind === "StepStarted" && e.stepId === "s",
     );
@@ -96,11 +96,10 @@ describe("selector result canonicalization", () => {
     );
     assertRecord(seenByAudit);
 
-    // The class-closing assertion: every key the invoker can reach must be a
-    // key the audit copy carries. `for...in` walks the prototype chain, which
-    // is the half `JSON.stringify` drops and so the only half the two sinks
-    // can disagree about. This fails for any result built with `[[Set]]`, no
-    // matter which branch built it.
+    // Every key the invoker can reach must be a key the audit copy carries.
+    // `for...in` walks the prototype chain -- the half `JSON.stringify` drops
+    // and so the only half the two sinks can disagree about. Fails for any
+    // result built with `[[Set]]`, whichever branch built it.
     const unseenByAudit: string[] = [];
     for (const key in seenByInvoker) {
       if (!Object.hasOwn(seenByAudit, key)) {
@@ -110,10 +109,9 @@ describe("selector result canonicalization", () => {
     expect(unseenByAudit).toEqual([]);
     expect(Object.getPrototypeOf(seenByInvoker)).toBe(Object.prototype);
 
-    // Deep equality between the sinks reads own keys only, so it is measured
-    // green against the broken evaluator and is NOT what catches this. Both
-    // are kept for the sibling failure mode `audit-input-divergence.test.ts`
-    // covers: a value the audit copy cannot represent at all.
+    // Deep equality reads own keys only, so it is green against the broken
+    // evaluator and is NOT what catches this. Both are kept for the sibling
+    // failure mode `audit-input-divergence.test.ts` covers.
     expect(JSON.parse(JSON.stringify(seenByInvoker))).toEqual(seenByInvoker);
     expect(seenByAudit).toEqual(seenByInvoker);
 

@@ -4,37 +4,26 @@
 // `mail_send`. Every other step in the fixture -- both top-level arms and the
 // inner loop's exhausted arm -- is toolless.
 //
-// This is the rung two levels below the top. An inner loop resolves its body
+// This is the rung two levels below the top: an inner loop resolves its body
 // ref from the same bodies map as the outer one and inherits the parent's env
 // one further rung down, so the innermost step's tool call authorizes against a
-// credentials snapshot that had to reach it through two nested descents. The
-// plain loop-body tool fixture proves one rung; the spawned-child variant
-// proves a loop inside a lifted body. Loop-inside-loop is neither.
-//
-// Because only the innermost body step carries a tool, a `tool_result` anywhere
-// in the captured inference traffic can only have originated there.
-//
-// The entry module exports BOTH `workflow` and the loop `while`/`carry`
-// functions, so the deployment points `interchange.loops` at the same bundled
-// entry and both loops resolve the same pure counter functions by export name.
-//
-// Each loop converges after exactly two iterations: `input` seeds
-// `currentInput = 0`; `keepGoing` stays true at 0 and turns false at 1;
-// `nextCount` increments. while/carry read only the carry state, so convergence
-// is deterministic regardless of the body's output. So the top-level run spawns
-// two outer iteration runs, and each outer iteration run spawns two inner
-// iteration runs.
+// credentials snapshot that reached it through two nested descents. The plain
+// loop-body tool fixture proves one rung; the spawned-child variant proves a
+// loop inside a lifted body. Because only the innermost body step carries a
+// tool, a `tool_result` anywhere in the captured inference traffic can only
+// have originated there. Each loop converges after exactly two iterations
+// (`keepGoing` turns false at 1; the functions read only the carry state), so
+// the top-level run spawns two outer iteration runs, and each outer iteration
+// run spawns two inner iteration runs.
 //
 // STEP ID DISTINCTNESS. Every id below is distinct from every other id in the
-// fixture, across all three nesting levels, and anyone changing them must keep
-// them so. The per-step tables a body step resolves against -- the credentials
-// snapshot, the pinned inference-source map, and the deploy-tree address
-// resolver -- are keyed by `baseStepId(stepId)` in ONE flat namespace shared by
-// the top level and both loop bodies. A colliding id resolves to the OTHER
-// step's entry, so the round-trip below would load the wrong step's tools and
-// pass against a broken system. The ids are deliberately unlike one another for
-// that reason; `ALL_TOOLLESS_STEP_IDS` is asserted disjoint from
-// `INNER_BODY_STEP_ID` in the test.
+// fixture across all three nesting levels. The per-step tables a body step
+// resolves against -- the credentials snapshot, the pinned inference-source
+// map, the deploy-tree address resolver -- are keyed by `baseStepId(stepId)`
+// in ONE flat namespace shared by the top level and both loop bodies; a
+// colliding id resolves to the OTHER step's entry, so the round-trip below
+// would load the wrong step's tools. `ALL_TOOLLESS_STEP_IDS` is asserted
+// disjoint from `INNER_BODY_STEP_ID` in the test.
 
 import path from "node:path";
 

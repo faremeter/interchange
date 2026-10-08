@@ -10,10 +10,6 @@ import { importPublicKeyBytes, verifyDetachedSignature } from "@intx/crypto";
 /**
  * Verify a PGP/MIME `multipart/signed` message against a public key.
  *
- * Extracts the signed-content part and the detached
- * `application/pgp-signature` part from the raw message bytes, then checks
- * the signature with `verifyDetachedSignature`.
- *
  * - `valid` — the detached signature verified against `publicKey`
  * - `invalid` — the signature check failed, or the message could not be
  *   parsed as a signed message
@@ -23,10 +19,10 @@ import { importPublicKeyBytes, verifyDetachedSignature } from "@intx/crypto";
  * Throws when `publicKey` cannot verify anything: a fault in the caller's
  * input, not a verdict about the message.
  *
- * `raw` must be the original, unmodified message bytes: the signature is
- * recomputed over the exact canonical bytes of the signed part, so a
- * re-serialized message will not verify. `publicKey` is the raw Ed25519
- * public key bytes, as returned by `CryptoProvider.getPublicKey()`.
+ * `raw` must be the original, unmodified bytes: the signature is recomputed
+ * over the exact canonical bytes of the signed part, so a re-serialized
+ * message will not verify. `publicKey` is the raw Ed25519 public key bytes, as
+ * returned by `CryptoProvider.getPublicKey()`.
  */
 export async function verifyMimeSignature(
   raw: Uint8Array,
@@ -72,7 +68,7 @@ export async function verifyMimeSignature(
 
 /**
  * Refuse a public key that cannot verify a signature, ahead of the catch that
- * turns every other failure into `invalid` -- inside it, an unusable key would
+ * turns every other failure into `invalid` — inside it, an unusable key would
  * read as a check that ran and failed.
  */
 async function requireUsableKey(publicKey: Uint8Array): Promise<void> {

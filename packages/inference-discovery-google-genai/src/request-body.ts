@@ -8,9 +8,8 @@ import {
   type ToolDecl,
 } from "@intx/inference-discovery/catalog";
 
-// Text models share the full multimodal text capability surface; only
-// thinking-budget handling differs for models that cannot disable thinking
-// (see minimalThinkingBudget). Image models are output-only.
+// Text models share the full multimodal surface; only thinking-budget
+// handling differs (see minimalThinkingBudget). Image models are output-only.
 export const TEXT_MODELS: ReadonlySet<string> = new Set([
   "gemini-2.5-flash",
   "gemini-2.5-pro",
@@ -147,14 +146,11 @@ interface GeminiRequestBody {
   generationConfig?: GeminiGenerationConfig;
 }
 
-// The two request shapes google-genai builds. A model's class selects its
-// capability surface (text is multimodal-in/text-out; image is output-only) and
-// its request body. Known models classify by set membership; a model absent
-// from both sets is classified by the caller-supplied override, defaulting to
-// text so an unknown chat model is probeable without being pre-registered. This
-// is deliberately not a gate: discovery must reach models the sets do not yet
-// list. An unknown image model needs its class declared, because its request
-// shape cannot be inferred from identity.
+// A model's class selects its request shape: text is multimodal-in/text-out,
+// image is output-only. Known models classify by set membership; an unknown
+// model uses the caller's override, defaulting to text so an unknown chat
+// model stays probeable without pre-registration. An unknown image model must
+// declare its class: the image shape cannot be inferred from identity.
 export type GeminiModelClass = "text" | "image";
 
 function classifyModel(
@@ -166,10 +162,9 @@ function classifyModel(
   return override ?? "text";
 }
 
-// True when the model's class is known from set membership, so its request
-// shape is not a guess. A caller (the probe) uses this to tell an operator when
-// it is defaulting an unknown model to the text class rather than classifying a
-// known one — the default is deliberate, but it should never be silent.
+// True when the class comes from set membership, not a guess. The probe uses
+// this to surface a text-class default for an unknown model; the default is
+// deliberate, but never silent.
 export function isKnownModel(model: string): boolean {
   return TEXT_MODELS.has(model) || IMAGE_MODELS.has(model);
 }
@@ -268,21 +263,18 @@ function userTextContent(prompt: string): GeminiContent {
 // think and no cap is imposed.
 const DYNAMIC_THINKING_BUDGET = -1;
 
-// gemini-2.5-pro rejects thinkingConfig.thinkingBudget: 0 with HTTP 400
-// "Budget 0 is invalid. This model only works in thinking mode." The budget can
-// only be chosen by model identity, because the API surfaces the constraint
-// solely as a runtime 400 with no build-time signal. Add a model here when its
-// API rejects a zero thinking budget.
+// gemini-2.5-pro rejects thinkingBudget: 0 with HTTP 400 "Budget 0 is invalid.
+// This model only works in thinking mode." The constraint is only visible as a
+// runtime 400, so the budget is chosen by model identity. Add a model here when
+// its API rejects a zero budget.
 const THINKING_MANDATORY_MODELS: ReadonlySet<string> = new Set([
   "gemini-2.5-pro",
   "gemini-3.6-flash",
   "gemini-3.1-pro-preview",
 ]);
 
-// The thinking budget to request when a probe wants thinking suppressed: 0
-// (fully off) for models that allow it, or the dynamic budget for models that
-// cannot be set to 0. includeThoughts stays false in both cases, so no thought
-// parts are returned either way.
+// Budget for a probe that wants thinking suppressed: 0 (fully off) where
+// allowed, else the dynamic budget. includeThoughts stays false either way.
 function minimalThinkingBudget(model: string): number {
   return THINKING_MANDATORY_MODELS.has(model) ? DYNAMIC_THINKING_BUDGET : 0;
 }
@@ -386,13 +378,11 @@ function groundingBody(intent: CapabilityIntent): GeminiRequestBody {
   };
 }
 
-// Shape-identical between streaming and non-streaming variants — only the
-// endpoint differs (handled by buildEndpointURL). The streaming variant
-// deliberately does NOT clamp `thinkingBudget: 0` the way plain-text
-// streaming does: the safety classifier's engagement may depend on
-// whether the model goes through a thinking phase, and the probe's job
-// is to observe natural classifier behavior at default generation
-// settings, not constrained ones.
+// Shape-identical between streaming and non-streaming (the endpoint differs,
+// handled by buildEndpointURL). Streaming deliberately does NOT clamp
+// `thinkingBudget: 0` the way plain-text streaming does: the safety
+// classifier's engagement may depend on the thinking phase, and the probe
+// observes natural behavior at default settings, not constrained ones.
 function safetyClassificationBody(intent: CapabilityIntent): GeminiRequestBody {
   return {
     contents: [userTextContent(intent.prompt)],

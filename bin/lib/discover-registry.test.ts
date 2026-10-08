@@ -84,10 +84,8 @@ describe("create factory env wiring", () => {
   });
 
   test("google-genai threads modelClass so an unknown image model probes", () => {
-    // The image class must reach the plug-in's build path: with it, an unknown
-    // model builds image-output; without it the default text class would raise
-    // CapabilityNotBuildableError. A create that drops options.modelClass fails
-    // here.
+    // The image class must reach the build path: with it an unknown model
+    // builds image-output; without it the default text class raises.
     const plugin = requireEntry("google-genai").create(
       { GOOGLE_API_KEY: "test-key" },
       { modelClass: "image" },
@@ -140,9 +138,8 @@ describe("create factory env wiring", () => {
   });
 
   test("opencode-zen does not accept the OpenAI credential", () => {
-    // The OpenAI key must not satisfy the opencode-zen factory: it reads only
-    // OPENCODE_API_KEY / OPENCODE_BASE_URL, so a mis-wire that read
-    // OPENAI_API_KEY instead would be caught here.
+    // The opencode-zen factory reads only OPENCODE_API_KEY / OPENCODE_BASE_URL,
+    // so a mis-wire that read OPENAI_API_KEY instead fails here.
     expect(() =>
       requireEntry("opencode-zen").create({ OPENAI_API_KEY: "test-key" }),
     ).toThrow("OPENCODE_API_KEY or OPENCODE_BASE_URL");

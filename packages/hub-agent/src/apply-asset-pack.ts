@@ -1,18 +1,15 @@
 // Materialize an asset pack as plain files under a workspace mount path.
 //
-// Asset packs are git packfiles produced by the hub for assets attached
-// to an agent (today only `skill`). The sidecar receives the pack at
-// session start and writes its tree contents under
-// `<workspaceRoot>/<mountPath>/`. The workspace is plain files, not a
-// git working tree — asset packs must not share the agent's deploy
-// `.git/` (separate ref namespaces, separate object lifecycles), so we
+// Asset packs are git packfiles the hub produces for assets attached to an
+// agent (today only `skill`). The sidecar receives the pack and writes its
+// tree contents under `<workspaceRoot>/<mountPath>/`. The workspace is plain
+// files, not a git working tree: asset packs must not share the agent's
+// deploy `.git/` (separate ref namespaces, separate object lifecycles), so we
 // index the pack against a scratch git directory and copy the tree out.
 //
-// Asset packs in v1 are unsigned: they originate from the hub itself
-// (synthetic content authored via the asset service) and are validated
-// by the kind handler's `validatePush` on the hub-side write path.
-// The cryptographic signature scheme that `applyDeployPack` enforces
-// does not apply.
+// Asset packs in v1 are unsigned -- they originate from the hub itself and
+// are validated by the kind handler's `validatePush` on the hub-side write
+// path -- so the `applyDeployPack` signature scheme does not apply.
 
 import fs from "node:fs";
 import fsp from "node:fs/promises";
@@ -99,9 +96,7 @@ export async function applyAssetPack(args: ApplyAssetPackArgs): Promise<void> {
 
   try {
     // Index the pack into the scratch `.git` and assert the pinned commit is
-    // present. The scratch dir is discarded in the `finally`; this reuses the
-    // same "index a pack into a gitDir and assert the commit" step a durable
-    // source-asset delivery keeps.
+    // present; the scratch dir is discarded in the `finally`.
     await indexPackIntoGitDir(
       scratchDir,
       pack,
@@ -117,9 +112,8 @@ export async function applyAssetPack(args: ApplyAssetPackArgs): Promise<void> {
 
     // Materialize into a sibling temp dir, then atomically publish it to the
     // mount by rename, so a crash mid-write never leaves a partial mount that
-    // restore's dir-exists check would trust. A re-delivery keeps the prior
-    // mount until the new one is ready, so a failed materialization does not
-    // destroy a working mount.
+    // restore's dir-exists check would trust. A failed materialization keeps
+    // the prior mount intact.
     materializeDir = await fsp.mkdtemp(
       path.join(workspaceRoot, ".intx-asset-materialize-"),
     );
@@ -139,9 +133,9 @@ export async function applyAssetPack(args: ApplyAssetPackArgs): Promise<void> {
     logger.info`Materialized asset pack at ${destDir} (${commitSha.slice(0, 8)} on ${ref})`;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    // The mount is published only by the atomic rename above, so a failure here
-    // leaves the prior (complete) mount untouched -- do not remove it. The
-    // partial temp is cleaned in the `finally`.
+    // The mount is published only by the atomic rename above, so a failure
+    // here leaves the prior mount untouched; the partial temp is cleaned in
+    // the `finally`.
     throw new Error(`asset_materialization_failed: ${msg}`, { cause: err });
   } finally {
     for (const dir of [scratchDir, materializeDir]) {

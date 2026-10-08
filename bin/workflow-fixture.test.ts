@@ -39,9 +39,7 @@ describe("workflow fixture", () => {
     expect(publish?.after).toEqual(["approval"]);
 
     // publish must consume the drafted content, not the approval node's
-    // signal payload. The default-input convention would wire it to
-    // `steps.approval.output` (the signal payload, `null` for a bare
-    // approval); the fixture overrides that to read the draft.
+    // signal payload (`steps.approval.output`); the fixture overrides that.
     if (publish?.kind !== "step") throw new Error("unreachable");
     expect(publish.input).toEqual({ from: "steps.draft.output" });
   });
@@ -106,9 +104,8 @@ describe("workflow fixture", () => {
   });
 
   test("the planted signal grant matches the route's resource gate", () => {
-    // The signal route resolves `idResource("workflow-run","deploymentId")`
-    // to `workflow-run:<deploymentId>`; the planted wildcard resource must
-    // glob-match any concrete deployment id, and the verb must be `manage`.
+    // The signal route resolves to `workflow-run:<deploymentId>`; the planted
+    // wildcard must glob-match any id, and the verb must be `manage`.
     expect(WORKFLOW_RUN_GRANT_RESOURCE.endsWith(":*")).toBe(true);
     expect(WORKFLOW_RUN_GRANT_RESOURCE.startsWith("workflow-run:")).toBe(true);
     expect(WORKFLOW_RUN_GRANT_ACTION).toBe("manage");

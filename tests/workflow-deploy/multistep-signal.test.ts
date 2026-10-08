@@ -7,24 +7,15 @@
 // and asserts the runtime resumes through `step2` to `RunCompleted`.
 //
 // The orchestrator's multi-step branch is composed in-test: the per-step
-// launch callback drives `env.hub.sessionService.stageWorkflowStep` (the
-// stage-only path, no warm harness) and the `sendMultiStepDeploy` hand-off
-// is supplied against `env.hub.router.sendAgentDeploy` so the sidecar's
-// deploy router takes the workflow-process spawn path. The deployment
-// handle is registered
-// on the env via `registerDeployment` so the fixture's `injectSignal`,
-// `readWorkflowRunEvents`, and `waitForWorkflowRunComplete` helpers can
-// resolve it by id.
+// launch callback drives `stageWorkflowStep` (stage-only, no warm harness)
+// and the `sendMultiStepDeploy` hand-off is supplied against
+// `env.hub.router.sendAgentDeploy` so the sidecar's deploy router takes the
+// workflow-process spawn path. The deployment handle is registered on the
+// env so the fixture's injectSignal / readWorkflowRunEvents /
+// waitForWorkflowRunComplete helpers can resolve it by id.
 //
-// The pre-landed `deploy-flow-env` fixture supplies every other helper;
-// this file does not modify the fixture.
-//
-// Architectural-gap discipline: this test was previously authored
-// against an un-wired multi-step transport surface. The plumbing that
-// makes the deployment-level address routable, threads the workflow
-// definition to the sidecar, spawns the workflow-process subprocess,
-// and routes per-step pack pushes back to the hub now lands in the
-// upstream commits this file's verification depends on.
+// The pre-landed `deploy-flow-env` fixture supplies every other helper; this
+// file does not modify the fixture.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
@@ -66,11 +57,9 @@ import { signalGateEntry } from "./fixtures/signal-gate";
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const DEPLOYMENT_ID = "run_multistep-signal-1";
 
-// The definition's own tenant, the caller principal that creates the
-// definition asset, and the `workflow`-kind asset the frozen definition
-// projects over. The install/approve freeze and the anchor `workflow_run`
-// insert both write against these, so they must exist in the real DB before
-// the deploy runs.
+// The tenant, caller principal, and `workflow`-kind definition asset the
+// install/approve freeze and anchor `workflow_run` insert write against; they
+// must exist in the real DB before the deploy runs.
 const TENANT_ID = "tnt_multistep_signal";
 const CALLER_PRINCIPAL_ID = "prn_multistep_signal";
 const DEFINITION_ASSET_ID = "ast_multistep_signal_wf";
@@ -189,9 +178,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const workflowRunRepoId = handle.workflowRunRepoId;
 
-      // The source-ref frame round-trips through the real sidecar subprocess
-      // (index the pack, check out the pinned subtree, register the address),
-      // so routability is asynchronous. Wait for it before firing the trigger.
+      // The source-ref frame round-trips through the real sidecar subprocess (index
+      // the pack, check out the pinned subtree, register the address); routability is async, so wait before firing the trigger.
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),

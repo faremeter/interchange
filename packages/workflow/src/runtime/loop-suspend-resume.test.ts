@@ -5,10 +5,9 @@
 // park up onto the loop CONTAINER step as `awaiting-signal`. When the process
 // dies while parked, a fresh run re-drives the durable log: `runLoop` re-derives
 // its cursor, `planLoopResume` classifies the parked/mid-relay iteration, and
-// the drive re-links it -- re-establishing the container's signal-relay race,
-// relaying a signal delivered but not relayed before the crash, or re-adopting
-// an approval park -- WITHOUT re-running the body's already-completed pre-park
-// steps.
+// the drive re-links it -- re-establishing the signal-relay race, relaying a
+// signal delivered but not relayed before the crash, or re-adopting an approval
+// park -- WITHOUT re-running the body's already-completed pre-park steps.
 //
 // Each test runs a body to a real park (a consistent store keeps both the parent
 // and child logs), captures that durable state, then resumes against a fresh
@@ -448,8 +447,8 @@ describe("loop iteration suspend crash-resume", () => {
     // body run) and the container's relay `SignalAwaited` flush (on the
     // container run): the container step is in-flight with NO relay await. On a
     // consistent store the body's parked gate is durable, so resume must
-    // recover the author name from the body's own state and drive the container
-    // relay FRESH. Without that, the re-adopted body re-parks silently and the
+    // recover the author name from the body's state and drive the container
+    // relay FRESH; otherwise the re-adopted body re-parks silently and the
     // container blocks forever on `child.next()`.
     const runId = "pre-relay-flush-run";
     const blobs = createInMemoryBlobSubstrate();
@@ -569,9 +568,9 @@ describe("loop iteration suspend crash-resume", () => {
     // Partial-park window: the crash lands after the inner body's leaf gate
     // flushed but before EITHER container's relay await flushed. Neither
     // container is parked, so the outer planner classifies undefined and
-    // forward-drives; re-adopting the outer body re-runs the inner loop, whose
-    // planner drives its container relay fresh from the leaf gate and surfaces
-    // it up so the outer's forward drive parks. It must still resume, once.
+    // forward-drives; the re-adopted outer body re-runs the inner loop, whose
+    // planner drives its relay fresh from the leaf gate and surfaces it up so
+    // the outer's forward drive parks. It must still resume, once.
     const runId = "nested-partial-both-run";
     const blobs = createInMemoryBlobSubstrate();
 
@@ -915,10 +914,9 @@ describe("loop iteration drain", () => {
 
     // A loop container defaults to `drainBehavior: "cancel"`, so the main loop's
     // drain observation aborts the container's step-local controller and the
-    // parked iteration sheds. As with any drained cancel-mode step, the runtime
-    // body commits StepFailed and the run terminates as failed -- no
-    // CancelRequested is issued here (the supervisor's drainTimeout escalation
-    // lives outside this layer).
+    // parked iteration sheds. The runtime commits StepFailed and the run ends
+    // failed -- no CancelRequested is issued here (the supervisor's
+    // drainTimeout escalation lives outside this layer).
     drain.trigger();
     const result = await run.complete;
     expect(result.terminalStatus).toBe("failed");
@@ -955,13 +953,12 @@ describe("loop iteration drain", () => {
       iterations: 1,
     });
 
-    // The run was still live when the signal arrived, which is the property
-    // that separates `wait` from `cancel` here. It is asserted as an ordering
-    // fact in the durable log rather than inferred from elapsed time: the
-    // container consumed the relayed signal BEFORE the run reached its
-    // terminal event. A drain that settled the run early would leave the
-    // terminal first and the SignalReceived after it or absent -- and it would
-    // do so while `terminalStatus` was still `completed`, so the assertions
+    // The run was still live when the signal arrived -- the property that
+    // separates `wait` from `cancel` here. Asserted as a durable-log ordering
+    // fact rather than elapsed time: the container consumed the relayed signal
+    // BEFORE the run's terminal event. A drain that settled the run early
+    // would leave the terminal first and the SignalReceived after it or
+    // absent, while `terminalStatus` was still `completed`, so the assertions
     // above would not catch it on their own.
     const log = await repoStore.read(runId);
     const receivedIdx = log.findIndex((e) => e.kind === "SignalReceived");
@@ -1036,9 +1033,9 @@ describe("loop iteration suspend crash-resume carry", () => {
 
     // Run 2: resume against a fresh store seeded with iteration 0's parked log.
     // The first delivery resumes iteration 0; iteration 1 -- a fresh iteration
-    // whose input is the carry threaded across the park -- parks on its own await
-    // and the second delivery resumes it. The in-memory channel queues both
-    // until each relay subscribes, so delivering them up front is safe.
+    // whose input is the carry threaded across the park -- parks on its own
+    // await and the second delivery resumes it. The in-memory channel queues
+    // both until each relay subscribes, so delivering up front is safe.
     const repoStore2 = createInMemoryRepoStore();
     await seedChildLog(repoStore2, loopBodyRunId(runId, "rework", 0), childLog);
     const preRuns2 = { n: 0 };
@@ -1064,8 +1061,7 @@ describe("loop iteration suspend crash-resume carry", () => {
     // Convergence at iteration 2 is reachable ONLY if the carry threaded 0 -> 1
     // across the park: `while` ("twice") converges once the input reaches 1, so
     // a dropped carry keeps the input at 0, re-parks iteration 2 on a `go` this
-    // test never delivers, and the run hangs (the assertions catch it as a
-    // timeout) rather than reaching this converged result.
+    // test never delivers, and the run hangs rather than reaching this result.
     expect("escalate" in result.outputs).toBe(false);
     expect(result.outputs.rework).toMatchObject({
       outcome: "converged",

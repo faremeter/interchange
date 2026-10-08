@@ -1,46 +1,28 @@
 // Workflow-run-substrate backing for the `@intx/mailbox` `MailboxStore`.
 //
-// The `MailboxStore` mutation surface is SYNCHRONOUS, but the workflow-run
-// substrate is an async git store. This backing follows the shape of an IMAP
-// client with a local cache: the async `createSubstrateMailboxStore` factory
-// loads the committed `mailbox/INBOX/` METADATA (`index.json`) into an
-// in-memory mirror on open, exposes the synchronous mutation surface over that
-// mirror, and persists the current state back to the substrate through
-// `flush`. Callers mutate synchronously (append / addFlags / removeFlags /
-// remove) and `await flush()` at a boundary.
+// The `MailboxStore` mutation surface is SYNCHRONOUS while the substrate is
+// an async git store, so this backing follows an IMAP-client-with-local-cache
+// shape: load the committed `mailbox/INBOX/index.json` metadata into an
+// in-memory mirror on open, serve the synchronous surface over it, and
+// persist through `flush`.
 //
-// The per-message raw RFC 2822 bytes are NOT loaded on open and are NOT held
-// resident: `readRaw(uid)` reads a message's `<uid>.eml` blob on demand from
-// the committed-read snapshot the open pinned. The only raw this backing keeps
-// in memory is that of a message appended-but-not-yet-flushed; a successful
-// `flush` drops it. So the resident footprint of a long-lived warm mailbox is
-// bounded to metadata regardless of how much mail it has accumulated.
+// Raw RFC 2822 bytes are never held resident: `readRaw(uid)` reads the
+// message's `<uid>.eml` blob on demand from the pinned committed snapshot;
+// only an appended-but-not-yet-flushed message keeps its raw in memory. So a
+// long-lived mailbox's footprint is bounded to metadata.
 //
-// On-disk layout, a top-level subtree of the workflow-run repo (one mailbox per
-// deployment repo):
+// On-disk layout (a top-level subtree of the workflow-run repo):
 //
-//   mailbox/INBOX/index.json      committed metadata: uidValidity, the
-//                                 uid/modseq counters, one entry per live
-//                                 message (uid, modseq, flags, pre-parsed
-//                                 envelope), and the expunged-uid tombstones
-//                                 QRESYNC answers `vanished` from.
-//   mailbox/INBOX/<uid>.eml       the verbatim raw RFC 2822 bytes of each live
-//                                 message, so `fetchFull` verifies signatures
-//                                 byte-exactly. Write-once per uid.
+//   mailbox/INBOX/index.json   metadata: uidValidity, uid/modseq counters,
+//                              one entry per live message, expunged-uid
+//                              tombstones for QRESYNC `vanished`.
+//   mailbox/INBOX/<uid>.eml    the verbatim raw bytes, write-once per uid,
+//                              so `fetchFull` verifies signatures exactly.
 //
-// Reads resolve from the committed substrate (`openCommittedReads`), never the
-// lagging working tree, matching the sibling `mail-part-store` reader. Writes
-// go through `writeTreeDelta`: `index.json` changes on every mutation and is
-// always put; each `<uid>.eml` is immutable, so a flush puts only the blobs
-// appended since the last successful flush and deletes only those whose
-// message was removed since then, and the substrate carries every untouched
-// `.eml` forward by object id. This keeps a flush O(delta) rather than
-// O(mailbox), so a long-lived warm conversational mailbox does not re-hash its
-// whole history on each append or flag change. The committed subtree the delta
-// leaves behind is byte-identical in shape to a full rewrite of the same live
-// set. The kind handler's push-time validation of this subtree is owned
-// separately by the hub replication layer; this module owns the on-disk shape
-// it validates.
+// Reads resolve from the committed substrate, never the lagging working tree.
+// Writes go through `writeTreeDelta`: `index.json` is always put; each
+// `.eml` is immutable, so a flush puts only blobs appended since the last
+// successful flush and deletes only removed ones -- O(delta), not O(mailbox).
 
 import { type } from "arktype";
 import type {
@@ -80,10 +62,9 @@ const decoder = new TextDecoder();
 const encoder = new TextEncoder();
 
 /**
- * On-disk envelope shape. Mirrors `StoredEnvelope` but serializes `date` as an
- * ISO string and the nullable header fields as `string | null` (JSON has no
- * `undefined`); the loader maps `null` back to `undefined`.
- *
+ * On-disk envelope shape. Mirrors `StoredEnvelope` but serializes
+ * `date` as an ISO string and nullable header fields as `string | null`
+ * (JSON has no `undefined`); the loader maps `null` back to `undefined`.
  * Widening a field needs no `INDEX_VERSION` bump: the version is matched
  * exactly, so a bump rejects every existing mailbox instead of migrating it.
  */
@@ -100,11 +81,9 @@ const StoredEnvelopeJson = type({
 });
 
 /**
- * On-disk `index.json` shape. Validated on every open: the committed tree is
- * durable but external to this process, so it is parsed at the boundary rather
- * than trusted. `expunged` records the uid and the modseq at which each
- * message vanished so a QRESYNC `sync` can answer `vanished` since a client's
- * known modseq.
+ * On-disk `index.json` shape, validated on every open (the committed
+ * tree is external to this process). `expunged` records uid + modseq at
+ * which each message vanished, so QRESYNC `sync` can answer `vanished`.
  */
 const MailboxIndexJson = type({
   version: `${INDEX_VERSION}`,
@@ -129,9 +108,9 @@ type MailboxIndexJson = typeof MailboxIndexJson.infer;
 type ExpungedRecord = { uid: number; modseq: number };
 
 /**
- * The client's last-known synchronization state, per QRESYNC (RFC 7162). A
- * mismatched `uidValidity` forces a full resync; otherwise `highestModSeq`
- * bounds the changed / vanished deltas.
+ * The client's last-known synchronization state, per QRESYNC (RFC 7162).
+ * A mismatched `uidValidity` forces a full resync; otherwise
+ * `highestModSeq` bounds the changed / vanished deltas.
  */
 export type MailboxSyncKnownState = {
   uidValidity: number;
@@ -139,12 +118,11 @@ export type MailboxSyncKnownState = {
 };
 
 /**
- * The result of a QRESYNC `sync`. `resync: true` signals the client's
- * `uidValidity` no longer matches the mailbox, so it must discard its cache
- * and take the full `messages` snapshot. `resync: false` carries the deltas
- * since the client's `highestModSeq`: `changed` is every live message whose
- * modseq advanced past it (new arrivals and flag changes alike), and
- * `vanished` is every uid expunged past it.
+ * Result of a QRESYNC `sync`. `resync: true` signals the client's
+ * `uidValidity` no longer matches, so it must discard its cache and
+ * take the full `messages` snapshot. `resync: false` carries the deltas
+ * since the client's `highestModSeq`: `changed` (modseq advanced past
+ * it) and `vanished` (uid expunged past it).
  */
 export type MailboxSyncResult =
   | {
@@ -164,21 +142,14 @@ export type MailboxSyncResult =
     };
 
 /**
- * A `MailboxStore` whose state is durable in the workflow-run substrate. The
- * synchronous `MailboxStore` surface reads and mutates an in-memory mirror;
- * `flush` persists that mirror to `mailbox/INBOX/`; `sync` answers a QRESYNC
- * delta against a client's known state.
+ * A `MailboxStore` whose state is durable in the workflow-run substrate:
+ * the synchronous surface reads and mutates an in-memory mirror; `flush`
+ * persists it; `sync` answers a QRESYNC delta.
  */
 export interface SubstrateMailboxStore extends MailboxStore {
   /** True when a mutation has occurred that `flush` has not yet persisted. */
   readonly pendingWrites: boolean;
-  /**
-   * Persist the current mirror to the substrate through a delta write:
-   * `index.json` (always), the `<uid>.eml` blobs appended since the last
-   * successful flush, and deletions for the blobs whose message was removed
-   * since then. Every untouched `<uid>.eml` is carried forward by object id. A
-   * no-op when no mutation is pending.
-   */
+  /** Persist the mirror via a delta write; a no-op when nothing is pending. */
   flush(): Promise<void>;
   /** Compute the QRESYNC delta between the mailbox and a client's known state. */
   sync(known: MailboxSyncKnownState): MailboxSyncResult;
@@ -231,9 +202,9 @@ function emlName(uid: number): string {
 }
 
 /**
- * A pinned committed-read snapshot of the repo the store opened against, the
- * source `readRaw` resolves a live message's `<uid>.eml` from. `null` when the
- * repo, ref, or subtree did not exist at open.
+ * Pinned committed-read snapshot the store opened against, the source
+ * `readRaw` resolves a live `<uid>.eml` from; `null` when the repo,
+ * ref, or subtree did not exist at open.
  */
 type CommittedReads = Awaited<
   ReturnType<SubstrateRepoStore["openCommittedReads"]>
@@ -245,25 +216,19 @@ type LoadedState = {
   highestModSeq: number;
   messages: StoredMessage[];
   expunged: ExpungedRecord[];
-  /**
-   * The pinned committed-read snapshot opened at load, retained so `readRaw`
-   * can resolve a message's `<uid>.eml` blob on demand without re-opening.
-   */
+  /** Pinned committed-read snapshot, for on-demand `readRaw`. */
   reads: CommittedReads;
-  /** The `<uid>.eml` object id per committed uid, for `readRaw`. */
+  /** The `<uid>.eml` object id per committed uid. */
   oidByUid: Map<number, string>;
 };
 
 /**
- * Load the committed `mailbox/INBOX/` METADATA into an in-memory state, or the
- * empty state (a fresh `uidValidity`) when the repo, the ref, or the subtree
- * does not yet exist. Only `index.json` is read; the per-message `<uid>.eml`
- * blobs stay on disk and are read lazily by `readRaw`, so an open's resident
- * footprint is bounded to metadata regardless of mailbox size. The committed
- * read snapshot and the uid->oid map are retained so `readRaw` resolves a
- * blob against the same pinned commit the open observed. Every read resolves
- * against the committed object store, so an open observes committed state even
- * when the working tree lags.
+ * Load the committed `mailbox/INBOX/` metadata into an in-memory state,
+ * or the empty state (a fresh `uidValidity`) when the repo, ref, or
+ * subtree does not exist yet. Only `index.json` is read; the `<uid>.eml`
+ * blobs stay on disk and are read lazily by `readRaw`. The committed-read
+ * snapshot and uid->oid map are retained so `readRaw` resolves against
+ * the same pinned commit the open observed.
  */
 async function loadCommittedState(
   opts: SubstrateMailboxStoreOpts,
@@ -325,8 +290,7 @@ async function loadCommittedState(
         )} but ${MAILBOX_INBOX_PREFIX}${emlName(entry.uid)} is absent`,
       );
     }
-    // The blob's presence is asserted by its object id; its bytes are not read
-    // here -- `readRaw` reads them on demand.
+    // Presence is asserted by the object id; bytes are read on demand.
     oidByUid.set(entry.uid, oid);
     messages.push({
       uid: entry.uid,
@@ -348,10 +312,9 @@ async function loadCommittedState(
 }
 
 /**
- * Create a workflow-run-substrate-backed `MailboxStore`. Loads the committed
- * `mailbox/INBOX/` subtree into an in-memory mirror, then serves the
- * synchronous `MailboxStore` surface over that mirror. Mutations stay in
- * memory until `flush` persists them.
+ * Create a workflow-run-substrate-backed `MailboxStore`: load the
+ * committed subtree into an in-memory mirror, serve the synchronous
+ * surface over it; mutations stay in memory until `flush`.
  */
 export async function createSubstrateMailboxStore(
   opts: SubstrateMailboxStoreOpts,
@@ -364,22 +327,17 @@ export async function createSubstrateMailboxStore(
   const reads = state.reads;
   const oidByUid = state.oidByUid;
   let uidCounter = state.uidNext;
-  // The next modseq to assign. `highestModSeq` is the largest assigned, so the
-  // next is one past it; a fresh mailbox (highestModSeq 0) starts at 1.
+  // Next modseq: one past the largest assigned (fresh mailbox starts at 1).
   let modseqCounter = state.highestModSeq + 1;
   let dirty = false;
 
-  // Delta tracking for `flush`. `index.json` changes on every mutation, so it
-  // is put unconditionally; each `<uid>.eml` is immutable and written once, so
-  // a flush need only put the blobs appended since the last successful flush
-  // and delete the blobs whose message was removed since then. The removed set
-  // clears on a successful flush; a flush that throws leaves it intact so the
-  // next flush re-attempts the same delta.
-  //
-  // `pendingRawByUid` holds the raw bytes of appended-but-not-yet-flushed
-  // messages -- the only raw this backing keeps resident. It doubles as the
-  // "appended since flush" set: `flush` puts each entry's blob, then drops it
-  // so a flushed message's bytes leave memory and are read from disk on demand.
+  // Delta tracking for `flush`: `index.json` is put unconditionally;
+  // each `.eml` is immutable, so only blobs appended since the last
+  // successful flush are put and only removed ones are deleted. The
+  // removed set clears on success; a throwing flush leaves it intact
+  // for a retry. `pendingRawByUid` holds appended-but-not-yet-flushed
+  // raws (the only resident raw) and doubles as the appended-since-flush
+  // set.
   const pendingRawByUid = new Map<number, Uint8Array>();
   const removedSinceFlush = new Set<number>();
 
@@ -412,11 +370,9 @@ export async function createSubstrateMailboxStore(
       expunged: expunged.map((e) => ({ uid: e.uid, modseq: e.modseq })),
     };
 
-    // `index.json` is put on every flush. Each `<uid>.eml` is immutable, so
-    // only the blobs appended since the last successful flush are put and only
-    // those whose message was removed are deleted; every other `.eml` is
-    // carried forward by object id, so the flush never re-hashes the mailbox's
-    // whole history.
+    // Only appended and removed blobs are touched; every other `.eml`
+    // carries forward by object id, so the flush never re-hashes the
+    // mailbox's whole history.
     const puts: Record<string, string | Uint8Array> = {
       [`${MAILBOX_INBOX_PREFIX}${MAILBOX_INDEX_FILE}`]: encoder.encode(
         JSON.stringify(index),
@@ -437,12 +393,10 @@ export async function createSubstrateMailboxStore(
       changedPathPrefixes: new Set([MAILBOX_INBOX_PREFIX]),
       message: `persist mailbox INBOX (${String(messages.length)} message(s))`,
     });
-    // The appended blobs are now committed, so their raw leaves memory: a later
-    // `readRaw` reads them from disk. Their object ids are not recorded here
-    // (the pinned committed-read snapshot predates this commit), so `readRaw`
-    // resolves a post-open append only while its raw is still pending; the
-    // long-lived writer never reads its own appends back, and every reader
-    // opens a fresh snapshot that sees the committed blob.
+    // Committed raws leave memory; a post-open append resolves only while
+    // pending (the pinned snapshot predates the commit), which is fine:
+    // the writer never reads its own appends back, and readers open a
+    // fresh snapshot.
     for (const uid of flushedUids) {
       pendingRawByUid.delete(uid);
     }
@@ -504,9 +458,8 @@ export async function createSubstrateMailboxStore(
       if (find(uid) === undefined) {
         throw new Error(`Message UID ${String(uid)} not found`);
       }
-      // An appended-but-not-yet-flushed message keeps its raw in memory; a
-      // flushed or previously-committed message reads its blob from the pinned
-      // committed-read snapshot on demand.
+      // Pending appends keep their raw in memory; committed messages
+      // read from the pinned snapshot on demand.
       const pending = pendingRawByUid.get(uid);
       if (pending !== undefined) return pending;
       const oid = oidByUid.get(uid);
@@ -544,15 +497,12 @@ export async function createSubstrateMailboxStore(
         throw new Error(`Message UID ${String(uid)} not found`);
       }
       messages.splice(idx, 1);
-      // Record the expunge with a fresh modseq so a QRESYNC `sync` can report
-      // this uid as `vanished` to a client whose known modseq predates it. The
-      // in-memory reference backing does not advance modseq on remove; this
-      // backing does, because it must answer QRESYNC across reopens.
+      // Record the expunge with a fresh modseq so a QRESYNC `sync` can
+      // report this uid as `vanished`; unlike the in-memory reference
+      // backing, this one must answer QRESYNC across reopens.
       expunged.push({ uid, modseq: modseqCounter++ });
-      // A message appended and removed within the same flush window was never
-      // committed, so its `.eml` must be neither put nor deleted: drop its
-      // pending raw. Otherwise the blob is already committed and the next flush
-      // deletes it.
+      // Appended and removed within one flush window, the `.eml` was
+      // never committed: drop its pending raw instead of deleting.
       if (pendingRawByUid.has(uid)) {
         pendingRawByUid.delete(uid);
       } else {

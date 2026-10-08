@@ -91,10 +91,9 @@ describe("PackRejectFrame reason forward-compat", () => {
   });
 
   test("accepts an unknown reason a newer peer may add", () => {
-    // The whole point of the widening: a reject carrying a reason this build
-    // does not know still validates, so it reaches the reject handler (which
-    // latches the transfer) instead of failing HubFrame validation and being
-    // dropped -- a dropped reject stalls the transfer until the next disconnect.
+    // A reject carrying a reason this build does not know still validates and
+    // reaches the reject handler instead of failing HubFrame validation and
+    // being dropped (which would stall the transfer until the next disconnect).
     const result = PackRejectFrame({ ...base, reason: "some_future_reason" });
     expect(result instanceof type.errors).toBe(false);
   });
@@ -159,9 +158,8 @@ describe("AgentDeployFrame", () => {
     model: "gpt-step",
   };
 
-  // The source-ref pin every workflow frame carries: where the definition's
-  // bytes come from plus the frozen dependency closure (empty here -- a
-  // workflow that pins no tool packages).
+  // The source-ref pin every workflow frame carries: source plus the frozen
+  // dependency closure (empty here — no pinned tool packages).
   const validSourceRef = {
     source: { kind: "registry", registry: "npmjs" },
     closure: { schemaVersion: "1", topLevel: [], entries: [] },
@@ -239,10 +237,8 @@ describe("SourcesUpdateFrame", () => {
   });
 
   test("rejects a frame whose sources list is empty", () => {
-    // The hub never emits an empty rotation -- `pushInstanceSourceUpdate`
-    // returns early when there is no head source -- so the boundary
-    // rejects an empty `sources` rather than accepting a rotation the
-    // agent could not swap to any live source.
+    // The hub never emits an empty rotation (`pushInstanceSourceUpdate`
+    // returns early without a head source), so the boundary rejects one.
     const result = SourcesUpdateFrame({ ...base, sources: [] });
     expect(result instanceof type.errors).toBe(true);
   });
@@ -325,9 +321,8 @@ describe("SignalCorrelationRegisterFrame snapshot requirement", () => {
   });
 
   test("rejects a register frame with no snapshot", () => {
-    // The ask rail is the only producer and always carries a snapshot, so a
-    // snapshot-absent frame is malformed at the receive boundary -- it fails
-    // the union parse and is logged and dropped, never co-written as null.
+    // The ask rail is the only producer and always carries a snapshot, so an
+    // absent one is malformed at the receive boundary — never co-written as null.
     expect(SignalCorrelationRegisterFrame(base) instanceof type.errors).toBe(
       true,
     );
@@ -335,12 +330,9 @@ describe("SignalCorrelationRegisterFrame snapshot requirement", () => {
   });
 
   test("rejects a register frame whose snapshot exceeds the size cap", () => {
-    // The snapshot crosses the sidecar->hub boundary as a
-    // `BoundedApprovalSnapshot`, so an oversized one -- here an inputSchema
-    // padded past the byte cap -- fails the frame parse and is dropped rather
-    // than co-written onto an approval row. Only the pad pushes it over; every
-    // other field is the valid baseline, so the cap is the sole reason for
-    // rejection.
+    // The snapshot crosses the boundary as a `BoundedApprovalSnapshot`, so an
+    // oversized one — an inputSchema padded past the byte cap — fails the
+    // frame parse. Only the pad pushes it over; the cap is the sole reason.
     const frame = {
       ...base,
       snapshot: {
@@ -356,11 +348,10 @@ describe("SignalCorrelationRegisterFrame snapshot requirement", () => {
 });
 
 describe("CredentialsUpdateFrame revoke", () => {
-  // `revoke` is the whole point of removal-capable rotation. It must survive
-  // the wire-frame validation the hub applies on send (the HubFrame union) and
-  // the sidecar applies on receive (CredentialsUpdateFrame). An arktype narrow
-  // that dropped it would silently defeat every revoke while every unit test
-  // above the wire still passed.
+  // `revoke` is the whole point of removal-capable rotation; it must survive
+  // both the hub's send-side (HubFrame) and the sidecar's receive-side
+  // (CredentialsUpdateFrame) validation. A narrow that dropped it would
+  // silently defeat every revoke while the tests above the wire still passed.
   const pureRevoke = {
     type: "credentials.update",
     requestId: "req_1",
@@ -435,13 +426,10 @@ describe("RunGrantsFrame senderIdentities co-delivery", () => {
   });
 
   test("the HubFrame union rejects a malformed identity entry", () => {
-    // arktype passes undeclared keys through unchanged, so a valid-input
-    // round-trip alone cannot prove the field is declared on the wire path:
-    // it would survive even if senderIdentities were dropped from the schema.
-    // A malformed entry rejected THROUGH the union is the real guard -- were
-    // the field undeclared, the bad entry would ride the union as a harmless
-    // passthrough key and this parse would succeed, silently starving the
-    // recipient's key cache.
+    // arktype passes undeclared keys through unchanged, so a valid round-trip
+    // cannot prove the field is declared: it would survive even if
+    // senderIdentities were dropped from the schema. A malformed entry
+    // rejected THROUGH the union is the real guard.
     const bad = {
       ...base,
       senderIdentities: [{ address: "run_sender@integration.interchange" }],
@@ -516,10 +504,10 @@ describe("frame array-length ceilings", () => {
     };
 
     test("accepts a count above the resync handler cap but within the ceiling", () => {
-      // The ceiling sits far above the hub-sessions `MAX_RESYNC_SENDER_ADDRESSES`
-      // handler cap (2048) so a report over that cap still parses and reaches the
-      // handler's graceful "resync the first N, log the overflow" degrade rather
-      // than dropping the whole register frame and stalling the reconnect.
+      // The ceiling sits above the hub-sessions `MAX_RESYNC_SENDER_ADDRESSES`
+      // handler cap (2048), so an over-cap report still parses and reaches the
+      // handler's graceful "resync the first N" degrade instead of dropping
+      // the register frame and stalling the reconnect.
       const frame = { ...base, cachedSenderAddresses: addresses(2049) };
       expect(RegisterFrame(frame) instanceof type.errors).toBe(false);
       expect(SidecarFrame(frame) instanceof type.errors).toBe(false);
@@ -615,9 +603,8 @@ describe("frame array-length ceilings", () => {
   });
 
   // The bounded optional fields moved from the `"string[]"` DSL to a chained
-  // `type("string").array().atMostLength(n)` value under a `"key?"` key. The
-  // regression that mechanical change risks is losing optionality (the key
-  // becomes required) or gaining a lower bound (an empty array is rejected).
+  // `type("string").array().atMostLength(n)` under a `"key?"` key; the
+  // regression risk is losing optionality or gaining a lower bound.
   describe("bounded optional fields stay optional", () => {
     test("RegisterFrame validates with cachedSenderAddresses omitted or empty", () => {
       const base = {
@@ -706,11 +693,9 @@ describe("frame array-length ceilings", () => {
 
 describe("frame payload byte limits", () => {
   test("the sidecar frame ceiling stays above the mail body cap", () => {
-    // maxPayloadLength must clear the largest legit received frame -- a
-    // mail.outbound whose rawMessage sits at the body cap, plus framing
-    // overhead -- or Bun would close the sidecar's control socket on a
-    // legitimate max-size mail. This pins that ordering, which the whole
-    // payload-limit design depends on.
+    // maxPayloadLength must clear the largest legit received frame — a
+    // mail.outbound at the body cap plus framing overhead — or Bun would
+    // close the socket on a legitimate max-size mail.
     expect(MAX_SIDECAR_FRAME_BYTES).toBeGreaterThan(
       MAX_MAIL_OUTBOUND_BODY_BYTES,
     );
@@ -737,9 +722,8 @@ describe("SenderKeyEvictFrame", () => {
   });
 
   test("carries no publicKey (it is not a refresh)", () => {
-    // The evict frame is deliberately keyless; a stray publicKey is an
-    // undeclared key arktype passes through, so assert the parsed frame's shape
-    // holds only the address.
+    // The evict frame is deliberately keyless; arktype would pass a stray
+    // publicKey through, so assert the parsed shape holds only the address.
     const out = SenderKeyEvictFrame(frame);
     if (out instanceof type.errors) {
       throw new Error(`expected a valid frame: ${out.summary}`);
@@ -754,11 +738,9 @@ describe("SenderKeyEvictFrame", () => {
 });
 
 // `FrozenApprovalBundle` is asserted against a persisted jsonb column
-// (`parseWorkflowRunLaunchSpecRow`, packages/db/src/parse-row.ts), so a row
-// written by an older build must keep parsing. `approvedGrants` widened from
-// `string[]` to `ApprovalItem[]`; nothing else in the suite holds a row from
-// before that widening, so this block is the only place the compatibility
-// claim is checked.
+// (`parseWorkflowRunLaunchSpecRow`), so a row written by an older build must
+// keep parsing; `approvedGrants` widened from `string[]` to `ApprovalItem[]`,
+// and this block is the only place that compatibility claim is checked.
 describe("FrozenApprovalBundle approvedGrants", () => {
   const bundle = {
     source: {

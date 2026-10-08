@@ -1,11 +1,8 @@
 /**
  * Pending-projection rows whose workflow-run pack receive is still running in
- * this process. Such a receive may advance Git after recovery reads it, so
- * recovery must not claim its row. A receive registers before its row is
- * inserted and leaves only after its Git transaction ends, so a listed row that
- * is absent here belongs to a receive whose effect on Git is final. The Hub is
- * the single writer of its workflow-run repositories, so rows left by an
- * earlier process are always final.
+ * this process. A receive may advance Git after recovery reads it, so recovery
+ * must not claim its row; one that has ended (or never started here) has final
+ * Git effects, since the Hub is the single writer of these repositories.
  */
 export function createWorkflowHistoryReceiveTracker() {
   const inFlight = new Set<string>();

@@ -1,21 +1,10 @@
-// End-to-end dispatch-demo shape on the extended engine.
-//
-// Authors the interchange-demo-dispatch orchestration as one workflow
-// using the new primitives -- deterministic `action` effects (baseline
-// capture, git commit), a `map` fan-out over a level's tasks, and a
-// bounded rework `loop` (the amendment loop) whose `while`/`carry` are
-// pure registry functions and whose `onExhausted` routes to an
-// `escalation`. Runs three scenarios end-to-end without an LLM: the
-// amendment loop converging, the loop exhausting to escalation, and a
-// mid-loop crash resuming to exactly-once effects.
-//
-// The demo's real agents (planner/critic/fixer/...) are stubbed behind
-// the invokeStep seam here, which keeps this the fast, deterministic,
-// LLM-free check of the engine's routing and crash-resume behaviour. The
-// real-agent integration proof -- the same per-level pipeline driven by
-// genuine @intx/agent agents through the production step-invoker seam --
-// lives in its sibling
-// `tests/workflow-deploy/per-level-pipeline-real-agents.test.ts`.
+// End-to-end dispatch-demo shape on the extended engine: one workflow using the
+// new primitives -- deterministic `action` effects, a `map` fan-out, and a
+// bounded rework `loop` whose `onExhausted` routes to an `escalation`. Runs
+// three scenarios without an LLM: the amendment loop converging, the loop
+// exhausting to escalation, and a mid-loop crash resuming to exactly-once
+// effects. Agents are stubbed behind the invokeStep seam; the real-agent proof
+// lives in `tests/workflow-deploy/per-level-pipeline-real-agents.test.ts`.
 
 import { describe, test, expect } from "bun:test";
 
@@ -148,8 +137,8 @@ const loopFns = (ref: string): LoopFn => {
   throw new Error(`unknown loop fn ${ref}`);
 };
 
-// `converge` decides the critic's verdict: once the round reaches the
-// threshold the critic passes; otherwise it asks for another amendment.
+// `converge` decides the critic's verdict: pass once the round reaches the
+// threshold, else amend.
 function makeInvokeStep(convergeAtRound: number): StepInvoker {
   return async ({ agent: a, input }) => {
     switch (a.id) {
@@ -266,8 +255,7 @@ describe("dispatch demo shape", () => {
 
     expect(result.terminalStatus).toBe("completed");
     expect(loopOutcome(result)).toBe("converged");
-    // The baseline and the commit both ran; consolidate ran; the loop
-    // converged so escalation was pruned.
+    // Both effects ran; the loop converged so escalation was pruned.
     expect(result.outputs.consolidate).toEqual({ consolidated: true });
     expect("escalate" in result.outputs).toBe(false);
   });
@@ -332,12 +320,11 @@ describe("dispatch demo shape", () => {
 
     expect(result2.terminalStatus).toBe("completed");
     expect(loopOutcome(result2)).toBe("converged");
-    // captureBaseline and commit both completed before the crash, so on
-    // resume their durable StepCompleted events replay from the seed log
-    // and their handlers are never re-invoked -- the two effects stay at
-    // one execution each. (The in-flight amendment iteration re-drives its
-    // body, which holds no effects.) The shared ledger's own dedup path is
-    // covered directly in action.test.ts.
+    // captureBaseline and commit completed before the crash, so their
+    // StepCompleted events replay and their handlers never re-invoke -- both
+    // effects stay at one execution each. (The in-flight amendment iteration
+    // re-drives its body, which holds no effects.) The ledger's own dedup path
+    // is covered in action.test.ts.
     expect(effectRuns.n).toBe(effectsAfterRun1);
   });
 });

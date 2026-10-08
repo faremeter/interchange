@@ -53,8 +53,7 @@ export async function runEditFile(
     );
   }
 
-  // Use split/join for both paths. String.replace() interprets $-patterns
-  // ($&, $', $`) in the replacement string, which corrupts content.
+  // split/join instead of replace(): replace() expands $-patterns in new_string.
   const newContent = content.split(args.old_string).join(args.new_string);
 
   signal.throwIfAborted();

@@ -1,13 +1,10 @@
 // Deployed behaviour of a gate inside a `childWorkflow` that nothing can
-// answer.
-//
-// A terminal child has no address of its own and no container relaying
+// answer. A terminal child has no address of its own and no container relaying
 // decisions down to it, so an untimed gate there waits on a signal that can
 // never arrive. Before this was refused, the deployment went quiet: the child
 // held the gate, the spawn step held the child, the run never terminated, and
 // because the suspension was never registered with the hub, no approval
-// appeared for the tenant. An operator had nothing to act on and no error to
-// read.
+// appeared for the tenant.
 //
 // What this asserts against a real hub and sidecar is the half that can
 // regress: the run reaches a terminal naming the gate, where before it went
@@ -17,13 +14,10 @@
 // park the issue actually reports, where the child's tool call suspends on the
 // control plane.
 //
-// Neither case asserts that no approval reached an operator, and the reason is
-// worth recording. A terminal child's env carries no notify sink at all, so no
-// park there registers a correlation whether it is refused or not. An
-// assertion to that effect could not fail, and would read as a guarantee this
-// suite does not provide. What it does assert is that no durable suspension is
-// recorded and the run ends -- which is what separates the fixed behaviour
-// from the reported one.
+// Neither case asserts that no approval reached an operator: a terminal
+// child's env carries no notify sink, so no park there registers a correlation
+// whether it is refused or not. What is asserted is that no durable suspension
+// is recorded and the run ends.
 //
 // A timed gate is the boundary case and must still work: its own timer
 // resolves it with no upstream involvement.
@@ -278,7 +272,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
       expect(terminal.type).toBe("RunFailed");
 
-      // The child failed at its own gate, naming the signal, so an author
+      // The child failed at its own gate naming the signal, so an author
       // reading the child's log learns which gate could not be held.
       const childRunId = await spawnedChildRunId(UNANSWERABLE_ANCHOR, runId);
       const childEvents = await readWorkflowRunEvents(
@@ -310,9 +304,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
       expect(terminal.type).toBe("RunFailed");
 
-      // Nothing durable was left claiming the child is still waiting. This is
-      // the assertion that distinguishes the two outcomes: without the refusal
-      // the child commits this and waits on it forever.
+      // Nothing durable was left claiming the child is still waiting; without
+      // the refusal the child commits this and waits on it forever.
       const childRunId = await spawnedChildRunId(ASK_ANCHOR, runId);
       const childTypes = (
         await readWorkflowRunEvents(env, ASK_ANCHOR, childRunId)

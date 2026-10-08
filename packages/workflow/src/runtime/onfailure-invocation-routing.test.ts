@@ -35,9 +35,9 @@ function agent(id: string) {
   });
 }
 
-// A childWorkflow reaches the runtime as a deployed `{ ref }` (an authored
-// inline child is a deploy-step bug the runtime rejects), resolved by the env's
-// spawnChild. Hand-build the deployed shape so the test drives the real
+// A childWorkflow reaches the runtime as a deployed `{ ref }` (an inline
+// child is a deploy-step bug the runtime rejects), resolved by the env's
+// spawnChild; hand-build the deployed shape so the test drives the real
 // spawn path.
 function cwUnit(): Primitive {
   return {
@@ -175,8 +175,8 @@ describe("onFailure action / childWorkflow routing", () => {
     const res = await runtimeRun(def, env, { runId: "r", triggerPayload: null })
       .complete;
 
-    // The carve-out: a cancelled child is a bare failure, so the run fails and
-    // the unit's StepFailed carries no routedTo (it was not routed).
+    // The carve-out: a cancelled child is a bare failure, so the run fails
+    // and the unit's StepFailed carries no routedTo.
     expect(res.terminalStatus).toBe("failed");
     expect(routedTo(await repoStore.read("r"), "unit")).toBeUndefined();
   });

@@ -33,9 +33,8 @@ import type { AgentKeyStore } from "../agent-key-store";
 import type { SessionManager } from "../session-manager";
 import type { ResolvedInboundMailPolicy } from "./inbound-signature";
 
-// These tests exercise routing and protocol, not admission policy, so they
-// hand the seam a policy that admits every outcome -- inbound mail routes as it
-// did before enforcement, keeping the tests focused on what they assert.
+// These tests exercise routing and protocol, not admission policy, so the seam
+// admits every outcome -- inbound mail routes as it did before enforcement.
 const admitAllInboundMailPolicy: ResolvedInboundMailPolicy = {
   clean: "admit",
   error: "admit",
@@ -47,8 +46,8 @@ const admitAllInboundMailPolicy: ResolvedInboundMailPolicy = {
   unknown: "admit",
 };
 
-// These tests exercise routing and the hub-link protocol, not handshake
-// auth, so the router accepts any token and keys off the claimed id.
+// These tests exercise routing and the hub-link protocol, not handshake auth,
+// so the router accepts any token and keys off the claimed id.
 const testIdentities = new Map<
   string,
   Awaited<ReturnType<SidecarAuthenticator>> & object
@@ -146,11 +145,9 @@ function sendPack(
 }
 
 /**
- * Test-only deploy router modelling the current deploy path: record the
- * hub pairing key so `verifyDeployCommit` can accept the deployment's
- * packs, and surface a public key on the ack. Production stages the
- * deploy through the workflow-run substrate; the tests here exercise the
- * link's surface against the router directly.
+ * Test-only deploy router modelling the current deploy path: record the hub
+ * pairing key so `verifyDeployCommit` can accept the deployment's packs, and
+ * surface a public key on the ack.
  */
 function createTestDeployRouter(keyStore: AgentKeyStore): DeployRouter {
   return {
@@ -162,11 +159,9 @@ function createTestDeployRouter(keyStore: AgentKeyStore): DeployRouter {
 }
 
 /**
- * Convenience spread for `createHubLink({ ... })` call sites that
- * use a freshly-constructed `createTestKeyStore()` and a sessions
- * mock: returns the `keyStore` and a matching `deployRouter` so the
- * call site does not have to name a temporary binding for the
- * keyStore-router pairing.
+ * Convenience spread for `createHubLink({ ... })` call sites using a fresh
+ * `createTestKeyStore()` and a sessions mock: returns the `keyStore` and a
+ * matching `deployRouter` so the call site need not name the pairing.
  */
 function withTestDeployBindings(): {
   keyStore: AgentKeyStore & { registerKey(address: string, kp: KeyPair): void };
@@ -193,10 +188,9 @@ import { hexDecode } from "@intx/types";
 import { waitUntil } from "@intx/types/testing";
 
 // In-memory AgentKeyStore for tests. Tests that exercise deploy-commit
-// verification register keys via the public AgentKeyStore methods
-// (loadOrGenerateKey, recordHubKey); the stub satisfies the interface
-// and uses real @intx/crypto primitives so signatures round-trip
-// through the production verify path.
+// verification register keys via the public AgentKeyStore methods; the stub
+// uses real @intx/crypto primitives so signatures round-trip through the
+// production verify path.
 function createTestKeyStore(): AgentKeyStore & {
   registerKey(address: string, kp: KeyPair): void;
 } {
@@ -386,11 +380,9 @@ afterAll(async () => {
 });
 
 /**
- * Wire a workflow deployment for the reconnect path: mint an Ed25519
- * keypair and register it in the sidecar's keyStore so the deploy path
- * picks up the pinned key. After this, the deployment address named in
- * `getWorkflowAddresses` routes once the hub re-registers it on
- * (re)connect.
+ * Wire a workflow deployment for the reconnect path: mint an Ed25519 keypair
+ * and register it in the sidecar's keyStore so the deploy path picks up the
+ * pinned key.
  */
 async function provisionDeploymentKey(
   keyStore: ReturnType<typeof createTestKeyStore>,
@@ -760,9 +752,8 @@ describe("sidecar↔hub integration", () => {
     });
 
     client.connect();
-    // Routability lags the connection: it lands only after the hub
-    // re-registers the announced addresses, so wait on the routable
-    // address directly.
+    // Routability lands only after the hub re-registers the announced
+    // addresses, so wait on the routable address directly.
     await waitUntil(() =>
       env.router.getRoutableAddresses().includes(deploymentAddress),
     );
@@ -1098,9 +1089,8 @@ describe("sidecar↔hub integration", () => {
       );
 
       // The heartbeat closes the link at the first tick that finds no pong
-      // within two ping intervals, so the SECOND tick is where a missing pong
-      // takes the connection down. Waiting for a third ping therefore waits
-      // past that point: the sidecar only reaches it by having been answered.
+      // within two ping intervals, so a third ping is only reached by having
+      // been answered.
       const pings = () =>
         pingEnv.sidecarFrames.filter(
           (frame) => JSON.parse(frame).type === "ping",
@@ -1304,11 +1294,9 @@ describe("sidecar↔hub integration", () => {
   test("close cancels a pending reconnect scheduled by the previous disconnect", async () => {
     const reconnectEnv = startTestServer();
 
-    // Inject a fake scheduler so we can observe the reconnect callback
-    // and the delay it was scheduled with directly, rather than waiting
-    // for a real timer. The cancel function nils the captured callback;
-    // after close() the callback must be gone, otherwise the bug is
-    // present.
+    // Inject a fake scheduler so the reconnect callback and its delay are
+    // observed directly rather than waited out on a real timer. The cancel
+    // function nils the captured callback; after close() it must be gone.
     let pendingReconnect: (() => void) | null = null;
     const scheduledDelays: number[] = [];
     const fakeScheduleReconnect: ReconnectScheduler = (cb, delayMs) => {
@@ -1347,14 +1335,13 @@ describe("sidecar↔hub integration", () => {
       await waitUntil(() => pendingReconnect !== null);
 
       // This link supplies no `reconnectDelayMs`, so the delay the seam
-      // receives is the link's own `DEFAULT_RECONNECT_DELAY_MS`. Reading
-      // it off the injected scheduler is what pins that constant --
-      // nothing here measures elapsed time.
+      // receives is the link's own `DEFAULT_RECONNECT_DELAY_MS`. Reading it
+      // off the injected scheduler pins that constant -- nothing measures
+      // elapsed time.
       expect(scheduledDelays).toEqual([3_000]);
 
-      // close() must cancel the scheduled reconnect. Without the fix
-      // the cancel function never runs and pendingReconnect stays
-      // non-null.
+      // close() must cancel the scheduled reconnect; without the fix the
+      // cancel function never runs and pendingReconnect stays non-null.
       client.close();
       expect(pendingReconnect).toBeNull();
     } finally {
@@ -1366,10 +1353,9 @@ describe("sidecar↔hub integration", () => {
   test("a configured reconnectDelayMs is the delay the reconnect is scheduled with", async () => {
     const reconnectEnv = startTestServer();
 
-    // The other half of the pin above: the sidecar's
-    // `SIDECAR_RECONNECT_DELAY_MS` arrives here as `reconnectDelayMs`, so
-    // this is where a link that drops the option -- or substitutes its own
-    // default for a supplied one -- is caught. The scheduler seam reports
+    // The other half of the pin above: a configured `reconnectDelayMs` must
+    // reach the scheduler as-is; a link that drops the option -- or
+    // substitutes its own default -- is caught here. The scheduler reports
     // the delay as a number, so the assertion needs no clock.
     const configuredDelayMs = 250;
     const scheduledDelays: number[] = [];
@@ -1414,12 +1400,10 @@ describe("sidecar↔hub integration", () => {
   test("mailInboundRouter claims an address and skips the legacy fallback", async () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
-    // The deployment address is what the hub routes mail to. The
-    // sidecar puts it on the register frame's `agentAddresses` list
-    // so the hub-side router accepts it as routable. Routing a
-    // mail.inbound for it goes through the link's switch case, which
-    // must consult mailInboundRouter first and -- on a non-null return
-    // -- skip transport.deliver and sessions.commitInboundMail.
+    // The deployment address is what the hub routes mail to, so the sidecar
+    // puts it on the register frame's `agentAddresses`. Routing a mail.inbound
+    // for it must consult mailInboundRouter first and, on a non-null return,
+    // skip the legacy transport.deliver / sessions.commitInboundMail path.
     const deploymentAddress = "run_mail1@integration.interchange";
 
     const routed: { address: string; bytes: Uint8Array }[] = [];
@@ -1565,7 +1549,7 @@ describe("sidecar↔hub integration", () => {
       await waitUntil(() =>
         env.router.getRoutableAddresses().includes(deploymentAddress),
       );
-      // Resolves on the sidecar's session.ack. Without a reply this would
+      // Resolves on the sidecar's session.ack; without a reply this would
       // await the full request timeout, so a prompt resolution is the proof
       // the round-trip no longer hangs.
       await env.router.sendSourcesUpdate(
@@ -1715,23 +1699,18 @@ describe("sidecar↔hub integration", () => {
   // The hub-link's `pushWorkflowRunPack` retries the FIRST push to a
   // never-bootstrapped `(repoId, ref)` once on failure, absorbing the
   // hub-side `initRepo` CAS race. The retry guard is a Set keyed by
-  // `(repoId, ref)`; the per-(repoId, ref) queue serializes pushes so
-  // a second-from-this-sender push only fires after the first has
-  // settled. Without the queue, two concurrent first-pushes from a
-  // single sender could each observe `workflowRunPackBootstrapped.has`
-  // as `false` and each fire its own bootstrap retry — a spurious
-  // double retry the queue+flag combination is supposed to prevent.
-  // This test pins the queue+retry interaction so a future change to
-  // the bootstrap-retry surface cannot quietly introduce that
-  // spurious retry.
+  // `(repoId, ref)`; the per-(repoId, ref) queue serializes pushes so a
+  // second-from-this-sender push only fires after the first has settled.
+  // Without the queue, two concurrent first-pushes could each observe the
+  // flag as false and each fire its own bootstrap retry -- the spurious
+  // double retry this test pins against.
   test("two concurrent first-pushes to the same (repoId, ref) fire exactly one bootstrap retry", async () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
 
-    // Fail the very first workflow-run pack push so the hub-link
-    // observes a rejection on its first send and exercises the
-    // bootstrap-retry arm. Every subsequent push (the retry, the
-    // second concurrent push) succeeds.
+    // Fail the very first workflow-run pack push so the hub-link observes a
+    // rejection on its first send and exercises the bootstrap-retry arm. Every
+    // subsequent push (the retry, the second concurrent push) succeeds.
     let receiveCount = 0;
     const receiveRecord: {
       transferIds: string[];
@@ -1775,10 +1754,10 @@ describe("sidecar↔hub integration", () => {
           },
           onMessage(evt, _ws) {
             if (typeof evt.data === "string") {
-              // Capture every inbound `repo.pack.done` frame so the
-              // test can assert how many sends the link actually
-              // issued — one per (initial-attempt | retry | second
-              // push). A spurious second retry adds a fourth entry.
+              // Capture every inbound `repo.pack.done` frame so the test can
+              // assert how many sends the link issued -- one per
+              // initial-attempt | retry | second-push. A spurious second
+              // retry would add a fourth entry.
               try {
                 const parsed: unknown = JSON.parse(evt.data);
                 if (
@@ -1827,8 +1806,8 @@ describe("sidecar↔hub integration", () => {
       );
 
       // Deploy an agent so the sender's outbound pack frames carry a
-      // routable address; otherwise the hub drops the push as
-      // "unrouted agent" before it ever reaches `receiveWorkflowRunPack`.
+      // routable address; otherwise the hub drops the push as "unrouted"
+      // before it reaches `receiveWorkflowRunPack`.
       const agentAddress = "race-agent@test.interchange";
       await sendAgentDeploy(wfrRouter, agentAddress, TEST_CONFIG);
       await waitUntil(() =>
@@ -1837,8 +1816,8 @@ describe("sidecar↔hub integration", () => {
 
       const repoId = {
         kind: "workflow-run",
-        // `deriveWorkflowRunRepoId(agentAddress)`; kept literal here so this
-        // package's tests do not acquire a runtime dependency on the deployer.
+        // Kept literal so this package's tests do not acquire a runtime
+        // dependency on the deployer.
         id: "race-agent-test-interchange",
       } as const;
       const ref = "refs/heads/events";
@@ -1846,8 +1825,7 @@ describe("sidecar↔hub integration", () => {
       const pack = new Uint8Array([1, 2, 3, 4, 5]);
 
       // Kick both pushes off in the same tick so they both observe the
-      // queue's pre-A state and B genuinely chains through A's
-      // promise.
+      // queue's pre-A state and B genuinely chains through A's promise.
       const pushA = client.pushWorkflowRunPack({
         agentAddress,
         repoId,
@@ -1864,20 +1842,18 @@ describe("sidecar↔hub integration", () => {
       });
 
       // Both pushes must resolve cleanly. If the bootstrap-retry path
-      // double-fired, the second push's send would reuse a
-      // transferId from a still-pending transfer and reject before
-      // the hub ever responded.
+      // double-fired, the second push's send would reuse a transferId from a
+      // still-pending transfer and reject before the hub ever responded.
       await Promise.all([pushA, pushB]);
 
-      // The hub sees exactly three packs:
-      //   1. A's first attempt — rejected with `corrupt`.
-      //   2. A's bootstrap retry — accepted.
-      //   3. B's single attempt — accepted (the flag is already set).
-      // A spurious second retry would push the count to 4.
+      // The hub sees exactly three packs: A's first attempt (rejected
+      // `corrupt`), A's bootstrap retry (accepted), and B's single attempt
+      // (accepted, the flag is already set). A spurious second retry would
+      // push the count to 4.
       expect(receiveCount).toBe(3);
       expect(receiveRecord.transferIds).toHaveLength(3);
-      // Each send mints a fresh transferId; the queue+retry must not
-      // collapse the two pushes into a shared in-flight id.
+      // Each send mints a fresh transferId; the queue+retry must not collapse
+      // the two pushes into a shared in-flight id.
       const uniqueTransferIds = new Set(receiveRecord.transferIds);
       expect(uniqueTransferIds.size).toBe(3);
     } finally {
@@ -1997,10 +1973,10 @@ describe("initial handshake on connect", () => {
   });
 
   test("sendSignalCorrelationRegister throws on a registration with no snapshot", () => {
-    // Regression cover for the existing fail-loud guard in the producer: the
-    // ask rail always carries a snapshot, so a registration without one is a
-    // wiring defect the producer refuses to send. The guard fires
-    // synchronously before the frame is built, so no connection is needed.
+    // Regression cover for the fail-loud guard in the producer: the ask rail
+    // always carries a snapshot, so a registration without one is a wiring
+    // defect the producer refuses to send. The guard fires synchronously
+    // before the frame is built, so no connection is needed.
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
     const client = createHubLink({
@@ -2101,7 +2077,7 @@ describe("initial handshake on connect", () => {
     // correlation is the test's clock: its watchdog was armed AFTER the acked
     // one and carries the same interval, so its retry cannot reach the socket
     // before a retry of the acked one would have. Seeing it is proof the acked
-    // correlation's window has passed, which a pause could only guess at.
+    // correlation's window has passed.
     app.get(
       "/ws",
       upgradeWebSocket((_c) => ({
@@ -2139,12 +2115,11 @@ describe("initial handshake on connect", () => {
       sessions,
       ...withTestDeployBindings(),
       getWorkflowAddresses: () => [],
-      // The watchdog here races a real round trip: the ack has to travel the
-      // socket and be handled before the acked correlation's own watchdog
-      // fires, or the retry this test forbids is the correct behaviour. At
-      // thirty milliseconds a loaded machine loses that race -- observed
-      // once in five runs of the unit pass at thirty-two workers -- so the
-      // interval is several times the loopback trip it surrounds.
+      // The watchdog races a real round trip: the ack must travel the socket
+      // and be handled before the acked correlation's own watchdog fires, or
+      // the retry this test forbids is correct behaviour. At thirty
+      // milliseconds a loaded machine loses that race, so the interval is
+      // several times the loopback trip it surrounds.
       registerAckTimeoutMs: 300,
       registerAckMaxAttempts: 10,
     });
@@ -2256,8 +2231,8 @@ describe("initial handshake on connect", () => {
         kind: "approval",
         approvalSnapshot,
       });
-      // The subject's first retry is on the socket, so its watchdog has
-      // fired once.
+      // The subject's first retry is on the socket, so its watchdog has fired
+      // once.
       await waitUntil(() => registersFor("corr-retry").length >= 2);
 
       // "corr-late" is the test's clock. Its watchdog is armed after that
@@ -2333,8 +2308,8 @@ describe("answerMalformedRequestFrame", () => {
 
   test("drops an unhandled request-shaped frame instead of answering it", () => {
     // A request-shaped frame whose type is in none of the answerable sets
-    // (SESSION_ERROR / AGENT_ERROR / PACK_REJECT) has no requester to
-    // answer, so a malformed one is dropped rather than answered.
+    // (SESSION_ERROR / AGENT_ERROR / PACK_REJECT) has no requester to answer,
+    // so a malformed one is dropped rather than answered.
     for (const frameType of ["some.unhandled.request", "another.unknown"]) {
       const sent: (SessionErrorFrame | AgentErrorFrame | PackRejectFrame)[] =
         [];
@@ -2424,8 +2399,8 @@ describe("answerMalformedRequestFrame", () => {
 
   test("recovers a non-pack frame that carries a malformed repoId-shaped field", () => {
     // repoId is validated only inside the pack branch, so a requestId- or
-    // agentAddress-correlated frame that happens to carry a garbage
-    // repoId still recovers through its own correlation key.
+    // agentAddress-correlated frame that happens to carry a garbage repoId
+    // still recovers through its own correlation key.
     const sent: (SessionErrorFrame | AgentErrorFrame | PackRejectFrame)[] = [];
     const answered = answerMalformedRequestFrame(
       {

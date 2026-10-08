@@ -19,11 +19,9 @@ export function createConnection(config: DBConfig) {
       TimeZone: "UTC",
       statement_timeout: config.statementTimeoutMs ?? 60_000,
       ...(config.schema !== undefined && {
-        // Pin the connection's search_path so unqualified table
-        // references resolve to the caller's schema. The migration
-        // runner emits SQL with the schema baked into FK references,
-        // but ORM-issued queries bind table names without a schema
-        // qualifier and rely on this setting.
+        // Pin search_path so ORM-issued queries (which bind table names
+        // without a schema qualifier) resolve to the caller's schema; the
+        // migration runner bakes the schema into its own SQL.
         search_path: quoteIdentifier(config.schema),
       }),
     },

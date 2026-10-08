@@ -1,29 +1,24 @@
 // Single-step INBOUND mail-loop integration test (INTR-480).
 //
-// The proof that the warm single-step agent's inbound mail surface is LIVE:
-// an arrived mail is visible to the agent's `mail_search` read tool WITHIN the
-// same turn, and the agent's reply drains back out as a signed outbound send.
-// Deploys a warm single-step agent (source-ref lineage) that PINS the real
-// `@intx/tools-mail` bundle -- so it carries `mail_search` / `mail_read` /
-// `mail_wait` -- against the real hub + real sidecar subprocess + a mock
-// inference fixture, fires a mail, and asserts the loop.
+// Proves the warm single-step agent's inbound mail surface is LIVE: an arrived
+// mail is visible to the agent's `mail_search` read tool WITHIN the same turn,
+// and the agent's reply drains back out as a signed outbound send. Deploys a
+// warm single-step agent (source-ref lineage) pinning the real `@intx/tools-mail`
+// bundle against the real hub + real sidecar subprocess + mock inference, fires
+// a mail, and asserts the loop.
 //
-// The mock inference server drives `mail_search` deterministically: the first
-// turn exposing the tool returns a `tool_use` calling `mail_search`; once the
-// child runs it and the tool_result lands, the mock replies with
-// `MAILSAW:<the tool_result content>`. Because the supervisor eager-commits an
-// arrived message into the deployment's substrate INBOX BEFORE it wakes the
-// dispatch that drives the turn (the mailbox commit is awaited ahead of
-// `wakeDispatch`), the agent's `mail_search` -- backed by the now-wired
-// supervisor transport inbound -- opens a committed snapshot that already
-// holds the message. The reply therefore echoes the fired mail's own identity
-// (its Message-Id and sender), the load-bearing proof that the delivered
-// inbound was visible to the read tool in the same turn.
+// The mock drives `mail_search` deterministically: the first turn exposing the
+// tool returns a `tool_use` calling it; once the tool_result lands, the mock
+// replies with `MAILSAW:<content>`. Because the supervisor eager-commits an
+// arrived message into the substrate INBOX BEFORE `wakeDispatch`, the agent's
+// `mail_search` opens a committed snapshot that already holds the message. The
+// reply therefore echoes the fired mail's own identity (Message-Id and sender) --
+// the load-bearing proof that the delivered inbound was visible to the read tool
+// in the same turn.
 //
 // Against the pre-activation behaviour (the transport's inbound throws "not
-// wired"), `mail_search` would reject rather than return the message, the tool
-// call would error, and the reply would not carry the fired mail's identity --
-// this test fails there.
+// wired"), `mail_search` would reject, the tool call would error, and the reply
+// would not carry the fired mail's identity -- this test fails there.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
@@ -94,11 +89,9 @@ const READ_TOOL_GRANTS: WireGrantRule[] = READ_TOOL_NAMES.map((name) => ({
   principalId: null,
 }));
 
-// The definition's own tenant, the caller principal that creates the
-// definition asset, and the `workflow`-kind asset the frozen definition
-// projects over. The install/approve freeze and the anchor `workflow_run`
-// insert both write against these, so they must exist in the real DB before
-// the deploy runs.
+// The tenant, caller principal, and `workflow`-kind definition asset the
+// install/approve freeze and anchor `workflow_run` insert write against; they
+// must exist in the real DB before the deploy runs.
 const TENANT_ID = "tnt_single_step_mail_loop";
 const CALLER_PRINCIPAL_ID = "prn_single_step_mail_loop";
 const DEFINITION_ASSET_ID = "ast_single_step_mail_loop_wf";
@@ -208,9 +201,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const workflowRunRepoId = handle.workflowRunRepoId;
 
-      // The source-ref frame round-trips through the real sidecar subprocess
-      // (index the pack, check out the pinned subtree, register the address),
-      // so routability is asynchronous. Wait for it before firing the trigger.
+      // The source-ref frame round-trips through the real sidecar subprocess (index
+      // the pack, check out the pinned subtree, register the address); routability is async, so wait before firing the trigger.
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),

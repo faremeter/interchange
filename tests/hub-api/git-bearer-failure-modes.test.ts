@@ -1,28 +1,11 @@
-// End-to-end coverage of the four bearer-middleware failure modes
-// that are not covered by `git-asset-clone.test.ts`'s anonymous-clone
-// case or the existing `token_revoked` integration test in
-// `packages/hub-api/src/routes/git-tokens.test.ts`.
-//
-// Each test spawns a real hub via `startHub`, drives a clone against
-// `/usr/bin/git`, and asserts on three surfaces in parallel:
-//
-//   1. The exit code of `git clone` (must be non-zero).
-//   2. The stderr of `git clone` — pinned to text stock git actually
-//      emits when the smart-HTTP endpoint replies 403. This is the
-//      string a real user sees in their terminal; pinning the
-//      assertion to it makes the test a drift detector for response
-//      shape changes that would silently re-route the failure through
-//      a different code path in git.
-//   3. A raw `fetch` probe of `${assetUrl}/info/refs?service=...`
-//      with the same Basic credential, asserting the JSON error body
-//      shape (`{ error: { code, message } }`).
-//
-// The four failure modes mirror the `forbidden(...)` branches in
-// `packages/hub-api/src/middleware/git-token-auth.ts`:
-//   - `token_expired`
-//   - `principal_suspended`
-//   - `tenant_mismatch`
-//   - `principal_not_found`
+// End-to-end coverage of the four bearer-middleware failure modes not
+// covered elsewhere (anonymous clone, `token_revoked`): token_expired,
+// principal_suspended, tenant_mismatch, principal_not_found. Each test
+// drives a clone against `/usr/bin/git` and asserts on three surfaces:
+// the clone exit code, its stderr (pinned to what stock git emits on a
+// 403, so a response-shape change that re-routes the failure fails
+// here), and a raw fetch probe of `info/refs` asserting the JSON error
+// body shape.
 
 import { describe, test, expect, afterEach } from "bun:test";
 import fs from "node:fs/promises";
@@ -75,10 +58,9 @@ async function startHubTracked(): Promise<HubHandle> {
 }
 
 /**
- * Open a per-test postgres connection that targets the spawned hub's
- * schema. The hub-api integration tests use this to inject targeted
- * mutations against state the REST API does not expose (e.g.
- * back-dating `git_token.expires_at`, suspending a principal).
+ * Postgres connection targeting the spawned hub's schema, for mutations
+ * the REST API does not expose (e.g. back-dating `git_token.expires_at`,
+ * suspending a principal).
  */
 function openSchemaSql(schema: string) {
   const dbConfig = loadHarnessDbConfig();
@@ -268,11 +250,10 @@ describe.skipIf(!harnessHubEnvAvailable())(
 
       const userB = await signUpUser(hub.url, { emailPrefix: "bob" });
 
-      // User B mints a PAT restricted to tenant A. The mint endpoint
-      // does not validate that B has any principal in A: it only writes
-      // the (userId=B, tenantId=A) tuple onto the row. At bearer time,
-      // the middleware resolves the principal via the URL's :tid bound
-      // against the token's `userId` and finds no row for (B, A).
+      // User B mints a PAT restricted to tenant A; the mint endpoint does
+      // not validate B has a principal there. At bearer time the
+      // middleware resolves the principal via the URL's :tid against the
+      // token's userId and finds no row for (B, A).
       const mintRes = await apiCall(
         hub.url,
         "POST",

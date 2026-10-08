@@ -3,19 +3,14 @@
 // WRITE-ONCE grants rule: a loop iteration writes its own capped
 // `runs/<iterationRunId>/grants.json` once, at birth, before the body runs. That
 // write commits to the shared workflow-run ref through a writer separate from
-// the runtime's event log, so if it were repeated on the resume re-drive it
-// would race the replay re-appends (a single-writer seq violation) or clobber
-// the iteration's committed `events/` and re-run `work`. Because the write is
-// write-once, resume reads the existing file back and the durable child log
-// replays intact, so `work` runs exactly once. Without the pre-park step a
-// from-scratch re-spawn would be indistinguishable from a clean replay; the
-// consumer asserts exactly-once at both the log layer (one StepCompleted) and
-// the effect layer (one inference invocation), which fails if anyone
-// reintroduces a resume-time grants re-write.
-//
-// The entry module exports BOTH `workflow` and the loop `while`/`carry`
-// functions, so the deployment points `interchange.loops` at the same bundled
-// entry and `loadWorkflowLoopFnsFromClosure` resolves the refs by export name.
+// the runtime's event log, so repeating it on the resume re-drive would race the
+// replay re-appends (a single-writer seq violation) or clobber the iteration's
+// committed `events/` and re-run `work`. Because the write is write-once, resume
+// reads the existing file back and the durable child log replays intact, so
+// `work` runs exactly once; without the pre-park step a from-scratch re-spawn
+// would be indistinguishable from a clean replay. The consumer asserts
+// exactly-once at both the log layer (one StepCompleted) and the effect layer
+// (one inference invocation).
 //
 // `keepGoing` converges after the first iteration, so the loop parks exactly
 // once; a single signal delivery resumes it to convergence (`settle` runs and

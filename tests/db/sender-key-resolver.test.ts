@@ -77,8 +77,8 @@ describe.skipIf(!harnessDbEnvAvailable())("resolveSenderKey (real DB)", () => {
   test("returns null for a run whose deploy has not been acked yet", async () => {
     await seedTenant("tnt_preack", "preack.localhost");
     const address = "run_preack01@preack.localhost";
-    // A deployed-but-not-yet-acked anchor carries an address with a null
-    // public_key; that is the expected pre-ack state, not an error.
+    // A deployed-but-not-yet-acked anchor carries a null public_key; that is
+    // the expected pre-ack state, not an error.
     await seedWorkflowRun(h.db, {
       id: "run_preack01",
       tenantId: "tnt_preack",
@@ -126,8 +126,8 @@ describe.skipIf(!harnessDbEnvAvailable())("resolveSenderKey (real DB)", () => {
   });
 
   test("matches the stored domain and refId case-insensitively", async () => {
-    // The stored domain derives from an unnormalized slug (mixed case), while an
-    // inbound From is lowercased when parsed. Resolution must still succeed.
+    // The stored domain derives from a mixed-case slug; an inbound From is
+    // lowercased, so resolution must match case-insensitively.
     await seedTenant("tnt_case", "Acme.Localhost");
     await seedPrincipal(h.db, {
       id: "prn_case",
@@ -182,10 +182,10 @@ describe.skipIf(!harnessDbEnvAvailable())("resolveSenderKey (real DB)", () => {
   });
 
   test("prefers the exact refId even when the tenant's stored domain is mixed-case", async () => {
-    // A legacy tenant whose stored domain was never lowercased (creation
-    // lowercases new ones; existing rows are left as stored). The exact-refId
-    // preference must still fire -- the domain is matched case-insensitively --
-    // so a mixed-case stored domain does not force the ambiguous ci fallback.
+    // A legacy tenant whose stored domain was never lowercased. The
+    // exact-refId preference must still fire (the domain is matched
+    // case-insensitively), so a mixed-case stored domain does not force the
+    // ambiguous ci fallback.
     await seedTenant("tnt_legacy", "Acme.Localhost");
     await seedPrincipal(h.db, {
       id: "prn_legacy_variant",
@@ -210,9 +210,9 @@ describe.skipIf(!harnessDbEnvAvailable())("resolveSenderKey (real DB)", () => {
   });
 
   test("throws when a user address is ambiguous with no canonical refId", async () => {
-    // Two principals in one tenant with case-variant refIds, neither equal to
-    // the lowercased inbound localPart, so no canonical row disambiguates them.
-    // Rather than attribute the sender to an arbitrary principal, it fails loud.
+    // Two case-variant refIds with no canonical match for the lowercased
+    // localPart, so no row disambiguates them; rather than pick an arbitrary
+    // principal, it fails loud.
     await seedTenant("tnt_amb", "amb.localhost");
     await seedPrincipal(h.db, {
       id: "prn_v1",
@@ -253,10 +253,10 @@ describe.skipIf(!harnessDbEnvAvailable())("resolveSenderKey (real DB)", () => {
   });
 
   test("resolveFrameSenderKey returns the key, and degrades a fault to null", async () => {
-    // A resolvable sender yields its hex key. A resolution FAULT -- here a
-    // keyless principal, the INTR-164 break that makes resolveSenderKey throw --
-    // degrades to null instead, so a resolution fault never blocks the send
-    // path (the recipient then resolves the sender as unverifiable).
+    // A resolvable sender yields its hex key; a resolution FAULT -- here a
+    // keyless principal, which makes resolveSenderKey throw -- degrades to
+    // null instead, so a fault never blocks the send path (the recipient then
+    // resolves the sender as unverifiable).
     await seedTenant("tnt_frame", "frame.localhost");
     await seedPrincipal(h.db, {
       id: "prn_frame_ok",
@@ -286,11 +286,11 @@ describe.skipIf(!harnessDbEnvAvailable())("resolveSenderKey (real DB)", () => {
   });
 
   test("audit: reports no unresolved senders when every sender has a key", async () => {
-    // Stand up a mixed population of senders that COULD sign -- two acked runs,
-    // one deployed-but-not-yet-acked run (the legitimate address-set, key-null
-    // row), and two active user principals across a lower- and a mixed-case
-    // domain -- then sweep. The bin/ audit runs this same sweep against live
-    // data; here it runs against seeds.
+    // Stand up senders that COULD sign -- two acked runs, one
+    // deployed-but-not-yet-acked run (the legitimate key-null row), and two
+    // active user principals across a lower- and a mixed-case domain -- then
+    // sweep. The bin/ audit runs this same sweep against live data; here it
+    // runs against seeds.
     await seedTenant("tnt_a", "a.localhost");
     await seedTenant("tnt_b", "B.Localhost");
 

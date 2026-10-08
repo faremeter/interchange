@@ -1,15 +1,10 @@
 // Per-agent Ed25519 key custody.
 //
-// Persists key pairs as raw 32-byte binary files on disk and produces
-// them on demand. The cryptographic primitives (keypair generation,
-// deploy-commit verification) are host-supplied so the package does
-// not pin a particular crypto backend.
-//
-// In addition to the on-disk persistence, the store keeps an in-memory
-// cache of the keypair and the paired hub public key for every agent
-// that has been loaded or recorded during the process lifetime. The
-// cache backs the per-frame crypto operations the wire layer needs:
-// verifyDeployCommit for incoming deploy packs.
+// Persists key pairs as raw 32-byte binary files on disk and produces them on
+// demand. The cryptographic primitives (keypair generation, deploy-commit
+// verification) are host-supplied so the package does not pin a crypto
+// backend. An in-memory cache backs the per-frame crypto operations the wire
+// layer needs (verifyDeployCommit for incoming deploy packs).
 
 import fsp from "node:fs/promises";
 import { hasCode, hexDecode } from "@intx/types";
@@ -33,9 +28,9 @@ export type AgentKeyStoreDeps = {
 
 export type AgentKeyStore = {
   /**
-   * Load the existing keypair for an agent, or mint and persist a new
-   * one. The keypair is also cached in memory. The `isNew` flag is true
-   * when the keypair was just generated.
+   * Load the existing keypair for an agent, or mint and persist a new one
+   * (also cached in memory). `isNew` is true when the keypair was just
+   * generated.
    */
   loadOrGenerateKey(
     address: string,
@@ -153,9 +148,8 @@ async function fileExists(filePath: string): Promise<boolean> {
     return true;
   } catch (err: unknown) {
     if (hasCode(err) && err.code === "ENOENT") return false;
-    // Any other failure mode (EACCES, EBUSY, EIO, …) must surface so a
-    // restart does not silently mint a fresh key over an existing one
-    // when the existence check is denied or transiently failing.
+    // Any other failure mode (EACCES, EBUSY, EIO, ...) must surface so a
+    // restart does not silently mint a fresh key over an existing one.
     throw err;
   }
 }

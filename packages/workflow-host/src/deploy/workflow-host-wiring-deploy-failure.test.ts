@@ -2,11 +2,11 @@
 // `DeploymentAddressRegistry` populated. The multi-step branch defers
 // `registerDeployment` until every step that can throw (asset
 // materialization, `supervisor.spawn`) has succeeded. The link's
-// `handleAgentDeploy` catches a rejection and sends `agent.error`
-// without invoking `deployRouter.undeploy(frame)`, so a premature
-// registration would retain a `(anchorRunId -> agentAddress)` mapping
-// for a deployment that does not exist. The multi-step test drives that
-// failure through a subprocess spawner that throws synchronously.
+// `handleAgentDeploy` catches a rejection and sends `agent.error` without
+// invoking `deployRouter.undeploy(frame)`, so a premature registration
+// would retain a `(anchorRunId -> agentAddress)` mapping for a deployment
+// that does not exist. The multi-step test drives that failure through a
+// subprocess spawner that throws synchronously.
 //
 // The first test pins the router's frame-shape guard: a frame carrying
 // neither `provisionStep` nor a workflow definition is rejected before
@@ -126,8 +126,8 @@ function stubFailingSessions(): Parameters<
 // definition by materializing the pin's closure through this dependency. These
 // spawn-failure tests need the closure to SUCCEED so the deploy reaches the
 // spawn it exercises, so the stub returns a valid single-step live definition
-// (its one step carries an agent so it survives `projectLiveToInert`), keyed to
-// the frame's single source id `s1`.
+// (its one step carries an agent so it survives `projectLiveToInert`), keyed
+// to the frame's single source id `s1`.
 function stubApplyFrozenWorkflowClosure(
   definitionId: string,
 ): NonNullable<

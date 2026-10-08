@@ -1,16 +1,10 @@
-// Time-window condition evaluator.
-//
-// Restricts a grant to a specific time-of-day window. The grant's
-// conditions object should contain:
+// Time-window condition evaluator: restricts a grant to a daily window.
 //
 //   { time_window: { after: "09:00", before: "17:00", timezone: "America/Los_Angeles" } }
 //
-// The evaluator returns true if ctx.now falls within [after, before).
-// Cross-midnight windows (after >= before) are supported:
-//   { after: "22:00", before: "06:00" } → active from 10pm to 6am.
-//
-// Timezone is required — omitting it is an error. Time strings must
-// be HH:MM in 24-hour format.
+// Active within [after, before). Cross-midnight windows (after >= before)
+// wrap, so { after: "22:00", before: "06:00" } is active 10pm to 6am.
+// Timezone is required; times are HH:MM 24-hour format.
 
 import type { ConditionEvaluator } from "./types";
 
@@ -90,10 +84,7 @@ function getCurrentTimeInZone(
 }
 
 /**
- * Condition evaluator for time-of-day windows.
- *
- * Register as `time_window` in the condition registry:
- *   `{ time_window: timeWindowEvaluator }`
+ * Condition evaluator for time-of-day windows. Register as `time_window`.
  */
 export const timeWindowEvaluator: ConditionEvaluator = (
   value: unknown,

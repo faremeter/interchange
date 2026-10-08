@@ -110,10 +110,10 @@ export async function createHubServer({
     throw new Error("HUB_DATA_DIR environment variable is required");
   }
 
-  // Credential secrets are encrypted at rest under this operator-provided key.
-  // Required at boot: a missing or wrong-length key fails loudly here rather than
-  // letting the hub run and store secrets it cannot protect. 32 bytes, hex --
-  // e.g. `openssl rand -hex 32`, the same shape as BETTER_AUTH_SECRET.
+  // Credential secrets are encrypted at rest under this operator-provided
+  // key. Required at boot: a missing or wrong-length key fails loudly here
+  // rather than storing secrets it cannot protect. 32 bytes, hex (same shape
+  // as BETTER_AUTH_SECRET).
   const credentialEncryptionKeyHex = process.env["CREDENTIAL_ENCRYPTION_KEY"];
   if (
     credentialEncryptionKeyHex === undefined ||
@@ -127,10 +127,9 @@ export async function createHubServer({
     hexDecode(credentialEncryptionKeyHex),
   );
 
-  // Per-principal signing keys are sealed at rest under their own operator key,
-  // separate from CREDENTIAL_ENCRYPTION_KEY so the two rotate independently.
-  // Required at boot for the same reason: a missing key would silently persist
-  // minted private keys in the clear. 32 bytes, hex.
+  // Per-principal signing keys are sealed at rest under their own operator
+  // key, separate from CREDENTIAL_ENCRYPTION_KEY so the two rotate
+  // independently. Required at boot for the same reason. 32 bytes, hex.
   const principalKeyEncryptionKeyHex =
     process.env["PRINCIPAL_KEY_ENCRYPTION_KEY"];
   if (
@@ -148,13 +147,10 @@ export async function createHubServer({
     ),
   });
 
-  // 10 MiB is the production cap for tool-package tarballs uploaded via
-  // the package-registry PUT endpoint. The npm registry's own per-tarball
-  // soft cap is several times this, but the substrate's tool packages are
-  // the curated subset the operator vets; an upload pushing past 10 MiB
-  // is far more likely to be misuse than a legitimate build. The
-  // HUB_MAX_TARBALL_BYTES env var lets an operator opt into a different
-  // cap without a code change.
+  // 10 MiB is the production cap for tool-package tarballs uploaded via the
+  // package-registry PUT endpoint — far below the npm registry's own soft cap,
+  // since these packages are the curated subset an operator vets. An operator
+  // can opt into a different cap via HUB_MAX_TARBALL_BYTES.
   const DEFAULT_HUB_MAX_TARBALL_BYTES = 10 * 1024 * 1024;
   const hubMaxTarballBytesRaw = process.env["HUB_MAX_TARBALL_BYTES"];
   const hubMaxTarballBytes =
@@ -170,16 +166,14 @@ export async function createHubServer({
   const hubSigningKey = await generateKeyPair();
   log.info("Generated hub deploy signing key");
 
-  // Write-path GC for the hub's agent-state repos. Each accepted state
-  // pack strands the prior tip's objects and adds a pack, and each deploy
-  // commit strands loose objects; left alone the repo grows without bound.
-  // The hub reclaims on the write path once a repo crosses
-  // HUB_AGENT_GC_PACK_THRESHOLD packs or HUB_AGENT_GC_LOOSE_THRESHOLD loose
-  // objects, and warns once it crosses HUB_AGENT_GC_WARN_BYTES. Retention
-  // is fixed to keep-history and not operator-configurable: the hub is the
-  // long-term archive of an agent's state graph, and tip-only would prune
-  // the commit ancestry the hub's subscriber-seq and history replay derive
-  // from git.log.
+  // Write-path GC for the hub's agent-state repos. Each accepted state pack
+  // strands the prior tip's objects and each deploy commit strands loose
+  // objects; left alone the repo grows without bound. The hub reclaims on the
+  // write path past HUB_AGENT_GC_PACK_THRESHOLD packs or
+  // HUB_AGENT_GC_LOOSE_THRESHOLD loose objects and warns past
+  // HUB_AGENT_GC_WARN_BYTES. Retention is fixed to keep-history: the hub is
+  // the long-term archive of an agent's state graph, and tip-only would prune
+  // the ancestry the subscriber-seq and history replay derive from git.log.
   const DEFAULT_HUB_AGENT_GC_PACK_THRESHOLD = 64;
   const DEFAULT_HUB_AGENT_GC_LOOSE_THRESHOLD = 2048;
   const DEFAULT_HUB_AGENT_GC_WARN_BYTES = 256 * 1024 * 1024;
@@ -268,12 +262,10 @@ export async function createHubServer({
   });
 
   // The asset service shares the agent-repo store's substrate so skill
-  // assets land under the same on-disk root and reuse the same signing
-  // key for commit signatures. It is consumed by the session service for
-  // per-attachment pack fan-out, by the smart-HTTP asset routes for clone
-  // and push, and by the mail-triggered run-grants materializer to hydrate
-  // a receiving deployment's definition. The E2E test seeds fixtures
-  // directly through this service object.
+  // assets land under the same on-disk root and reuse its signing key. It is
+  // consumed by the session service, the smart-HTTP asset routes, and the
+  // mail-triggered run-grants materializer; the E2E test seeds fixtures
+  // directly through it.
   const httpRegistries = new Map([
     ["npmjs", { url: "https://registry.npmjs.org" }],
   ]);
@@ -282,12 +274,10 @@ export async function createHubServer({
     db,
     repoStore: agentRepoStore.repoStore,
     // Reserve every configured HTTP registry name so a `package-registry`
-    // asset cannot silently shadow it at session launch. The session
-    // service's per-launch registry assembly applies asset-wins-on-name-
-    // collision (see `session-service.ts` `assetIndex` build), which
-    // turns a same-named asset into an opaque reroute of the public
-    // npm registry; rejecting at creation surfaces the collision at
-    // intent time instead of debugging an unexpected reroute later.
+    // asset cannot silently shadow it at session launch: the per-launch
+    // registry assembly applies asset-wins-on-name-collision, which would
+    // turn a same-named asset into an opaque reroute of the public npm
+    // registry. Rejecting at creation surfaces the collision at intent time.
     reservedPackageRegistryNames: new Set(httpRegistries.keys()),
   });
 
@@ -296,9 +286,8 @@ export async function createHubServer({
   const workflowHistoryReceives = createWorkflowHistoryReceiveTracker();
   // Materialize a mail-triggered workflow run's grants from the receiving
   // deployment's definition, so a workflow->workflow mail run is born with
-  // the same authorization an externally-triggered run gets. Threaded into
-  // the sidecar router as a lookup its `mail.outbound` handler invokes for
-  // each workflow-deployment recipient.
+  // the same authorization an externally-triggered run gets. The sidecar
+  // router invokes it for each workflow-deployment recipient.
   const lookups: SidecarLookups = {
     ...createHubSessionLookups({
       db,
@@ -386,15 +375,12 @@ export async function createHubServer({
     toolPackageRegistries: {
       httpRegistries,
       defaultRegistry: "npmjs",
-      // The `workspace-builtins` package-registry asset hosts the
-      // three in-tree tool packages (`@intx/tools-mail`,
-      // `@intx/tools-posix`, `@intx/tools-lsp`). Routing the `@intx`
-      // scope through it keeps an agent's pin set readable
-      // (`{ name: "@intx/tools-mail" }`) without forcing every pin to
-      // carry an explicit `registry` field. Operators who shadow this
-      // asset at a child tenancy with their own `workspace-builtins`
-      // asset get the closer-scope win for free, since the session
-      // service builds the per-launch registry map leaf-to-root.
+      // The `workspace-builtins` package-registry asset hosts the three
+      // in-tree tool packages (`@intx/tools-mail`, `@intx/tools-posix`,
+      // `@intx/tools-lsp`). Routing the `@intx` scope through it keeps an
+      // agent's pin set readable (`{ name: "@intx/tools-mail" }`) without a
+      // per-pin `registry` field, and a child tenancy shadowing the asset
+      // wins via the leaf-to-root registry assembly.
       scopeRouting: [{ scope: "@intx", registry: WORKSPACE_BUILTINS_REGISTRY }],
     },
   });
@@ -595,18 +581,13 @@ export async function createHubServer({
   log.info("Starting server on port {port}", { port });
 
   // Cap the size of a frame the hub accepts from a sidecar. Bun's default
-  // (~16MB) sits below legitimate frames -- a large mail.outbound would trip it
+  // (~16MB) sits below legitimate frames — a large mail.outbound would trip it
   // and Bun would CLOSE the sidecar's control socket, forcing a reconnect. Raise
   // it above the largest legit received frame so only a genuinely oversized
-  // frame closes the connection. hono types the shared `websocket` handler with
-  // its minimal BunWebSocketHandler interface, which omits Bun's serve-level
-  // `maxPayloadLength`. The explicit `typeof websocket & { maxPayloadLength }`
-  // annotation adds the field with a nameable type -- both halves are portable,
-  // which keeps createHubServer's return type nameable, where an un-annotated
-  // inline spread infers an anonymous intersection that references hono's
-  // internal websocket type and trips TS2742 -- while still type-checking the
-  // option name so a future typo fails to compile rather than silently reverting
-  // to Bun's default.
+  // frame closes the connection. hono's shared `websocket` handler omits Bun's
+  // serve-level `maxPayloadLength`, so the explicit intersection adds the field
+  // with a nameable type (an inline spread would infer an anonymous type that
+  // trips TS2742) while still type-checking the option name.
   const sidecarWebsocket: typeof websocket & { maxPayloadLength: number } = {
     ...websocket,
     maxPayloadLength: MAX_SIDECAR_FRAME_BYTES,

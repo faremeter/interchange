@@ -71,13 +71,10 @@ const DEPLOYMENT_ID = "run_abc";
 
 // The sidecar's deploy router keys the workflow-run repo by the
 // sanitized deployment address, NOT the bare deployment id (see
-// `deriveWorkflowRunRepoId`). The read routes must
-// reconstruct the same id from `(anchorRunId, tenantDomain)`; the
-// run-observe tests build their on-disk repo under this derived id so a
-// passing test proves the read side addresses the same repo the write
-// side committed to. Keying the repo by the bare DEPLOYMENT_ID (the
-// pre-fix behavior) would make these tests pass against the buggy
-// bare-id reader and fail against the corrected derivation.
+// `deriveWorkflowRunRepoId`). The read routes reconstruct the same id
+// from `(anchorRunId, tenantDomain)`; the run-observe tests build their
+// on-disk repo under this derived id so a passing test proves the read
+// side addresses the same repo the write side committed to.
 const WORKFLOW_RUN_REPO_ID = deriveWorkflowRunRepoId(
   deriveRunAddress({
     runId: DEPLOYMENT_ID,
@@ -151,10 +148,10 @@ const WORKFLOW_JSON = JSON.stringify({
   },
 });
 
-// A workflow whose sole step declares two tools, one approval-gated. The
-// capability walk lifts these into the run's tool grants: the trigger route
-// materializes one `tool:<name>` grant row per declared tool, carrying the
-// effect the tool's static declaration requested.
+// A workflow whose sole step declares two tools, one approval-gated.
+// The capability walk lifts these into the run's tool grants: one
+// `tool:<name>` grant row per declared tool, carrying the effect the
+// tool's static declaration requested.
 const WORKFLOW_JSON_WITH_TOOLS = JSON.stringify({
   id: "wf_tools",
   triggers: [{ type: "manual" }],
@@ -187,8 +184,7 @@ const WORKFLOW_JSON_WITH_TOOLS = JSON.stringify({
 // The capability walk lifts `effect.requires` into `effect:<cap>` grant
 // strings (see `collectActionGrants` in `@intx/workflow-deploy`), which the
 // trigger route must materialize as run grant rows: the action EffectContext
-// authorizes `effect:<cap>`/`invoke` fail-closed at runtime, so a missing row
-// makes the action throw.
+// authorizes `effect:<cap>`/`invoke` fail-closed at runtime.
 const WORKFLOW_JSON_WITH_EFFECT = JSON.stringify({
   id: "wf_effect",
   triggers: [{ type: "manual" }],
@@ -207,8 +203,7 @@ const WORKFLOW_JSON_WITH_EFFECT = JSON.stringify({
 // A workflow declaring one invoker-sourced grant requirement. At trigger
 // time the requirement resolves against the run's triggerer, so a triggerer
 // who holds `secret:vault`/`use` gets a materialized run grant and one who
-// lacks it is rejected fail-closed -- two runs by principals of differing
-// authority produce different run.grants.
+// lacks it is rejected fail-closed.
 const WORKFLOW_JSON_WITH_INVOKER_GRANT = JSON.stringify({
   id: "wf_invoker_grant",
   triggers: [{ type: "manual" }],
@@ -276,8 +271,7 @@ function makeGrant(overrides: Partial<GrantRule> = {}): GrantRule {
 
 // An insert the mock DB records: the drizzle table object it targeted and
 // the row values. Tests inspect `inserts` to assert what was (or was not)
-// committed. Insert order is preserved so a transaction body's writes are
-// visible in the order they ran.
+// committed. Insert order is preserved.
 type InsertRecord = { table: unknown; values: unknown };
 
 type MockDBOpts = {
@@ -324,11 +318,11 @@ function createMockDB(opts: MockDBOpts) {
   // redelivery no-op is covered against a real database).
   const select = () => {
     const from = (table: unknown) => {
-      // The anchor-run existence check selects the run alone; the trigger route
-      // and the deploy readback additionally inner-join the definition to read
-      // its asset. Track the join so the join case answers with the anchor's
-      // full assembled shape (id, tenant, definition, asset, created-at) and the
-      // plain case with the bare id, both keyed on the deployment.
+      // The anchor-run existence check selects the run alone; the trigger
+      // route and the deploy readback additionally inner-join the definition
+      // to read its asset. Track the join so the join case answers with the
+      // anchor's full assembled shape and the plain case with the bare id,
+      // both keyed on the deployment.
       let joined = false;
       const selectedRows = (locked: boolean) => {
         if (table === sidecarAllocationTable) {
@@ -591,15 +585,13 @@ function createMockPrincipalKeyStore(): PrincipalKeyStore {
     generate: async () => "ab".repeat(32),
     // The trigger resolves the triggering principal's public key to stamp on
     // the inbound frame (so the recipient can verify the mail). Return the same
-    // canned hex key the store mints; this suite asserts route behavior, not the
-    // key's cryptographic validity.
+    // canned hex key the store mints; this suite asserts route behavior, not
+    // the key's cryptographic validity.
     getPublicKey: async () => "ab".repeat(32),
     // The trigger signs the outbound mail with the caller's principal key.
     // This suite asserts route behavior (status, run.grants ordering, grant
     // materialization), not signature validity, so return a fixed-length raw
-    // Ed25519 signature the PGP packet assembler accepts. A real caller key
-    // signing a verifiable message is covered by the run-mail-send integration
-    // test.
+    // Ed25519 signature the PGP packet assembler accepts.
     sign: async () => new Uint8Array(64),
   };
 }
@@ -804,7 +796,7 @@ type TestAppOpts = {
 
 // Project a workflow envelope into the deploy-approved grant-walk snapshot the
 // trigger route reads back at run time. Mirrors the deploy-time walk over the
-// approved projection: the same grants the old hydrate-then-walk path derived.
+// approved projection.
 function snapshotFromWorkflowJson(json: string): GrantWalkSnapshot {
   const parsed: unknown = JSON.parse(json);
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- controlled test fixture envelope; the deploy path walks the same approved projection shape

@@ -43,7 +43,7 @@ const HASH = "a".repeat(64);
 
 // The deploy-approved grant-walk snapshot a source-ref deployment persists at
 // approval: one `tool:read_file` runtime grant plus a creator-sourced
-// requirement. The mail path materializes grants from THIS, never from a
+// requirement. The mail path materializes grants from this, never from a
 // workflow.json blob.
 function snapshot(creatorRequirementResource: string): GrantWalkSnapshot {
   return {
@@ -93,9 +93,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
         name: ASSET,
         creatorPrincipalId: CREATOR,
       });
-      // The deployment's first-class definition and its anchor run: the
-      // materializer resolves the run's asset and definition off the anchor,
-      // keyed by the deployment address.
+      // The deployment's definition and anchor run: the materializer resolves
+      // the run's asset and definition off the anchor, keyed by the
+      // deployment address.
       await h.db.insert(workflowDefinition).values({
         id: DEFINITION,
         tenantId: TENANT,
@@ -111,8 +111,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         status: "running",
       });
       // The creator holds the grant its creator-sourced requirement demands,
-      // so the happy path resolves it. The rejection test overrides the
-      // requirement to a resource the creator does NOT hold.
+      // so the happy path resolves it; the rejection test overrides the
+      // requirement to a resource the creator does not hold.
       await seedGrant(h.db, {
         id: "grt_creator_vault",
         tenantId: TENANT,
@@ -124,8 +124,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
     });
 
-    // Freeze a grant-walk snapshot onto the definition's version row, the way a
-    // deploy-time approval does. The mail materializer reads grants from here.
+    // Freeze a grant-walk snapshot onto the definition's version row, the way
+    // a deploy-time approval does; the mail materializer reads grants from
+    // here.
     async function seedFrozenSnapshot(grantSnapshot: GrantWalkSnapshot | null) {
       await h.db.insert(workflowDefinitionVersion).values({
         id: `wdv_${DEFINITION}`,
@@ -181,8 +182,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(runs[0]?.anchorRunId).toBe(DEPLOYMENT);
       expect(runs[0]?.principalId).toBe(runPrincipalId);
       expect(runs[0]?.status).toBe("running");
-      // The committed run anchors on the deployment's definition -- the one the
-      // anchor run carries.
+      // The committed run anchors on the definition the anchor run carries.
       expect(runs[0]?.definitionId).toBe(DEFINITION);
 
       // Every staged grant persisted and FK-resolves to the run principal. The
@@ -254,17 +254,17 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       // Second delivery of the SAME runId: the deterministic principal id and
       // the in-transaction guard make the reservation a true no-op. A fresh
-      // random principal id would break the principal foreign key on redelivery
-      // (the conflict-noop principal insert would leave the new id unwritten
-      // while the grant rows referenced it), and re-running the grant inserts
-      // would duplicate rows -- both of which the assertions below rule out.
+      // random principal id would break the principal FK on redelivery (the
+      // conflict-noop insert would leave the new id unwritten while the grant
+      // rows referenced it), and re-running the grant inserts would duplicate
+      // rows -- both of which the assertions below rule out.
       const second = await materializeOnce(RUN_ID);
       if (second.outcome !== "materialized") {
         throw new Error(`expected materialized, got ${second.outcome}`);
       }
 
-      // The two materializations derive the SAME run principal id from the shared
-      // runId, confirming the derivation is deterministic. A random id would
+      // Both materializations derive the SAME run principal id from the shared
+      // runId, confirming the derivation is deterministic; a random id would
       // differ here and leave the persisted grant rows referencing an id the
       // conflict-noop principal insert never wrote.
       const firstPrincipalIds = new Set(
@@ -297,8 +297,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     test("a creator shortfall rejects and writes zero rows", async () => {
       // The creator-sourced requirement names a resource the creator does not
-      // hold, so staging rejects (403). The rejection is RETURNED (not
-      // thrown), and because authorization fails before reservation, NOTHING
+      // hold, so staging rejects with 403. The rejection is returned (not
+      // thrown), and because authorization fails before reservation, nothing
       // is written -- no orphaned principal, run, or grant rows.
       await seedFrozenSnapshot(snapshot("secret:locked"));
       const result = await materializeOnce(RUN_ID);

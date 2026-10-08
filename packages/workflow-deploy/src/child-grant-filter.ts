@@ -28,11 +28,11 @@ import {
  * across all its steps AND every inline nested body (loop, onTrigger,
  * childWorkflow) the capability walk folds into its enclosing step.
  *
- * Pass the child's PRE-rewrite definition -- whose grandchildren are still
- * inline. The walk skips a `{ ref }` body, so a rewritten definition (children
- * lifted to refs) would omit a grandchild's declared resources; the union must
- * include them, because the caller uses this set to cap the grants it persists
- * as the ceiling a grandchild spawn filters against in turn.
+ * Pass the child's PRE-rewrite definition, whose grandchildren are still
+ * inline. The walk skips a `{ ref }` body, so a rewritten definition would
+ * omit a grandchild's declared resources; the union must include them because
+ * the caller uses this set to cap the grants it persists as the ceiling a
+ * grandchild spawn filters against in turn.
  */
 export function collectDeclaredResources(
   definition: WorkflowDefinition,
@@ -64,14 +64,12 @@ export function collectDeclaredCredentialConsumers(
 
 /**
  * Filter a parent's grant rules down to what a spawned child body declares.
- *
  * The result caps the child at the parent: it only ever REMOVES parent rules,
- * never adds or widens one. Dropping a `deny` or an `ask` weakens safety, so
- * those are kept. An `allow` is kept only when the child declares the
- * capability it authorizes.
+ * never adds or widens one. The filter errs toward keeping, because dropping
+ * is the only unsafe direction:
  *
- *  - Every `deny` and `ask` rule is kept unconditionally. Both only ever
- *    restrict, so dropping one WEAKENS safety. An `ask` floor in particular is
+ *  - Every `deny` and `ask` rule is kept unconditionally. Both only restrict,
+ *    so dropping one WEAKENS safety. An `ask` floor in particular is
  *    load-bearing: `evaluateGrants` ranks `ask` above `allow` at equal
  *    specificity so a workflow cannot declare its way under an approval gate,
  *    and filtering the `ask` out would punch straight through that gate.

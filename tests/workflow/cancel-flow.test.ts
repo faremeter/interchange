@@ -1,14 +1,8 @@
-// Cancellation log invariants.
-//
-// The runtime body's responsibility for the cancel cascade lives in
-// `runtime/run.ts`. The state machine documents in `state-machine/
-// resume.ts` that a `CancelRequested` without a matching
-// `RunCancelled` requires the runtime to emit a `CancelPropagated`
-// for every non-terminal step and a `ChildCancelRequested` for every
-// tracked child whose `cancelRequested` flag is still false. Both
-// tests below assert the runtime upholds the responsibility against
-// the persisted log -- the canonical source of truth a resuming
-// runtime would consult.
+// Cancellation log invariants. A `CancelRequested` without a matching
+// `RunCancelled` requires the runtime to emit a `CancelPropagated` for every
+// non-terminal step and a `ChildCancelRequested` for every tracked child whose
+// `cancelRequested` flag is still false. Both tests assert the runtime upholds
+// this against the persisted log.
 
 import { describe, test, expect } from "bun:test";
 
@@ -50,11 +44,10 @@ function makeAgent(id: string) {
   });
 }
 
-// A parent whose sole step spawns an embedded (inline) child. The runtime only
-// dispatches a childWorkflow whose definition is the internal `{ ref }` handle,
-// so lift the inline child before running -- the same rewrite the host applies
-// at child boot. The stub spawnChild in these tests ignores the resolved
-// definition, so the child body's content is irrelevant.
+// A parent whose sole step spawns an inline child. The runtime only dispatches
+// a childWorkflow whose definition is the internal `{ ref }` handle, so lift the
+// inline child before running -- the same rewrite the host applies at child
+// boot. The stub spawnChild ignores the resolved definition.
 function makeChildSpawningParent() {
   const child = defineWorkflow({
     id: "child-w",
@@ -146,8 +139,8 @@ describe("cancellation log invariants", () => {
       steps: { a: step({ agent: a }) },
     });
 
-    // Hold the step open with a deferred resolver so the test can
-    // sequence cancel() before the step's commit lands.
+    // Hold the step open with a deferred resolver so cancel() lands before the
+    // step's commit.
     let resolveStep!: (value: { output: unknown }) => void;
     const invokeStep: StepInvoker = () =>
       new Promise((resolve) => {
@@ -159,14 +152,14 @@ describe("cancellation log invariants", () => {
       hasUpstreamSignalResolver: true,
       invokeStep,
     });
-    // Wait a tick for StepStarted to commit and the runner to land
-    // on env.invokeStep.
+    // Wait a tick for StepStarted to commit and the runner to reach
+    // env.invokeStep.
     await new Promise<void>((resolve) => {
       setTimeout(resolve, 5);
     });
     await run.cancel("self", "race the step's StepCompleted");
-    // Release the step so it commits StepCompleted; the runtime's
-    // post-loop branch must still emit RunCancelled.
+    // Release the step; the runtime's post-loop branch must still emit
+    // RunCancelled.
     resolveStep({ output: null });
     const result = await run.complete;
     expect(result.terminalStatus).toBe("cancelled");
@@ -179,9 +172,8 @@ describe("cancellation log invariants", () => {
   });
 
   test("emits ChildCancelRequested for every live child on parent cancel", async () => {
-    // Drive the spawn callback through a stub `runtimeRun` env so
-    // the test can hold the spawn open until cancel arrives,
-    // independently of how the child would otherwise resolve.
+    // Hold the spawn open until cancel arrives, independently of how the child
+    // would resolve.
     const parent = makeChildSpawningParent();
 
     let resolveSpawn!: (value: {
@@ -198,8 +190,8 @@ describe("cancellation log invariants", () => {
       }>((resolve) => {
         resolveSpawn = resolve;
       });
-      // When the parent aborts, settle the spawn as cancelled so
-      // the spawn step's runner returns and the main loop drains.
+      // When the parent aborts, settle the spawn as cancelled so the spawn
+      // step returns and the main loop drains.
       signal.addEventListener("abort", () => {
         resolveSpawn({ terminalStatus: "cancelled" });
       });
@@ -238,8 +230,8 @@ describe("cancellation log invariants", () => {
       throw new Error("spawn callback never invoked within 2s");
     }
     await run.cancel("self", "test");
-    // The abort listener on the spawn signal resolves the spawn
-    // promise as cancelled, letting the parent's main loop drain.
+    // The abort listener resolves the spawn promise as cancelled, letting the
+    // parent's main loop drain.
     void resolveSpawn;
     const result = await run.complete;
     expect(result.terminalStatus).toBe("cancelled");

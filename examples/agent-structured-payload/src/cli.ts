@@ -9,16 +9,11 @@
 // conversation message uses, and the reactor preserves the typed
 // data verbatim for audit and downstream consumers.
 //
-// What the example does NOT do, and why: the default director in
-// `@intx/harness` does not render structured payloads into
-// the model's prompt (`createInboundTurn` in
-// packages/inference/src/turns.ts returns null when
-// `message.content` is empty, which is the case for structured
-// payloads). Making the model react to a payload requires a custom
-// director or context transform that maps the payload's body into a
-// user turn. The README links the pattern; this example focuses on
-// the delivery half, which is the part the mail-builder API
-// directly governs.
+// The default director in `@intx/harness` does not render structured
+// payloads into the model's prompt (a payload has no text content),
+// so this example focuses on the delivery half, which is the part
+// the mail-builder API directly governs; the README links the
+// custom-director pattern that makes a model react to a payload.
 
 import {
   openExampleAgent,
@@ -224,11 +219,9 @@ async function waitForReceived(
   });
   // The IIFE keeps running in the background when `timeout` wins
   // the race; `.catch` swallows any rejection from the stream
-  // consumer's `close()` path so it does not surface as an unhandled
-  // promise rejection after the timeout has already been reported.
-  // The example deliberately does not depend on the precise
-  // termination shape of `agent.stream()` — graceful end or thrown
-  // error both produce `undefined` here.
+  // consumer's `close()` path. The example does not depend on the
+  // precise termination shape of `agent.stream()` — graceful end
+  // or thrown error both produce `undefined` here.
   const found = (async (): Promise<
     Extract<ReactorEmittedEvent, { type: "message.received" }> | undefined
   > => {

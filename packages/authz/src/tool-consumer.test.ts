@@ -47,7 +47,7 @@ describe("toolConsumerEvaluator", () => {
   });
 
   test("withholds from an empty consumer before comparing", () => {
-    // Even when the grant value is also empty, an empty consumer never matches.
+    // An empty consumer never matches, even when the grant value is also empty.
     expect(toolConsumerEvaluator("", ctx(""))).toBe(false);
     expect(toolConsumerEvaluator(REACTOR, ctx(""))).toBe(false);
   });

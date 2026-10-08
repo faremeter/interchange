@@ -1,8 +1,8 @@
 // A loop body may now park on an `awaitSignal` and resume. This drives the
-// in-process park path end to end: the body parks on `awaitSignal`, the loop
-// container proxies it up as a signal-relay await (driveContainerSignalRelay),
-// the delivered signal relays back into the body, and the iteration completes.
-// No crash is involved -- in-process park/deliver needs no planLoopResume.
+// in-process park path end to end: the body parks, the loop container proxies
+// it up as a signal-relay await (driveContainerSignalRelay), the delivered
+// signal relays back into the body, and the iteration completes. No crash is
+// involved -- in-process park/deliver needs no planLoopResume.
 
 import { describe, test, expect } from "bun:test";
 
@@ -96,8 +96,8 @@ describe("loop body awaitSignal (in-process park)", () => {
       actionResolver,
       loopFns,
     });
-    // Deliver on the parent channel where the container's relay awaits it; the
-    // in-memory channel queues the delivery until the relay subscribes.
+    // Deliver on the parent channel where the container's relay awaits; the
+    // in-memory channel queues until the relay subscribes.
     await run.signal("go", { done: true }, "sig-1");
     const result = await run.complete;
 
@@ -109,8 +109,8 @@ describe("loop body awaitSignal (in-process park)", () => {
 
   test("threads carry forward through a parked-then-resumed iteration", async () => {
     // The body's awaitSignal output becomes the iteration output; `cont`
-    // continues while the delivered value is < 2 and `thread` carries it. This
-    // is FORWARD carry through an in-process park (not durable crash-carry).
+    // continues while the delivered value is < 2 and `thread` carries it --
+    // FORWARD carry through an in-process park, not durable crash-carry.
     const loopFns = (ref: string): LoopFn => {
       if (ref === "cont") {
         return (childOutput) => Number(holdOf(childOutput)) < 2;
@@ -124,8 +124,8 @@ describe("loop body awaitSignal (in-process park)", () => {
       actionResolver,
       loopFns,
     });
-    // Iteration 0 consumes the first "go" (1); iteration 1 consumes the second
-    // (2). FIFO on the parent channel's "go" queue routes each to its relay.
+    // Iteration 0 consumes "go"(1), iteration 1 consumes "go"(2); FIFO on the
+    // parent channel's "go" queue routes each to its relay.
     await run.signal("go", 1, "sig-1");
     await run.signal("go", 2, "sig-2");
     const result = await run.complete;
@@ -133,9 +133,9 @@ describe("loop body awaitSignal (in-process park)", () => {
     expect(result.terminalStatus).toBe("completed");
     const out = loopOutput(result);
     expect(out.outcome).toBe("converged");
-    // iter0 parked, resumed on 1 (1 < 2 -> continue); carry threaded 1 into
-    // iter1, which parked, resumed on 2 (2 < 2 -> converge). The loop's carry
-    // is the input carried into the converging iteration -- 1.
+    // iter0 parked and resumed on 1 (1 < 2 -> continue); carry threaded 1
+    // into iter1, which parked and resumed on 2 (2 < 2 -> converge). The
+    // loop's carry is the input carried into the converging iteration -- 1.
     expect(out.iterations).toBe(2);
     expect(out.carry).toBe(1);
   });

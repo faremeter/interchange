@@ -2,16 +2,9 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { getLogger, resetSync } from "./index";
 import { installDefaultConsoleSink } from "./default-sink";
 
-// Locks down two design contracts of the module-load default sink that
-// default-sink.test.ts does not currently exercise:
-//
-//   1. Threshold is "warning" — info/debug must be suppressed; warning,
-//      error, and fatal must be routed.
-//   2. Formatter selection follows NODE_ENV — production yields JSON Lines,
-//      anything else yields ANSI-colored text.
-//
-// Both behaviors are contracts a future refactor could accidentally break
-// (e.g., bumping threshold to "info" or flipping the env heuristic).
+// Locks down two module-load default-sink contracts that
+// default-sink.test.ts does not exercise: the "warning" threshold
+// (info/debug suppressed) and the NODE_ENV formatter selection.
 
 /* eslint-disable no-console -- intentional spies on console methods */
 describe("default console sink routing contract", () => {

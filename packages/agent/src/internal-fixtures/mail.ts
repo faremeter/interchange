@@ -1,15 +1,11 @@
 // Mail-participating agent fixture for the reactor-once tests.
 //
-// The fixture's definition has a tool factory that declares
-// `requires: ["transport", "address"]`. A bare `BaseEnv` is short on
-// those keys; instantiation must fail with `AgentEnvError`. A
-// transport-bearing env satisfies the requirement and instantiation
-// succeeds; the reactor-once assertion lives in `mail.test.ts`.
-//
-// The fixture does not import `@intx/harness` -- the composition
-// layer's reactor-once invariant is exercised by the harness's own
-// tests against its own surface; cross-importing harness here would
-// introduce a `@intx/agent <-> @intx/harness` cycle.
+// The fixture's mail tool factory declares `requires: ["transport",
+// "address"]`; a bare `BaseEnv` is short on those keys and
+// instantiation must fail with `AgentEnvError`, while a
+// transport-bearing env succeeds. The fixture does not import
+// `@intx/harness` -- that would introduce an `@intx/agent` <->
+// `@intx/harness` cycle.
 
 import type { ContextStore, InferenceSource } from "@intx/types/runtime";
 

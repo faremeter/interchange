@@ -1,27 +1,22 @@
-// Smoke test for the hub-link disconnect/reconnect harness surface.
-//
-// Exercises the three helpers `deploy-flow-env` grew for the
-// reconnect-survival acceptance work -- `settleThenDrop`,
-// `waitForReconnect`, and (via `settleThenDrop`) `dropHubLink` -- plus the
-// `liveHandles` wiring that lets the harness force a dropped sidecar link.
+// Smoke test for the hub-link disconnect/reconnect harness surface: exercises
+// the three helpers `deploy-flow-env` grew for the reconnect-survival
+// acceptance work -- `settleThenDrop`, `waitForReconnect`, and (via
+// `settleThenDrop`) `dropHubLink` -- plus the `liveHandles` wiring that lets
+// the harness force a dropped sidecar link.
 //
 // Shape: deploy a single-step workflow, drive one mail trigger to
-// `RunCompleted`, settle the pack-push pipeline and drop the hub link,
-// wait for the allocation-authenticated reconnect to make the deployment
-// address routable again, then fire a second mail trigger and assert it
-// reaches the deployment's `consumed/` index.
+// `RunCompleted`, settle the pack-push pipeline and drop the hub link, wait
+// for the allocation-authenticated reconnect to make the deployment address
+// routable again, then fire a second mail trigger and assert it reaches the
+// deployment's `consumed/` index.
 //
-// What the reconnect restores is routability and inbox admission, not a
-// second run. The workflow run id is derived from the deployment mail
-// address and is therefore stable across messages, so mail 2 resolves to
-// the run that mail 1 already drove to `RunCompleted`; a completed
-// deployment rejects further mail by design. Mail 2 consuming with a
-// `workflow_run_terminal` rejection is the assertion, and it only happens
-// because the sidecar re-established the link and re-entered routing.
+// What the reconnect restores is routability and inbox admission, not a second
+// run: the workflow run id is derived from the deployment mail address and is
+// stable across messages, so mail 2 resolves to the run mail 1 already drove
+// to `RunCompleted`; a completed deployment rejects further mail by design.
+// Mail 2 consuming with a `workflow_run_terminal` rejection is the assertion.
 //
-// Harness justification: SPAWN-REAL. A real hub server, a real sidecar
-// subprocess, a real workflow-process child, and a test inference
-// provider. The drop is a genuine server-side WebSocket close; the
+// Harness: SPAWN-REAL. The drop is a genuine server-side WebSocket close; the
 // reconnect is the sidecar's real `hub-link` path passing durable identity
 // revalidation and the current allocation-generation fence.
 
@@ -72,11 +67,9 @@ const DEPLOYMENT_ID = "run_d15c0nnec7ed0d0d15c0nnec7ed0d0d0";
 const STEP_ID = "step1";
 const AGENT_ID = "agent-reconnect-smoke";
 
-// The definition's own tenant, the caller principal that creates the
-// definition asset, and the `workflow`-kind asset the frozen definition
-// projects over. The install/approve freeze and the anchor `workflow_run`
-// insert both write against these, so they must exist in the real DB before
-// the deploy runs.
+// The tenant, caller principal, and `workflow`-kind definition asset the
+// install/approve freeze and anchor `workflow_run` insert write against; they
+// must exist in the real DB before the deploy runs.
 const TENANT_ID = "tnt_hub_link_reconnect";
 const CALLER_PRINCIPAL_ID = "prn_hub_link_reconnect";
 const DEFINITION_ASSET_ID = "ast_hub_link_reconnect_wf";

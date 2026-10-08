@@ -1,29 +1,20 @@
 // Supervisor-side drainTimeout accumulator and escalation path.
 //
-// When the supervisor's control loop sends `drain` to the workflow
-// process, the child's `DrainController` flips its signal and the
-// runtime body picks up the change on the next tick at each of the
-// four observation points. Steps whose declared `drainBehavior` is
-// `"cancel"` abort their local controller; steps whose behavior is
-// `"wait"` continue running.
+// When the supervisor sends `drain` to the workflow process, steps
+// whose declared `drainBehavior` is `"cancel"` abort their local
+// controller; steps with `"wait"` behavior continue running. The
+// accumulator tracks wall-clock time spent against `"cancel"`-behavior
+// work after drain is issued; time while every in-flight step is
+// `"wait"`-behavior does NOT tick the accumulator -- waiting for a
+// human-in-the-loop pause should not burn the drain budget. On expiry
+// it invokes the injected `signAsPrincipal("supervisor", ...)` to
+// obtain a signed `CancelRequested{origin: "supervisor-drain"}` and
+// commits it via the injected substrate handle.
 //
-// The supervisor's accumulator tracks wall-clock time spent against
-// `"cancel"`-behavior work after drain has been issued. Time spent
-// while every in-flight step is `"wait"`-behavior does NOT tick the
-// accumulator -- waiting for a human-in-the-loop pause should not
-// burn the drain budget. On `drainTimeout` expiry, the accumulator
-// invokes the supervisor's injected `signAsPrincipal("supervisor",
-// ...)` callback to obtain a signed `CancelRequested{origin:
-// "supervisor-drain"}` and commits it via the injected substrate
-// handle. The runtime body's existing cancellation cascade handles
-// teardown from there.
-//
-// The accumulator is started by the supervisor on receipt of the
-// host's drain command; it is stopped when (a) drainTimeout expires
-// and the CancelRequested commit lands, or (b) the run reaches a
-// terminal phase before expiry. Pausing is driven by the supervisor's
-// view of which step kinds are in flight -- it consults the same
-// `behaviorFor` projection the workflow-host child uses.
+// Started on the host's drain command; stopped when (a) expiry lands
+// the commit, or (b) the run reaches a terminal phase before expiry.
+// Pausing is driven by the supervisor's view of which step kinds are
+// in flight (the same `behaviorFor` projection the child uses).
 
 import { getLogger } from "@intx/log";
 
@@ -46,9 +37,8 @@ export const DEFAULT_DRAIN_TIMEOUT_MS = 60_000;
 
 export type DrainTimeoutOpts = {
   /**
-   * Substrate handle through which the escalation commit lands.
-   * Reused from the supervisor's bindings -- the accumulator does
-   * not own a substrate of its own.
+   * Substrate handle the escalation commit lands through; reused from
+   * the supervisor's bindings.
    */
   substrate: SubstrateRepoStore;
   /** Workflow-run repo for this deployment. */
@@ -60,9 +50,8 @@ export type DrainTimeoutOpts = {
   /** Run id the drain is being escalated against. */
   runId: string;
   /**
-   * Host-supplied per-principal signing callback the supervisor uses
-   * to mint the CancelRequested signature. The drain origin is
-   * `supervisor-drain`.
+   * Per-principal signing callback used to mint the CancelRequested
+   * signature. The drain origin is `supervisor-drain`.
    */
   signAsPrincipal: PrincipalSigner;
   /** ISO-8601 reason for the CancelRequested escalation. */
@@ -78,13 +67,13 @@ export type DrainTimeoutOpts = {
    */
   now: () => number;
   /**
-   * Scheduling primitive the accumulator uses for its tick callback.
-   * Tests inject a deterministic timer; production wires
+   * Scheduling primitive for the tick callback. Tests inject a
+   * deterministic timer; production wires
    * `(cb, ms) => setTimeout(cb, ms)`.
    */
   setTimer: (cb: () => void, ms: number) => unknown;
   /**
-   * Disposer paired with `setTimer`. Production wires
+   * Disposer paired with `setTimer`; production wires
    * `(handle) => clearTimeout(handle as ReturnType<typeof setTimeout>)`.
    */
   clearTimer: (handle: unknown) => void;
@@ -92,39 +81,36 @@ export type DrainTimeoutOpts = {
    * Optional per-runId terminal-event source the accumulator consumes
    * to settle early when the tracked run reaches a terminal phase
    * before the drainTimeout fires. When absent, the accumulator falls
-   * back to timer-only settlement (the pre-binding behaviour). The
-   * supervisor wires this against its `terminalEventSource` binding;
-   * the iterator is finalised via `return()` whenever the accumulator
-   * settles (terminal, timeout, or `stop()`).
+   * back to timer-only settlement. The iterator is finalised via
+   * `return()` whenever the accumulator settles (terminal, timeout,
+   * or `stop()`).
    */
   terminalEventSource?: TerminalEventSource;
 };
 
 /**
- * Handle the supervisor holds onto so it can pause/resume ticking
- * during step-kind transitions, and so it can stop the accumulator
- * cleanly when the run reaches a terminal phase before the
- * drainTimeout expires.
+ * Handle the supervisor holds so it can pause/resume ticking during
+ * step-kind transitions and stop the accumulator cleanly when the run
+ * reaches a terminal phase before the drainTimeout expires.
  */
 export interface DrainTimeoutAccumulator {
   /**
-   * Begin counting cancel-time. Idempotent; a second call after the
-   * accumulator has already started is a no-op so the supervisor's
-   * control loop can re-issue drain without breaking ordering.
+   * Begin counting cancel-time. Idempotent; a second call after start
+   * is a no-op so the supervisor can re-issue drain without breaking
+   * ordering.
    */
   start(): void;
   /**
-   * Pause the accumulator. The supervisor calls this when its view
-   * of the workflow's in-flight steps transitions from cancel-mode
-   * to wait-mode (e.g., the last cancel-mode step completed and only
-   * `awaitSignal` steps remain). Time spent paused does not count
-   * toward the timeout.
+   * Pause the accumulator. The supervisor calls this when its view of
+   * in-flight steps transitions from cancel-mode to wait-mode (e.g.
+   * the last cancel-mode step completed and only `awaitSignal` steps
+   * remain). Time paused does not count toward the timeout.
    */
   pause(): void;
   /**
-   * Resume the accumulator. Inverse of `pause`. Time elapsed since
-   * the last `start` or `resume` carries forward -- pause/resume is
-   * about wall-clock attribution, not zeroing the count.
+   * Resume the accumulator. Time elapsed since the last `start` or
+   * `resume` carries forward; pause/resume is about wall-clock
+   * attribution, not zeroing the count.
    */
   resume(): void;
   /**
@@ -137,16 +123,13 @@ export interface DrainTimeoutAccumulator {
   /** Whether the accumulator has already escalated. */
   readonly escalated: boolean;
   /**
-   * Resolves when every asynchronous resource the accumulator owns has
-   * been disposed: the escalation commit (if armed) has finished, and
-   * the per-runId terminal-event watcher (if armed) has had its
-   * iterator finalised. The supervisor awaits this in `shutdown` so a
+   * Resolves when every async resource the accumulator owns has been
+   * disposed: the escalation commit (if armed) has finished, and the
+   * per-runId terminal-event watcher (if armed) has had its iterator
+   * finalised. The supervisor awaits this in `shutdown` so a
    * still-running watcher cannot fire a settle against a torn-down
-   * supervisor.
-   *
-   * Idempotent: calling `disposed()` multiple times returns the same
-   * promise. Resolves once `stop()` or the timer-driven escalation has
-   * run.
+   * supervisor. Idempotent; resolves once `stop()` or the
+   * timer-driven escalation has run.
    */
   disposed(): Promise<void>;
 }
@@ -161,9 +144,8 @@ type AccumulatorState =
 /**
  * Factory shape the supervisor binds against. Mirrors
  * `createDrainTimeoutAccumulator` exactly; surfaced so tests can
- * inject a mock factory through `WorkflowSupervisorBindings.
- * drainTimeoutAccumulatorFactory` and observe the supervisor's
- * drain-arming sequence without rigging a real timer host.
+ * inject a mock factory and observe the supervisor's drain-arming
+ * sequence without rigging a real timer host.
  */
 export type DrainTimeoutAccumulatorFactory = (
   opts: DrainTimeoutOpts,
@@ -183,10 +165,9 @@ export function createDrainTimeoutAccumulator(
   let state: AccumulatorState = { phase: "idle" };
   let escalated = false;
   /**
-   * Active terminal-event iterator the accumulator is consuming for
-   * its tracked runId. Held so the dispose path can finalise it via
-   * `return()`. `null` when no source binding was supplied or the
-   * iterator has already been finalised.
+   * Active terminal-event iterator for the tracked runId, held so the
+   * dispose path can finalise it via `return()`. `null` when no source
+   * binding was supplied or the iterator is already finalised.
    */
   let terminalIterator: AsyncIterator<unknown> | null = null;
   /** Promise the per-runId terminal-watcher coroutine resolves into. */
@@ -204,20 +185,16 @@ export function createDrainTimeoutAccumulator(
     terminalWatcherDone = (async () => {
       try {
         // The first terminal event the source yields is the signal to
-        // settle. The source pre-filters on runId, so any element it
+        // settle; the source pre-filters on runId, so any element it
         // produces applies to the tracked run.
         const next = await iterator.next();
         if (next.done === true) return;
         settleOnTerminal();
       } catch (cause) {
-        // The iterator's failure does not need an explicit
-        // escalation: the outer `setTimer`-based deadline keeps
-        // ticking against the same `state.phase === "running"` slot
-        // and fires `escalate()` if no terminal event arrives. The
-        // warn here surfaces the iterator failure to operator logs
-        // so a persistent broken event source is visible; the
-        // accumulator's contract is preserved by the timer's
-        // fall-through.
+        // No explicit escalation here: the outer `setTimer`-based
+        // deadline keeps ticking against the same running slot and
+        // fires `escalate()` if no terminal event arrives. The warn
+        // surfaces a persistent broken event source to operator logs.
         const message = cause instanceof Error ? cause.message : String(cause);
         logger.warn`terminal-event watcher for run ${opts.runId} threw: ${message}`;
       }
@@ -252,8 +229,8 @@ export function createDrainTimeoutAccumulator(
     }
     const timer = opts.setTimer(() => {
       // The timer is the authority for escalation -- the accumulator
-      // does not poll. When the timer fires we transition to
-      // `escalated` and commit through the substrate.
+      // does not poll. When it fires we transition to `escalated` and
+      // commit through the substrate.
       void escalate();
     }, remaining);
     state = {
@@ -271,11 +248,10 @@ export function createDrainTimeoutAccumulator(
       opts.clearTimer(state.timer);
     }
     state = { phase: "escalated" };
-    // The terminal watcher's role ends when the deadline fires: the
+    // The terminal watcher's role ends when the deadline fires; the
     // commit below races the on-disk CancelRequested against any
-    // natural terminal arrival, and either way the accumulator settles
-    // here. Finalising the iterator lets the producer free its
-    // resources.
+    // natural terminal arrival. Finalising the iterator lets the
+    // producer free its resources.
     finaliseTerminalWatcher();
     const origin: CancelOrigin = "supervisor-drain";
     escalationPending = commitCancelRequested({
@@ -302,11 +278,10 @@ export function createDrainTimeoutAccumulator(
     if (iterator === null) return;
     terminalIterator = null;
     if (typeof iterator.return !== "function") return;
-    // Fire the iterator's `return()` so the producer side observes the
-    // cancel. The producer (`subscribeKind`-backed) wires its own
-    // `AbortSignal`; finalising the iterator surfaces as an abort
-    // through the substrate's `subscribe` primitive, which is the
-    // contract `subscribeKind` documents.
+    // Fire `return()` so the producer side observes the cancel (the
+    // `subscribeKind`-backed producer wires its own AbortSignal;
+    // finalising the iterator surfaces as an abort through
+    // `subscribe`, which is that contract).
     void iterator.return(undefined).catch((cause: unknown) => {
       const message = cause instanceof Error ? cause.message : String(cause);
       logger.warn`terminal-event watcher return() for run ${opts.runId} threw: ${message}`;

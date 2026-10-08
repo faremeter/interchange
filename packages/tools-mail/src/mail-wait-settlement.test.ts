@@ -198,9 +198,9 @@ describe("mail_wait always settles", () => {
   });
 
   test("the declared timeout covers a read that never answers", async () => {
-    // The deadline is the subject, so it is driven rather than waited out. The
-    // seam also puts the declared seconds under assertion, which waiting out a
-    // real timer cannot do.
+    // The deadline is the subject, so it is driven rather than waited out.
+    // The seam also puts the declared seconds under assertion, which waiting
+    // out a real timer cannot do.
     const armed = Promise.withResolvers<() => void>();
     const scheduler = {
       setTimeout(callback: () => void, delayMs: number) {
@@ -228,8 +228,8 @@ describe("mail_wait always settles", () => {
 
 describe("mail_wait bounds its timeout", () => {
   // Out of range means out of setTimeout's signed 32-bit delay: the runtime
-  // coerces such a delay to 1ms, so an unbounded timeout returns at once with a
-  // `timeout` error for a wait that never happened. Nothing may reach the
+  // coerces such a delay to 1ms, so an unbounded timeout returns at once with
+  // a `timeout` error for a wait that never happened. Nothing may reach the
   // transport either -- a refused argument costs no round trip.
   test.each([
     ["past the 32-bit setTimeout range", 3_000_000],

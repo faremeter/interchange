@@ -1,18 +1,16 @@
-// Mutation tests for the security-load-bearing probe gate + freeze.
+// Mutation tests for the security-load-bearing probe gate + freeze. The gate is
+// the single point where a code-sourced workflow's inert probe answer becomes
+// an approved, frozen definition; these tests pin three invariants a mutation
+// must not break:
 //
-// The gate is the single point where a code-sourced workflow's inert probe
-// answer becomes an approved, frozen definition. These tests pin the three
-// invariants a mutation must not be able to break:
-//
-//   1. Tamper-evidence: a probe whose SHIPPED hash disagrees with the hub
-//      recompute over the RECEIVED projection is rejected, and nothing is
-//      frozen.
-//   2. Freeze fidelity: on approval the RECOMPUTED hash (not the shipped one)
-//      and exactly the workflow's advertised grant set (not the operator's
-//      wider approval set) are frozen.
+//   1. Tamper-evidence: a probe whose shipped hash disagrees with the hub
+//      recompute is rejected, and nothing is frozen.
+//   2. Freeze fidelity: on approval the RECOMPUTED hash and exactly the
+//      workflow's advertised grant set (not the operator's wider approval set)
+//      are frozen.
 //   3. Subset invariant: deploy grants materialize as a subset of the frozen
-//      approved set, so a naive live re-walk that surfaces MORE grants than
-//      were approved cannot grant beyond the freeze.
+//      approved set, so a naive live re-walk surfacing more grants than were
+//      approved cannot grant beyond the freeze.
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { promises as fs } from "node:fs";
@@ -150,9 +148,8 @@ describe("gateAndFreezeProbeResult", () => {
     ]);
     expect(result.approvedSurface.requirements).toEqual([]);
 
-    // The freeze was written exactly once, carrying the recomputed hash and the
-    // advertised set -- not the shipped hash blindly and not the wider approval
-    // set.
+    // The freeze was written exactly once, with the recomputed hash and the
+    // advertised set -- not the shipped hash blindly, not the wider approval set.
     expect(calls).toHaveLength(1);
     const frozen = calls[0];
     if (frozen === undefined) throw new Error("no freeze recorded");
@@ -361,8 +358,7 @@ describe("installAndApproveWorkflowDefinition", () => {
     const router = {
       sendProbe: async (frame: SendProbeArgs): Promise<WorkflowProbeResult> => {
         captured = frame;
-        // Capture the built frame and stop: the gate/freeze is out of scope for
-        // this producer test.
+        // Capture the built frame and stop; the gate/freeze is out of scope here.
         throw new Error("captured-probe-frame");
       },
     };

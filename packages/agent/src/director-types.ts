@@ -1,35 +1,19 @@
-// Type-only surface for the director registry.
-//
-// The runtime implementations -- `createDirectorRegistry`,
-// `defineDirector`, and the built-in default factory -- live in
-// adjacent files. This module holds only the type-level shapes the env
-// contract (`BaseEnv`) depends on, so the env primitives can typecheck
-// independently.
-//
-// `DirectorFactory` returns a `ReactorDirector` directly. The only
-// director that flows through the registry today is the built-in
-// default, which is already `ReactorDirector`-shaped; no translation
-// layer is needed.
+// Type-only surface for the director registry. The runtime
+// implementations (`createDirectorRegistry`, `defineDirector`, and the
+// built-in default factory) live in adjacent files; this module holds
+// only the type-level shapes `BaseEnv` depends on.
 
 import type { ReactorDirector, ToolDefinition } from "@intx/types/runtime";
 
 import type { BaseEnv } from "./env";
 
 /**
- * Agent-instance properties a director factory needs at construction.
- * Sourced from the `AgentDefinition` the agent harness is instantiating:
- * the system prompt and the resolved tool definitions the model will
- * see. Held separately from `BaseEnv` because these values are derived
- * from the agent definition, not supplied by the caller as runtime env.
- *
- * `compactorNames` is the exception to the "derived from definition"
- * shape: it lists the names the deployer registered on `env.compactors`
- * and is surfaced here so the director picks a known name to pass to
- * `caps.compact(name, reason)`. The list is empty when the deployer
- * omits the env field. The shape mirrors `toolDefinitions` for the
- * same reason: a director that emits an action keyed by name benefits
- * from learning the registered names at construction rather than
- * trusting the deployer by convention.
+ * Agent-instance properties a director factory needs at construction,
+ * sourced from the `AgentDefinition` being instantiated: the system
+ * prompt, the resolved tool definitions, and the compactor names the
+ * deployer registered on `env.compactors` (empty when omitted). Held
+ * separately from `BaseEnv` because they derive from the definition,
+ * not the caller's runtime env.
  */
 export interface DirectorAgentContext {
   readonly systemPrompt: string;
@@ -38,13 +22,10 @@ export interface DirectorAgentContext {
 }
 
 /**
- * Reference to a director shipped with a bundle. The package-namespaced
- * id is the identity. The bundle that ships the director includes the
- * factory that maps the id back to runtime code; same bundle = same
- * factory, so no separate `factoryHash` is needed.
- *
- * `config` is canonical-JSON-serializable so deploy-hash consumers can
- * stably hash the ref via `canonicalizeForHash(ref.config)`.
+ * Reference to a director shipped with a bundle; the package-namespaced
+ * id is the identity. Same bundle = same factory, so no separate
+ * `factoryHash` is needed. `config` is canonical-JSON-serializable so
+ * deploy-hash consumers can stably hash the ref.
  */
 export interface DirectorRef<Config = unknown> {
   readonly id: string;
@@ -53,11 +34,9 @@ export interface DirectorRef<Config = unknown> {
 
 /**
  * Factory function shape that produces a `ReactorDirector` from a
- * validated config, the agent's runtime env, and the agent-instance
- * context (`DirectorAgentContext`: system prompt, resolved tool
- * definitions, registered compactor names). The implementation lives
- * in the same bundle as the agent definition; the registry resolves it
- * from `DirectorRef.id`.
+ * validated config, the runtime env, and the agent-instance context.
+ * The implementation lives in the same bundle as the agent
+ * definition; the registry resolves it from `DirectorRef.id`.
  */
 export type DirectorFactory<
   Config = unknown,
@@ -69,16 +48,14 @@ export type DirectorFactory<
 ) => ReactorDirector;
 
 /**
- * Arktype validator for a director's config. Stored as `unknown` at the
- * type level so this module does not have to import arktype; the
- * concrete `defineDirector` runtime validates it.
+ * Arktype validator for a director's config. Typed as `unknown` so
+ * this module does not import arktype; `defineDirector` validates it.
  */
 export type DirectorConfigSchema = unknown;
 
 /**
- * Runtime metadata attached to a `DirectorFactory` by `defineDirector`.
- * The factory carries its package-namespaced id, its env-key
- * requirements, and the arktype schema that validates its config.
+ * Runtime metadata attached to a `DirectorFactory` by `defineDirector`:
+ * the package-namespaced id, env-key requirements, and config schema.
  */
 export interface DirectorFactoryMeta {
   readonly id: string;
@@ -87,8 +64,8 @@ export interface DirectorFactoryMeta {
 }
 
 /**
- * A director factory with its runtime metadata attached. The registry
- * stores these; `defineDirector` produces them.
+ * A director factory with its runtime metadata attached; the registry
+ * stores these, `defineDirector` produces them.
  */
 export type AnnotatedDirectorFactory<
   Config = unknown,
@@ -96,13 +73,11 @@ export type AnnotatedDirectorFactory<
 > = DirectorFactory<Config, EnvReq> & DirectorFactoryMeta;
 
 /**
- * Per-runtime director registry. Populated explicitly at startup from
- * the bundle's `defineDirector` calls plus built-ins from `@intx/agent`.
- * No module-load side effects.
- *
- * `resolve` returns the factory for a given ref; `defaultFactory` is the
- * canonical built-in; `buildDefaultRef` constructs the default ref on
- * demand (each call constructs a fresh object, no module-load constant).
+ * Per-runtime director registry, populated explicitly at startup from
+ * the bundle's `defineDirector` calls plus built-ins; no module-load
+ * side effects. `resolve` returns the factory for a ref;
+ * `defaultFactory` is the canonical built-in; `buildDefaultRef`
+ * constructs the default ref on demand.
  */
 export interface DirectorRegistry {
   resolve(ref: DirectorRef): AnnotatedDirectorFactory;

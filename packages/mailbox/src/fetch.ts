@@ -39,10 +39,10 @@ const MessagePayload = type({
 });
 
 /**
- * Parse the full RFC 2822 headers of a stored message. Reads the message's raw
- * bytes on demand: the parsed set is a superset of the pre-parsed envelope (it
- * carries `cc`, `mimeVersion`, trace headers, ...), so it cannot be served from
- * the envelope metadata alone.
+ * Parse the full RFC 2822 headers of a stored message. Reads the raw bytes on
+ * demand: the parsed set is a superset of the pre-parsed envelope (it carries
+ * `cc`, `mimeVersion`, trace headers), so it cannot be served from the
+ * envelope metadata alone.
  */
 export async function fetchHeaders(
   ref: MessageRef,
@@ -71,10 +71,9 @@ export async function fetchStructure(
 
 /**
  * Fetch a single MIME part by dot-separated path. `content` is the
- * CTE-decoded bytes, matching `extractAttachments` / `decodeMail`.
- * `contentType` is the type/subtype `decodeMail` reports — parameters such
- * as charset are spent once the bytes are decoded — and it carries the
- * RFC 2045 §6.4 relabel, since an undecodable part arrives undecoded.
+ * CTE-decoded bytes, matching `extractAttachments`/`decodeMail`; `contentType`
+ * is the type/subtype `decodeMail` reports, carrying the RFC 2045 §6.4 relabel
+ * since an undecodable part arrives undecoded.
  */
 export async function fetchPart(
   ref: MessageRef,
@@ -99,9 +98,8 @@ export async function fetchPart(
 
 /**
  * Decode a leaf part's body into text, or undefined when the octets are not
- * text: an unrecognized mechanism (RFC 2045 §6.4) or encoded data that will not
- * decode. The octets stay reachable through `fetchPart`, which reports them
- * under the §6.4 relabel.
+ * text: an unrecognized mechanism (RFC 2045 §6.4) or encoded data that will
+ * not decode. The octets stay reachable through `fetchPart`.
  */
 function decodePartText(
   part: ParsedMimePart,
@@ -114,11 +112,9 @@ function decodePartText(
   try {
     decoded = decodePartBytes(part.body, part.headers);
   } catch (cause) {
-    // Absent text is the answer, but it is not a self-explaining one: a caller
-    // reading `undefined` cannot tell "not text" from "would not decode", and
-    // an operator would otherwise never learn that a peer sends bodies its own
-    // declared encoding does not describe. The record names the message so the
-    // octets can be read back through `fetchPart`.
+    // `undefined` cannot tell "not text" from "would not decode", so record
+    // the failure; the record names the message so the octets can be read back
+    // through `fetchPart`.
     logger.warn`Message uid=${ref.uid} in mailbox ${ref.mailbox} carries a ${part.contentType} part whose ${transferEncodingMechanism(part.headers)} body did not decode; delivering it without text: ${cause instanceof Error ? cause.message : String(cause)}`;
     return undefined;
   }
@@ -126,7 +122,7 @@ function decodePartText(
 }
 
 /**
- * The leaf part a message's content lives in: part 1.1 under our assembler's
+ * The leaf part a message's content lives in: part 1.1 under the assembler's
  * multipart/mixed wrapper, part 1 when a peer signed a bare part, and the
  * message itself when it is not multipart at the top level.
  */
@@ -184,8 +180,8 @@ export async function fetchFull(
     signatureStatus,
   };
 
-  // A body that did not decode is not text, and both destinations here are
-  // text; the message is delivered without one rather than refused.
+  // An undecodable body is not text, and both destinations here are text;
+  // deliver the message without it rather than refuse.
   const text = decodePartText(
     resolveContentPart(raw, headers, bodyOffset),
     ref,
@@ -220,8 +216,8 @@ async function verifyMessageSignature(
   fromAddress: string | undefined,
   getCrypto: (fromAddress: string) => CryptoProvider | undefined,
 ): Promise<SignatureStatus> {
-  // No originator names no key to verify against, which is the same position
-  // as a sender we hold no key for.
+  // A message with no originator names no key to verify against, the same
+  // position as a sender we hold no key for.
   if (fromAddress === undefined) {
     return "unknown";
   }

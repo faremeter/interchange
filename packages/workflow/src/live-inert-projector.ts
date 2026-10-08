@@ -1,32 +1,25 @@
 // Live -> inert needs-surface projector.
 //
-// This is the one place that reifies a live `WorkflowDefinition` -- whose
-// steps carry functions (agent tool factories), arktype `Type` objects
-// (state schemas), and other non-JSON values -- into pure plain data that
-// survives the child->hub process boundary without silently losing the
-// tool grant surface. The projector output is what
-// `computeWireDefinitionHash` hashes, so any loss here would corrupt the
-// content handle the deploy gate, the install-time probe, and re-verify
-// all compare by byte equality.
+// The one place that reifies a live `WorkflowDefinition` -- whose steps
+// carry functions (agent tool factories), arktype `Type` objects (state
+// schemas), and other non-JSON values -- into pure plain data that survives
+// the child->hub process boundary without silently losing the tool grant
+// surface. The projector output is what `computeWireDefinitionHash` hashes,
+// so any loss here corrupts the content handle the deploy gate, the
+// install-time probe, and re-verify all compare by byte equality.
 //
-// The failure mode this defends against: a naive `JSON.stringify` of a
-// live tool factory yields `null` (a factory is a function, and JSON drops
-// functions), which erases the entire grant surface while leaving a
-// non-empty-looking `toolFactories: [null]`. The projector reads the
-// static metadata (`.id`/`.requires`/`.definitions`) off each factory
-// function directly, and fails loud if a factory is not a function or is
-// missing that metadata -- a reified-to-`null` factory is a corrupted
-// grant surface, never a valid empty grant set.
+// Failure mode defended against: a naive `JSON.stringify` of a live tool
+// factory yields `null`, erasing the grant surface while leaving a
+// non-empty-looking `toolFactories: [null]`. The projector reads the static
+// metadata (`.id`/`.requires`/`.definitions`) off each factory and fails
+// loud if a factory is not a function or is missing that metadata.
 //
-// Model sources are canonicalized to their `(provider, model)` identity
-// and nothing else. Per-source `parameters` -- the provider-native knob
-// bag that may carry credential-adjacent material -- are excluded from the
-// projection, and therefore from the hashed preimage, so a credential or
-// parameter rotation cannot trip re-verify downstream.
+// Model sources are canonicalized to their `(provider, model)` identity and
+// nothing else: per-source `parameters` -- a knob bag that may carry
+// credential-adjacent material -- are excluded from the projection and the
+// hashed preimage, so a rotation cannot trip re-verify.
 //
-// An unreifiable or unknown step shape THROWS. It never projects to
-// `null`: a step whose kind is outside the closed primitive set is a
-// hydrated-or-tampered definition and must fail loud.
+// An unreifiable or unknown step shape THROWS; it never projects to `null`.
 
 import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import type {
@@ -184,9 +177,8 @@ export interface InertChildWorkflow {
 // or arktype `Type` values -- they are already pure plain data -- so their
 // inert form is structurally identical to the live primitive. They are
 // reconstructed field by field below rather than aliased so the projection is
-// a self-contained tree. `childWorkflow` carries an inline child definition
-// (a live `WorkflowDefinition`), so it projects recursively like `onTrigger`
-// rather than aliasing the live primitive.
+// a self-contained tree. `childWorkflow` carries an inline child definition,
+// so it projects recursively like `onTrigger`.
 export type InertStep =
   | InertStepStep
   | InertMap
@@ -212,13 +204,12 @@ export interface InertWorkflowDefinition {
   // a binding names WHICH provider-backed credential the code may request,
   // so it belongs to what the operator approves. On the code-sourced path
   // the inert projection is the ONLY carrier of the bindings the deploy
-  // resolves -- a moved or tampered registry that served code with
-  // different bindings would change this projection and fail re-verify.
+  // resolves -- a moved or tampered registry would change this projection
+  // and fail re-verify.
   readonly credentialBindings?: readonly CredentialBinding[];
   readonly sidecarPlacement?: SidecarCapabilityPolicy;
   // The author-declared inbound-mail admission policy, projected verbatim (it
-  // is already pure plain data). It is part of the hashed surface on purpose:
-  // the policy governs how mail addressed to the deployment is admitted, so a
+  // is already pure plain data). Part of the hashed surface on purpose: a
   // changed or tampered policy must move the content hash and fail re-verify.
   // Sparse -- an outcome the author left unset stays unset in the projection,
   // so the hash covers only the declared keys.
@@ -286,9 +277,9 @@ function projectDefinition(
     ...(definition.state !== undefined
       ? { state: projectState(definition.state) }
       : {}),
-    // Bindings carry no secret and are plain data, so they project verbatim.
-    // Keeping them in the projection puts the operator-approved credential
-    // request surface inside the content hash (see `InertWorkflowDefinition`).
+    // Bindings carry no secret and are plain data, so they project verbatim;
+    // keeping them in the projection puts the operator-approved credential
+    // request surface inside the content hash.
     ...(definition.credentialBindings !== undefined
       ? { credentialBindings: [...definition.credentialBindings] }
       : {}),
@@ -296,9 +287,9 @@ function projectDefinition(
       ? { sidecarPlacement: { capabilities: [...sidecarCapabilities] } }
       : {}),
     // The admission policy is pure plain data (a sparse map of outcome ->
-    // reject/admit), so it projects verbatim like the credential bindings.
-    // Keeping it in the projection puts the author-approved admission surface
-    // inside the content hash (see `InertWorkflowDefinition`).
+    // reject/admit), so it projects verbatim like the credential bindings;
+    // keeping it in the projection puts the author-approved admission surface
+    // inside the content hash.
     ...(definition.inboundMailPolicy !== undefined
       ? { inboundMailPolicy: { ...definition.inboundMailPolicy } }
       : {}),
@@ -480,9 +471,9 @@ function projectSleep(primitive: SleepPrimitive): SleepPrimitive {
 function projectChildWorkflow(
   primitive: ChildWorkflowPrimitive,
 ): InertChildWorkflow {
-  // Mirror `projectOnTrigger`: an inline child definition projects recursively
-  // (its grant surface must survive the child->hub boundary just like the
-  // parent's own steps), the internal `{ ref }` handle passes through.
+  // Mirror `projectOnTrigger`: an inline child definition projects
+  // recursively (its grant surface must survive the child->hub boundary
+  // just like the parent's own steps), the `{ ref }` handle passes through.
   const definition: InertChildWorkflowBody =
     "inline" in primitive.definition
       ? { inline: projectDefinition(primitive.definition.inline) }

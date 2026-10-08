@@ -1,16 +1,9 @@
-// The discover CLI's provider registry: the table mapping each provider name to
-// the environment it requires and the factory that builds its plug-in.
-//
-// bin/discover.ts drives these entries — buildHelpText advertises each row's
-// requiredEnv, and main() looks a row up by name, validates its env, and calls
-// create. The colocated discover-registry.test.ts is the guard. It pins the
-// provider to requiredEnv contract and the create factory's read-site wiring
-// (which variables each factory actually consumes) so an edit cannot advertise
-// one credential while reading another, or drop a required variable.
-//
-// This module holds only the registry and its plug-in constructors — no CLI
-// argument parsing, no capture loop — so the guard test can import it without
-// the network machinery in discover.ts.
+// The discover CLI's provider registry: provider name → required env and the
+// factory that builds its plug-in. The colocated discover-registry.test.ts
+// pins the name→requiredEnv contract and which variables each factory reads,
+// so an edit cannot advertise one credential while reading another, or drop a
+// required variable. No CLI parsing or capture loop lives here, so the guard
+// test can import it without the network machinery in discover.ts.
 
 import type { ProviderPlugin } from "@intx/inference-discovery";
 import { createAnthropicPlugin } from "@intx/inference-discovery-anthropic";
@@ -24,10 +17,9 @@ import {
   createXaiPlugin,
 } from "@intx/inference-discovery-openai";
 
-// Options a caller can pass when constructing a plug-in. Empty for most
-// providers; the probe uses modelClass to declare the request shape of a
-// google-genai model absent from the known text/image sets. bin/discover does
-// not pass options — it only touches models the support matrix already lists.
+// Options for plug-in construction. Only the probe passes modelClass, to
+// declare the request shape of a google-genai model absent from the known
+// text/image sets.
 export interface PluginCreateOptions {
   modelClass?: GeminiModelClass | undefined;
 }
@@ -119,8 +111,8 @@ export function findPlugin(name: string): RegisteredPlugin | undefined {
   return PLUGIN_REGISTRY.find((entry) => entry.name === name);
 }
 
-// The "Available providers" block shared by bin/discover and bin/probe help
-// text, so the two CLIs advertise providers and their required env identically.
+// Shared by bin/discover and bin/probe help text, so both advertise providers
+// and their required env identically.
 export function formatProviderHelp(): string {
   return PLUGIN_REGISTRY.map((entry) => {
     const envList = entry.requiredEnv.join(", ");

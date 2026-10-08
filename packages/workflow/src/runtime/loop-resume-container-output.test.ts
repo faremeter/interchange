@@ -3,10 +3,10 @@
 // publishes, at every crash boundary where `runLoop` is re-entered?
 //
 // The committed boundary tests assert routing and effect counts only; none
-// of them read the container's own output. `final` is derived from two
-// different sources on the two paths (the replay reads the scoped
-// StepCompleted from the log, the drive reads `hydrateChildOutputs` off the
-// child run), so agreement is an assumption, not a given.
+// read the container's own output. `final` is derived from different sources
+// on the two paths (the replay reads the scoped StepCompleted from the log,
+// the drive reads `hydrateChildOutputs` off the child run), so agreement is
+// an assumption, not a given.
 
 import { describe, test, expect } from "bun:test";
 
@@ -273,9 +273,9 @@ describe("loop container output across resume boundaries", () => {
     test(b.name, async () => {
       const { first, second } = await runThenResume(b.def, b.pred);
       expect(second.terminalStatus).toBe("completed");
-      // Pin the straight-through record as populated before comparing. The
-      // comparison below is a deep equality, so two absent or empty records
-      // would satisfy it while proving nothing about the seam under test.
+      // Pin the straight-through record as populated before comparing: the
+      // deep equality below would pass on two absent or empty records,
+      // proving nothing about the seam under test.
       expect(first.outputs.rework).toMatchObject({
         outcome: expect.any(String),
         iterations: expect.any(Number),

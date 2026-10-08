@@ -7,11 +7,10 @@
  * channel-1 frames.
  *
  * Denial during negotiation is reported as a pkt-line `ERR <msg>\n`
- * frame, never as a non-200 HTTP status: stock git surfaces the ERR
- * payload as `remote: <msg>; fatal: protocol error`, which is the
+ * frame, never a non-200 HTTP status: stock git surfaces the ERR
+ * payload as `remote: <msg>; fatal: protocol error`, the
  * protocol-correct shape for refPattern denial and unknown-ref
- * rejections. (Receive-pack uses `ng` during report-status instead;
- * that vocabulary is not used here.)
+ * rejections. (Receive-pack uses `ng` during report-status instead.)
  */
 
 import fs from "node:fs";
@@ -110,9 +109,9 @@ async function parseUploadRequest(body: Uint8Array): Promise<ParsedRequest> {
 /**
  * Per-commit cache entry built during the allowed-tip walk: the
  * objects reachable from a given commit (tree + blobs + the commit
- * itself) and the commit's parent SHAs. The cache lets the downstream
- * want walk compute reachable-from-wants without re-reading commits
- * or re-walking their trees.
+ * itself) and the commit's parent SHAs, so the downstream want walk
+ * computes reachable-from-wants without re-reading commits or
+ * re-walking their trees.
  */
 type CommitIndexEntry = {
   readonly objects: ReadonlySet<string>;
@@ -155,15 +154,13 @@ async function walkAllowedAndIndex(
 /**
  * Compute reachable-from-`starts` in pure memory using the commit
  * index built by `walkAllowedAndIndex`. Every commit reachable from
- * an allowed tip is in the index; ancestors of a valid want are
- * therefore present without any further `git.readCommit` calls.
+ * an allowed tip is in the index, so ancestors of a valid want are
+ * present without any further `git.readCommit` calls.
  *
  * The caller is responsible for ensuring every start OID is a commit
- * present in the index — `classifyWants` enforces both. A start OID
+ * present in the index -- `classifyWants` enforces both. A start OID
  * missing from the index is silently skipped; if it slips past the
- * classifier (a non-commit OID reachable from an allowed ref's tree,
- * or any other contract violation upstream) the result will be the
- * empty set rather than a thrown error.
+ * classifier, the result is the empty set rather than a thrown error.
  */
 function reachableFromIndex(
   starts: readonly string[],
@@ -206,20 +203,13 @@ async function classifyWants(
   wants: readonly string[],
   allowedObjects: ReadonlySet<string>,
 ): Promise<WantClassification> {
-  // Two-pass classification with a stable preference: `forbidden`
-  // outranks `unknown` so the client always sees the same error
-  // vocabulary regardless of how it ordered its want lines. A SHA
-  // that exists but is reachable only from refs the token cannot see
-  // is more useful diagnostic information than a SHA we cannot find
-  // at all, and incident triage benefits from determinism.
-  //
-  // Membership in `allowedObjects` is necessary but not sufficient:
-  // the substrate's reachable-objects walk includes commits, trees,
-  // and blobs alike, so a hand-crafted client could otherwise want a
-  // blob OID that appears in some allowed ref's tree. This handler
-  // expects `want` lines to name commits — annotated-tag wants are
-  // not supported here today; a non-commit want is classified the
-  // same as a SHA that does not exist at all.
+  // Two-pass classification with a stable preference: `forbidden` outranks
+  // `unknown` so the client always sees the same error vocabulary regardless
+  // of want-line order. Membership in `allowedObjects` is necessary but not
+  // sufficient: the reachable-objects walk includes trees and blobs, so a
+  // hand-crafted client could otherwise want a blob OID in some allowed ref's
+  // tree. `want` lines must name commits -- annotated-tag wants are not
+  // supported; a non-commit want is classified as unknown.
   let sawForbidden = false;
   let sawUnknown = false;
   for (const want of wants) {
@@ -326,16 +316,11 @@ function successResponse(pack: Uint8Array | null): Response {
 }
 
 /**
- * Translate substrate-thrown errors that escape the listRefs /
- * getRepoDir / pack-build call chain into the upload-pack pkt-line
- * ERR vocabulary. Only `authorize_denied:` is reachable from the
- * upload-pack call chain; the receive-pack prefixes belong to
- * `receive-pack.ts`'s translator. Upload-pack has no per-ref status
- * channel, so the substrate's authorize denial collapses into the
- * same `ERR forbidden ref` shape used for refPattern denial.
- *
- * Returns `null` when the error message does not carry the known
- * substrate prefix; the caller rethrows in that case so a genuine
+ * Translate substrate-thrown errors that escape the listRefs / getRepoDir /
+ * pack-build call chain into the upload-pack pkt-line ERR vocabulary. Only
+ * `authorize_denied:` is reachable from this chain; the receive-pack prefixes
+ * belong to `receive-pack.ts`'s translator. Returns `null` when the error
+ * message carries no known substrate prefix; the caller rethrows so a genuine
  * crash still bubbles to the HTTP layer as a 500.
  */
 function translateSubstrateError(err: unknown): Response | null {

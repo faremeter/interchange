@@ -95,8 +95,7 @@ export type MailResponse = typeof MailResponse.infer;
 // machine-actionable `code` plus the fields a client needs to locate and
 // explain the rejection, alongside a human-readable `message`. The shared
 // validator emits every variant but `invalid_encoding`, which only the
-// mail tools produce; the mail routes return the union as their
-// attachment 400 body and the mail tools return its `code` and `message`.
+// mail tools produce.
 export const AttachmentError = type.or(
   {
     code: "'oversize_attachment'",

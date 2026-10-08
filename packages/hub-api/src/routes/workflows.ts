@@ -69,9 +69,9 @@ import { jsonResponse } from "../openapi";
 // `source` names where its bytes come from and `entry` the `interchange.workflow`
 // module the sidecar evaluates; the hub installs + probes + gates + freezes it
 // and deploys by source-ref. The caller supplies the ordered catalog offerings
-// from which the Hub resolves the inference chain. `pin` selects the definition
-// package for the `registry` and asset-`tarball` variants (asset-`source`
-// selects by `packageName`). The `source` union is validated at this boundary.
+// from which the Hub resolves the inference chain; `pin` selects the definition
+// package for the `registry` and asset-`tarball` variants. The `source` union is
+// validated at this boundary.
 const SourceOfferingIds = type("string > 0")
   .array()
   .atLeastLength(1)
@@ -89,11 +89,10 @@ const DeployWorkflow = type({
   "pin?": "string > 0",
 });
 
-// Request body for signal delivery. `signalId` is caller-supplied and
-// stable: the workflow-run state machine dedups on `observedSignalIds`,
-// so a server-generated id would defeat idempotent retries. Reject an
-// empty id at the boundary rather than letting a blank value reach the
-// supervisor.
+// Request body for signal delivery. `signalId` is caller-supplied and stable:
+// the workflow-run state machine dedups on `observedSignalIds`, so a
+// server-generated id would defeat idempotent retries. Reject an empty id at
+// the boundary rather than letting a blank value reach the supervisor.
 const DeliverSignal = type({
   runId: "string > 0",
   signalName: "string > 0",
@@ -106,13 +105,10 @@ const WorkflowRunListResponse = type({
 });
 
 // A deployment's API shape, assembled from its anchor run and the run's
-// definition. The old projection reported a constant "deployed" for every row
-// -- no code path ever wrote another status -- and the anchor run's own status
-// (running -> terminal) is a different, run-level concept, so the deployment
-// status is synthesized as that same constant. `definitionAssetId` comes from
-// the run's definition; a null asset is a corrupt definition the deployment
-// contract cannot represent, so it surfaces loudly rather than emitting null
-// into a string field.
+// definition. The deployment status is synthesized from the allocation row;
+// a null asset is a corrupt definition the deployment contract cannot
+// represent, so it surfaces loudly rather than emitting null into a string
+// field.
 function formatDeployment(
   row: {
     id: string;
@@ -166,9 +162,8 @@ function formatAllocationStatus(row: {
 }
 
 // A deployment exists iff its anchor run does -- the workflow_run whose id is
-// the deployment id, carrying its routing identity. `anchorRunId` is
-// non-null on a deployment-anchored run, distinguishing it from a folded-agent
-// run (which never shares an anchor run anyway).
+// the deployment id, carrying its routing identity (`anchorRunId` non-null on
+// a deployment-anchored run).
 async function deploymentAnchorRunExists(
   db: DB["db"],
   anchorRunId: string,
@@ -267,8 +262,7 @@ export function createWorkflowRoutes({
       // The deployment anchors its frozen `workflow_definition` to a
       // `workflow`-kind asset. An asset-sourced deploy projects the definition
       // over the very asset it sources from; a registry-sourced deploy has no
-      // backing asset for the definition, so this route (which anchors every
-      // deployment to a workflow asset) does not support it yet.
+      // backing asset, so this route does not support it yet.
       if (body.source.kind !== "asset") {
         return errorResponse(
           c,
@@ -346,8 +340,7 @@ export function createWorkflowRoutes({
       // an internal persistence concern. The id is server-minted for this
       // request, so a missing row is an invariant violation, not a
       // sidecar-reachability failure, and must surface as a 500 rather than be
-      // mislabeled 502. Keyed on the run id alone -- no tenant filter -- since
-      // the id was just minted for this tenant's deploy.
+      // mislabeled 502.
       const [row] = await db
         .select({
           id: workflowRun.id,
@@ -391,14 +384,11 @@ export function createWorkflowRoutes({
     async (c) => {
       const tenant = c.get("tenant");
       // List the deployments as their anchor runs -- the workflow_run whose id
-      // equals its own deployment_id. There is deliberately NO run-status
-      // filter: allocation lifecycle is separate from run execution status.
+      // equals its own deployment_id. Deliberately no run-status filter:
+      // allocation lifecycle is separate from run execution status.
       // Deployments without an allocation row retain the legacy "deployed"
       // projection; provisioned deployments derive their public lifecycle from
-      // the allocation joined below. The `id = deployment_id`
-      // predicate (with the explicit non-null, matching
-      // deploymentAnchorRunExists) is the anchor-run identity; child and
-      // folded runs never satisfy it.
+      // the allocation joined below.
       const rows = await db
         .select({
           id: workflowRun.id,
@@ -503,8 +493,7 @@ export function createWorkflowRoutes({
       // A reserved control-plane channel name (`signalName(correlationId)`) is
       // the hub's own approval/input plane. Delivering on it through this route
       // would let a caller answer a pending approval directly -- bypassing the
-      // approval co-write and its authorization -- so reject it. Author signals
-      // to a workflow use free-form names.
+      // approval co-write and its authorization -- so reject it.
       if (correlationIdFromSignalName(body.signalName) !== undefined) {
         return errorResponse(
           c,
@@ -514,9 +503,9 @@ export function createWorkflowRoutes({
       }
 
       // Only the deployment's single addressable run may be signaled. A
-      // synthetic body-child run id (or any other id) is not addressable: a
-      // signal for a section body is delivered to the parent deployment run and
-      // relayed down by the runtime, never addressed to the child directly.
+      // synthetic body-child run id is not addressable: a signal for a section
+      // body is delivered to the parent deployment run and relayed down by the
+      // runtime, never addressed to the child directly.
       if (body.runId !== runId) {
         return errorResponse(
           c,
@@ -579,9 +568,9 @@ export function createWorkflowRoutes({
             ) {
               return "allocation-unavailable" as const;
             }
-            // Pack receipt advances Git while holding this allocation lock. Read
-            // again after acquiring it so the preflight result cannot go stale
-            // while this transaction waits behind a terminal pack.
+            // Pack receipt advances Git while holding this allocation lock;
+            // re-read after acquiring it so the preflight result cannot go
+            // stale while this transaction waits behind a terminal pack.
             if (
               (await readRunLifecycle(anchorRunId, tenant.domain, runId)) !==
               "live"

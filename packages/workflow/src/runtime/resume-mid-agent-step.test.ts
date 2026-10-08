@@ -1,11 +1,9 @@
-// Property: an agent step's side effect runs at most once across a
-// mid-step crash. The runtime flushes `StepStarted` durably before it
-// invokes the agent, so a crash mid-invocation leaves a durable marker
-// with no `StepCompleted`. On resume, the runtime settles that residual
-// in-flight step as a terminal `StepFailed` (the agent is NOT
-// re-invoked) and the run settles `RunFailed` with the crash reason,
-// rather than silently re-invoking the agent or stalling with no
-// terminal event.
+// Property: an agent step's side effect runs at most once across a mid-step
+// crash. `StepStarted` is flushed durably before the agent invocation, so a
+// crash mid-invocation leaves a durable marker with no `StepCompleted`. On
+// resume the runtime settles that in-flight step as a terminal `StepFailed`
+// (the agent is NOT re-invoked) and the run settles `RunFailed` with the
+// crash reason.
 
 import { describe, test, expect } from "bun:test";
 
@@ -75,9 +73,8 @@ describe("resume mid-agent-step", () => {
     const result1 = await runtimeRun(def, env1).complete;
     expect(invocations).toBe(1);
 
-    // Truncate the first run's log at the agent step's own StepStarted,
-    // inclusive, to simulate a crash mid-invocation: the durable marker
-    // is present but StepCompleted never landed.
+    // Truncate the first run's log at step `s`'s StepStarted, inclusive: the
+    // durable marker is present but StepCompleted never landed.
     const trimmed: WorkflowEvent[] = [];
     for (const e of result1.events) {
       trimmed.push(e);
@@ -86,8 +83,7 @@ describe("resume mid-agent-step", () => {
       }
     }
 
-    // Resume against a FRESH repo store but the SAME blob substrate so
-    // the seed log's blob refs resolve.
+    // Fresh repo store, same blob substrate, so the seed log's blob refs resolve.
     const repoStore2 = createInMemoryRepoStore();
     const env2: WorkflowRuntimeEnv = {
       ...env1,
@@ -117,17 +113,13 @@ describe("resume mid-agent-step", () => {
 
   test("a crashed mid-invocation step settles terminal while a still-runnable dependent runs to completion on resume", async () => {
     // Two agent steps: `b` depends on `a`. `a` crashes mid-invocation
-    // (its StepStarted is durable, StepCompleted never landed) and `b`
-    // has not started yet. On resume, `a` settles terminal (StepFailed,
-    // NOT re-invoked); because a failed dependency counts as resolved,
-    // `b` is genuinely schedulable and runs to completion. The run still
-    // settles RunFailed because `a` failed.
-    // `b` names `a` in `after` (so it starts only after `a` settles) but
-    // takes an explicit literal input rather than the default-input
-    // convention's `{ from: "steps.a.output" }`: `a` fails with no
-    // output, so a `b` that read `a`'s output could never run. The
-    // literal input keeps `b` genuinely schedulable once `a` reaches a
-    // terminal (failed) phase.
+    // (StepStarted durable, StepCompleted never landed) and `b` has not
+    // started. On resume `a` settles StepFailed without re-invocation; a
+    // failed dependency counts as resolved, so `b` is genuinely schedulable
+    // and runs to completion. The run still settles RunFailed.
+    // `b` takes an explicit literal input, not the default
+    // `{ from: "steps.a.output" }`: `a` fails with no output, so a `b` that
+    // read it could never run.
     const def = defineWorkflow({
       id: "midstep-resume-dependent",
       trigger: { type: "manual" },
@@ -141,11 +133,8 @@ describe("resume mid-agent-step", () => {
       },
     });
 
-    // Key the counter off the agent identity, not any request field the
-    // env does not carry: `StepInvokeRequest` has no top-level `stepId`,
-    // so keying on `agent.id` is what distinguishes the two agents'
-    // invocations. This makes the "`a` not re-invoked" assertion
-    // watertight rather than incidentally true.
+    // Key the counter off `agent.id`: `StepInvokeRequest` has no top-level
+    // `stepId`, so agent identity is what distinguishes the two invocations.
     const invocationsByAgent = new Map<string, number>();
     const invokeStep: StepInvoker = async ({ agent, input }) => {
       invocationsByAgent.set(
@@ -181,8 +170,7 @@ describe("resume mid-agent-step", () => {
     expect(invocationsByAgent.get("agent-b")).toBe(1);
 
     // Truncate at `a`'s StepStarted, inclusive: `a`'s StepCompleted is
-    // dropped (crash mid-invocation) and `b` has no StepStarted yet
-    // (it only starts after `a` completes, which never happened).
+    // dropped and `b` never started (it waits on `a`'s completion).
     const trimmed: WorkflowEvent[] = [];
     for (const e of result1.events) {
       trimmed.push(e);
@@ -197,8 +185,7 @@ describe("resume mid-agent-step", () => {
       trimmed.some((e) => e.kind === "StepStarted" && e.stepId === "b"),
     ).toBe(false);
 
-    // Fresh counters for the resume so the assertions observe only what
-    // the resumed run invokes.
+    // Fresh counters, so the assertions observe only the resumed run.
     const resumeInvocations = new Map<string, number>();
     const resumeInvokeStep: StepInvoker = async ({ agent, input }) => {
       resumeInvocations.set(

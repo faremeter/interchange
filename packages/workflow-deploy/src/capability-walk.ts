@@ -1,54 +1,29 @@
 // Deploy-time capability walk.
 //
 // `walkCapabilities(workflow, registry)` is the structural lift of
-// `getRequiredEnvKeys` from `@intx/agent`: the env-validation helper
-// walks each step's `AgentDefinition` to collect the env-key surface
-// the agent declares at instantiation; this walk traverses the same
-// shape and emits the grant-shape strings the deploy-time operator-
-// approval gate consumes.
-//
-// The two walks must stay structurally aligned -- a step whose
-// `AgentDefinition` would pass `validateEnv` at runtime must produce
-// the matching grant set here. The parity test in
-// `capability-walk.test.ts` is the load-bearing structural-identity
-// check for that claim.
+// `getRequiredEnvKeys` from `@intx/agent`: the env-validation helper walks
+// each step's `AgentDefinition` to collect the env-key surface the agent
+// declares at instantiation; this walk traverses the same shape and emits the
+// grant-shape strings the deploy-time operator-approval gate consumes. The two
+// walks must stay structurally aligned; the parity test in
+// `capability-walk.test.ts` is the load-bearing check for that claim.
 //
 // Grant shapes (v1):
-//   - `tool:<def.name>`              -- every tool name a factory
-//                                        declares via `definitions[i].name`
-//                                        (per definition, NOT per factory
-//                                        id, so the grant matches the
-//                                        runtime `tool:<call.name>` the
-//                                        gate authorizes against)
+//   - `tool:<def.name>`              -- every tool name a factory declares
+//                                        (per definition, NOT per factory id)
 //   - `director:<ref.id>`            -- resolved director ref
 //   - `capability:<name>`            -- `AgentDefinition.capabilities`
-//   - `inference.source:<id>`        -- `inference.sources[i].provider`
-//                                        with `<provider>:<model>`-style
-//                                        id (matches the existing
-//                                        InferencePreference shape)
-//   - `mail.address:<address>`       -- every workflow trigger of type
-//                                        `"mail"` (the deployment's
-//                                        right to register and receive)
+//   - `inference.source:<id>`        -- `inference.sources[i]` provider:model
+//   - `mail.address:<address>`       -- every mail workflow trigger
 //   - `mail.send:<domain>`           -- the trigger address's domain
-//                                        (the deployment's right to
-//                                        send mail as that domain)
 //
-// Wildcard semantics (e.g. `tool:@vendor/foo/*`) are intentionally
-// deferred: v1 ships explicit per-tool approvals so the operator UX
-// matches what `getRequiredEnvKeys` enforces today. When a deployment
-// accumulates enough tool factories that explicit approval is
-// unergonomic, the wildcard shape lands as an additive refinement.
+// Wildcard semantics (e.g. `tool:@vendor/foo/*`) are intentionally deferred:
+// v1 ships explicit per-tool approvals so the operator UX matches what
+// `getRequiredEnvKeys` enforces today.
 //
-// Director resolution: the walk calls `effectiveDirectorRef` so the
-// absent-director normalization stays identical between this walk and
-// `getRequiredEnvKeys`. Director factories loaded from pinned tool
-// packages via `interchange.directors` are folded into the registry by
-// the caller; this module does not synthesize that registry itself
-// because the loader is the layer that owns package materialization.
-// An unresolvable director surfaces on `unresolvedDirectors` rather
-// than raising -- the deploy flow translates that into a deploy-time
-// `"unresolvable director"` failure when it wires this output into
-// approval flow.
+// Director resolution uses `effectiveDirectorRef` so the absent-director
+// normalization stays identical to `getRequiredEnvKeys`. An unresolvable
+// director surfaces on `unresolvedDirectors` rather than raising.
 
 import type {
   AgentDefinition,
@@ -70,17 +45,12 @@ import {
 import type { WorkflowDefinition } from "@intx/workflow/definition";
 
 /**
- * Grant declarations produced for a single workflow step. `grants`
- * carries the grant-shape strings the operator-approval gate consumes.
- *
- * `grantEffects` maps each TOOL grant string (`tool:<def.name>`) to the
- * effect the tool's static declaration requested: `"ask"` for a tool
- * gated behind per-invocation approval, `"allow"` otherwise. It covers
- * TOOL grants only -- director/capability/inference.source/mail.* grants
- * live in `grants` and are absent from `grantEffects`.
- *
- * Frozen so downstream consumers cannot mutate the walk output in
- * place.
+ * Grant declarations produced for a single workflow step. `grantEffects` maps
+ * each TOOL grant string to the effect its static declaration requested:
+ * `"ask"` for a tool gated behind per-invocation approval, `"allow"`
+ * otherwise. Covers TOOL grants only; director/capability/inference.source/
+ * mail.* grants live in `grants` and are absent from `grantEffects`. Frozen
+ * so downstream consumers cannot mutate the walk output in place.
  */
 export interface GrantDeclarations {
   readonly grants: readonly string[];
@@ -88,15 +58,11 @@ export interface GrantDeclarations {
 }
 
 /**
- * The capability walk's result. `perStep` keys are workflow step ids;
- * `unresolvedDirectors` lists every director id the supplied registry
- * could not resolve across the whole walk, so the deploy flow can
- * surface a single deploy-time failure rather than tearing down per
- * step.
- *
- * `unresolvedDirectors` is a readonly array (not an optional) so
- * callers must inspect it explicitly; an optional that resolves to
- * `undefined` is too easy to ignore at the approval-gate site.
+ * The capability walk's result: per-step grant declarations keyed by
+ * workflow step id, plus every director id the supplied registry could not
+ * resolve across the whole walk, so the deploy flow can surface a single
+ * deploy-time failure. `unresolvedDirectors` is a required array (not
+ * optional) so callers must inspect it explicitly.
  */
 export interface CapabilityWalkResult {
   readonly perStep: ReadonlyMap<string, GrantDeclarations>;
@@ -105,14 +71,12 @@ export interface CapabilityWalkResult {
 
 /**
  * Static tool declarations a plugin package contributes, keyed by the
- * plugin-package name an agent names in `AgentDefinition.plugins`. A
- * plugin package contributes NO agent-visible tool factory (its tools reach
- * the agent through `env.plugins` at run time), so the walk cannot read the
- * plugin's tool grant surface off the definition alone. The caller (the
- * probe, over the materialized closure) loads each declared plugin's static
- * `definitions` and threads them here so the walk emits `tool:<name>` grants
- * for plugin-contributed tools alongside factory-contributed ones. Empty
- * when the walked closure declares no plugin package.
+ * plugin-package name an agent names in `AgentDefinition.plugins`. A plugin
+ * contributes NO agent-visible tool factory (its tools reach the agent
+ * through `env.plugins` at run time), so the walk cannot read its grant
+ * surface off the definition alone; the caller loads each declared plugin's
+ * static `definitions` and threads them here. Empty when the walked closure
+ * declares no plugin package.
  */
 export type PluginToolDefinitions = ReadonlyMap<
   string,
@@ -120,10 +84,8 @@ export type PluginToolDefinitions = ReadonlyMap<
 >;
 
 /**
- * Mutable accumulator threaded through the collectors while a single
- * step is walked. `grants` is the deduplicated grant-string set;
- * `effects` maps each TOOL grant string to its effect. The two are
- * frozen into a `GrantDeclarations` once the step is fully walked.
+ * Mutable accumulator threaded through the collectors while a single step is
+ * walked. Frozen into a `GrantDeclarations` once the step is fully walked.
  */
 interface GrantSet {
   readonly grants: Set<string>;
@@ -133,8 +95,8 @@ interface GrantSet {
 
 /**
  * Fold the deployment-wide trigger grants into a step's collected
- * agent/action/loop grants and freeze the result. Trigger grants are
- * never TOOL grants, so they add to `grants` without touching `effects`.
+ * agent/action/loop grants and freeze the result. Trigger grants are never
+ * TOOL grants, so they add to `grants` without touching `effects`.
  */
 function freezeDeclarations(
   collected: GrantSet,
@@ -152,12 +114,10 @@ function freezeDeclarations(
 
 /**
  * Walk a workflow definition and produce per-step grant declarations.
- *
- * The walk visits every step's agent definition once; trigger-derived
- * grants (`mail.address:` / `mail.send:`) are attached to every step
- * because the workflow's mail-receive and mail-send authority is a
- * deployment-wide property -- any step can be the one whose run
- * consumes inbound mail or generates a reply.
+ * Trigger-derived grants (`mail.address:` / `mail.send:`) are attached to
+ * every step because mail-receive/send authority is a deployment-wide
+ * property: any step can be the one whose run consumes inbound mail or
+ * generates a reply.
  */
 export function walkCapabilities(
   workflow: WorkflowDefinition,
@@ -239,10 +199,9 @@ function emptyGrantSet(): GrantSet {
 }
 
 /**
- * Project a primitive to its agent definition when it carries one.
- * `step` and `map` are the agent-carrying shapes today; other
- * primitives have no agent, so they receive only the trigger-derived
- * grant set.
+ * Project a primitive to its agent definition when it carries one. Only
+ * `step` and `map` are agent-carrying shapes today; other primitives
+ * receive only the trigger-derived grant set.
  */
 function extractAgent(
   primitive: WorkflowDefinition["steps"][string],
@@ -256,10 +215,7 @@ function extractAgent(
   return null;
 }
 
-/**
- * Collect an action's `effect:<cap>` grants from its declared `requires`
- * set. Non-action primitives contribute none.
- */
+/** Collect an action's `effect:<cap>` grants from its declared `requires`. */
 function collectActionGrants(
   primitive: WorkflowDefinition["steps"][string],
 ): string[] {
@@ -274,21 +230,18 @@ function collectActionGrants(
 }
 
 /**
- * Union a single primitive's grants into `collected`: its agent grants (when
- * it carries an agent), its action `effect:<cap>` grants, and -- for a
- * body-bearing primitive -- the grants of every step of its nested body. A
- * loop, an inline onTrigger section, and an inline childWorkflow each run their
- * body per the deployment, so the operator must approve everything the body can
- * run. That is exactly `EXECUTABLE_STEP_DESCENT`: every step the deployment can
- * execute, including the ones a lifted body owns. A `{ ref }` body is a
+ * Union a single primitive's grants into `collected`: its own grants plus,
+ * for a body-bearing primitive, the grants of every step of its nested body.
+ * A loop, an inline onTrigger section, and an inline childWorkflow each run
+ * their body per the deployment, so the operator must approve everything the
+ * body can run -- exactly `EXECUTABLE_STEP_DESCENT`. A `{ ref }` body is a
  * separately-declared asset whose grants were folded in from its own inline
  * form, so the descent skips it.
  *
- * Duplicate-name handling is scoped per body step: `collectAgentGrants` throws
- * on a duplicate within a single agent, but two DIFFERENT body steps that each
- * mint the same `tool:<name>` are distinct runtime agents (the runtime builds
- * one agent per step), so the union across body steps is not a duplicate-name
- * error.
+ * Duplicate-name handling is scoped per body step: a duplicate within a
+ * single agent throws, but two DIFFERENT body steps that each mint the same
+ * `tool:<name>` are distinct runtime agents, so the union across body steps
+ * is not a duplicate-name error.
  */
 function collectPrimitiveGrants(
   primitive: WorkflowDefinition["steps"][string],
@@ -309,9 +262,9 @@ function collectPrimitiveGrants(
 }
 
 /**
- * Union the grants a single primitive declares in its own right -- its agent's
- * grants and its action's `effect:<cap>` grants -- into `collected`, without
- * descending into anything it nests.
+ * Union the grants a single primitive declares in its own right -- its
+ * agent's grants and its action's `effect:<cap>` grants -- into `collected`,
+ * without descending into anything it nests.
  */
 function collectOwnGrants(
   primitive: WorkflowDefinition["steps"][string],
@@ -336,19 +289,16 @@ function collectAgentGrants(
   unresolved: Set<string>,
   collected: GrantSet,
 ): void {
-  // Track the final tool names this agent has minted so a collision
-  // across the agent's factories throws here rather than surfacing as a
-  // runtime DuplicateToolError (see resolveTools in
-  // packages/agent/src/agent.ts) after the deploy has already gone out.
+  // Track final tool names so a collision across the agent's factories or
+  // plugins throws here rather than surfacing as a runtime DuplicateToolError
+  // after the deploy has already gone out.
   const seenToolNames = new Set<string>();
   for (const factory of agent.toolFactories) {
     // Gate 2 keys the consumer on the factory id, including a factory whose
     // `definitions` array is empty and therefore emits no `tool:` grant.
     collected.credentialConsumers.add(toolConsumer(factory.id));
-    // Intra-factory: a repeated name within one factory's declarations
-    // is a declaration bug; the runtime would collapse the two into one
-    // dispatch entry, leaving one tool unreachable. Surface it at walk
-    // time.
+    // A repeated name within one factory's declarations is a declaration bug;
+    // the runtime would collapse the two into one dispatch entry.
     const seenInFactory = new Set<string>();
     for (const definition of factory.definitions) {
       if (seenInFactory.has(definition.name)) {
@@ -362,13 +312,12 @@ function collectAgentGrants(
       emitToolGrant(definition, collected);
     }
   }
-  // Plugin-contributed tools. A plugin package (`agent.plugins`) exposes
-  // its tools through `env.plugins` at run time, so they never appear in
-  // `agent.toolFactories`; the loaded static `definitions` supplied by the
-  // caller carry the tool names to authorize. A plugin tool sharing a name
-  // with a factory tool (or another plugin's tool) is a real collision --
-  // both dispatch under the same bare runtime name -- so it flows through
-  // the SAME `seenToolNames` guard.
+  // Plugin-contributed tools never appear in `agent.toolFactories` (they reach
+  // the agent through `env.plugins`), so the caller-supplied static
+  // `definitions` carry the names to authorize. A plugin tool sharing a name
+  // with a factory or another plugin is a real collision -- both dispatch
+  // under the same bare runtime name -- so it flows through the same
+  // `seenToolNames` guard.
   for (const pluginName of agent.plugins ?? []) {
     const definitions = pluginDefs.get(pluginName);
     if (definitions === undefined) {
@@ -401,14 +350,11 @@ function collectAgentGrants(
 }
 
 /**
- * Add a tool's `tool:<name>` grant and its authorization effect to the
- * collected set, applying the ask-wins merge. `collected` is one GrantSet
- * shared across every body step of a loop, so two body steps declaring the
- * same bare tool name write the same `tool:<name>` key; a plain overwrite
- * would let a later unmarked declaration downgrade an earlier `ask` to
- * `allow`, so keep `ask` if either the existing or incoming effect asks.
- * Shared by the factory-declared and plugin-contributed tool paths so both
- * derive the effect through the one canonical `toolApprovalEffect` mapping.
+ * Add a tool's `tool:<name>` grant and its authorization effect, applying
+ * the ask-wins merge. `collected` is one GrantSet shared across every body
+ * step of a loop, so two body steps declaring the same bare tool name write
+ * the same key; a plain overwrite would let a later unmarked declaration
+ * downgrade an earlier `ask` to `allow`, so keep `ask` if either side asks.
  */
 function emitToolGrant(definition: ToolDeclaration, collected: GrantSet): void {
   const grant = `tool:${definition.name}`;
@@ -443,13 +389,11 @@ function extractDomain(address: string): string | null {
 }
 
 /**
- * Thrown when the walk finds two tool definitions that mint the same
- * final `tool:<name>` grant within a single agent -- whether from a
- * repeated name inside one factory or a collision across two of the
- * agent's factories. Mirrors the runtime `DuplicateToolError` (see
- * `resolveTools` in `packages/agent/src/agent.ts`), surfacing the
- * collision at deploy time so a broken agent fails the walk instead of
- * deploying and then crashing when `createAgent` builds it.
+ * Thrown when the walk finds two tool definitions that mint the same final
+ * `tool:<name>` grant within a single agent. Mirrors the runtime
+ * `DuplicateToolError`, surfacing the collision at deploy time so a broken
+ * agent fails the walk instead of deploying and then crashing when
+ * `createAgent` builds it.
  */
 export class DuplicateWalkToolError extends Error {
   readonly toolName: string;

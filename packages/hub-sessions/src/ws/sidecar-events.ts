@@ -1,23 +1,16 @@
 // Typed event emitter for the sidecar router.
 //
-// The router emits events at the points where wire-layer frame handling
-// completes and a host-side decision or side effect is required. Two
-// emission shapes are exposed:
-//
 // - `emit(type, payload)` — notification semantics. Each listener runs
-//   inside its own try/catch; a thrown error is logged and does not
-//   affect other listeners or the wire layer. Used for events whose
-//   outcome does not feed back into protocol behavior.
+//   inside its own try/catch; a throw is logged and does not affect
+//   other listeners or the wire layer.
 //
 // - `emitAndAwait(type, payload)` — sequential await semantics.
 //   Listeners run in registration order; the first rejection propagates
-//   to the caller and stops the chain. Used for events whose outcome
-//   affects subsequent wire-layer state (e.g. reconnect rollback).
+//   to the caller and stops the chain.
 //
-// The TSDoc on each entry in `SidecarEventMap` records which semantic
-// applies. Mixing the two on a single event is intentional: today's
-// wire layer already has both behaviors, and pretending otherwise
-// would silently change failure handling.
+// The TSDoc on each `SidecarEventMap` entry records which semantic
+// applies; mixing the two on one event is intentional, since the wire
+// layer already has both behaviors.
 
 import type {
   PackRejectReason,
@@ -59,7 +52,7 @@ export type WorkflowRunPackSource = {
  * Outcome of reserving a mail-triggered run's grants. `skip` means the
  * recipient names no workflow deployment; `rejected` means the deployment's
  * stable run is terminal or its requirements cannot be authorized;
- * `materialized` carries the canonical persisted wire rows.
+ * `materialized` carries the persisted wire rows.
  */
 export type MailTriggeredRunGrantsResult =
   | { outcome: "skip" }
@@ -100,7 +93,7 @@ export type SidecarEventMap = {
   };
 
   /** Notification. Emitted when a mail.outbound frame from a sidecar
-   * names recipients that the wire layer could not deliver locally and
+   * names recipients the wire layer could not deliver locally and
    * could not enqueue for a disconnected agent. The host is free to
    * relay it onto an external transport or drop it. */
   "mail.outbound.undelivered": {
@@ -109,9 +102,7 @@ export type SidecarEventMap = {
   };
 
   /** Notification. Emitted once per row produced by the host's
-   * `persistMail` lookup. The wire layer calls `persistMail` to obtain
-   * the rows; this event fires for each so subscribers can react
-   * per-row (e.g. dispatch a delivered event). */
+   * `persistMail` lookup; the wire layer attaches `raw` to each row. */
   "mail.persisted": SidecarMailPersistedPayload;
 
   /** Notification after a sidecar confirms a mail trigger is in its durable
@@ -143,10 +134,9 @@ export type SidecarEventMap = {
 
   /** Notification. Emitted when the sidecar reports a change to an
    * agent's connector-thread state. The wire layer caches the state
-   * per agent so the host can read it via
-   * `router.getConnectorState(agentAddress)`; this event is for hosts
-   * that want to observe transitions directly. `connectorState` is
-   * `null` when the agent has no active connector thread. */
+   * per agent for `router.getConnectorState(agentAddress)`; this event
+   * is for hosts that want to observe transitions directly.
+   * `connectorState` is `null` when the agent has no active thread. */
   "connector.state.changed": {
     agentAddress: string;
     connectorState: ConnectorThreadState | null;
@@ -249,10 +239,9 @@ export type SidecarLookups = {
   /** Re-resolves a reconnecting deployment's current credential delivery and
    * reconciles the child, so a credential revoked, deleted, or rotated while
    * the sidecar was disconnected is applied on reconnect (closing the offline
-   * window). Keyed by the run address. Fire-and-forget: the wire layer does not
-   * await it and it never throws -- a failure is logged and dropped, like the
-   * best-effort source-update pushes. No-ops for a run that persisted no
-   * credential refs. */
+   * window). Fire-and-forget: the wire layer does not await it and it never
+   * throws -- a failure is logged and dropped. No-ops for a run that persisted
+   * no credential refs. */
   resyncCredentials?: (agentAddress: string) => void;
 
   /** Persists a delivered outbound mail frame. Returns one row per
@@ -268,43 +257,29 @@ export type SidecarLookups = {
    * or `null` when the sender has no resolvable key (a run whose deploy is not
    * yet acked, an address matching no known principal). The `mail.inbound` frame
    * carries the result so a recipient verifies the signature locally against the
-   * hub-resolved key rather than the message's own spoofable From. Returns only
-   * the key string, not its source, so the recipient cannot branch on sender
-   * kind.
+   * hub-resolved key rather than the message's spoofable From.
    *
-   * Best-effort: this NEVER throws. A resolution fault degrades to `null`
-   * (logged at ERROR by the resolver), so a key-resolution problem can never
-   * block mail delivery. The strict, throwing resolver is `resolveSenderKey`
-   * in `@intx/db`; the reconnect reconciliation consumes it through
-   * `resolveSenderKeyStrict` below, which needs to tell a fault from a genuine
-   * absence. */
+   * Best-effort: NEVER throws; a resolution fault degrades to `null`, so a
+   * key-resolution problem can never block mail delivery. The strict, throwing
+   * resolver lives in `@intx/db`; the reconnect reconciliation consumes it via
+   * `resolveSenderKeyStrict` below. */
   resolveSenderKey?: (address: string) => Promise<string | null>;
 
-  /** Strict sibling of `resolveSenderKey` for the reconnect reconciliation. The
-   * register/reconnect handler re-resolves each reported cached sender and acts
-   * on the three-way outcome the best-effort resolver collapses:
-   *   - returns the hex key when the sender resolves -> push `sender.key.refresh`;
-   *   - returns `null` for a CONFIRMED absence (no matching principal = a deleted
-   *     sender) -> push `sender.key.evict`;
-   *   - THROWS on a fault (ambiguous address, a keyless-principal invariant
-   *     break, a DB error) -> keep the stale cached key, evict nothing.
-   * Never evicting on a throw is load-bearing: dropping a live key on a
-   * transient DB fault would be worse than doing nothing. Wraps the strict
-   * `resolveSenderKey` in `@intx/db` (unwrapped to the key string). Note the
-   * naming inversion: in `@intx/db` the STRICT resolver is `resolveSenderKey`
-   * and the best-effort one is `resolveFrameSenderKey`, whereas on this lookup
-   * type the best-effort field is `resolveSenderKey` and this is the strict
-   * one. */
+  /** Strict sibling of `resolveSenderKey` for the reconnect reconciliation.
+   * Three-way outcome the best-effort resolver collapses: key -> push
+   * `sender.key.refresh`; `null` (deleted sender) -> push `sender.key.evict`;
+   * THROWS (fault) -> keep the stale key, evict nothing. Never evicting on a
+   * throw is load-bearing: dropping a live key on a transient DB fault would
+   * be worse than doing nothing. Wraps the strict `resolveSenderKey` in
+   * `@intx/db`. */
   resolveSenderKeyStrict?: (address: string) => Promise<string | null>;
 
   /** Co-writes the `signal_correlation` routing row and the `approval` row
-   * for a suspending workflow agent step, in one transaction. Called from
-   * the `signal.correlation.register` frame handler after the wire layer has
-   * confirmed the sending sidecar owns `agentAddress`. Idempotent: a
-   * redelivered frame (reconnect, workflow-log replay, supervisor restart
-   * re-emitting) is a no-op, not an error. The wire layer does not carry
-   * `signalName`; the host derives it from `correlationId`. Resolves the
-   * tenancy from the workflow deployment the address names. */
+   * for a suspending workflow agent step, in one transaction, called after
+   * the wire layer confirms the sending sidecar owns `agentAddress`.
+   * Idempotent: a redelivered frame (reconnect, log replay, supervisor
+   * restart re-emit) is a no-op. The wire layer does not carry `signalName`;
+   * the host derives it from `correlationId`. */
   registerSignalCorrelation?: (args: {
     correlationId: string;
     runId: string;
@@ -316,17 +291,17 @@ export type SidecarLookups = {
 
   /** Reserves a mail-triggered workflow run's grants from the receiving
    * deployment's definition, returning a discriminated result the
-   * `mail.outbound` handler orders against delivery. Called for each recipient
-   * that is a workflow deployment. The `runId` is the deployment's stable
+   * `mail.outbound` handler orders against delivery. Called for each workflow
+   * deployment recipient; the `runId` is the deployment's stable
    * address-derived run id.
    *
    * On `materialized`, `stepGrants` are already persisted and the caller sends
-   * them ahead of the inbound mail. Reservation is idempotent on the runId, so
-   * a redelivered inbound mail neither double-mints nor throws. On `skip` the
-   * address names no deployed workflow deployment, so no grants are sent and
-   * the mail still forwards. On `rejected` the stable run is terminal or a
-   * declared requirement's authority is insufficient; the caller fails the
-   * mail closed for that recipient. */
+   * them ahead of the inbound mail; reservation is idempotent on the runId, so
+   * a redelivered mail neither double-mints nor throws. On `skip` the address
+   * names no deployed workflow, so no grants are sent and the mail still
+   * forwards. On `rejected` the stable run is terminal or a requirement's
+   * authority is insufficient; the caller fails the mail closed for that
+   * recipient. */
   materializeMailTriggeredRunGrants?: (args: {
     agentAddress: string;
     runId: string;

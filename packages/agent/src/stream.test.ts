@@ -100,14 +100,13 @@ describe("createStreamConsumer", () => {
     const r1 = await pending;
     expect(r1.done).toBe(false);
 
-    // Now buffer 2 events (capacity), then a 3rd while another waiter is
-    // pending — wait, an immediate waiter would consume the 3rd directly.
-    // Instead saturate the buffer first.
+    // Now buffer 2 events (capacity), then a 3rd while another waiter
+    // is pending -- an immediate waiter would consume the 3rd
+    // directly, so saturate the buffer first.
     c.push(makeEvent(2));
     c.push(makeEvent(3));
-    // Saturated. A pending waiter at this point will be served from the
-    // buffer; the overflow only fires on a push that has no waiter and a
-    // full buffer.
+    // Saturated. A pending waiter is served from the buffer; overflow
+    // only fires on a push with no waiter and a full buffer.
     c.push(makeEvent(4));
 
     // Drain.

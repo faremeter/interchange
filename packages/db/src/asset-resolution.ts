@@ -7,9 +7,9 @@ import { getAncestorChain } from "./tenant-hierarchy";
 export type AssetRow = typeof asset.$inferSelect;
 
 /**
- * An asset row paired with the tenant that supplied it. `direct` is
- * true when the asset was declared on the input tenant itself, false
- * when it was inherited from an ancestor.
+ * An asset row paired with the tenant that supplied it. `direct` is true when
+ * the asset was declared on the input tenant itself, false when it was
+ * inherited from an ancestor.
  */
 export type AssetWithOrigin = AssetRow & {
   origin: { tenantId: string; direct: boolean };
@@ -67,11 +67,10 @@ const KIND_NAME_SEPARATOR = "\u0000";
 
 /**
  * Lists assets visible to the tenant, including those inherited from
- * ancestors. When two ancestors expose the same `(kind, name)` pair,
- * the descendant shadows the ancestor: the chain is walked leaf-to-root
- * and the first row to claim a `(kind, name)` key wins.
- *
- * When `kind` is supplied the result is filtered to that kind.
+ * ancestors. When two ancestors expose the same `(kind, name)` pair, the
+ * descendant shadows the ancestor: the chain is walked leaf-to-root and the
+ * first row to claim a `(kind, name)` key wins. When `kind` is supplied the
+ * result is filtered to that kind.
  */
 export async function listAssetsForTenant(
   db: DB["db"],

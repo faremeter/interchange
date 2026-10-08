@@ -217,14 +217,13 @@ describe("compactRunEvents", () => {
   });
 
   test("a sibling grants.json survives a seal", async () => {
-    // A run's per-run grants live at `runs/<runId>/grants.json` -- a sibling
-    // of the run's `events/` subtree, NOT under it. Compaction clears and
-    // rebuilds only the `events/` prefix (`writeTreePreservingPrefix` passes
-    // paths outside the prefix through unchanged), so the grants file must
-    // survive the seal and remain readable alongside the folded
-    // `events.jsonl`. The `runs/<runId>/` subtree is never pruned, so
-    // grants.json lives and is reclaimed on exactly the same schedule as the
-    // run's own retained event log.
+    // A run's per-run grants live at `runs/<runId>/grants.json`, a
+    // sibling of the run's `events/` subtree. Compaction clears and
+    // rebuilds only the `events/` prefix (`writeTreePreservingPrefix`
+    // passes paths outside the prefix through unchanged), so the
+    // grants file must survive the seal. The `runs/<runId>/` subtree
+    // is never pruned, so grants.json is reclaimed on the same
+    // schedule as the run's retained event log.
     const { repoId, substrate, supervisor, anchorRunId } =
       await setup("dep-grants");
     const grantsContents = JSON.stringify({
@@ -254,7 +253,8 @@ describe("compactRunEvents", () => {
       ).compacted,
     ).toBe(true);
 
-    // The per-event directory is gone, but the sibling grants file remains.
+    // The per-event directory is gone, but the sibling grants file
+    // remains.
     const grants = await fs.promises.readFile(
       path.join(substrate.getRepoDir(repoId), "runs", "run-1", "grants.json"),
       "utf8",

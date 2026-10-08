@@ -17,12 +17,9 @@ const repoRoot = resolve(import.meta.dirname ?? ".", "..");
 //    then pulling expression and JSON Schema from the runtime ArkType objects.
 // ---------------------------------------------------------------------------
 
-// Predicates appear in arktype schemas whenever a `.narrow` callback is
-// attached (e.g. ToolPackagePinArray's duplicate-name guard). Those rules
-// are runtime invariants that have no JSON-Schema analogue, so the
-// generator falls back to the predicate's base shape and keeps the
-// OpenAPI document focused on the wire shape. Validation still runs at
-// the REST boundary; the docs simply document the structural contract.
+// `.narrow` predicates are runtime invariants with no JSON-Schema analogue;
+// fall back to the predicate's base shape so the OpenAPI document stays
+// focused on the wire shape.
 const JSON_SCHEMA_OPTS = {
   fallback: {
     predicate: (ctx: { base: unknown }) => ctx.base,
@@ -156,8 +153,7 @@ function formatTypeName(schema: JsonSchema, tagHint?: string): string {
 // ---------------------------------------------------------------------------
 
 const app = createApp({
-  // Stub dependencies — this script only calls /openapi.json which uses
-  // route metadata, not runtime services. These stubs are never called.
+  // Only /openapi.json is called, which uses route metadata, not services.
   getSession: async () => null,
   authHandler: () => new Response("", { status: 404 }),
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- stub; only /openapi.json is called

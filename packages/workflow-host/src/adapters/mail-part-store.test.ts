@@ -138,9 +138,8 @@ describe("mail part store", () => {
   test("commits a part whose filename carries a Unicode line separator", async () => {
     const { opts, reader } = await makeStoreHandles("dep-ls", "dep-ls");
     // U+2028 slips through a naive control-char sanitizer but the kind
-    // handler's `<index>-<name>` regex rejects it (JS `.` excludes it). The
-    // sanitizer must strip it so the store's "satisfies the handler by
-    // construction" contract holds and the commit succeeds.
+    // handler's `<index>-<name>` regex rejects it (JS `.` excludes it);
+    // the sanitizer must strip it so the commit succeeds.
     const mail = await commitMail(opts, "<msg-ls@host>", {
       headers: headers(),
       rawHeaders: {},
@@ -157,10 +156,9 @@ describe("mail part store", () => {
   });
 
   test("resolves parts of multiple runs through one deployment-scoped reader", async () => {
-    // A childWorkflow / body step resolves a PARENT run's part: the reader is
-    // scoped to the deployment repo, not a single run, so a ref for any run
-    // committed under that repo resolves. This is the cross-run property the
-    // deployment-scoped ref exists for.
+    // A childWorkflow / body step resolves a PARENT run's part: the
+    // reader is scoped to the deployment repo, not a single run, so a
+    // ref for any run committed under that repo resolves.
     const dataDir = await makeTempDir();
     const repoId: RepoId = { kind: "workflow-run", id: "dep-x" };
     const principalShape = {
@@ -244,8 +242,8 @@ describe("mail part store", () => {
 
   test("reader rejects a compound-traversal ref", async () => {
     const { reader } = await makeStoreHandles("dep-trav", "dep-trav");
-    // `%2e%2e%2f%2e%2e` decodes to `../..`: a compound traversal that is not
-    // exactly `..`, so an equality-only guard would let it through.
+    // `%2e%2e%2f%2e%2e` decodes to `../..`: a compound traversal that
+    // is not exactly `..`, so an equality-only guard would let it through.
     await expect(
       reader.read("mail-part:///%2e%2e%2f%2e%2e/seg/0-x"),
     ).rejects.toThrow(/malformed ref/);

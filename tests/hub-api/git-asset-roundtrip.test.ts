@@ -1,8 +1,7 @@
-// Clone → edit → commit → push → fresh clone roundtrip.
-//
-// Asserts the on-disk content and the HEAD SHA match between the two
-// clones, demonstrating that the upload-pack/receive-pack pair
-// round-trips both objects and refs through the smart-HTTP layer.
+// Clone → edit → commit → push → fresh clone roundtrip. Asserts the
+// on-disk content and HEAD SHA match between the two clones, proving the
+// upload-pack/receive-pack pair round-trips objects and refs over
+// smart-HTTP.
 
 import { describe, test, expect, afterEach } from "bun:test";
 import fs from "node:fs/promises";
@@ -85,11 +84,9 @@ describe.skipIf(!harnessHubEnvAvailable())(
       })) {
         await runGit(["config", k, v], { cwd: c1 });
       }
-      // HEAD is advertised as a symref pointing at refs/heads/main, so
-      // stock `git clone` already left a born HEAD checked out on the
-      // local main branch. The explicit checkout below is a no-op on the
-      // happy path and would diverge if the symref ever regresses; assert
-      // HEAD's pre-checkout state matches refs/remotes/origin/main first.
+      // HEAD is advertised as a symref to refs/heads/main, so the clone
+      // already has a born HEAD; assert its pre-checkout state matches
+      // refs/remotes/origin/main so a symref regression fails here.
       {
         const headRev = await runGit(["rev-parse", "HEAD"], { cwd: c1 });
         if (headRev.status !== 0) {
@@ -153,7 +150,7 @@ describe.skipIf(!harnessHubEnvAvailable())(
       expect(head2.stdout.trim()).toBe(head1Sha);
 
       // The advertise layer projects HEAD as a symref, so the fresh
-      // clone also has a born HEAD that resolves to the same SHA.
+      // clone's HEAD resolves to the same SHA.
       const head2Head = await runGit(["rev-parse", "HEAD"], { cwd: c2 });
       if (head2Head.status !== 0) {
         throw new Error(`rev-parse HEAD failed in c2: ${head2Head.stderr}`);

@@ -1,41 +1,31 @@
 // Assertion matchers for `InferenceEvent[]` collected from a harness run.
 //
-// The matchers are plain functions returning chainable objects rather than
-// `expect.extend(...)` registrations, so they work uniformly across bun:test
-// and any runner that supports calling functions. Each terminal method
-// throws a descriptive `Error` on failure — callers should let those bubble
-// up through bun:test's normal failure machinery.
+// Plain functions returning chainable objects rather than
+// `expect.extend(...)` registrations, so they work across bun:test and any
+// runner that supports calling functions. Each terminal method throws a
+// descriptive `Error` on failure.
 
 import type { ContentBlock, InferenceEvent } from "@intx/types/runtime";
 
 /**
- * Partial expectation against an `InferenceEvent`. The `type` is required;
- * any other field is a structural sub-match: numbers / strings / booleans
- * compared by `Object.is`, objects compared recursively, arrays compared
- * element-wise.
+ * Partial expectation against an `InferenceEvent`. `type` is required; any
+ * other field is a structural sub-match: primitives by `Object.is`, objects
+ * recursively, arrays element-wise.
  *
- * Object matching is partial — fields absent from the partial are ignored
- * on the actual value. Array matching is NOT partial: `partial` and
- * `actual` must have the same length, and elements are compared by
- * position. To assert against a single array element by index, name it
- * with the surrounding object structure rather than supplying a
- * partial-length array.
+ * Objects match partially (fields absent from the partial are ignored);
+ * arrays match exactly — same length, compared by position. To assert a
+ * single array element, name it via the surrounding object structure.
  */
 export type EventPartial = {
   type: InferenceEvent["type"];
 } & Partial<Record<string, unknown>>;
 
 /**
- * Structural deep-match used by the matchers. Returns true iff every
- * property in `partial` is satisfied by `actual`.
- *
- * Arrays are compared element-wise: `partial` and `actual` must have the
- * same length, and each pair must match. Objects compare every key in
- * `partial` (extras in `actual` are ignored). Primitives use `Object.is`,
- * which gives NaN-aware equality.
- *
- * The matcher walks unknown shapes, so it tolerates `InferenceEvent`
- * variants without bespoke per-type handling.
+ * Structural deep-match used by the matchers. Every property in `partial`
+ * must be satisfied by `actual`. Arrays match element-wise and
+ * same-length; objects match every key in `partial` (extras in `actual`
+ * are ignored); primitives use NaN-aware `Object.is`. Walks unknown
+ * shapes, so `InferenceEvent` variants need no bespoke handling.
  */
 function deepMatchPartial(partial: unknown, actual: unknown): boolean {
   if (partial === actual) return true;
@@ -94,40 +84,24 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Fluent assertion API returned by `expectEvents`. The wrapper carries the
- * events array; chained `to*` methods perform the assertion and return
- * `this` so further assertions can be chained.
+ * Fluent assertion API returned by `expectEvents`. Chained `to*` methods
+ * perform the assertion and return `this` for further chaining.
  */
 export type EventAssertion = {
   /**
-   * Assert that the events array contains an ordered subsequence matching
-   * every entry in `expected`. Gaps between matches are permitted, so a
-   * sequence like `[start, done]` succeeds against an actual run that
-   * carried `[start, text.delta, usage, done]`. Each expected entry is a
-   * partial: `type` is required, every other field is structurally matched
-   * against the actual event.
-   *
-   * Object fields inside an expected entry are matched partially (missing
-   * keys on the partial are ignored). Array fields are matched
-   * exact-length, element-by-position — they are NOT partial. To assert
-   * against a single element of a longer array, write a partial that
-   * names the array's surrounding object structure but skips the array
-   * field entirely, or assert against a different event that exposes the
-   * element directly.
-   *
-   * Throws on the first expected entry that cannot be matched at or after
-   * the cursor position.
+   * Assert the events array contains an ordered subsequence matching
+   * every entry in `expected`; gaps between matches are permitted. Each
+   * entry is a partial: `type` required, other fields structurally
+   * matched (objects partial, arrays exact-length by position). Throws on
+   * the first expected entry that cannot be matched at or after the
+   * cursor position.
    */
   toMatchSequence(expected: readonly EventPartial[]): EventAssertion;
 };
 
 /**
- * Wrap a collected events array in an assertion API. The wrapper is the
- * minimum surface required by the spec: ordered sub-sequence matching with
- * gaps allowed. Additional matchers can be added on a need-to-match basis.
- *
- * The events themselves are immutable from the matcher's perspective; the
- * wrapper does not mutate them.
+ * Wrap a collected events array in an assertion API: ordered sub-sequence
+ * matching with gaps allowed. The events are never mutated.
  */
 export function expectEvents(
   events: readonly InferenceEvent[],
@@ -168,8 +142,7 @@ export function expectEvents(
 
 /**
  * Result entry from `expectToolCalls`. Mirrors the `inference.tool_call.end`
- * data shape so authors can write assertions in the same vocabulary the
- * harness emits.
+ * data shape.
  */
 export type CollectedToolCall = {
   name: string;
@@ -198,10 +171,9 @@ export type ToolCallsAssertion = {
 };
 
 /**
- * Collect every `inference.tool_call.end` event from `events` and wrap it in
- * an assertion API. Use the resulting `toInclude({ name, arguments })` to
- * assert presence; the matcher allows arbitrary other tool calls in the
- * same run.
+ * Collect every `inference.tool_call.end` event from `events` and wrap it
+ * in an assertion API. `toInclude({ name, arguments })` asserts presence;
+ * other tool calls in the same run are allowed.
  */
 export function expectToolCalls(
   events: readonly InferenceEvent[],
@@ -246,26 +218,20 @@ export function expectToolCalls(
 /**
  * Fluent assertion API returned by `expectToolCall(name).from(events)`.
  *
- * The two-step shape lets the caller name the tool of interest up-front and
- * then evaluate properties of its occurrences in the events array.
+ * The two-step shape names the tool of interest up-front, then evaluates
+ * properties of its occurrences.
  */
 export type SingleToolCallAssertion = {
   /**
-   * Assert that the named tool was called exactly `n` times. Counts
-   * `inference.tool_call.end` events matching the captured name.
+   * Assert the named tool was called exactly `n` times (counting
+   * `inference.tool_call.end` events for that name).
    */
   toHaveBeenCalledTimes(n: number): SingleToolCallAssertion;
 };
 
 /**
- * Build a single-tool assertion bound to the supplied `name`. The returned
- * `from(events)` method materializes the assertion against a collected
- * events array.
- *
- * The two-step shape exists because the matcher needs to count occurrences
- * of a specific name; binding the name first matches the spec's
- * `expectToolCall(name).toHaveBeenCalledTimes(n)` reading and avoids
- * repeating the events argument when chaining multiple assertions.
+ * Build a single-tool assertion bound to `name`; its `from(events)` method
+ * materializes the assertion against a collected events array.
  */
 export function expectToolCall(name: string): {
   from(events: readonly InferenceEvent[]): SingleToolCallAssertion;
@@ -295,14 +261,11 @@ export function expectToolCall(name: string): {
 // Media block matchers
 //
 // Content blocks that carry a MediaSource (image, audio, video, document)
-// can hold base64 payloads in the megabyte range — Anthropic's image-output
-// captures show ~1MB blobs. A failing assertion that serializes the whole
-// block leaves multi-MB of base64 in test logs, which makes debugging the
-// failure dramatically worse than the failure itself.
-//
-// `expectMediaBlock` is the assertion entry point that formats failure
-// messages with an elided representation: kind, mime, source discriminant,
-// and decoded byte length — never the raw `data` field. Use this matcher
+// can hold base64 payloads in the megabyte range. A failing assertion that
+// serializes the whole block leaves multi-MB of base64 in test logs, making
+// the failure harder to debug than it needs to be. `expectMediaBlock`
+// formats failures with an elided representation: kind, mime, source
+// discriminant, decoded byte length — never the raw `data` field. Use it
 // instead of `expect(block).toEqual(...)` for any media block whose source
 // kind might be `"base64"`.
 // ---------------------------------------------------------------------------
@@ -337,15 +300,12 @@ export type MediaBlockAssertion = {
 
 /**
  * Decode the byte length of a base64 string without materializing the
- * decoded bytes. Each four base64 characters encode three bytes, less
- * trailing `=` padding.
+ * decoded bytes: four base64 characters encode three bytes, less trailing
+ * `=` padding.
  *
- * Validates structural invariants — length divisible by 4 and at most
- * two trailing padding chars — and throws on violation. A silent
- * fallback that returns a meaningless count (negative numbers for
- * stray `=` clusters) would let downstream assertions like
- * `toHaveByteLengthAtLeast(-2)` pass on garbage; surfacing the
- * malformed input loudly forces callers to feed real base64.
+ * Throws on structural violations (length not divisible by 4, more than
+ * two padding chars) so malformed input cannot pass assertions like
+ * `toHaveByteLengthAtLeast(-2)` silently.
  */
 function base64ByteLength(b64: string): number {
   if (b64.length % 4 !== 0) {

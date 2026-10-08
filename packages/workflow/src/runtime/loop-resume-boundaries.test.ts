@@ -1,8 +1,7 @@
-// Temp critique test: exercise loop-resume truncation boundaries the
-// committed loop-resume.test.ts does not: crash at container-start,
-// clean between-iteration boundary, exhausted path, and the
-// post-routing window (skip sentinels durable, container StepCompleted
-// not yet landed).
+// Exercise loop-resume truncation boundaries loop-resume.test.ts does not:
+// crash at container-start, clean between-iteration boundary, exhausted
+// path, and the post-routing window (skip sentinels durable, container
+// StepCompleted not yet landed).
 
 import { describe, test, expect } from "bun:test";
 
@@ -250,8 +249,8 @@ describe("loop resume boundaries (critique)", () => {
 
   test("crash after final iteration StepCompleted but before routing (exhaust)", async () => {
     // maxIterations=3 -> iterations 0,1,2. Truncate right after the last
-    // iteration's StepCompleted; the replay must detect exhaustion from
-    // the log alone, then route + complete the container.
+    // iteration's StepCompleted; the replay must detect exhaustion from the
+    // log alone, then route and complete the container.
     const { effectRuns, result2 } = await runThenResume(
       parentExhaust,
       (e) => e.kind === "StepCompleted" && e.stepId === "rework[2]",
@@ -282,11 +281,9 @@ describe("loop resume boundaries (critique)", () => {
   });
 
   test("crash between an iteration's ChildCompleted and its StepCompleted", async () => {
-    // The suspendable-loop drive flushes ChildCompleted (inside
-    // driveSuspendableOccurrence) BEFORE the caller flushes the scoped
-    // StepCompleted[i]. That split creates a crash window the old single-flush
-    // loop did not have: ChildCompleted for rework__0 is durable but its
-    // StepCompleted[rework[0]] is not, so isIterationDone is false and the
+    // The drive flushes ChildCompleted before the caller flushes the scoped
+    // StepCompleted[i]. That split creates a crash window: ChildCompleted for
+    // rework__0 is durable but StepCompleted[rework[0]] is not, so the
     // iteration is re-driven. The re-driven effect must NOT double-fire.
     const { effectRuns, result2 } = await runThenResume(
       parentConverge,

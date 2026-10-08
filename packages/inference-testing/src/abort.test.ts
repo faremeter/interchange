@@ -34,14 +34,14 @@ describe("scenario.abortAt", () => {
         signal: ac.signal,
       });
       // The matcher binds eagerly on the register-scan, so the response
-      // resolves once the next runScan trigger fires; advance until the
+      // resolves once the next scan trigger fires; advance until the
       // abort lands and verify what arrived.
       await harness.advanceTo(20);
       const response = await fetchPromise;
       expect(ac.signal.aborted).toBe(false);
 
-      // The reader is now consuming. Advance past the abort time; the
-      // controller should be errored and subsequent reads must reject.
+      // The reader is now consuming; advance past the abort time. The
+      // controller must be errored and subsequent reads must reject.
       const body = response.body;
       if (body === null) throw new Error("response body is null");
       const reader = body.getReader();
@@ -50,8 +50,8 @@ describe("scenario.abortAt", () => {
       expect(first.done).toBe(false);
       expect(decoder.decode(first.value)).toBe("before-abort");
 
-      // Advance through the abort time. The matched-stream controller
-      // is errored synchronously when the abort signal fires (per-call
+      // Advance through the abort time. The matched-stream controller is
+      // errored synchronously when the abort signal fires (per-call
       // abort isolation hook in `routeWaitingFetch`).
       await harness.advanceTo(30);
       expect(ac.signal.aborted).toBe(true);
@@ -89,9 +89,9 @@ describe("scenario.abortAt", () => {
       expect(decoder.decode(first.value)).toBe("delivered");
 
       // Advance past the abort time. The per-call abort isolation
-      // listener cancels every pending chunk on this stream when the
-      // signal fires, so the t=50 chunk and t=60 close are no-ops; no
-      // "enqueue after terminal state" throw escapes advanceTo.
+      // listener cancels every pending chunk when the signal fires, so
+      // the t=50 chunk and t=60 close are no-ops; no "enqueue after
+      // terminal state" throw escapes advanceTo.
       await harness.advanceTo(60);
       expect(ac.signal.aborted).toBe(true);
       const abortErr = await expectAbortError(reader.read());
@@ -141,17 +141,16 @@ describe("scenario.abortAfter (wire-event predicate)", () => {
       const reader = body.getReader();
 
       // Drive the clock to t=5 and drain the first chunk before the
-      // trigger chunk fires. This pins what the consumer sees BEFORE
-      // the abort: bytes already delivered (read off the reader before
-      // the controller errors) are durable.
+      // trigger chunk fires, pinning that bytes already delivered are
+      // durable.
       await harness.advanceTo(5);
       const first = await reader.read();
       expect(decoder.decode(first.value)).toBe("event: open\n\n");
 
-      // Advance past the trigger chunk. The trigger fires, onChunkFired
-      // runs, predicate matches, abort fires, the per-call isolation
-      // listener cancels the tail chunk and close, and errors the
-      // controller. Reads after this point reject with AbortError.
+      // Advance past the trigger chunk: the trigger fires, the
+      // predicate matches, abort fires, the isolation listener cancels
+      // the tail chunk and close, and errors the controller. Reads
+      // after this reject with AbortError.
       await harness.advanceTo(40);
       expect(ac.signal.aborted).toBe(true);
 
@@ -187,9 +186,9 @@ describe("scenario.abortAfter (wire-event predicate)", () => {
       });
       await fetchPromise;
 
-      // First match at t=5 aborts; the abort listener cancels the t=10
-      // and t=20 entries, so advanceTo completes without re-firing the
-      // matcher. The abort event listener counts exactly one call.
+      // First match at t=5 aborts; the listener cancels the t=10 and
+      // t=20 entries, so advanceTo completes without re-firing the
+      // matcher. The abort listener counts exactly one call.
       await harness.advanceTo(20);
       expect(abortCount).toBe(1);
     } finally {
@@ -246,16 +245,16 @@ describe("per-call abort isolation (matched stream)", () => {
       expect(decoder.decode(b1.value)).toBe("beta-1");
 
       // Abort A. The matched-stream listener cancels A's pending chunks
-      // and errors A's controller. B must be unaffected.
+      // and errors A's controller; B must be unaffected.
       acA.abort();
 
       const aErr = await expectAbortError(readerA.read());
       expect(aErr.name).toBe("AbortError");
       expect(acB.signal.aborted).toBe(false);
 
-      // Drive B to completion. A's pending chunks were cancelled by
-      // the abort listener, so advanceTo runs cleanly — no spurious
-      // close on B and no enqueue-after-terminal throws from A.
+      // Drive B to completion. A's pending chunks were cancelled, so
+      // advanceTo runs cleanly — no spurious close on B and no
+      // enqueue-after-terminal throws from A.
       await harness.advanceTo(30);
       const b2 = await readerB.read();
       expect(decoder.decode(b2.value)).toBe("beta-2");
@@ -288,8 +287,8 @@ describe("harness.abortBefore(streamId)", () => {
       // Tool-handler-style: a scheduled callback at t=5 calls
       // abortBefore on its own stream, cancelling the t=10/t=20/t=30
       // enqueues and the t=40 close ahead of when they would have
-      // fired. The seq-ordering guarantee: cancelled callbacks pop
-      // off the heap as no-ops, so the body never sees them.
+      // fired; cancelled callbacks pop off the heap as no-ops, so the
+      // body never sees them.
       let aborted = false;
       harness.clock.schedule(5, () => {
         harness.abortBefore(stream.streamId);
@@ -370,11 +369,10 @@ describe("sync-throw stream cleanup via onSyncCallbackError", () => {
       if (body === null) throw new Error("response body is null");
       const reader = body.getReader();
 
-      // Drive the clock past the t=5 chunk so the reader has a chunk
-      // in flight before the throwing callback fires. This pins the
-      // semantics: bytes already DELIVERED to the consumer are not
-      // retroactively lost; only the queue inside the controller is
-      // dropped when the hook errors it.
+      // Drive the clock past the t=5 chunk so the reader has a chunk in
+      // flight before the throwing callback fires, pinning that bytes
+      // already DELIVERED are not retroactively lost; only the queue
+      // inside the controller is dropped when the hook errors it.
       await harness.advanceTo(7);
       const decoder = new TextDecoder();
       const first = await reader.read();
@@ -397,8 +395,8 @@ describe("sync-throw stream cleanup via onSyncCallbackError", () => {
       if (!(advanceErr instanceof Error)) throw new Error("unreachable");
       expect(advanceErr.message).toMatch(/synthetic callback failure/);
 
-      // The stream's controller was errored by the sync-throw hook.
-      // The reader's next read must reject; the would-be-second chunk
+      // The stream's controller was errored by the sync-throw hook; the
+      // reader's next read must reject, and the would-be-second chunk
       // at t=20 is never reached.
       let readErr: unknown;
       try {
@@ -410,11 +408,11 @@ describe("sync-throw stream cleanup via onSyncCallbackError", () => {
       if (!(readErr instanceof Error)) throw new Error("unreachable");
       expect(readErr.message).toMatch(/synthetic callback failure/);
 
-      // The sync-throw hook's `forceError` must have driven the stream
-      // into a terminal state and removed it from the harness's open-
-      // stream registry. We can't read the registry directly, but the
-      // `abortBefore` guard rejects on terminal streams; if the hook
-      // had not transitioned the stream, this would not throw.
+      // The hook's `forceError` must have driven the stream terminal and
+      // removed it from the open-stream registry. We can't read the
+      // registry directly, but `abortBefore` rejects on terminal
+      // streams; if the hook had not transitioned the stream, this
+      // would not throw.
       expect(() => harness.abortBefore(stream.streamId)).toThrow(
         /already in a terminal state/,
       );

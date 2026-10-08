@@ -13,23 +13,19 @@ import {
 import { generateId } from "@intx/hub-common";
 
 /**
- * The first-class `workflow_definition` a selector names, created if absent. A
- * native workflow carries its body in the asset it points at, so this only
- * projects a definition row -- plus its version "1" -- over that asset, keyed
- * by the selector's wire hash, so a run can anchor on a first-class definition.
- * A single asset backs many definitions distinguished by their wire hash, so
- * distinct hashes over one asset yield distinct definitions.
- * `currentVersion`/`status` are left to the table defaults; the definition
- * carries no `modelRequirements` manifest, so it deploys as a workflow rather
- * than launching as an instance.
+ * The first-class `workflow_definition` a selector names, created if absent.
+ * A native workflow carries its body in the asset it points at, so this only
+ * projects a definition row (plus version "1") over that asset, keyed by the
+ * selector's wire hash; distinct hashes over one asset yield distinct
+ * definitions. `currentVersion`/`status` keep table defaults and the row has
+ * no `modelRequirements` manifest, so it deploys as a workflow, not an
+ * instance.
  *
- * Idempotent and concurrency-safe: the definition insert conflicts on the
- * unique `(assetId, wireHash)` and the version on `(definitionId, version)`, so
- * two concurrent deploys of the same selector still yield exactly one
- * definition and one version. The returned id is read back after the conflict
- * -- the winner's id, not a locally-minted one -- so a losing insert anchors
- * its version on the real row. `created` distinguishes a fresh projection from
- * a pre-existing one for callers that report fold counts.
+ * Idempotent and concurrency-safe: the definition insert conflicts on unique
+ * `(assetId, wireHash)` and the version on `(definitionId, version)`, and the
+ * id is read back after a conflict so a losing insert anchors on the real row.
+ * `created` distinguishes a fresh projection for callers that report fold
+ * counts.
  */
 export async function ensureWorkflowDefinitionForAsset(
   db: DBExecutor,

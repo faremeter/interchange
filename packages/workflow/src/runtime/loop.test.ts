@@ -20,9 +20,9 @@ const allowAll: WorkflowAuthorizeFn = async () => ({
   resolvedBy: null,
 });
 
-// A loop body: one action that echoes its numeric input. The iteration
-// input arrives as the child run's trigger payload, so the action reads
-// it explicitly (actions do not take the default-input convention).
+// A loop body: one action echoing its numeric input. The iteration input
+// arrives as the child run's trigger payload, so the action reads it
+// explicitly (actions do not take the default-input convention).
 const body = defineWorkflow({
   id: "body",
   trigger: { type: "manual" },
@@ -197,8 +197,8 @@ describe("runLoop", () => {
     }).complete;
 
     expect(result.terminalStatus).toBe("completed");
-    // Converges after 3 iterations; each iteration is a distinct child
-    // run, so its effect key differs and each fires exactly once.
+    // Converges after 3 iterations; each is a distinct child run with its own
+    // effect key, so each fires exactly once.
     expect(effectRuns).toBe(3);
   });
 });

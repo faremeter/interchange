@@ -1,9 +1,8 @@
-// Selector edge cases: array index out-of-range and trailing-index
-// resolution must surface a `SelectorError` rather than silently
-// returning `undefined`. The H-R2 fix covered missing keys via the
-// `in` check on the key branch; the index branch needs the same
-// guard so an out-of-bounds index does not feed `undefined` into a
-// step as though no input were supplied.
+// Selector edge cases: array index out-of-range and trailing-index resolution
+// must surface a `SelectorError` rather than silently returning `undefined`.
+// The H-R2 fix covered missing keys via the `in` check on the key branch; the
+// index branch needs the same guard so an out-of-bounds index does not feed
+// `undefined` into a step as though no input were supplied.
 
 import { describe, test, expect } from "bun:test";
 

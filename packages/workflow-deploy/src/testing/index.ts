@@ -5,15 +5,12 @@
 // stored as). Production no longer folds new agents: the one live fold path
 // reads a folded definition back with `extractFoldedBody`, it never
 // synthesizes one, so this builder exists only to construct folded definitions
-// in tests. It is PURE: every impure input (the inference preferences resolved
+// in tests. It is PURE: every impure input (inference preferences resolved
 // against the tenant catalog, the mail trigger address) is supplied by the
 // caller, not computed here.
 //
-// Tools ride as `toolPackagePins` on the step agent (pins-only: the sidecar
-// materializes them and its tool floor authorizes them at runtime, exactly as
-// a deployed step agent does). The step agent's `toolFactories` is the empty array
-// by construction -- a folded definition has no live factories, and the
-// capability walk falls back to the (empty) factories to emit no tool grants.
+// Tools ride as `toolPackagePins` on the step agent; `toolFactories` is the
+// empty array by construction, so the capability walk emits no tool grants.
 
 import type { CredentialBinding, GrantRequirement } from "@intx/types";
 import type { ToolPackagePin } from "@intx/types/tool-packages";
@@ -29,9 +26,9 @@ export interface FoldedWorkflowInput {
   /** The workflow definition id (e.g. `wf_<agentId>`). */
   readonly workflowId: string;
   /**
-   * The mail trigger address. Supplied, never invented: routing keys on the
-   * deployment address, but this is the audit/grant record's mail identity and
-   * must match the deployment address the agent is folded onto.
+   * The mail trigger address. Supplied, never invented: this is the
+   * audit/grant record's mail identity and must match the deployment address
+   * the agent is folded onto.
    */
   readonly mailAddress: string;
   /** The agent's system prompt. Null makes the agent undeployable -- fail loud. */

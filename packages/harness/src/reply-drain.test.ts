@@ -1,8 +1,8 @@
-// Unit tests for the shared connector reply drain. The drain is exercised
-// against a plain async stream and stub compose/send/onReplySent seams --
-// no full agent or transport -- so the contract (one send per
-// connector.reply, correct threading headers, serialized ordering, and a
-// surfaced send failure) is asserted in isolation.
+// Unit tests for the shared connector reply drain, exercised against a
+// plain async stream and stub compose/send/onReplySent seams -- no full
+// agent or transport -- so the contract (one send per connector.reply,
+// correct threading headers, serialized ordering, surfaced send
+// failure) is asserted in isolation.
 
 import { describe, expect, test } from "bun:test";
 
@@ -21,8 +21,8 @@ function replyEvent(seq: number, content: string): InferenceEvent {
   return { type: "connector.reply", seq, data: { content } };
 }
 
-// A non-reply event the drain must ignore. `reactor.start` carries an empty
-// data object, so it is the cheapest event to interleave.
+// A non-reply event the drain must ignore; `reactor.start` is the
+// cheapest event to interleave.
 function noiseEvent(seq: number): InferenceEvent {
   return { type: "reactor.start", seq, data: {} };
 }
@@ -32,22 +32,21 @@ async function* streamOf(
 ): AsyncGenerator<InferenceEvent> {
   for (const event of events) {
     yield event;
-    // Yield to the microtask queue between events so the drain's reply chain
-    // has a chance to interleave, matching the real agent stream's async
+    // Yield to the microtask queue between events so the drain's reply
+    // chain can interleave, matching the real agent stream's async
     // delivery.
     await Promise.resolve();
   }
 }
 
 /**
- * A push-based event stream: a test feeds events with `push` and ends the
- * stream with `end`, so the barrier's capture-then-await ordering can be
- * exercised against a stream that stays open between events.
+ * A push-based event stream: a test feeds events with `push` and ends
+ * the stream with `end`, so the barrier's capture-then-await ordering
+ * can be exercised against a stream that stays open between events.
  *
- * `pulled()` reports how many events the consumer has taken off the queue.
- * The drain consumes serially, so `pulled()` reaching n+1 is a signal that
- * the drain finished its handling of event n -- which is what a test asserting
- * "event n changed nothing" needs, since there is no event of its own to await.
+ * `pulled()` reports how many events the consumer has taken off the
+ * queue. The drain consumes serially, so `pulled()` reaching n+1
+ * signals that the drain finished handling event n.
  */
 function pushStream(): {
   stream: AsyncGenerator<InferenceEvent>;
@@ -163,8 +162,9 @@ describe("driveConnectorReplies", () => {
 
     await drain.done;
 
-    // The resolver is consulted with the parent id from composeReply, and the
-    // full ancestry it returns rides onto the outbound message verbatim.
+    // The resolver is consulted with the parent id from composeReply,
+    // and the full ancestry it returns rides onto the outbound message
+    // verbatim.
     expect(resolvedFor).toEqual(["<parent@interchange>"]);
     expect(sent[0]?.references).toEqual([
       "<root@interchange>",
@@ -174,8 +174,7 @@ describe("driveConnectorReplies", () => {
   });
 
   test("omits references when the resolver reports no parent", async () => {
-    // A resolver miss (first reply on a fresh thread, malformed id) returns
-    // undefined; the drain then leaves `references` unset so the transport
+    // A resolver miss leaves `references` unset so the transport
     // derives a single-element chain from inReplyTo.
     const sent: OutboundMessage[] = [];
 
@@ -202,8 +201,7 @@ describe("driveConnectorReplies", () => {
 
   test("omits references with no resolver supplied", async () => {
     // The createHarness path supplies no resolver; the drain must leave
-    // `references` unset, preserving the pre-existing single-element
-    // threading the transport derives from inReplyTo.
+    // `references` unset (the transport derives a single-element chain).
     const sent: OutboundMessage[] = [];
 
     const drain = driveConnectorReplies({
@@ -227,10 +225,10 @@ describe("driveConnectorReplies", () => {
   });
 
   test("serializes replies so each composes against the advanced thread", async () => {
-    // A minimal connector-thread model: `onReplySent` advances the parent id
-    // that the next `composeReply` threads against. If the drain did not
-    // serialize compose -> send -> onReplySent, the second reply would
-    // compose against the pre-advance id.
+    // A minimal connector-thread model: `onReplySent` advances the
+    // parent id the next `composeReply` threads against. Without
+    // serializing compose -> send -> onReplySent, the second reply
+    // would compose against the pre-advance id.
     let lastMessageId = "<root@interchange>";
     let nextChildSeq = 0;
     const inReplyToSeen: string[] = [];
@@ -292,9 +290,8 @@ describe("driveConnectorReplies", () => {
   });
 
   test("does not let a send failure reject the done promise", async () => {
-    // The drain must keep running past a per-reply failure: `done` resolves,
-    // and a later reply still sends. A rejecting `done` would take down the
-    // caller that awaits it on teardown.
+    // A per-reply failure must not reject `done`: it resolves, and a
+    // later reply still sends.
     const sent: OutboundMessage[] = [];
     let failCount = 0;
 
@@ -324,8 +321,7 @@ describe("driveConnectorReplies", () => {
 
   test("stop() halts the loop before the next event's reply", async () => {
     // `stop()` is the cooperative early exit a teardown uses before the
-    // stream ends on its own. After it is set, the loop breaks at the next
-    // event rather than sending its reply.
+    // stream ends; the loop then breaks at the next event.
     const sent: OutboundMessage[] = [];
     let stopHandle: (() => void) | null = null;
 
@@ -387,7 +383,8 @@ describe("driveConnectorReplies", () => {
     push(replyEvent(1, "the reply"));
     const settlement = await barrier;
 
-    // The barrier resolved only after the send acked, and carries the receipt.
+    // The barrier resolved only after the send acked, and carries the
+    // receipt.
     expect(sendAcked).toBe(true);
     expect(settlement.ok).toBe(true);
     if (settlement.ok) {
@@ -401,10 +398,10 @@ describe("driveConnectorReplies", () => {
   });
 
   test("a turn that emits no reply does not settle the barrier until teardown", async () => {
-    // A suspended / no-reply turn produces no `connector.reply`, so the reply
-    // sequence does not advance and a barrier awaiting that reply stays pending
-    // -- which is why the warm step must NOT await the barrier for such a turn.
-    // When the drain ends before the reply arrives, the barrier resolves as a
+    // A suspended / no-reply turn produces no `connector.reply`, so the
+    // reply sequence does not advance and a barrier awaiting that reply
+    // stays pending -- which is why the warm step must NOT await it. When
+    // the drain ends before the reply arrives, the barrier resolves as a
     // failure rather than hanging forever.
     const { stream, push, end, pulled } = pushStream();
 
@@ -428,11 +425,10 @@ describe("driveConnectorReplies", () => {
       settledEarly = true;
     });
 
-    // A non-reply event flows past without advancing the reply sequence.
-    // The drain consumes the stream serially, so it takes the second noise
-    // event only after it has finished handling the first: waiting for that
-    // second pull puts the assertions strictly after any settlement the first
-    // event could have caused, with no interval to guess at.
+    // A non-reply event flows past without advancing the reply
+    // sequence. The drain consumes the stream serially, so waiting for
+    // the second pull puts the assertions strictly after any settlement
+    // the first event could have caused, with no interval to guess at.
     push(noiseEvent(1));
     push(noiseEvent(2));
     await waitUntil(() => pulled() >= 2);
@@ -447,9 +443,9 @@ describe("driveConnectorReplies", () => {
   });
 
   test("a failed send settles the barrier as not-sent", async () => {
-    // A send failure must NOT count as a durable reply: the barrier resolves
-    // with `ok: false` carrying the cause, distinct from a successful ack, so a
-    // per-turn caller fails the turn rather than treating the reply as sent.
+    // A send failure must NOT count as a durable reply: the barrier
+    // resolves with `ok: false` carrying the cause, so a per-turn caller
+    // fails the turn rather than treating the reply as sent.
     const sentinel = new Error("outbound bridge rejected the send");
 
     const drain = driveConnectorReplies({

@@ -1,22 +1,19 @@
 #!/usr/bin/env bun
 
 // Backfill per-principal signing keys onto principals that predate the
-// per-principal-key feature.
-//
-// Run ONCE as the last step of the deploy that introduces per-principal keys,
-// AFTER the key-minting hub is live. It is safe against a live hub: nothing
-// reads principal keys yet, the hub only mints for newly-created principals,
-// and the active-key unique index blocks a double key. Idempotent -- a
-// principal that already holds an active key is skipped -- so it is safe to
-// re-run or resume after a partial failure. On a database where every principal
-// was created after the feature landed (e.g. local dev), it does nothing.
+// per-principal-key feature. Run ONCE, as the last step of the deploy that
+// introduces per-principal keys, AFTER the key-minting hub is live. Safe
+// against a live hub: nothing reads principal keys yet, the hub only mints
+// for newly-created principals, and the active-key unique index blocks a
+// double key. Idempotent — a principal that already holds an active key is
+// skipped — so it is safe to re-run or resume after a partial failure.
 //
 //   set -a; . .env; . .env.hub; set +a
 //   bun run --conditions=intx-src bin/backfill-principal-keys.ts
 //
-// It reads the same DB_* and PRINCIPAL_KEY_ENCRYPTION_KEY the hub uses. The key
-// is required: the seeds must be sealed under the same cipher the hub decrypts
-// with, so there is no noop fallback.
+// Reads the same DB_* and PRINCIPAL_KEY_ENCRYPTION_KEY the hub uses. The
+// key is required: the seeds must be sealed under the same cipher the hub
+// decrypts with, so there is no noop fallback.
 
 import { setup, getLogger } from "@intx/log";
 import {

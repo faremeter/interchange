@@ -2,18 +2,10 @@
 //
 // The wrapper crosses the only boundary that touches `process.env`,
 // `process.stdin`/`process.stdout`, and the inherited event-channel
-// file descriptor. Each host ships a ~5-line entry script
-// (`#!/usr/bin/env bun` + an `import` + an `await` of this function)
-// against a substrate-factory of its own; the factory consumes a
-// narrow typed env struct rather than `NodeJS.ProcessEnv`, and the
-// runtime body never sees the process boundary.
-//
-// The factory's typed env carries the spawn-time keys the supervisor
-// promises plus the substrate-config keys the host injected on top.
-// The supervisor's `WorkflowSupervisorBindings.substrateEnv` is the
-// only documented surface for the substrate-config slot; the host
-// places its own data-dir / signing-key / definition-repo keys there
-// at supervisor-construction time and reads them back here.
+// file descriptor. Each host ships a ~5-line entry script against a
+// substrate-factory of its own; the factory consumes a narrow typed
+// env struct rather than `NodeJS.ProcessEnv`, and the runtime body
+// never sees the process boundary.
 
 import fs from "node:fs";
 
@@ -51,80 +43,57 @@ import {
 } from "../ipc/index";
 
 /**
- * File descriptor the supervisor's `Bun.spawn` wires the
- * event-channel socketpair onto. The supervisor's spawn convention
- * inherits stdio 0/1/2 for stdin/stdout/stderr and the
- * event-channel write side at fd 3 in the child's address space.
- * The wrapper opens fd 3 as the child's `FrameWriter`.
+ * File descriptor the supervisor's `Bun.spawn` wires the event-channel
+ * socketpair onto: stdio 0/1/2 stay as stdin/stdout/stderr, the
+ * event-channel write side lands at fd 3. The wrapper opens fd 3 as the
+ * child's `FrameWriter`.
  */
 export const EVENT_CHANNEL_FD = 3;
 
 /**
- * Substrate-config env keys the host promises to its factory. The
- * supervisor's spawn-time env always carries the IPC trust anchors
- * plus the deployment identifiers (parsed via `parseSpawnTimeEnv`).
- * `substrateConfig` carries every key the host placed in
- * `WorkflowSupervisorBindings.substrateEnv` -- the host's own narrow
- * struct (data-dir, signing-key paths, definition-repo identifiers)
- * lives there, and the factory narrows it again on the way in.
- *
- * The factory does NOT receive `NodeJS.ProcessEnv` directly. The
- * surface is intentionally narrow so a future env-shaped surface
- * (a CLI launcher that prepends keys, a test harness that injects
- * extra knobs) crosses this contract explicitly rather than via
- * an opaque process-shaped slot.
+ * Typed env the host promises its factory: the parsed spawn-time env
+ * (IPC trust anchors + deployment ids) plus the substrate-config keys
+ * the host placed in `WorkflowSupervisorBindings.substrateEnv`. The
+ * factory narrows the record again on the way in.
  */
 export interface SubstrateFactoryEnv {
   /** Parsed spawn-time env (IPC trust anchors + deployment ids). */
   readonly spawn: SpawnTimeEnv;
-  /**
-   * Substrate-config keys the host placed in
-   * `WorkflowSupervisorBindings.substrateEnv`. The factory narrows
-   * its own required-key shape against this record at the boundary.
-   */
+  /** Substrate-config keys the host placed in `WorkflowSupervisorBindings.substrateEnv`; the factory narrows its own required-key shape against this record. */
   readonly substrateConfig: Readonly<Record<string, string>>;
   /**
-   * Child-side IPC bridge over the upstream control channel for the
-   * workflow-run substrate-write surface. The substrate factory uses
-   * this to construct its proxy `RepoStore`, whose
-   * `writeTreePreservingPrefix` forwards over IPC into the
-   * supervisor's substrate. The bridge's `submit` sends a
-   * `substrate.write.request` upstream control frame; the supervisor
-   * runs its own underlying `writeTreePreservingPrefix` (which fires
-   * the boot-edge pack-push wrap on success) and replies with a
-   * matching `substrate.write.response` the bridge resolves the
-   * awaiter against. The supervisor's merge callback runs as a
-   * `substrate.merge.request` / `substrate.merge.response` pair so
-   * the child's per-write merge closure stays in the child's address
-   * space.
+   * Child-side IPC bridge for the workflow-run substrate-write surface.
+   * The factory uses it for its proxy `RepoStore`, whose
+   * `writeTreePreservingPrefix` forwards over IPC: `submit` sends a
+   * `substrate.write.request` upstream, the supervisor runs the write
+   * (firing the boot-edge pack-push wrap) and replies with
+   * `substrate.write.response`. The supervisor's merge callback runs as a
+   * `substrate.merge.request` / `substrate.merge.response` pair so the
+   * child's merge closure stays in the child's address space.
    */
   readonly substrateWriteBridge: ChildSubstrateWriteBridge;
   /**
-   * Child-side IPC bridge over the upstream control channel for the
-   * OUTBOUND half of mailbox ownership (§3a). The substrate factory uses
-   * this to construct the supervisor-backed `MessageTransport` it
-   * supplies as the step agent's `env.transport`: the transport's
-   * `send` calls `bridge.submit`, which emits an `outbound.message`
-   * upstream frame and resolves once the supervisor's matching
-   * `outbound.result` lands. The supervisor performs the actual signed
-   * send through the host transport, so outbound mail carries the
-   * agent's signature without the child ever holding the agent's key.
+   * Child-side IPC bridge for the OUTBOUND half of mailbox ownership
+   * (§3a). The factory uses it for the supervisor-backed
+   * `MessageTransport` it supplies as the step agent's `env.transport`:
+   * `send` emits an `outbound.message` frame and resolves once the
+   * supervisor's `outbound.result` lands. The supervisor does the actual
+   * signed send, so outbound mail carries the agent's signature without
+   * the child holding the key.
    */
   readonly outboundMailBridge: ChildOutboundMailBridge;
   /**
-   * Child-side IPC bridge over the upstream control channel for the
-   * INBOUND half of mailbox ownership (§3b). The substrate factory uses
-   * this to construct the supervisor-backed `MessageTransport`'s write
-   * surface: `setFlags` / `clearFlags` / `expunge` call `bridge.submit`,
-   * which emits a `mailbox.mutate.request` upstream frame and resolves
-   * once the supervisor's matching `mailbox.mutate.response` lands. The
-   * supervisor -- the sole mailbox writer -- applies the mutation to its
-   * owned store, so the child never flushes the run ref itself.
+   * Child-side IPC bridge for the INBOUND half of mailbox ownership
+   * (§3b). The factory uses it for the supervisor-backed transport's
+   * write surface: `setFlags` / `clearFlags` / `expunge` emit a
+   * `mailbox.mutate.request` frame and resolve on `mailbox.mutate.response`.
+   * The supervisor -- the sole mailbox writer -- applies the mutation, so
+   * the child never flushes the run ref itself.
    */
   readonly mailboxMutationBridge: ChildMailboxMutationBridge;
   /**
    * Child-side IPC bridge for every mailbox method that is not `send` and
-   * not a flag or expunge mutation. The factory attaches it to the warm
+   * not a flag or expunge mutation; the factory attaches it to the warm
    * agent's transport. A build without an inbound surface does not receive
    * it, and those methods fail as unwired.
    */
@@ -133,24 +102,20 @@ export interface SubstrateFactoryEnv {
 
 /**
  * Substrate-factory callback the host supplies to
- * `runWorkflowChildFromProcessEnv`. The factory constructs the
- * `RunWorkflowChildBindings` the runtime body consumes:
- * substrate-shaped `RepoStore`, principal, per-deployment repo ids,
- * scheduler, step invoker, child spawner, grant evaluator. The
- * factory owns every concrete dependency the runtime body needs to
- * see; the wrapper itself depends on nothing host-specific.
+ * `runWorkflowChildFromProcessEnv`, constructing the
+ * `RunWorkflowChildBindings` the runtime body consumes: substrate-shaped
+ * `RepoStore`, principal, per-deployment repo ids, scheduler, step
+ * invoker, child spawner, grant evaluator. The factory owns every
+ * concrete dependency the runtime body needs; the wrapper itself depends
+ * on nothing host-specific.
  */
 export type SubstrateFactory = (
   env: SubstrateFactoryEnv,
 ) => Promise<RunWorkflowChildBindings>;
 
 /**
- * Optional overrides for the process-shaped surfaces the wrapper
- * crosses. Production hosts use the defaults; tests can inject
- * in-memory streams. The fields exist so a host that wants to
- * compose the wrapper around its own logging layer or telemetry
- * surface can pass through, without exposing `process.env` to the
- * factory.
+ * Optional overrides for the process-shaped surfaces the wrapper crosses.
+ * Production hosts use the defaults; tests can inject in-memory streams.
  */
 export interface RunWorkflowChildFromProcessEnvOpts {
   /** Override the raw env record (defaults to `process.env`). */
@@ -163,37 +128,28 @@ export interface RunWorkflowChildFromProcessEnvOpts {
   eventWriter?: FrameWriter;
   /**
    * Override which env keys are forwarded to the factory's
-   * `substrateConfig`. Keys not in this allowlist are filtered out.
-   * Production hosts list their own substrate-config keys here so the
-   * factory never sees spawn-time IPC keys (those flow through the
-   * typed `spawn` slot) or unrelated process env. The default is the
-   * empty allowlist -- a host that wants its factory to receive
-   * substrate-config keys MUST name them here.
+   * `substrateConfig`. Keys not in this allowlist are filtered out, so the
+   * factory never sees spawn-time IPC keys (those flow through the typed
+   * `spawn` slot) or unrelated process env. The default is the empty
+   * allowlist -- a host that wants substrate-config keys MUST name them
+   * here.
    */
   substrateConfigKeys?: readonly string[];
 }
 
 /**
- * Process-boundary wrapper around `runWorkflowChild`. The wrapper
- * parses `process.env` into the typed `SpawnTimeEnv` plus a narrow
- * substrate-config record, opens stdin/stdout for the control
- * channel, wraps the inherited event-channel fd into a
- * `FrameWriter`, hands the typed env to the host's substrate
- * factory to mint the runtime body's bindings, and invokes
- * `runWorkflowChild`.
+ * Process-boundary wrapper around `runWorkflowChild`: parses `process.env`
+ * into the typed `SpawnTimeEnv` plus a narrow substrate-config record,
+ * opens stdin/stdout for the control channel, wraps the inherited
+ * event-channel fd into a `FrameWriter`, hands the typed env to the host's
+ * substrate factory, and invokes `runWorkflowChild`.
  *
- * Failures surface loudly:
- *   - missing or malformed spawn-time env throws via
- *     `parseSpawnTimeEnv`;
- *   - a substrate-config key listed in `substrateConfigKeys` whose
- *     value is missing or empty throws;
- *   - factory rejection propagates;
- *   - `runWorkflowChild` rejection propagates.
- *
- * The wrapper does not catch or coerce failures. The host's binary
- * is the layer that decides what to do with a thrown error; the
- * convention shown in the documentation is `process.exit(1)` with
- * a stderr message.
+ * Failures surface loudly: a missing or malformed spawn-time env throws via
+ * `parseSpawnTimeEnv`; a listed substrate-config key whose value is missing
+ * or empty throws; factory and `runWorkflowChild` rejections propagate. The
+ * wrapper does not catch or coerce failures -- the host's binary decides
+ * what to do with a thrown error (conventionally `process.exit(1)` with a
+ * stderr message).
  */
 export async function runWorkflowChildFromProcessEnv(
   factory: SubstrateFactory,
@@ -209,10 +165,8 @@ export async function runWorkflowChildFromProcessEnv(
   const controlWriter = opts.controlWriter ?? defaultControlWriter();
   const eventWriter = opts.eventWriter ?? defaultEventWriter();
   // Mint the child's upstream-signing keypair here so the wrapper can
-  // construct the upstream sender before invoking the substrate
-  // factory: the factory consumes the sender via the pack-push bridge
-  // to build its `ChildHubPackSink`, and the same sender carries the
-  // `ready` frame `runWorkflowChild` emits.
+  // construct the upstream sender before invoking the factory; the same
+  // sender carries the `ready` frame `runWorkflowChild` emits.
   const childKeyPair = await generateKeyPair();
   const upstreamSender = createControlChannelSender({
     privateKeySeed: childKeyPair.privateKey,
@@ -246,10 +200,9 @@ export async function runWorkflowChildFromProcessEnv(
     eventWriter,
     bindings: {
       ...bindings,
-      // The child key pair is minted at this layer so the upstream
-      // sender and the `ready` frame's `childPublicKey` come from one
-      // keypair. Override the factory's path so `runWorkflowChild`
-      // does not re-mint a different key and break verification.
+      // Override the factory's keypair path so `runWorkflowChild` does not
+      // re-mint a different key and break verification: the upstream sender
+      // and the `ready` frame's `childPublicKey` come from one keypair.
       ipcChildKeyPairFactory: () => Promise.resolve(childKeyPair),
     },
     upstreamSender,
@@ -307,11 +260,10 @@ function defaultControlWriter(): NdjsonWriter {
 }
 
 function defaultEventWriter(): FrameWriter {
-  // The supervisor inherits the event-channel write side on fd 3 in
-  // the child's address space. Wrap it as a Node writable so the
-  // wire matches the supervisor's `FrameReader` half. Failing to
-  // open fd 3 surfaces loudly: the child cannot publish
-  // InferenceEvents without it.
+  // The supervisor inherits the event-channel write side on fd 3 in the
+  // child's address space. Wrap it as a Node writable so the wire matches
+  // the supervisor's `FrameReader` half; failing to open fd 3 surfaces
+  // loudly, as the child cannot publish InferenceEvents without it.
   const stream = fs.createWriteStream("", { fd: EVENT_CHANNEL_FD });
   return {
     write(bytes: Uint8Array): Promise<void> {
@@ -328,10 +280,9 @@ function defaultEventWriter(): FrameWriter {
 async function* readNdjsonLines(
   source: NodeJS.ReadableStream,
 ): AsyncIterableIterator<string> {
-  // Buffered line splitter over the source stream. Yields one JSON
-  // line per iteration; trailing newlines are stripped so callers
-  // see exactly what the sender wrote without a wire-shape
-  // re-decode.
+  // Buffered line splitter over the source stream: yields one JSON line per
+  // iteration, trailing newlines stripped so callers see exactly what the
+  // sender wrote without a wire-shape re-decode.
   const decoder = new TextDecoder("utf-8");
   let pending = "";
   for await (const chunk of source) {

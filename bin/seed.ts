@@ -871,8 +871,8 @@ checkOrSkip("create widgets wallet", w2Status, 201, w2Data);
 // published package). Each catalog provider gets a dedicated old-system
 // provider (so its credential has a provider FK) and a credential, then the
 // catalog provider, its offerings (carrying baked capabilities and explicit
-// quirks), and pricing. Ids are resolved by listing after each create so the
-// seed stays idempotent across re-runs where a POST returns 409.
+// quirks), and pricing. Ids are resolved by listing after each create so
+// the seed stays idempotent across re-runs where a POST returns 409.
 
 log("Creating model catalog...");
 
@@ -1088,18 +1088,15 @@ for (const p of catalogProviders) {
 // -- Seed a launchable human-in-the-loop workflow on Acme --
 //
 // The fixture is a `draft -> awaitSignal{"approve"} -> publish`
-// workflow whose step-agents are authored inline (system prompts and
-// inference preferences on the definition; no FK to the agent-catalog
-// rows above). The definition is created as a `workflow`-kind asset and
-// pushed as a code-sourced CODEBASE -- a `package.json` declaring
-// `interchange.workflow` plus a bundled entry module -- over the asset
-// smart-HTTP route, the only surface that writes asset tree content since
-// `createAsset` only lays down the genesis `.gitignore`. The push uses
-// the system git binary with a `GIT_ASKPASS` bearer-token shim, matching
-// the established asset-push convention; isomorphic-git over HTTP is not
-// used anywhere in the repo for this. The seed makes the fixture
-// deployable but does not deploy it; an operator deploys it via the
-// admin-ui / API.
+// workflow whose step-agents are authored inline (see
+// bin/workflow-fixture.ts). The definition is created as a `workflow`-kind
+// asset and pushed as a code-sourced CODEBASE -- a `package.json`
+// declaring `interchange.workflow` plus a bundled entry module -- over
+// the asset smart-HTTP route, the only surface that writes asset tree
+// content (`createAsset` only lays down the genesis `.gitignore`). The
+// push uses the system git binary with a `GIT_ASKPASS` bearer-token shim.
+// The seed makes the fixture deployable but does not deploy it; an
+// operator deploys it via the admin-ui / API.
 
 log("Seeding workflow definition on Acme...");
 
@@ -1139,10 +1136,9 @@ async function plantPrincipalGrant(
   cookies: CookieJar,
 ): Promise<void> {
   // The grants table has no unique constraint and the POST is a plain
-  // insert, so re-running the seed would accumulate duplicate grant
-  // rows. Check for an equivalent existing grant first and skip the
-  // insert when one is present, matching how the role-grant block only
-  // plants grants for a freshly created role.
+  // insert, so re-running the seed would accumulate duplicate grant rows.
+  // Check for an equivalent existing grant first and skip the insert when
+  // one is present.
   const { status: listStatus, data: listData } = await api(
     "GET",
     `/api/tenants/${tenantId}/grants?principalId=${encodeURIComponent(principalId)}&resource=${encodeURIComponent(resource)}&limit=200`,

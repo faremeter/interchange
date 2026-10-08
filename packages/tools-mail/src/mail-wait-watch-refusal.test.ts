@@ -1,19 +1,17 @@
 // What mail_wait answers when the transport refuses the watch it installs
 // after the opening search has already answered.
 //
-// The opening search and the watch install are two separate calls, so a removal
-// that lands between them is refused by the second one and not by the first.
-// The refusal carries the same RFC 5530 condition the opening search would have
-// carried, and the caller is owed the same code for it: a mailbox that is gone
-// is `invalid_mailbox`, and a handle whose registration is gone is
-// `not_available`. Neither is `internal_error`, which errors.ts reserves for a
-// defect in this package.
+// The opening search and the watch install are two separate calls, so a
+// removal that lands between them is refused by the second one and not by
+// the first. The refusal carries the same RFC 5530 condition the opening
+// search would have carried, and the caller is owed the same code for it:
+// a mailbox that is gone is `invalid_mailbox`, a handle whose registration
+// is gone is `not_available`; neither is `internal_error`.
 //
-// These assertions run against the real in-memory transport rather than a mock,
-// so the condition under test is the one a transport actually raises. Only the
-// interleaving is injected: a delegating handle performs the removal as the last
-// act of `search`, which makes the window between the two calls deterministic
-// rather than a race against the microtask queue.
+// These assertions run against the real in-memory transport. Only the
+// interleaving is injected: a delegating handle performs the removal as the
+// last act of `search`, which makes the window between the two calls
+// deterministic rather than a race against the microtask queue.
 
 import { describe, expect, test } from "bun:test";
 import { generateKeyPair, createEd25519Crypto } from "@intx/crypto";
@@ -83,8 +81,8 @@ function withRemovalAfterFirstSearch(
 // The deadline is captured rather than waited out, after the seam in
 // mail-wait-settlement.test.ts. Nothing in this file fires it, so no case can
 // answer `timeout`: every case is expected to settle on the transport's
-// refusal, and one whose refusal never reaches the caller hangs instead, which
-// the test runner's own budget charges as a failure.
+// refusal, and one whose refusal never reaches the caller hangs instead,
+// which the test runner's own budget charges as a failure.
 function capturedScheduler(): WaitScheduler {
   return {
     setTimeout() {
@@ -172,10 +170,9 @@ describe("mail_wait classifies a refused watch install", () => {
   });
 
   // The same two removals, performed before the opening search rather than
-  // after it, are the contrast that makes the pair above the interesting case:
-  // the code a caller receives must not depend on which of the two calls saw
-  // the removal first. deregistered.test.ts covers the deregistered handle
-  // across the whole toolset; the vanished mailbox is covered here.
+  // after it, are the contrast that makes the pair above the interesting
+  // case: the code a caller receives must not depend on which of the two
+  // calls saw the removal first.
   test("a mailbox already gone at the opening search is invalid_mailbox", async () => {
     const { scoped } = await liveHandle();
     await scoped.deleteMailbox("INBOX");
@@ -190,10 +187,10 @@ describe("mail_wait classifies a refused watch install", () => {
 });
 
 describe("mail_wait keeps internal_error for a defect in this package", () => {
-  // The classification above must not swallow the case the code exists for. A
-  // cause naming no condition is not an operational outcome the caller
-  // provoked, and reporting it as one would launder a bug in this package into
-  // an ordinary transport failure.
+  // The classification above must not swallow the case the code exists for.
+  // A cause naming no condition is not an operational outcome the caller
+  // provoked, and reporting it as one would launder a bug in this package
+  // into an ordinary transport failure.
   test("a watch install that throws a bare error is internal_error", async () => {
     const { scoped } = await liveHandle();
     const transport = delegate(scoped, {

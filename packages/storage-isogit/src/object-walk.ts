@@ -2,8 +2,8 @@ import { readCommitObject, readTreeEntries } from "./isogit-helpers";
 import type { StorageRuntime } from "./runtime";
 
 /**
- * Collect all unique object OIDs reachable from a commit: the commit itself,
- * its tree, and all blobs and subtrees recursively.
+ * Collect all unique object OIDs reachable from a commit: the commit
+ * itself, its tree, and all blobs and subtrees recursively.
  */
 export async function collectReachableObjects(
   runtime: StorageRuntime,

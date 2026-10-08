@@ -1,10 +1,8 @@
 // Helpers for exercising the windows between a durable commit and the abort
-// bridge that follows it.
-//
-// Each of those windows opens on an `await`, so a test has to land its abort
-// precisely inside one. Driving that from a timer would be a race; these
-// helpers instead trigger the abort from the durable write itself, which makes
-// the placement deterministic.
+// bridge that follows it. Each window opens on an `await`, so a test has to
+// land its abort precisely inside one; these helpers trigger the abort from
+// the durable write itself instead of from a timer, making the placement
+// deterministic.
 
 import { createDefaultDirectorRegistry } from "@intx/agent";
 
@@ -22,11 +20,9 @@ import type { WorkflowEvent } from "../state-machine/index";
  * durably written, placing the abort inside the window between that write and
  * whatever bridge the runtime builds next.
  *
- * Both write methods are wrapped. `RepoStore` exposes `append` and
- * `appendBatch` as independent operations, so hooking only the batch form
- * would leave a test targeting a single-event write silently unarmed -- it
- * would pass without ever placing its abort, which is the one failure mode a
- * deterministic helper must not have.
+ * Both write methods are wrapped: hooking only the batch form would leave a
+ * test targeting a single-event write silently unarmed, passing without ever
+ * placing its abort.
  */
 export function abortOnDurableEvent(
   teardown: AbortController,
@@ -53,7 +49,7 @@ export function abortOnDurableEvent(
 
 /**
  * Resolve `"settled"` when `promise` finishes either way, or `"pending"` once
- * `ms` elapses. A wedged run is indistinguishable from a slow one, so a bound
+ * `ms` elapses; a wedged run is indistinguishable from a slow one, so a bound
  * is the only way to assert the difference.
  */
 export async function settlesWithin(

@@ -1,12 +1,9 @@
 // Attachment allowlist — the system-level source of truth for which MIME
 // types the hub accepts as conversation attachments and which ContentBlock
-// category each maps to. Adding a MIME type is a one-line change here.
-//
-// This is the hard capability ceiling: a type is only useful if the pipeline
-// can produce the right ContentBlock and an adapter can marshal it. Per-agent
-// or per-workflow narrowing rides on top of this ceiling — it narrows the
-// accepted set, it never widens past what the adapters support.
-
+// category each maps to. This is the hard capability ceiling: a type is only
+// useful if the pipeline can produce the right ContentBlock and an adapter
+// can marshal it. Per-agent or per-workflow narrowing rides on top of it —
+// it narrows the accepted set, never widens past what adapters support.
 export const ATTACHMENT_CATEGORIES = [
   "image",
   "video",

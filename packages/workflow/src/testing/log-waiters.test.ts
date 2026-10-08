@@ -7,8 +7,8 @@ import { waitForEvent, waitForNthEvent } from "./log-waiters";
 
 const RUN = "run-waiters";
 
-// `DEFAULT_BUFFER_LIMIT` in `packages/workflow/src/runlocal/repo-store.ts`.
-// Both waiters subscribe from seq 0 and pass no `bufferLimit`, so this is how
+// `DEFAULT_BUFFER_LIMIT` in `packages/workflow/src/runlocal/repo-store.ts`:
+// both waiters subscribe from seq 0 and pass no `bufferLimit`, so this is how
 // much already-committed log a waiter can replay through.
 const REPLAY_LIMIT = 1024;
 
@@ -27,8 +27,8 @@ describe("waitForEvent", () => {
   test("is satisfied by an event committed before the call", async () => {
     const store = createInMemoryRepoStore();
     await store.append(RUN, runStarted(1));
-    // Subscribing from seq 0 replays what is already committed, so a caller
-    // that arrives late still sees the event rather than waiting for another.
+    // Subscribing from seq 0 replays what is already committed, so a late
+    // caller still sees the event rather than waiting for another.
     const event = await waitForEvent(
       store,
       RUN,
@@ -58,11 +58,9 @@ describe("waitForEvent", () => {
     for (let seq = 1; seq <= REPLAY_LIMIT + 1; seq++) {
       await store.append(RUN, runStarted(seq));
     }
-    // The replay the two tests above depend on is staged through the
-    // subscription buffer, so it is bounded by that buffer rather than by the
-    // log. Past the bound the waiter stops being "resolves on the matching
-    // event" and becomes "throws", which is a run length away from any test
-    // that subscribes from seq 0.
+    // The replay the tests above depend on is staged through the subscription
+    // buffer, so it is bounded by that buffer rather than by the log; past
+    // the bound the waiter throws instead of resolving.
     await expect(
       waitForEvent(store, RUN, (e) => e.seq === REPLAY_LIMIT + 1),
     ).rejects.toThrow(/repo_store_subscribe_buffer_overrun/);
@@ -75,8 +73,8 @@ describe("waitForNthEvent", () => {
     await store.append(RUN, runStarted(1));
     await store.append(RUN, runStarted(2, "second"));
     await store.append(RUN, runStarted(3, "third"));
-    // The contract the park waiter depends on: asking for the second match
-    // yields the second, even though three are already committed.
+    // The contract the park waiter depends on: the second match is the
+    // second, even though three are already committed.
     const second = await waitForNthEvent(
       store,
       RUN,
@@ -112,12 +110,11 @@ describe("waitForNthEvent", () => {
     ).rejects.toThrow(/predicate threw/);
 
     // Asserted on the signal rather than on the store's subscriber set:
-    // leaving a `for await` by a throw makes the iteration protocol call the
-    // iterator's `return()`, which this store implements by closing the
-    // subscription. Store state would therefore look correct even if the
-    // waiter never aborted. The abort is what ends the subscription for an
-    // implementation whose iterator does not honour `return()`, so the abort
-    // itself is the thing worth asserting.
+    // leaving a `for await` by a throw calls the iterator's `return()`, which
+    // this store implements by closing the subscription, so store state would
+    // look correct even if the waiter never aborted. The abort is what ends
+    // the subscription for an iterator that does not honour `return()`, so
+    // the abort itself is the thing worth asserting.
     const [signal] = signals;
     if (signal === undefined) {
       throw new Error("waitForNthEvent did not subscribe");

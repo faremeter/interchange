@@ -81,10 +81,9 @@ const log = getLogger(["hub", "app"]);
 
 /**
  * Resolve the credential cipher, falling back to the noop cipher when none is
- * provided. The fallback is expected in tests and local development; it warns so
- * a production deployment that forgot to configure a cipher is not silently
- * storing secrets unencrypted. The composition root (`apps/hub`) always supplies
- * a real env-key cipher, gated by a required `CREDENTIAL_ENCRYPTION_KEY` at boot.
+ * provided. Expected in tests and local development; it warns so a production
+ * deployment that forgot to configure a cipher is not silently storing secrets
+ * unencrypted.
  */
 function resolveCredentialCipher(
   provided: CredentialCipher | undefined,
@@ -100,10 +99,7 @@ function resolveCredentialCipher(
  * Resolve the principal key store, falling back to a noop-cipher store when
  * none is provided. The fallback seals nothing, so a minted signing key's
  * private seed is stored in the CLEAR; it is expected only in tests and local
- * development and warns loudly so a production deployment that forgot to
- * configure `PRINCIPAL_KEY_ENCRYPTION_KEY` is not silently persisting private
- * keys unencrypted. The composition root (`apps/hub`) always supplies a real
- * store, gated by a required key at boot.
+ * development and warns loudly.
  */
 function resolvePrincipalKeyStore(
   provided: PrincipalKeyStore | undefined,
@@ -121,9 +117,9 @@ export type CreateHubContextMiddlewareDeps = {
 };
 
 /**
- * Builds the per-request context middleware that resolves the
- * authenticated user and session from the incoming request and
- * exposes them via the Hono variable bag.
+ * Builds the per-request context middleware that resolves the authenticated
+ * user and session from the incoming request and exposes them via the Hono
+ * variable bag.
  */
 export function createHubContextMiddleware({
   getSession,
@@ -161,10 +157,10 @@ export type MountHubRoutesDeps = {
   sidecarWsHandler?: Handler<AppEnv>;
   /**
    * The asset REST endpoint and smart-HTTP route group mount under
-   * `/api/tenants/:tenantId/assets` when both are supplied. Tests
-   * that have no reason to exercise the asset surface MUST pass
-   * `null` for both to opt out explicitly; passing only one is a
-   * wiring bug and throws at construction.
+   * `/api/tenants/:tenantId/assets` when both are supplied. Tests that
+   * have no reason to exercise the asset surface MUST pass `null` for
+   * both to opt out explicitly; passing only one is a wiring bug and
+   * throws at construction.
    */
   assetService: AssetService | null;
   repoStore: RepoStore | null;
@@ -233,10 +229,9 @@ export function mountHubRoutes(
   app.use("/api/me/*", requireAuth);
   app.route("/api/me", createMeRoutes({ db }));
 
-  // The git-tokens mint surface mounts under the same gate as the
-  // smart-HTTP route groups: tokens are only useful when at least one
-  // smart-HTTP route consumes them. Both deps null = no smart-HTTP
-  // anywhere = no token-mint endpoints.
+  // The git-tokens mint surface mounts under the same gate as the smart-HTTP
+  // route groups: tokens are only useful when at least one smart-HTTP route
+  // consumes them. Both deps null = no smart-HTTP = no token-mint endpoints.
   if (repoStore !== null) {
     app.route("/api/me/git-tokens", createMeGitTokenRoutes({ db }));
   }
@@ -244,13 +239,10 @@ export function mountHubRoutes(
   // Smart-HTTP asset routes use bearer authentication instead of
   // session+tenant resolution. The bearer middleware mounts ahead of
   // resolveTenant so it populates `principal` + `tenant` first; the
-  // tenant resolver short-circuits when both are already set, which
-  // lets bearer-only requests bypass the session-required path.
-  //
-  // The gate is `repoStore !== null` rather than the two-dep check;
-  // the XOR throw above already guarantees the deps move as a unit,
-  // so checking either one is equivalent. Keeping a single shape
-  // across every gate site makes the contract obvious to a reader.
+  // tenant resolver short-circuits when both are already set, letting
+  // bearer-only requests bypass the session-required path. The gate is
+  // `repoStore !== null`; the XOR throw above already guarantees the
+  // deps move as a unit.
   if (repoStore !== null) {
     // Constrain `:nameDotGit` to the `.git` suffix so the bearer
     // middleware does not capture the REST tarball routes that share
@@ -261,11 +253,10 @@ export function mountHubRoutes(
     );
   }
 
-  // Agent-state smart-HTTP read routes also use bearer auth. The
-  // receive-pack denial middleware mounts BEFORE bearer auth so an
-  // unauthenticated `git push -v` parses the pkt-line ERR record
-  // rather than a generic 401. The bearer middleware then gates the
-  // upload-pack half (advertise + POST) on a valid token.
+  // Agent-state smart-HTTP read routes also use bearer auth. The receive-pack
+  // denial middleware mounts BEFORE bearer auth so an unauthenticated
+  // `git push -v` parses the pkt-line ERR record rather than a generic 401;
+  // the bearer middleware then gates the upload-pack half on a valid token.
   if (repoStore !== null) {
     app.use(
       "/api/tenants/:tenantId/workflows/runs/:runId/state.git/*",
@@ -277,9 +268,9 @@ export function mountHubRoutes(
     );
   }
 
-  // Tenant-scoped middleware -- require auth + tenant membership for any
-  // path under /api/tenants/:tenantId/*. Must be registered before routes
-  // so Hono includes it in the middleware chain.
+  // Tenant-scoped middleware -- require auth + tenant membership for any path
+  // under /api/tenants/:tenantId/*. Registered before routes so Hono includes
+  // it in the middleware chain.
   app.use("/api/tenants/:tenantId/*", resolveTenant);
 
   // Global tenant routes (create needs auth, detail/update handle auth inline)
@@ -320,9 +311,8 @@ export function mountHubRoutes(
   );
   // The run management surface -- list, observe, stop, mail a single run.
   // Mounted as `/workflows/runs` (tenant-wide runs) before the `/workflows`
-  // deploy router below, and its literal `runs` segment out-prioritizes that
-  // router's `:runId`, so `/workflows/runs` never resolves as a
-  // deployment id.
+  // deploy router below; its literal `runs` segment out-prioritizes that
+  // router's `:runId`, so `/workflows/runs` never resolves as a deployment id.
   app.route(
     "/api/tenants/:tenantId/workflows/runs",
     createRunRoutes({
@@ -346,11 +336,9 @@ export function mountHubRoutes(
   );
 
   // Definition version/rollback management needs neither the asset service
-  // nor the repo store, so it mounts unconditionally -- definition management
-  // stays available even when the gated `/workflows` deploy surface is off.
-  // Registered before that surface as a defensive measure: the concrete
+  // nor the repo store, so it mounts unconditionally; the concrete
   // `/workflows/definitions/...` paths do not overlap the deploy router's
-  // `/:runId` patterns, so this ordering is belt-and-suspenders.
+  // `/:runId` patterns.
   app.route(
     "/api/tenants/:tenantId/workflows/definitions",
     createWorkflowDefinitionRoutes({
@@ -362,8 +350,7 @@ export function mountHubRoutes(
   );
 
   // The workflow deploy + signal + listing surface reads the workflow-run
-  // repo through the repo store (its run-observe routes and the mail-send
-  // trigger's terminal-state read). Gate on the repo store being present.
+  // repo through the repo store, so it mounts only when that is present.
   if (repoStore !== null) {
     app.route(
       "/api/tenants/:tenantId/workflows",
@@ -485,12 +472,7 @@ export function mountHubRoutes(
   // stubs that carry no requireGrant of their own, so without this any active
   // tenant member would reach them; a mount-level grant check makes them fail
   // closed instead. No grants are minted for these resources today, so this is
-  // a pure deny until the features ship. When they do, REFINE the resource and
-  // action per route -- agent-data's history restore is a write, not a read,
-  // and observability's agent logs/metrics belong under an observability
-  // resource rather than the agent-data one this shared prefix applies -- do
-  // not remove the gate. These two prefixes are stub-only; no live route
-  // resolves under them.
+  // a pure deny until the features ship.
   app.use(
     "/api/tenants/:tenantId/agents/:agentId/*",
     requireGrant("agent-data:*", "read"),
@@ -523,9 +505,9 @@ export function mountHubRoutes(
 
   if (repoStore !== null) {
     // The folded run's agent-state clone surface. Mounts at `/workflows/runs`
-    // alongside the run-management routes; the git sub-paths (`:runId/state.git`)
-    // are disjoint from the run routes, and the literal `runs` segment
-    // out-ranks the `/workflows/:runId` deploy router.
+    // alongside the run-management routes; the git sub-paths are disjoint from
+    // the run routes, and the literal `runs` segment out-ranks the
+    // `/workflows/:runId` deploy router.
     app.route(
       "/api/tenants/:tenantId/workflows/runs",
       createAgentStateRunGitRoutes({

@@ -2,9 +2,8 @@
 //
 // URL- and filename-safe base64: standard base64 with `+`/`/` replaced by
 // `-`/`_` and trailing `=` padding stripped. Used for opaque pagination
-// cursors and git PAT secrets that ride in URLs and HTTP basic-auth headers,
-// where the standard `+`, `/`, and `=` characters are unsafe. Reuses the
-// base64 core so the two encodings stay byte-compatible.
+// cursors and git PAT secrets that ride in URLs and HTTP basic-auth headers.
+// Reuses the base64 core so the two encodings stay byte-compatible.
 
 import { base64Decode, base64Encode } from "./base64";
 

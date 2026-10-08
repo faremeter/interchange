@@ -1,36 +1,28 @@
-// Single-step warm-agent flag + expunge round-trip (INTR-480).
-//
-// Proves that the warm single-step agent consumes a message end-to-end: it
-// flags an inbound mail \Deleted through `mail_flag`, then removes it with
-// `mail_expunge`, and the change lands in the deployment's durable substrate
-// mailbox on the hub. Both tools route through the supervisor -- the sole
-// mailbox writer -- so this exercises the whole chain: agent tool -> child
+// Single-step warm-agent flag + expunge round-trip (INTR-480): the warm
+// single-step agent consumes a message end-to-end -- it flags an inbound mail
+// \Deleted through `mail_flag`, removes it with `mail_expunge`, and the change
+// lands in the deployment's durable substrate mailbox on the hub. Both tools
+// route through the supervisor (the sole mailbox writer): agent tool -> child
 // mailbox-mutation bridge -> supervisor apply + flush -> pack-push to the hub.
 //
 // The test carries TWO inbound messages so it can prove the expunge sweep is
-// \Deleted-SELECTIVE, not a blanket wipe -- which is what makes the routed
-// read-your-writes claim unconditional. The scripted mock provider drives the
-// loop deterministically inside ONE run:
-//   turn 0: mail_wait for mail 2's sender -- blocks the run.
-//   turn 1 (after mail 2 arrives): mail_flag mail 1 (uid 1) \Deleted.
-//   turn 2: mail_expunge -- sweeps every \Deleted message from INBOX.
-//   turn 3: a closing text turn, which ends the run.
-// Mail 1 is the first message, so the supervisor's eager-commit assigns it
-// uid 1 -- the static ref the flag turn targets. Mail 2, delivered while the
-// run blocks in mail_wait, eager-commits as uid 2 and is never flagged.
+// \Deleted-SELECTIVE, not a blanket wipe. The scripted mock drives the loop
+// deterministically inside ONE run: turn 0 mail_wait for mail 2 (blocks the
+// run); turn 1 mail_flag mail 1 (uid 1) \Deleted; turn 2 mail_expunge; turn 3
+// a closing text turn ends the run. Mail 1 is the first message, so the
+// supervisor's eager-commit assigns it uid 1 -- the static ref the flag turn
+// targets; mail 2 arrives while the run blocks in mail_wait, eager-commits as
+// uid 2, and is never flagged.
 //
 // Assertions, read off the hub's replicated workflow-run repo:
 //   * The committed `mailbox/INBOX/index.json` holds exactly the UNFLAGGED
-//     uid 2: the expunge removed uid 1 (\Deleted) and left uid 2. This only
-//     holds if the sweep observed the flag mail_flag wrote AND honored it
-//     selectively -- the routed read-your-writes. uidNext stayed at 3, so the
-//     mailbox was never reset.
+//     uid 2 -- the sweep observed the flag mail_flag wrote AND honored it
+//     selectively (read-your-writes); uidNext stayed at 3, so the mailbox was
+//     never reset.
 //   * The `1.eml` blob is ABSENT from the tip tree (physically expunged) but
-//     still reachable through an ancestor commit: the audit bytes survive in
-//     git history, not the live tree. `2.eml` remains in the tip tree.
-//   * The `mail_wait` tool_result the agent answered carries mail 2's sender,
-//     which is what proves mail 2's arrival woke the wait rather than the wait
-//     expiring on its own timer.
+//     still reachable through an ancestor commit; `2.eml` remains in the tip.
+//   * The `mail_wait` tool_result carries mail 2's sender, proving mail 2's
+//     arrival woke the wait rather than the wait expiring on its own timer.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import fs from "node:fs";
@@ -88,9 +80,8 @@ const MAIL2_BODY = "An unflagged bystander that must survive the expunge.";
 
 const RESULT_MARKER = "FLAG-EXPUNGE-DONE";
 // mail_wait's own timeout, kept far above a healthy notify-wake so the wait
-// resolves from mail 2's arrival rather than from its own expiry. Which of the
-// two actually happened is proved by the tool_result content assertion, not by
-// this number.
+// resolves from mail 2's arrival rather than its own expiry; which of the two
+// happened is proved by the tool_result content assertion, not this number.
 const MAIL_WAIT_TIMEOUT_S = 90;
 
 // The agent waits for mail 2, then flags mail 1 (uid 1) \Deleted and expunges.

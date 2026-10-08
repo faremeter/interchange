@@ -1,24 +1,16 @@
-// IPC crypto primitives: raw Ed25519 sign/verify and HMAC-SHA256 sign/verify.
+// IPC crypto primitives: raw Ed25519 sign/verify and HMAC-SHA256
+// sign/verify. The control channel uses Ed25519 (the supervisor is the
+// only signer; the child must not be able to forge supervisor commands);
+// the event channel uses HMAC-SHA256 (both sides hold the same 32-byte
+// key, and its per-frame cost keeps the stream affordable at
+// InferenceEvent rates).
 //
-// The control channel uses Ed25519 because the supervisor is the only
-// signer and the child must not be able to forge supervisor commands.
-// The event channel uses HMAC-SHA256 because both sides hold the same
-// 32-byte secret and the cost-per-frame of HMAC over per-frame Ed25519
-// is what keeps the event stream affordable at InferenceEvent rates.
-//
-// Ed25519 sign/verify come from `@intx/crypto`, whose raw
-// `signEd25519`/`verifyEd25519` primitives produce and check the bare
-// 64-byte RFC 8032 signature without the PGP packet framing and ASCII
-// armor the package's envelope helpers add — exactly the wire format
-// this channel wants. HMAC-SHA256 uses the Web Crypto `subtle` API; its
-// tag is verified by recomputing the tag with `subtle.sign` and
-// comparing under an explicit constant-time XOR-accumulate rather than
-// `subtle.verify`, because the Web Crypto spec does not guarantee
-// `verify` runs in constant time and this channel keeps ownership of
-// that property. The wire format here is the raw 64-byte Ed25519
-// signature and the raw 32-byte HMAC-SHA256 tag concatenated with the
-// canonical-JSON payload bytes. Anything fancier would just pay PGP
-// overhead per frame.
+// Ed25519 comes from `@intx/crypto` -- bare 64-byte RFC 8032 signatures
+// without the PGP framing the package's envelope helpers add, exactly the
+// wire format this channel wants. HMAC-SHA256 uses Web Crypto `subtle`,
+// verified by recomputing and comparing under an explicit constant-time
+// XOR-accumulate rather than `subtle.verify`, whose constant-time
+// behavior the spec does not guarantee.
 
 import {
   signEd25519 as ed25519Sign,
@@ -33,34 +25,27 @@ const HMAC_TAG_BYTES = 32;
 const CHANNEL_ID_BYTES = 16;
 
 /**
- * Mint a fresh control-channel HMAC key. Used by the supervisor at
- * spawn time. The child never derives its own key; it receives the
- * 32-byte secret in spawn-time env and never sees the Ed25519 private
- * key the supervisor uses on the control channel.
+ * Mint the 32-byte HMAC key the supervisor passes to the child in
+ * spawn-time env; the child never derives its own key or holds the
+ * Ed25519 private key.
  */
 export function generateHmacKey(): Uint8Array {
   return crypto.getRandomValues(new Uint8Array(HMAC_KEY_BYTES));
 }
 
 /**
- * Mint a fresh channelId per the channel-identity contract: 16 bytes
- * from `crypto.getRandomValues`, hex-encoded. The supervisor mints one at
- * every spawn and every recycle, passes it to the child in spawn-time
- * env, and rotates it on the next respawn. The hex encoding keeps the
- * value safe to log and round-trips cleanly through JSON.
+ * Mint a fresh channelId: 16 bytes from `crypto.getRandomValues`,
+ * hex-encoded so the value logs cleanly and round-trips through JSON.
+ * The supervisor mints one per spawn and per recycle.
  */
 export function generateChannelId(): string {
   return hexEncode(crypto.getRandomValues(new Uint8Array(CHANNEL_ID_BYTES)));
 }
 
 /**
- * Sign the canonicalized envelope bytes with the supervisor's
- * Ed25519 private key. Caller is responsible for canonicalization;
- * this primitive does not see the structured envelope.
- *
- * The private-key bytes are the 32-byte Ed25519 seed. The raw signing
- * primitive lives in `@intx/crypto`; this module wraps it with the
- * channel's fixed-length validation.
+ * Sign canonicalized envelope bytes with the supervisor's Ed25519
+ * private key (32-byte seed); the caller owns canonicalization. Wraps
+ * `@intx/crypto`'s raw primitive with fixed-length validation.
  */
 export async function signEd25519(
   bytes: Uint8Array,
@@ -93,9 +78,9 @@ export async function verifyEd25519(
 }
 
 /**
- * Produce the 32-byte HMAC-SHA256 tag for the given canonicalized
- * envelope bytes under the shared key. Same primitive on both sides
- * of the event channel.
+ * Produce the 32-byte HMAC-SHA256 tag over the given envelope bytes
+ * under the shared key; same primitive on both sides of the event
+ * channel.
  */
 export async function signHmac(
   bytes: Uint8Array,
@@ -124,11 +109,10 @@ export async function signHmac(
 }
 
 /**
- * Constant-time byte comparison. A non-constant comparison would leak
- * the position of the first mismatched byte through a timing side
- * channel. The XOR accumulate is branch-free over the byte range; the
- * only early return is on a length mismatch, which is not secret-
- * dependent.
+ * Constant-time byte comparison: the XOR accumulate is branch-free over
+ * the byte range, so the position of the first mismatched byte is not
+ * observable through timing. The only early return is a length mismatch,
+ * which is not secret-dependent.
  */
 function constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {
   if (a.length !== b.length) {
@@ -143,10 +127,9 @@ function constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {
 }
 
 /**
- * Verify an HMAC tag by recomputing it and comparing in constant time.
+ * Verify an HMAC tag by recomputing and comparing in constant time.
  * Deliberately avoids `subtle.verify`, whose constant-time behavior the
- * Web Crypto spec does not guarantee; this channel owns that property
- * via `constantTimeEqual`.
+ * Web Crypto spec does not guarantee.
  */
 export async function verifyHmac(
   bytes: Uint8Array,

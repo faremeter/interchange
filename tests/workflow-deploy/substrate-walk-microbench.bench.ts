@@ -15,7 +15,7 @@
 //     that forces changedPathPrefixes:undefined (validate-all).
 //
 // Run with:  bun test tests/workflow-deploy/substrate-walk-microbench.bench.ts
-// It is named `.bench.ts` so the default `make test` enumeration skips it.
+// (named `.bench.ts` so the default `make test` enumeration skips it).
 
 import { describe, test, expect, afterAll, beforeAll } from "bun:test";
 import fs from "node:fs";
@@ -290,8 +290,8 @@ describe("B3a substrate-walk microbench", () => {
     console.log(`B3A_MICROBENCH ${JSON.stringify(report)}`);
 
     // The scoped slopes must be a small fraction of the un-scoped slopes:
-    // the proof the prod scopings flatten the per-commit cost in file
-    // count the way the throwaway's did.
+    // the proof the prod scopings flatten the per-commit cost in file count
+    // the way the throwaway's did.
     expect(smNarrowSlope).toBeLessThan(smWideSlope * 0.5 + 0.01);
     expect(vpScopedSlope).toBeLessThan(vpAllSlope * 0.5 + 0.01);
   }, 120000);

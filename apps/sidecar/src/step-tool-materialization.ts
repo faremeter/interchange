@@ -1,8 +1,7 @@
-// Pinned tool-package materialization for one workflow step.
-//
-// The child factory takes `materializeStepTools` as a required argument.
-// This module is the sidecar process's implementation: it reads the step's
-// deploy tree and loads the pinned closure. The factory never imports it.
+// Pinned tool-package materialization for one workflow step. The child
+// factory takes `materializeStepTools` as a required argument; this module
+// is the sidecar process's implementation, reading the step's deploy tree
+// and loading the pinned closure. The factory never imports it.
 
 import path from "node:path";
 
@@ -35,12 +34,12 @@ import {
  * The step's mail address is `resolveStepAddress(...)`, the single owner
  * of the head/step collapse: for a single-step deployment the lone step
  * IS the head (the deployment mailbox itself), so the tree is read at the
- * head; for multi-step it is `deriveStepAddress(runId, stepId,
- * domain)`. The `runId`/`domain` are recovered from the deployment mailbox
- * address the supervisor threaded into the child as `MAILBOX_ADDRESS`
- * (`<runId>@<domain>`): the local part is the run id and the address domain
- * is the deployment domain. `stepCount` is sourced from the host (via
- * `substrateEnv`) so producer and consumer never derive divergent addresses.
+ * head; for multi-step it is `deriveStepAddress(runId, stepId, domain)`.
+ * The `runId`/`domain` come from the deployment mailbox address the
+ * supervisor threaded into the child as `MAILBOX_ADDRESS`
+ * (`<runId>@<domain>`); `stepCount` comes from the host (via
+ * `substrateEnv`) so producer and consumer never derive divergent
+ * addresses.
  */
 export function stepDeployTreeDir(args: {
   dataDir: string;
@@ -98,12 +97,11 @@ export async function materializeStepTools(args: {
   });
   const deployTree = await readDeployTree(deployTreeDir);
 
-  // Root the tarball cache per step so concurrent steps in one child
-  // do not race on the content-addressable cache root. The cache is
-  // content-addressed and therefore safe to share globally, but the
-  // design (§3d, point 3) calls for a per-step cacheRoot so a wedged
-  // or partially-written apply in one step cannot corrupt another's
-  // view.
+  // Root the tarball cache per step so concurrent steps in one child do
+  // not race on the content-addressable cache root. The cache is
+  // content-addressed and safe to share globally, but the design calls
+  // for a per-step cacheRoot so a wedged or partially-written apply in
+  // one step cannot corrupt another's view.
   const cacheRoot = path.join(args.storeDir, "tarball-cache");
 
   // Asset-mounted tool tarballs are staged by the hub's asset-pack push
@@ -112,7 +110,7 @@ export async function materializeStepTools(args: {
   // asset resolution there while keeping the apply-state + cache rooted
   // per step under `storeDir`.
   //
-  // This `<deployTreeDir>/workspace` (read-only staged assets, keyed by the
+  // `<deployTreeDir>/workspace` (read-only staged assets, keyed by the
   // BASE step) and the agent's read-write workdir `<storeDir>/workspace`
   // (keyed by the SCOPED step) share a leaf name but are deliberately
   // different roots -- a map iteration reads one shared deploy tree while

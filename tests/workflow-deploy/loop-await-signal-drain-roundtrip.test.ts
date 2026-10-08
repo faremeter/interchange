@@ -1,35 +1,26 @@
 // Deployed drain-shed for a PARKED LOOP ITERATION.
 //
-// The runtime layer already pins the shed
-// (packages/workflow/src/runtime/loop-suspend-resume.test.ts, "a parked
-// iteration sheds on drain under the loop's default cancel behavior" -> the
-// container's cancel-mode step aborts and the run settles failed). What that
-// layer explicitly does NOT exercise is the supervisor's drain landing on a
-// parked loop container through the real wire pipeline. This test pins that:
-// hub `sendDrain` -> sidecar hub-link -> supervisor `drain` -> workflow-process
-// child `DrainController`, with the drain landing on a loop step parked as
+// The runtime layer already pins the shed (loop-suspend-resume.test.ts, "a
+// parked iteration sheds on drain under the loop's default cancel behavior").
+// What that layer does NOT exercise is the supervisor's drain landing on a
+// parked loop container through the real wire pipeline: hub `sendDrain` ->
+// sidecar hub-link -> supervisor `drain` -> workflow-process child
+// `DrainController`, with the drain landing on a loop step parked as
 // `awaiting-signal` (the body's awaitSignal proxied up onto the container).
+// The loop container defaults to `drainBehavior: "cancel"`, so the parked step
+// aborts, commits StepFailed, and the run terminates RunFailed.
 //
-// A loop whose body parks on an `awaitSignal` is deployed by source-ref against
-// the real hub + sidecar subprocess + mock inference. Firing the trigger drives
-// iteration 0 to its park (the container relay awaits the author signal); no
-// signal is ever delivered. Initiating drain flips the child's DrainController;
-// the loop container defaults to `drainBehavior: "cancel"`, so the parked step
-// aborts, commits StepFailed, and the run terminates RunFailed. The default is
-// the loop's, not the body awaitSignal's -- a top-level awaitSignal author would
-// have to opt into cancel, but a loop sheds by default.
-//
-// Regression guard for the loop iteration's LOCAL teardown: the container abort
-// tears the in-process iteration down through its own cancel controller (no
-// durable supervisor-signed CancelRequested, which its workflow-process
+// Regression guard for the loop iteration's LOCAL teardown: the container
+// abort tears the in-process iteration down through its own cancel controller
+// (no durable supervisor-signed CancelRequested, which its workflow-process
 // principal -- writing through the run proxy -- cannot sign), so the iteration
 // fails locally and the container unblocks and lands StepFailed{rework} ->
 // RunFailed. Self-writing a supervisor CancelRequested instead would have the
 // proxy author it as workflow-process, the kind handler reject it, the child
 // wedge un-settled, and the container HANG here -- the exact defect this caught.
 //
-// Harness justification: SPAWN-REAL. Mirrors drain-roundtrip.test.ts (top-level
-// cancel-mode awaitSignal) with a loop container instead.
+// Harness: SPAWN-REAL. Mirrors drain-roundtrip.test.ts (top-level cancel-mode
+// awaitSignal) with a loop container instead.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 

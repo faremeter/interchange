@@ -76,11 +76,9 @@ describe("aeadEncrypt / aeadDecrypt", () => {
 
   test("rejects a tampered ciphertext", async () => {
     const blob = await aeadEncrypt(KEY_A, "x", "aad");
-    // Flip a base64 character near the START of the body (iv bytes) rather than
-    // the end: a trailing base64 char can carry "don't-care" padding bits whose
-    // flip leaves the decoded bytes unchanged, so a tail flip is not reliably a
-    // tamper. An early char is pure data, so the flip always alters the
-    // ciphertext and GCM authentication rejects it.
+    // Flip a base64 char near the START of the body (iv bytes), not the end: a
+    // trailing char can carry don't-care padding bits, so a tail flip may not
+    // change the decoded bytes.
     const idx = blob.lastIndexOf(":") + 3;
     const flipped =
       blob.slice(0, idx) +

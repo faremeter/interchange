@@ -1,9 +1,7 @@
 import { type } from "arktype";
 
-// A single committed workflow-run event as the run-event log records it.
-// `type` is the discriminator; `body` carries the full per-type payload
-// verbatim (the hub validates the shape at push time, so the client narrows
-// on the discriminator it cares about).
+// A single committed run-event: `type` is the discriminator; `body` is the
+// verbatim per-type payload (the hub validates it at push time).
 export const WorkflowRunEvent = type({
   seq: "number",
   type: "string",

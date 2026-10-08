@@ -1,77 +1,35 @@
-// CAPSTONE end-to-end approval-tracer integration test.
+// CAPSTONE end-to-end approval-tracer integration test through the real hub +
+// sidecar stack with no stubbed suspend or resume: on approval the ORIGINAL
+// tool runs and the agent continues with its real result.
 //
-// Proves the approval tracer's Slice 0 headline through the real hub + sidecar
-// stack, with no stubbed suspend and no stubbed resume: on approval the
-// ORIGINAL tool runs and the agent continues with its real result.
+// Flow: the tool call hits an `ask` grant, the reactor suspends and the
+// sidecar co-writes `signal_correlation` + `approval` rows; the real hub HTTP
+// approve route resolves the correlation, `sendSignalDeliver` resumes the
+// parked run, the reactor grants a one-shot bypass keyed on the parked
+// ToolCall.id, re-dispatches the call, and the run completes with the tool's
+// REAL result.
 //
-//   deploy a single-step workflow whose agent calls a recording tool
-//     -> the tool call hits an `ask` grant
-//     -> the reactor SUSPENDS (mints a correlationId), capturing the parked
-//        ToolCall on the pending operation
-//     -> runStep parks the step on the reserved `__signal__:<corr>` channel
-//     -> the sidecar emits `signal.correlation.register`
-//     -> the hub co-writes the `signal_correlation` + `approval` rows
-//     -> approve via the real hub HTTP route
-//        (POST /api/tenants/:tenantId/approvals/:approvalId/approve, scope "once")
-//     -> the resolver claims + resolves + `sendSignalDeliver`
-//     -> the parked run RESUMES: the reactor grants a one-shot bypass keyed on
-//        the parked ToolCall.id and RE-DISPATCHES the exact call on the
-//        execute-tools rail, so the approved tool RUNS, its real result lands in
-//        history, and the agent re-infers once off that result to a reply
-//        -> the workflow reaches terminal `completed`.
+// Assertions: parked before approval (rows present, tool not run); approve ->
+// 200; the tool executes EXACTLY ONCE; the run reaches terminal `completed`
+// with NO re-park (one `SignalAwaited`, one `approval` row, one
+// `signal_correlation` row).
 //
-// Load-bearing assertions:
-//   1. Before approval: a pending `approval` row + `signal_correlation` row
-//      exist for the minted correlationId (status `pending`), and the tool has
-//      NOT run yet (no sentinel).
-//   2. Approve once -> 200.
-//   3. After approval: the run resumes, the recording tool executes EXACTLY
-//      ONCE (sentinel written once with its content), the run reaches terminal
-//      `completed` carrying the tool's REAL result (the resumed reply reflects
-//      the tool output, not a re-inference that skipped the tool), the
-//      post-resume conversation history is a well-formed tool_call/tool_result
-//      sequence (the parked call is answered, no dangling tool_use), and there
-//      was NO re-park (one `SignalAwaited`, one `approval` row, one
-//      `signal_correlation` row -- the one-shot bypass let the re-dispatched
-//      call through without a second suspension). Plus the resolved approval row
-//      and the claimed correlation row.
+// The mock model is the discriminator between fixed and broken: it re-issues
+// the tool call until a tool_result answers it. Under the old broken resume
+// rail the decision arrived as a bare user turn, so the call re-issued,
+// re-hit the still-`ask` grant, and re-parked forever; a latched "call once"
+// mock would hide that loop.
 //
-// The mock model is the discriminator between fixed and broken. It re-issues the
-// tool call on every inference whose history does not yet carry a tool_result
-// answering it, and only replies once it sees that result. Under the OLD broken
-// resume rail the decision arrived as a bare user turn (no tool_result), so the
-// mock re-issued the call, re-hit the still-`ask` grant, and re-parked -- an
-// endless loop that never completes. Under the NEW re-dispatch rail the approved
-// call runs and its real tool_result lands in history, so the next inference
-// sees it and the mock replies -- the run completes. A latched "call once" mock
-// would hide the loop; this one does not.
+// Harness: SPAWN-REAL (real hub, sidecar subprocess, workflow-process child,
+// migrated Postgres schema) through the shared `deploy-flow-env` fixture;
+// approval goes through the REAL hub HTTP route with a mock betterAuth
+// session bound to a seeded user-principal, authorized by a real
+// `approval:<anchorRunId>` / `resolve` grant.
 //
-// Harness composition. The suspend/register/resume half runs against the real
-// sidecar subprocess through the shared `deploy-flow-env` fixture (the same
-// harness `single-step-grants-bridge` and `multistep-signal` drive). The
-// approval-store + approve-route half runs against a real migrated Postgres
-// schema (`@intx/test-harness`), the same substrate the
-// `signal-correlation-register` and `approvals` route tests use. The two are
-// bridged by wiring the fixture hub's `registerSignalCorrelation` lookup to the
-// real DB co-write and pointing the real `createApprovalRoutes` app at the same
-// schema and the same sidecar router (so its `sendSignalDeliver` reaches the
-// real subprocess). The deployment is seeded as its anchor `workflow_run` row so
-// the co-write resolves tenancy exactly as production does.
-//
-// Approval is driven through the REAL hub HTTP route, not the resolver: the
-// fixture makes an authenticated tenant call the same way `credential-routes`
-// does -- a mock betterAuth session bound to a seeded active user-principal,
-// which `resolveTenant` resolves into the tenant + principal the route reads.
-// The approver's authority is a real `approval:<anchorRunId>` / `resolve`
-// grant evaluated by the route's `authorize` call.
-//
-// Single-test file. The shared `deploy-flow-env` (real sidecar subprocess + its
-// on-disk warm step-state) is `beforeAll`-scoped, while the DB resets per test.
-// A second test in this describe block would inherit the first run's warm
-// workspace, and "sentinel written exactly once" would silently stop meaning
-// what it claims. A run-once guard below fails loud if a second test is ever
-// added here rather than letting that assumption rot; a genuinely independent
-// second scenario belongs in its own file with its own env.
+// Single-test file: the shared env (real sidecar subprocess + on-disk warm
+// step-state) is beforeAll-scoped while the DB resets per test; a second test
+// would inherit the first run's warm workspace and "sentinel written exactly
+// once" would silently stop meaning what it claims.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -144,11 +102,9 @@ import { MAIL_TOOL_NAME } from "./fixtures/mail-tool";
 import { singleStepMailToolEntry } from "./fixtures/single-step-mail-tool";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
-// A single-agent run id: `run_` + a hex-shaped local part, mirroring
-// the single-step grants-bridge shape. The deploy mail address is the
-// run's own top-level `run_<hex>@<domain>` address, and the sidecar's
-// deploy router recognizes the single-step projection and applies the
-// single-agent identity strategy.
+// A single-agent run id, mirroring the single-step grants-bridge shape: the
+// deploy mail address is the run's top-level `run_<hex>@<domain>` address,
+// and the sidecar's deploy router applies the single-agent identity strategy.
 const INSTANCE_LOCAL = "run_feedface0001feedface0002feedface";
 const DEPLOYMENT_ID = INSTANCE_LOCAL;
 const STEP_ID = "step1";
@@ -156,8 +112,8 @@ const STEP_ID = "step1";
 // The tool the model is told to call. The granted resource is
 // `tool:<TOOL_NAME>` with action `invoke`; the agent's authorize gate fires
 // that exact query when the model calls the tool. The grant's effect is `ask`,
-// so the call SUSPENDS instead of running.
-// The inline `mail_send` tool's runtime name, shared with the fixture.
+// so the call SUSPENDS instead of running. The inline `mail_send` tool's
+// runtime name is shared with the fixture.
 const TOOL_NAME = MAIL_TOOL_NAME;
 const ASK_RESOURCE = `tool:${TOOL_NAME}`;
 const STEP_AGENT_ID = "agent-approval-capstone";
@@ -165,8 +121,8 @@ const STEP_AGENT_ID = "agent-approval-capstone";
 // The sentinel the recording tool writes when (and only when) it actually runs
 // in the child. Absent before approval (the ask grant suspends the call);
 // written exactly once after approval (the re-dispatch runs the parked call).
-// The `mail_send` fixture tool writes `SENTINEL_CONTENT` (its `to`
-// argument) into the file named by its `body` argument, and returns
+// The `mail_send` fixture tool writes `SENTINEL_CONTENT` (its `to` argument)
+// into the file named by its `body` argument and returns
 // `"wrote " + <filename>` as the tool result, which the resumed reply echoes.
 const SENTINEL_FILENAME = "approval-tool-ran.txt";
 const SENTINEL_CONTENT = "tool-executed";
@@ -281,13 +237,11 @@ const approverGrant: GrantRule = {
 
 /**
  * The real hub co-write, mirroring `createHubSessionLookups`'s
- * `registerSignalCorrelation`: resolve tenancy from the deployment's anchor run
- * -- the `workflow_run` whose id is the deployment id -- the address names,
- * cross-check the frame's `anchorRunId` against it, and co-write the
- * `signal_correlation` + `approval` rows in one transaction through the real
- * stores. Wired into the fixture hub's sidecar router so the
- * `signal.correlation.register` frame the parked run emits lands durable rows on
- * the same schema the approve route reads.
+ * `registerSignalCorrelation`: resolve tenancy from the deployment's anchor
+ * run, cross-check the frame's `anchorRunId` against the address-derived
+ * slug, and co-write the `signal_correlation` + `approval` rows in one
+ * transaction. Wired into the fixture hub's sidecar router so the parked
+ * run's register frame lands rows on the same schema the approve route reads.
  */
 function createRegisterSignalCorrelation(db: TestDb["db"]) {
   const signalCorrelationStore = createSignalCorrelationStore(db);
@@ -311,8 +265,7 @@ function createRegisterSignalCorrelation(db: TestDb["db"]) {
     // Resolve the deployment's anchor run by address across the live states
     // (a source-ref deploy's anchor sits at "deployed" in its pre-trigger
     // window). The co-write keys the correlation/approval rows on the anchor's
-    // own DB id, which for a source-ref deploy is the run id the deploy passed
-    // (distinct from the workflow-run repo slug the frame carries).
+    // own DB id, which for a source-ref deploy is the run id the deploy passed.
     const anchor = await db
       .select({
         id: workflowRun.id,
@@ -442,11 +395,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       // Seed the tenancy the co-write and the approve route resolve against:
       // a tenant, the workflow definition asset the deployment references, a
-      // workflow_definition the co-write's lazily-anchored per-message run row
-      // FKs, and the active approver user-principal. The deployment's anchor
-      // `workflow_run` row is written by the source-ref deploy below (keyed by
-      // the run id the deploy passes), not seeded here; the co-write resolves
-      // tenancy from it by address.
+      // workflow_definition row for the co-write's lazily-anchored per-message
+      // run row FK, and the active approver user-principal. The deployment's
+      // anchor `workflow_run` row is written by the source-ref deploy below,
+      // not seeded here.
       await seedTenants(h.db, [{ id: TENANT_ID }]);
       await seedAsset(h.db, {
         id: DEFINITION_ASSET_ID,
@@ -521,8 +473,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const workflowRunRepoId = handle.workflowRunRepoId;
 
-      // The source-ref frame round-trips through the real sidecar subprocess,
-      // so routability is asynchronous. Wait for it before firing the trigger.
+      // The source-ref frame round-trips through the real sidecar subprocess; routability is async, so wait before firing the trigger.
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
@@ -543,12 +494,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
 
       // The warm agent's durable conversation dir on the sidecar's on-disk
-      // substrate. The sidecar roots each workflow-run repo at
-      // `<dataDir>/workflow-runs/<repoId>` (the same layout the deployment-record
-      // path uses), and the durable conversation mirror lives under
-      // `agent-state/<stepId>` inside it. `reconstructDurableConversation` reads
-      // it the way the warm agent's own restore does, so the post-resume history
-      // it returns is the real conversation, not a re-derivation.
+      // substrate, rooted at `<dataDir>/workflow-runs/<repoId>/agent-state/
+      // <stepId>`. `reconstructDurableConversation` reads it the way the warm
+      // agent's own restore does, so the post-resume history it returns is the
+      // real conversation, not a re-derivation.
       const agentStateDir = path.join(
         env.sidecar.dataDir,
         "workflow-runs",
@@ -560,7 +509,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // Guard the single-test warm-state assumption at the source: no prior run
       // may have left the sentinel in this env before this test fires.
       expect(fs.existsSync(sentinelPath)).toBe(false);
-
       // Fire the trigger. The model turn calls the tool; the tool call hits the
       // ask grant and suspends, so the run parks rather than completing.
       await fireMailTrigger(env, deploymentMailAddress, {
@@ -601,13 +549,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(approvalRow.resolvedAt).toBeNull();
 
       // The approval snapshot content survived the real cross-process path
-      // (child -> sidecar -> hub -> co-write) intact. Every field the snapshot
-      // carries is pinned verbatim: the name and arguments the model issued,
-      // and the description and inputSchema of the resolved tool definition.
-      // All four are test-owned -- the tool is the `mail_send` definition from
-      // the `mail-tool.ts` fixture, whose model-facing name the test pins as
-      // TOOL_NAME (MAIL_TOOL_NAME) -- so a hop that dropped or mangled any
-      // field between the park and the co-write fails this assertion.
+      // (child -> sidecar -> hub -> co-write) intact: the name and arguments
+      // the model issued, and the description and inputSchema of the resolved
+      // tool definition. All four are test-owned, so a hop that dropped or
+      // mangled any field fails this assertion.
       expect(approvalRow.toolDefinition).toEqual({
         name: TOOL_NAME,
         description: "Send a mail message",
@@ -731,12 +676,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       // The resume actually drove the run: the delivered decision landed as a
       // `SignalReceived` on the parked correlation channel, carrying the
-      // approved outcome. (The log carries two `SignalReceived` entries for the
-      // one delivery -- the wire `signal.deliver` path commits the canonical
-      // one that resolves the parked `awaitNext`, and the runtime body commits
-      // its own after `awaitNext` returns; both share the delivered `signalId`,
-      // which the state machine's `observedSignalIds` dedup makes a state no-op.
-      // So the load-bearing fact is the delivered outcome, not the raw count.)
+      // approved outcome. The log carries two `SignalReceived` entries for the
+      // one delivery (the wire `signal.deliver` path commits the canonical one
+      // that resolves the parked `awaitNext`, and the runtime body commits its
+      // own after `awaitNext` returns; both share the delivered `signalId`,
+      // which the state machine's `observedSignalIds` dedup makes a no-op). So
+      // the load-bearing fact is the delivered outcome, not the raw count.
       const finalEvents = await readWorkflowRunEvents(
         env,
         DEPLOYMENT_ID,
@@ -780,11 +725,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // The post-resume conversation history is a well-formed tool sequence.
       // `assertWellFormedToolSequence` checks that every tool_result has a
       // preceding tool_call and that no tool_call id or tool_result is
-      // duplicated; it does NOT by itself require every call to be answered. The
-      // "parked tool_use is answered, no dangling call" property comes from that
-      // validator TOGETHER with the exactly-one-call / exactly-one-result counts
-      // below: one call and one result, well-ordered, means the single call is
-      // the one answered. Read the warm agent's durable conversation off the
+      // duplicated; it does NOT by itself require every call to be answered.
+      // The "parked tool_use is answered, no dangling call" property comes from
+      // that validator TOGETHER with the exactly-one-call / exactly-one-result
+      // counts below. Read the warm agent's durable conversation off the
       // sidecar's on-disk substrate so this runs against the real history.
       //
       // The durable mirror is committed at run boundaries and can lag the

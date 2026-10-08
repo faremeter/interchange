@@ -1,12 +1,10 @@
-// Audit/error flush wiring tests for the in-process agent.
-//
-// These tests pin the behaviour of `commitErrors` accumulation and the
-// flush hooks the agent registers at the assembly's `afterCheckpoint`
-// and `onShutdown` lifecycle boundaries. The wiring lives inside
-// `createAgent`; the tests drive it through a custom `ReactorDirector`
-// that responds to specific event types, so each test isolates one
-// behavioural axis: error event shape, flush timing, multi-batch
-// boundaries, no-op skip, and survives-commit-failure semantics.
+// Audit/error flush wiring tests for the in-process agent: pin the
+// `commitErrors` accumulation and the flush hooks the agent registers
+// at the assembly's `afterCheckpoint` and `onShutdown` boundaries. The
+// tests drive `createAgent` through a custom `ReactorDirector` that
+// responds to specific event types, each test isolating one axis:
+// error shape, flush timing, multi-batch boundaries, no-op skip, and
+// survives-commit-failure.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -70,11 +68,9 @@ interface FailingAuditStore extends AuditStore {
   getCommittedErrors(): ErrorRecord[][];
 }
 
-// Audit store whose first `commitErrors` call throws and subsequent
-// calls succeed. The original "errors survive a commitErrors failure"
-// behaviour: records dropped from the agent's accumulator only on
-// successful commit, so a transient failure does not silently lose
-// the batch.
+// Audit store whose first `commitErrors` throws and later calls
+// succeed, pinning the survives-commit-failure behaviour: records
+// leave the accumulator only on successful commit.
 function makeFailFirstAuditStore(): FailingAuditStore {
   const committedErrors: ErrorRecord[][] = [];
   let shouldFail = true;
@@ -98,10 +94,9 @@ function makeFailFirstAuditStore(): FailingAuditStore {
   };
 }
 
-// Director factory that closes over a caller-supplied `decide` to drive
-// the reactor through targeted event shapes. The factory shape requires
-// a configSchema (arktype) and returns a ReactorDirector; this helper
-// hides that boilerplate.
+// Director factory closing over a caller-supplied `decide` to drive
+// the reactor through targeted event shapes, hiding the
+// configSchema/ReactorDirector boilerplate.
 function makeDirectorRegistry(
   decide: ReactorDirector["decide"],
 ): BaseEnv["directors"] {
@@ -299,12 +294,11 @@ describe("agent error flushing", () => {
   });
 
   test("retains the batch on a commitErrors failure and re-flushes on the next hook", async () => {
-    // The agent's flush wiring spliced the accumulator only on
-    // successful commit -- a transient storage failure left the
-    // records in place for the next flush (afterCheckpoint or
-    // onShutdown) to retry. This test pins that behaviour against the
+    // The flush wiring splices the accumulator only on successful
+    // commit -- a transient storage failure leaves the records for the
+    // next flush to retry. This test pins that against the
     // failing-store stub: the first commitErrors throws, the second
-    // (shutdown flush) sees the retained records and succeeds.
+    // (shutdown flush) succeeds on the retained records.
     const audit = makeFailFirstAuditStore();
     const directors = makeDirectorRegistry(
       async (

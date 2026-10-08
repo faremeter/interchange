@@ -1,14 +1,12 @@
-// Credential provider plugins: the seam that shapes a resolved provider-backed
-// credential into a mediated handle a consumer can use. A provider owns HOW the
-// handle authenticates (an authed `fetch`, a future key-file + socket); it is
-// given a material source and never acquires material or decides authorization
-// -- both happen upstream, at the delivery boundary, before a provider is
-// consulted.
+// Credential provider plugins: shape a resolved provider-backed
+// credential into a mediated handle. A provider owns HOW the handle
+// authenticates; it never acquires material or decides authorization --
+// both happen upstream at the delivery boundary.
 //
-// The registry mirrors @intx/inference's AdapterRegistry: a Map-backed lookup
-// keyed by provider identifier, prototype-pollution-safe (a Map never consults
-// Object.prototype, so an untrusted key like "toString" resolves to the loud
-// unknown-provider error rather than an inherited member), throw-on-missing.
+// The registry is a Map-backed, throw-on-missing lookup keyed by
+// provider identifier. A Map never consults Object.prototype, so an
+// untrusted key like "toString" resolves to the loud unknown-provider
+// error rather than an inherited member.
 
 import type {
   CredentialProvider,
@@ -23,10 +21,9 @@ export interface CredentialProviderRegistry {
 }
 
 /**
- * Build a registry from a list of providers. The list is copied into a private
- * `Map`, so callers cannot mutate the set after construction and lookups never
- * reach `Object.prototype`. A duplicate key is a wiring error and throws at
- * construction rather than silently shadowing.
+ * Build a registry from a list of providers; the list is copied into a
+ * private `Map`, so callers cannot mutate the set and lookups never
+ * reach `Object.prototype`. A duplicate key throws at construction.
  */
 export function createCredentialProviderRegistry(
   providers: readonly CredentialProvider[],
@@ -53,11 +50,7 @@ export function createCredentialProviderRegistry(
   };
 }
 
-/**
- * The minimal call signature the shaped handle needs from `fetch`. The global
- * `fetch` satisfies it; a test stub can too, without implementing the extra
- * members (`preconnect`) the full `fetch` type carries.
- */
+/** The `fetch` subset a shaped handle needs; the global `fetch` and a test stub both satisfy it. */
 export type FetchLike = (
   input: string | URL | Request,
   init?: RequestInit,
@@ -65,34 +58,24 @@ export type FetchLike = (
 
 /** Options for the built-in HTTP provider. */
 export interface HttpCredentialProviderOptions {
-  /**
-   * The `fetch` the shaped handle delegates to once the request is
-   * origin-checked and the auth header is injected. Defaults to the global
-   * `fetch`; injectable so origin-pinning can be exercised without a network.
-   */
+  /** `fetch` for the shaped handle; defaults to the global one, injectable for tests. */
   fetch?: FetchLike;
 }
 
 /**
- * The built-in HTTP credential provider. It shapes an `HttpMediatedCredential`:
- * an authed `fetch` pinned to the credential's provider origin, injecting the
- * current secret as a bearer token per request. The material is read fresh on
- * every call, so a rotation that updates the underlying cell is picked up
- * without rebuilding the handle.
+ * The built-in HTTP provider: shapes an `HttpMediatedCredential` -- an
+ * authed `fetch` pinned to the credential's provider origin, injecting
+ * the current secret as a bearer token per request. Material is read
+ * fresh on every call, so a rotation reaches the handle without a
+ * rebuild.
  *
- * Origin pinning is load-bearing security: the handle authenticates only the
- * initial, origin-checked request and never follows redirects. A request whose
- * resolved origin is not the pinned one is refused, and a server 3xx is
- * returned to the caller unfollowed (`redirect: "manual"`), so the bearer is
- * never sent to any origin but the pinned one. Transparent redirect-following
- * is intentionally not provided: a tool re-issues a same-origin redirect target
- * through the handle (a cross-origin one is refused). This keeps token safety
- * in the handle rather than resting on the injected `fetch`'s redirect
- * behavior.
+ * Origin pinning is load-bearing security: only the initial,
+ * origin-checked request authenticates, and redirects are never
+ * followed (`redirect: "manual"`), so the bearer is never sent to any
+ * origin but the pinned one.
  *
- * Bearer is the only auth scheme today; providers that authenticate differently
- * (a `token` scheme, an `x-api-key` header) are separate plugins, not a branch
- * here.
+ * Bearer is the only auth scheme today; other schemes are separate
+ * plugins.
  */
 export function createHttpCredentialProvider(
   opts?: HttpCredentialProviderOptions,
@@ -117,19 +100,18 @@ export function createHttpCredentialProvider(
             );
           }
 
-          // Read the secret fresh on every call so a rotation of the underlying
-          // material cell reaches this handle without a rebuild.
+          // Read the secret fresh on every call so a rotation reaches this handle.
           const { secret } = context.readCurrentMaterial();
 
-          // redirect:"manual" is dictated by the handle, never inherited from
-          // caller input. The origin check guards only the INITIAL url, so
-          // following a server 3xx to a foreign origin would carry the bearer
-          // off the pinned host. Instead the 3xx is returned to the caller
-          // unfollowed: a same-origin target is re-issued through the handle
-          // (which re-pins and re-auths); a cross-origin one is refused above.
+          // redirect:"manual" is dictated by the handle, never inherited
+          // from caller input: the origin check guards only the initial
+          // url, so following a 3xx to a foreign origin would carry the
+          // bearer off the pinned host. The 3xx is returned unfollowed;
+          // a same-origin retry re-pins and re-auths, a cross-origin one
+          // is refused above.
           if (input instanceof Request) {
-            // Re-issue the caller's request (method, body preserved) with the
-            // auth header added and the redirect mode forced; its url was
+            // Re-issue the caller's request (method, body preserved)
+            // with the auth header and forced redirect mode; its url was
             // origin-checked above.
             const headers = new Headers(input.headers);
             headers.set("authorization", `Bearer ${secret}`);
@@ -150,20 +132,15 @@ export function createHttpCredentialProvider(
   };
 }
 
-/**
- * The built-in credential providers every host registers. A single `http`
- * provider today; a host composes additional providers by extending the list
- * passed to `createCredentialProviderRegistry`.
- */
+/** The built-in providers every host registers; hosts extend the list passed to `createCredentialProviderRegistry`. */
 export function builtinCredentialProviders(): CredentialProvider[] {
   return [createHttpCredentialProvider()];
 }
 
 /**
- * Resolve the URL a request targets. A relative string resolves against the
- * pinned origin (so a tool can call `/repos`); an absolute string or URL keeps
- * its own origin (and is refused by the caller if it differs); a `Request`
- * carries an absolute URL already.
+ * Resolve a request's target URL: a relative string resolves against
+ * the pinned origin; an absolute string, URL, or `Request` keeps its
+ * own origin (refused by the caller if it differs).
  */
 function resolveTargetUrl(
   input: string | URL | Request,

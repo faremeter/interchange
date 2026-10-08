@@ -122,8 +122,8 @@ function createMockDB(
     // A standing resolution's post-commit push calls loadCommittedRunGrants off
     // the top-level db (outside the resolve tx): the run principal (limit(1))
     // then its grant rows (orderBy). This mock seeds no run principal, so the
-    // read returns null and the push no-ops -- its correctness is covered by the
-    // setRunToolGrantEffect real-DB test.
+    // read returns null and the push no-ops -- its correctness is covered by
+    // the setRunToolGrantEffect real-DB test.
     select: () => ({
       from: () => ({
         where: () => ({
@@ -139,9 +139,8 @@ function createMockDB(
           from: (table: unknown) => {
             if (table === principal) {
               // A standing resolution's setRunToolGrantEffect resolves the run
-              // principal here; this mock seeds none, so the mutation no-ops.
-              // Its correctness is covered by the setRunToolGrantEffect real-DB
-              // test.
+              // principal here; this mock seeds none, so the mutation no-ops
+              // (covered by the setRunToolGrantEffect real-DB test).
               return { where: () => ({ limit: () => Promise.resolve([]) }) };
             }
             return {
@@ -293,9 +292,6 @@ function createMockSidecarRouter(
     handleMessage: () => notImpl("handleMessage"),
     handleClose: () => notImpl("handleClose"),
     routeMail: () => notImpl("routeMail"),
-    // A standing resolution's post-commit push no-ops in these tests (no run
-    // principal is seeded, so loadCommittedRunGrants returns null before this is
-    // reached); sendRunGrants is never called.
     sendRunGrants: () => notImpl("sendRunGrants"),
     noteSenderDeployStarted: () => notImpl("noteSenderDeployStarted"),
     noteSenderDeploySettled: () => notImpl("noteSenderDeploySettled"),
@@ -837,9 +833,8 @@ describe("POST /approvals/:approvalId/approve", () => {
     const resolveCalls: ResolveCall[] = [];
     // The standing-grant mutation (setRunToolGrantEffect) and its post-commit
     // push no-op here: the mock seeds no run principal, so both resolve to
-    // nothing. Their correctness is covered by the setRunToolGrantEffect
-    // real-DB test. This asserts the boundary accepts 'always' (no more 400)
-    // and threads the scope through to the resolution.
+    // nothing (covered by the setRunToolGrantEffect real-DB test). This asserts
+    // the boundary accepts 'always' and threads the scope through.
     const app = createTestApp({ resolveCalls });
 
     const res = await app.fetch(

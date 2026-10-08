@@ -1,17 +1,6 @@
-// Shared streaming harness — the 8-step pipeline described in INFERENCE.md.
-//
-// The harness:
-//   1. Opens an HTTP connection with the adapter's built request
-//   2. Parses the SSE byte stream into data lines
-//   3. Passes each data line to the adapter's response parser
-//   4. Accumulates partial message state from parser output
-//   5. Emits events on the common event protocol
-//   6. Checks AbortSignal between chunks
-//   7. On error: classifies, emits inference.error, cleans up
-//   8. On completion: emits inference.usage + inference.done
-//
-// Provider adapters never touch SSE parsing, connection lifecycle, abort
-// handling, or event emission. They translate request/response shapes.
+// Shared streaming harness. Provider adapters never touch SSE parsing,
+// connection lifecycle, abort handling, or event emission; they translate
+// request/response shapes.
 
 import { type } from "arktype";
 
@@ -60,37 +49,32 @@ import { createDefaultRetryPolicy } from "./retry-policy";
 const logger = getLogger(["interchange", "inference", "harness"]);
 
 /**
- * Default per-call inactivity timeout (ms). Two minutes is conservative
- * for reasoning-heavy models that emit `inference.thinking.delta` tokens
- * regularly when actually working — sustained silence past this means
- * the provider stream has genuinely stalled, not that the model is
- * thinking. Operators can tune via `InferenceOptions.inactivityTimeoutMs`.
+ * Default per-call inactivity timeout (ms) — sustained silence past this
+ * means the provider stream stalled, not that the model is thinking.
+ * Tunable via `InferenceOptions.inactivityTimeoutMs`.
  */
 export const DEFAULT_INACTIVITY_TIMEOUT_MS = 120_000;
 
 /**
  * Default per-call total wall-clock cap (ms). Matches Anthropic's
- * documented per-call recommendation and fits within typical CI
- * timeouts. Operators can tune via `InferenceOptions.totalTimeoutMs`.
+ * documented per-call recommendation and fits within typical CI timeouts.
  */
 export const DEFAULT_TOTAL_TIMEOUT_MS = 600_000;
 
 export const HarnessId: unique symbol = Symbol("HarnessId");
 
 /**
- * Runtime dependencies injected into `runInference`. Code-only — not part of
- * any persisted schema. Test harnesses substitute `fetch` (and stamp the
- * `[HarnessId]` tag for per-harness identity) so production `runInference`
- * never reaches `globalThis.fetch`.
+ * Runtime dependencies injected into `runInference`. Code-only, not part of
+ * any persisted schema. Test harnesses substitute `fetch` and stamp the
+ * `[HarnessId]` tag so production `runInference` never reaches
+ * `globalThis.fetch`.
  *
- * `fetch` is intentionally typed as a plain function rather than
- * `typeof globalThis.fetch` — the latter is augmented per-runtime (Bun adds
- * `preconnect`; Node and the DOM lib do not) and `runInference` only ever
- * invokes the call signature.
+ * `fetch` is a plain function rather than `typeof globalThis.fetch` — the
+ * latter is augmented per-runtime (Bun adds `preconnect`; Node and the DOM
+ * lib do not) and `runInference` only ever invokes the call signature.
  *
- * The `[HarnessId]` tag is enumerable via `Object.getOwnPropertySymbols`
- * (and `Reflect.ownKeys`, which is the superset). Do not pass `Dependencies`
- * instances through reflective serializers or expose them across trust
+ * The `[HarnessId]` tag is enumerable via `Object.getOwnPropertySymbols`.
+ * Do not pass `Dependencies` through reflective serializers or across trust
  * boundaries. (`JSON.stringify` is safe — it walks string keys only.)
  */
 export type Dependencies = {
@@ -99,35 +83,26 @@ export type Dependencies = {
     init?: RequestInit,
   ) => Promise<Response>;
   /**
-   * Time-based scheduler used by the harness's per-call timeouts (see
-   * `InferenceOptions.inactivityTimeoutMs` / `totalTimeoutMs`). Production
-   * passes the default wrapper around `setTimeout` / `clearTimeout`; the
-   * deterministic test harness injects a scheduler that wraps its virtual
-   * clock so timeout tests fire at virtual-time-N without sleeping real
-   * wall-clock. Required — every caller must make an explicit choice
-   * between the production scheduler and a virtual one. Use
-   * `createDefaultScheduler()` for the production default.
+   * Scheduler for the harness's per-call timeouts. Production uses the
+   * default wrapper around `setTimeout`; test harnesses inject one backed
+   * by a virtual clock. Required — callers must explicitly choose between
+   * production and virtual. Use `createDefaultScheduler()` for production.
    */
   readonly scheduler: Scheduler;
   /**
-   * Registry resolving an inference source to its provider adapter.
-   * `runSingleAttempt` consults this on every call via `adapters.resolve`,
-   * so it is required — the caller makes an explicit choice of provider set.
-   * Construct it via `createDependencies(adapters)` (core) or, for the
-   * built-in set, `@intx/inference/providers`' `createDefaultDependencies()`.
+   * Registry resolving an inference source to its provider adapter,
+   * consulted on every call via `adapters.resolve`. Required — callers
+   * make an explicit choice of provider set. Build with
+   * `createDependencies(adapters)` or `createDefaultDependencies()`.
    */
   readonly adapters: AdapterRegistry;
   readonly [HarnessId]?: symbol;
 };
 
 /**
- * Minimal scheduling abstraction. `setTimeout` returns a canceller; the
- * canceller is idempotent (multiple calls are safe). The harness uses
- * this for both the inactivity timer (which is re-armed on every event)
- * and the total wall-clock cap. `now()` is a monotonic time source in
- * the same `delayMs` units `setTimeout` accepts — deltas across two
- * `now()` reads describe elapsed time the same way `setTimeout(...,
- * delta)` would have measured it.
+ * Scheduling abstraction. `setTimeout` returns an idempotent canceller.
+ * `now()` is a monotonic time source in the same `delayMs` units
+ * `setTimeout` accepts, so deltas across two reads describe elapsed time.
  */
 export type Scheduler = {
   setTimeout(callback: () => void, delayMs: number): () => void;
@@ -142,11 +117,9 @@ export function createDefaultScheduler(): Scheduler {
         clearTimeout(handle);
       };
     },
-    // `performance.now()` is monotonic and survives wall-clock
-    // adjustments (NTP, daylight-saving) that could otherwise make a
-    // long-running interval read as negative against `Date.now()`. The
-    // epoch differs from `Date.now()`, but consumers only ever read
-    // deltas across two `now()` calls from the same Scheduler instance.
+    // Monotonic; deltas survive wall-clock adjustments that would make
+    // `Date.now()`-based intervals read negative. Consumers only read
+    // deltas across two `now()` calls from the same instance.
     now() {
       return performance.now();
     },
@@ -154,15 +127,11 @@ export function createDefaultScheduler(): Scheduler {
 }
 
 /**
- * Construct runtime dependencies for `runInference` from an explicit adapter
- * registry, binding `fetch` to `globalThis.fetch` and `scheduler` to the
- * production wrapper. The registry is required so the caller makes an explicit
- * choice of provider set; `@intx/inference/providers`' zero-arg
- * `createDefaultDependencies()` is the honest default that supplies the
- * built-in registry.
- *
- * @param adapters - Registry resolving inference sources to provider adapters
- * @returns Fully-populated dependencies
+ * Construct runtime dependencies for `runInference`: `globalThis.fetch`, the
+ * production scheduler, and the given adapter registry. The registry is
+ * required so the caller makes an explicit choice of provider set;
+ * `@intx/inference/providers`' `createDefaultDependencies()` supplies the
+ * built-in set.
  */
 export function createDependencies(adapters: AdapterRegistry): Dependencies {
   return {
@@ -179,21 +148,18 @@ export type InferenceHarnessOptions = {
   signal?: AbortSignal;
   // Sequence number allocator — called once per event to get the next seq.
   nextSeq: () => number;
-  // Resolves the source's credential secret by `source.credentialId` from the
-  // run's credential cell at send time, so the source config carries no inline
-  // secret. Read live per attempt, so a failover to a source with a different
-  // `credentialId` resolves that source's credential. Optional: a caller whose
-  // adapter emits no credential sentinel (a mock harness in a test) needs none;
-  // the harness installs a fail-closed default that throws only if a request
-  // actually reaches a credential sentinel without a resolver.
+  // Resolves the source's credential secret by `source.credentialId` at send
+  // time. Read live per attempt, so a failover to a source with a different
+  // `credentialId` resolves that source's credential. Optional — the harness
+  // installs a fail-closed default that throws only if a request actually
+  // reaches a credential sentinel without a resolver.
   readMaterial?: CredentialMaterialResolver;
   deps: Dependencies;
 };
 
-// Fail-closed default resolver, installed when a caller supplies no
-// `readMaterial`. It throws only if a request actually reaches a credential
-// sentinel, so a sentinel-free mock harness runs without a resolver while a
-// real credentialed request surfaces the missing wiring loudly.
+// Fail-closed default: throws only if a request actually reaches a
+// credential sentinel, so a sentinel-free mock harness runs without a
+// resolver while a real credentialed request surfaces missing wiring.
 const unconfiguredCredentialResolver: CredentialMaterialResolver = (
   credentialId,
 ) => {
@@ -204,13 +170,9 @@ const unconfiguredCredentialResolver: CredentialMaterialResolver = (
 
 /**
  * Run one fetch lifecycle and yield its events. Ends on the first
- * `inference.error` or `inference.done`. The outer `runInference`
- * consumes this generator, decides retry vs flush per the configured
- * `RetryPolicy`, and either flushes the buffered events to the caller
- * or discards them and re-enters this generator with the same opts.
- *
- * Not exported — the wrapper is the public entry point; calling this
- * directly would bypass retry handling.
+ * `inference.error` or `inference.done`; the outer `runInference` decides
+ * retry vs flush per the `RetryPolicy`. Not exported — calling this directly
+ * would bypass retry handling.
  */
 async function* runSingleAttempt(
   opts: InferenceHarnessOptions,
@@ -224,34 +186,18 @@ async function* runSingleAttempt(
     readMaterial,
     deps,
   } = opts;
-  // Per-call options override source-bound defaults. The merge happens
-  // here, once, so the adapter and timeout-resolution paths below all
-  // see the effective option set without having to remember the
-  // precedence rule.
+  // Per-call options override source-bound defaults; merged once here so
+  // all downstream paths see the effective set.
   const effectiveOptions: InferenceOptions = {
     ...(source.defaults ?? {}),
     ...(inferenceOptions ?? {}),
   };
   const model = source.model;
-  // Snapshot the source identity at call start. The harness reads
-  // `source.*` lazily across the rest of this function (and the adapter
-  // closes over `source` for its parseResponse), so a `setSource`
-  // mid-call would otherwise mutate the identity stamped onto the
-  // inference.usage and inference.done events for this very call.
-  // Capturing into a local LastCycleSource here is the single point
-  // that defends against that hot-swap.
-  //
-  // Scope of the defense: this snapshot protects *identity attribution*
-  // — what the director's policy hook and external event consumers see
-  // for `lastCycleSource` and `event.data.source`. It does NOT isolate
-  // the in-flight HTTP request from the swap: `resolveURL` reads
-  // `source.baseURL` live and `injectCredentials` reads `source.apiKey`
-  // live (both below). A mid-call `setSource` will route the request to
-  // the new endpoint with the new credentials while the resulting
-  // inference.done still carries the pre-swap identity. That is
-  // consistent with `LastCycleSource` deliberately excluding
-  // baseURL/apiKey, but it is worth knowing: the snapshot is
-  // identity-only, not a transactional freeze of the entire source.
+  // Snapshot the source identity at call start so a mid-call `setSource`
+  // cannot mutate the identity stamped on this call's usage/done events.
+  // Identity-only: `resolveURL` reads `source.baseURL` and
+  // `injectCredentials` reads `source.apiKey` live, so a swap reroutes
+  // the in-flight request while done still carries the pre-swap identity.
   const lastCycleSource: LastCycleSource = {
     sourceId: source.id,
     provider: source.provider,
@@ -263,14 +209,10 @@ async function* runSingleAttempt(
 
   // Mutable partial state — the harness owns this.
   const partial: PartialMessage = { text: "" };
-  // Per-index block tracking. The map preserves insertion order (JS
-  // Map guarantee, even for integer keys — unlike plain objects).
-  // Each entry records one block's running state; final-turn
-  // assembly walks the map in arrival order and emits one ContentBlock
-  // per entry. The `tool_use` entries are index markers only — the
-  // tool-call state machine lives in `openToolCalls` /
-  // `completedToolCalls` and is resolved into the final block at
-  // assembly time via the marker's `callId`.
+  // Per-index block tracking. The map preserves insertion order (a JS Map
+  // guarantee, even for integer keys). Final-turn assembly walks it in
+  // arrival order; `tool_use` entries are index markers resolved to final
+  // blocks via `completedToolCalls` at assembly time.
   type BlockState =
     | { kind: "text"; text: string; signature?: string }
     | { kind: "thinking"; text: string; signature?: string }
@@ -285,12 +227,8 @@ async function* runSingleAttempt(
       }
     | { kind: "code_execution_result"; result: CodeExecutionResultBlock };
   const blockMap = new Map<number, BlockState>();
-  // Citations streamed from the provider. Indexed citations attribute
-  // to the block at the matching index and interleave into the
-  // finalized turn immediately after that block; unindexed citations
-  // append at the end of `content[]` per the CitationBlock attribution
-  // rule. The two collections capture distinct semantics, not just
-  // different keys.
+  // Indexed citations interleave after the block at their index; unindexed
+  // citations append at the end of `content[]`.
   const citationsByIndex = new Map<number, CitationBlock[]>();
   const unindexedCitations: CitationBlock[] = [];
   // Prompt-level safety signals (no candidate index on the first
@@ -305,7 +243,7 @@ async function* runSingleAttempt(
     argsBuffer: string;
   };
   const openToolCalls = new Map<string, ToolCallState>();
-  // OpenAI uses index-based tracking before we have a real callId.
+  // OpenAI tracks by index before a real callId exists.
   const indexToCallId = new Map<string, string>();
 
   if (signal?.aborted) {
@@ -361,11 +299,9 @@ async function* runSingleAttempt(
     readMaterial ?? unconfiguredCredentialResolver,
   );
 
-  // Per-call timeouts. The inactivity timer fires when the harness
-  // hasn't yielded an event for `inactivityTimeoutMs`; the total timer
-  // is a wall-clock cap from fetch onwards. We own one AbortController,
-  // combine its signal with the caller's, and attribute the abort to
-  // whichever timer fired by checking `timeoutReason` at the catch site.
+  // The inactivity timer fires after `inactivityTimeoutMs` without an event;
+  // the total timer caps the call from fetch onwards. Both abort one
+  // controller; `timeoutReason` attributes the abort at the catch site.
   const inactivityTimeoutMs =
     effectiveOptions.inactivityTimeoutMs ?? DEFAULT_INACTIVITY_TIMEOUT_MS;
   const totalTimeoutMs =
@@ -385,22 +321,18 @@ async function* runSingleAttempt(
     timeoutReason = "total";
     timeoutAbort.abort();
   }, totalTimeoutMs);
-  // Per-timer cancellers are idempotent (the production scheduler's
-  // canceller wraps `clearTimeout`, which no-ops on a fired timer; the
-  // test scheduler's canceller flips a `cancelled` flag). Callers may
-  // invoke `cleanupTimers` exactly once; the `try/finally` around the
-  // generator body below is the single owner of that lifecycle.
+  // Cancellers are idempotent (production wraps `clearTimeout`; the test
+  // scheduler flips a `cancelled` flag). The `try/finally` below is the
+  // single owner of this lifecycle.
   const cleanupTimers = (): void => {
     cancelTotal();
     cancelInactivity?.();
     cancelInactivity = null;
   };
-  // Combined signal: the production code's existing caller-signal +
-  // our timeout controller, so a fetch implementation that respects
-  // AbortSignal sees both. `cleanupSignal` removes the abort listeners
-  // `combineSignals` installs on the caller signal so a long-lived
-  // caller signal (e.g., a session-scoped controller) does not
-  // accumulate one un-removed listener per call.
+  // Combine the caller signal with the timeout controller so the fetch
+  // sees both; `cleanupSignal` removes the listeners `combineSignals`
+  // installs, so a long-lived caller signal does not accumulate one
+  // un-removed listener per call.
   const { signal: fetchSignal, cleanup: cleanupSignal } = combineSignals(
     signal,
     timeoutAbort.signal,
@@ -452,17 +384,11 @@ async function* runSingleAttempt(
     }
 
     if (!response.ok) {
-      // Read the body as text once and then try to parse it as JSON.
-      // Calling `.json()` first and falling back to `.text()` on the
-      // same response does not work — per WHATWG fetch the body stream
-      // is locked/disturbed by the first read attempt, so the fallback
-      // throws `TypeError: body already consumed` and `errorBody` ends
-      // up `undefined`. Reading text-then-parsing covers both JSON and
-      // plain-text error bodies in a single pass.
-      //
-      // The read is bound to the combined fetch signal so a hostile
-      // server returning a 4xx/5xx with a body that never terminates
-      // cannot hang the call past the total-timeout horizon.
+      // Read the body as text, then try JSON.parse. `.json()`-first with a
+      // `.text()` fallback does not work — the first read consumes/locks
+      // the body stream, so the fallback throws "body already consumed".
+      // The read is bound to the fetch signal so a hostile server with a
+      // never-terminating error body cannot hang past the total timeout.
       let errorBody: unknown;
       try {
         const text = await awaitWithSignal(response.text(), fetchSignal);
@@ -504,9 +430,8 @@ async function* runSingleAttempt(
       };
       return;
     }
-    // Captured as a const so the non-null narrowing from the guard above
-    // carries into the SSE branch of the event-source generator below (a
-    // bare `response.body` re-widens to nullable across the closure).
+    // Const so the non-null narrowing from the guard carries into the
+    // closure below (a bare `response.body` re-widens to nullable).
     const responseBody = response.body;
 
     let responseKind: ResponseKind;
@@ -514,8 +439,7 @@ async function* runSingleAttempt(
       responseKind = detectResponseKind(response.headers);
     } catch (cause) {
       // A 2xx whose Content-Type is neither SSE nor JSON is a protocol
-      // violation, not a transient failure — surface it loudly rather than
-      // pushing unknown bytes through the SSE parser to yield an empty turn.
+      // violation, not a transient failure — surface it loudly.
       yield {
         type: "inference.error",
         seq: nextSeq(),
@@ -529,20 +453,15 @@ async function* runSingleAttempt(
       return;
     }
 
-    // Arm the inactivity timer now that the SSE stream is open. Every
-    // event we yield below resets it; sustained silence past
-    // `inactivityTimeoutMs` aborts the controller and the loop's catch
-    // surfaces the timeout error. A non-streaming JSON body has no
-    // inter-event silence to detect, so the timer stays disarmed there and
-    // the total-timeout controller alone bounds the buffered read.
+    // Arm the inactivity timer now that the SSE stream is open; every event
+    // resets it. A JSON body has no inter-event silence, so the timer stays
+    // disarmed and the total timer alone bounds the buffered read.
     if (responseKind === "sse") {
       armInactivity();
     }
 
-    // The event source: one branch per response kind, both feeding batches
-    // of raw adapter events into the shared accumulator below. SSE yields
-    // one batch per wire chunk; JSON buffers the whole body and yields a
-    // single batch.
+    // One branch per response kind: SSE yields a batch per wire chunk;
+    // JSON buffers the whole body and yields a single batch.
     const rawEventBatches = async function* (): AsyncGenerator<
       InferenceEvent[]
     > {
@@ -552,7 +471,6 @@ async function* runSingleAttempt(
         return;
       }
       for await (const sseData of parseSSE(responseBody)) {
-        // Reset inactivity timer — we just got something from the wire.
         armInactivity();
         yield adapter.parseResponse(sseData);
       }
@@ -605,10 +523,10 @@ async function* runSingleAttempt(
                   raw,
                 );
               }
-              // Running concat of all text deltas — backwards
-              // compatible with consumers that treat `partial.text` as
-              // "everything the assistant has typed so far," regardless
-              // of which content block it came from.
+              // Running concat of all text deltas — backwards compatible
+              // with consumers that treat `partial.text` as everything the
+              // assistant has typed so far, regardless of which block it
+              // came from.
               partial.text += raw.data.token;
               yield {
                 type: "inference.text.delta",
@@ -635,13 +553,10 @@ async function* runSingleAttempt(
                   raw,
                 );
               }
-              // Re-yield with a fresh seq; the partial snapshot does
-              // not currently carry a `refusal` field (PartialMessage
-              // only knows text and thinking today), so the snapshot
-              // here reflects the surrounding text/thinking state.
-              // Subscribers needing the running refusal string
-              // accumulate tokens from the emitted delta events
-              // themselves, or read the finalized turn's RefusalBlock.
+              // Re-yield with a fresh seq; `PartialMessage` has no
+              // `refusal` field, so the snapshot reflects surrounding
+              // text/thinking state. Consumers needing the running refusal
+              // string accumulate the emitted delta tokens themselves.
               yield {
                 type: "inference.refusal.delta",
                 seq: nextSeq(),
@@ -667,12 +582,10 @@ async function* runSingleAttempt(
                   raw,
                 );
               }
-              // Running concat of all thinking deltas across every
-              // thinking block. Under interleaving (thinking@0 "A",
-              // text@1 "X", thinking@2 "B"), `partial.thinking` ends
-              // up "AB" — backwards compatible with the pre-per-index
-              // single-buffer semantics. Consumers needing per-block
-              // structure walk the finalized turn's `content[]`.
+              // Running concat of every thinking delta. Under interleaving
+              // (thinking@0 "A", text@1 "X", thinking@2 "B"),
+              // `partial.thinking` ends up "AB" — backwards compatible
+              // with the pre-per-index single-buffer semantics.
               const concat = (partial.thinking ?? "") + raw.data.token;
               partial.thinking = concat;
               yield {
@@ -696,10 +609,9 @@ async function* runSingleAttempt(
                   raw,
                 );
               }
-              // A signature authenticates the block whose part it rides on.
-              // The signable kinds are the ones whose ContentBlock carries a
-              // `signature` field; the others (redacted_thinking, refusal,
-              // code_execution_result) have no place to hold one.
+              // A signature authenticates the block whose part it rides on;
+              // the kinds without a `signature` field have no place to hold
+              // one.
               if (
                 existing.kind !== "thinking" &&
                 existing.kind !== "text" &&
@@ -784,23 +696,16 @@ async function* runSingleAttempt(
               const toolIdx = requireIndex(raw, "tool_call.start");
               const { callId, name } = raw.data;
               openToolCalls.set(callId, { callId, name, argsBuffer: "" });
-              // OpenAI-flavoured adapters synthesize a placeholder
-              // callId on tool_call.delta events (the real id is only
-              // present on the start). Key the resolution map on the
-              // start event's `data.index` so the placeholder the
-              // delta emits (`String(blockIndex)`) maps back to the
-              // real id even when `tcDelta.index` is non-zero or
-              // non-contiguous.
+              // OpenAI-flavoured adapters synthesize a placeholder callId on
+              // tool_call.delta (the real id is only on the start). Key the
+              // resolution map on the start's `data.index` so the placeholder
+              // maps back to the real id even when `tcDelta.index` is
+              // non-zero or non-contiguous.
               indexToCallId.set(String(toolIdx), callId);
-              // Anchor the tool_use position in the per-index map.
-              // The map walk in final assembly will resolve the marker
-              // via `completedToolCalls` so the tool_use block lands
-              // in its wire-arrival position relative to text and
-              // thinking blocks. Collisions with another kind at the
-              // same index throw, matching the discipline of the
-              // text/thinking/redacted_thinking branches above —
-              // distinct kinds cannot share an index without losing
-              // the per-index ordering guarantee.
+              // Anchor the tool_use position in the per-index map; the final
+              // walk resolves the marker via `completedToolCalls` so the
+              // block lands in wire-arrival order. Collisions with another
+              // kind at the same index throw.
               const existingAtIdx = blockMap.get(toolIdx);
               if (existingAtIdx === undefined) {
                 blockMap.set(toolIdx, { kind: "tool_use", callId });
@@ -870,25 +775,18 @@ async function* runSingleAttempt(
               if (existing === undefined) {
                 blockMap.set(imgIdx, { kind: "image", image: raw.data.image });
               } else {
-                // Image blocks are atomic per event (no streaming
-                // chunks the way text deltas accumulate). A second
-                // image_output event at the same index, or any
-                // collision with a different block kind, is a
-                // protocol violation -- there is no coalesce branch
-                // for image_output by design.
+                // Image blocks are atomic per event; a second image_output
+                // at the same index, or a collision with another kind, is a
+                // protocol violation — there is no coalesce branch.
                 throw new ProtocolMismatchError(
                   `harness: image_output at index ${String(imgIdx)} collides with existing ${existing.kind} block`,
                   raw,
                 );
               }
-              // The `partial` snapshot is intentionally not updated:
-              // images are not streamed, so there is no
-              // "partial-image" concept to surface to snapshot
-              // consumers. The atomic event itself is the signal
-              // that the image has arrived. The forwarded payload
-              // carries the ImageBlock verbatim; elision (for logs)
-              // is the consumer's job and is enforced by the
-              // existing invariant test against `image_output`.
+              // `partial` is intentionally not updated: images are not
+              // streamed, so there is no partial-image concept. The atomic
+              // event itself signals arrival; the payload carries the
+              // ImageBlock verbatim.
               yield {
                 type: "inference.image_output",
                 seq: nextSeq(),
@@ -906,12 +804,9 @@ async function* runSingleAttempt(
                   request: raw.data.request,
                 });
               } else {
-                // Code-execution request blocks are atomic per
-                // event in their current form (Gemini delivers the
-                // full `code` in one part); a `delta` may extend
-                // the running request below, but the start handler
-                // never reuses an existing slot. Collision with a
-                // different kind at the same index is a wire bug.
+                // Code-execution request blocks are atomic per event in
+                // their current form; the start handler never reuses an
+                // existing slot. A collision at the same index is a wire bug.
                 throw new ProtocolMismatchError(
                   `harness: code_execution.start at index ${String(ceIdx)} collides with existing ${existing.kind} block`,
                   raw,
@@ -926,19 +821,12 @@ async function* runSingleAttempt(
             }
 
             case "inference.code_execution.delta": {
-              // Append a code fragment to the running request at
-              // the event's index. Gemini does not emit deltas
-              // (its `executableCode` is atomic), but the type
-              // system commits to the streaming lifecycle
-              // (`start -> delta* -> result`), so the handler is
-              // wired for providers that do chunk source code. The
-              // per-index router resolves the target block via
-              // the event's `index`; the `requestId` is then
-              // verified against the block's stored id as a
-              // consistency check that the routed block matches
-              // the back-pointer the delta carries (a mismatch
-              // would mean an upstream rerouting bug producing a
-              // confidently-wrong concatenation).
+              // Gemini does not emit these (its `executableCode` is atomic),
+              // but the type commits to `start -> delta* -> result`, so the
+              // handler is wired for providers that do chunk source code.
+              // The event's `index` routes to the target block; `requestId`
+              // is verified against the block's stored id so a routing bug
+              // cannot produce a confidently-wrong concatenation.
               const ceIdx = requireIndex(raw, "code_execution.delta");
               const existing = blockMap.get(ceIdx);
               if (existing === undefined) {
@@ -998,31 +886,15 @@ async function* runSingleAttempt(
             }
 
             case "inference.usage": {
-              // Accumulate usage — providers may send multiple usage events
-              // (e.g., Anthropic sends one at message_start with input
-              // tokens, then one at message_delta with output tokens
-              // and input deliberately set to 0 by the parser to mean
-              // "no change to input"). Emit the cumulative
-              // post-merge total rather than the raw incoming so
-              // downstream consumers and invariants see a monotone
-              // non-decreasing stream — the raw incoming would
-              // observably "decrease" input from a real count back
-              // to 0 between the two events even though no decrease
-              // occurred in the underlying counter.
+              // Providers may send multiple usage events (Anthropic sends
+              // one at message_start, then one at message_delta with input
+              // set to 0 to mean "no change"). Emit the cumulative
+              // post-merge total so consumers see a monotone stream.
               //
-              // The source field uses the call-start `lastCycleSource`
-              // snapshot rather than `raw.data.source`. The adapter
-              // stamps source on its own emit because the InferenceEvent
-              // type requires the field at every producer site, but the
-              // harness owns identity attribution for downstream
-              // consumers: the harness's snapshot is the single source
-              // of truth, the adapter's stamp is type-system overhead
-              // that gets replaced here. Both descriptors are equal by
-              // construction (the registry passes the same snapshot to
-              // the adapter factory), so the override is redundant for
-              // correctness; it exists so a future provider that
-              // synthesizes its own descriptor cannot drift from the
-              // call-start identity the rest of the harness commits to.
+              // `source` uses the call-start `lastCycleSource` snapshot: the
+              // harness owns identity attribution, and the adapter's own
+              // stamp is replaced here so a future provider synthesizing its
+              // own descriptor cannot drift from the call-start identity.
               usageSeen = mergeUsage(usageSeen, raw.data.usage);
               yield {
                 type: "inference.usage",
@@ -1124,13 +996,10 @@ async function* runSingleAttempt(
       };
     }
 
-    // Build the final assistant message by walking the per-index map
-    // in insertion order. JS `Map` preserves insertion order for all
-    // keys (including integers — distinct from plain object behaviour),
-    // so iteration here reproduces the wire-arrival order of content
-    // blocks regardless of the numeric values. Tool-call markers are
-    // resolved to the finalized ContentBlock from the completedToolCalls
-    // array via the marker's callId.
+    // Build the final assistant message by walking the per-index map in
+    // insertion order (a JS Map guarantee, including for integer keys), so
+    // iteration reproduces wire-arrival order. Tool-call markers resolve to
+    // their finalized block via the marker's callId.
     const completedToolCallsByCallId = new Map<string, ContentBlock>();
     for (const tc of completedToolCalls) {
       if (tc.type === "tool_call") {
@@ -1138,16 +1007,11 @@ async function* runSingleAttempt(
       }
     }
     const contentBlocks: ContentBlock[] = [];
-    // Emit a content block and immediately append (and consume) any
-    // citations registered at that block's index. Centralizing the
-    // per-emission interleave step here means each arm of the walk
-    // below just calls `emit(block, idx)`; a new block kind can't
-    // forget the interleave step. Consumed indices are deleted from
-    // `citationsByIndex` so the post-walk check below can detect any
-    // citation whose index pointed at a block that never emitted
-    // (orphan reference or block filtered out during finalization)
-    // and surface it loudly rather than silently dropping the
-    // citation from `content[]`.
+    // Each arm of the walk calls `emit(block, idx)`, which appends any
+    // citations registered at that index and consumes them, so a new block
+    // kind cannot forget the interleave step. Consumed indices are deleted
+    // so the post-walk check can surface citations whose index pointed at a
+    // block that never emitted.
     const emit = (block: ContentBlock, idx: number) => {
       contentBlocks.push(block);
       const atIdx = citationsByIndex.get(idx);
@@ -1177,10 +1041,9 @@ async function* runSingleAttempt(
         continue;
       }
       if (entry.kind === "thinking") {
-        // Emit thinking blocks even when text is empty if a signature
-        // was captured — Anthropic's redacted-adjacent flow can
-        // produce a thinking block whose visible text is empty but
-        // whose signature must round-trip on follow-up turns.
+        // Anthropic's redacted-adjacent flow can produce a thinking block
+        // whose visible text is empty but whose signature must round-trip
+        // on follow-up turns.
         if (entry.text.length === 0 && entry.signature === undefined) {
           continue;
         }
@@ -1201,13 +1064,11 @@ async function* runSingleAttempt(
         continue;
       }
       if (entry.kind === "refusal") {
-        // Empty-reason refusals were filtered at the adapter's wire
-        // boundary (the OpenAI parser skips delta.refusal chunks with
-        // length 0), so an entry that reaches the final walk with an
-        // empty reason indicates either a synthetic capture or a
-        // future adapter without that guard. Skip rather than emit a
-        // RefusalBlock with reason: "" which would fail the type's
-        // documented "human-readable text the model emitted" contract.
+        // Empty-reason refusals were filtered at the adapter's wire boundary
+        // (OpenAI skips length-0 refusal chunks), so an empty reason here
+        // indicates a synthetic capture or an adapter without that guard.
+        // Skip rather than emit a RefusalBlock that fails the type's
+        // "human-readable text" contract.
         if (entry.reason.length === 0) continue;
         emit({ type: "refusal", reason: entry.reason }, idx);
         continue;
@@ -1215,15 +1076,11 @@ async function* runSingleAttempt(
       if (entry.kind === "tool_use") {
         const finalized = completedToolCallsByCallId.get(entry.callId);
         if (finalized === undefined) {
-          // Every tool_use marker is added in the
-          // inference.tool_call.start handler at the same time the
-          // entry is inserted into openToolCalls. The finalize loop
-          // above turns every openToolCalls entry into a
-          // completedToolCalls entry. So a marker whose callId is
-          // missing from completedToolCallsByCallId here would mean
-          // the start-time bookkeeping diverged from the finalize-
-          // time bookkeeping — surface it loudly rather than dropping
-          // the tool call from the final turn.
+          // Every tool_use marker is added at tool_call.start alongside the
+          // openToolCalls entry, and the finalize loop turns every
+          // openToolCalls entry into a completedToolCalls entry. A missing
+          // marker here means the two bookkeeping paths diverged — surface
+          // it loudly rather than dropping the tool call.
           throw new ProtocolMismatchError(
             `harness: tool_use marker at callId ${entry.callId} has no matching completed tool call`,
             entry,
@@ -1244,12 +1101,9 @@ async function* runSingleAttempt(
         continue;
       }
       if (entry.kind === "image") {
-        // Image blocks land here when an adapter delivered an
-        // `inference.image_output` event at this index. The
-        // ImageBlock is stored complete on the entry (images are
-        // atomic, not streamed), so the final-walk emits it
-        // verbatim. Citation interleave applies the same way as
-        // any other block kind.
+        // The ImageBlock is stored complete on the entry (images are atomic,
+        // not streamed), so the final walk emits it verbatim. Citation
+        // interleave applies as for any other block kind.
         emit(
           entry.signature !== undefined
             ? { ...entry.image, signature: entry.signature }
@@ -1259,12 +1113,10 @@ async function* runSingleAttempt(
         continue;
       }
       if (entry.kind === "code_execution_request") {
-        // The request block carries whatever code accumulated
-        // across `code_execution.start` plus any subsequent
-        // `code_execution.delta` events at this index. Gemini's
-        // current wire delivers all of it atomically on `start`;
-        // streaming providers would extend `request.code` via the
-        // delta handler before this walk runs.
+        // Carries whatever code accumulated across start plus any deltas at
+        // this index. Gemini delivers all of it atomically on `start`;
+        // streaming providers extend `request.code` via the delta handler
+        // before this walk runs.
         emit(
           entry.signature !== undefined
             ? { ...entry.request, signature: entry.signature }
@@ -1280,13 +1132,10 @@ async function* runSingleAttempt(
       entry satisfies never;
     }
     if (citationsByIndex.size > 0) {
-      // A citation whose `index` pointed at a block that never made
-      // it into `content[]` would otherwise be silently dropped. The
-      // cases that get here in practice are upstream bugs: an adapter
-      // emitted a citation indexed at a block that doesn't exist, or
-      // at a block that the finalize walk filtered out (empty text,
-      // empty thinking with no signature). Surface the bookkeeping
-      // mismatch loudly rather than papering over it.
+      // A citation whose index pointed at a block that never made it into
+      // `content[]` (orphan reference, or a block filtered out by the final
+      // walk) would otherwise be silently dropped — surface the bookkeeping
+      // mismatch loudly.
       const orphanIndices = Array.from(citationsByIndex.keys()).sort(
         (a, b) => a - b,
       );
@@ -1320,11 +1169,10 @@ async function* runSingleAttempt(
       },
     };
   } finally {
-    // Single owner of the timer + signal-listener lifecycle. Runs on
-    // every exit including normal completion, early `return`, thrown
-    // errors, and consumer abandonment via `for await` `break`
-    // (which invokes the generator's `return()` and triggers the
-    // finally). Both cleanups are idempotent.
+    // Single owner of the timer + signal-listener lifecycle. Runs on every
+    // exit including normal completion, early `return`, thrown errors, and
+    // consumer abandonment via `for await` `break`. Both cleanups are
+    // idempotent.
     cleanupTimers();
     cleanupSignal();
   }
@@ -1332,70 +1180,49 @@ async function* runSingleAttempt(
 
 /**
  * Run a single inference call with mechanical retry. Wraps
- * `runSingleAttempt` and consults the configured `RetryPolicy` (or the
- * default from `createDefaultRetryPolicy`) on every `inference.error`.
+ * `runSingleAttempt` and consults the configured `RetryPolicy` on every
+ * `inference.error`.
  *
- * Events from each attempt are buffered until the attempt terminates;
- * the wrapper only flushes them to the caller once it knows whether
- * the attempt resolved (`inference.done` or a policy-approved abort)
- * or whether the attempt's events should be discarded in favour of a
- * retry. The buffer-and-flush model is what guarantees the caller
- * sees a single clean event stream — exactly one `inference.start`,
- * no orphaned partial deltas, no leaked `inference.error`s from
- * attempts the policy chose to retry. The cost is that no events
- * reach the caller until the wrapper knows the attempt's terminal
- * shape, even on a successful first attempt. That trade-off is the
- * deliberate consequence of making "one clean stream" a hard contract
- * rather than a best-effort one. Consumers that need token-by-token
- * partials must pin a custom non-buffering wrapper — no streaming-
- * partials emission API exists today.
+ * Events from each attempt are buffered until the attempt terminates; the
+ * wrapper flushes them only once it knows whether the attempt resolved or
+ * its events should be discarded for a retry. That gives the caller a
+ * single clean event stream — exactly one `inference.start`, no orphaned
+ * partial deltas, no leaked `inference.error`s from retried attempts. The
+ * cost is that nothing reaches the caller until the attempt's terminal
+ * shape is known, even on a successful first attempt. The buffer is
+ * per-call and bounded by one attempt's event stream.
  *
- * The buffer is per-call and bounded by the size of one attempt's
- * event stream — no cross-call accumulation.
+ * Caller-visible seqs stay contiguous across retries: each attempt runs
+ * against a private seq allocator, and on flush the wrapper re-stamps the
+ * buffered events with the caller's `nextSeq`, so a discarded attempt
+ * leaves no gap in the consumer's stream.
  *
- * Caller-visible seqs stay contiguous across retries. Each attempt
- * runs against a private seq allocator; on flush the wrapper
- * re-stamps the buffered events with seqs from the caller's
- * `nextSeq`, so a retry that discards an attempt does not leave a
- * gap in the consumer's seq stream.
+ * Between attempts the wrapper emits one `inference.retry` event carrying
+ * the attempt number, the policy-chosen `delayMs`, and the classified
+ * error. The delay is awaited via `deps.scheduler`, so virtual-clock test
+ * harnesses advance retry delays without sleeping real wall-clock. The
+ * caller's `signal` short-circuits the delay: aborting mid-delay wakes the
+ * await immediately, and the next attempt surfaces `inference.error` of
+ * category `aborted` from its entry-time signal check, which the default
+ * policy aborts on.
  *
- * Between attempts the wrapper emits one `inference.retry` event with
- * the failed attempt's number, the policy-chosen `delayMs`, and the
- * classified error that triggered the retry. The `setTimeout` await
- * is driven by `deps.scheduler`, so virtual-clock test harnesses
- * advance retry delays without sleeping real wall-clock. The
- * caller-supplied `signal` short-circuits the retry delay: aborting
- * the signal mid-delay wakes the await immediately and the next
- * `runSingleAttempt` invocation surfaces `inference.error` of
- * category `aborted` from its entry-time signal check, which the
- * default policy aborts on.
+ * If the policy throws synchronously or rejects, the wrapper treats it as
+ * `{ kind: "abort" }`, logs the exception at `warn`, and surfaces the
+ * *original* `inference.error` to the caller.
  *
- * Policy-failure handling: if the policy throws synchronously or its
- * returned Promise rejects, the wrapper treats the failure as
- * `{ kind: "abort" }` and surfaces the *original* `inference.error`
- * to the caller. The policy's own exception is logged at `warn` so
- * operators can see when a custom policy is failing under load, and
- * dropped — the inference error is what the caller needs to act on,
- * not the bug in the policy callback.
- *
- * Synchronous throws from `runSingleAttempt` (`ProtocolMismatchError`
- * raised by the streaming parse or the finalization walk, etc.)
- * propagate out of `runInference`. The current attempt's buffered
- * events are discarded along with the throw — those represent
- * protocol bugs the policy mechanism is not equipped to absorb, and
- * the caller's `for await` rejects so the failure surfaces rather
- * than being silently buffered.
+ * Synchronous throws from `runSingleAttempt` (`ProtocolMismatchError` from
+ * the streaming parse or the finalization walk, etc.) propagate out of
+ * `runInference`; the current attempt's buffered events are discarded with
+ * the throw, and the caller's `for await` rejects.
  */
 export async function* runInference(
   opts: InferenceHarnessOptions,
 ): AsyncIterable<InferenceEvent> {
-  // Crash-loudly guards. The wrapper and the attempts it drives access
-  // `deps.fetch` and `deps.adapters` (per `runSingleAttempt` invocation)
-  // and `deps.scheduler` (read here for the monotonic time source) before
-  // any event yields. A malformed `deps` from a JS caller would otherwise
-  // surface as a confusing `Cannot read properties of undefined`. The
-  // wrapper is the single public entrypoint to the harness; this is the
-  // right layer to own the `deps` shape check.
+  // Crash-loudly guards: the wrapper touches `deps.fetch`, `deps.adapters`,
+  // and `deps.scheduler` before any event yields, so a malformed `deps` from
+  // a JS caller would otherwise surface as a confusing undefined-property
+  // error. The wrapper is the single public entrypoint; this is the right
+  // layer to own the shape check.
   if (typeof opts.deps?.fetch !== "function") {
     throw new Error(
       `runInference: deps.fetch must be a function (got ${typeof opts.deps?.fetch}); pass createDefaultDependencies() or a test harness Dependencies object`,
@@ -1433,13 +1260,10 @@ export async function* runInference(
     const buffered: InferenceEvent[] = [];
     let terminalError: InferenceError | undefined;
 
-    // Per-attempt private allocator. `runSingleAttempt` allocates a
-    // seq for every event it yields; if the attempt is discarded on
-    // retry, any caller-visible seq it had consumed would leave a
-    // gap in the consumer's stream — indistinguishable from the
-    // "missed events during brief disconnection" the seq stream is
-    // documented to expose. Allocate from a private counter here and
-    // re-stamp the buffer with caller-visible seqs at flush time.
+    // Per-attempt private allocator. If a discarded attempt's seqs leaked
+    // into the caller-visible stream, a retry would leave gaps — so the
+    // wrapper allocates from a private counter and re-stamps the buffer
+    // with caller-visible seqs at flush time.
     let attemptSeq = 0;
     const attemptOpts: InferenceHarnessOptions = {
       ...opts,
@@ -1464,12 +1288,10 @@ export async function* runInference(
       return;
     }
 
-    // Consult the policy. Sync throws and Promise rejections both
-    // resolve to an abort decision; the original inference.error
-    // surfaces to the caller, not the policy's exception. The
-    // exception is logged at warn so a custom policy that
-    // misbehaves under load is not invisible — swallowing the
-    // failure silently would hide the bug from operators.
+    // Consult the policy. Sync throws and rejections both resolve to an
+    // abort decision; the original `inference.error` surfaces to the caller.
+    // The exception is logged at `warn` so a misbehaving custom policy is
+    // not invisible under load.
     let decision: RetryDecision;
     try {
       decision = await Promise.resolve(
@@ -1492,8 +1314,8 @@ export async function* runInference(
       return;
     }
 
-    // Retry: discard the failed attempt's events, emit a single
-    // inference.retry, await the delay, and re-enter the loop.
+    // Discard the failed attempt's events, emit a single inference.retry,
+    // await the delay, and re-enter the loop.
     yield {
       type: "inference.retry",
       seq: opts.nextSeq(),
@@ -1505,16 +1327,14 @@ export async function* runInference(
     };
 
     const retryDelayMs = decision.delayMs;
-    // Wire the caller-supplied signal into the delay so an abort
-    // during the wait short-circuits to the next attempt within a
-    // single virtual tick rather than blocking until the full
-    // `retryDelayMs` elapses. A 60-second `retryAfterMs` on a quota
-    // error would otherwise pin the wrapper for the full minute
-    // before honouring cancellation. The shape is the standard one
-    // for racing a scheduled timeout against an abort listener: a
-    // single `settled` flag plus a `settle()` helper that cancels
-    // whichever side did not fire and removes the listener so the
-    // caller signal does not accumulate one stale entry per call.
+    // Wire the caller signal into the delay so an abort mid-wait
+    // short-circuits to the next attempt within a single virtual tick
+    // instead of pinning the wrapper for the full `retryDelayMs` (a
+    // 60-second `retryAfterMs` on a quota error would otherwise block
+    // cancellation for a minute). Standard race of a scheduled timeout
+    // against an abort listener: one `settled` flag plus a `settle()`
+    // that cancels whichever side did not fire and removes the listener
+    // so the caller signal does not accumulate stale entries.
     await new Promise<void>((resolve) => {
       let settled = false;
       const settle = (): void => {
@@ -1544,20 +1364,16 @@ export async function* runInference(
 }
 
 /**
- * Combine an optional caller-supplied `AbortSignal` with the harness's
- * internal timeout-driven controller into a single signal the fetch
- * implementation can observe. Returns the internal controller's signal
- * alone if no caller signal exists; otherwise wires both so that either
- * one firing aborts the combined signal.
+ * Combine an optional caller `AbortSignal` with the harness's internal
+ * timeout controller into a single signal the fetch can observe. Returns
+ * the internal signal alone if no caller signal exists.
  *
- * Returns a bundle containing the signal AND an explicit cleanup
- * function. `{ once: true }` on the abort listeners only auto-removes
- * after firing, so on the happy path (no abort) the listeners would
- * accumulate against a long-lived caller signal — one un-removed
- * listener per `runInference` call. The caller MUST invoke
- * `cleanup()` exactly once when the call's interest in the signal
- * ends (whether by completion, error, or abandonment); the harness
- * does this from its `try/finally` block. `cleanup()` is idempotent.
+ * The returned bundle includes an explicit `cleanup()`: `{ once: true }`
+ * listeners only auto-remove after firing, so on the happy path they would
+ * accumulate against a long-lived caller signal — one un-removed listener
+ * per call. The caller MUST invoke `cleanup()` exactly once when the call's
+ * interest in the signal ends; the harness does this from its `try/finally`.
+ * `cleanup()` is idempotent.
  */
 type CombinedSignal = {
   readonly signal: AbortSignal;
@@ -1604,9 +1420,9 @@ function combineSignals(
 /**
  * Await `promise` but reject early if `signal` aborts in the meantime.
  * Used for non-streaming reads of the error response body so a hostile
- * server cannot hang the call by returning a 4xx/5xx with a body that
- * never terminates. The signal's listener is always removed before
- * settlement so this helper does not itself leak listeners.
+ * server cannot hang the call with a body that never terminates. The
+ * signal listener is always removed before settlement, so the helper
+ * does not leak listeners.
  */
 async function awaitWithSignal<T>(
   promise: Promise<T>,
@@ -1649,16 +1465,12 @@ function snapshotPartial(partial: PartialMessage): PartialMessage {
   };
 }
 
-// The harness's per-index routing is load-bearing on every delta
-// carrying an `index`. Provider adapters synthesize a default at the
-// adapter boundary if their wire shape doesn't carry one (e.g.
-// OpenAI Chat Completions emits `index: 0` explicitly on text and
-// thinking deltas because Chat Completions ships a single content
-// block per kind per response). A delta arriving at the harness
-// without an index is a wiring bug at the adapter, not data the
-// harness should silently route to block 0 — surfacing it as a
-// ProtocolMismatchError is the load-bearing alternative to corrupt
-// state.
+// Per-index routing is load-bearing on every delta that carries an `index`.
+// Provider adapters synthesize a default at the boundary when their wire
+// shape lacks one (e.g. OpenAI emits `index: 0` explicitly). A delta arriving
+// without an index is a wiring bug at the adapter, not data to silently
+// route to block 0 — surfacing it as a ProtocolMismatchError is the
+// load-bearing alternative to corrupt state.
 function requireIndex(
   event: {
     type: string;
@@ -1706,17 +1518,15 @@ const ErrorBody = type({ error: { message: "string" } });
 const DirectMessageBody = type({ message: "string" });
 
 /**
- * Upper bound on the length of a plain-text error body that gets
- * promoted to `InferenceError.message`. Bodies longer than this are
- * truncated with a marker pointing operators at `error.raw`, which
- * always retains the untruncated body. Structured JSON envelopes are
- * not subject to this cap — their `message` fields are server-curated
- * and concise in practice.
+ * Upper bound on the length of a plain-text error body promoted to
+ * `InferenceError.message`. Longer bodies are truncated with a marker
+ * pointing operators at `error.raw`, which always retains the untruncated
+ * body. Structured JSON envelopes are exempt — their `message` fields are
+ * server-curated and concise in practice.
  *
- * 500 characters covers a multi-line stack trace or a paragraph of
- * diagnostic text without blowing up the default director's
- * user-facing reply (which concatenates the message into a chat-style
- * string) or the timeline part stored by the hub event collector.
+ * 500 characters covers a stack trace or a paragraph of diagnostics
+ * without blowing up the default director's user-facing reply or the
+ * timeline part stored by the hub event collector.
  */
 const MAX_PLAIN_TEXT_MESSAGE_CHARS = 500;
 
@@ -1738,14 +1548,11 @@ function extractErrorMessage(body: unknown): string | null {
     return directBody.message;
   }
 
-  // Plain-text error bodies (HTML error pages, raw exception strings,
-  // load-balancer diagnostics). The body reaches us via the
-  // text-then-parse path in the `!response.ok` branch: when
-  // JSON.parse failed, the raw string is stored as errorBody.
-  // Surfacing it here means the operator-visible message contains
-  // the server's actual diagnostic rather than just `statusText`.
-  // `error.raw` always holds the untruncated body for audit-time
-  // inspection.
+  // Plain-text error bodies (HTML pages, raw exception strings, load-balancer
+  // diagnostics) reach us via the text-then-parse path: when JSON.parse
+  // failed, the raw string is stored as `errorBody`. Surfacing it here means
+  // the operator-visible message carries the server's actual diagnostic, not
+  // just `statusText`. `error.raw` always holds the untruncated body.
   if (typeof body === "string" && body.length > 0) {
     return truncatePlainTextMessage(body);
   }

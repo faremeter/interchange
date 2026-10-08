@@ -4,10 +4,9 @@
 // `catalog:` specifier to the catalog's range, classifies the dependency as a
 // workspace member, and freezes BOTH members as source entries; a run reaching
 // completion proves the catalog-resolved dependency materialized and was
-// importable at evaluation time.
-//
-// `catalog:` resolution is otherwise only unit-tested; this exercises it through
-// install -> deploy-by-source-ref -> run against the real subprocess sidecar.
+// importable at evaluation time. `catalog:` resolution is otherwise only
+// unit-tested; this exercises it through install -> deploy-by-source-ref -> run
+// against the real subprocess sidecar.
 
 import { promises as fs } from "node:fs";
 import os from "node:os";

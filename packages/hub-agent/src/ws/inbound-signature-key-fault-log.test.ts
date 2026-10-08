@@ -2,18 +2,16 @@
 // against.
 //
 // The outcome each fault produces, and the fact that no policy admits it, are
-// asserted beside the decision tables in `inbound-signature.test.ts`. What is
-// asserted here is the other half: that an operator can tell WHY. A keyring
-// fault is an operator condition -- a truncated write, a hub-side resolution
-// bug, a corrupt cache entry -- and it is invisible in the mail flow itself,
-// which shows only mail being rejected. Without the lines this file pins,
-// nothing points at the keyring.
+// asserted beside the decision tables in `inbound-signature.test.ts`. Asserted
+// here is the other half: that an operator can tell WHY -- a keyring fault is
+// an operator condition (a truncated write, a hub-side resolution bug, a
+// corrupt cache entry) and is invisible in the mail flow itself, which shows
+// only mail being rejected.
 //
-// The second suite below drives the PRODUCTION construction path: a real cache
-// over a real directory holding a corrupt entry, read through the real resolver.
-// An injected stub proves only that the gate refuses bad material it is handed;
-// it says nothing about whether a corrupt keyring ever produces any.
-//
+// The second suite drives the PRODUCTION construction path: a real cache over
+// a real directory holding a corrupt entry, read through the real resolver.
+// An injected stub proves only that the gate refuses bad material it is
+// handed; it says nothing about whether a corrupt keyring ever produces any.
 // The capture is a process-global logging configuration, which is why this
 // suite is its own file rather than a case inside the decision tables.
 
@@ -145,11 +143,10 @@ async function signedMessage(): Promise<{
 }
 
 /**
- * The captured ERROR lines that name the sender key as the condition.
- *
- * LogTape splits a record's message at each placeholder, so the literal text
- * arrives as several pieces with the interpolated values between them. Joining
- * the string pieces is what lets a phrase spanning a placeholder be matched.
+ * The captured ERROR lines that name the sender key as the condition. LogTape
+ * splits a record's message at each placeholder, so the literal text arrives
+ * as several pieces with the interpolated values between them; joining the
+ * string pieces lets a phrase spanning a placeholder be matched.
  */
 function keyFaultLines(): CapturedLog[] {
   return capturedLogs.filter((r) => {

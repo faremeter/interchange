@@ -25,10 +25,10 @@ const WORKFLOW_ENTRY = "index.js";
 type AssetDelivery = WorkflowClosureMaterializerConfig["materializeAssets"];
 
 // The pinned workflow entry writes a sentinel file as an import-time side
-// effect. The materializer lays the closure out WITHOUT importing any author
-// code, so the sentinel must never appear -- its absence proves no module was
-// evaluated on the host. The path is baked into the source so the test does
-// not read the process environment.
+// effect. The materializer lays the closure out WITHOUT importing any
+// author code, so the sentinel must never appear — its absence proves no
+// module was evaluated on the host. The path is baked into the source so
+// the test does not read the process environment.
 function workflowEntrySource(sentinelPath: string): string {
   return `
 import { writeFileSync } from "node:fs";
@@ -122,9 +122,9 @@ function recordEmptyAssets(): AssetDelivery {
 }
 
 /**
- * Records the call and places `bytes` where a tarball `kind: "asset"` entry
- * resolves. Asset unpacking itself is owned by the caller-supplied delivery
- * function; this stub is the mount that function returns.
+ * Records the call and places `bytes` where a tarball `kind: "asset"`
+ * entry resolves. Asset unpacking is owned by the caller-supplied
+ * delivery function; this stub is the mount that function returns.
  */
 function deliverMountedTarball(
   assetId: string,
@@ -246,8 +246,8 @@ describe("createWorkflowClosureMaterializer", () => {
     );
     const materialized = await materialize(probeFrame(closure, WORKFLOW_ENTRY));
 
-    // The workflow package's own package.json is present in the laid-out
-    // store directory.
+    // The workflow package's own package.json is present in the
+    // laid-out store directory.
     const pkgJson = JSON.parse(
       await fs.readFile(
         path.join(materialized.packageDir, "package.json"),

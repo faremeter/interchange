@@ -7,10 +7,10 @@ export const offering = pgTable("offering", {
   id: text("id").primaryKey(),
   // The workflow definition this offering prices. The column keeps its
   // `agent_id` name for contract stability -- the offering API exposes
-  // `agentId`/`agentName` -- but it now holds a workflow_definition id (a folded
-  // agent's definition). `restrict`, not cascade: an offering is a commercial
-  // pricing record, so deleting its definition must consciously deal with the
-  // offering rather than silently vaporize it.
+  // `agentId`/`agentName` -- but it now holds a workflow_definition id (a
+  // folded agent's definition). `restrict`, not cascade: an offering is a
+  // commercial pricing record, so deleting its definition must consciously
+  // deal with the offering rather than silently vaporize it.
   agentId: text("agent_id")
     .notNull()
     .references(() => workflowDefinition.id, { onDelete: "restrict" }),

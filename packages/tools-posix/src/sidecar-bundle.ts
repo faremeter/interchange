@@ -1,13 +1,6 @@
-// Sidecar-bundle entry for `@intx/tools-posix` — the convention-compliant
-// factory the tool-package loader invokes.
-//
-// The factory reads the working tree it operates on from `env.toolCwd`
-// and the blob store from the `BaseEnv` `storage` field, plus the
-// optional `plugins` slot. Plugins are filtered by shape: any element
-// of `env.plugins` that has a `tools` array, a `middleware` function,
-// or a `dispose` function is treated as a `ToolPlugin` and handed to
-// `createPosixTools`. This is how LSP (a plugin factory) plugs into
-// posix without posix needing to know about LSP by name.
+// Sidecar-bundle entry for `@intx/tools-posix`: the loader-invoked factory.
+// `env.toolCwd` is the working tree, `env.storage` the blob store, and
+// `env.plugins` is filtered to ToolPlugin-shaped values.
 
 import { defineTool, isToolPluginInstance, type BaseEnv } from "@intx/agent";
 import { createBlobReader } from "@intx/types/runtime";
@@ -17,26 +10,17 @@ import type { ToolPlugin } from "./plugin";
 import { GATED_TOOL_NAMES, TOOL_DEFINITIONS } from "./registry";
 
 /**
- * Env contract for the posix sidecar bundle. `toolCwd` is the working
- * tree the posix filesystem tools operate on: read, write, edit, shell,
- * search, and grep resolve relative paths against it.
- *
- * It is independent of the `BaseEnv` `workdir` lock and storage
- * boundary. Two agents may share one `toolCwd` while holding distinct
- * `workdir` values; the posix tools apply no lock to `toolCwd`, so
- * concurrent writes to a shared tree are the caller's corruption risk
- * to own.
+ * Env contract: `toolCwd` is the working tree the posix tools resolve
+ * relative paths against, independent of `BaseEnv` `workdir`. The posix
+ * tools apply no lock to `toolCwd`; callers own the concurrency risk.
  */
 export interface PosixToolEnv extends BaseEnv {
   toolCwd: string;
 }
 
 function isToolPlugin(value: unknown): value is ToolPlugin {
-  // Require the `kind: "tool-plugin"` marker minted by definePlugin
-  // before any shape check. A foreign object that happens to expose
-  // `tools`, `middleware`, or `dispose` would have been
-  // mis-identified by the previous duck-typing-only check; the
-  // marker eliminates that collision risk.
+  // The `kind: "tool-plugin"` marker (minted by definePlugin) prevents
+  // mis-identifying foreign objects that happen to expose those fields.
   if (!isToolPluginInstance(value)) return false;
   const hasTools = "tools" in value && Array.isArray(value["tools"]);
   const hasMiddleware =
@@ -46,10 +30,7 @@ function isToolPlugin(value: unknown): value is ToolPlugin {
   return hasTools || hasMiddleware || hasDispose;
 }
 
-/**
- * Named export the loader picks up. The id is package-namespaced per
- * the convention.
- */
+/** Named export the loader picks up; id is package-namespaced. */
 export const posix = defineTool<PosixToolEnv>({
   id: "@intx/tools-posix/sidecar-bundle",
   requires: ["toolCwd"],

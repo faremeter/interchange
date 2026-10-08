@@ -1,15 +1,8 @@
 // Source-entry builder for the signal-gated multi-step workflow fixture (F2):
 // `step1 -> gate = awaitSignal(...) -> step2`, where the second step is
-// optional. The returned string is a `@intx/*`-importing entry module;
-// `bundleWorkflowEntry` inlines it to a self-contained `.mjs` the sidecar
-// evaluates in-child.
-//
-// Parameterised by the mail trigger address, the awaited signal name, an
-// optional `drainBehavior` on the gate, the step and gate ids, and the per-step
-// system prompts so a caller pins each agent's inference request to the
-// deployment it exercises. Omit `systemPrompt2` to deploy a `step1 -> gate`
-// workflow with no tail step (the drain round-trip shape); supply it to deploy
-// the full `step1 -> gate -> step2` shape (the signal park/resume shape).
+// optional. Omit `systemPrompt2` to deploy a `step1 -> gate` workflow with no
+// tail step (the drain round-trip shape); supply it to deploy the full
+// `step1 -> gate -> step2` shape (the signal park/resume shape).
 
 export type SignalGateFixtureParams = {
   /** The mail trigger's `to` address the deployment routes on. */

@@ -65,16 +65,12 @@ export type WithFailoverResult<T> = {
 
 /**
  * Wrap an inference attempt with a single-shot failover: if the call
- * rejects, swap to `fallback` and retry once. The returned object
- * carries which source ultimately served the request so the caller
- * can report it; `attempts` lists every source tried in order, and
- * `primaryError` carries the primary's failure when failover engaged
- * so it can be logged rather than silently discarded.
- *
- * When the fallback also rejects, the thrown wrapper Error carries
- * both failure messages in its `message` text and points its `cause`
- * at the fallback's error. Neither the caller's primary nor fallback
- * error object is mutated.
+ * rejects, swap to `fallback` and retry once. The result carries which
+ * source served the request, every source tried in order, and the
+ * primary's failure when failover engaged (so it can be logged rather
+ * than silently discarded). When the fallback also rejects, the thrown
+ * Error carries both failure messages and points its `cause` at the
+ * fallback's error. Neither caller-supplied error object is mutated.
  */
 export async function withFailover<T>(args: {
   primary: SourceEntry;

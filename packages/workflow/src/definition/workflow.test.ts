@@ -53,8 +53,7 @@ describe("onTrigger primitive", () => {
     const prim = onTrigger({ on: { type: "mail", to: "s@x.example" }, body });
     expect(prim.kind).toBe("onTrigger");
     expect(prim.on).toEqual({ type: "mail", to: "s@x.example" });
-    // Authored inline: the constructor wraps the WorkflowDefinition as
-    // `{ inline }`; deploy later rewrites it to `{ ref }`.
+    // The constructor wraps the body as `{ inline }`; deploy later rewrites it to `{ ref }`.
     expect(prim.body).toEqual({ inline: body });
     expect(prim.drainBehavior).toBe("wait");
     // defineWorkflow, not the constructor, assigns the id from the record key.
@@ -73,11 +72,9 @@ describe("onTrigger primitive", () => {
   });
 
   test("omits onBodyFailure when the author does not opt in", () => {
-    // Unlike drainBehavior, an absent policy is NOT resolved to a default: the
-    // field must stay off the primitive so a default section's inert projection
-    // -- and therefore its approval hash -- is byte-identical to before the
-    // policy existed. `in`, not `=== undefined`: a present-but-undefined key
-    // would still change the canonical bytes.
+    // No default: the field must stay absent so the inert projection -- and
+    // its approval hash -- stays byte-identical. `in`, not `=== undefined`:
+    // a present-but-undefined key would still change the canonical bytes.
     const prim = onTrigger({ on: { type: "manual" }, body: simpleBody() });
     expect("onBodyFailure" in prim).toBe(false);
   });
@@ -108,9 +105,8 @@ describe("onTrigger primitive", () => {
   });
 
   test("accepts a deployed ref-form section body, skipping its validation", () => {
-    // The deploy step rewrites the inline body to a `{ ref }` arm; the
-    // referenced body was validated at its own deploy, so defineWorkflow
-    // must accept the ref without descending into (absent) inline steps.
+    // A ref-form body was validated at its own deploy; accept it without
+    // descending into (absent) inline steps.
     const section: Primitive = {
       kind: "onTrigger",
       id: "",
@@ -156,8 +152,7 @@ describe("onTrigger primitive", () => {
       trigger: { type: "manual" },
       steps: { hold: awaitSignal({ name: "go" }) },
     });
-    // Does not throw: an onTrigger body is the sanctioned long-lived loop.
-    // (A loop body may also await now; see the loop-body validation tests.)
+    // onTrigger bodies are the sanctioned long-lived loops (and may await).
     defineWorkflow({
       id: "wf",
       steps: { section: onTrigger({ on: { type: "manual" }, body }) },
@@ -235,11 +230,9 @@ describe("step triggers budget", () => {
   });
 
   test("rejects an invalid trigger count at the read point too", () => {
-    // A definition hydrated from workflow.json never passes through `step()`
-    // (the envelope schema checks structure only), so `stepTriggerBudget` --
-    // the single read point -- must fail loud on a persisted invalid value
-    // rather than silently coercing (0 would behave as 1; 1.5 would service
-    // an extra trigger). Build the primitive directly, as hydration does.
+    // Hydrated definitions skip `step()`, so the read point must fail loud on
+    // a persisted invalid value (0 would behave as 1; 1.5 would service an
+    // extra trigger). Build the primitive directly, as hydration does.
     const hydrated = { ...step({ agent: makeAgent("a") }), triggers: 0 };
     expect(() => stepTriggerBudget(hydrated)).toThrow(
       /positive integer or "unbounded"/,
@@ -251,10 +244,9 @@ describe("step triggers budget", () => {
   });
 
   test("rejects a retry policy on a multi-trigger step", () => {
-    // A retried attempt re-invokes the step with its launch input and starts
-    // with no resume, so on a step with a trigger budget other than 1 a
-    // mid-run failure would re-service the launch trigger and never
-    // re-service the consumed one -- the combination fails loud.
+    // A retry re-invokes with the launch input and no resume, so on a
+    // multi-trigger step it would re-service the launch trigger instead of
+    // the consumed one -- the combination fails loud.
     const retry = { maxAttempts: 2, initialBackoffMs: 100 };
     expect(() => step({ agent: makeAgent("a"), triggers: 3, retry })).toThrow(
       /cannot combine with a trigger budget/,
@@ -262,12 +254,10 @@ describe("step triggers budget", () => {
     expect(() =>
       step({ agent: makeAgent("a"), triggers: "unbounded", retry }),
     ).toThrow(/cannot combine with a trigger budget/);
-    // A batch step retries fine: re-invoking with the launch input IS the
-    // retry semantics for a single trigger.
+    // A single-trigger retry re-invokes with the launch input, which is the retry semantics.
     step({ agent: makeAgent("a"), retry });
     step({ agent: makeAgent("a"), triggers: 1, retry });
-    // A declared maxAttempts of 1 never retries, so it combines with any
-    // budget.
+    // maxAttempts 1 never retries, so it combines with any budget.
     step({
       agent: makeAgent("a"),
       triggers: "unbounded",
@@ -276,9 +266,8 @@ describe("step triggers budget", () => {
   });
 
   test("rejects the retry/budget combination at the read point too", () => {
-    // Hydrated definitions never pass through `step()`, so the runtime's
-    // read-point guard (applied at runStep entry) must reject the persisted
-    // combination. Build the primitive directly, as hydration does.
+    // Hydrated definitions skip `step()`, so the runtime's read-point guard
+    // must reject the persisted combination. Build the primitive directly.
     const hydrated = {
       ...step({ agent: makeAgent("a"), triggers: 3 }),
       retry: { maxAttempts: 2, initialBackoffMs: 100 },
@@ -289,10 +278,8 @@ describe("step triggers budget", () => {
   });
 
   test("rejects a map-level retry over a multi-trigger inner step", () => {
-    // The map's retry applies to each fan-out instance of an inner step that
-    // declares none, so `map()` must validate the COMPOSED shape -- `step()`
-    // alone never sees a map-level retry, and without the map-side check the
-    // forbidden combination would surface only at the run's first execution.
+    // The map's retry applies to inner steps that declare none, so `map()`
+    // must validate the composed shape; `step()` alone never sees it.
     const retry = { maxAttempts: 2, initialBackoffMs: 100 };
     expect(() =>
       map({
@@ -301,8 +288,8 @@ describe("step triggers budget", () => {
         retry,
       }),
     ).toThrow(/cannot combine with a trigger budget/);
-    // The inner step's OWN retry wins over the map's, so a budget-1 inner
-    // step with its own retry composes fine under a map-level retry...
+    // The inner step's own retry wins over the map's, so a budget-1 step
+    // with its own retry composes fine under a map-level retry...
     map({
       over: { from: "trigger.payload" },
       step: step({ agent: makeAgent("a"), retry }),
@@ -348,10 +335,8 @@ describe("defineWorkflow", () => {
   });
 
   test("rejects any step id containing a double underscore", () => {
-    // `__` is the delimiter joining a step id into the runtime ids derived from
-    // it (inline-body refs, loop/onTrigger body run ids), so a `__` inside a
-    // step id would make one of those ids ambiguous. The rule spans every
-    // primitive kind, not just loops -- a plain step id is rejected too.
+    // `__` joins step ids into derived runtime ids (body refs, body run ids),
+    // so one inside a step id would make those ambiguous. Spans every kind.
     expect(() =>
       defineWorkflow({
         id: "w",
@@ -518,8 +503,7 @@ describe("inboundMailPolicy", () => {
       untrustedFrom: "admit",
       missing: "reject",
     });
-    // The two unset outcomes stay unset rather than defaulted -- the field is
-    // sparse and no key is populated for an outcome the author omitted.
+    // Sparse: no key is populated for an outcome the author omitted.
     expect(def.inboundMailPolicy).not.toHaveProperty("invalid");
     expect(def.inboundMailPolicy).not.toHaveProperty("unknown");
   });
@@ -561,9 +545,8 @@ describe("inboundMailPolicy", () => {
 
 describe("acyclicity validation", () => {
   test("rejects a gate whose branch names an ancestor (F2 back-edge)", () => {
-    // G runs after A, and G's then-branch points back at A. This is a
-    // cycle only in the after-union-gate graph; a pure-after check would
-    // accept it and the runtime would silently run the wrong branch.
+    // A cycle only in the after-union-gate graph; a pure-after check would
+    // accept it and the runtime would run the wrong branch.
     const a = makeAgent("a");
     const e = makeAgent("e");
     const edown = makeAgent("edown");
@@ -604,8 +587,7 @@ describe("acyclicity validation", () => {
   });
 
   test("rejects a two-node cycle that the self-check does not catch", () => {
-    // validateAfterRefs only rejects a step depending on itself; a
-    // two-node cycle is the minimal case that validateAcyclic owns.
+    // Two-node cycles are the minimal case validateAfterRefs's self-check misses.
     const x = makeAgent("x");
     const y = makeAgent("y");
     expect(() =>
@@ -698,9 +680,8 @@ describe("loop validation", () => {
   });
 
   test("rejects a loop step id containing a double underscore", () => {
-    // A loop body run id joins run id, loop id, and index with `__`
-    // (`loopBodyRunId`), so a `__` inside the loop id would make the run id --
-    // a durable-store key -- ambiguous with a different nesting chain.
+    // Body run ids join loop id and index with `__`; a `__` inside the loop
+    // id would make the durable-store run id ambiguous across nesting chains.
     expect(() =>
       defineWorkflow({
         id: "w",
@@ -720,9 +701,8 @@ describe("loop validation", () => {
   });
 
   test("rejects a double underscore in a loop body step id", () => {
-    // A loop body is its own normalized definition, so the ban fires at every
-    // nesting level -- a `__` step id inside the body is caught by the body's
-    // own `defineWorkflow`, not only at the top level.
+    // The body is its own normalized definition, so the ban fires at every
+    // nesting level, not only at the top level.
     expect(() =>
       loop({
         body: defineWorkflow({
@@ -799,10 +779,8 @@ describe("loop validation", () => {
   });
 
   test("rejects a loop whose onExhausted does not depend on the loop", () => {
-    // onExhausted routes only on exhaustion, so it must name the loop in
-    // its after; otherwise it would be schedulable from RunStarted and
-    // fire on every run. Naming an ancestor (no after: [loop]) is the
-    // canonical way this goes wrong.
+    // onExhausted routes only on exhaustion, so it must name the loop in its
+    // after; otherwise it would fire on every run.
     expect(() =>
       defineWorkflow({
         id: "w",
@@ -899,17 +877,16 @@ describe("loop validation", () => {
   });
 
   test("recursion catches a sleep in a hand-built (unvalidated) nested loop body", () => {
-    // The per-body `defineWorkflow` guarantee does not hold for a body assembled
-    // directly (bypassing normalization). `validateLoopBody` therefore recurses,
-    // so an outer `defineWorkflow` still rejects a sleep buried in a nested loop
-    // of a hand-built body.
+    // A hand-built body bypassed its own `defineWorkflow`, so `validateLoopBody`
+    // recurses: an outer `defineWorkflow` still rejects a sleep buried in a
+    // nested loop.
     const sleepBody = defineWorkflow({
       id: "sleep-leaf",
       trigger: { type: "manual" },
       steps: { nap: sleep({ duration: 1 }) },
     });
-    // A valid single-level loop body, then swap its inner loop's body to the
-    // sleep-bearing one -- the swap never re-runs validation.
+    // Build a valid body, then swap in the sleep-bearing one -- the swap never
+    // re-runs validation.
     const valid = defineWorkflow({
       id: "hand-built",
       trigger: { type: "manual" },
@@ -949,8 +926,8 @@ describe("loop validation", () => {
   });
 
   test("rejects loop nesting deeper than the static limit", () => {
-    // Build the deepest permitted nesting (8 loop levels), then one more must be
-    // rejected at definition time so no recursive reader overflows on it.
+    // The deepest permitted nesting is 8 levels; one more must be rejected at
+    // definition time so no recursive reader overflows.
     const nest = (levels: number): WorkflowDefinition => {
       let body = simpleBody();
       for (let i = 0; i < levels; i += 1) {
@@ -999,8 +976,7 @@ describe("loop validation", () => {
   });
 
   test("allows a loop body that spawns a childWorkflow", () => {
-    // childWorkflow is wired inside a loop body: the grandchild is lifted to a
-    // ref and depth-counted against the tree-wide ceiling like any other child.
+    // The grandchild is lifted to a ref and depth-counted like any other child.
     expect(() =>
       defineWorkflow({
         id: "w",
@@ -1024,8 +1000,7 @@ describe("loop validation", () => {
   });
 
   test("allows a loop body that parks on an awaitSignal", () => {
-    // awaitSignal is the one suspending primitive a loop body may now hold: it
-    // parks and resumes through the suspendable-child seam.
+    // awaitSignal parks and resumes through the suspendable-child seam.
     expect(() =>
       defineWorkflow({
         id: "w",
@@ -1146,10 +1121,8 @@ describe("childWorkflow inline authoring", () => {
   });
 
   test("rejects an onTrigger section inside an inline child body", () => {
-    // The runtime lifts onTrigger sections only at the top level, so a section
-    // inside a spawned body reaches the runtime inline and fails. The deploy
-    // enumeration already rejects it; authoring must agree, or the author gets
-    // a clean definition and a clean local run followed by a deploy rejection.
+    // Sections are lifted only at the top level, so one inside a spawned body
+    // would fail at the runtime; authoring must agree with the deploy check.
     const child = defineWorkflow({
       id: "child",
       steps: {
@@ -1166,8 +1139,8 @@ describe("childWorkflow inline authoring", () => {
   });
 
   test("rejects an onTrigger section nested two bodies deep", () => {
-    // Hand-assembled, because every intermediate defineWorkflow would reject
-    // the nesting itself; the parent's authoring is the first check that runs.
+    // Hand-assembled: every intermediate defineWorkflow would reject the
+    // nesting, so the parent's authoring is the first check that runs.
     const grandchild = simpleBody();
     const grandchildWithSection: WorkflowDefinition = {
       ...grandchild,
@@ -1251,7 +1224,7 @@ describe("awaitSignal onTimeout validation", () => {
 
   test("rejects an onTimeout target that does not depend on the gate", () => {
     // onTimeout routes only on a fired timer, so the target must name the gate
-    // in its after (mirroring loop.onExhausted) -- else it would run every run.
+    // in its after (mirroring loop.onExhausted).
     const recover = makeAgent("recover");
     expect(() =>
       defineWorkflow({
@@ -1464,10 +1437,9 @@ describe("concurrent awaitSignal name validation", () => {
   });
 
   test("rejects same-name awaiters on a gate's then and else branches (conservative)", () => {
-    // Documents the accepted over-reject: the two gates are mutually exclusive
-    // at runtime, but deciding that statically is a dominator analysis whose
-    // permissive-direction error would re-admit the hazard, so this is rejected
-    // and the runtime guard remains the backstop.
+    // Accepted over-reject: the branches are mutually exclusive at runtime,
+    // but proving it statically is a dominator analysis whose permissive error
+    // would re-admit the hazard, so the runtime guard stays the backstop.
     expect(() =>
       defineWorkflow({
         id: "wf",
@@ -1532,9 +1504,8 @@ describe("onFailure validation", () => {
   });
 
   test("accepts onFailure on a step inside a childWorkflow inline body", () => {
-    // A childWorkflow body is its own workflow root with its own routing, so a
-    // member step there may carry onFailure -- validated against the child's
-    // own steps by the validateChildWorkflowBody re-entry.
+    // The child body is its own workflow root, so a member step there may
+    // carry onFailure, validated by the validateChildWorkflowBody re-entry.
     const child = defineWorkflow({
       id: "child",
       trigger: { type: "manual" },
@@ -1634,8 +1605,8 @@ describe("onFailure validation", () => {
   });
 
   test("rejects onFailure on a member step inside a loop body", () => {
-    // The loop body constructs on its own (onFailure is legal on a body root
-    // step there); the parent's loop-body walk is what rejects it.
+    // onFailure is legal on a loop-body root step; the parent's loop-body walk
+    // is what rejects it.
     const body = defineWorkflow({
       id: "body",
       trigger: { type: "manual" },
@@ -1664,8 +1635,8 @@ describe("onFailure validation", () => {
 
   test("rejects a hand-assembled onFailure on a non-member kind", () => {
     // The type blocks onFailure on a gate, but a hand-assembled definition
-    // rides the open wire schema. Inject the field the way such a definition
-    // would, to prove the definition-time defense fires.
+    // rides the open wire schema; inject the field to prove the
+    // definition-time defense fires.
     const tampered = {
       ...gate({
         when: { from: "steps.a.output" },
@@ -1709,8 +1680,8 @@ describe("onFailure validation", () => {
   });
 
   test("accepts onFailure on a member step inside an onTrigger body", () => {
-    // A section body runs as its own child run, structurally like a
-    // childWorkflow body, so a member step there may route its own failure.
+    // A section body runs as its own child run, so a member step there may
+    // route its own failure.
     const body = defineWorkflow({
       id: "sec",
       trigger: { type: "manual" },
@@ -1728,8 +1699,8 @@ describe("onFailure validation", () => {
   });
 
   test("rejects a hand-assembled onFailure on a non-member in an onTrigger body", () => {
-    // A hand-assembled section body bypasses the body's own defineWorkflow, so
-    // the parent must re-validate it. A gate may never carry onFailure.
+    // A hand-assembled section body bypassed its own defineWorkflow, so the
+    // parent must re-validate it.
     const gateNode = {
       ...gate({ when: { from: "steps.a.output" }, then: "yes", else: "no" }),
       onFailure: "yes",
@@ -1827,12 +1798,9 @@ describe("hashDefinition", () => {
   });
 
   test("hashes a definition whose agent carries tool factories", () => {
-    // Tool factories are functions; `canonicalizeForHash` rejects
-    // function values directly. The projection layer in workflow.ts
-    // must extract the factory metadata (id, requires) and discard
-    // the function before canonicalization. Without that projection,
-    // any non-trivial production workflow would fail to hash and
-    // crash `RunStarted` emission inside `runtimeRun`.
+    // Tool factories are functions, which canonicalizeForHash rejects; the
+    // projection layer must keep factory metadata (id, requires) and drop the
+    // function, or any production workflow would fail to hash.
     const tool = defineTool({
       id: "@x/y/echo",
       definitions: [],
@@ -1908,13 +1876,9 @@ describe("hashDefinition", () => {
   });
 
   test("an absent inbound mail policy is hash-invariant against a mail-triggered baseline", () => {
-    // A definition that omits the policy must hash identically whether or not
-    // the field ever entered the construction -- the absent field contributes
-    // nothing to the canonical form, so a deployment authored before the field
-    // existed keeps its content handle. Construct one baseline through a
-    // conditional spread that resolves to no key (the sparse-optional contract:
-    // an omitted policy is never populated), and assert it matches the plain
-    // baseline.
+    // An omitted policy must hash identically whether the field ever entered
+    // construction -- the absent field contributes nothing to the canonical
+    // form, so pre-existing deployments keep their content handle.
     const a = makeAgent("a");
     const plain = defineWorkflow({
       id: "w",

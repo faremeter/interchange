@@ -67,7 +67,7 @@ export function resolver(
  * Builds a single OpenAPI response object whose body is a JSON document
  * described by the given arktype schema. Collapses the repeated
  * `content: { "application/json": { schema: resolver(...) } }` wrapper
- * that every route's `responses` map carries.
+ * every route's `responses` map carries.
  *
  * Uses the raw hono-openapi resolver (not the `$ref`-rewriting wrapper
  * above): the docs generator matches response schemas against full JSON

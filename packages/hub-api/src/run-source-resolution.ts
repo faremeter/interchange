@@ -20,7 +20,7 @@ export type DefinitionSourceResolution =
       ok: true;
       sources: InferenceSource[];
       // The credential material backing the resolved chain, deduped by
-      // `credentialId`. Forwarded to the deploy so it reaches the unified
+      // `credentialId`. Forwarded to the deploy so it reaches the
       // credential-material cell alongside any tool material.
       materials: CredentialMaterialEntry[];
       defaultSource: string;
@@ -32,11 +32,10 @@ export type DefinitionSourceResolution =
  * catalog. The chain head is the active source; the tail is the failover chain
  * (the run pins the whole chain). Requirements come from the definition's
  * `modelRequirements` manifest when set, else are derived from the single
- * step's declared model (`fallbackModel`) for a definition that carries no
- * manifest. A source carries a credential secret only where the launching
- * tenant owns the referenced credential within its hierarchy (ownership is the
- * authority), fail-closed. On failure the message is caller-facing (a 409
- * not_launchable).
+ * step's declared model (`fallbackModel`). A source carries a credential
+ * secret only where the launching tenant owns the referenced credential
+ * within its hierarchy (ownership is the authority), fail-closed. On failure
+ * the message is caller-facing (a 409 not_launchable).
  */
 export async function resolveDefinitionSources(args: {
   db: DB["db"];
@@ -45,9 +44,9 @@ export async function resolveDefinitionSources(args: {
   fallbackModel: string | null;
   invokerPreferences: Record<string, ProviderPreference>;
   // Decrypts each resolved credential secret at its point of use inside
-  // resolveModelSources. Required: the launch route owns and supplies the app's
-  // real cipher (resolved to a noop only at that edge for a keyless dev/test
-  // composition).
+  // resolveModelSources. Required: the launch route owns and supplies the
+  // app's real cipher (resolved to a noop only at that edge for a keyless
+  // dev/test composition).
   credentialCipher: CredentialCipher;
 }): Promise<DefinitionSourceResolution> {
   const requirements: ModelRequirement[] =

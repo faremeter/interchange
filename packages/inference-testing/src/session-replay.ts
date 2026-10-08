@@ -1,18 +1,13 @@
-// Session replay: take a captured session directory, register matchers
-// for every captured exchange, register tool handlers that serve
-// captured dispatch results verbatim, and drive production
-// `runInference` through it. Replay surfaces orchestration-layer
-// regressions that a single-exchange parser regression cannot
-// see — multi-turn body construction, conversation history
-// threading, dispatch wiring, terminal sequencing across turns.
+// Session replay: take a captured session directory, register matchers for
+// every captured exchange, register tool handlers that serve captured
+// dispatch results verbatim, and drive production `runInference` through
+// it. Replay surfaces orchestration-layer regressions that a single-
+// exchange parser regression cannot see — multi-turn body construction,
+// conversation history threading, dispatch wiring, terminal sequencing.
 //
-// Captured tool results are baked in: real tool handlers are NOT
-// invoked at replay time. Re-running a real handler risks producing a
-// result that diverges from capture, which causes the next turn's
-// request body to diverge, which makes the captured response no longer
-// a valid reply — the replay would fail out before any orchestration
-// had been exercised. Handler correctness is a separate test concern
-// with its own tests.
+// Captured tool results are baked in: real tool handlers are NOT invoked
+// at replay time, because re-running a real handler risks a result that
+// diverges from capture and breaks the next turn's request body.
 
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -41,19 +36,18 @@ import {
 } from "./invariants";
 import { isDelayedEnvelope } from "./tool-handler";
 
-// Fail-open credential resolver for the replay harness. Replay serves captured
-// bytes from a stubbed fetch and never sends the injected secret anywhere, so a
-// request that emits a credential sentinel just needs SOME material rather than
+// Fail-open credential resolver for the replay harness. Replay serves
+// captured bytes from a stubbed fetch and never sends the injected secret
+// anywhere, so a credential sentinel just needs SOME material rather than
 // the production fail-closed throw.
 const DEFAULT_TEST_READ_MATERIAL: CredentialMaterialResolver = () => ({
   secret: "inference-test-secret",
 });
 
 /**
- * Discriminates the specific shape of the contract violation. Used by
- * `SessionReplayMismatchError.kind` so callers can branch (e.g., "I
- * expected the conversation to terminate early; ignore
- * exchanges_under_consumed but re-raise body_diverged").
+ * Discriminates the specific shape of the contract violation, so callers
+ * can branch (e.g. ignore `exchanges_under_consumed` but re-raise
+ * `body_diverged`).
  */
 export type SessionReplayMismatchKind =
   | "body_diverged"
@@ -103,49 +97,46 @@ export class SessionReplayMismatchError extends Error {
   }
 }
 
+/**
+ * Options for `createReplayHarness`.
+ */
 export interface CreateReplayHarnessOpts {
   /** Absolute path to a session capture directory. */
   sessionDir: string;
   /**
-   * Override for the `apiKey` field of the `InferenceSource` constructed
-   * from `session.json`. Defaults to `"session-replay-stub"` — the
-   * captured headers are served verbatim, so the adapter never sends
-   * this value to the (stubbed) network.
+   * Override for the `apiKey` field of the `InferenceSource` built from
+   * `session.json`. Defaults to `"session-replay-stub"` — captured
+   * headers are served verbatim, so the adapter never sends this value
+   * to the (stubbed) network.
    */
   apiKey?: string;
   /**
-   * Override for the `id` field of the `InferenceSource` constructed
-   * from `session.json`. Defaults to `"<provider>:<model>"`.
+   * Override for the `id` field of the `InferenceSource` built from
+   * `session.json`. Defaults to `"<provider>:<model>"`.
    */
   sourceId?: string;
 }
 
 export interface RunTurnOpts {
   /**
-   * Conversation turns to feed into this `runInference` call. Each
-   * call drives one turn; the caller assembles the multi-turn
-   * conversation across calls (carrying the assistant turn from the
-   * previous `inference.done` plus a user turn with `tool_result`
-   * blocks built from the matching captured dispatches).
-   *
-   * The actual request body the adapter constructs from these turns
-   * must match (after canonicalisation) the captured request body for
-   * the corresponding exchange; otherwise
-   * `SessionReplayMismatchError` surfaces.
+   * Conversation turns to feed into this `runInference` call. Each call
+   * drives one turn; the caller assembles the multi-turn conversation
+   * across calls. The request body the adapter constructs must match
+   * (after canonicalisation) the captured body for the corresponding
+   * exchange, else `SessionReplayMismatchError` surfaces.
    */
   turns: ConversationTurn[];
   /**
    * Optional `nextSeq` generator passed through to `runInference`.
-   * Defaults to an internal counter that survives across `runTurn`
-   * calls on this harness, so event `seq` values are monotonic across
-   * the full replay.
+   * Defaults to an internal counter surviving across `runTurn` calls, so
+   * event `seq` values stay monotonic across the full replay.
    */
   nextSeq?: () => number;
   /**
-   * Tool definitions to declare on this turn's request, mirroring what the
-   * recording sent. A capture whose request declared tools reconstructs into a
-   * matching body only if the same tools are declared here; omit for captures
-   * that carried none.
+   * Tool definitions to declare on this turn's request, mirroring what
+   * the recording sent. A capture whose request declared tools
+   * reconstructs into a matching body only if the same tools are
+   * declared here.
    */
   tools?: ToolDefinition[];
 }
@@ -156,20 +147,17 @@ export interface ReplayHarness {
   /** The `InferenceSource` reconstructed from the manifest. */
   readonly source: InferenceSource;
   /**
-   * Drive one `runInference` call against the next un-consumed
-   * captured exchange. Returns every event the production
-   * `runInference` emitted for that turn. The body-aware matcher
-   * registered for this exchange routes the adapter's fetch to the
-   * captured response; if the actual request body fails canonical
-   * comparison against the capture,
-   * `SessionReplayMismatchError` is thrown with a diff.
+   * Drive one `runInference` call against the next un-consumed captured
+   * exchange, returning every event it emitted. A body-aware matcher
+   * routes the adapter's fetch to the captured response; a body that
+   * fails canonical comparison throws `SessionReplayMismatchError` with
+   * a diff.
    */
   runTurn(opts: RunTurnOpts): Promise<InferenceEvent[]>;
   /**
-   * After driving every turn, call this to verify every captured
-   * exchange and dispatch was consumed. Throws
-   * `SessionReplayMismatchError` if the actual conversation was
-   * shorter than the capture.
+   * After driving every turn, verify every captured exchange and dispatch
+   * was consumed. Throws `SessionReplayMismatchError` if the actual
+   * conversation was shorter than the capture.
    */
   assertFullyConsumed(): void;
   /** Captured exchanges in capture order, exposed for assertions. */
@@ -181,10 +169,10 @@ export interface ReplayHarness {
 }
 
 // The request side is a discriminated union: a JSON request carries its
-// parsed body (matched by canonical-JSON equality), a raw request carries only
-// its byte length on the public shape (the bytes match by byte equality — the
-// Files-API upload step, not driven by the runInference replay). The response
-// side is orthogonal and identical across both.
+// parsed body (matched by canonical-JSON equality), a raw request carries
+// only its byte length on the public shape (bytes match by byte equality —
+// the Files-API upload step, not driven by the runInference replay). The
+// response side is orthogonal and identical across both.
 export type CapturedExchange = {
   index: number;
   responseHeaders: Record<string, string>;
@@ -217,8 +205,8 @@ type InternalExchange = {
 
 // Byte-equality is the match primitive for a raw request body (request.bin);
 // canonical-JSON equality does not apply to opaque bytes. The runInference
-// replay driver never invokes this — it rejects raw exchanges up front — so it
-// exists for a future Files-API-aware driver that replays the upload step.
+// replay driver never invokes this — it rejects raw exchanges up front — so
+// it exists for a future Files-API-aware driver.
 export function requestBytesMatch(a: Uint8Array, b: Uint8Array): boolean {
   return Buffer.from(a).equals(Buffer.from(b));
 }
@@ -301,13 +289,11 @@ async function fileExists(p: string): Promise<boolean> {
 
 // A captured dispatch result shaped `{ result, virtualDelayMs: <finite
 // non-negative number> }` collides with the test-harness "delayed
-// envelope" return shape that `ToolHandlerRegistry` unwraps. If a
-// session ever carried such a result and the replay harness served
-// it verbatim to `scenario.onTool`, the registry would schedule a
-// virtual delay and pass only the inner `.result` to the reactor.
-// That's wrong-but-not-loud behavior; recording rejects it at write
-// time too via the same predicate. Reject at load time so the
-// failure is contained to the load boundary.
+// envelope" return shape that `ToolHandlerRegistry` unwraps: serving it
+// verbatim to `scenario.onTool` would schedule a virtual delay and pass
+// only the inner `.result` to the reactor. Recording rejects it at write
+// time via the same predicate; reject at load time too so the failure is
+// contained to the load boundary.
 function rejectEnvelopeShape(
   index: number,
   toolName: string,
@@ -355,12 +341,12 @@ async function loadExchanges(sessionDir: string): Promise<InternalExchange[]> {
   for (const { name, index } of parsed) {
     const dir = path.join(exchangesRoot, name);
 
-    // A well-formed exchange carries exactly one request body: `request.json`
-    // (a JSON body, matched by canonical-JSON equality) or `request.bin` (raw
-    // bytes — e.g. a Files-API upload — matched by byte equality). Both
-    // present or neither present is a malformed capture. A raw request loads
-    // fine here; whether a given replay driver can *drive* it is a separate
-    // constraint the driver enforces (createReplayHarness rejects raw).
+    // A well-formed exchange carries exactly one request body:
+    // `request.json` (JSON, matched by canonical-JSON equality) or
+    // `request.bin` (raw bytes, e.g. a Files-API upload, matched by byte
+    // equality). Both or neither present is a malformed capture. A raw
+    // request loads fine here; whether a driver can *drive* it is a
+    // separate constraint (createReplayHarness rejects raw).
     const requestJsonPath = path.join(dir, "request.json");
     const requestBinPath = path.join(dir, "request.bin");
     const jsonRequestExists = await fileExists(requestJsonPath);
@@ -506,10 +492,10 @@ export async function createReplayHarness(
 
   // This harness drives replay through `runInference` (see runTurn). A raw
   // request body is a Files-API upload step, which is not a `runInference`
-  // call, so this driver cannot faithfully replay it. Reject loudly here — at
-  // the layer that owns the constraint — rather than let runTurn register a
-  // JSON matcher that silently never binds. A Files-API-aware driver is the
-  // layer that would drive such a session.
+  // call, so this driver cannot faithfully replay it; reject loudly here —
+  // at the layer that owns the constraint — rather than let runTurn
+  // register a JSON matcher that silently never binds. A Files-API-aware
+  // driver is the layer that would drive such a session.
   const rawExchange = exchanges.find((e) => e.requestKind === "raw");
   if (rawExchange !== undefined) {
     throw new Error(
@@ -537,16 +523,15 @@ export async function createReplayHarness(
 
   // The exchanges have already been pre-canonicalised; their
   // `canonicalRequestText` is what each matcher compares against.
-  // Matchers are registered lazily — one per `runTurn` call — so
-  // that each turn's scheduled chunks fire at the right virtual
-  // time relative to that turn's run.
+  // Matchers are registered lazily — one per `runTurn` call — so that
+  // each turn's scheduled chunks fire at the right virtual time relative
+  // to that turn's run.
 
-  // Per-tool dispatch queues. Each invocation pops the next result
-  // from the queue for that tool. Args from the recording are exposed
-  // via `capturedDispatches` for the caller to assert against; the
-  // replay handler itself does not validate them, because args
-  // divergence would already show up as a body divergence on the
-  // exchange that carries the tool_result block.
+  // Per-tool dispatch queues. Each invocation pops the next result for
+  // that tool. Args from the recording are exposed via
+  // `capturedDispatches`; the replay handler does not validate them,
+  // because args divergence would already show up as body divergence on
+  // the exchange carrying the tool_result block.
   const dispatchQueues = new Map<string, ToolDispatchQueue>();
   for (const dispatch of dispatches) {
     let queue = dispatchQueues.get(dispatch.toolName);
@@ -576,14 +561,12 @@ export async function createReplayHarness(
   }
 
   // After a runTurn throws a `SessionReplayMismatchError`, the inner
-  // harness retains the stream and matcher we registered for the
-  // failed turn — the harness exposes no API to retract a matcher.
-  // Subsequent runTurn calls would register the next exchange's
-  // matcher on top of the stale one, and the predicates only happen
-  // to converge because both exchanges' canonical bodies differ.
-  // Rather than rely on the accident, the harness is poisoned after
-  // any runTurn failure: a fresh replay harness is required to
-  // re-drive the session.
+  // harness retains the stream and matcher we registered for the failed
+  // turn — the harness exposes no API to retract a matcher. Subsequent
+  // runTurn calls would register the next exchange's matcher on top of
+  // the stale one. Rather than rely on the accident that both exchanges'
+  // canonical bodies differ, the harness is poisoned after any runTurn
+  // failure: a fresh replay harness is required to re-drive the session.
   let poisoned = false;
 
   const runTurn = async (runOpts: RunTurnOpts): Promise<InferenceEvent[]> => {
@@ -628,24 +611,23 @@ export async function createReplayHarness(
           `request; the runInference replay driver only drives JSON exchanges.`,
       );
     }
-    // Track which matched request count we had BEFORE the turn so we
-    // can identify this turn's matched request by index after it
-    // fires. We rely on the invariant that runTurn is the only code
-    // path in this harness that registers matchers — see the index
-    // safety check below.
+    // Track the matched-request count BEFORE the turn so this turn's
+    // matched request can be identified by index after it fires. We rely
+    // on runTurn being the only path that registers matchers here — see
+    // the index safety check below.
     const matchedBefore = inner.scenario.matchedRequests().length;
 
-    // Register this turn's matcher and enqueue its response stream
-    // RIGHT NOW so chunks fire at the current virtual time. Lazy
-    // registration is what makes the multi-turn shape work: we want
-    // turn N's chunks scheduled relative to clock.now() at the moment
-    // turn N starts, not relative to harness construction.
+    // Register this turn's matcher and enqueue its response stream NOW so
+    // chunks fire at the current virtual time. Lazy registration is what
+    // makes the multi-turn shape work: turn N's chunks are scheduled
+    // relative to clock.now() at the moment turn N starts, not at harness
+    // construction.
     //
     // The body-aware predicate is the only place the actual body is
-    // compared against the captured body. If the canonical forms
-    // disagree the predicate returns false, no matcher binds, and
-    // the harness eventually raises `UnmatchedFetchError` — which
-    // we translate to `SessionReplayMismatchError` below.
+    // compared against the capture. On disagreement it returns false, no
+    // matcher binds, and the harness eventually raises
+    // `UnmatchedFetchError` — translated to `SessionReplayMismatchError`
+    // below.
     const stream = inner.scenario.createStream();
     stream.enqueueAt(inner.clock.now() + 1, exchange.responseBytes);
     stream.closeAt(inner.clock.now() + 2);
@@ -664,10 +646,9 @@ export async function createReplayHarness(
     );
 
     // Only bump `turnCount` once this turn settles successfully.
-    // Otherwise a throw leaves `turnCount` at a value that no
-    // longer matches `exchanges[turnCount]`, and the next runTurn
-    // call would register the wrong exchange's matcher on top of
-    // the stale one.
+    // Otherwise a throw leaves `turnCount` at a value that no longer
+    // matches `exchanges[turnCount]`, and the next runTurn call would
+    // register the wrong exchange's matcher on top of the stale one.
     const nextSeq = runOpts.nextSeq ?? (() => ++internalSeq);
     const inferenceController = new AbortController();
     const events: InferenceEvent[] = [];
@@ -679,11 +660,10 @@ export async function createReplayHarness(
         signal: inferenceController.signal,
         // Replay is deterministic: every captured exchange has a
         // one-to-one matcher, and a fetch that fails to bind has no
-        // semantically-meaningful "retry the same prompt" outcome —
-        // the next attempt would just hit the same bound-or-unbound
-        // result. Pin an abort-only policy so the inert scheduler
-        // does not deadlock the wrapper on the retry-delay setTimeout
-        // when an unmatched-fetch error surfaces through the harness.
+        // semantically-meaningful "retry the same prompt" outcome. Pin an
+        // abort-only policy so the inert scheduler does not deadlock the
+        // wrapper on the retry-delay setTimeout when an unmatched-fetch
+        // error surfaces through the harness.
         inferenceOptions: {
           retryPolicy: () => ({ kind: "abort" }),
           ...(runOpts.tools !== undefined ? { tools: runOpts.tools } : {}),
@@ -693,12 +673,11 @@ export async function createReplayHarness(
       }
     })();
 
-    // `Promise.allSettled` lets us inspect both promises even when
-    // the run path rejects first. If the harness raised
-    // `UnmatchedFetchError`, the collector promise is still awaiting
-    // an iterator that will never resolve — we abort it so the
-    // surrounding test does not inherit a phantom in-flight
-    // iteration.
+    // `Promise.allSettled` lets us inspect both promises even when the
+    // run path rejects first. If the harness raised
+    // `UnmatchedFetchError`, the collector promise is still awaiting an
+    // iterator that will never resolve — abort it so the surrounding
+    // test does not inherit a phantom in-flight iteration.
     const [runResult, collectResult] = await Promise.allSettled([
       inner.run(),
       collector,
@@ -709,9 +688,8 @@ export async function createReplayHarness(
       // promptly rather than hanging until `dispose()`.
       inferenceController.abort();
       // Drain the collector's rejection so the unhandled-rejection
-      // tracker doesn't fire. We re-throw the run-side error which
-      // is the primary failure; the collector's rejection is a
-      // downstream symptom of the same cause.
+      // tracker does not fire; the run-side error is the primary
+      // failure, the collector's rejection a downstream symptom.
       await collector.catch(() => undefined);
       const cause = runResult.reason;
       poisoned = true;
@@ -744,14 +722,11 @@ export async function createReplayHarness(
     }
     if (collectResult.status === "rejected") {
       poisoned = true;
-      // Detect the "no onTool handler registered for tool X" error
-      // the inner harness throws when production runInference emits
-      // a tool_call.end for a tool name the capture has no dispatches
-      // for. The error originates inside @intx/inference-testing's
-      // own harness.ts and the message is stable within this package;
-      // translate it to a SessionReplayMismatchError so the caller
-      // sees a discriminated mismatch instead of a generic
-      // "Harness.runInference" failure.
+      // Translate the "no onTool handler registered for tool X" error
+      // the inner harness throws when production runInference emits a
+      // tool_call.end for a tool name the capture has no dispatches for
+      // into a discriminated `SessionReplayMismatchError`. The message
+      // is stable within this package.
       const reason = collectResult.reason;
       if (reason instanceof Error) {
         const match = /tool "([^"]+)" but no handler was registered/.exec(
@@ -777,11 +752,10 @@ export async function createReplayHarness(
       throw reason;
     }
 
-    // Sanity: exactly one new matched request should have landed on
-    // the inner harness during this turn. Anything else means a
-    // future helper has started routing fetches outside `runTurn` —
-    // and the `allMatched[turnCount]` indexing pattern this harness
-    // uses would silently desync, so fail loudly.
+    // Sanity: exactly one new matched request should have landed during
+    // this turn. Anything else means a future helper has started routing
+    // fetches outside `runTurn` — and the `allMatched[turnCount]`
+    // indexing pattern would silently desync, so fail loudly.
     const matchedAfter = inner.scenario.matchedRequests().length;
     const newlyMatched = matchedAfter - matchedBefore;
     if (newlyMatched !== 1) {
@@ -801,11 +775,9 @@ export async function createReplayHarness(
     if (turnCount < exchanges.length) {
       const expectedIndex = turnCount;
       const expected = exchanges[expectedIndex];
-      // `turnCount < exchanges.length` proves `expectedIndex` is in
-      // range and `loadExchanges` has already verified the array
-      // density, so `expected` must be defined here. Invariant-throw
-      // rather than silently skip so a future refactor that breaks
-      // the invariant fails loudly.
+      // `turnCount < exchanges.length` proves `expectedIndex` is in range
+      // and `loadExchanges` verified array density, so `expected` must be
+      // defined; invariant-throw rather than silently skip.
       if (expected === undefined) {
         throw new Error(
           `Session replay: exchanges[${String(expectedIndex)}] missing despite ` +
@@ -870,23 +842,23 @@ export async function createReplayHarness(
 
 // Anything-goes parser replay: drive each captured JSON exchange's response
 // through the real adapter with a stub fetch, ignoring the request body and
-// the conversation entirely. This is the loose counterpart to
+// conversation entirely. This is the loose counterpart to
 // createReplayHarness's strict, body-matched, chained replay — it lets the
 // parser regression exercise every captured response's decoding without
 // threading a multi-turn conversation or dispatches.
 //
-// It shares the session loader (loadExchanges) with strict replay but drives
-// the raw @intx/inference `runInference` directly, NOT the inner harness, so a
-// captured response that terminates on a tool_call collects its events instead
-// of tripping the inner harness's auto-dispatch (which throws for want of a
-// registered handler). Raw-byte (Files-API upload) exchanges are skipped
-// per-exchange rather than rejecting the whole session, so a two-step
-// Files-API session's generate exchange is still exercised.
+// It shares the session loader (loadExchanges) with strict replay but
+// drives the raw @intx/inference `runInference` directly, NOT the inner
+// harness, so a captured response that terminates on a tool_call collects
+// its events instead of tripping the inner harness's auto-dispatch (which
+// throws for want of a registered handler). Raw-byte (Files-API upload)
+// exchanges are skipped per-exchange rather than rejecting the whole
+// session, so a two-step Files-API session's generate exchange is still
+// exercised.
 //
-// Each replayed exchange also carries the invariant violations found over its
-// decoded event stream, so a caller checking parser output against the wire
-// contract reads events and violations from one uniform result rather than
-// re-running the invariants itself.
+// Each replayed exchange also carries the invariant violations found over
+// its decoded event stream, so a caller checking parser output against the
+// wire contract reads events and violations from one uniform result.
 export type ParserReplayResult =
   | {
       index: number;
@@ -944,11 +916,11 @@ export async function replayResponsesForParsing(
       continue;
     }
 
-    // Serve the captured response verbatim, including its content-type header,
-    // which the harness branches on to pick the SSE or JSON decode path. An
-    // abort-only retry policy keeps a parse failure surfacing as one
-    // inference.error event rather than a retry that re-opens the fetch; a
-    // single fetch call is therefore expected.
+    // Serve the captured response verbatim, including its content-type
+    // header, which the harness branches on to pick the SSE or JSON decode
+    // path. An abort-only retry policy keeps a parse failure surfacing as
+    // one inference.error event rather than a retry that re-opens the
+    // fetch; a single fetch call is therefore expected.
     let fetchCallCount = 0;
     const headers = new Headers(exchange.responseHeaders);
     const deps: Dependencies = {

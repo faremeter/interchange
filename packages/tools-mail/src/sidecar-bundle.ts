@@ -1,12 +1,8 @@
-// Sidecar-bundle entry for `@intx/tools-mail` — the convention-compliant
-// factory the tool-package loader invokes.
-//
-// The bundle consumes the host-assembled runtime capabilities rather than
-// building its own. The host (the sidecar's step-env builder) owns the
-// `RuntimeCapabilities` and puts it on `env.capabilities`; this factory
-// resolves `mail.transport` from it through `createMailTools` instead of
-// re-wrapping a raw transport it was handed separately. The env keys it
-// touches (`capabilities`, `address`) are declared in `requires`.
+// Sidecar-bundle entry for `@intx/tools-mail` -- the convention-compliant
+// factory the tool-package loader invokes. The bundle consumes the
+// host-assembled runtime capabilities from `env.capabilities` and resolves
+// `mail.transport` through `createMailTools`; the env keys it touches are
+// declared in `requires`.
 
 import { defineTool, type BaseEnv } from "@intx/agent";
 import type { RuntimeCapabilities } from "@intx/types/runtime-capabilities";
@@ -26,8 +22,8 @@ export interface MailToolEnv extends BaseEnv {
 
 /**
  * Named export the loader picks up. The id is package-namespaced per
- * the convention; the model-facing tool names are synthesized by the
- * loader as `@intx/tools-mail/sidecar-bundle:<def.name>`.
+ * the convention; the loader synthesizes model-facing tool names from
+ * it as `@intx/tools-mail/sidecar-bundle:<def.name>`.
  */
 export const mail = defineTool<MailToolEnv>({
   id: "@intx/tools-mail/sidecar-bundle",

@@ -1,22 +1,18 @@
 // Per-run grants barrier proof.
 //
-// The supervisor pushes the deployment's credentialsSnapshot to the child
-// on a per-run basis -- right before each run's `trigger.fire`, gated by
-// the dispatch loop's `onRunStart` barrier -- rather than once per spawn.
-// The push is the child's authorize prerequisite: the child's authorize
-// closure throws on a null snapshot, so a run whose grants never landed
-// cannot authorize any resource. A granted tool that runs to completion
-// therefore proves the per-run push landed on the child ahead of the
-// trigger.
+// The supervisor pushes the deployment's credentialsSnapshot to the child on a
+// per-run basis -- right before each run's `trigger.fire`, gated by the
+// dispatch loop's `onRunStart` barrier -- rather than once per spawn. The push
+// is the child's authorize prerequisite: the authorize closure throws on a
+// null snapshot, so a run whose grants never landed cannot authorize any
+// resource. A granted tool that runs to completion therefore proves the
+// per-run push landed on the child ahead of the trigger.
 //
-// This test deploys a one-step workflow BY SOURCE-REF whose step agent
-// carries the inline `mail_send` tool from the `mail-tool.ts` fixture, fires
-// an inbound mail to trigger a run, and asserts the run reaches
-// `RunCompleted` with the tool having executed in the child. The run's tool
-// grant rides the `run.grants` frame the trigger delivers per run; the
-// supervisor's `onRunStart` sink pushes it to the child ahead of the trigger.
-// Without the per-run grants landing, the child's authorize would deny the
-// tool and the run would fail before the tool ran.
+// This test deploys a one-step workflow BY SOURCE-REF whose step agent carries
+// the inline `mail_send` tool, fires an inbound mail to trigger a run, and
+// asserts the run reaches `RunCompleted` with the tool having executed in the
+// child. Without the per-run grants landing, the child's authorize would deny
+// the tool and the run would fail before the tool ran.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -82,11 +78,9 @@ const PER_RUN_TOOL_GRANT: WireGrantRule = {
   principalId: null,
 };
 
-// The definition's own tenant, the caller principal that creates the
-// definition asset, and the `workflow`-kind asset the frozen definition
-// projects over. The install/approve freeze and the anchor `workflow_run`
-// insert both write against these, so they must exist in the real DB before
-// the deploy runs.
+// The tenant, caller principal, and `workflow`-kind definition asset the
+// install/approve freeze and anchor `workflow_run` insert write against; they
+// must exist in the real DB before the deploy runs.
 const TENANT_ID = "tnt_single_step_per_run_grants";
 const CALLER_PRINCIPAL_ID = "prn_single_step_per_run_grants";
 const DEFINITION_ASSET_ID = "ast_single_step_per_run_grants_wf";
@@ -196,8 +190,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const workflowRunRepoId = handle.workflowRunRepoId;
 
-      // The source-ref frame round-trips through the real sidecar subprocess,
-      // so routability is asynchronous. Wait for it before firing the trigger.
+      // The source-ref frame round-trips through the real sidecar subprocess; routability is async, so wait before firing the trigger.
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),

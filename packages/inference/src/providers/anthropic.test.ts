@@ -259,17 +259,17 @@ describe("Anthropic parser — required-index schema enforcement", () => {
   });
 });
 
-// Happy-path redacted_thinking fixtures use a realistic opaque `data`
-// blob shaped like Anthropic wire (`{ type, data }` only — no
-// signature, no thinking text). Streaming captures deliver each block
-// as a one-shot `content_block_start` (no thinking_delta) and may open
-// multiple redacted blocks before text. This constant is test material,
-// not a live re-export of a corpus fixture path.
+// Happy-path redacted_thinking fixtures use a realistic opaque `data` blob
+// shaped like Anthropic wire (`{ type, data }` only — no signature, no
+// thinking text). Streaming captures deliver each block as a one-shot
+// `content_block_start` (no thinking_delta) and may open multiple redacted
+// blocks before text. This constant is test material, not a live re-export of
+// a corpus fixture path.
 //
-// Adversarial unit cases (missing data, whitespace-preserving blobs)
-// stay synthetic: the corpus does not cover those failure modes. Corpus
-// smoke lives in the session parser regression, which replays every
-// fixture-bearing capture through the adapter.
+// Adversarial unit cases (missing data, whitespace-preserving blobs) stay
+// synthetic: the corpus does not cover those failure modes. Corpus smoke
+// lives in the session parser regression, which replays every fixture-bearing
+// capture through the adapter.
 const CAPTURED_REDACTED_DATA =
   "EuMFCpQBCBAYAipAk6yhHbnY8TlQ7bUY2Ji/24unHQHqjdggHcUEqfwJ30Aw" +
   "0/MEN7OxckAJk+w8kg0Gb7Wa4bUBHooVkOAYSFI7TTIaY2xhdWRlLXNvbm5l" +
@@ -385,12 +385,11 @@ describe("Anthropic parser — redacted_thinking content_block_start", () => {
 });
 
 describe("Anthropic adapter — redacted_thinking parser-to-builder round-trip", () => {
-  // The parser-side wire shape and the request-builder-side wire shape
-  // are tested independently elsewhere. This test closes the loop: it
-  // proves that the opaque `data` blob the parser surfaces in
-  // `inference.thinking.redacted` reconstructs back to a request body
-  // that carries the same bytes verbatim. That round-trip is the
-  // invariant Anthropic requires on every follow-up turn.
+  // The parser-side wire shape and the request-builder-side wire shape are
+  // tested independently elsewhere. This test closes the loop: it proves the
+  // opaque `data` blob the parser surfaces in `inference.thinking.redacted`
+  // reconstructs back to a request body that carries the same bytes verbatim
+  // — the invariant Anthropic requires on every follow-up turn.
   test("data survives parse → reconstruct → buildRequest unchanged", () => {
     const adapter = createAnthropicAdapter(TEST_SOURCE);
     const events = parse(adapter, {
@@ -633,11 +632,10 @@ describe("Anthropic parser — citations_delta to inference.citation", () => {
   });
 
   test("citation missing cited_text throws ProtocolMismatchError", () => {
-    // CitationBlock.citedText is required ("Both providers emit it;
-    // required for inspection and for fallback offset reconstruction"
-    // — runtime.ts). Surfacing a missing wire field as a thrown error
-    // is the load-bearing alternative to coalescing to an empty
-    // string and silently emitting a content-free citation.
+    // CitationBlock.citedText is required (per runtime.ts). Surfacing a
+    // missing wire field as a thrown error is the load-bearing alternative to
+    // coalescing to an empty string and silently emitting a content-free
+    // citation.
     const adapter = createAnthropicAdapter(TEST_SOURCE);
     let thrown: unknown;
     try {
@@ -664,13 +662,12 @@ describe("Anthropic parser — citations_delta to inference.citation", () => {
   });
 
   test("citations interleave with text deltas preserving arrival order", () => {
-    // Anthropic streams citations attached to the most recent text
-    // run as `citations_delta` events interleaved with subsequent
-    // `text_delta`s. Downstream consumers building citation-aware UI
-    // re-attach each citation to the text region preceding it, so
-    // the parser-emitted event stream must preserve the wire order
-    // exactly. Feed a mixed sequence and assert the emitted events
-    // come out in the same order they went in.
+    // Anthropic streams citations attached to the most recent text run as
+    // `citations_delta` events interleaved with subsequent `text_delta`s.
+    // Downstream consumers building citation-aware UI re-attach each citation
+    // to the text region preceding it, so the parser-emitted event stream
+    // must preserve the wire order exactly. Feed a mixed sequence and assert
+    // the emitted events come out in the same order they went in.
     const adapter = createAnthropicAdapter(TEST_SOURCE);
     const events: InferenceEvent[] = [];
     events.push(

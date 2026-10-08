@@ -1,23 +1,15 @@
 // Package-namespaced id validation for tool and director factories.
-//
-// Ids must be either scoped ("@scope/pkg/name") or unscoped
-// ("pkg/name"). The package portion is the identity anchor; the trailing
-// segment names the tool or director within that package. Bare ids
-// without a package portion are rejected at definition time so two
-// independently-authored bundles cannot accidentally collide on an
-// otherwise plausible name like "default".
+// Ids are scoped ("@scope/pkg/name") or unscoped ("pkg/name"); bare
+// ids are rejected at definition time so independently-authored
+// bundles cannot collide on plausible names like "default".
 
-// Per-segment character set. Mirrors what npm and most package-manager
-// ecosystems accept inside an id segment: alphanumerics, dot, hyphen,
-// underscore. Whitespace (space, tab, newline) and other punctuation
-// are excluded so an id never carries characters that would render
-// strangely in error messages, break log-line parsing, or trip
-// downstream tooling that splits on whitespace.
+// Per-segment character set: alphanumerics, dot, hyphen, underscore.
+// Whitespace and other punctuation are excluded so ids never carry
+// characters that break log-line parsing or downstream tooling.
 const SEGMENT = "[A-Za-z0-9._-]+";
 
 // Scoped: "@scope/pkg/name". Three slash-separated segments; the first
-// starts with "@" followed by the segment character set. Each segment
-// must be non-empty.
+// starts with "@" followed by the segment character set.
 const SCOPED = new RegExp(`^@${SEGMENT}\\/${SEGMENT}\\/${SEGMENT}$`);
 
 // Unscoped: "pkg/name". Two slash-separated segments. The package

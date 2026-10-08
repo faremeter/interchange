@@ -25,19 +25,12 @@ const SidecarPrincipal = type({
 
 export const AGENT_STATE_DEPLOY_REF = "refs/heads/deploy";
 
-// Mirror of the sidecar's agent-state write surface. The isogit
-// ContextStore (`packages/storage-isogit/src/store.ts`) writes exactly
-// these top-level entries: `turns.jsonl`, `prompt.jsonl`,
-// `response.jsonl`, `manifest.jsonl`, `metadata.json`, the `tool-output/`
-// blob directory, and the `state/` directory holding `state/audit/` and
-// `state/errors/`. `.gitignore` is seeded once by `initSidecarRepo`.
-// Adding a new top-level write on the sidecar side requires adding the
-// entry here in the same change — receivePack will silently
-// `path_violation` the push otherwise. The receivePack path
-// (`pack-receive.ts:validateTree`) walks every top-level tree entry —
-// files and directories alike — through this allowlist; widening it
-// to anything unowned by the sidecar's writer would let a malicious
-// pack smuggle non-state content into the repo.
+// Mirror of the sidecar's agent-state write surface (`packages/storage-isogit`
+// writes exactly these top-level entries plus `state/audit/`, `state/errors/`,
+// and a `.gitignore` seeded by `initSidecarRepo`). receivePack walks every
+// top-level tree entry through this allowlist, so a sidecar-side addition
+// needs the entry here in the same change, and widening it would let a
+// malicious pack smuggle non-state content into the repo.
 const ALLOWED_STATE_TOP_LEVEL = new Set([
   "state",
   ".gitignore",

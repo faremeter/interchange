@@ -7,9 +7,7 @@
 //
 // The working directory flows through env-DI: `env.toolCwd` is the tree
 // the model reads and edits, distinct from `env.workdir` (the isogit
-// lock and storage boundary). The posix bundle and the LSP plugin both
-// read `toolCwd`, so the reference consumer demonstrates the env-DI
-// surface rather than bypassing it with constructor arguments.
+// lock and storage boundary).
 
 import { mkdirSync } from "node:fs";
 
@@ -113,11 +111,9 @@ export async function createCodingAgent(
   // keeps the toolCwd env-DI contract enforced by validateEnv.
   //
   // This capture-dispose shape is duplicated in apps/sidecar
-  // (rewrapStepToolFactory); it is inlined here rather than shared
-  // because that helper carries a sidecar-specific credentials parameter
-  // and lives in an app that examples must not depend on. A shared helper
-  // belongs next to defineTool in @intx/agent, but only once a third
-  // consumer justifies touching that package's public surface.
+  // (rewrapStepToolFactory); a shared helper belongs next to defineTool
+  // in @intx/agent, but only once a third consumer justifies touching
+  // that package's public surface.
   let disposeTools: (() => Promise<void>) | undefined;
   const posixFactory = defineTool<PosixToolEnv>({
     id: posix.id,
@@ -155,8 +151,7 @@ export async function createCodingAgent(
 
   // The LSP plugin is a host responsibility: instantiate it (it reads
   // env.toolCwd) and hand it to the agent through a fresh env carrying
-  // plugins, the same composition the deploy path performs. posix's
-  // factory reads it back off env.plugins and attaches it to its bundle.
+  // plugins, the same composition the deploy path performs.
   const lspInstance = lsp(env);
   const envWithPlugins: PosixToolEnv = { ...env, plugins: [lspInstance] };
 
@@ -164,9 +159,9 @@ export async function createCodingAgent(
   try {
     agent = await createAgent(def, envWithPlugins);
   } catch (cause) {
-    // Idempotent dual-dispose: the posix disposer if its factory ran
-    // (which chains to the LSP plugin), plus the LSP instance directly in
-    // case createAgent threw before the posix factory ran.
+    // Dual-dispose: the posix disposer if its factory ran (which chains
+    // to the LSP plugin), plus the LSP instance directly in case
+    // createAgent threw before the posix factory ran.
     if (disposeTools !== undefined) await disposeTools();
     if (lspInstance.dispose !== undefined) await lspInstance.dispose();
     throw cause;

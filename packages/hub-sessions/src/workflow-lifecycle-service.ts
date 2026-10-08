@@ -79,9 +79,8 @@ type ReleaseResult =
   | "history_pending"
   | "not_found"
   | "cleanup_failed";
-// `request` is an explicit caller waiting on the answer, so it reads Git even
-// while the sweep is backing off; `stop` and `sweep` respect the backoff, and
-// only `sweep` leaves young rows to the receive that wrote them.
+// `request` is an explicit caller, so it reads Git even while the sweep backs
+// off; only `sweep` leaves young rows to the receive that wrote them.
 type RecoveryTrigger = "request" | "stop" | "sweep";
 
 export type WorkflowLifecycleServiceDeps = {
@@ -459,12 +458,9 @@ export function createWorkflowLifecycleService({
   }
 
   async function markStopped(tx: DBExecutor, run: Run): Promise<void> {
-    // Forced termination may leave only a partial event log. The Hub records
-    // the outcome after the worker confirms its stop or the provisioner confirms
-    // destruction; it never reports cancellation while an unfenced worker lives.
-    // A pending projection means accepted history may hold an outcome a live
-    // row does not show yet, so the stop is recorded only after recovery clears
-    // it. The allocation lock keeps a new receive from advancing Git meanwhile.
+    // Record only after recovery clears pending projections: accepted history
+    // may hold an outcome a live row does not yet show, and the allocation
+    // lock keeps a new receive from advancing Git meanwhile.
     if (await pendingProjections.hasAny(run.id, tx)) return;
     const endedAt = now();
     const stopped = await tx
@@ -703,12 +699,9 @@ export function createWorkflowLifecycleService({
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      // A live worker that stayed silent or refused has failed to stop. Any
-      // other failure is retried briefly, since this Hub may not hold the
-      // worker's connection yet, the worker may still be deploying, its
-      // acknowledgement may not have been processed in time, or its history
-      // may not have reached the Hub yet. Once the grace passes, no failure
-      // can postpone the stop further.
+      // A silent or refusing worker has failed to stop; any other failure is
+      // retried briefly (connection, deploy, ack, or history not yet here).
+      // Once the grace passes, no failure can postpone the stop further.
       const failedDefinitively =
         error instanceof WorkflowControlTimeoutError ||
         error instanceof WorkflowControlRejectedError;
@@ -757,20 +750,12 @@ export type WorkflowLifecycleService = ReturnType<
 
 /**
  * Selects the deployments `reconcileRun` can act on: a live run that is
- * cancelling or past its expiry, retained capacity whose release time has
- * passed or is not yet recorded, a deferred infrastructure failure, and
- * accepted history left unprojected past its grace. A new action there needs a
- * branch here. Deployments are never deleted, so each branch starts from an
- * index over rows still active in its own sense and reaches an anchor only by
- * key: a pass costs time in proportion to current capacity, not to every
- * deployment ever created. Status lists are SQL literals rather than bound
- * parameters: a plan made without parameter values could not otherwise use the
- * partial indexes.
- *
- * Each branch keeps its next candidate for the rest of a pass and is read again
- * only once the sweep takes that candidate, so a branch with nothing due is
- * scanned once per pass rather than once per selection. Work that becomes due
- * behind a branch's kept candidate waits for the next pass.
+ * cancelling or past its expiry, retained capacity due for release, a deferred
+ * infrastructure failure, and accepted history left unprojected past its
+ * grace. A new action there needs a branch here. Each branch scans an index
+ * over rows still active in its own sense (deployments are never deleted) and
+ * keeps its next candidate for the rest of a pass; status lists are SQL
+ * literals so the plans use the partial indexes.
  */
 export function createLifecycleSweepQueries(
   db: DB["db"],

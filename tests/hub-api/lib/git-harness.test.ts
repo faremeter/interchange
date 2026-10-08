@@ -1,11 +1,6 @@
-// Smoke test for the integration-test harness foundation.
-//
-// Covers the harness contract before any wire-format test consumes
-// it: discoverGitBinary parses a real version and enforces the
-// floor, startHub spawns a real hub subprocess against a freshly
-// created per-test postgres schema, runGit executes with a fully
-// redirected git config environment, and stop drops the schema
-// cleanly and the spawned process exits.
+// Smoke test for the integration-test harness foundation: git binary
+// discovery, runGit's redirected config env, the askpass shim, and a
+// startHub/stop cycle against a fresh per-test schema.
 
 import { afterEach, describe, expect, test } from "bun:test";
 import fs from "node:fs/promises";
@@ -60,9 +55,9 @@ describe("runGit", () => {
       cwd,
     });
     expect(result.status).toBe(0);
-    // Verify the redirected HOME by reading what git resolved for
-    // user.name — with our shim there is no global config, so the
-    // local config we set next is the only source.
+    // Verify the redirected HOME by reading what git resolves for
+    // user.name: with no global config, the local config we set next
+    // is the only source.
     await runGit(["config", "user.name", "Harness"], { cwd });
     await runGit(["config", "user.email", "harness@example.invalid"], { cwd });
     const got = await runGit(["config", "user.name"], { cwd });
@@ -88,7 +83,7 @@ describe("tokenAskpassEnv", () => {
     expect(typeof env["GIT_ASKPASS"]).toBe("string");
 
     // The askpass shim must echo the token regardless of which
-    // prompt git asks for. Invoke it directly to verify.
+    // prompt git asks for; invoke it directly to verify.
     const askpath = env["GIT_ASKPASS"];
     if (askpath === undefined) {
       throw new Error("tokenAskpassEnv did not provide GIT_ASKPASS");

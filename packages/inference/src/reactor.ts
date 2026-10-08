@@ -1,15 +1,11 @@
-// Agent reactor: the event-driven dispatch loop.
+// Agent reactor: the event-driven dispatch loop. Processes one event at a
+// time, asks the director for the next action, validates and executes it, and
+// emits all session events with monotonic sequence numbers.
 //
-// The reactor processes one event at a time, asks the director for the next
-// action, validates the action set, and executes. It manages the streaming
-// harness for inference, dispatches tool calls, handles gates and correlation,
-// and emits all session events with monotonic sequence numbers.
-//
-// Suspension semantics: when the director returns a suspend action, the reactor
-// registers the gate and continues processing events. Inbound messages during
-// suspension reach the director as message.received events (director decides:
-// queue, fork, or ignore). When the gate clears, a reactor.gate.cleared event
-// is enqueued and the director gets to decide next steps.
+// Suspension: a suspend action registers a gate and the reactor keeps
+// processing events; inbound messages during suspension reach the director as
+// message.received events. When the gate clears, reactor.gate.cleared is
+// enqueued and the director decides next steps.
 //
 // (INFERENCE.md § Agent Reactor)
 
@@ -66,9 +62,9 @@ const logger = getLogger(["interchange", "reactor"]);
 // excluded from the tool-result history append and from tool.done continuation.
 const SUSPENDED = Symbol("suspended");
 
-// Exhaustiveness guard for the resume-dispatch switch. A newly added
-// SignalKind or approval outcome that is not classified fails to type-check
-// here, so the switch cannot silently drop an unhandled case.
+// Exhaustiveness guard for the resume-dispatch switch: a new SignalKind or
+// approval outcome that is not classified fails to type-check here, so the
+// switch cannot silently drop an unhandled case.
 function assertNever(x: never): never {
   throw new Error(`Unhandled resume case: ${JSON.stringify(x)}`);
 }
@@ -107,18 +103,17 @@ export type ReactorConfig = {
   director: ReactorDirector;
   source: InferenceSource;
   /**
-   * Fail over `source` to the next entry in the priority-ordered source
-   * list, in place, returning false at the end of the list. When omitted the
-   * reactor runs the single active source with no failover.
+   * Fail over `source` to the next entry in the priority-ordered source list,
+   * in place, returning false at the end of the list. Omitted: no failover.
    */
   failOverToNextSource?: () => boolean;
   /** Reset `source` to the most-preferred source, in place. */
   resetToPreferredSource?: () => void;
   /**
-   * Resolves the active source's credential secret by `credentialId` from the
-   * run's credential cell at send time. Read live per attempt, so a failover to
-   * a source with a different `credentialId` resolves that source's credential.
-   * Optional: the harness installs a fail-closed default when it is omitted.
+   * Resolves the active source's credential secret by `credentialId` at send
+   * time. Read live per attempt, so a failover to a source with a different
+   * `credentialId` resolves that source's credential. Optional — the harness
+   * installs a fail-closed default when omitted.
    */
   readMaterial?: CredentialMaterialResolver;
   toolRunner: ToolRunner;
@@ -139,12 +134,11 @@ export type ReactorConfig = {
   shutdownTimeoutMs?: number;
   /**
    * Number of consecutive identical tool-call turns that trips doom-loop
-   * detection. A turn's identity is its batch of executed tool calls; a
-   * runaway model repeating the same call burns inference cost with no
-   * progress. On the Nth consecutive identical turn the reactor emits a fatal
-   * `reactor.error` and shuts the run down. Must be a positive integer.
-   * Pass `false` to disable doom-loop detection entirely. Defaults to
-   * `DEFAULT_DOOM_LOOP_THRESHOLD`.
+   * detection. A turn's identity is its batch of executed tool calls; a runaway
+   * model repeating the same call burns inference cost with no progress. On the
+   * Nth consecutive identical turn the reactor emits a fatal `reactor.error`
+   * and shuts the run down. Must be a positive integer; pass `false` to
+   * disable. Defaults to `DEFAULT_DOOM_LOOP_THRESHOLD`.
    */
   doomLoopThreshold?: number | false;
 };
@@ -163,14 +157,11 @@ const DEFAULT_SHUTDOWN_TIMEOUT_MS = 30_000;
 const DEFAULT_DOOM_LOOP_THRESHOLD = 3;
 
 /**
- * Resolve the caller-facing `doomLoopThreshold` into the reactor's internal
- * form: a positive integer when detection is active, or `null` when it is
- * disabled. `undefined` (omitted) takes the default; `false` disables; a
- * number is validated here — the construction edge is the one place that owns
- * the default and rejects a malformed value loudly, so a stray `0`, negative,
- * or non-integer throws rather than silently disarming the guard. Downstream
- * code compares against the returned `number | null` and never sees the raw
- * `false`, whose numeric coercion would otherwise trip the loop immediately.
+ * Resolve the caller-facing `doomLoopThreshold` into the internal form: a
+ * positive integer when detection is active, `null` when disabled. `undefined`
+ * takes the default; `false` disables; an invalid number throws rather than
+ * silently disarming the guard (raw `false` coerces to 0 and would trip the
+ * loop on the first turn).
  */
 function resolveDoomLoopThreshold(
   raw: number | false | undefined,
@@ -186,11 +177,9 @@ function resolveDoomLoopThreshold(
 }
 
 /**
- * Order-independent identity of a batch of executed tool calls. Each call
- * canonicalizes to its name and arguments (the call `id` is excluded, since it
- * differs on every request); sorting makes a parallel batch match regardless
- * of the order the model emitted its calls. Two turns share a signature when
- * they run the same multiset of `(name, arguments)` pairs.
+ * Order-independent identity of a batch of executed tool calls: each call
+ * canonicalizes to its name and arguments (the `id` differs on every request),
+ * and sorting makes a parallel batch match regardless of emission order.
  */
 function toolBatchSignature(calls: ToolCall[]): string {
   return calls
@@ -223,19 +212,16 @@ export function createReactor(config: ReactorConfig): Reactor {
     onShutdown,
     gateTimeout = DEFAULT_GATE_TIMEOUT_MS,
     shutdownTimeoutMs = DEFAULT_SHUTDOWN_TIMEOUT_MS,
-    // Resolve the optional failover hooks once here, at the reactor's
-    // construction edge. A reactor with no source list fails over to
-    // nothing and resets to a no-op, so the inference loop below runs the
-    // single active source exactly as before.
+    // Resolve the optional failover hooks once at the construction edge; without
+    // a source list they no-op, so the loop runs the single active source as before.
     failOverToNextSource = () => false,
     resetToPreferredSource = () => {
       /* single-source: nothing to reset */
     },
   } = config;
 
-  // Resolved once at the construction edge: a positive integer while detection
-  // is active, or `null` when the caller disabled it with `false`. Every
-  // downstream comparison reads this binding, never the raw config value.
+  // Resolved once at the construction edge; downstream reads this binding,
+  // never the raw config value.
   const doomLoopThreshold = resolveDoomLoopThreshold(config.doomLoopThreshold);
 
   // Monotonic sequence counter, scoped to this session.
@@ -248,32 +234,17 @@ export function createReactor(config: ReactorConfig): Reactor {
     onEvent(event);
   }
 
-  // Inbound event queue. Events are pushed here and drained by the loop.
   const queue: ReactorInboundEvent[] = [];
   let queueResolve: (() => void) | null = null;
 
-  // A tool cycle spans from the moment the reactor dispatches an inference or
-  // a tool batch until the director has consumed every completion event that
-  // operation produces. While a cycle is in flight, admitting a new inbound
-  // message — and the inference it triggers — ahead of the outstanding
-  // completion events corrupts the prompt: an assistant tool_call turn must be
-  // immediately followed by its tool results, and a new inference would
-  // instead interleave fresh turns and re-infer against a half-finished batch,
-  // which providers reject.
-  //
-  // pendingContinuations is the authoritative count of dispatched operations
-  // whose completion events have not yet been consumed. Every cycle event is
-  // counted as it is enqueued and uncounted as it is dequeued, so the count
-  // always equals the number of cycle events waiting in the queue. While it is
-  // positive, dequeueNext drains cycle events ahead of inbound mail; at zero
-  // the cycle is quiescent and processing reverts to FIFO.
-  //
-  // An earlier design inferred "mid-cycle" from history shape — whether the
-  // last turn was an assistant tool_call turn. That underreports in-flight
-  // work: a finished tool batch appends its tool-result turn to history before
-  // its tool.done events are consumed, flipping the last turn away from the
-  // assistant tool_call turn while completion events are still queued, which
-  // let inbound mail start an overlapping inference.
+  // A tool cycle spans from dispatching an inference or tool batch until the
+  // director has consumed every completion event it produces; a new inbound
+  // message ahead of those completions would corrupt the prompt. While
+  // pendingContinuations (dispatched ops whose completion events are still
+  // queued) is positive, dequeueNext drains cycle events ahead of inbound
+  // mail. An earlier history-shape gate underreported in-flight work: a
+  // finished batch appended its tool-result turn before its tool.done events
+  // were consumed, letting inbound mail start an overlapping inference.
   const CYCLE_EVENT_TYPES = new Set<ReactorInboundEvent["type"]>([
     "inference.done",
     "inference.error",
@@ -310,9 +281,7 @@ export function createReactor(config: ReactorConfig): Reactor {
       return queue.splice(abortIdx, 1)[0];
     }
 
-    // Mid-cycle: drain inference-cycle events before anything else so the
-    // outstanding inference or tool batch completes before new mail can start
-    // an overlapping inference.
+    // Mid-cycle: drain cycle events before new mail.
     if (pendingContinuations > 0) {
       const idx = queue.findIndex((e) => CYCLE_EVENT_TYPES.has(e.type));
       if (idx !== -1) {
@@ -337,21 +306,18 @@ export function createReactor(config: ReactorConfig): Reactor {
   let startupDeliveries: InboundMessage[] | null = [];
 
   // Per-message run-bracket state. Set when the loop dequeues a
-  // message.received and begins per-message work; cleared at the
-  // terminal point (wait/reply/done) or at a reactor-fatal abandon.
-  // `messageRunId` is reactor-minted per dequeue via crypto.randomUUID
-  // so a crash-and-replay that re-delivers the same messageId still
-  // produces unambiguous start/end pairs downstream.
+  // message.received and begins per-message work; cleared at the terminal
+  // point (wait/reply/done) or at a reactor-fatal abandon. `messageRunId` is
+  // reactor-minted per dequeue via crypto.randomUUID so a crash-and-replay
+  // that re-delivers the same messageId still produces unambiguous
+  // start/end pairs downstream.
   let currentMessageRunId: string | null = null;
   let currentMessageId: string | null = null;
 
-  // Doom-loop detection state, scoped to the current message run. Each executed
-  // tool-call turn is reduced to a batch signature; consecutive identical
-  // signatures accumulate here, and the run is broken when the count reaches
-  // `doomLoopThreshold`. This is run-scoped, not cycle-scoped: it resets only in
-  // `openMessageRun`, never in `resetCycleAccumulators`. It is also deliberately
-  // ephemeral (closure state, not persisted) -- a mid-run restart resets it to
-  // zero and the loop simply re-accumulates and trips a few turns later.
+  // Doom-loop detection state, scoped to the current message run: each
+  // executed tool-call turn reduces to a batch signature; consecutive
+  // identical signatures accumulate and the run breaks at `doomLoopThreshold`.
+  // Resets only in `openMessageRun`; a mid-run restart re-accumulates.
   let lastToolBatchSignature: string | null = null;
   let toolBatchRepeatCount = 0;
   let lastToolBatchNames: string[] = [];
@@ -410,9 +376,9 @@ export function createReactor(config: ReactorConfig): Reactor {
   let cycleInferred = false;
   let cycleToolCallsExecuted = 0;
   let cycleCompactorName: string | null = null;
-  // A suspension registers a gate and may persist a pending operation. That is
-  // a durable state change even when the cycle ran no inference and completed
-  // no tool call, so it must force the cycle commit.
+  // A suspension registers a gate and may persist a pending operation — a
+  // durable state change even when the cycle ran no inference and no tool call,
+  // so it must force the cycle commit.
   let cycleSuspended = false;
 
   // Director-supplied checkpoint message override; consumed exactly once.
@@ -426,7 +392,6 @@ export function createReactor(config: ReactorConfig): Reactor {
     operationController = new AbortController();
   }
 
-  // Track in-flight inference and tool promises for shutdown cleanup.
   const inFlight = new Set<Promise<unknown>>();
 
   function track<T>(p: Promise<T>): Promise<T> {
@@ -447,33 +412,26 @@ export function createReactor(config: ReactorConfig): Reactor {
   // across an await boundary in the validator, causing double-correlation.
   const correlatingIds = new Set<string>();
 
-  // How the reactor resumes a correlated pending operation.
-  //
-  //   redispatch — an approved approval re-runs its parked tool call. The
-  //     reactor grants a one-shot bypass for the call and re-dispatches it;
-  //     the resumed run answers the parked call with a real tool result. The
-  //     correlated message body is the decision, not conversation content, so
-  //     it is NOT appended to history.
+  // How the reactor resumes a correlated pending operation:
+  //   redispatch — an approved approval re-runs its parked tool call with a
+  //     one-shot bypass; the decision body is not conversation content, so it
+  //     is NOT appended to history.
   //   gate-cleared — the async-tool path (a pending marker awaiting an inbound
-  //     response). The gate clears normally, driving the director to re-infer,
-  //     and the correlated message body IS appended to history so the model
-  //     sees the response it was waiting on.
+  //     response): the gate clears normally, driving the director to re-infer,
+  //     and the correlated body IS appended to history so the model sees it.
   type ResumeDispatch =
     | { mode: "redispatch"; calls: ToolCall[] }
     | { mode: "gate-cleared" }
     | { mode: "error_result"; result: ToolResult };
 
   // Decide how a correlated approval-kind pending operation resumes, granting
-  // any one-shot bypass synchronously so no delivery can interleave between the
-  // grant and the re-dispatch enqueued by the caller. An operation that carries
-  // a `suspendedCall` is an ask-flow suspension: the approver's decision routes
-  // it down the re-dispatch rail. An operation without one is an async-tool
-  // pending marker, which resumes on the normal gate-cleared rail.
-  //
-  // The nested switch is total: the outer `assertNever(op.kind)` rejects a
-  // future SignalKind at compile time, and the inner `assertNever` rejects a
-  // future decision outcome. A malformed decision body fails loud at the parse
-  // boundary before the switch.
+  // any one-shot bypass synchronously so no delivery can interleave between
+  // the grant and the re-dispatch enqueued by the caller. An operation that
+  // carries a `suspendedCall` is an ask-flow suspension routed down the
+  // re-dispatch rail; one without it is an async-tool pending marker, which
+  // resumes on the normal gate-cleared rail. The nested switch is total:
+  // `assertNever` rejects a future SignalKind or decision outcome at compile
+  // time.
   function resumePendingOperation(
     op: PendingOperation,
     message: InboundMessage,
@@ -517,10 +475,10 @@ export function createReactor(config: ReactorConfig): Reactor {
             }
             return { mode: "redispatch", calls: [suspendedCall] };
           case "rejected": {
-            // The approver denied the call. Answer the parked call with a
-            // synthetic error result rather than re-running it — no one-shot
-            // bypass is granted, so the tool never executes. The approver's
-            // reason, when present, is surfaced to the model verbatim.
+            // Answer the parked call with a synthetic error result rather than
+            // re-running it — no one-shot bypass is granted, so the tool never
+            // executes. The approver's reason, when present, is surfaced to the
+            // model verbatim.
             const content =
               "denied by approver" +
               (decision.message !== undefined ? `: ${decision.message}` : "");
@@ -562,10 +520,8 @@ export function createReactor(config: ReactorConfig): Reactor {
       }
     }
 
-    // Capture the operation before removal so the resume dispatch can read its
-    // kind and suspended call. Removal happens only after the dispatch is
-    // decided, all inside this correlatingIds-guarded critical section so a
-    // double-deliver early-returns rather than double-dispatching.
+    // Capture the operation before removal; the correlatingIds guard makes a
+    // double-deliver early-return rather than double-dispatch.
     const op = pending;
 
     let dispatch: ResumeDispatch;
@@ -579,9 +535,8 @@ export function createReactor(config: ReactorConfig): Reactor {
     const gate = gates.findByCorrelationId(correlationId);
     switch (dispatch.mode) {
       case "redispatch": {
-        // Clear the gate WITHOUT enqueuing gate.cleared: the re-dispatched call
-        // is the resumption, so a gate.cleared-driven re-infer would double the
-        // continuation. The re-dispatch's own tool.done drives the re-infer.
+        // Clear the gate silently: the re-dispatched call is the resumption,
+        // and a gate.cleared-driven re-infer would double the continuation.
         if (gate !== undefined) {
           gates.clearSilently(gate.gateId);
           if (stateManager !== null) {
@@ -601,10 +556,9 @@ export function createReactor(config: ReactorConfig): Reactor {
         break;
       }
       case "error_result": {
-        // The approver denied the call. Clear the gate SILENTLY (like the
-        // approved redispatch) so it cannot also trip onGateCleared and enqueue
-        // a second continuation. The synthetic error result answers the parked
-        // call; the director appends it and re-infers once.
+        // The approver denied the call. Clear the gate silently so it cannot
+        // also enqueue a second continuation; the synthetic error result
+        // answers the parked call and the director re-infers once.
         if (gate !== undefined) {
           gates.clearSilently(gate.gateId);
           if (stateManager !== null) {
@@ -620,8 +574,7 @@ export function createReactor(config: ReactorConfig): Reactor {
       }
       case "gate-cleared": {
         // Async-tool resumption: clear the gate normally so the director
-        // re-infers, and append the correlated response to history so the model
-        // sees the content it was waiting on.
+        // re-infers, and append the correlated response to history.
         if (gate !== undefined) {
           gates.clear(gate.gateId);
         }
@@ -692,7 +645,7 @@ export function createReactor(config: ReactorConfig): Reactor {
       if (signal.aborted) return;
     }
 
-    // Run the context transform chain to produce the materialized prompt.
+    // Context transform chain.
     let prompt: ConversationTurn[] = stateManager.getTurns();
     for (const transform of contextTransforms) {
       const ctx = buildStrategyContext("pre-inference");
@@ -705,8 +658,7 @@ export function createReactor(config: ReactorConfig): Reactor {
     // Tripwire: a malformed tool sequence is invalid in a coherent tool
     // conversation and would otherwise surface as an opaque provider rejection.
     // Catch it here, before the prompt is persisted or sent, so the corruption
-    // fails loud as an internal error at the assembly boundary. Throwing routes
-    // through the reactor's fatal-error path.
+    // fails loud as an internal error at the assembly boundary.
     assertWellFormedToolSequence(prompt);
 
     try {
@@ -807,20 +759,17 @@ export function createReactor(config: ReactorConfig): Reactor {
         }
 
         // Any remaining error (quota, credential, protocol mismatch,
-        // retryable, timeout) is source-specific. The harness wrapper owns
-        // mechanical retry and has already exhausted it against this source
-        // by the time the reactor sees the error, including honoring a
-        // provider Retry-After for quota, so re-running the same source
-        // would only retry-compound. Fail over to the next source instead.
-        // A pacing delay the leaving source asked for must not gate the
-        // next source.
+        // retryable, timeout) is source-specific: the harness owns mechanical
+        // retry and has already exhausted it against this source, so re-running
+        // it would only retry-compound. Fail over instead; a pacing delay the
+        // leaving source asked for must not gate the next source.
         pendingPacingDelayMs = 0;
         if (failOverToNextSource()) {
           logger.warn`Failing over to next inference source after ${err.category}`;
           continue;
         }
 
-        // No further source to fail over to: surface the last error.
+        // No source left: surface the error.
         enqueue({ type: "inference.error", error: err, partial });
         return;
       }
@@ -861,9 +810,9 @@ export function createReactor(config: ReactorConfig): Reactor {
 
         if (decision.type === "suspend") {
           // Park the call: register the gate, persist the pending operation,
-          // snapshot, and commit. The call is neither run nor answered — no
-          // tool.start, no tool.done, no tool-result turn. The gate clears
-          // when the correlated external decision is delivered.
+          // snapshot, and commit. No tool.start, no tool.done, no tool-result
+          // turn. The gate clears when the correlated external decision is
+          // delivered.
           await suspendOnGate({
             gateType: decision.gate.type,
             gateId: decision.gate.gateId,
@@ -909,8 +858,8 @@ export function createReactor(config: ReactorConfig): Reactor {
         stateManager.addPendingOperation(op);
       }
 
-      // Apply the tool-result transform chain. Each transform's output is fed
-      // into the next; emitted blobs are persisted immediately so downstream
+      // Apply the tool-result transform chain: each transform's output feeds
+      // the next, and emitted blobs are persisted immediately so downstream
       // transforms can rely on the spill being available.
       let current = rawResult;
       for (const transform of toolResultTransforms) {
@@ -943,12 +892,10 @@ export function createReactor(config: ReactorConfig): Reactor {
     const results = outcomes.filter((o): o is ToolResult => o !== SUSPENDED);
 
     // Doom-loop accounting keys off the calls that actually ran, aligned to
-    // their outcome by index (both the parallel and serial paths above keep
-    // `outcomes` in `calls` order). A parked call contributes nothing, so a
-    // suspend-then-redispatch cycle counts its one real execution once. The
-    // loop reads `toolBatchRepeatCount` after this returns and breaks the run
-    // when it reaches the threshold. A `null` threshold means detection is
-    // disabled, so the accounting is skipped entirely.
+    // their outcome by index (both paths keep `outcomes` in `calls` order); a
+    // parked call contributes nothing, so a suspend-then-redispatch cycle
+    // counts its one real execution once. The loop breaks the run when the
+    // count reaches the threshold; a `null` threshold skips this entirely.
     const ranCalls = calls.filter((_call, i) => outcomes[i] !== SUSPENDED);
     if (doomLoopThreshold !== null && ranCalls.length > 0) {
       const signature = toolBatchSignature(ranCalls);
@@ -1101,8 +1048,8 @@ export function createReactor(config: ReactorConfig): Reactor {
   // window, `onGateCleared` would take effect ahead of the `blocked` it belongs
   // to — emitting `reactor.gate.cleared` on the plain path, or enqueuing the
   // synthetic `resume.tool_result` and removing the pending operation on the
-  // ask rail — before the suspension has been announced. `deriveStatus` and the
-  // send-awaiter both assume a gate's `blocked` precedes any effect of its
+  // ask rail — before the suspension has been announced. `deriveStatus` and
+  // the send-awaiter both assume a gate's `blocked` precedes any effect of its
   // clearing, so the in-flight suspend is tracked here and such a clear is
   // deferred until `blocked` has fired.
   type InFlightSuspend = {
@@ -1112,21 +1059,15 @@ export function createReactor(config: ReactorConfig): Reactor {
   let suspendingGate: InFlightSuspend | null = null;
 
   // Callback the gate manager invokes when a gate resolves, times out, or is
-  // shut down. Refreshes the snapshot and drives the loop's next step.
-  //
-  // A parked ask-flow approval that TIMES OUT ends without running its tool:
-  // it must be answered with a synthetic error result rather than left as a
-  // dangling tool_use. That path enqueues `resume.tool_result` INSTEAD OF
-  // `reactor.gate.cleared` — the two are mutually exclusive, because enqueuing
-  // both would drive two re-inferences for one timeout. Every other case (an
-  // async-marker pending op with no suspendedCall, no pending op at all, a
-  // `resolved`/`shutdown` reason, or a shutting-down reactor) keeps today's
-  // behavior: enqueue `reactor.gate.cleared` and let the director re-infer.
-  //
-  // A delivered `resolved` never reaches here on the ask rail — the redispatch
-  // and reject paths clear the gate silently (no onCleared) — so the timeout
-  // branch is gated on `reason === "timeout"` and shutdown stays on the plain
-  // path: a shutting-down reactor must not manufacture tool results.
+  // shut down. A parked ask-flow approval that TIMES OUT ends without running
+  // its tool, so it is answered with a synthetic error result: this path
+  // enqueues `resume.tool_result` INSTEAD OF `reactor.gate.cleared` — the two
+  // are mutually exclusive, since both would drive two re-inferences for one
+  // timeout. Every other case enqueues `reactor.gate.cleared` and lets the
+  // director re-infer. The branch is gated on `reason === "timeout"` because a
+  // delivered `resolved` never reaches here on the ask rail (the redispatch
+  // and reject paths clear the gate silently) and a shutting-down reactor
+  // must not manufacture tool results.
   function onGateCleared(
     gateId: string,
     reason: "resolved" | "timeout" | "shutdown",
@@ -1228,13 +1169,9 @@ export function createReactor(config: ReactorConfig): Reactor {
     // the `send()` awaiter as "suspended", and a downstream consumer (the warm
     // agent's run-boundary durability mirror) reads the pending operation back
     // out of the just-committed context store the instant `send()` settles.
-    // Emitting before the commit would resolve `send()` first, letting that
-    // mirror read a store that has not yet persisted the pending op -- it would
-    // durably mirror an empty pending-operation set and lose the approval
-    // snapshot, so a parked correlation could not be re-registered after a hub
-    // reconnect. This upholds persist-before-settle: the durable commit the
-    // header promises before returning to the loop lands before the suspension
-    // settles.
+    // Emitting before the commit would let that mirror read a store that has
+    // not yet persisted the pending op and durably mirror an empty set — so a
+    // parked correlation could not be re-registered after a hub reconnect.
     emit({
       type: "reactor.gate.blocked",
       seq: nextSeq(),
@@ -1259,16 +1196,12 @@ export function createReactor(config: ReactorConfig): Reactor {
 
   // Re-registers a live gate and correlation for each pending operation loaded
   // from the context store on restart. The remaining timeout is computed from
-  // the persisted absolute deadline (`timeoutAt`) against the current clock, so
-  // the deadline is preserved across the restart rather than restarted; a
-  // deadline already in the past clamps to 1ms so the gate fires on the next
-  // tick. An operation persisted without a `timeoutAt` (hold-indefinitely) has
-  // no deadline to preserve; the gate manager cannot express an indefinite
-  // hold, so it is armed with the session-level `gateTimeout` — the same
-  // effective timeout the director-suspend fallback uses — rather than a
-  // silent zero. This does not run through `suspendOnGate`: rehydration must
-  // not re-emit `reactor.gate.blocked` (the suspension already happened before
-  // the restart) and must not commit (nothing changed).
+  // the persisted absolute deadline (`timeoutAt`) against the current clock,
+  // so the deadline survives the restart; one already past clamps to 1ms so
+  // the gate fires on the next tick. An operation without `timeoutAt`
+  // (hold-indefinitely) is armed with the session-level `gateTimeout`. This
+  // skips `suspendOnGate`: rehydration must not re-emit `reactor.gate.blocked`
+  // (the suspension already happened) or commit (nothing changed).
   function rehydrateGates(ops: PendingOperation[]): void {
     for (const op of ops) {
       const timeoutMs =
@@ -1319,11 +1252,10 @@ export function createReactor(config: ReactorConfig): Reactor {
         break;
       }
 
-      // Append inbound messages to conversation history so the provider sees them.
-      // Each dequeued message.received opens a fresh per-message run bracket.
-      // If a prior bracket is still open (defensive — should not occur given
-      // the dequeue priority that drains cycle events before new messages),
-      // close it as completed first so the new bracket starts cleanly.
+      // Append inbound messages to conversation history so the provider sees
+      // them. Each dequeued message.received opens a fresh per-message run
+      // bracket; a still-open prior bracket (defensive, since the dequeue
+      // priority drains cycle events first) is closed as completed.
       if (event.type === "message.received") {
         if (stateManager !== null) {
           const msg = createInboundTurn(event.message);
@@ -1340,9 +1272,8 @@ export function createReactor(config: ReactorConfig): Reactor {
       // A parked approval that ended without running its tool (rejected or
       // timed out) carries a synthetic error result answering the parked call.
       // Land it in history before the director decides so the tool_result turn
-      // closes the dangling tool_use and the re-inference the director returns
-      // sees a well-formed sequence. No tool ran, so no tool.done and no
-      // counter change accompany it.
+      // closes the dangling tool_use and the re-inference sees a well-formed
+      // sequence. No tool ran, so no tool.done accompanies it.
       if (event.type === "resume.tool_result") {
         if (stateManager !== null) {
           stateManager.appendTurn(createToolResultTurn([event.result]));
@@ -1416,10 +1347,9 @@ export function createReactor(config: ReactorConfig): Reactor {
         }
       }
 
-      // Handle done.
       if (normalized.some((a) => a.type === "done")) {
-        // Flush the cycle (in case the director paired done with checkpoint
-        // or other work) before shutting down.
+        // Flush the cycle (done may pair with checkpoint or other work) before
+        // shutting down.
         await commitCycle();
         closeMessageRun("completed");
         done = true;
@@ -1428,9 +1358,8 @@ export function createReactor(config: ReactorConfig): Reactor {
       }
 
       // Handle wait: commit the cycle (if work happened) and return to the
-      // event loop without shutting down. Wait is a per-message terminal:
-      // the reactor has nothing more to do for the message and is returning
-      // to idle.
+      // event loop without shutting down. Wait is a per-message terminal: the
+      // reactor has nothing more to do for the message and returns to idle.
       if (normalized.some((a) => a.type === "wait")) {
         await commitCycle();
         closeMessageRun("completed");
@@ -1468,9 +1397,8 @@ export function createReactor(config: ReactorConfig): Reactor {
           },
         });
         // Reply is a per-message terminal point: close the bracket so the
-        // next inbound message opens a fresh run.
+        // next inbound message opens a fresh run, then wait for it.
         closeMessageRun("completed");
-        // After replying, wait for the next inbound message.
         continue;
       }
 
@@ -1496,14 +1424,12 @@ export function createReactor(config: ReactorConfig): Reactor {
         continue;
       }
 
-      // Handle infer.
       const inferAction = normalized.find((a) => a.type === "infer");
       if (inferAction !== undefined && inferAction.type === "infer") {
         await executeInfer(inferAction.options);
         continue;
       }
 
-      // Handle execute_tools.
       const toolsAction = normalized.find((a) => a.type === "execute_tools");
       if (toolsAction !== undefined && toolsAction.type === "execute_tools") {
         const parallel = toolsAction.parallel !== false;
@@ -1526,9 +1452,8 @@ export function createReactor(config: ReactorConfig): Reactor {
         continue;
       }
 
-      // No infer/tools/reply/suspend/wait/compact action — if a checkpoint
-      // override was set on its own (or alongside emit/fork), the next event
-      // will pick it up. Nothing to flush here.
+      // No work action: a checkpoint override set on its own is picked up by
+      // the next event.
     }
   }
 
@@ -1618,20 +1543,18 @@ export function createReactor(config: ReactorConfig): Reactor {
       );
 
       try {
-        // Re-arm gates for operations that were suspended before the restart.
-        // The state manager holds the loaded pending operations, but a gate is
-        // in-memory and does not survive a restart; without this a reloaded
+        // Re-arm gates for operations suspended before the restart: gates are
+        // in-memory and do not survive a restart, so without this a reloaded
         // suspended agent is wedged (no live gate to clear, no correlation to
-        // match). Each op re-registers its correlation and a live gate keyed on
-        // the op's own gateId and correlationId, so a delivered signal clears
-        // it exactly as the original suspension would have.
+        // match). Each op re-registers its correlation and a gate keyed on its
+        // own gateId and correlationId, so a delivered signal clears it as the
+        // original suspension would have.
         //
-        // Rehydration runs inside this try/catch because the pending operations
-        // come from the context store — an untrusted external boundary — and
-        // correlation/gate registration throws synchronously on a duplicate
-        // correlationId or gateId. A throw must surface as reactor.error plus
-        // reactor.done (matching the load-failure path), not brick the reactor
-        // as a silent unhandled rejection.
+        // Rehydration runs inside this try/catch because the pending
+        // operations come from the context store — an untrusted external
+        // boundary — and registration throws synchronously on a duplicate
+        // correlationId or gateId; the throw must surface as reactor.error
+        // plus reactor.done, not a silent unhandled rejection.
         rehydrateGates(initialOps);
 
         stateManager.setGatesSnapshot(gates.snapshot());
@@ -1671,9 +1594,8 @@ export function createReactor(config: ReactorConfig): Reactor {
         correlated = await tryCorrelate(message);
       } catch (cause) {
         // A correlation-path invariant failed (e.g. a malformed approval
-        // decision). Surface it as a fatal reactor error rather than a silent
-        // unhandled rejection, and stop the run — the resume cannot proceed on
-        // a decision the reactor cannot trust.
+        // decision). Surface it as a fatal reactor error and stop the run —
+        // the resume cannot proceed on a decision the reactor cannot trust.
         const msg = cause instanceof Error ? cause.message : String(cause);
         logger.error`Correlation dispatch failed: ${cause}`;
         emitError(`Correlation dispatch failed: ${msg}`, true);

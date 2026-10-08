@@ -49,8 +49,8 @@ export function createApprovalStore(db: DBHandle) {
      * Idempotent variant of `create`. On a `correlationId` unique conflict the
      * insert is a no-op and this returns `null` rather than throwing, so a
      * redelivered register frame (sidecar reconnect, workflow-log replay,
-     * supervisor restart re-emitting) does not fail the co-write. Conflicts
-     * on `correlationId` -- not the `id` primary key -- because the register
+     * supervisor restart re-emitting) does not fail the co-write. Conflicts on
+     * `correlationId` -- not the `id` primary key -- because the register
      * co-write mints a fresh `id` per frame while the correlation is the stable
      * dedup key. Returns the parsed row only when this call performed the
      * insert.

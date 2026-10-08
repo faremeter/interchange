@@ -1,7 +1,6 @@
-// Concurrent-push race: two pushes against the same ref are launched
-// in parallel. One wins; the other observes a non-fast-forward
-// rejection on stderr. The remote tip after the race matches the
-// winner's commit.
+// Concurrent-push race: two pushes against the same ref run in parallel.
+// One wins; the other sees a non-fast-forward rejection on stderr. The
+// remote tip after the race matches the winner's commit.
 
 import { describe, test, expect, afterEach } from "bun:test";
 import fs from "node:fs/promises";

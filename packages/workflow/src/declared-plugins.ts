@@ -1,18 +1,15 @@
 // Enumerate the plugin-package names a workflow's agents declare.
 //
-// A plugin package contributes no agent-visible tool factory: its
-// `definePlugin` factory reaches an agent only through `env.plugins`, so
-// the only record of which plugin packages a workflow uses is the
-// per-agent `AgentDefinition.plugins` list. The deploy-time probe needs
-// that union up front -- before the capability walk runs -- so it can load
-// each declared plugin's static tool `definitions` from the materialized
-// closure and surface the plugin-contributed tool grants into the walk.
+// A plugin package contributes no agent-visible tool factory; the only
+// record of which plugin packages a workflow uses is the per-agent
+// `AgentDefinition.plugins` list. The deploy-time probe needs that union
+// before the capability walk runs, so it can load each declared plugin's
+// static tool definitions from the materialized closure.
 //
-// The traversal mirrors the capability walk's agent extraction (step and
+// The traversal mirrors the capability walk's agent extraction: step and
 // map carry an agent; loop, onTrigger, and inline childWorkflow bodies are
-// nested definitions whose own agents are collected recursively). A
-// by-`ref` body is an independent asset with its own approval surface and
-// is not descended into here, matching the walk.
+// nested definitions collected recursively. A by-`ref` body is an
+// independent asset and is not descended into.
 
 import type { Primitive, WorkflowDefinition } from "./definition/index";
 

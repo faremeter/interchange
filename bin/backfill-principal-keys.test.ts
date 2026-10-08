@@ -4,10 +4,8 @@ import path from "node:path";
 const REPO_ROOT = path.resolve(import.meta.dir, "..");
 
 // The backfill seals private key seeds under the cipher the hub decrypts with,
-// so a missing PRINCIPAL_KEY_ENCRYPTION_KEY must hard-fail rather than fall back
-// to a noop cipher (which would seal seeds unrecoverably). The key check runs
-// before any DB connection, so spawning with the key absent surfaces exactly
-// that guard.
+// so a missing PRINCIPAL_KEY_ENCRYPTION_KEY must hard-fail rather than fall
+// back to a noop cipher that would seal seeds unrecoverably.
 describe("bin/backfill-principal-keys env guard", () => {
   test("fails hard when PRINCIPAL_KEY_ENCRYPTION_KEY is absent", async () => {
     const env: Record<string, string> = {};

@@ -1,27 +1,24 @@
 /**
  * Asset REST endpoint and smart-HTTP route group.
  *
- * Two distinct surfaces live in this file. The REST half — `POST /` —
- * is gated by the standard session + `requireGrant("asset:*", "create")`
- * pipeline and provisions the asset row plus the genesis-signed repo
- * via `assetService.createAsset`. The smart-HTTP half — every path
- * under `/:kind/:nameDotGit/...` — is gated by the bearer middleware
- * the app layer mounts ahead of it (`itx_pat_*` / `itx_svc_*` tokens)
- * and serves the four standard endpoints (`info/refs` for upload-pack
- * and receive-pack, then the two POST endpoints themselves).
+ * The REST half -- `POST /` -- is gated by the standard session +
+ * `requireGrant("asset:*", "create")` pipeline and provisions the asset
+ * row plus the genesis-signed repo via `assetService.createAsset`. The
+ * smart-HTTP half -- every path under `/:kind/:nameDotGit/...` -- is gated
+ * by the bearer middleware the app layer mounts ahead of it and serves the
+ * four standard endpoints (`info/refs` for both services, then the two
+ * POST endpoints).
  *
- * The smart-HTTP handler resolves URL `:kind/:name` to a concrete
- * `RepoId` by looking up the asset row `(tenantId, kind, name)`; on
- * miss the request is rejected with `404 not_found`. The handler
- * then resolves the authz verdict against `asset:<asset.id>` and the
- * grant verb derived from the `RepoAction`, and constructs the
- * `UserPrincipal` with the verdict pre-resolved so the substrate's
- * authorize gate only sanity-checks rather than re-querying.
+ * The smart-HTTP handler resolves URL `:kind/:name` to a concrete `RepoId`
+ * by looking up the asset row `(tenantId, kind, name)`; on miss the request
+ * is rejected with 404. The authz verdict is resolved against
+ * `asset:<asset.id>` with the grant verb derived from the `RepoAction`, and
+ * the `UserPrincipal` is built with the verdict pre-resolved so the
+ * substrate's authorize gate only sanity-checks rather than re-querying.
  *
  * Bearer-claim `expiresAt` is a `Date` on the wire; the substrate's
- * `UserPrincipal.tokenClaims.expiresAt` is a `number`. The Date →
- * number conversion happens exactly once, at the route handler
- * boundary.
+ * `UserPrincipal.tokenClaims.expiresAt` is a `number`. The conversion
+ * happens exactly once, at the route handler boundary.
  */
 
 import { and, eq } from "drizzle-orm";
@@ -84,12 +81,12 @@ import { jsonResponse } from "../openapi";
 const log = getLogger(["hub", "assets"]);
 
 /**
- * Genesis `.gitignore` body shipped with every asset repo. Captures
- * the OS- and editor-cruft families that show up in skill-asset
- * workspaces in practice, plus the `keys/` directory the hub uses to
- * stage materialised credentials at session-start time. The list is
- * a deliberate literal here; new entries are policy decisions
- * reviewed at this file rather than fanned out through configuration.
+ * Genesis `.gitignore` body shipped with every asset repo. Captures the
+ * OS- and editor-cruft families that show up in skill-asset workspaces in
+ * practice, plus the `keys/` directory the hub stages materialized
+ * credentials into at session-start. The list is a deliberate literal;
+ * new entries are policy decisions reviewed at this file rather than
+ * fanned out through configuration.
  */
 export const SANE_GITIGNORE = [
   ".DS_Store",
@@ -212,15 +209,12 @@ function formatAssetWithOrigin(
 }
 
 /**
- * Drain `request.body` into a single Uint8Array, aborting as soon as
- * the accumulated byte count would exceed `maxBytes`. Returns `null`
- * when the body overruns the cap so the caller can emit 413 without
- * having to thread the cap into the catch path. Returns an empty
- * array when the body is absent.
- *
- * The pre-buffer Content-Length check upstream covers honest clients;
- * this guard catches the rest — clients that omit the header or lie
- * about it — by enforcing the limit as the bytes arrive.
+ * Drain `request.body` into a single Uint8Array, aborting as soon as the
+ * accumulated byte count would exceed `maxBytes`. Returns `null` when the
+ * body overruns the cap (caller emits 413) and an empty array when the
+ * body is absent. The pre-buffer Content-Length check covers honest
+ * clients; this guard catches clients that omit or lie about the header by
+ * enforcing the limit as bytes arrive.
  */
 async function readBodyWithLimit(
   request: Request,
@@ -238,15 +232,12 @@ async function readBodyWithLimit(
       if (value === undefined) continue;
       total += value.byteLength;
       if (total > maxBytes) {
-        // `reader.cancel()` requests cancellation upstream, but whether
-        // the runtime then drops the in-flight TCP frames or just
-        // unsubscribes our reader is runtime-dependent (Bun, Node's
-        // undici, and Cloudflare Workers each behave slightly
-        // differently here). In the worst case the client may still
-        // upload up to its own buffer of bytes after we return 413;
-        // we treat that as acceptable because the server-side cost
-        // is bounded by the runtime's per-request buffer, not by the
-        // caller's malicious intent.
+        // `reader.cancel()` requests cancellation upstream, but whether the
+        // runtime then drops the in-flight TCP frames or just unsubscribes
+        // the reader is runtime-dependent. In the worst case the client may
+        // still upload up to its own buffer of bytes after we return 413;
+        // acceptable because the server-side cost is bounded by the runtime's
+        // per-request buffer, not the caller's intent.
         await reader.cancel();
         return null;
       }
@@ -446,10 +437,10 @@ export function createAssetRoutes({
 
   // ----- Tarball routes ---------------------------------------------
   //
-  // The PUT/GET/DELETE handlers operate against package-registry
-  // assets. They look the asset up through `resolveAssetById`, which
-  // walks the tenant ancestor chain; a sibling-tenant asset id resolves
-  // to null and surfaces as 404 so callers cannot probe across tenants.
+  // The PUT/GET/DELETE handlers operate against package-registry assets,
+  // looked up through `resolveAssetById` (the tenant ancestor walk); a
+  // sibling-tenant asset id resolves to null and surfaces as 404 so callers
+  // cannot probe across tenants.
 
   const TarballSummary = type({
     filename: "string",
@@ -559,21 +550,17 @@ export function createAssetRoutes({
         );
       }
 
-      // Pre-buffer guard: reject obviously-oversize uploads on the
-      // declared Content-Length before we read a single byte of body.
-      // Clients that omit Content-Length still flow into the streaming
-      // guard below, but the header check spares the server the
-      // round-trip for the common case where the client knows its
-      // payload size.
+      // Pre-buffer guard: reject obviously-oversize uploads on the declared
+      // Content-Length before reading any body bytes. Clients that omit
+      // Content-Length still flow into the streaming guard below, but the
+      // header check spares the round-trip for the common case.
       const declaredLengthRaw = c.req.raw.headers.get("content-length");
       if (declaredLengthRaw !== null) {
         // RFC 9110 §8.6 defines Content-Length as `1*DIGIT`. `Number()`
-        // accepts decimal, hex (`0x10`), and scientific notation
-        // (`1e3`), which would let a malicious client smuggle a value
-        // past the cap (`1e1` reads as 10 bytes but the literal header
-        // text fails the digit check) or land an unrepresentably-large
-        // value (`1e308`). Insist on the digit-only shape so the
-        // header is exactly what RFC 9110 says it is.
+        // accepts decimal, hex (`0x10`), and scientific notation (`1e3`),
+        // which would let a malicious client smuggle a value past the cap
+        // (`1e1` reads as 10 bytes but fails the digit check) or land an
+        // unrepresentably-large value. Insist on the digit-only shape.
         if (!/^\d+$/.test(declaredLengthRaw)) {
           return errorResponse(
             c,
@@ -602,21 +589,18 @@ export function createAssetRoutes({
           `tarball exceeds maximum size of ${String(maxTarballBytes)} bytes`,
         );
       }
-      // Integrity is computed from the request bytes. The substrate
-      // stores those bytes verbatim, so request-bytes-integrity ===
-      // stored-blob-integrity by construction at this layer. Any
-      // future substrate transformation (compression, re-encoding,
-      // metadata stripping) must re-derive integrity from the
-      // post-commit blob; otherwise the value returned here lies
-      // about what the asset will serve back on GET.
+      // Integrity is computed from the request bytes, which the substrate
+      // stores verbatim, so request-bytes-integrity === stored-blob-integrity
+      // by construction at this layer. Any future substrate transformation
+      // must re-derive integrity from the post-commit blob, or the value
+      // returned here lies about what the asset serves back on GET.
       const integrity = ssri
         .fromData(bytes, { algorithms: ["sha512"] })
         .toString();
 
-      // Read-then-write happens inside the substrate's per-repo lock so
-      // two concurrent PUTs against different filenames in the same
-      // asset cannot both pre-image the prior tip and clobber each
-      // other's just-staged entries.
+      // Read-then-write happens inside the substrate's per-repo lock so two
+      // concurrent PUTs against different filenames in the same asset cannot
+      // both pre-image the prior tip and clobber each other's entries.
       try {
         const { commitSha } = await repoStore.writeTreePreservingPrefix(
           hubPrincipal,
@@ -737,12 +721,11 @@ export function createAssetRoutes({
         );
       }
 
-      // Existence check + write-back happen inside the substrate's
-      // per-repo lock via writeTreePreservingPrefix so two concurrent
-      // DELETEs (or a concurrent PUT) cannot race the pre-image.
-      // The merge callback throws TarballNotFoundError when the
-      // target filename is absent at the locked-in pre-image; the
-      // outer try translates it into a 404 response.
+      // Existence check + write-back happen inside the substrate's per-repo
+      // lock via writeTreePreservingPrefix so concurrent DELETEs (or a
+      // concurrent PUT) cannot race the pre-image. The merge callback throws
+      // TarballNotFoundError when the target is absent at the locked-in
+      // pre-image; the outer try translates it into a 404 response.
       try {
         const { commitSha } = await repoStore.writeTreePreservingPrefix(
           hubPrincipal,
@@ -786,12 +769,11 @@ export function createAssetRoutes({
 
   // ----- Smart-HTTP route group -------------------------------------
   //
-  // The bearer middleware is mounted by the app layer ahead of this
-  // route group (so the `principal`, `tenant`, and `git-token-claims`
-  // context variables are populated before any handler runs). The
-  // handlers here resolve the asset row from `:kind/:nameDotGit`,
-  // build the pre-resolved authz verdict, construct a UserPrincipal,
-  // and dispatch to the wire handlers.
+  // The bearer middleware is mounted by the app layer ahead of this route
+  // group, populating `principal`, `tenant`, and `git-token-claims` before
+  // any handler runs. The handlers resolve the asset row from
+  // `:kind/:nameDotGit`, build the pre-resolved authz verdict, construct a
+  // UserPrincipal, and dispatch to the wire handlers.
 
   async function resolveAssetFromUrl(
     c: { req: { param: (n: string) => string | undefined } },
@@ -836,16 +818,14 @@ export function createAssetRoutes({
         message: `malformed asset name: ${name}`,
       };
     }
-    // Smart-HTTP asset lookup is intentionally scoped to the requesting
-    // tenant only — inherited assets are NOT visible here. The smart-HTTP
-    // surface exposes the underlying git repo for direct clone/push, and
-    // those repos live on exactly one tenant; an inherited asset's repo
-    // lives on its owning ancestor and is reachable only via that
-    // tenant's bearer token, not the descendant's. The REST tarball
-    // routes use the tenancy walker (`resolveAssetById` and friends)
-    // because they serve resolver-derived materializations that
-    // descendants legitimately read from inherited rows. Do not widen
-    // this query to the ancestor chain without rethinking how bearer
+    // Smart-HTTP asset lookup is scoped to the requesting tenant only:
+    // inherited assets are NOT visible here. The smart-HTTP surface exposes
+    // the underlying git repo for direct clone/push, and those repos live
+    // on exactly one tenant -- an inherited asset's repo is reachable only
+    // via its owning tenant's bearer token, not the descendant's. The REST
+    // tarball routes use the tenancy walker because they serve
+    // resolver-derived materializations descendants legitimately read from
+    // inherited rows. Do not widen this query without rethinking how bearer
     // tokens scope to repo ownership.
     const row = await db.query.asset.findFirst({
       where: and(
@@ -887,11 +867,9 @@ export function createAssetRoutes({
     };
   }
 
-  // Capture: tenant resolution is normally handled by the tenant
-  // middleware (session-based), but bearer requests skip the user
-  // session pipeline. The bearer middleware itself sets
-  // `principal`/`tenant` on the context, so the handlers here read
-  // straight from `c.get(...)` rather than re-querying the DB.
+  // Bearer requests skip the user session pipeline; the bearer middleware
+  // itself sets `principal`/`tenant`, so the handlers read straight from
+  // `c.get(...)`.
 
   type SmartHttpResolved = {
     principal: UserPrincipal;
@@ -913,11 +891,9 @@ export function createAssetRoutes({
     const tenantRow = c.get("tenant");
     const principalRow = c.get("principal");
     const claims: GitTokenClaims = c.get("git-token-claims");
-    // The typed env makes this unreachable today, but if the route
-    // module is ever mounted without the bearer middleware ahead of
-    // it, surface a misconfiguration rather than a downstream
-    // TypeError. A 401 would imply the client was unauthenticated;
-    // a missing claims object means the server is misconfigured.
+    // Unreachable through the typed env; surface a misconfiguration
+    // instead of a downstream TypeError if the route is ever mounted
+    // without the bearer middleware.
     if (claims === undefined) {
       throw new Error(
         "smart-HTTP route handler invoked without bearer middleware; check the mount order in app.ts",
@@ -968,9 +944,9 @@ export function createAssetRoutes({
   }
 
   // The smart-HTTP sub-app is typed against `TenantGitTokenEnv` so the
-  // bearer middleware's `git-token-claims` variable narrows naturally
-  // at the handler site. The bearer middleware is mounted in `app.ts`
-  // ahead of this route surface, so the variable is statically present.
+  // bearer middleware's `git-token-claims` variable narrows naturally at
+  // the handler site; the middleware is mounted in `app.ts` ahead of this
+  // surface.
   const smartHttp = new Hono<TenantGitTokenEnv>();
 
   smartHttp.get("/:kind/:nameDotGit/info/refs", async (c) => {
@@ -982,9 +958,9 @@ export function createAssetRoutes({
         "info/refs requires service=git-upload-pack or git-receive-pack",
       );
     }
-    // info/refs maps to the `resolveRef` RepoAction for the bearer
-    // claims gate; the substrate's createPack handler runs later and
-    // its own gate covers the upload itself.
+    // info/refs maps to the `resolveRef` RepoAction for the bearer claims
+    // gate; the substrate's createPack handler runs later and its own gate
+    // covers the upload itself.
     const r = await resolveSmartHttp(c, "resolveRef");
     if (!r.ok) {
       return c.json({ error: { code: r.code, message: r.message } }, r.status);

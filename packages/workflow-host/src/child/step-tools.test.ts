@@ -1,26 +1,13 @@
 // LSP-lifecycle seam test for the workflow-process child's tool-bearing
 // agent factory.
 //
-// What this asserts, precisely:
-//   - The agent factory built by `createToolBearingAgentFactory` runs
-//     each materialized plugin factory when it builds the step's agent
-//     (the plugin chain mirrors `default-harness.ts`).
-//   - The plugin's `dispose` runs when `agent.close()` is called, and
-//     `agent.close()` is what the step-invoker adapter calls in its
-//     `finally` on every exit path.
-//
-// What this does NOT assert: a real language server protocol exchange.
-// The real LSP plugin (`@intx/tools-lsp` `createLSPPlugin`) spawns its
-// server subprocess LAZILY -- only when a tool touches a file -- and its
-// `dispose` chains to `lsp.dispose()`, which terminates whatever server
-// subprocesses were spawned. This test stands in a plugin whose factory
-// spawns a REAL subprocess eagerly and whose `dispose` kills it, so the
-// load-bearing seam under test -- "the child's agent.close() tears down
-// the plugin's subprocess" -- is exercised against a real OS process
-// without depending on a language-server binary being present in CI.
-// The LSP-specific lazy-spawn behavior is covered by the `tools-lsp`
-// package's own tests; what is sidecar-specific (and new in Phase 2) is
-// the close -> plugin-dispose wiring proven here.
+// Asserts that the agent factory runs each materialized plugin factory when
+// building a step's agent, and that a plugin's `dispose` runs on
+// `agent.close()` (the call the step-invoker adapter makes in its `finally`).
+// A real subprocess stands in for the LSP server -- the real plugin spawns
+// lazily -- so the close -> plugin-dispose wiring is proven against a real OS
+// process without needing a language-server binary in CI. The LSP-specific
+// lazy-spawn behavior is covered by the `tools-lsp` package's own tests.
 
 import { describe, test, expect, afterEach } from "bun:test";
 
@@ -104,9 +91,8 @@ async function buildStepEnv(): Promise<BaseEnv> {
 
 /**
  * Returns `true` if a process with the given pid is alive. `kill(pid, 0)`
- * throws ESRCH when the process does not exist and EPERM when it exists
- * but is not signalable by this user; either non-throw / EPERM means
- * "alive", ESRCH means "gone".
+ * throws ESRCH when the process does not exist and EPERM when it exists but
+ * is not signalable by this user; either non-throw or EPERM means "alive".
  */
 function isAlive(pid: number): boolean {
   try {
@@ -122,10 +108,8 @@ function isAlive(pid: number): boolean {
 
 describe("createToolBearingAgentFactory plugin/LSP lifecycle", () => {
   test("agent.close() runs the plugin disposer and tears down its subprocess", async () => {
-    // A plugin standing in for the LSP plugin: its factory spawns a REAL
-    // subprocess (a sleeping shell) and its `dispose` kills it. This is
-    // the same shape `createLSPPlugin` produces -- a `ToolPlugin` whose
-    // `dispose` terminates a server subprocess -- minus the lazy spawn.
+    // A plugin standing in for the LSP plugin: its factory spawns a real
+    // subprocess (a sleeping shell) and its `dispose` kills it.
     let spawnedPid: number | undefined;
     let spawnedExit: Promise<number> | undefined;
     let disposeCalls = 0;
@@ -172,9 +156,9 @@ describe("createToolBearingAgentFactory plugin/LSP lifecycle", () => {
 
     const env = await buildStepEnv();
     attachStepTools(env, materialization);
-    // The step-invoker adapter spreads the env (`{ ...envBase, authorize }`)
-    // before handing it to the agent factory; replicate that spread so the
-    // test exercises the symbol-slot-survives-spread path.
+    // The step-invoker adapter spreads the env before handing it to the
+    // agent factory; replicate that spread so the test exercises the
+    // symbol-slot-survives-spread path.
     const spreadEnv: BaseEnv = { ...env };
 
     const agentFactory = createToolBearingAgentFactory();
@@ -202,11 +186,9 @@ describe("createToolBearingAgentFactory plugin/LSP lifecycle", () => {
     await agent.close();
 
     expect(disposeCalls).toBe(1);
-    // The disposer's `kill` only sends the signal; the child exits after it.
-    // `Bun.spawn` reports that exit as a promise, so await it rather than
-    // re-reading the pid on a timer. The pid stops being signalable once the
-    // exited child is reaped, which is a separate transition the test does
-    // not drive, so wait for that too -- `isAlive` is the only report for it.
+    // The disposer's `kill` only signals; the child exits after. Await the
+    // spawn's exit promise, then wait for the pid to stop being signalable --
+    // it stays signalable until the exited child is reaped.
     if (spawnedExit === undefined) {
       throw new Error("plugin factory did not expose the child's exit");
     }
@@ -216,10 +198,8 @@ describe("createToolBearingAgentFactory plugin/LSP lifecycle", () => {
   });
 
   test("a plugin factory that throws mid-chain disposes the already-built plugins", async () => {
-    // Mirrors `default-harness.ts`'s plugin-construction rollback: if a
-    // later plugin factory throws, every earlier plugin instance must be
-    // disposed so a partial-success chain does not leak (the LSP server
-    // subprocess being the resource that would leak in production).
+    // If a later plugin factory throws, every earlier plugin instance must
+    // be disposed so a partial-success chain does not leak.
     let spawnedPid: number | undefined;
     let spawnedExit: Promise<number> | undefined;
     let disposed = false;
@@ -274,8 +254,7 @@ describe("createToolBearingAgentFactory plugin/LSP lifecycle", () => {
       throw new Error("first plugin factory did not spawn a subprocess");
     }
     const pid = spawnedPid;
-    // Same two transitions as the close() test above: the child exits after
-    // the rollback's `kill`, and its pid stops being signalable once reaped.
+    // Same two transitions as the close() test above.
     if (spawnedExit === undefined) {
       throw new Error("first plugin factory did not expose the child's exit");
     }
@@ -285,11 +264,9 @@ describe("createToolBearingAgentFactory plugin/LSP lifecycle", () => {
   });
 
   test("agent.close() rejects with an AggregateError when a disposer fails, and still runs the rest", async () => {
-    // The underlying agent close succeeds; a plugin disposer (standing in
-    // for the LSP subprocess kill) then throws. That failure must surface
-    // through close() rather than be swallowed -- a leaked LSP subprocess
-    // is otherwise invisible -- and one failing disposer must not strand
-    // the others.
+    // A failing plugin disposer must surface through close() rather than be
+    // swallowed -- a leaked LSP subprocess is otherwise invisible -- and one
+    // failing disposer must not strand the others.
     const disposeError = new Error("lsp dispose boom");
     let survivorDisposed = 0;
     const throwingPlugin = definePlugin({
@@ -346,9 +323,9 @@ describe("createToolBearingAgentFactory plugin/LSP lifecycle", () => {
   });
 
   test("a disposer that throws during construction rollback does not mask the construction error", async () => {
-    // On a construction-failure rollback the pending construction error is
-    // the one worth surfacing; a disposer failure during that rollback is
-    // logged but must never replace it.
+    // On a construction-failure rollback the construction error is the one
+    // to surface; a disposer failure during that rollback must never replace
+    // it.
     const firstPlugin = definePlugin({
       id: "@intx/rollback-throwing-disposer/sidecar-bundle",
       factory: () => ({
@@ -421,9 +398,8 @@ describe("createToolBearingAgentFactory plugin/LSP lifecycle", () => {
 
     await expect(agent.close()).rejects.toBeInstanceOf(AggregateError);
     expect(disposeCalls).toBe(1);
-    // wrapAgentClose guards teardown behind `tornDown`, so a second close
-    // is a no-op: it neither re-runs the disposer nor re-surfaces the
-    // failure.
+    // `wrapAgentClose` guards teardown behind `tornDown`: a second close is
+    // a no-op.
     await agent.close();
     expect(disposeCalls).toBe(1);
   });
@@ -441,8 +417,7 @@ describe("rewrapStepToolFactory", () => {
       }),
     });
 
-    // This test only inspects the re-wrapped factory's static metadata;
-    // it never invokes the factory, so the disposer-capture callback
+    // The factory is never invoked here, so the disposer-capture callback
     // must not fire.
     const rewrapped = rewrapStepToolFactory(
       source,
@@ -493,8 +468,8 @@ describe("rewrapStepToolFactory", () => {
     if (seenEnv === undefined) {
       throw new Error("the bundle factory was not invoked");
     }
-    // The bundle sees a layered bag resolving THIS package's capability -- the
-    // seam that must never hand a bundle another package's capability.
+    // The bundle must see this package's own capability, never another
+    // package's.
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the slot is the RuntimeCapabilities resolver this test set
     const bag = Reflect.get(seenEnv, "capabilities") as RuntimeCapabilities;
     expect(bag.resolve("credentials")).toBe(capability);
@@ -530,8 +505,8 @@ describe("rewrapStepToolFactory", () => {
     if (seenEnv === undefined) {
       throw new Error("the bundle factory was not invoked");
     }
-    // No capability -> the exact base env is passed through, no credentials key
-    // layered on, so a resolve fails closed as not-provided.
+    // No capability: the exact base env passes through, and `resolve` fails
+    // closed as not-provided.
     expect(seenEnv).toBe(env);
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the slot is the RuntimeCapabilities resolver this test set
     const bag = Reflect.get(seenEnv, "capabilities") as RuntimeCapabilities;
@@ -592,8 +567,8 @@ describe("deriveToolMarkFloorGrants", () => {
       ]),
     ];
     // A credentials-snapshot grant explicitly denying the tool at equal
-    // specificity. `deny` (priority 2) outranks the derived `ask`, so the
-    // floor never overrides an explicit denial.
+    // specificity. `deny` outranks the derived `ask`, so the floor never
+    // overrides an explicit denial.
     const declaredDeny: GrantRule = {
       id: "declared-deny",
       resource: "tool:run_shell",
@@ -616,12 +591,10 @@ describe("deriveToolMarkFloorGrants", () => {
         { name: "run_shell", approval: "ask" },
       ]),
     ];
-    // A run grant explicitly ALLOWING the tool at the SAME specificity as the
-    // derived floor (both `tool:run_shell`/`invoke`, exact match). `ask`
-    // (priority 1) outranks `allow` (priority 0) at equal specificity, so the
-    // floor holds -- a workflow cannot declare its way below a tool's
-    // approval gate. This is the `ask > allow` half of the effect ordering in
-    // packages/authz/src/evaluate.ts.
+    // A run grant allowing the tool at the same specificity as the derived
+    // floor (both exact `tool:run_shell`/`invoke`). `ask` outranks `allow`
+    // at equal specificity, so the floor holds -- a workflow cannot declare
+    // its way below a tool's approval gate.
     const declaredAllow: GrantRule = {
       id: "declared-allow",
       resource: "tool:run_shell",
@@ -644,11 +617,10 @@ describe("deriveToolMarkFloorGrants", () => {
         { name: "run_shell", approval: "ask" },
       ]),
     ];
-    // A run grant allowing EVERY tool via a `tool:*` glob. The glob is far
+    // A run grant allowing every tool via a `tool:*` glob. The glob is far
     // less specific than the exact `tool:run_shell` floor, so specificity --
     // ranked before effect -- resolves to the exact floor regardless of
-    // effect. The exact `ask` wins; the broad `allow` never enters the effect
-    // tie-break.
+    // effect.
     const broadAllow: GrantRule = {
       id: "broad-allow",
       resource: "tool:*",

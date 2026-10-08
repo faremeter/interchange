@@ -6,9 +6,8 @@ import {
 } from "./sync-workspace-lockfile";
 
 // A miniature bun.lock (JSONC, trailing commas) exercising the shapes that
-// matter: a root entry with no version, a normal package, an app whose `bin`
-// field precedes `version`, a tests/lib member, catalog ranges, and a
-// third-party package in the array syntax that must never be touched.
+// matter: root entry with no version, `bin` before `version`, a tests/lib
+// member, catalog ranges, and a third-party package never to be touched.
 const LOCKFILE = `{
   "lockfileVersion": 1,
   "workspaces": {
@@ -108,9 +107,8 @@ describe("rewriteWorkspaceVersions", () => {
   });
 
   test("throws when a member version uses spacing the edit misses", () => {
-    // The block edit matches `"version": "` (with a space); a member written
-    // `"version":"x"` is left stale and the completeness re-parse must catch
-    // it rather than silently shipping the previous version.
+    // The edit matches `"version": "` (with a space); a member written
+    // `"version":"x"` stays stale and the re-parse must catch it.
     const lock = `{
   "workspaces": {
     "packages/d": {
@@ -154,9 +152,8 @@ describe("rewriteWorkspaceVersions", () => {
   });
 });
 
-// Exercises the `escaped` branch of the shared stepStringScan: a string value
-// with an escaped quote or backslash must not be mistaken for closing the
-// string, so a structural-looking `,}` inside it is left intact.
+// The `escaped` branch of stepStringScan: an escaped quote or backslash must
+// not be mistaken for closing the string, so a `,}` inside it is left intact.
 describe("escaped characters inside string values", () => {
   test("escaped quote followed by comma-brace is not corrupted", () => {
     const lock = `{

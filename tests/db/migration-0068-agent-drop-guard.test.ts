@@ -24,8 +24,7 @@ const MIGRATION_PATH = join(
 
 // The migrated test schema already applied 0068, so agent_instance is gone.
 // Recreate a minimal stand-in (drop-first so each test starts from a known
-// empty table regardless of what a prior test left behind) to give the guard
-// something to inspect.
+// empty table) to give the guard something to inspect.
 async function recreateAgentInstance(h: TestDb): Promise<void> {
   await h.db.execute(sql.raw(`DROP TABLE IF EXISTS "agent_instance"`));
   await h.db.execute(

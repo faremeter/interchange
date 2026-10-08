@@ -17,12 +17,9 @@ import type { SignalKind } from "./signals";
 // ---------------------------------------------------------------------------
 
 /**
- * An Ed25519 key pair as raw bytes. The private key is 32 bytes; the public
- * key is the corresponding 32-byte compressed point.
- *
- * Key material is represented as Uint8Array throughout so it stays
- * runtime-agnostic (Bun, Node, browser) and never accidentally leaks through
- * JSON serialization.
+ * An Ed25519 key pair as raw bytes. Uint8Array throughout so key material
+ * stays runtime-agnostic (Bun, Node, browser) and never leaks through JSON
+ * serialization.
  */
 export type KeyPair = {
   privateKey: Uint8Array;
@@ -30,44 +27,29 @@ export type KeyPair = {
 };
 
 /**
- * A key-bound cryptographic provider. Each instance is constructed with a
- * specific agent's Ed25519 key pair and holds the private key internally.
- *
- * `sign` uses the instance's own private key — no key parameter is accepted.
- * `verify` accepts a public key parameter so the holder can verify messages
- * from arbitrary senders without constructing a new provider instance.
- *
- * The in-memory transport stores one CryptoProvider per registered agent and
- * calls `crypto.sign(content)` during `send()` without passing keys around.
+ * A key-bound cryptographic provider: constructed with a specific agent's
+ * Ed25519 key pair, holding the private key internally.
  *
  * Key formats (IMPLEMENTATION.md):
  * - Ed25519 in SSH format — control plane interactions
  * - Ed25519 in PGP format — message-level signatures over SMTP/IMAP
  * - Ed25519 in X.509 format — TLS mutual auth certificates
- *
- * `getPublicKey` returns the raw public key bytes so callers can publish
- * them to the control plane or embed them in discovery metadata.
  */
 export interface CryptoProvider {
   /**
-   * Sign `content` with the instance's private key. Returns the Ed25519
+   * Sign `content` with the instance's private key, returning the Ed25519
    * detached signature as raw bytes.
    */
   sign(content: Uint8Array): Promise<Uint8Array>;
 
   /**
-   * Sign `payload` with the instance's private key using the SSH signature
-   * envelope (sshsig). Returns an ASCII-armored SSH SIGNATURE block suitable
-   * for the `gpgsig` header of a git commit or any other site that consumes
-   * `git verify-commit`-compatible signatures. The framing differs from
-   * `sign`'s raw output; callers that need either format should pick the
-   * matching method rather than reframing the result themselves.
+   * Sign `payload` with the SSH signature envelope (sshsig), returning an
+   * ASCII-armored SSH SIGNATURE block for `gpgsig`-style consumers.
    */
   signSSH(payload: string): Promise<string>;
 
   /**
    * Verify that `signature` over `content` was produced by `publicKey`.
-   * Returns true if the signature is valid; false otherwise.
    */
   verify(
     content: Uint8Array,
@@ -79,32 +61,23 @@ export interface CryptoProvider {
   getPublicKey(): Uint8Array;
 }
 
-/**
- * Generate a fresh Ed25519 key pair. The returned pair is used to construct
- * a CryptoProvider instance.
- */
+/** Generate a fresh Ed25519 key pair. */
 export type GenerateKeyPair = () => Promise<KeyPair>;
 
 // ---------------------------------------------------------------------------
 // Message Transport (MESSAGE.md § Transport Interface)
 // ---------------------------------------------------------------------------
 
-/**
- * Opaque reference to a message in a specific mailbox. Carries the IMAP UID
- * and the mailbox name. Passed to fetch, flag, and move operations without
- * requiring re-search.
- */
+/** Opaque reference to a message in a specific mailbox. */
 export type MessageRef = {
   uid: number;
   mailbox: string;
 };
 
 /**
- * Interchange payload types as defined in MESSAGE.md § Payload Types.
- * The type field in structured messages matches the Interchange-Type header.
- *
- * Exposed as both an arktype validator (for runtime validation at parse
- * boundaries and tool-argument schemas) and a derived TypeScript union.
+ * Interchange payload types (MESSAGE.md § Payload Types). The type field in
+ * structured messages matches the Interchange-Type header. Exposed as both
+ * an arktype validator and a derived TypeScript union.
  */
 export const InterchangeType = type.enumerated(
   "conversation.message",
@@ -143,7 +116,7 @@ export function isConversationType(value: InterchangeType): boolean {
   return CONVERSATION_TYPES.has(value);
 }
 
-/** Attachment for an outbound message. Content is raw bytes. */
+/** Attachment for an outbound message. */
 export type MessageAttachment = {
   name: string;
   contentType: string;
@@ -156,13 +129,9 @@ export type MessageAttachment = {
 };
 
 /**
- * A message the harness submits for delivery via SMTP. The transport
- * assembles the PGP/MIME multipart structure, signs it with the agent's
- * CryptoProvider, and submits it.
- *
- * Conversation types (conversation.*) carry `content` as text/plain.
- * Structured types carry `payload` as application/vnd.interchange+json.
- * Providing both is an error.
+ * A message the harness submits for delivery via SMTP. Conversation types
+ * (conversation.*) carry `content` as text/plain; structured types carry
+ * `payload` as application/vnd.interchange+json. Providing both is an error.
  *
  * (MESSAGE.md § Transport Interface › Outbound)
  */
@@ -173,10 +142,10 @@ export type OutboundMessage = {
 
   type: InterchangeType;
 
-  /** Plain text body — used when type is a conversation.* type. */
+  /** Plain text body for conversation.* types. */
   content?: string;
 
-  /** Structured JSON body — used when type is a non-conversation type. */
+  /** Structured JSON body for non-conversation types. */
   payload?: Record<string, unknown>;
 
   /** Human-readable summary for structured messages (the text/plain part). */
@@ -188,12 +157,8 @@ export type OutboundMessage = {
   inReplyTo?: string;
 
   /**
-   * The RFC 5322 References chain for a threaded reply: the parent's own
-   * References plus the parent's Message-ID, in order. When present the
-   * transport ships it verbatim (after appending `inReplyTo` if it is not
-   * already the tail) rather than deriving a single-element `[inReplyTo]`
-   * chain, so a reply carries the full conversational ancestry. Absent for a
-   * non-reply or a reply whose parent could not be located.
+   * RFC 5322 References chain; shipped verbatim, appending `inReplyTo` when
+   * not already the tail.
    */
   references?: string[];
 
@@ -208,8 +173,7 @@ export type OutboundMessage = {
 };
 
 /**
- * Receipt returned by `send()`. Contains the assigned Message-ID and
- * delivery status.
+ * Receipt returned by `send()`: the assigned Message-ID and delivery status.
  *
  * (MESSAGE.md § Transport Interface › Outbound)
  */
@@ -219,11 +183,8 @@ export type SendReceipt = {
 };
 
 /**
- * Parsed headers from an inbound message. Field names follow RFC 5322 and
- * the Interchange-specific header conventions from MESSAGE.md § Headers.
- *
- * `from` is optional because a message can arrive carrying no originator at
- * all, and there is no string that honestly stands for one.
+ * Parsed inbound headers (RFC 5322 + MESSAGE.md § Headers). `from` is
+ * optional: a message can arrive carrying no originator.
  */
 export type MessageHeaders = {
   from?: string;
@@ -249,12 +210,8 @@ export type MessageHeaders = {
 };
 
 /**
- * Signature verification status of an inbound message.
- *
- * - `valid` — signature verified against the sender's public key
- * - `invalid` — signature check failed (tampering or wrong key)
- * - `unknown` — public key not available for verification
- * - `missing` — message was not signed
+ * Signature verification status of an inbound message: `valid`, `invalid`,
+ * `unknown` (no key available), or `missing` (not signed).
  *
  * (MESSAGE.md § Transport Interface › fetchFull)
  */
@@ -267,20 +224,9 @@ export const SignatureStatus = type.enumerated(
 export type SignatureStatus = typeof SignatureStatus.infer;
 
 /**
- * The admission outcome of an inbound message. This is the single vocabulary a
- * delivery decision keys on, distinct from the two-axis signature verdict that
- * produces it.
- *
- * - `clean` — nothing suspect; always admitted
- * - `untrustedFrom` — the visible `From` is present but cannot be reduced to a
- *   single addr-spec
- * - `mismatchedFrom` — the visible `From` names a different identity from the
- *   sender the hub stamped
- * - `absentFrom` — the message carries no usable `From`
- * - `invalid` — the signature check failed (tampering or the wrong key)
- * - `missing` — the message carried no signature
- * - `unknown` — no key was available to verify against
- * - `error` — a fault stopped the check from running at all; always rejected
+ * The admission outcome of an inbound message, the single vocabulary a
+ * delivery decision keys on. `clean` is always admitted; `error` (a fault
+ * stopped the check) is always rejected.
  */
 export const InboundMailOutcome = type.enumerated(
   "clean",
@@ -295,11 +241,8 @@ export const InboundMailOutcome = type.enumerated(
 export type InboundMailOutcome = typeof InboundMailOutcome.infer;
 
 /**
- * The subset of {@link InboundMailOutcome} a workflow author may relax to admit
- * a message that would otherwise be rejected. It omits `clean` (which always
- * admits, so there is nothing to relax) and `error` (pinned to reject, since a
- * fault we could not check through is never something an author should be able
- * to wave past). A per-workflow policy keys on exactly these outcomes.
+ * The subset of {@link InboundMailOutcome} a workflow author may relax to
+ * admit a message that would otherwise be rejected.
  */
 export const AuthorControllableOutcome = type.enumerated(
   "untrustedFrom",
@@ -312,19 +255,9 @@ export const AuthorControllableOutcome = type.enumerated(
 export type AuthorControllableOutcome = typeof AuthorControllableOutcome.infer;
 
 /**
- * A per-workflow inbound-mail admission policy: for each admission outcome the
- * author may control, whether a message that raises that outcome as a finding is
- * `reject`ed or `admit`ted. The key set is exactly the
- * {@link AuthorControllableOutcome} values -- `clean` (always admitted) and
- * `error` (pinned to reject) are deliberately not keys.
- *
- * The object is SPARSE: every key is optional, and an omitted key is NOT a
- * default of any kind here. It is left for a later resolution step to interpret
- * an absent outcome. Keeping it sparse means the content hash covers only what
- * the author actually declared, so a definition that omits the policy hashes
- * identically to one authored before the field existed. Undeclared keys are
- * rejected so a typo such as `clean` or `errror` fails at the wire boundary
- * rather than riding through as an inert unknown key.
+ * A per-workflow inbound-mail admission policy: for each
+ * {@link AuthorControllableOutcome}, whether a message raising that outcome
+ * is `reject`ed or `admit`ted. Sparse: omitted keys are not defaults.
  */
 export const InboundMailPolicy = type({
   "untrustedFrom?": "'reject' | 'admit'",
@@ -342,10 +275,7 @@ type AssertEqual<A, B> = [A] extends [B]
     : false
   : false;
 
-/**
- * The three outcome vocabularies must move together, but nothing else connects
- * them: each spells the same names out again in its own notation.
- */
+/** The three outcome vocabularies must move together. */
 const _policyKeysMatchAuthorControllable: AssertEqual<
   keyof InboundMailPolicy,
   AuthorControllableOutcome
@@ -357,31 +287,23 @@ const _authorControllableAreOutcomes: AssertEqual<
 > = true;
 
 /**
- * A parsed MIME part. `content` is the DECODED bytes in memory (the
- * transfer-encoding has already been undone). `filename` and `disposition` are
- * surfaced from the part's `Content-Disposition` / `Content-Type` so a consumer
- * can distinguish an inline part from a named attachment without re-parsing
- * headers.
+ * A parsed MIME part. `content` is the DECODED bytes in memory (transfer
+ * encoding already undone); `filename`/`disposition` are surfaced from the
+ * part's headers so a consumer need not re-parse them.
  */
 export type MessagePart = {
   contentType: string;
   content: Uint8Array;
   filename?: string;
   disposition?: "inline" | "attachment";
-  /**
-   * The Content-Transfer-Encoding the part declared. Not set for a decoded
-   * mail part -- `content` is already decoded, so the wire encoding is spent
-   * transport metadata.
-   */
+  /** Declared Content-Transfer-Encoding; absent on a decoded part. */
   encoding?: string;
 };
 
 /**
  * A single part of a persisted `Mail`. The bytes live in the durable store;
- * this descriptor carries the part's metadata plus an opaque, relocation-stable
- * `ref` a `MailPartReader` resolves to the part's bytes. Small UTF-8 text parts
- * also carry their decoded `text` inline so a selector can read them without
- * resolving.
+ * `ref` resolves them via a `MailPartReader`. Small UTF-8 text parts also
+ * carry their decoded `text` inline.
  */
 export type MailPart = {
   contentType: string;
@@ -392,13 +314,9 @@ export type MailPart = {
 };
 
 /**
- * The single, environment-agnostic interface for reading a persisted mail
- * part's bytes. Modeled on `BlobReader`: a consumer -- a workflow step, an
- * agent tool, the agent's content-block projection -- resolves a
- * `MailPart.ref` to its bytes without knowing or caring where the bytes live
- * (a committed file on the sidecar, a blob in a browser runtime). The `ref`
- * is opaque; the reader owns its scheme. Threaded to consumers through the
- * runtime so a browser runtime can supply its own implementation.
+ * Environment-agnostic reader for a persisted mail part's bytes. A consumer
+ * resolves a `MailPart.ref` without knowing where the bytes live; the `ref`
+ * is opaque and the reader owns its scheme.
  */
 export interface MailPartReader {
   /** Resolve a `MailPart.ref` to the part's decoded bytes. Throws if the ref
@@ -407,14 +325,10 @@ export interface MailPartReader {
 }
 
 /**
- * A fully decoded mail message: every header (both the typed, ergonomic subset
- * and a raw catch-all with nothing dropped) plus the flat list of decoded leaf
- * parts. This is the lossless representation a deployed workflow receives as
- * its trigger input; a workflow programs against it directly (select headers,
- * walk parts, route on content type), and an agent step projects the parts into
- * model content blocks. It is JSON-safe: each part carries a `ref` (not raw
- * bytes), so binary content never enters the event log; the runtime resolves a
- * `ref` into a loadable `MessagePart` on demand.
+ * A fully decoded mail message: the typed header subset, a raw catch-all with
+ * nothing dropped, and the flat list of decoded leaf parts. JSON-safe: each
+ * part carries a `ref` (not raw bytes), so binary content never enters the
+ * event log; the runtime resolves a `ref` into a `MessagePart` on demand.
  */
 export type Mail = {
   headers: MessageHeaders;
@@ -424,10 +338,9 @@ export type Mail = {
 };
 
 const MailShape = type({
-  // Require the recipient list a consumer dereferences unconditionally; other
-  // header fields stay optional and are carried losslessly in `rawHeaders`.
-  // `from` is optional here deliberately: a mail with no usable originator is
-  // still mail, and requiring it makes `isMail` reject one.
+  // Require the recipient list consumers dereference unconditionally; other
+  // headers stay optional and lossless in `rawHeaders`. `from` stays
+  // optional: mail with no usable originator is still mail.
   headers: {
     "from?": "string",
     to: "string[]",
@@ -447,21 +360,18 @@ const MailShape = type({
 }).onUndeclaredKey("reject");
 
 /**
- * Narrow an opaque value (a workflow step input) to a `Mail`. Used at the
- * `agent.send` boundary to decide whether the input is a mail-derived message
- * whose parts must be projected into content blocks, or an arbitrary value
- * delivered as synthesized text. The strict undeclared-key rejection keeps an
- * arbitrary step value that merely carries a `parts` field from matching.
+ * Narrow an opaque value (a workflow step input) to a `Mail`, used at the
+ * `agent.send` boundary to decide whether its parts must be projected into
+ * content blocks. Strict undeclared-key rejection keeps an arbitrary value
+ * that merely carries a `parts` field from matching.
  */
 export function isMail(value: unknown): value is Mail {
   return !(MailShape(value) instanceof type.errors);
 }
 
 /**
- * MIME tree metadata returned by `fetchStructure()`. Describes content types,
- * sizes, and dispositions without transferring content.
- *
- * (MESSAGE.md § Partial Fetch)
+ * MIME tree metadata returned by `fetchStructure()`: content types, sizes,
+ * and dispositions, without transferring content. (MESSAGE.md § Partial Fetch)
  */
 export type BodyStructure = {
   contentType: string;
@@ -471,10 +381,8 @@ export type BodyStructure = {
 };
 
 /**
- * A fully parsed inbound message including structured payload, headers,
- * attachments, and signature verification status.
- *
- * (MESSAGE.md § Transport Interface › fetchFull)
+ * A fully parsed inbound message: structured payload, headers, attachments,
+ * and signature verification status. (MESSAGE.md § Transport Interface › fetchFull)
  */
 export type InboundMessage = {
   ref: MessageRef;
@@ -495,22 +403,14 @@ export type InboundMessage = {
   signatureStatus: SignatureStatus;
 };
 
-/**
- * IMAP mailbox descriptor.
- *
- * (MESSAGE.md § Inbox Management)
- */
+/** IMAP mailbox descriptor. (MESSAGE.md § Inbox Management) */
 export type Mailbox = {
   name: string;
   role?: string;
   delimiter?: string;
 };
 
-/**
- * Current status of an IMAP mailbox, including QRESYNC identifiers.
- *
- * (MESSAGE.md § Inbox Management)
- */
+/** Current status of an IMAP mailbox, including QRESYNC identifiers. (MESSAGE.md § Inbox Management) */
 export type MailboxStatus = {
   total: number;
   unseen: number;
@@ -520,12 +420,7 @@ export type MailboxStatus = {
   highestModSeq: number;
 };
 
-/**
- * Structured IMAP search query. Maps the IMAP SEARCH grammar to a typed
- * object. Supports recursive boolean composition via `and`, `or`, `not`.
- *
- * (MESSAGE.md § Search)
- */
+/** Structured IMAP search query mapping the SEARCH grammar to a typed object. (MESSAGE.md § Search) */
 export type SearchQuery = {
   from?: string;
   to?: string;
@@ -549,23 +444,13 @@ export type SearchQuery = {
   not?: SearchQuery;
 };
 
-/**
- * A thread node returned by `thread()`. Carries a message reference and
- * child threads representing replies. Implements the RFC 5256 REFERENCES
- * threading algorithm.
- *
- * (MESSAGE.md § Thread Retrieval)
- */
+/** A thread node returned by `thread()`: a message reference plus child reply threads. (MESSAGE.md § Thread Retrieval) */
 export type Thread = {
   ref: MessageRef;
   children: Thread[];
 };
 
-/**
- * QRESYNC state the harness provides when reconnecting to the transport.
- *
- * (MESSAGE.md § Synchronization)
- */
+/** QRESYNC state the harness provides when reconnecting. (MESSAGE.md § Synchronization) */
 export type SyncState = {
   uidValidity: number;
   uidNext: number;
@@ -573,11 +458,7 @@ export type SyncState = {
   knownUids?: number[];
 };
 
-/**
- * Result of a QRESYNC-style sync operation.
- *
- * (MESSAGE.md § Synchronization)
- */
+/** Result of a QRESYNC-style sync operation. (MESSAGE.md § Synchronization) */
 export type SyncResult = {
   vanished: number[];
   changed: { uid: number; flags: string[] }[];
@@ -585,11 +466,7 @@ export type SyncResult = {
   fullResyncRequired: boolean;
 };
 
-/**
- * Distribution list metadata returned by `createList()`.
- *
- * (MESSAGE.md § Message Topologies)
- */
+/** Distribution list metadata returned by `createList()`. (MESSAGE.md § Message Topologies) */
 export type ListInfo = {
   address: string;
   name: string;
@@ -597,12 +474,7 @@ export type ListInfo = {
   createdAt: string;
 };
 
-/**
- * Event emitted by the mailbox watcher callback. Corresponds to IMAP IDLE
- * notifications.
- *
- * (MESSAGE.md § Real-Time Notification)
- */
+/** Event emitted by the mailbox watcher callback (IMAP IDLE). (MESSAGE.md § Real-Time Notification) */
 export type MailboxEvent =
   | { type: "exists"; uid: number; headers: MessageHeaders }
   | { type: "flagsChanged"; uid: number; flags: string[] }
@@ -612,12 +484,9 @@ export type MailboxEvent =
 export type Unsubscribe = () => void;
 
 /**
- * The message transport interface. Abstracts SMTP and IMAP behind a
- * TypeScript API. Implementations range from real SMTP/IMAP servers to
- * in-process stubs that route messages through memory.
- *
- * All long-running operations accept an AbortSignal for cooperative
- * cancellation.
+ * The message transport interface, abstracting SMTP and IMAP behind a
+ * TypeScript API (real servers to in-memory stubs). All long-running
+ * operations accept an AbortSignal for cooperative cancellation.
  *
  * (MESSAGE.md § Transport Interface)
  */
@@ -686,11 +555,7 @@ export interface MessageTransport {
 
   copy(ref: MessageRef, toMailbox: string, signal?: AbortSignal): Promise<void>;
 
-  /**
-   * Permanently remove every `\Deleted` message from the mailbox. Returns the
-   * uids that were expunged, so a caller can report how many messages it
-   * consumed and which ones.
-   */
+  /** Permanently remove every `\Deleted` message; returns the expunged uids. */
   expunge(
     mailbox: string,
     signal?: AbortSignal,
@@ -699,9 +564,8 @@ export interface MessageTransport {
   // --- Real-time notification ---
 
   /**
-   * Monitor a mailbox for new messages and flag changes (IMAP IDLE).
-   * The promise resolves once the watch is accepted. Callers await it
-   * before relying on the callback, and a refusal rejects with the
+   * Monitor a mailbox for new messages and flag changes (IMAP IDLE). The
+   * promise resolves once the watch is accepted; a refusal rejects with the
    * transport's condition. The unsubscribe function stays synchronous.
    */
   watch(
@@ -744,9 +608,7 @@ export interface MessageTransport {
 /**
  * The condition a `MessageTransport` operation failed under. A transport that
  * grows a condition this union does not carry takes its name from RFC 5530 § 3
- * rather than coining one.
- *
- * https://www.rfc-editor.org/rfc/rfc5530.html
+ * rather than coining one (https://www.rfc-editor.org/rfc/rfc5530.html).
  */
 export const MessageTransportCondition = type(
   "'NONEXISTENT' | 'CANNOT' | 'SERVERBUG'",
@@ -765,9 +627,9 @@ export class MessageTransportError extends Error {
 
 /**
  * `instanceof` is not usable for this: a tool package is published as a bundle
- * whose workspace imports are inlined (`bin/build-builtins.ts`), so a consumer
- * loaded from a bundle holds its own copy of the class above and answers false
- * against an error the host's copy constructed.
+ * with workspace imports inlined, so a bundle-loaded consumer holds its own
+ * copy of MessageTransportError and `instanceof` against the host's answers
+ * false. The check is structural instead.
  */
 export function isMessageTransportError(
   value: unknown,
@@ -782,10 +644,8 @@ export function isMessageTransportError(
 // ---------------------------------------------------------------------------
 
 /**
- * A tool call as requested by the model. Carries the provider-assigned call
- * ID, the tool name, and the parsed arguments.
- *
- * (INFERENCE.md § Message Format › Content Types)
+ * A tool call as requested by the model: provider-assigned call ID, tool
+ * name, and parsed arguments. (INFERENCE.md § Message Format › Content Types)
  */
 export const ToolCall = type({
   id: "string",
@@ -795,15 +655,10 @@ export const ToolCall = type({
 export type ToolCall = typeof ToolCall.infer;
 
 /**
- * Approver-facing snapshot of the tool call awaiting approval. Built at the
- * authz `ask` branch from the tool's definition and the live call, then
- * threaded unchanged from the reactor's pending operation through every
- * suspend hop to the hub co-write that records it on the approval row.
- *
- * `name`, `description`, and `inputSchema` mirror the {@link ToolDefinition};
- * `arguments` is the live call's arguments. Carried as a sibling of the pending
- * operation's `suspendedCall`, never folded into {@link ToolCall}, so the
- * re-dispatch artifact and the approval snapshot stay separate concerns.
+ * Approver-facing snapshot of the tool call awaiting approval, built at the
+ * authz `ask` branch and threaded to the hub co-write. `name`,
+ * `description`, and `inputSchema` mirror the {@link ToolDefinition};
+ * `arguments` is the live call's; never folded into {@link ToolCall}.
  */
 export const ApprovalSnapshot = type({
   name: "string",
@@ -815,33 +670,19 @@ export type ApprovalSnapshot = typeof ApprovalSnapshot.infer;
 
 /**
  * The kind of a control-plane park: a step suspended awaiting an external
- * event. `"approval"` and `"input"` park on a reserved
- * `signalName(correlationId)` channel; `"signal-relay"` parks on an
- * author-chosen name.
+ * event.
  *
- * - `"approval"` -- the step parked on a tool/authz gate and REQUIRES an
- *   {@link ApprovalSnapshot}; the runtime notifies the host (`env.onPark`) so
- *   the sidecar co-writes the approval/correlation rows the hub registers.
- * - `"input"` -- the step parked awaiting its next input (e.g. a long-lived
- *   agent run awaiting the next mail so it can take another turn). It carries
- *   NO snapshot and does NOT notify the host: the run's owner delivers the
- *   input on the same channel and the step re-arms. It is a runtime-local
- *   concept -- deliberately NOT a {@link SignalKind}, so it never touches the
- *   approval-routing machinery (IPC register frames, the hub co-write, the
- *   approval columns).
+ * - `"approval"` -- parked on a tool/authz gate; carries an
+ *   {@link ApprovalSnapshot} and notifies the host (`env.onPark`).
+ * - `"input"` -- parked awaiting its next input; carries no snapshot, does
+ *   not notify the host, and is deliberately not a {@link SignalKind}.
  * - `"signal-relay"` -- an onTrigger section container parked on an
- *   author-named signal so a body child's `awaitSignal` on that name is
- *   serviced through the deployment run: the external signal is delivered to
- *   the parent run and the runtime relays it down into the live body child.
- *   The channel name is the author's free-form signal name, NOT a reserved
- *   `signalName(correlationId)`, so recovery must branch on this kind BEFORE
- *   assuming the awaited name is a reserved control-plane channel. Carries no
- *   snapshot and is not hub-registered.
+ *   author-named signal; the name is not a reserved
+ *   `signalName(correlationId)`, so recovery must branch on this kind first.
  *
- * The kinds are distinguished by an EXPLICIT discriminant everywhere the kind
- * flows -- never inferred from the presence or absence of a snapshot, which
- * would silently reclassify a malformed snapshot-less approval as another
- * park kind rather than failing loud.
+ * Kinds are discriminated by an explicit discriminant, never by snapshot
+ * presence, which would silently reclassify a malformed snapshot-less
+ * approval as another park kind.
  */
 export const ControlParkKind = type.enumerated(
   "approval",
@@ -851,21 +692,17 @@ export const ControlParkKind = type.enumerated(
 export type ControlParkKind = typeof ControlParkKind.infer;
 
 /**
- * Maximum serialized size, in UTF-8 bytes, of an {@link ApprovalSnapshot} that
- * crosses a trust boundary. A tool `inputSchema` is normally single-digit KB;
- * a snapshot approaching this bound is malformed or hostile and is rejected at
- * the parse boundary rather than co-written onto an approval row.
+ * Maximum serialized size, in UTF-8 bytes, of an {@link ApprovalSnapshot}
+ * crossing a trust boundary.
  */
 export const APPROVAL_SNAPSHOT_MAX_BYTES = 131072;
 
 /**
  * {@link ApprovalSnapshot} bounded to {@link APPROVAL_SNAPSHOT_MAX_BYTES}.
- * Parse the snapshot through this validator where it crosses a trust boundary
- * (the `park.notify` IPC frame, the `parked-correlations.response` IPC frame,
- * and the sidecar→hub register frame); internal hops use the unbounded
- * {@link ApprovalSnapshot}. `.narrow` bounds the runtime check only — its
- * inferred type is identical to {@link ApprovalSnapshot} — so the cap holds only
- * where a frame is actually parsed, not merely typed.
+ * Parse the snapshot through this validator at trust boundaries (the
+ * `park.notify` and `parked-correlations.response` IPC frames, the
+ * sidecar→hub register frame); internal hops use the unbounded
+ * {@link ApprovalSnapshot}.
  */
 export const BoundedApprovalSnapshot = ApprovalSnapshot.narrow(
   (snapshot, ctx) => {
@@ -879,13 +716,9 @@ export const BoundedApprovalSnapshot = ApprovalSnapshot.narrow(
 export type BoundedApprovalSnapshot = typeof BoundedApprovalSnapshot.infer;
 
 /**
- * Result of a tool execution. `content` is text or structured data the model
- * sees as the tool result. `detail` is additional data that the harness may
- * use (e.g., for validation or audit) but that is not shown to the model.
- *
- * When `isError` is true the model sees the result as an error. When
- * `pendingMarker` is present the tool is async — the reactor registers the
- * correlation ID and waits for a matching inbound message.
+ * Result of a tool execution. `content` is what the model sees; `detail` is
+ * harness-only. `pendingMarker` marks an async tool whose correlation ID
+ * awaits a matching inbound message.
  *
  * (INFERENCE.md § Tool Execution Semantics)
  */
@@ -902,18 +735,14 @@ export const ToolResult = type({
 export type ToolResult = typeof ToolResult.infer;
 
 /**
- * The tool runner interface. The harness implements this; the reactor calls
- * it when the director requests tool execution.
- *
- * Parallel execution is modeled by calling `run` concurrently for each call
- * in a batch — the interface is per-call, not per-batch.
- *
- * (ARCHITECTURE.md § Agent Harness › Tools)
+ * The tool runner interface, implemented by the harness and called by the
+ * reactor. Parallel execution is modeled by calling `run` concurrently per
+ * call in a batch. (ARCHITECTURE.md § Agent Harness › Tools)
  */
 export interface ToolRunner {
   /**
-   * Execute a single tool call. Resolves with the result. Must not throw —
-   * errors are returned as `ToolResult` with `isError: true`.
+   * Execute a single tool call. Must not throw — errors are returned as
+   * `ToolResult` with `isError: true`.
    */
   run(call: ToolCall, signal: AbortSignal): Promise<ToolResult>;
 }
@@ -923,17 +752,11 @@ export interface ToolRunner {
 // ---------------------------------------------------------------------------
 
 /**
- * Partial assistant message accumulated during streaming. Carries all
- * content blocks seen so far so late-joining subscribers receive current
- * state without replaying deltas.
- *
- * `text` and `thinking` are cumulative across every emitted delta of
- * that kind in the current turn — intentionally flat, even when the
- * harness's per-index block tracking has split the stream into
- * multiple ThinkingBlocks or TextBlocks. Consumers that need per-block
- * structure walk the finalized inference.done turn's content[]; this
- * snapshot is the live "what bytes has the assistant streamed so
- * far" view.
+ * Partial assistant message accumulated during streaming, carrying all
+ * content blocks seen so far so late-joining subscribers get current state
+ * without replaying deltas. `text` and `thinking` are cumulative across
+ * every delta of that kind; per-block structure lives in the finalized
+ * `inference.done` turn's content[].
  *
  * (INFERENCE.md § Event Protocol › Partial State)
  */
@@ -950,9 +773,7 @@ export type PartialMessage = typeof PartialMessage.infer;
 
 /**
  * Token usage for a single inference call. Cache read/write counts are
- * provider-specific and may be zero when the provider does not report them.
- *
- * (INFERENCE.md § Token Accounting)
+ * provider-specific and may be zero when unreported. (INFERENCE.md § Token Accounting)
  */
 export const TokenUsage = type({
   input: "number",
@@ -965,22 +786,10 @@ export type TokenUsage = typeof TokenUsage.infer;
 
 /**
  * Slim source descriptor stamped onto `inference.usage` / `inference.done`
- * events and onto `ReactorState.lastCycleSource`.
- *
- * Carries enough identity for state-aware policies (cost gating, budget
- * caps, governance triggers, audit) to attribute usage to a specific
- * inference source without re-reading the live, mutable `InferenceSource`
- * the harness owns.
- *
- * Deliberately a strict subset of `InferenceSource` — `apiKey` and
- * `baseURL` are intentionally excluded. Credentials and endpoints must
- * not leak to director-side policy code or to external event consumers.
- * Any code path that needs the full source obtains it through the
- * harness's source registry, not through this descriptor.
- *
- * `sourceId` aliases `InferenceSource.id` to disambiguate from message
- * ids, turn ids, and session ids in director-side code where `id` alone
- * would be ambiguous.
+ * events and `ReactorState.lastCycleSource`, so state-aware policies can
+ * attribute usage without re-reading the live `InferenceSource`. Strict
+ * subset: credentials and endpoints must not leak to policy code; full
+ * sources go through the harness's source registry.
  */
 export const LastCycleSource = type({
   sourceId: "string",
@@ -1001,20 +810,14 @@ export type LastCycleSource = typeof LastCycleSource.infer;
 const TextBlock = type({
   type: "'text'",
   text: "string",
-  // Opaque provider signature authenticating this block, echoed back
-  // verbatim on follow-up turns. Gemini attaches a `thoughtSignature` to
-  // output parts (including plain text); absent for providers that do not
-  // sign this block kind.
+  // Opaque provider signature; echo back verbatim on follow-up turns (Gemini `thoughtSignature`, including plain text).
   "signature?": "string",
 });
 
 /**
- * How a media payload is carried by a content block. One of three
- * variants: inline as a base64-encoded string, by reference to an
- * opaque provider-native handle (e.g. a Gemini fileUri, an Anthropic
- * file_id), or by public URL the provider fetches itself. The wire
- * shape each provider expects is built by the provider adapter;
- * MediaSource is the internal, provider-agnostic representation.
+ * How a media payload is carried by a content block: inline base64, an
+ * opaque provider-native handle (Gemini fileUri, Anthropic file_id), or a
+ * public URL the provider fetches itself. Provider-agnostic internal form.
  *
  * (INFERENCE.md § Generalized Multimodal Taxonomy)
  */
@@ -1049,9 +852,7 @@ export type MediaSource = typeof MediaSource.infer;
 export const ImageBlock = type({
   type: "'image'",
   source: MediaSource,
-  // Opaque provider signature authenticating this block, echoed back
-  // verbatim on follow-up turns. Gemini rides a `thoughtSignature` on the
-  // inlineData part; absent otherwise.
+  // Opaque provider signature; echo back verbatim on follow-up turns (Gemini rides a `thoughtSignature` on the inlineData part).
   "signature?": "string",
 });
 export type ImageBlock = typeof ImageBlock.infer;
@@ -1080,14 +881,11 @@ const ThinkingBlock = type({
 });
 
 /**
- * A thinking block whose content the provider has filtered. The
- * opaque `data` blob must echo back verbatim on every follow-up turn
- * — Anthropic 400s the request if it changes or goes missing. Treat
- * the bytes as opaque: do not log them and do not render them to
- * users.
+ * A thinking block whose content the provider filtered. The opaque `data`
+ * blob must echo back verbatim on every follow-up turn — Anthropic 400s if
+ * it changes or goes missing. Do not log or render it.
  *
- * Exported because `inference.thinking.redacted` events reference it
- * by name.
+ * Exported because `inference.thinking.redacted` events reference it by name.
  */
 export const RedactedThinkingBlock = type({
   type: "'redacted_thinking'",
@@ -1096,33 +894,18 @@ export const RedactedThinkingBlock = type({
 export type RedactedThinkingBlock = typeof RedactedThinkingBlock.infer;
 
 /**
- * A model-emitted refusal. Produced when a provider's strict-mode
- * structured-outputs path declines to satisfy the requested schema —
- * OpenAI's `delta.refusal` / `message.refusal` field is the canonical
- * wire shape. The `reason` is the accumulated human-readable text the
- * model emitted in lieu of conformant output.
+ * A model-emitted refusal: the provider's strict-mode structured-outputs
+ * path declined to satisfy the requested schema (OpenAI `delta.refusal` /
+ * `message.refusal`). Distinct from `inference.error`: the HTTP call
+ * succeeded, and `reason` is the model's refusal text in lieu of
+ * schema-conformant content.
  *
- * Refusal is semantically distinct from `inference.error`: the HTTP
- * call succeeded and the model produced a coherent response, but that
- * response is "I will not satisfy this schema" rather than schema-
- * conformant content. Callers that distinguish policy declines from
- * transport/protocol failures should branch on the block type rather
- * than treat the assistant turn as an error.
- *
- * Exported because `inference.refusal.delta` events reference it by
- * name and adapters construct RefusalBlocks in the finalized
- * AssistantTurn from accumulated delta fragments.
+ * Exported because `inference.refusal.delta` events reference it by name.
  */
 export const RefusalBlock = type({
   type: "'refusal'",
-  // Refusals must carry text — a zero-length reason corrupts the
-  // "human-readable text the model emitted in lieu of conformant
-  // output" contract and would round-trip indistinguishably from a
-  // refusal block whose payload was lost. The arktype constraint is
-  // belt-and-braces alongside the adapter's wire-boundary filter on
-  // empty `delta.refusal` chunks: synthetic fixtures or future
-  // adapters without that filter still cannot construct a vacuous
-  // refusal.
+  // A zero-length reason would be indistinguishable from a lost payload; the
+  // adapter's empty-chunk filter is belt-and-braces alongside this.
   reason: "string > 0",
 });
 export type RefusalBlock = typeof RefusalBlock.infer;
@@ -1131,19 +914,15 @@ const ToolCallBlock = type({
   id: "string",
   name: "string",
   arguments: "Record<string, unknown>",
-  // Opaque provider signature authenticating this block, echoed back
-  // verbatim on follow-up turns. Gemini rides a `thoughtSignature` on the
-  // functionCall part; absent otherwise.
+  // Opaque provider signature; echo back verbatim on follow-up turns (Gemini rides a `thoughtSignature` on the functionCall part).
   "signature?": "string",
 });
 /**
- * Location of a citation's cited span within its source document.
- * The unit of `start` and `end` varies by `kind`:
- *   - "page": 1-indexed page numbers (Anthropic `page_location`).
- *   - "char": UTF-16 character offsets, matching JS string semantics
- *     (Anthropic `char_location`; Gemini `groundingSupports[].segment`).
- *   - "content-block": index into a structured source's content blocks
- *     (Anthropic `content_block_location`).
+ * Location of a citation's cited span within its source document. The unit
+ * of `start`/`end` varies by `kind`: "page" (Anthropic `page_location`),
+ * "char" (UTF-16 offsets; Anthropic `char_location`, Gemini
+ * `groundingSupports[].segment`), or "content-block" (Anthropic
+ * `content_block_location`).
  */
 const CitationLocation = type({
   kind: "'page' | 'char' | 'content-block'",
@@ -1153,73 +932,50 @@ const CitationLocation = type({
 
 const CitationSource = type({
   "title?": "string",
-  // Self-contained dereferenceable URL — populated by providers whose
-  // citations carry URLs directly (Gemini `groundingChunks[].web.uri`).
+  // URL populated by providers whose citations carry one directly (Gemini
+  // `groundingChunks[].web.uri`).
   "uri?": "string",
-  // Back-pointer into the request's `documents` array, populated by
-  // providers that cite uploaded documents by position (Anthropic
-  // `document_index`).
+  // Index into the request's `documents` array (Anthropic `document_index`).
   "documentRef?": type({ index: "number" }),
 });
 
 /**
- * A citation that supports a span of assistant text. Consumers
- * receiving a CitationBlock without a paired source-block index MUST
- * attribute it by adjacency to the nearest preceding TextBlock in the
- * same turn.
+ * A citation supporting a span of assistant text. Without a paired
+ * source-block index, consumers MUST attribute it by adjacency to the
+ * nearest preceding TextBlock in the same turn. Deliberately excluded from
+ * ToolResultBlock.content — citations annotate model output, not tool
+ * output.
  *
- * Citations are deliberately excluded from ToolResultBlock.content
- * — they annotate model output, not tool output.
- *
- * Exported because `inference.citation` events reference it by name,
- * following the same pattern as `AssistantTurn`, `ToolCall`, and
- * `ToolResult`. See the `inference.citation` event docstring for how
- * a paired source-block index is carried on the wire and consumed by
- * the harness.
+ * Exported because `inference.citation` events reference it by name.
  */
 export const CitationBlock = type({
   type: "'citation'",
-  // The exact substring of the preceding TextBlock this citation
-  // supports. Both providers emit it; required for inspection and
-  // for fallback offset reconstruction.
+  // The exact substring of the preceding TextBlock this citation supports;
+  // required for inspection and fallback offset reconstruction.
   citedText: "string",
   source: CitationSource,
   "location?": CitationLocation,
-  // UTF-16 character offsets into the preceding TextBlock's text.
-  // Providers that emit offsets natively populate these directly;
-  // adapters that derive offsets from a cited substring populate
-  // them only when the substring appears unambiguously in the
-  // preceding text. Omitted when the offset cannot be determined.
+  // UTF-16 character offsets into the preceding TextBlock's text, populated
+  // by the provider or derived by the adapter when the cited substring
+  // appears unambiguously. Omitted when they cannot be determined.
   "textOffset?": type({ start: "number", end: "number" }),
 });
 export type CitationBlock = typeof CitationBlock.infer;
 
 /**
- * A structured safety signal on model output or request filtering.
+ * A structured safety signal on model output or request filtering. Mirrors
+ * the first real Gemini capture (2026-07-28), prompt-level only
+ * (`promptFeedback: { blockReason: "PROHIBITED_CONTENT" }`, no candidates).
  *
- * The name `SafetyRatingBlock` follows the issue vocabulary; the
- * payload is derived from the first real Gemini capture that engaged
- * the structured classifier (2026-07-28). That wire shape is
- * prompt-level only:
+ * Deliberately excluded from ToolResultBlock.content — safety signals
+ * annotate model/request filtering, not tool output.
  *
- *   `promptFeedback: { blockReason: "PROHIBITED_CONTENT" }`
- *
- * with no candidates and no per-category `safetyRatings` arrays. So
- * this block carries `blockReason` and does **not** invent category /
- * probability / blocked fields. When a future capture surfaces
- * candidate-level ratings, extend the type from those bytes rather
- * than from the API reference.
- *
- * Deliberately excluded from ToolResultBlock.content — safety
- * signals annotate model/request filtering, not tool output.
- *
- * Exported because `inference.safety_rating` events reference it by
- * name.
+ * Exported because `inference.safety_rating` events reference it by name.
  */
 export const SafetyRatingBlock = type({
   type: "'safety_rating'",
-  // Provider-native block reason string (observed: "PROHIBITED_CONTENT").
-  // Open string so a new reason token does not force a type bump.
+  // Provider-native reason string (observed: "PROHIBITED_CONTENT"); open so a
+  // new token does not force a type bump.
   blockReason: "string > 0",
 });
 export type SafetyRatingBlock = typeof SafetyRatingBlock.infer;
@@ -1236,81 +992,56 @@ export function formatSafetyRatingText(block: SafetyRatingBlock): string {
 
 /**
  * The model's request to execute code via a server-side execution tool.
- * Paired with a CodeExecutionResultBlock carrying the same `id` as the
- * result's `requestId`. Streaming order within a single execution is
- * `inference.code_execution.start` → zero or more
- * `inference.code_execution.delta` → `inference.code_execution.result`,
- * uninterrupted by other events that share the same `requestId`; events
- * with different `requestId`s or for other block kinds at distinct
- * `index`es may interleave.
+ * Paired with a CodeExecutionResultBlock whose `requestId` matches this
+ * block's `id`. Streaming order for one execution is
+ * `inference.code_execution.start` → zero or more `...delta` →
+ * `inference.code_execution.result`, uninterrupted by events sharing the
+ * `requestId`.
  *
- * Exported because `inference.code_execution.start` references it by
- * name.
+ * Exported because `inference.code_execution.start` references it by name.
  */
 export const CodeExecutionRequestBlock = type({
   type: "'code_execution_request'",
-  // Identifier for the execution request. Populated from the
-  // provider's call id where one exists (Anthropic
-  // `srvtoolu_...`); synthesized by the adapter for providers that
-  // don't emit one (Gemini), using a deterministic per-response
-  // position-based scheme so replays match.
+  // Provider call id where one exists (Anthropic `srvtoolu_...`); otherwise
+  // synthesized deterministically per response position so replays match.
   id: "string",
   // Source code the model is asking to execute.
   code: "string",
-  // Language hint. Absent when the provider does not emit one;
-  // adapters MUST NOT default this — callers narrow on its
-  // presence rather than fall through to a guessed language.
+  // Absent when the provider does not emit one; adapters MUST NOT default it
+  // — callers narrow on presence rather than fall through to a guess.
   "language?": "string",
-  // Opaque provider signature authenticating this block, echoed back
-  // verbatim on follow-up turns. Gemini rides a `thoughtSignature` on the
-  // executableCode part; absent otherwise.
+  // Opaque provider signature; echo back verbatim on follow-up turns (Gemini rides a `thoughtSignature` on the executableCode part).
   "signature?": "string",
 });
 export type CodeExecutionRequestBlock = typeof CodeExecutionRequestBlock.infer;
 
 /**
- * The result of executing a CodeExecutionRequestBlock. The `requestId`
+ * The result of executing a CodeExecutionRequestBlock; `requestId`
  * back-points to the request block's `id`. Status is normalized across
  * providers; raw provider signals (return code, native outcome string,
- * abort reason) are preserved on optional fields for callers that need
- * them.
+ * abort reason) are preserved on optional fields. File outputs are not
+ * modeled today.
  *
- * File outputs from code execution (e.g. generated plots that
- * Anthropic returns in `code_execution_tool_result.content`) are NOT
- * modeled by this block today. The block carries no field for them;
- * surfacing file outputs is a separate concern.
- *
- * Exported because `inference.code_execution.result` references it by
- * name.
+ * Exported because `inference.code_execution.result` references it by name.
  */
 export const CodeExecutionResultBlock = type({
   type: "'code_execution_result'",
   // Back-pointer to the originating CodeExecutionRequestBlock.id.
   requestId: "string",
-  // Normalized outcome. Translated from provider-specific signals:
-  //   - Anthropic: derived from `return_code` (0 → "ok", non-zero →
-  //     "error") and `abort_reason` (non-null → "aborted" or
-  //     "timeout" per the reason).
-  //   - Gemini: derived from the `outcome` enum
-  //     (OUTCOME_OK → "ok", OUTCOME_FAILED → "error",
-  //     OUTCOME_DEADLINE_EXCEEDED → "timeout", etc.).
+  // Normalized outcome. Anthropic: derived from `return_code` and
+  // `abort_reason`; Gemini: from the `outcome` enum.
   status: "'ok' | 'error' | 'aborted' | 'timeout'",
-  // Standard output. Providers that don't split stdout from stderr
-  // (Gemini) map their combined `output` here and leave `stderr` empty.
+  // Providers that don't split (Gemini) map their combined `output` to
+  // `stdout` and leave `stderr` empty.
   "stdout?": "string",
-  // Standard error. Empty for providers that don't split.
   "stderr?": "string",
-  // Provider-native numeric return code when available
-  // (Anthropic `return_code`). Absent for providers whose outcome
-  // is enum-only (Gemini).
+  // Provider-native numeric return code (Anthropic `return_code`).
   "returnCode?": "number",
-  // Provider-native outcome string preserved verbatim for callers
-  // that need the raw signal (Gemini `OUTCOME_OK` /
-  // `OUTCOME_FAILED` / `OUTCOME_DEADLINE_EXCEEDED` / ...). Absent
-  // when the provider does not emit one (Anthropic).
+  // Provider-native outcome string kept verbatim for callers that need the
+  // raw signal (Gemini `OUTCOME_OK` / `OUTCOME_FAILED` / ...).
   "providerOutcome?": "string",
-  // Human-readable reason populated when status is "aborted"
-  // (Anthropic `abort_reason`). Absent otherwise.
+  // Human-readable reason, populated when status is "aborted"
+  // (Anthropic `abort_reason`).
   "abortReason?": "string",
 });
 export type CodeExecutionResultBlock = typeof CodeExecutionResultBlock.infer;
@@ -1318,11 +1049,8 @@ export type CodeExecutionResultBlock = typeof CodeExecutionResultBlock.infer;
 const ToolResultBlock = type({
   type: "'tool_result'",
   callId: "string",
-  // Deliberately narrow: tool results carry user-facing media, not
-  // CitationBlocks (citations annotate the model's text output), not
-  // SafetyRatingBlocks (safety signals annotate model/request
-  // filtering), and not CodeExecution blocks (server-side code
-  // execution is a distinct lifecycle from the user-tool round-trip).
+  // Deliberately narrow: tool results carry user-facing media only — not
+  // citations (model output), safety ratings (filtering), or code execution.
   content: type
     .or(TextBlock, ImageBlock, AudioBlock, VideoBlock, DocumentBlock)
     .array(),
@@ -1349,12 +1077,8 @@ export const ContentBlock = type.or(
 export type ContentBlock = typeof ContentBlock.infer;
 
 /**
- * A turn in the internal conversation history. The `model` field records
- * which provider model produced this turn (present only on assistant
- * turns). Used by cross-provider transformation to strip or preserve
- * thinking blocks.
- *
- * (INFERENCE.md § Message Format)
+ * A turn in the internal conversation history. `model` records the provider
+ * model that produced the turn (assistant turns only). (INFERENCE.md § Message Format)
  */
 export type ConversationTurn = {
   role: "user" | "assistant" | "system";
@@ -1364,7 +1088,7 @@ export type ConversationTurn = {
 };
 
 /**
- * A completed assistant turn returned in `inference.done`. Narrower type
+ * A completed assistant turn returned in `inference.done` — a narrower type
  * than ConversationTurn to make the inference boundary explicit.
  */
 export const AssistantTurn = type({
@@ -1381,9 +1105,7 @@ export type AssistantTurn = typeof AssistantTurn.infer;
 
 /**
  * Classified inference error. The category determines the reactor's default
- * response; the director can override per its policy.
- *
- * (INFERENCE.md § Error Classification)
+ * response; the director can override per policy. (INFERENCE.md § Error Classification)
  */
 export const InferenceError = type({
   category: type.enumerated(
@@ -1407,11 +1129,7 @@ export type InferenceError = typeof InferenceError.infer;
 // Agent Reactor (INFERENCE.md § Agent Reactor)
 // ---------------------------------------------------------------------------
 
-/**
- * Gate types that can block the reactor.
- *
- * (INFERENCE.md § Gates)
- */
+/** Gate types that can block the reactor. (INFERENCE.md § Gates) */
 export const GateType = type.enumerated(
   "approval",
   "payment",
@@ -1423,9 +1141,8 @@ export const GateType = type.enumerated(
 export type GateType = typeof GateType.infer;
 
 /**
- * Fork mode. `independent` creates a divergent reactor with its own context.
- * `child` creates a reactor that reports results back to the parent.
- *
+ * Fork mode. `independent` forks a divergent reactor with its own context;
+ * `child` forks one that reports results back to the parent.
  * (INFERENCE.md § Forking)
  */
 export const ForkMode = type.enumerated("independent", "child");
@@ -1436,11 +1153,9 @@ export type ForkMode = typeof ForkMode.infer;
 // ---------------------------------------------------------------------------
 
 /**
- * Wire-safe representation of InboundMessage for use in InferenceEvent
- * variants. The runtime InboundMessage type contains Uint8Array fields
- * (MessageAttachment.data) that cannot survive JSON serialization, so the
- * wire validator uses `unknown` for attachment data and accepts whatever
- * JSON.parse produces.
+ * Wire-safe representation of InboundMessage for InferenceEvent variants:
+ * the runtime type carries Uint8Array fields that cannot survive JSON
+ * serialization, so attachment data is validated as `unknown`.
  */
 const WireInboundMessage = type({
   ref: { uid: "number", mailbox: "string" },
@@ -1453,11 +1168,9 @@ const WireInboundMessage = type({
 });
 
 /**
- * A single event in the inference event protocol. Every event carries a
- * monotonic session-scoped sequence number.
- *
- * Event types are namespaced: `inference.*`, `tool.*`, `reactor.*`,
- * `fork.*`, `message.*`, `custom.*`.
+ * A single event in the inference event protocol: a monotonic session-scoped
+ * sequence number plus a namespaced type (`inference.*`, `tool.*`,
+ * `reactor.*`, `fork.*`, `message.*`, `custom.*`).
  *
  * (INFERENCE.md § Event Protocol)
  */
@@ -1567,23 +1280,16 @@ export const InferenceEvent = type.or(
   {
     type: "'inference.citation'",
     seq: "number",
-    // `index`, when present, names the source content block (typically
-    // a TextBlock) the citation annotates. The harness uses it to
-    // interleave the citation into the finalized turn's `content[]`
-    // immediately after the matching block. Adapters whose wire
-    // protocol does not carry per-citation block indices omit the
-    // field; the harness then appends those citations at the end of
-    // `content[]` and consumers attribute them to the nearest
-    // preceding TextBlock per the CitationBlock docstring.
+    // `index` names the cited source content block so the harness can
+    // interleave it into the finalized turn; absent when the adapter has no
+    // per-citation index (the harness appends at `content[]` end).
     data: { citation: CitationBlock, "index?": "number" },
   },
   {
     type: "'inference.safety_rating'",
     seq: "number",
-    // Prompt-level structured safety signal (observed Gemini
-    // `promptFeedback.blockReason`). No candidate index: the first
-    // capture has zero candidates. Harness appends the block to the
-    // finalized turn's `content[]`.
+    // Prompt-level signal (observed Gemini `promptFeedback.blockReason`);
+    // the first capture had zero candidates, so there is no candidate index.
     data: { safetyRating: SafetyRatingBlock },
   },
   {
@@ -1594,13 +1300,8 @@ export const InferenceEvent = type.or(
   {
     type: "'inference.code_execution.delta'",
     seq: "number",
-    // requestId correlates fragments back to the originating
-    // CodeExecutionRequestBlock; index is the positional hint into
-    // the response's content-block stream. They are independent: a
-    // single response may stream code execution for multiple
-    // requests interleaved, distinguished by requestId; index lets
-    // the harness's per-block accumulator route the fragment to
-    // the correct block when the array isn't yet finalized.
+    // requestId correlates fragments to the originating request; index is a
+    // positional hint. One response may interleave several requests.
     data: {
       requestId: "string",
       codeFragment: "string",
@@ -1615,13 +1316,8 @@ export const InferenceEvent = type.or(
   {
     type: "'inference.image_output'",
     seq: "number",
-    // Fires mid-stream when an adapter finalizes an image-output
-    // block, signaling that the image is ready for downstream
-    // handoff before the full inference.done lands. The wrapped
-    // ImageBlock typically carries a base64 MediaSource — the
-    // payload can be large (Gemini's image-output captures show
-    // ~1MB inline blobs); consumers that subscribe to this event
-    // should treat it as a non-trivial transport size.
+    // Fires mid-stream when an adapter finalizes an image-output block, so
+    // the image is ready before inference.done lands.
     data: { image: ImageBlock, "index?": "number" },
   },
   {
@@ -1735,13 +1431,10 @@ export const InferenceEvent = type.or(
     data: "Record<string, unknown>",
   },
 );
-// The TypeScript type is defined manually rather than inferred from the
-// validator because the `custom.*` variant uses a regex pattern which
-// arktype infers as `string`. A bare `string` in the discriminant position
-// prevents TypeScript from narrowing the union in switch statements.
-// The manually defined type uses a `custom.${string}` template literal
-// for that variant, preserving the narrowing behavior downstream code
-// relies on.
+// The TypeScript type is manual rather than inferred: arktype infers the
+// `custom.*` regex variant as `string`, which would prevent narrowing in
+// switch statements. The manual type uses a `custom.${string}` template
+// literal to preserve it.
 export type InferenceEvent =
   | { type: "inference.start"; seq: number; data: { model: string } }
   | {
@@ -1822,13 +1515,8 @@ export type InferenceEvent =
     }
   | {
       /**
-       * Emitted between attempts when the per-call retry policy decides
-       * to retry after an error. `attempt` is the 1-indexed number of
-       * the attempt that just **failed** — the same value the policy
-       * saw on its `RetrySituation.attempt` reading. `delayMs` is the
-       * delay the wrapper will apply before the next attempt starts;
-       * `previousError` carries the classified error that triggered
-       * the retry. The event is not emitted when the policy aborts.
+       * Emitted when the per-call retry policy decides to retry; not emitted
+       * when it aborts.
        */
       type: "inference.retry";
       seq: number;
@@ -1882,15 +1570,10 @@ export type InferenceEvent =
     }
   | {
       /**
-       * Per-message run-bracket open. Emitted by the reactor when it
-       * dequeues an inbound mail message and begins per-message work.
-       *
-       * `messageRunId` is reactor-minted, unique per dequeue. It is
-       * non-negotiable for crash-replay correlation: the reactor can
-       * legitimately dequeue the same `messageId` more than once across
-       * a crash + replay cycle, so two bracket-open events with the
-       * same `messageId` and no run-id cannot be unambiguously paired
-       * with their `message.run.ended` counterparts.
+       * Per-message run-bracket open, emitted when the reactor dequeues an
+       * inbound mail message. `messageRunId` is reactor-minted, unique per
+       * dequeue, and required for crash-replay correlation: the same
+       * `messageId` can be dequeued more than once across a crash + replay.
        */
       type: "message.run.started";
       seq: number;
@@ -1902,26 +1585,14 @@ export type InferenceEvent =
     }
   | {
       /**
-       * Per-message run-bracket close. Pairs with `message.run.started`
-       * by `messageRunId`. `messageId` is carried redundantly so log
-       * readers can correlate without a join against the open event; it is
-       * absent for a message that named no id of its own.
+       * Per-message run-bracket close, pairing with `message.run.started` by
+       * `messageRunId`. `messageId` is carried redundantly for log
+       * correlation; absent for a message with no id of its own.
        *
-       * The `status` enum is `"completed" | "failed"` only.
-       * Cancellation lives in the workflow-runtime's
-       * `CancelRequested` -> `RunFailed` vocabulary, not on the
-       * reactor's bracket: the reactor does not run a state machine
-       * and what it observes when cancellation arrives is a harness
-       * abort, which is structurally `"failed"` with a specific
-       * `error.kind`.
-       *
-       * `error.kind` is documented as one of
-       * `"inference_error" | "tool_error" | "reactor_fatal" |
-       * "harness_aborted" | "doom_loop"` initially, extensible as new
-       * failure categories surface. `"doom_loop"` marks a protective
-       * break the reactor took on the agent's behalf when the agent
-       * repeated an identical tool batch past the configured threshold;
-       * unlike `"reactor_fatal"` it is not an internal fault.
+       * `status` is `"completed" | "failed"` only; cancellation is a harness
+       * abort with `error.kind` `"inference_error" | "tool_error" |
+       * "reactor_fatal" | "harness_aborted" | "doom_loop"`. `"doom_loop"`
+       * marks a protective break on a repeated identical tool batch.
        */
       type: "message.run.ended";
       seq: number;
@@ -1992,14 +1663,11 @@ export type InferenceEvent =
       data: Record<string, unknown>;
     };
 
-// Load-bearing drift guards for the dual-maintained `reactor.gate.blocked`
-// event. The arktype `InferenceEvent` validator and the hand-written
-// `InferenceEvent` type are kept in lockstep by hand (the `custom.*` regex
-// variant forces the manual mirror). arktype passes undeclared keys through at
-// runtime, so a schema that dropped `approvalSnapshot` would not fail at
-// runtime. Projecting the field off each inferred shape makes it load-bearing:
-// `tsc` errors if either mirror stops carrying it, mirroring the
-// `_persistedSuspendedCall` guard in storage-isogit.
+// Drift guards for the dual-maintained `reactor.gate.blocked` event: the
+// arktype validator and the manual type are kept in lockstep by hand, and
+// arktype passes undeclared keys through at runtime, so a schema that dropped
+// `approvalSnapshot` would not fail at runtime. Projecting the field off each
+// shape makes it load-bearing: `tsc` errors if either mirror stops carrying it.
 const _arkGateBlockedApprovalSnapshot = (
   data: Extract<
     typeof InferenceEvent.infer,
@@ -2014,10 +1682,9 @@ const _tsGateBlockedApprovalSnapshot = (
 void _tsGateBlockedApprovalSnapshot;
 
 /**
- * Validate unknown data as an InferenceEvent. ArkType's regex-based validator
- * infers `custom.*` event types as `string`, but the manual InferenceEvent type
- * uses a `custom.${string}` template literal for switch narrowing. This function
- * centralizes that single unavoidable cast.
+ * Validate unknown data as an InferenceEvent, centralizing the single
+ * unavoidable cast: arktype infers `custom.*` as `string` while the manual
+ * type uses a `custom.${string}` template literal for switch narrowing.
  */
 export function parseInferenceEvent(
   data: unknown,
@@ -2029,11 +1696,9 @@ export function parseInferenceEvent(
 }
 
 /**
- * A pending async operation registered in the reactor's async state.
- * Correlates an outbound message (or payment/approval request) to the
- * expected inbound response.
- *
- * (INFERENCE.md § Correlation)
+ * A pending async operation in the reactor's async state, correlating an
+ * outbound message (or payment/approval request) to its expected inbound
+ * response. (INFERENCE.md § Correlation)
  */
 export type PendingOperation = {
   correlationId: string;
@@ -2041,26 +1706,21 @@ export type PendingOperation = {
   registeredAt: number;
   gateId: string;
   /**
-   * Absolute deadline (epoch ms) for the gate that parks this operation.
-   * Persisted so that rehydration after a restart re-arms the gate with the
-   * remaining time against the original deadline rather than restarting the
-   * countdown. Absent for operations parked with no deadline.
+   * Absolute deadline (epoch ms) for the parking gate, persisted so a restart
+   * re-arms the gate against the original deadline. Absent when parked with
+   * none.
    */
   timeoutAt?: number;
   /**
-   * The tool call that was suspended when this operation parked. Captured for
-   * `kind: "approval"` operations minted from the ask flow so the approved
-   * call can be re-run on resume. Absent for operations parked by the
-   * director path (async-tool pending markers), which carry no tool call.
+   * The tool call suspended when this operation parked, for `kind:
+   * "approval"` operations so the approved call re-runs on resume. Absent
+   * for director-path async-tool pending markers.
    */
   suspendedCall?: ToolCall;
   /**
-   * Approver-facing snapshot of `suspendedCall`, built at the authz `ask`
-   * branch from the tool definition and the live arguments. A sibling of
-   * `suspendedCall`, not a widening of it: `suspendedCall` is the re-dispatch
-   * artifact, this is what the approver decides on. Present only for ask-rail
-   * operations that carry a `suspendedCall`; absent for async-tool pending
-   * markers. Threaded through the suspend hops to the hub co-write.
+   * Approver-facing snapshot of `suspendedCall`: what the approver decides
+   * on, as distinct from the re-dispatch artifact. Present only for ask-rail
+   * operations; threaded to the hub co-write.
    */
   approvalSnapshot?: ApprovalSnapshot;
 };
@@ -2068,20 +1728,10 @@ export type PendingOperation = {
 /**
  * Complete reactor state visible to the director decision function.
  *
- * `tokenUsage` is the cumulative usage across the session.
- *
- * `lastCycleUsage` and `lastCycleSource` describe the most recent
- * *successful* inference call. They move together: both null before the
- * first completion; every `inference.done` sets both atomically.
- * `inference.error` does not clear either — the pair always reflects the
- * last cycle that produced a well-defined turn and usage. The director's
- * `afterInferenceDone` hook fires only on `inference.done`, so policy
- * code never observes a torn or stale-vs-fresh window.
- *
- * The per-cycle values support compaction triggers that key off recent
- * input cost rather than session totals, and state-aware policies (cost
- * gating, budget caps, governance triggers) that need to attribute
- * usage to the source that produced it.
+ * `tokenUsage` is cumulative session usage. `lastCycleUsage` and
+ * `lastCycleSource` describe the most recent *successful* inference call
+ * and move together: both null before the first completion, set atomically
+ * on `inference.done`, not cleared by `inference.error`.
  *
  * (INFERENCE.md § Agent Reactor › Director Decision Function)
  */
@@ -2141,8 +1791,7 @@ export type ReactorAction =
   | { type: "done" };
 
 /**
- * The capabilities object passed to the director. Mirrors the `ReactorAction`
- * union — provides a type-safe way for the director to construct actions.
+ * Type-safe helpers for the director to construct `ReactorAction`s.
  *
  * (INFERENCE.md § Agent Reactor › Director Decision Function)
  */
@@ -2174,19 +1823,13 @@ export type ReactorCapabilities = {
 /**
  * The inbound events delivered to the director decision function.
  *
- * `resume.execute_tools` is raised by the reactor when an approval resolves
- * and a parked tool call must be re-run on resume. It carries the calls the
- * reactor is about to dispatch so the director can seed its outstanding
- * tool-result count before those calls' `tool.done` events arrive — the
- * reactor drives the execution, the director counts the results. Without this
- * seed the count would sit at zero and the first `tool.done` would drive an
- * accidental re-inference off a negative count.
- *
- * `resume.tool_result` is raised by the reactor when a parked approval ends
- * without running its tool — a rejected decision or a gate timeout. It carries
- * a synthetic error tool result that answers the parked call so history stays
- * well-formed; the director appends it and re-infers exactly once. No tool
- * runs, so it seeds no outstanding-result count.
+ * `resume.execute_tools` fires when an approval resolves and a parked tool
+ * call must re-run; it carries the calls so the director can seed its
+ * outstanding tool-result count before their `tool.done` events arrive
+ * (without the seed the first `tool.done` drives an accidental
+ * re-inference). `resume.tool_result` fires when a parked approval ends
+ * without running its tool, carrying a synthetic error result that answers
+ * the parked call; no tool runs, so no count seed.
  *
  * (INFERENCE.md § Agent Reactor › Reactor Structure)
  */
@@ -2211,10 +1854,8 @@ export type ReactorInboundEvent =
 
 /**
  * The core director is a single decision function: given an event and the
- * current reactor state, return one or more actions.
- *
- * If the director throws, the reactor catches the exception, emits
- * `reactor.error`, and initiates graceful shutdown.
+ * current reactor state, return one or more actions; a throw emits
+ * `reactor.error` and shuts the reactor down gracefully.
  *
  * (INFERENCE.md § Reactor Director › Core Director)
  */
@@ -2234,14 +1875,9 @@ export interface ReactorDirector {
  * Decision returned by a `BeforeToolExtension`.
  *
  * - `allow` — the tool proceeds.
- * - `block` — the tool is answered with an error result carrying `reason`;
- *   the call is done.
- * - `suspend` — the call is parked awaiting an external decision. The reactor
- *   registers `gate`, persists `pendingOp`, and does not answer the call: it
- *   is neither run nor error-completed. `gate.timeoutAt` is the absolute
- *   deadline (epoch ms) so the reactor can compute the remaining time; the
- *   `correlationId` on both `gate` and `pendingOp` ties an inbound resolution
- *   back to the suspension.
+ * - `block` — the tool is answered with an error result carrying `reason`.
+ * - `suspend` — the call is parked: the reactor registers `gate`, persists
+ *   `pendingOp`, and neither runs nor error-completes the call.
  */
 export type BeforeToolDecision =
   | { type: "allow" }
@@ -2258,15 +1894,11 @@ export type BeforeToolDecision =
     };
 
 /**
- * Extension that runs before a tool call is executed. Returns a
- * `BeforeToolDecision`: `allow` lets the call run, `block` answers it with an
- * error result, `suspend` parks it awaiting an external decision.
- *
- * `grantOneShot` registers a within-cycle bypass token keyed on a
- * `ToolCall.id`: the next `beforeTool` for that id skips a suspension it would
- * otherwise raise, consuming the token as it does so. It is optional because
- * only extensions that can suspend a call have anything to bypass; extensions
- * that never suspend omit it.
+ * Extension that runs before a tool call is executed, returning a
+ * `BeforeToolDecision`. `grantOneShot` registers a within-cycle bypass token
+ * keyed on a `ToolCall.id`: the next `beforeTool` for that id skips a
+ * suspension, consuming the token. Optional; only extensions that can
+ * suspend a call have anything to bypass.
  */
 export interface BeforeToolExtension {
   beforeTool(
@@ -2278,8 +1910,8 @@ export interface BeforeToolExtension {
 }
 
 /**
- * Extension that runs after a tool result is produced. Can modify the result
- * (redaction, enrichment, audit logging). Extensions run in order.
+ * Extension that runs after a tool result is produced, in order, and may
+ * modify it (redaction, enrichment, audit logging).
  */
 export interface AfterToolExtension {
   afterTool(
@@ -2296,19 +1928,10 @@ export interface AfterToolExtension {
 // ---------------------------------------------------------------------------
 
 /**
- * Durable description of a single strategy invocation. Written to the
- * per-cycle manifest in the context store so that future operators can
- * reconstruct exactly which strategy made which change, with what
- * parameters, and why.
- *
- * - `strategy` is the implementation name (e.g. `"size-cap"`).
- * - `version` is the implementation version. Changes to the strategy's
- *   behavior bump the version so old manifest entries remain unambiguous.
- * - `parameters` records the configuration the strategy ran with.
- * - `reason` is a short machine-readable cause label
- *   (e.g. `"exceeded-cap"`, `"overflow-recovery"`).
- * - `decisions` records strategy-specific details about what was actually
- *   done (e.g. the keep count, the spill key, the original byte size).
+ * Durable description of a single strategy invocation, written to the
+ * per-cycle manifest so operators can reconstruct which strategy made which
+ * change, with what parameters, and why. `version` bumps when behavior
+ * changes so old manifest entries stay unambiguous.
  */
 export const TransformRecord = type({
   strategy: "string",
@@ -2320,10 +1943,9 @@ export const TransformRecord = type({
 export type TransformRecord = typeof TransformRecord.infer;
 
 /**
- * Per-invocation context passed to every `ContextStrategy.apply` call.
- * `state` is the reactor's snapshot at the moment the strategy runs;
- * `trigger` is a short label describing why the strategy was invoked
- * (e.g. `"tool-result-ingest"`, `"pre-inference"`, `"director-request"`).
+ * Per-invocation context passed to every `ContextStrategy.apply` call:
+ * the reactor's snapshot at the moment the strategy runs plus a short label
+ * describing why it was invoked.
  */
 export interface StrategyContext {
   readonly state: ReactorState;
@@ -2332,8 +1954,7 @@ export interface StrategyContext {
 
 /**
  * Optional blob attachment emitted by a strategy. The reactor writes each
- * blob to the context store's working tree via `ContextStore.writeBlob`
- * (Phase 2) so the data is durable and migrates with the conversation.
+ * blob to the context store's working tree via `ContextStore.writeBlob`.
  */
 export type StrategyBlob = {
   key: string;
@@ -2342,9 +1963,8 @@ export type StrategyBlob = {
 };
 
 /**
- * Result returned by `ContextStrategy.apply`. Carries the transformed
- * output, a `TransformRecord` describing what happened, and any blobs
- * that should be persisted in the context store.
+ * Result returned by `ContextStrategy.apply`: the transformed output, a
+ * `TransformRecord`, and any blobs to persist in the context store.
  */
 export interface StrategyResult<O> {
   output: O;
@@ -2353,13 +1973,10 @@ export interface StrategyResult<O> {
 }
 
 /**
- * Generic base interface for content-mutating strategies. The role-specific
- * aliases below specialize `I` and `O` for tool-result ingestion, pre-
- * inference context shaping, and explicit compaction.
- *
- * Strategies are pure with respect to the context store: they describe what
- * should change via their return value. The reactor decides where to write
- * the result (history, prompt, manifest) and which blobs to persist.
+ * Generic base interface for content-mutating strategies; the role-specific
+ * aliases below specialize `I`/`O`. Strategies are pure with respect to the
+ * context store: they describe what should change via their return value, and
+ * the reactor decides where to write it.
  */
 export interface ContextStrategy<I, O> {
   readonly name: string;
@@ -2368,9 +1985,8 @@ export interface ContextStrategy<I, O> {
 }
 
 /**
- * Runs on each tool result entering history. Output is appended to the
- * conversation; any emitted blobs are written to the context store's
- * `tool-output/` directory.
+ * Runs on each tool result entering history; output is appended to the
+ * conversation and any blobs are written to `tool-output/`.
  */
 export type ToolResultTransform = ContextStrategy<
   { call: ToolCall; result: ToolResult },
@@ -2379,10 +1995,8 @@ export type ToolResultTransform = ContextStrategy<
 
 /**
  * Runs in order before every inference call, producing the materialized
- * prompt. Output is written to `prompt.jsonl` for that cycle; the durable
- * history in `turns.jsonl` is left untouched.
- *
- * (INFERENCE.md § Async State Awareness › Pending Status Injection)
+ * prompt written to `prompt.jsonl`; the durable history in `turns.jsonl` is
+ * left untouched. (INFERENCE.md § Async State Awareness › Pending Status Injection)
  */
 export type ContextTransform = ContextStrategy<
   ConversationTurn[],
@@ -2390,9 +2004,9 @@ export type ContextTransform = ContextStrategy<
 >;
 
 /**
- * Named compaction strategy. Registered in a registry on the reactor and
- * invoked explicitly via the director's `compact` action. Output overwrites
- * `turns.jsonl`; a `TransformRecord` is appended to the manifest.
+ * Named compaction strategy, registered on the reactor and invoked via the
+ * director's `compact` action. Output overwrites `turns.jsonl`; a
+ * `TransformRecord` is appended to the manifest.
  */
 export type Compactor = ContextStrategy<ConversationTurn[], ConversationTurn[]>;
 
@@ -2401,31 +2015,18 @@ export type Compactor = ContextStrategy<ConversationTurn[], ConversationTurn[]>;
 // ---------------------------------------------------------------------------
 
 /**
- * Read-only capability for resolving `tool-output:///{callId}` URIs to the
- * underlying blob bytes. A `ToolResultTransform` that spills oversized tool
- * output writes a blob via `ContextStore.writeBlob` and returns a pointer of
- * the form `tool-output:///{callId}`; the agent's read tool reaches the spill
- * by calling `BlobReader.read(uri)`.
+ * Read-only capability for resolving `tool-output:///{callId}` URIs to blob
+ * bytes. A transform that spills oversized tool output writes a blob via
+ * `ContextStore.writeBlob` and returns a pointer of that form; the agent's
+ * read tool reaches the spill via `BlobReader.read(uri)`.
  *
- * The URI scheme is deliberately rigid:
- *
- * - Scheme: `tool-output`
- * - Authority: empty (the `///` makes pathname carry the callId)
- * - Path: `/{callId}` — preserves case so provider-assigned callIds with
- *   uppercase letters survive parsing
- * - Query and fragment: rejected
- *
- * Any deviation (different scheme, missing or non-empty hostname, extra path
- * segments, search string, or fragment) throws. Missing blobs throw.
- * `BlobReader` never accepts a filesystem path; the agent has no direct view
- * of the context store's working tree.
+ * The URI scheme is rigid: `tool-output` scheme, empty authority (the `///`
+ * keeps the callId in pathname so case survives URL parsing), `/{callId}`
+ * path, no query or fragment. Any deviation or missing blob throws; the
+ * reader never accepts a filesystem path.
  */
 export interface BlobReader {
-  /**
-   * Resolve `uri` to the underlying blob bytes. Throws if the URI is not a
-   * well-formed `tool-output:///{callId}` reference or if no blob exists for
-   * the extracted callId.
-   */
+  /** Resolve `uri` to the blob bytes; throws on a malformed URI or missing blob. */
   read(uri: string): Promise<Uint8Array>;
 }
 
@@ -2436,13 +2037,9 @@ export interface BlobSource {
 
 /**
  * Parse a `tool-output:///{callId}` URI and return the callId. Throws on any
- * deviation from the documented shape: wrong scheme, non-empty authority,
- * missing or extra path components, search string, or fragment.
- *
- * The two-slash form `tool-output://abc` is rejected because the URL parser
- * lowercases the hostname, which silently corrupts provider-assigned callIds
- * that contain uppercase letters. The three-slash form puts the callId in
- * `pathname`, where case is preserved.
+ * deviation. The two-slash form is rejected: the URL parser lowercases the
+ * hostname, silently corrupting callIds with uppercase letters; the
+ * three-slash form keeps the callId in `pathname`, where case survives.
  */
 export function parseToolOutputURI(uri: string): string {
   let parsed: URL;
@@ -2489,13 +2086,9 @@ export function parseToolOutputURI(uri: string): string {
 
 /**
  * Construct a `BlobReader` that resolves `tool-output:///{callId}` URIs by
- * delegating to `source.readBlob(callId)`. The most common source is a
- * `ContextStore` (Phase 2 added `readBlob` to that interface), but any object
- * implementing `BlobSource` works — this keeps tests trivial.
- *
- * URI parsing is performed in this layer; the source only ever sees the
- * extracted callId. Missing blobs surface as whatever error the source
- * raises (`ContextStore.readBlob` already throws for unknown keys).
+ * delegating to `source.readBlob(callId)`; the source only ever sees the
+ * extracted callId. The most common source is a `ContextStore`, but any
+ * `BlobSource` works.
  */
 export function createBlobReader(source: BlobSource): BlobReader {
   return {
@@ -2510,12 +2103,7 @@ export function createBlobReader(source: BlobSource): BlobReader {
 // Abort Reasons (INFERENCE.md § Abort Handling)
 // ---------------------------------------------------------------------------
 
-/**
- * Reason codes for the `abort` reactor event. The reason determines the
- * appropriate cleanup action.
- *
- * (INFERENCE.md § Abort Handling › Abort Reasons)
- */
+/** Reason codes for the `abort` reactor event. (INFERENCE.md § Abort Handling › Abort Reasons) */
 export const AbortReason = type.enumerated(
   "user_disconnect",
   "wallet_exhaustion",
@@ -2531,48 +2119,26 @@ export type AbortReason = typeof AbortReason.infer;
 
 /**
  * Model-bound default knobs for an inference source. Per-call
- * `InferenceOptions.X` overrides `defaults.X`; the merge happens once at
- * the top of `runInference` before the adapter sees anything. New fields
- * land here as separately-scoped issues.
+ * `InferenceOptions.X` overrides `defaults.X`, merged once at the top of
+ * `runInference` before the adapter sees anything.
  */
 export const InferenceSourceDefaults = type({
   "maxTokens?": "number",
-  // A bag of provider-native knobs the caller wants merged into the
-  // outbound request body (Anthropic's `metadata.user_id`,
-  // OpenAI's `user`, Gemini's `safetySettings`, etc.). Adapters that
-  // recognize keys translate; unrecognized keys are passed through or
-  // dropped per the adapter's documented behavior. The merge into
-  // per-call `InferenceOptions.providerOptions` is shallow — a per-
-  // call providerOptions object wholesale replaces the source-bound
-  // one, it does not deep-merge per key.
+  // Provider-native knobs merged into the outbound request body (Anthropic
+  // `metadata.user_id`, OpenAI `user`, Gemini `safetySettings`, ...); the
+  // per-call merge is shallow: a per-call object replaces the source one.
   "providerOptions?": "Record<string, unknown>",
 });
 export type InferenceSourceDefaults = typeof InferenceSourceDefaults.infer;
 
 /**
- * A specific (provider, model) bundle the agent runtime can route to.
- * Carries wire reachability, credentials, the model identity at the
- * provider, and the model-bound default knobs.
- *
- * `id` is the catalog offering's primary key, set by the resolver from the
- * matched offering. It is the routing key used by `AgentConfig.defaultSource`
- * and `Agent.setSource`.
- *
- * Multi-model providers become multiple sources — `model` is part of the
- * identity, not an optional override.
- *
- * `capabilities` is carried for the selection-policy layer (the model
- * selector consumes it). The runtime ignores it; populating the field
- * later is not a wire-format change.
- *
- * `quirks` is the opaque per-deployment bag of provider-specific adapter
- * accommodations. The harness reads it once, at adapter instantiation, and
- * passes it to `AdapterRegistry.resolve` as a sibling of the slim
- * `LastCycleSource` — quirks are deliberately kept off `LastCycleSource`,
- * which rides on every usage event. The field is present-and-populated or
- * absent; it is never `null`. A source row with no quirks stores SQL `NULL`,
- * and the catalog resolver translates that absence into an omitted key here,
- * so downstream code sees `undefined`, never `null`.
+ * A specific (provider, model) bundle the agent runtime can route to. `id`
+ * is the catalog offering's primary key and the routing key for
+ * `AgentConfig.defaultSource` / `Agent.setSource`; multi-model providers
+ * become multiple sources. `quirks` is an opaque bag of provider-adapter
+ * accommodations, read once at adapter instantiation; present-and-populated
+ * or absent, never `null` (no quirks stores SQL `NULL`, resolved to an
+ * omitted key).
  *
  * (INFERENCE.md § Providers)
  */
@@ -2580,10 +2146,8 @@ export const InferenceSource = type({
   id: "string",
   provider: "string",
   baseURL: "string",
-  // Reference into the run's credential-material cell. The provider's secret
-  // (formerly an inline `apiKey`) is resolved from that cell by `credentialId`
-  // at call time, so the source config carries no secret and the child never
-  // holds the key inline. The same cell backs tool credentials.
+  // Reference into the run's credential-material cell; the secret is resolved
+  // by `credentialId` at call time, so the source config carries no secret.
   credentialId: "string",
   model: "string",
   "defaults?": InferenceSourceDefaults,
@@ -2593,16 +2157,10 @@ export const InferenceSource = type({
 export type InferenceSource = typeof InferenceSource.infer;
 
 /**
- * Replace every field on `active` with the corresponding field from
- * `next`, in place. Optional fields (`defaults`, `capabilities`,
- * `quirks`) are `delete`d from `active` when absent on `next` so the
- * swap is exact — no stale value from a previous rotation can survive.
- *
- * Used by both the agent's source registry and the harness's source
- * hot-swap path to mutate the single shared `InferenceSource` object the
- * reactor reads lazily at the start of each inference call. Putting the
- * field list in one place means the next field added to
- * `InferenceSource` only has to be remembered here.
+ * Replace every field on `active` with the corresponding field from `next`,
+ * in place; optional fields absent on `next` are `delete`d so the swap is
+ * exact. Used by the source registry and hot-swap path to mutate the single
+ * shared `InferenceSource` the reactor reads lazily per call.
  */
 export function applyInferenceSourceFields(
   active: InferenceSource,
@@ -2629,10 +2187,9 @@ export function applyInferenceSourceFields(
     delete active.quirks;
   }
 
-  // Compile-time exhaustiveness check. `Required<>` forces optional
-  // keys to also be required in the guard — so a future optional field
-  // (e.g. `region?: string`) added to `InferenceSource` without being
-  // handled above is flagged by TypeScript, not silently dropped.
+  // Compile-time exhaustiveness: `Required<>` forces optional keys into the
+  // guard, so a future optional field added to `InferenceSource` without
+  // handling here is flagged by TypeScript.
   const _handled: { readonly [K in keyof Required<InferenceSource>]: true } = {
     id: true,
     provider: true,
@@ -2647,11 +2204,9 @@ export function applyInferenceSourceFields(
 }
 
 /**
- * Outcome of a `RetryPolicy` consultation. Either abort the call
- * (surface the most recent `inference.error` to the caller), or retry
- * after `delayMs` milliseconds, measured against the harness Scheduler.
- *
- * (INFERENCE.md § Providers › Streaming Harness)
+ * Outcome of a `RetryPolicy` consultation: abort the call (surfacing the
+ * most recent `inference.error`) or retry after `delayMs` milliseconds
+ * against the harness Scheduler. (INFERENCE.md § Providers › Streaming Harness)
  */
 export type RetryDecision =
   | { kind: "abort" }
@@ -2659,39 +2214,26 @@ export type RetryDecision =
 
 /**
  * Context supplied to a `RetryPolicy` each time an attempt produces an
- * `inference.error`.
- *
- * (INFERENCE.md § Providers › Streaming Harness)
+ * `inference.error`. (INFERENCE.md § Providers › Streaming Harness)
  */
 export type RetrySituation = {
   /** The classified error the most recent attempt produced. */
   readonly error: InferenceError;
-  /**
-   * 1-indexed attempt counter. The first failure has `attempt: 1`;
-   * the second failure (after one retry) has `attempt: 2`; and so on.
-   */
+  /** 1-indexed attempt counter (the first failure is 1). */
   readonly attempt: number;
   /**
-   * Milliseconds since the *first* attempt of this call started,
-   * measured via the harness `Scheduler.now()`. The default Scheduler
-   * uses `performance.now()` (sub-millisecond resolution), so the
-   * value may be fractional; virtual-clock test schedulers report
-   * integer virtual time. Both are valid; policies that compare
-   * against integer thresholds should `Math.floor` if they need that.
+   * Milliseconds since the first attempt of this call started, via the
+   * harness `Scheduler.now()`. May be fractional (performance.now) or
+   * integer (virtual-clock test schedulers).
    */
   readonly elapsedMs: number;
 };
 
 /**
- * Per-call retry policy. The harness invokes the policy once per
- * `inference.error` an attempt produces, in 1-indexed attempt order.
- * Returning `{ kind: "abort" }` ends the call by surfacing the most
- * recent error to the caller; returning `{ kind: "retry", delayMs }`
- * causes the harness to discard the failed attempt's events, sleep
- * `delayMs` milliseconds against the Scheduler, and re-issue the
- * underlying HTTP request with the identical body. The policy may be
- * async; the harness awaits the returned `Promise<RetryDecision>` if
- * it is a thenable.
+ * Per-call retry policy, invoked once per `inference.error`, in 1-indexed
+ * attempt order. `{ kind: "abort" }` ends the call; `{ kind: "retry",
+ * delayMs }` discards the failed attempt's events, sleeps `delayMs` against
+ * the Scheduler, and re-issues the request with the same body. May be async.
  *
  * (INFERENCE.md § Providers › Streaming Harness)
  */
@@ -2700,10 +2242,8 @@ export type RetryPolicy = (
 ) => RetryDecision | Promise<RetryDecision>;
 
 /**
- * Options for a single inference call. Override the defaults from the agent
- * configuration on a per-call basis.
- *
- * (INFERENCE.md § Providers › Streaming Harness)
+ * Options for a single inference call, overriding the agent-configuration
+ * defaults per call. (INFERENCE.md § Providers › Streaming Harness)
  */
 export type InferenceOptions = {
   maxTokens?: number;
@@ -2712,46 +2252,18 @@ export type InferenceOptions = {
   systemPrompt?: string;
   tools?: ToolDefinition[];
   /**
-   * Modalities the caller wants the model to emit. Adapters translate
-   * to the provider-native shape (Gemini's
-   * `generationConfig.responseModalities` accepts `"TEXT"` / `"IMAGE"`
-   * uppercase; see `packages/inference-discovery-google-genai/sessions/
-   * google-genai/gemini-2.5-flash-image/image-output/exchanges/0/request.json`
-   * for the captured shape). Providers that do not expose a modality
-   * switch ignore the
-   * field. When omitted the provider's default modalities apply.
+   * Modalities the caller wants the model to emit; adapters translate to the
+   * provider-native shape (e.g. Gemini `generationConfig.responseModalities`
+   * accepts uppercase `"TEXT"` / `"IMAGE"`); omitted means the provider default.
    */
   responseModalities?: ("text" | "image" | "audio")[];
   /**
-   * Structured-output constraint. Asks the model to produce text, free-
-   * form JSON, or JSON conforming to a specific schema. Adapters
-   * translate to the provider-native wire shape:
-   *
-   * - **OpenAI** (`response_format`):
-   *   - `text` → `{ type: "text" }`
-   *   - `json` → `{ type: "json_object" }`
-   *   - `json-schema` → `{ type: "json_schema", json_schema: { name, schema, strict } }`
-   *   When the model declines in strict mode, the wire emits
-   *   `delta.refusal` chunks; the adapter surfaces them as
-   *   `inference.refusal.delta` events and a final `RefusalBlock` in
-   *   the assistant turn's `content[]`.
-   * - **Google GenAI** (`generationConfig`):
-   *   - `text` → no constraint (default).
-   *   - `json` → `{ responseMimeType: "application/json" }`.
-   *   - `json-schema` → `{ responseMimeType: "application/json", responseSchema: <schema> }`.
-   *   `name` and `strict` are OpenAI-specific and have no Gemini
-   *   counterpart; adapters ignore them. Gemini enforces a subset of
-   *   JSON Schema (no `oneOf`, limited `pattern`, no `$ref`, etc.) —
-   *   the adapter forwards the schema verbatim and surfaces Gemini's
-   *   HTTP error if the subset is violated.
-   * - **Anthropic**: no native structured-output API.
-   *   - `text` is a no-op (the default).
-   *   - `json` and `json-schema` throw at the adapter boundary; there
-   *     is no shim that synthesizes a tool to extract structured
-   *     output.
-   *
-   * When omitted the provider's default applies (typically free-form
-   * text).
+   * Structured-output constraint: free-form text, JSON, or JSON conforming
+   * to a schema. Adapters translate to the provider-native wire shape —
+   * OpenAI `response_format` (strict-mode refusals surface as
+   * RefusalBlocks), Gemini `responseMimeType` / `responseSchema` (a JSON
+   * Schema subset, forwarded verbatim). Anthropic has none: `text` is a
+   * no-op, `json` / `json-schema` throw. Omitted means the provider default.
    */
   responseFormat?:
     | { kind: "text" }
@@ -2763,36 +2275,25 @@ export type InferenceOptions = {
         strict?: boolean;
       };
   /**
-   * A bag of provider-native knobs the adapter merges into the outbound
-   * request body. Primary home is `InferenceSourceDefaults.providerOptions`
-   * (model-bound); this field exists for per-call overrides through the
-   * standard merge precedence at the top of `runInference`. The merge is
-   * shallow: a per-call providerOptions object wholesale replaces the
-   * source-bound one, it does not deep-merge per key.
+   * Provider-native knobs merged into the outbound request body, overriding
+   * `InferenceSourceDefaults.providerOptions` per call. The merge is
+   * shallow: a per-call object replaces the source-bound one wholesale.
    */
   providerOptions?: Record<string, unknown>;
   /**
-   * Per-call inactivity timeout in milliseconds. If the harness yields no
-   * event (other than `inference.start`) for this many ms, the underlying
-   * fetch is aborted and the call ends with `inference.error` of category
-   * `"timeout"`. Default 120_000 (2 min). Tune higher for reasoning models
-   * that exhibit long silent-thinking stretches between token bursts; tune
-   * lower to fail fast. `0` arms the timer to fire on the next tick (a
-   * "fail-fast even if the fetch is instant" mode useful in tests).
+   * Per-call inactivity timeout in ms: no event (other than `inference.start`)
+   * for this long ends the call with an `inference.error` of category
+   * `"timeout"`. Default 120_000; `0` fires on the next tick (fail-fast,
+   * useful in tests).
    */
   inactivityTimeoutMs?: number;
   /**
-   * Per-call total wall-clock cap in milliseconds. Starts at fetch.
-   * Default 600_000 (10 min). Backstop for streams that keep emitting
-   * forever without terminating. Same error category as `inactivityTimeoutMs`.
-   * `0` arms the timer to fire on the next tick.
+   * Per-call total wall-clock cap in ms, starting at fetch. Default 600_000;
+   * backstop for streams that never terminate. Same error category as
+   * `inactivityTimeoutMs`. `0` arms the timer to fire on the next tick.
    */
   totalTimeoutMs?: number;
-  /**
-   * Per-call mechanical retry policy. Consulted once per attempt that
-   * ends in `inference.error`; see `RetryPolicy` for the contract. If
-   * omitted, a built-in default policy is applied.
-   */
+  /** Per-call retry policy (see `RetryPolicy`); a built-in default applies if omitted. */
   retryPolicy?: RetryPolicy;
 };
 
@@ -2801,11 +2302,7 @@ export type InferenceOptions = {
 //                ARCHITECTURE.md § Change History)
 // ---------------------------------------------------------------------------
 
-/**
- * A named commit point in the context store. Corresponds to a git commit.
- *
- * (ARCHITECTURE.md § Change History › Named Checkpoints)
- */
+/** A named commit point in the context store, corresponding to a git commit. (ARCHITECTURE.md § Change History › Named Checkpoints) */
 export type ContextCommit = {
   hash: string;
   message: string;
@@ -2814,20 +2311,10 @@ export type ContextCommit = {
 };
 
 /**
- * The state of an active connector thread. The connector is one durable
- * thread per agent; participants accumulate as they speak. Persisted
- * alongside the conversation context so the thread survives sidecar
- * restarts.
- *
- * `replyTo` is the most recent speaker — the primary recipient (`to`)
- * on the next outbound reply. `cc` is every other participant who has
- * spoken on the thread, deduplicated, in arrival order — they ride as
- * `cc` on the next outbound reply so everyone stays in the loop.
- * `subject` is set when the thread starts and preserved for its life.
- *
- * Defined as an arktype so the wire layer (sidecar↔hub frames) and
- * other parsing boundaries can validate snapshots without
- * re-declaring the shape.
+ * State of an active connector thread (one durable thread per agent,
+ * persisted across sidecar restarts). `replyTo` is the most recent speaker,
+ * the primary recipient on the next outbound reply; `cc` is every other
+ * participant who has spoken, deduplicated in arrival order.
  */
 export const ConnectorThreadState = type({
   "threadRoot?": "string",
@@ -2839,20 +2326,13 @@ export const ConnectorThreadState = type({
 export type ConnectorThreadState = typeof ConnectorThreadState.infer;
 
 /**
- * The context store interface. Implementations back the store with git
- * (filesystem, in-memory, or virtual) depending on the execution environment.
- * The reactor accepts any implementation that satisfies this interface.
- *
- * The store holds the turn history and reactor metadata. Forking creates
- * a git branch. Compaction commits the compacted history.
- *
- * (INFERENCE.md § Context Management › Context Store)
+ * The context store interface, backed by git (filesystem, in-memory, or
+ * virtual) depending on the execution environment. Holds the turn history
+ * and reactor metadata; forking creates a branch, compaction commits the
+ * compacted history. (INFERENCE.md § Context Management › Context Store)
  */
 export interface ContextStore {
-  /**
-   * Load the current turn history and reactor metadata from the store.
-   * Called during reactor initialization.
-   */
+  /** Load the current turn history and reactor metadata (reactor init). */
   load(signal?: AbortSignal): Promise<{
     turns: ConversationTurn[];
     pendingOperations: PendingOperation[];
@@ -2860,49 +2340,28 @@ export interface ContextStore {
     connectorState: ConnectorThreadState | null;
   }>;
 
-  /**
-   * Buffer connector thread state for the next commit. The harness calls
-   * this before each checkpoint so that connector state is persisted
-   * atomically with the conversation context.
-   */
+  /** Buffer connector thread state for the next commit, persisted atomically with the context. */
   setConnectorState(state: ConnectorThreadState | null): void;
 
-  /**
-   * Commit whatever currently lives in the working tree, using the supplied
-   * commit message. The reactor's per-cycle checkpoint routes through this
-   * overload after writing the per-cycle files via `writeTurns`,
-   * `writePrompt`, `writeResponse`, `writeManifest`, and any `writeBlob`
-   * calls produced by transforms.
-   */
+  /** Commit the working tree with the supplied message. */
   commit(
     options: { message: string },
     signal?: AbortSignal,
   ): Promise<ContextCommit>;
 
-  /**
-   * Create a branch for a fork operation. The branch starts from the current
-   * HEAD commit.
-   */
+  /** Create a branch for a fork, starting from the current HEAD commit. */
   branch(name: string, signal?: AbortSignal): Promise<void>;
 
-  /**
-   * List recent commits. Used by the agent's history query tools.
-   */
+  /** List recent commits, for history query tools. */
   log(limit?: number, signal?: AbortSignal): Promise<ContextCommit[]>;
 
-  /**
-   * Read the turn history at a specific commit hash. Used for history
-   * inspection and rollback.
-   */
+  /** Read the turn history at a specific commit hash. */
   readAt(hash: string, signal?: AbortSignal): Promise<ConversationTurn[]>;
 
   /**
-   * Write an opaque blob to the working tree under `tool-output/`. Used by
-   * `ToolResultTransform`s that spill oversized payloads out of the inline
-   * conversation. The file is staged at the next `commit({ message })`.
-   *
-   * `key` is sanitized for filesystem safety; callers should pass the tool
-   * call id. `contentType` selects a file extension when known.
+   * Write an opaque blob to the working tree under `tool-output/`, staged at
+   * the next commit. `key` is sanitized for filesystem safety; callers
+   * should pass the tool call id.
    */
   writeBlob(
     key: string,
@@ -2911,48 +2370,27 @@ export interface ContextStore {
     signal?: AbortSignal,
   ): Promise<void>;
 
-  /**
-   * Read a blob previously written via `writeBlob`. Throws if no blob with
-   * that key exists.
-   */
+  /** Read a blob previously written via `writeBlob`; throws for an unknown key. */
   readBlob(key: string, signal?: AbortSignal): Promise<Uint8Array>;
 
-  /**
-   * Overwrite `prompt.jsonl` with the materialized prompt for the current
-   * inference cycle. One `ConversationTurn` per line. Staged at the next
-   * `commit({ message })`.
-   */
+  /** Overwrite `prompt.jsonl` with the materialized prompt, staged at the next commit. */
   writePrompt(turns: ConversationTurn[], signal?: AbortSignal): Promise<void>;
 
-  /**
-   * Overwrite `response.jsonl` with the assistant turn returned for the
-   * current cycle. Single-line JSONL for consistency with the per-cycle file
-   * conventions. Staged at the next `commit({ message })`.
-   */
+  /** Overwrite `response.jsonl` with the current cycle's assistant turn. */
   writeResponse(turn: AssistantTurn, signal?: AbortSignal): Promise<void>;
 
-  /**
-   * Overwrite `manifest.jsonl` with the ordered transform records produced
-   * for the current cycle. One `TransformRecord` per line. Staged at the
-   * next `commit({ message })`.
-   */
+  /** Overwrite `manifest.jsonl` with the current cycle's transform records. */
   writeManifest(
     records: TransformRecord[],
     signal?: AbortSignal,
   ): Promise<void>;
 
-  /**
-   * Overwrite `turns.jsonl` with the durable conversation history. One
-   * `ConversationTurn` per line. Staged at the next `commit({ message })`.
-   */
+  /** Overwrite `turns.jsonl` with the durable conversation history. */
   writeTurns(turns: ConversationTurn[], signal?: AbortSignal): Promise<void>;
 
   /**
-   * Overwrite `metadata.json` with non-turn-shaped reactor state needed for
-   * restart: pending async operations and cumulative token usage. The store
-   * combines this with the most recently buffered connector state (from
-   * `setConnectorState`) and writes the merged payload. Staged at the next
-   * `commit({ message })`.
+   * Overwrite `metadata.json` with non-turn-shaped restart state: pending
+   * operations and token usage, merged with the buffered connector state.
    */
   writeMetadata(
     metadata: {
@@ -2963,9 +2401,8 @@ export interface ContextStore {
   ): Promise<void>;
 
   /**
-   * Read manifest entries from the most recent `limit` commits that contain
-   * a `manifest.jsonl`. Newest commit first; records within a commit are
-   * returned in their natural in-file order (chronological per-cycle).
+   * Read manifest entries from the most recent `limit` commits containing a
+   * `manifest.jsonl`, newest first; records keep their in-file order.
    */
   readManifestHistory(
     limit: number,
@@ -2978,28 +2415,17 @@ export interface ContextStore {
 // ---------------------------------------------------------------------------
 
 /**
- * Persistent store for tool invocation audit records. Separated from
- * ContextStore so the audit capability is opt-in at the composition
- * layer. The isogit implementation writes audit records as individual
- * JSON files in the same git repo used for context storage.
+ * Persistent store for tool invocation audit records, separated from
+ * ContextStore so the capability is opt-in at the composition layer.
  */
 export interface AuditStore {
-  /**
-   * Persist a batch of audit records. Called at checkpoint boundaries
-   * with all records accumulated since the last checkpoint.
-   */
+  /** Persist a batch of audit records accumulated since the last checkpoint. */
   commitAudit(records: AuditRecord[], signal?: AbortSignal): Promise<void>;
 
-  /**
-   * Load audit records for a session. Returns all records matching
-   * the given sessionId, ordered by seq.
-   */
+  /** Load a session's audit records, ordered by seq. */
   loadAudit(sessionId: string, signal?: AbortSignal): Promise<AuditRecord[]>;
 
-  /**
-   * Persist a batch of error records. Called at checkpoint boundaries
-   * and shutdown with all error records accumulated since the last flush.
-   */
+  /** Persist a batch of error records accumulated since the last flush. */
   commitErrors(records: ErrorRecord[], signal?: AbortSignal): Promise<void>;
 }
 
@@ -3008,10 +2434,8 @@ export interface AuditStore {
 // ---------------------------------------------------------------------------
 
 /**
- * Configured tool definition exposed to the model. The harness registers
- * available tools; the reactor passes this list to the inference provider as
- * part of each request.
- *
+ * Configured tool definition exposed to the model, registered by the harness
+ * and passed to the inference provider with each request.
  * (ARCHITECTURE.md § Agent Harness › Tools)
  */
 export const ToolDefinition = type({
@@ -3022,16 +2446,11 @@ export const ToolDefinition = type({
 export type ToolDefinition = typeof ToolDefinition.infer;
 
 /**
- * Agent harness configuration. Assembled from the agent definition package
- * and capability grants during harness initialization.
- *
- * `principalId` is the agent's principal in the hub's authorization model.
- * The sidecar needs it to reconstruct the in-memory grant store on restart
- * (the store's `collectGrants` filters by principal).
- *
- * `grants` uses `WireGrantRule` because this type arrives over JSON where
- * `GrantRule.expiresAt` is serialized as a string. The wire validator
- * coerces strings back to Date instances.
+ * Agent harness configuration, assembled from the agent definition package
+ * and capability grants during harness initialization. `principalId`
+ * reconstructs the in-memory grant store on restart; `grants` uses
+ * `WireGrantRule` because it arrives over JSON where `GrantRule.expiresAt`
+ * is a serialized string.
  *
  * (ARCHITECTURE.md § Agent Harness)
  */

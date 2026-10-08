@@ -3,18 +3,16 @@
 // that consumed it. This is the correctness crux of the signal-relay pass: the
 // runtime driver reaches it only on the pre-consume and race-landed log-read
 // paths, so its corrections (signalId dedup, FIFO-oldest, abandon-retire) are
-// proven here against hand-built logs rather than through the driver.
-//
-// Each log is a COMPLETE run log from seq 1 (the helper's precondition); the
-// container step id is "section" throughout.
+// proven here against hand-built logs rather than through the driver. Each log
+// is a COMPLETE run log from seq 1 (the helper's precondition); the container
+// step id is "section" throughout.
 
 import { describe, test, expect } from "bun:test";
 
 import type { WorkflowEvent } from "@intx/workflow";
 
-// Imported directly from the runtime module: the binding is intentionally not
-// part of the package's public surface, so it is exercised via its source path
-// rather than promoted to the barrel for a test.
+// Not part of the package's public surface, so it is exercised via its source
+// path rather than promoted to the barrel for a test.
 import { boundSignalForContainerAwait } from "./run";
 
 const at = "2026-01-01T00:00:00.000Z";
@@ -84,8 +82,8 @@ describe("boundSignalForContainerAwait", () => {
       received(3, "s2", { v: 2 }),
       awaited(4),
     ];
-    // The reducer consumes the queue HEAD (oldest). A newest-observed heuristic would
-    // return the newest ("s2") -- the exact divergence this replay avoids.
+    // The reducer consumes the queue HEAD (oldest); a newest-observed heuristic
+    // would return "s2" -- the exact divergence this replay avoids.
     const bound = boundSignalForContainerAwait(log, N, SECTION, 4);
     expect(bound?.signalId).toBe("s1");
     expect(bound?.payload).toEqual({ v: 1 });
@@ -100,7 +98,7 @@ describe("boundSignalForContainerAwait", () => {
       awaited(5), // await #2
       received(6, "s2", { v: 2 }), // pairs with #2
     ];
-    // With dedup, await #2 binds s2. Without it, the redelivery would queue and
+    // With dedup, await #2 binds s2; without it, the redelivery would queue and
     // await #2 would wrongly bind the duplicate.
     expect(boundSignalForContainerAwait(log, N, SECTION, 5)).toEqual({
       payload: { v: 2 },
@@ -120,8 +118,8 @@ describe("boundSignalForContainerAwait", () => {
       awaited(4), // await #2
       received(5, "s1", { v: 1 }),
     ];
-    // The reducer drops the abandoned awaiter, so the signal binds await #2.
-    // Without abandon-retire, the replay would pair it with the retired #1.
+    // The reducer drops the abandoned awaiter, so the signal binds await #2;
+    // without abandon-retire, the replay would pair it with the retired #1.
     expect(boundSignalForContainerAwait(log, N, SECTION, 4)).toEqual({
       payload: { v: 1 },
       signalId: "s1",
@@ -136,8 +134,7 @@ describe("boundSignalForContainerAwait", () => {
       received(3, "s1", { v: 1 }),
       received(4, "s2", { v: 2 }),
     ];
-    // The await at seq 2 binds the earliest later signal (s1); s2 queues for a
-    // future await.
+    // The await binds the earliest later signal (s1); s2 queues for a future await.
     const bound = boundSignalForContainerAwait(log, N, SECTION, 2);
     expect(bound?.signalId).toBe("s1");
   });

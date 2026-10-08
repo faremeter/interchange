@@ -38,8 +38,7 @@ describe("register acker", () => {
 
     // A second ack finding nothing pending is the settled state itself, and
     // the watchdog handler no-ops for a correlation with no pending entry --
-    // so no retry can fire later. The pause this replaces could only report
-    // that none had fired yet.
+    // so no retry can fire later.
     expect(acker.handleAck("c1")).toBe(false);
     expect(sends).toEqual(["c1"]);
   });
@@ -47,12 +46,10 @@ describe("register acker", () => {
   test("retries on the watchdog up to the attempt cap, then gives up", async () => {
     const sends: string[] = [];
     // The acker consults `isOpen` once per watchdog fire and from nowhere
-    // else, so counting the calls counts the fires. The fire that brings the
-    // count to three is the one that finds the budget spent: it drops the
-    // pending entry and, unlike the resend branch, arms no replacement
-    // timer. A fourth fire therefore has nothing to fire from, at any load,
-    // so the count cannot overshoot the cap -- and the ack below reads that
-    // settled state back.
+    // else, so counting the calls counts the fires. The fire that finds the
+    // budget spent drops the entry and arms no replacement timer, so a fourth
+    // fire has nothing to fire from at any load -- the count cannot overshoot
+    // the cap.
     let watchdogFires = 0;
     const acker = createRegisterAcker({
       sendFrame: (f) => sends.push(f.correlationId),
@@ -129,11 +126,10 @@ describe("register acker", () => {
     });
 
     acker.send(frameFor("c1"));
-    // A concurrent re-emit for the same correlation: refreshes the one entry
-    // and resets its watchdog rather than arming a second. Nothing has to
-    // elapse between the two sends -- the pause this replaces had to land
-    // inside the watchdog window, and a slow machine landed past it and let
-    // the first watchdog fire.
+    // A concurrent re-emit for the same correlation refreshes the one entry
+    // and resets its watchdog rather than arming a second. The pause this
+    // replaces had to land inside the watchdog window, and a slow machine
+    // landed past it.
     acker.send(frameFor("c1"));
 
     // One ack settles the single pending entry; there is no second entry left.

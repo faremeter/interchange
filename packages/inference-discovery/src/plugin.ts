@@ -5,20 +5,18 @@ export interface CapturedResponse {
   headers: Record<string, string>;
   // Populated for application/json responses; null for SSE.
   parsed: unknown | null;
-  // Populated for text/event-stream responses; null otherwise. Iterators
-  // that consume streaming turn-1 responses to build a turn-2 body parse
-  // these bytes themselves — the runner does not interpret SSE.
+  // Populated for text/event-stream responses; null otherwise. Iterators that
+  // build a turn-2 body parse these bytes themselves — the runner does not
+  // interpret SSE.
   bytes: Uint8Array | null;
 }
 
 export type Turn1Reconstructor = (bytes: Uint8Array) => unknown;
 
-// Resolves turn-1's assistant response for a multi-turn capture. A non-streaming
-// turn-1 arrives as a parsed JSON body; a streaming turn-1 arrives as SSE bytes
-// that the provider reconstructs into the response shape its turn-2 builder
-// expects. Enforces CapturedResponse's parsed-XOR-bytes invariant: exactly one
-// of parsed/bytes is non-null, so a response carrying neither is malformed and
-// throws.
+// Resolves turn-1's assistant response for a multi-turn capture: a parsed JSON
+// body, or SSE bytes the provider reconstructs into the shape its turn-2
+// builder expects. Enforces the parsed-XOR-bytes invariant — a response
+// carrying neither is malformed and throws.
 export function resolveTurn1Response(
   turn1: CapturedResponse,
   reconstruct: Turn1Reconstructor,
@@ -42,28 +40,24 @@ interface CaptureStepBase {
   url: string;
   // Defaults to "POST" when omitted.
   method?: "POST" | "PUT" | "PATCH";
-  // Headers the step contributes on top of the runner's content-type default.
-  // Per-step headers may override the default content-type (for example,
-  // a multipart upload). They MUST NOT collide with the plug-in's auth
-  // headers — the runner detects that collision and throws, on the
-  // principle that auth is a plug-in-wide invariant and capability-
-  // specific overrides belong on the step.
+  // Extra headers on top of the runner's content-type default (may override
+  // it, e.g. a multipart upload). MUST NOT collide with the plug-in's auth
+  // headers — the runner detects that and throws; auth is plug-in-wide, and
+  // capability-specific overrides belong on the step.
   headers?: Record<string, string>;
 }
 
-// A step whose body is a JSON-serializable value. The runner writes it to
-// `request.json` after JSON.stringify and sends it with the default
-// `Content-Type: application/json` unless overridden via `headers`.
+// A step whose body is a JSON-serializable value; the runner writes it to
+// `request.json` and sends it with the default content-type unless overridden.
 export interface JsonCaptureStep extends CaptureStepBase {
   kind: "json";
   body: unknown;
 }
 
-// A step whose body is raw bytes (e.g. a multipart upload envelope, a
-// single-part octet-stream). The runner writes the bytes to `request.bin`
-// and sends them verbatim with the supplied `contentType`. The plug-in
-// owns content-type because there is no sensible default for non-JSON
-// bodies.
+// A step whose body is raw bytes (e.g. a multipart upload envelope). The
+// runner writes them to `request.bin` and sends them verbatim with the
+// supplied `contentType`; the plug-in owns content-type because there is no
+// sensible default for non-JSON bodies.
 export interface RawCaptureStep extends CaptureStepBase {
   kind: "raw";
   contentType: string;

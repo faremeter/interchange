@@ -2,10 +2,8 @@
 //
 // Sits on top of `createReactorAssembly` from `@intx/inference` to
 // provide a code-driven agent surface: send a message, stream events,
-// project history, hot-swap inference sources. Peer to `@intx/harness`;
-// the harness drives the reactor from a mail transport (INBOX watch,
-// connector threads, outbound replies via MessageTransport) while the
-// agent drives it from in-process calls.
+// project history, hot-swap inference sources. Peer to `@intx/harness`,
+// which drives the reactor from a mail transport instead.
 
 export { AgentContextLockError } from "./lock";
 export {

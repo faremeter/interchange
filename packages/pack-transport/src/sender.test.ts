@@ -108,11 +108,8 @@ describe("createPackSender", () => {
   });
 
   test("send releases the pending entry when sendFrame throws synchronously", async () => {
-    // A synchronous throw from `sendFrame` (closed transport, serializer
-    // failure) used to leave the transferId in `pending` forever, so the
-    // next `send` with the same transferId would reject at the
-    // already-in-flight guard. Confirm the throw cleans up the entry and
-    // a retry under the same transferId is admitted.
+    // A throw from `sendFrame` must clean up the pending entry so a
+    // retry under the same transferId is admitted.
     let shouldThrow = true;
     const sender = createPackSender({
       sendFrame: () => {
