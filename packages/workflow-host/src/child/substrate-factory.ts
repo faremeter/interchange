@@ -77,6 +77,8 @@ import { createIsogitStore } from "@intx/storage-isogit/node";
 import {
   baseStepId,
   collectDeclaredPluginNames,
+  createDefaultActionInvoker,
+  createInMemoryEffectLedger,
   createLoopIterationHandle,
   createNoopDrainController,
   createSuspendableChildHandle,
@@ -87,6 +89,7 @@ import {
   runtimeRun,
   walkWorkflowSteps,
   LOOP_BODY_DESCENT,
+  type ActionHandler,
   type LoopFnRegistry,
   type ParkedApprovalOp,
   type ReadParkedApprovalOps,
@@ -126,6 +129,7 @@ import {
   type CredentialsSnapshot,
 } from "../supervisor/index";
 import {
+  loadWorkflowActionHandlersFromClosure,
   loadWorkflowLoopFnsFromClosure,
   loadWorkflowPluginFactoriesFromClosure,
   loadWorkflowPluginToolDefinitionsFromClosure,
@@ -137,6 +141,7 @@ import type { LoadParkedApproval } from "./parked-correlations";
 import { createProxyWorkflowRunRepoStore } from "./proxy-repo-store";
 import {
   createCredentialsBackedAuthorize,
+  eagerlyResolveActionHandlers,
   type CredentialsSnapshotRef,
   type GrantEvaluator,
   type RunWorkflowChildBindings,
@@ -1328,9 +1333,10 @@ interface SidecarRunChildDeps {
    * (`env.spawn.closurePackageDir`), the source-ref lineage's only closure.
    * `buildChildRunEnv` loads the child body's declared plugin tool definitions
    * from it so a plugin-contributed `tool:<name>` the child loads is declared
-   * when capping the child's inherited grants. A child body that declares no
-   * plugin package needs no closure read; absent on a lineage that stages no
-   * closure.
+   * when capping the child's inherited grants, and loads `interchange.actions`
+   * when this body can reach an action. A body that declares neither a plugin
+   * nor an action needs no closure read; absent on a lineage that stages no
+   * closure. A body that reaches an action and has no directory fails at spawn.
    */
   closurePackageDir?: string;
   /** Clock for timestamp generation; defaults to `() => new Date()`. */
@@ -1917,6 +1923,35 @@ async function buildChildRunEnv(args: {
     credentialsRef,
     deps.evaluateGrants,
   );
+  // An action this env can run needs its own invoker: the same
+  // `createDefaultActionInvoker` the top-level run uses, closed over THIS
+  // body's capped authorize and a fresh ledger. Load only when the pre-rewrite
+  // body reaches an action under `LOOP_BODY_DESCENT` (loop bodies share this
+  // env; an inline childWorkflow or onTrigger does not). A grandchild action
+  // is resolved when that grandchild builds its own env. A reachable action
+  // with no closure directory is a wiring defect -- fail at spawn, before the
+  // handler can run.
+  let actionReachable = false;
+  walkWorkflowSteps({
+    definition,
+    descent: LOOP_BODY_DESCENT,
+    context: "sidecar child action handlers: ",
+    visit: ({ step }) => {
+      if (step.kind === "action") actionReachable = true;
+    },
+  });
+  let actionResolver: ((ref: string) => ActionHandler) | undefined;
+  if (actionReachable) {
+    if (deps.closurePackageDir === undefined) {
+      throw new Error(
+        "sidecar child: an action is reachable in this spawned body but deps.closurePackageDir is missing; the action handlers cannot be resolved",
+      );
+    }
+    actionResolver = await loadWorkflowActionHandlersFromClosure({
+      packageDir: deps.closurePackageDir,
+    });
+    eagerlyResolveActionHandlers([definition], actionResolver);
+  }
   const drain = createNoopDrainController(rewrittenDefinition);
   // Both the terminal childWorkflow path and the onTrigger BODY path run a real
   // agent that resolves inference against its OWN per-step source table, keyed by
@@ -1990,6 +2025,16 @@ async function buildChildRunEnv(args: {
       childOnEvent,
       childCredentialContext,
     );
+  let effects: ReturnType<typeof createInMemoryEffectLedger> | undefined;
+  let invokeAction: ReturnType<typeof createDefaultActionInvoker> | undefined;
+  if (actionResolver !== undefined) {
+    effects = createInMemoryEffectLedger();
+    invokeAction = createDefaultActionInvoker(
+      authorize,
+      effects,
+      actionResolver,
+    );
+  }
   const env: WorkflowRuntimeEnv = {
     repoStore,
     scheduler: deps.scheduler,
@@ -2004,11 +2049,15 @@ async function buildChildRunEnv(args: {
     drain,
     hasUpstreamSignalResolver: args.hasUpstreamSignalResolver,
     ...(loopFns !== undefined ? { loopFns } : {}),
+    ...(effects !== undefined && invokeAction !== undefined
+      ? { effects, invokeAction }
+      : {}),
   };
   // Wire loop-iteration spawning for a `loop` nested in this body. Assigned
   // AFTER the env literal because the iteration host closes over `env`: a loop
   // iteration re-enters THIS body env, so a nested loop composes and inherits
-  // the body's step invoker, capped grants, and in-memory spawnChild.
+  // the body's step invoker, capped grants, invokeAction, effect ledger, and
+  // in-memory spawnChild.
   //
   // This deliberately REPLICATES the top-level loop host in run-child.ts rather
   // than sharing a helper. The two differ in the grants seam (here

@@ -64,6 +64,8 @@ import {
   rewriteInlineChildWorkflowBodies,
   enumerateInlineLoopBodies,
   eagerlyResolveLoopFns,
+  walkWorkflowSteps,
+  LOOP_BODY_DESCENT,
 } from "@intx/workflow";
 import type { AuthzCallResult } from "@intx/inference";
 
@@ -793,11 +795,13 @@ export async function runWorkflowChild(
   );
 
   // Action handlers resolve from the pinned closure's `interchange.actions`
-  // module, on the same terms as loop fns. Resolve every action handler ref
-  // reachable from the definition eagerly here (recursing into loop bodies,
-  // where an action body is the common case), so a deployment that declares an
-  // action whose handler the closure does not export fails at establish rather
-  // than mid-run.
+  // module, on the same terms as loop fns. This call walks the rewritten
+  // top-level definition plus each lifted onTrigger and childWorkflow body;
+  // loop bodies share the top-level env and are walked with it. The walk is
+  // `LOOP_BODY_DESCENT`, so a grandchild action still inline inside one of
+  // those bodies is not resolved here. That grandchild's own env resolves it
+  // when the grandchild is built. A handler this call does walk, and that the
+  // closure does not export, fails at establish.
   const actionResolver = await loadWorkflowActionHandlersFromClosure({
     packageDir: opts.env.closurePackageDir,
   });
@@ -1675,27 +1679,31 @@ async function handleControlPayload(
  */
 
 /**
- * Force-resolve every `action` handler ref reachable from these definitions
- * against the resolver, so a missing action handler surfaces at establish
- * rather than when the action is first invoked mid-run. Recurses into loop
- * bodies (an action body is the common loop shape). The caller passes the
- * lifted onTrigger/childWorkflow bodies separately, as with loop fns.
+ * Force-resolve every `action` handler ref these definitions run against the
+ * resolver, so a missing action handler surfaces before the run starts rather
+ * than when the action is first invoked. The walk is `LOOP_BODY_DESCENT`: a
+ * loop body shares this env, and an inline onTrigger or childWorkflow body
+ * does not. The establish caller passes those lifted bodies as their own
+ * definitions; a spawned body passes only the definition it is about to run,
+ * and a grandchild action is resolved when that grandchild builds its own env.
  */
-function eagerlyResolveActionHandlers(
+export function eagerlyResolveActionHandlers(
   definitions: readonly WorkflowDefinition[],
   actionResolver: (ref: string) => ActionHandler,
 ): void {
-  const visit = (def: WorkflowDefinition): void => {
-    for (const step of Object.values(def.steps)) {
-      if (step.kind === "action") {
-        // Throws (fail closed) if the handler names no export, or a non-function.
-        actionResolver(step.handler);
-      } else if (step.kind === "loop") {
-        visit(step.body);
-      }
-    }
-  };
-  for (const def of definitions) visit(def);
+  for (const definition of definitions) {
+    walkWorkflowSteps({
+      definition,
+      descent: LOOP_BODY_DESCENT,
+      context: "eagerlyResolveActionHandlers: ",
+      visit: ({ step }) => {
+        if (step.kind === "action") {
+          // Throws (fail closed) if the handler names no export, or a non-function.
+          actionResolver(step.handler);
+        }
+      },
+    });
+  }
 }
 
 function unwiredMailPartReader(): MailPartReader {
