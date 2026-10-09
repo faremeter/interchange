@@ -761,10 +761,23 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
       expect(claimed?.id).toBe(pending.id);
       const replacementAt = new Date(Date.now() + 300_000);
+      const previousRefs = {
+        credentialIds: ["cred-previous"],
+        bindings: [
+          {
+            handle: "api",
+            credentialId: "cred-previous",
+            consumer: "tool:bundle-id",
+          },
+        ],
+      };
 
       await h.db
         .update(workflowRun)
-        .set({ publicKey: "generation-1-public-key" })
+        .set({
+          publicKey: "generation-1-public-key",
+          credentialRefs: previousRefs,
+        })
         .where(eq(workflowRun.id, ANCHOR_RUN_ID));
 
       expect(
@@ -778,6 +791,15 @@ describe.skipIf(!harnessDbEnvAvailable())(
           failureMessage: "stale reconciler",
         }),
       ).toBeNull();
+      expect(
+        await h.db.query.workflowRun.findFirst({
+          where: (row, { eq }) => eq(row.id, ANCHOR_RUN_ID),
+          columns: { publicKey: true, credentialRefs: true },
+        }),
+      ).toEqual({
+        publicKey: "generation-1-public-key",
+        credentialRefs: previousRefs,
+      });
 
       const replacing = await store.beginReplacement({
         allocationId: pending.id,
@@ -802,9 +824,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(
         await h.db.query.workflowRun.findFirst({
           where: (row, { eq }) => eq(row.id, ANCHOR_RUN_ID),
-          columns: { publicKey: true },
+          columns: { publicKey: true, credentialRefs: true },
         }),
-      ).toEqual({ publicKey: null });
+      ).toEqual({ publicKey: null, credentialRefs: null });
 
       const replacement = await store.bindReplacementSidecar({
         allocationId: pending.id,

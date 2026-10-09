@@ -5,7 +5,11 @@ import path from "node:path";
 import git from "isomorphic-git";
 import { type, type Type } from "arktype";
 
-import { createInMemoryGrantStore, evaluateGrants } from "@intx/authz";
+import {
+  createInMemoryGrantStore,
+  evaluateGrants,
+  toolConsumer,
+} from "@intx/authz";
 import {
   TenantConfigInvalidError,
   WorkflowRunDispatchPayloadConflictError,
@@ -297,6 +301,13 @@ type MockDBOpts = {
   // definition's version row. `null` models the "not yet approved" state
   // (fail-closed); `undefined` returns no version row (also fail-closed).
   grantSnapshot?: GrantWalkSnapshot | null;
+  credentialRefs?: {
+    credentialIds: string[];
+    bindings: { handle: string; credentialId: string; consumer: string }[];
+  };
+  /** Null models an anchor whose initialization has not published a key. */
+  publicKey?: string | null;
+  initializationLeaseId?: string | null;
 };
 
 function createMockDB(opts: MockDBOpts) {
@@ -341,6 +352,7 @@ function createMockDB(opts: MockDBOpts) {
                   status: locked
                     ? (opts.lockedAllocationStatus ?? status)
                     : status,
+                  initializationLeaseId: opts.initializationLeaseId ?? null,
                 },
               ];
         }
@@ -385,6 +397,9 @@ function createMockDB(opts: MockDBOpts) {
                     ? "running"
                     : opts.topLevelRunStatus,
                 createdAt: opts.deploymentRow.createdAt,
+                ...(opts.credentialRefs !== undefined
+                  ? { credentialRefs: opts.credentialRefs }
+                  : {}),
               },
             ]
           : [
@@ -399,6 +414,14 @@ function createMockDB(opts: MockDBOpts) {
                   opts.topLevelRunStatus ?? opts.anchorStatus ?? "running",
                 cancellationRequestedAt: opts.cancellationRequestedAt ?? null,
                 expiresAt: opts.expiresAt ?? null,
+                publicKey:
+                  opts.publicKey !== undefined
+                    ? opts.publicKey
+                    : "recorded-key",
+                credentialRefs:
+                  opts.credentialRefs !== undefined
+                    ? opts.credentialRefs
+                    : null,
               },
             ];
       };
@@ -2218,6 +2241,68 @@ describe("POST /workflows/:anchorRunId/mail", () => {
       const grantRow = assertBody(GrantInsert, gi.values);
       expect(grantRow.principalId).toBe(principalRow.id);
     }
+  });
+
+  test("stamps a credential use grant from the anchor bindings", async () => {
+    const consumer = toolConsumer("bundle-id");
+    const runGrantsCalls: RunGrantsCall[] = [];
+    const app = createTestApp({
+      grants: [manageGrant()],
+      runGrantsCalls,
+      db: {
+        deploymentRow,
+        assetRow: workflowAssetRow,
+        credentialRefs: {
+          credentialIds: ["cred-1", "inference-only"],
+          bindings: [
+            { handle: "api", credentialId: "cred-1", consumer },
+            { handle: "other", credentialId: "cred-1", consumer },
+          ],
+        },
+      },
+      workflowJson: WORKFLOW_JSON_WITH_TOOLS,
+    });
+
+    const res = await app.fetch(
+      authedPost(`${base()}/${DEPLOYMENT_ID}/mail`, { content: "kick off" }),
+    );
+    expect(res.status).toBe(202);
+    const grantsCall = runGrantsCalls[0];
+    if (grantsCall === undefined) throw new Error("missing run.grants call");
+    const credentialGrants = grantsCall.stepGrants.filter((grant) =>
+      grant.resource.startsWith("credential:"),
+    );
+    expect(credentialGrants).toEqual([
+      expect.objectContaining({
+        resource: "credential:cred-1",
+        action: "use",
+        effect: "allow",
+        origin: "system",
+        conditions: { tool: consumer },
+        expiresAt: null,
+      }),
+    ]);
+  });
+
+  test("refuses the first trigger while credential resolution is unrecorded", async () => {
+    const inserts: InsertRecord[] = [];
+    const app = createTestApp({
+      grants: [manageGrant()],
+      db: {
+        deploymentRow,
+        assetRow: workflowAssetRow,
+        inserts,
+        publicKey: null,
+      },
+      workflowJson: WORKFLOW_JSON_WITH_TOOLS,
+    });
+
+    const res = await app.fetch(
+      authedPost(`${base()}/${DEPLOYMENT_ID}/mail`, { content: "kick off" }),
+    );
+    expect(res.status).toBe(409);
+    expect(await errorCode(res)).toBe("deployment_not_ready");
+    expect(inserts.filter((record) => record.table === grantTable)).toEqual([]);
   });
 
   test("materializes action effect grants in the frame and DB", async () => {

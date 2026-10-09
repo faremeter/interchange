@@ -383,6 +383,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         address,
         // The deploy-time birth state; the first mail trigger flips it running.
         status: "deployed",
+        // A recorded key with no credential refs is a finished initialization
+        // that delivered nothing. The first grant commit refuses an anchor
+        // that has recorded neither.
+        publicKey: "test-public-key",
       });
 
       await repoStore.initRepo({ kind: "workflow", id: assetId });

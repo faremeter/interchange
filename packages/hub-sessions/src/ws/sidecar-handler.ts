@@ -834,6 +834,33 @@ export function createSidecarRouter(
     timer: ReturnType<typeof setTimeout>;
   };
   const deferredSenderMail = new Map<string, Set<DeferredSenderMailEntry>>();
+  // Recipient address → mail held because that deployment has not recorded
+  // credential resolution. A sibling of `deferredSenderMail`: keyed by the
+  // RECIPIENT. A recorded settle re-drives with the sender key bound when
+  // the mail was accepted, not the recipient's key. `rejected` is the
+  // wrong outcome here -- it drops the mail.
+  type DeferredRecipientResolutionMailEntry = {
+    recipient: string;
+    authenticatedSender: string;
+    rawMessage: string;
+    recipients: string[];
+    // The sender key bound for this message before the hold. Null means
+    // that resolve found no key. A redrive passes this value so a later
+    // key cannot replace it; omitting it would resolve again.
+    recordedSenderKey: string | null;
+    // Armed when the attempt finishes parked with no wake. Null while the
+    // attempt is in flight, and after the hold is claimed.
+    cancelTimer: (() => void) | null;
+    // True until the attempt that parked this entry finishes. A settle during
+    // that await records `wake` and does not re-drive yet: the attempt may
+    // still route, and a re-drive beside it would deliver the mail twice.
+    inflight: boolean;
+    wake: SenderDeploySettledOutcome | null;
+  };
+  const deferredRecipientResolutionMail = new Map<
+    string,
+    Set<DeferredRecipientResolutionMailEntry>
+  >();
   // agentAddress → set of subscriber callbacks for agent events
   const agentSubscribers = new Map<string, Set<(event: unknown) => void>>();
   // agentAddress → cached connector-thread state, populated by
@@ -2005,10 +2032,204 @@ export function createSidecarRouter(
     settleSenderMail(sender, outcome);
   }
 
+  function parkDeferredRecipientResolutionMail(
+    recipient: string,
+    rawMessage: string,
+    authenticatedSender: string,
+    recordedSenderKey: string | null,
+  ): DeferredRecipientResolutionMailEntry {
+    let parked = deferredRecipientResolutionMail.get(recipient);
+    if (parked === undefined) {
+      parked = new Set();
+      deferredRecipientResolutionMail.set(recipient, parked);
+    }
+    // The hold owns this recipient alone. Its settle, TTL, and drain report
+    // `recipients`, and a recorded settle re-drives only that list.
+    const entry: DeferredRecipientResolutionMailEntry = {
+      recipient,
+      authenticatedSender,
+      rawMessage,
+      recipients: [recipient],
+      recordedSenderKey,
+      inflight: true,
+      wake: null,
+      cancelTimer: null,
+    };
+    parked.add(entry);
+    return entry;
+  }
+
+  function claimDeferredRecipientResolutionEntry(
+    entry: DeferredRecipientResolutionMailEntry,
+  ): boolean {
+    const parked = deferredRecipientResolutionMail.get(entry.recipient);
+    if (parked === undefined) return false;
+    const claimed = parked.delete(entry);
+    if (!claimed) return false;
+    if (entry.cancelTimer !== null) {
+      entry.cancelTimer();
+      entry.cancelTimer = null;
+    }
+    if (parked.size === 0)
+      deferredRecipientResolutionMail.delete(entry.recipient);
+    return true;
+  }
+
+  function claimAllDeferredRecipientResolutionMail(
+    recipient: string,
+  ): DeferredRecipientResolutionMailEntry[] {
+    const parked = deferredRecipientResolutionMail.get(recipient);
+    if (parked === undefined) return [];
+    deferredRecipientResolutionMail.delete(recipient);
+    const entries = [...parked];
+    for (const entry of entries) {
+      if (entry.cancelTimer !== null) {
+        entry.cancelTimer();
+        entry.cancelTimer = null;
+      }
+    }
+    return entries;
+  }
+
+  function drainDeferredRecipientResolutionMail(
+    recipient: string,
+    reason: string,
+  ): void {
+    const entries = claimAllDeferredRecipientResolutionMail(recipient);
+    if (entries.length === 0) return;
+    for (const entry of entries) {
+      events.emit("mail.outbound.undelivered", {
+        rawMessage: entry.rawMessage,
+        recipients: entry.recipients,
+      });
+    }
+    logger.warn`Dropping ${String(entries.length)} deferred message(s) to ${recipient}: ${reason}`;
+  }
+
+  function redriveRecipientResolutionMail(
+    entry: DeferredRecipientResolutionMailEntry,
+  ): void {
+    // Re-drive with the sender key bound when this mail was accepted. The
+    // recipient's recorded key authenticates the deployment, not the
+    // sender, so it is not the fourth argument.
+    void Promise.resolve()
+      .then(() =>
+        handleMailOutbound(
+          entry.rawMessage,
+          entry.authenticatedSender,
+          entry.recipients,
+          entry.recordedSenderKey,
+        ),
+      )
+      .catch((err: unknown) => {
+        logger.error`Re-driving deferred mail to ${entry.recipient} failed: ${err instanceof Error ? err.message : String(err)}`;
+      });
+  }
+
+  function undeliverRecipientResolutionEntry(
+    entry: DeferredRecipientResolutionMailEntry,
+    reason: string,
+  ): void {
+    events.emit("mail.outbound.undelivered", {
+      rawMessage: entry.rawMessage,
+      recipients: entry.recipients,
+    });
+    logger.warn`Dropping mail to ${entry.recipient}: ${reason}`;
+  }
+
+  // The in-flight attempt is about to route. Drop the hold, including a
+  // settle that arrived during the await, so that settle does not route too.
+  function takeInFlightRecipientDelivery(
+    entry: DeferredRecipientResolutionMailEntry,
+  ): boolean {
+    entry.inflight = false;
+    entry.wake = null;
+    return claimDeferredRecipientResolutionEntry(entry);
+  }
+
+  // The TTL starts once the attempt has finished parked. Arming it at
+  // park time can claim the hold while materialize is still in flight,
+  // which drops a recorded wake and supersedes a return that is ready
+  // to route. A drain during that await detaches the entry; arming then
+  // would leak a timer whose callback no-ops.
+  function armRecipientResolutionTtl(
+    entry: DeferredRecipientResolutionMailEntry,
+  ): void {
+    if (entry.cancelTimer !== null) return;
+    const parked = deferredRecipientResolutionMail.get(entry.recipient);
+    if (parked === undefined || !parked.has(entry)) return;
+    entry.cancelTimer = scheduleTimeout(() => {
+      if (!claimDeferredRecipientResolutionEntry(entry)) return;
+      events.emit("mail.outbound.undelivered", {
+        rawMessage: entry.rawMessage,
+        recipients: entry.recipients,
+      });
+      logger.warn`Dropping mail to ${entry.recipient}: credential resolution was not recorded before the deferred-mail TTL expired`;
+    }, disconnectQueueTTLMs);
+  }
+
+  // The in-flight attempt did not route. A settle that arrived during the
+  // await owns the next step; otherwise the entry stays parked for a later
+  // settle or the TTL.
+  function finishParkedRecipientResolution(
+    entry: DeferredRecipientResolutionMailEntry,
+  ): void {
+    entry.inflight = false;
+    const wake = entry.wake;
+    if (wake === null) {
+      armRecipientResolutionTtl(entry);
+      return;
+    }
+    if (!claimDeferredRecipientResolutionEntry(entry)) return;
+    if ("failed" in wake) {
+      undeliverRecipientResolutionEntry(
+        entry,
+        `recipient deploy failed: ${wake.failed}`,
+      );
+      return;
+    }
+    redriveRecipientResolutionMail(entry);
+  }
+
+  // A thrown attempt fails closed. Claim the hold so the TTL does not later
+  // report the original recipient list as undelivered.
+  function abandonInFlightRecipientResolution(
+    entry: DeferredRecipientResolutionMailEntry,
+  ): void {
+    entry.inflight = false;
+    entry.wake = null;
+    claimDeferredRecipientResolutionEntry(entry);
+  }
+
+  function settleRecipientResolutionMail(
+    address: string,
+    outcome: SenderDeploySettledOutcome,
+  ): void {
+    // A failed attempt has not recorded resolution and does not prove a
+    // later attempt will not. Claiming the hold drops mail the next
+    // recorded settle can still deliver. The TTL undelivers if none does.
+    if ("failed" in outcome) return;
+    const parked = deferredRecipientResolutionMail.get(address);
+    if (parked === undefined) return;
+    const idle: DeferredRecipientResolutionMailEntry[] = [];
+    for (const entry of parked) {
+      if (entry.inflight) {
+        entry.wake = outcome;
+      } else {
+        idle.push(entry);
+      }
+    }
+    for (const entry of idle) {
+      if (!claimDeferredRecipientResolutionEntry(entry)) continue;
+      redriveRecipientResolutionMail(entry);
+    }
+  }
+
   function settleSenderMail(
     address: string,
     outcome: SenderDeploySettledOutcome,
   ): void {
+    settleRecipientResolutionMail(address, outcome);
     if ("failed" in outcome) {
       drainDeferredSenderMail(
         address,
@@ -2120,7 +2341,11 @@ export function createSidecarRouter(
     rawMessage: string,
     authenticatedSender: string,
     recipients: string[],
-    recordedSenderKey?: string,
+    // undefined resolves now. null is a finished resolve that found no
+    // key, and a string is the key already bound for this message. null
+    // and undefined are different: treating null as missing resolves again
+    // and can co-deliver a key this message was not accepted under.
+    recordedSenderKey?: string | null,
   ): Promise<void> {
     // A mail addressed to more than one workflow deployment would birth a
     // run per recipient from a single inbound mail. The stable runId
@@ -2171,6 +2396,9 @@ export function createSidecarRouter(
           };
     if (!resolution.deliver) return;
     const senderIdentities = resolution.senderIdentities;
+    const boundIdentity = senderIdentities?.[0];
+    const boundSenderKey =
+      boundIdentity === undefined ? null : boundIdentity.publicKey;
 
     // Route to locally connected sidecars first, then try disconnect queues.
     const unrouted: string[] = [];
@@ -2179,15 +2407,41 @@ export function createSidecarRouter(
       // fail-closed rejection for one must not drop the mail for its
       // co-recipients. The catch fails THIS recipient closed (its run never
       // starts under-authorized) and continues to the rest.
+      // Register the hold before awaiting materialization. A settle that
+      // lands during that await finds the entry and records a wake; it does
+      // not re-drive until this attempt finishes, so a ready attempt routes
+      // once and a not-ready attempt hands the mail to that wake.
+      let parked: DeferredRecipientResolutionMailEntry | undefined;
       try {
+        parked =
+          lookups.materializeMailTriggeredRunGrants !== undefined &&
+          isRunAddress(recipient)
+            ? parkDeferredRecipientResolutionMail(
+                recipient,
+                rawMessage,
+                authenticatedSender,
+                boundSenderKey,
+              )
+            : undefined;
         const outcome = await deliverMailToRecipient(
           recipient,
           rawMessage,
           authenticatedSender,
           senderIdentities,
+          parked,
         );
+        if (
+          parked !== undefined &&
+          (outcome === "parked" || outcome === "superseded")
+        ) {
+          // This hold is only this recipient. Its settle, TTL, and drain
+          // report that recipient, so the rest of this attempt still runs.
+          if (outcome === "parked") finishParkedRecipientResolution(parked);
+          continue;
+        }
         if (outcome === "unrouted") unrouted.push(recipient);
       } catch (err) {
+        if (parked !== undefined) abandonInFlightRecipientResolution(parked);
         logger.error`Failed to deliver mail to ${recipient}: ${err instanceof Error ? err.message : String(err)}`;
       }
     }
@@ -2213,6 +2467,10 @@ export function createSidecarRouter(
   //   - `failed-closed`: the run's grants could not be materialized safely,
   //     so the mail is deliberately DROPPED for this recipient (not relayed)
   //     to keep its run from starting under-authorized.
+  //   - `parked`: credential resolution is not recorded yet. The caller holds
+  //     the mail and retries after initialization; it is not relayed.
+  //   - `superseded`: something else claimed the hold during this attempt.
+  //     The caller must not also route.
   //
   // A workflow deployment is the only recipient whose inbound mail can first
   // fire its stable run. Its grants are reserved, and the `run.grants` frame is
@@ -2226,7 +2484,10 @@ export function createSidecarRouter(
     rawMessage: string,
     authenticatedSender: string,
     senderIdentities: RunGrantsFrame["senderIdentities"],
-  ): Promise<"routed" | "unrouted" | "failed-closed"> {
+    hold?: DeferredRecipientResolutionMailEntry,
+  ): Promise<
+    "routed" | "unrouted" | "failed-closed" | "parked" | "superseded"
+  > {
     if (
       lookups.materializeMailTriggeredRunGrants !== undefined &&
       isRunAddress(recipient)
@@ -2245,6 +2506,12 @@ export function createSidecarRouter(
         agentAddress: recipient,
         runId,
       });
+      if (result.outcome === "notReady") return "parked";
+      // Claim before any send. A settle that arrived during the await must
+      // not route beside this attempt.
+      if (hold !== undefined && !takeInFlightRecipientDelivery(hold)) {
+        return "superseded";
+      }
       if (result.outcome === "rejected") {
         // The run's grants could not be materialized with sufficient
         // authority or it is already terminal. Fail the mail closed for this
@@ -3593,6 +3860,10 @@ export function createSidecarRouter(
           // per case.
           if (conn.identity.kind !== "allocated") {
             drainDeferredSenderMail(agentAddress, `deploy failed: ${error}`);
+            drainDeferredRecipientResolutionMail(
+              agentAddress,
+              `deploy failed: ${error}`,
+            );
           }
           response.reject(deployFrameFailure(error, true));
         },

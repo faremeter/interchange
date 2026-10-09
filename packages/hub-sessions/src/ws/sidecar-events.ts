@@ -59,11 +59,14 @@ export type WorkflowRunPackSource = {
  * Outcome of reserving a mail-triggered run's grants. `skip` means the
  * recipient names no workflow deployment; `rejected` means the deployment's
  * stable run is terminal or its requirements cannot be authorized;
+ * `notReady` means credential resolution is not recorded yet, so nothing
+ * was committed and the caller should retry after initialization;
  * `materialized` carries the canonical persisted wire rows.
  */
 export type MailTriggeredRunGrantsResult =
   | { outcome: "skip" }
   | { outcome: "rejected"; status: 403 | 409; code: string; message: string }
+  | { outcome: "notReady" }
   | {
       outcome: "materialized";
       stepGrants: RunGrantsFrame["stepGrants"];
