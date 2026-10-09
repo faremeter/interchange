@@ -53,7 +53,6 @@ import {
 
 import {
   SESSION_ID,
-  buildSyntheticNpmPackageTarball,
   fireMailTrigger,
   seedInferenceCredentials,
   startDeployFlowEnv,
@@ -62,6 +61,7 @@ import {
   waitForWorkflowRunComplete,
   type DeployFlowEnv,
 } from "../hub-agent/lib/deploy-flow-env";
+import { buildSyntheticNpmPackageTarball } from "../hub-agent/lib/synthetic-npm-package-tarball";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const DEPLOYMENT_ID = generateId("workflowRun");
@@ -165,7 +165,6 @@ let scratchDir: string;
 let sourceCommitSha: string;
 let registryServer: ReturnType<typeof Bun.serve> | undefined;
 let packument: Packument;
-const tarballTempDirs: string[] = [];
 
 const sourceRepoId: RepoId = { kind: "workflow", id: SOURCE_ASSET_ID };
 
@@ -210,14 +209,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       // Build the external dep tarball, compute its SRI, and stand up an
       // in-process npm registry that serves its packument + tarball.
-      const extBytes = await buildSyntheticNpmPackageTarball(
-        (dir) => tarballTempDirs.push(dir),
-        {
-          packageName: EXT_PACKAGE_NAME,
-          version: EXT_PACKAGE_VERSION,
-          moduleSource: extModuleSource,
-        },
-      );
+      const { bytes: extBytes } = await buildSyntheticNpmPackageTarball({
+        packageName: EXT_PACKAGE_NAME,
+        version: EXT_PACKAGE_VERSION,
+        moduleFilename: "index.mjs",
+        moduleSource: extModuleSource,
+        manifest: { type: "module", exports: "./index.mjs" },
+      });
       const extIntegrity = sri(extBytes);
 
       registryServer = Bun.serve({
@@ -316,9 +314,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
       if (env !== undefined) await env.teardown();
       if (h !== undefined) await h.close();
       if (registryServer !== undefined) await registryServer.stop(true);
-      for (const dir of tarballTempDirs.splice(0)) {
-        await fs.rm(dir, { recursive: true, force: true });
-      }
       if (scratchDir !== undefined) {
         await fs.rm(scratchDir, { recursive: true, force: true });
       }

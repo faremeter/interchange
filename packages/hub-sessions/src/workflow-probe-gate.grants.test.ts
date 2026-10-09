@@ -26,6 +26,7 @@ import type { GrantRequirement } from "@intx/types";
 import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import type { WorkflowProjectionDefinition } from "@intx/types/sidecar";
 import { createApprovalSet, type ApprovalSet } from "@intx/workflow-deploy";
+import type { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
 
 import {
   gateAndFreezeProbeResult,
@@ -33,6 +34,15 @@ import {
   type PersistFrozenApprovalFn,
 } from "./workflow-probe-gate";
 import type { WorkflowProbeResult } from "./ws/sidecar-handler";
+
+const DEFINITION_SOURCE: WorkflowDefinitionSource = {
+  kind: "asset",
+  assetId: "asset-1",
+  package: {
+    format: "source",
+    commitSha: "0123456789abcdef0123456789abcdef01234567",
+  },
+};
 
 const PROJECTION: WorkflowProjectionDefinition = {
   id: "wf-forged-requirements",
@@ -111,6 +121,94 @@ function mentions(value: unknown, requirement: GrantRequirement): boolean {
 }
 
 describe("gateAndFreezeProbeResult declared grant requirements", () => {
+  test("rejects creator requirements from an asset tarball before freezing", async () => {
+    const probeResult = await makeProbeResult({
+      grants: [],
+      grantRequirements: [FORGED_NAMED],
+    });
+    const { persist, calls } = recordingPersist("def-registry-creator");
+
+    const result = await gateAndFreezeProbeResult({
+      assetId: "asset-1",
+      source: {
+        kind: "asset",
+        assetId: "registry-1",
+        package: { format: "tarball" },
+      },
+      probeResult,
+      approvals: { kind: "approve-probed" },
+      persist,
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected rejection");
+    expect(result.reason).toBe(
+      "creator_requirements_unsupported_for_package_registry_tarball",
+    );
+    if (
+      result.reason !==
+      "creator_requirements_unsupported_for_package_registry_tarball"
+    ) {
+      throw new Error("wrong reason");
+    }
+    expect(result.creatorGrantRequirements).toEqual([FORGED_NAMED]);
+    expect(calls).toEqual([]);
+  });
+
+  test("allows an asset tarball without creator requirements", async () => {
+    const invokerRequirement: GrantRequirement = {
+      resource: "wallet:wal_invoker",
+      action: "spend",
+      source: "invoker",
+    };
+    const probeResult = await makeProbeResult({
+      grants: [],
+      grantRequirements: [invokerRequirement],
+    });
+    const { persist, calls } = recordingPersist("def-registry-invoker");
+
+    const result = await gateAndFreezeProbeResult({
+      assetId: "asset-1",
+      source: {
+        kind: "asset",
+        assetId: "registry-1",
+        package: { format: "tarball" },
+      },
+      probeResult,
+      approvals: { kind: "approve-probed" },
+      persist,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(calls).toHaveLength(1);
+  });
+
+  test("allows creator requirements from an asset source tree", async () => {
+    const probeResult = await makeProbeResult({
+      grants: [],
+      grantRequirements: [FORGED_NAMED],
+    });
+    const { persist, calls } = recordingPersist("def-source-creator");
+
+    const result = await gateAndFreezeProbeResult({
+      assetId: "asset-1",
+      source: {
+        kind: "asset",
+        assetId: "workflow-source-1",
+        package: {
+          format: "source",
+          commitSha: "0123456789abcdef0123456789abcdef01234567",
+        },
+      },
+      probeResult,
+      approvals: { kind: "approve-probed" },
+      persist,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(calls).toHaveLength(1);
+  });
+
   test("rejects a declared requirement the operator's ApprovalSet does not cover", async () => {
     // The operator approved nothing at all. The probe advertises no walk
     // grants, so the gate's `grants` filter finds nothing to object to -- but
@@ -124,6 +222,7 @@ describe("gateAndFreezeProbeResult declared grant requirements", () => {
 
     const result = await gateAndFreezeProbeResult({
       assetId: "asset-1",
+      source: DEFINITION_SOURCE,
       probeResult,
       approvals,
       persist,
@@ -151,6 +250,7 @@ describe("gateAndFreezeProbeResult declared grant requirements", () => {
 
     const result = await gateAndFreezeProbeResult({
       assetId: "asset-1",
+      source: DEFINITION_SOURCE,
       probeResult,
       approvals,
       persist,
@@ -173,6 +273,7 @@ describe("gateAndFreezeProbeResult declared grant requirements", () => {
 
     const result = await gateAndFreezeProbeResult({
       assetId: "asset-1",
+      source: DEFINITION_SOURCE,
       probeResult,
       approvals,
       persist,
@@ -203,6 +304,7 @@ describe("gateAndFreezeProbeResult declared grant requirements", () => {
 
     const result = await gateAndFreezeProbeResult({
       assetId: "asset-1",
+      source: DEFINITION_SOURCE,
       probeResult,
       approvals: { kind: "approve-probed" },
       persist,
@@ -243,6 +345,7 @@ describe("gateAndFreezeProbeResult declared grant requirements", () => {
 
     const result = await gateAndFreezeProbeResult({
       assetId: "asset-1",
+      source: DEFINITION_SOURCE,
       probeResult,
       approvals,
       persist,
@@ -279,6 +382,7 @@ describe("gateAndFreezeProbeResult declared grant requirements", () => {
 
     const result = await gateAndFreezeProbeResult({
       assetId: "asset-1",
+      source: DEFINITION_SOURCE,
       probeResult,
       approvals,
       persist,
@@ -306,6 +410,7 @@ describe("gateAndFreezeProbeResult declared grant requirements", () => {
 
     const result = await gateAndFreezeProbeResult({
       assetId: "asset-1",
+      source: DEFINITION_SOURCE,
       probeResult,
       approvals,
       persist,

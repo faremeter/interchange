@@ -25,6 +25,7 @@ import type { DBExecutor } from "@intx/db";
 import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import type { WorkflowProjectionDefinition } from "@intx/types/sidecar";
 import { createApprovalSet, type ApprovalSet } from "@intx/workflow-deploy";
+import type { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
 
 import {
   gateAndFreezeProbeResult,
@@ -33,6 +34,15 @@ import {
   type PersistFrozenApprovalFn,
 } from "./workflow-probe-gate";
 import type { SendProbeArgs, WorkflowProbeResult } from "./ws/sidecar-handler";
+
+const DEFINITION_SOURCE: WorkflowDefinitionSource = {
+  kind: "asset",
+  assetId: "asset-1",
+  package: {
+    format: "source",
+    commitSha: "0123456789abcdef0123456789abcdef01234567",
+  },
+};
 
 const PROJECTION: WorkflowProjectionDefinition = {
   id: "wf-under-test",
@@ -100,6 +110,7 @@ describe("gateAndFreezeProbeResult", () => {
 
     const result = await gateAndFreezeProbeResult({
       assetId: "asset-1",
+      source: DEFINITION_SOURCE,
       probeResult,
       approvals,
       persist: persistMustNotRun,
@@ -131,6 +142,7 @@ describe("gateAndFreezeProbeResult", () => {
 
     const result = await gateAndFreezeProbeResult({
       assetId: "asset-1",
+      source: DEFINITION_SOURCE,
       probeResult,
       approvals,
       persist,
@@ -177,6 +189,7 @@ describe("gateAndFreezeProbeResult", () => {
 
     const result = await gateAndFreezeProbeResult({
       assetId: "asset-1",
+      source: DEFINITION_SOURCE,
       probeResult,
       approvals,
       persist,
@@ -204,6 +217,7 @@ describe("gateAndFreezeProbeResult", () => {
 
     const result = await gateAndFreezeProbeResult({
       assetId: "asset-1",
+      source: DEFINITION_SOURCE,
       probeResult,
       approvals,
       persist: persistMustNotRun,
@@ -229,6 +243,7 @@ describe("gateAndFreezeProbeResult", () => {
     // the probe's surface.
     const result = await gateAndFreezeProbeResult({
       assetId: "asset-1",
+      source: DEFINITION_SOURCE,
       probeResult,
       approvals: { kind: "approve-probed" },
       persist,
@@ -268,6 +283,7 @@ describe("gateAndFreezeProbeResult", () => {
     // relaxes the grant gate, never the wire-hash check.
     const result = await gateAndFreezeProbeResult({
       assetId: "asset-1",
+      source: DEFINITION_SOURCE,
       probeResult,
       approvals: { kind: "approve-probed" },
       persist: persistMustNotRun,

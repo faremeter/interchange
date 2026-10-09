@@ -1,5 +1,5 @@
 import { createMiddleware } from "hono/factory";
-import type { MiddlewareHandler } from "hono";
+import type { Context, MiddlewareHandler } from "hono";
 
 import { authorize } from "@intx/authz";
 import { getLogger } from "@intx/log";
@@ -100,4 +100,47 @@ export function idResource(
     const id = c.param(paramName);
     return id ? `${resourceType}:${id}` : `${resourceType}:*`;
   };
+}
+
+/**
+ * In-handler grant check for an asset named in a request body. `idResource`
+ * only reads URL params and `requireGrant` runs before the body validator, so
+ * a body-sourced `asset:<id>` cannot be gated in middleware. Returns the
+ * same 403 envelope as `requireGrant` when the principal lacks `read`.
+ */
+export async function requireAssetGrant(args: {
+  c: Context<TenantEnv>;
+  grantStore: GrantStore;
+  conditionRegistry: ConditionRegistry;
+  assetId: string;
+}): Promise<Response | null> {
+  const principal = args.c.get("principal");
+  const tenant = args.c.get("tenant");
+  const resource = `asset:${args.assetId}`;
+  const result = await authorize(
+    args.grantStore,
+    principal.id,
+    tenant.id,
+    resource,
+    "read",
+    args.conditionRegistry,
+  );
+  if (result.effect === "allow") {
+    return null;
+  }
+  log.info(
+    "Authorization denied for {principalId}: {resource} {action} -> {effect}",
+    {
+      principalId: principal.id,
+      resource,
+      action: "read",
+      effect: result.effect ?? "no_match",
+      resolvedBy: result.resolvedBy?.id ?? null,
+    },
+  );
+  return errorResponse(
+    args.c,
+    "forbidden",
+    "You do not have permission to perform this action",
+  );
 }

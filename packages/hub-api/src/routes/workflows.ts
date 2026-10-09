@@ -18,7 +18,7 @@ import {
   type DB,
   type PrincipalKeyStore,
 } from "@intx/db";
-import type { GrantStore } from "@intx/types/authz";
+import type { ConditionRegistry, GrantStore } from "@intx/types/authz";
 import {
   correlationIdFromSignalName,
   ErrorResponse,
@@ -38,6 +38,7 @@ import {
   type WorkflowDispatchService,
   WorkflowProvisioningError,
   WORKFLOW_RUN_REF,
+  workflowSourceRepoKind,
 } from "@intx/hub-sessions";
 import { generateId } from "@intx/hub-common";
 import {
@@ -47,7 +48,11 @@ import {
 
 import type { TenantEnv } from "../context";
 import { errorResponse, tenantConfigErrorResponse } from "../error-response";
-import { idResource, type RequireGrant } from "../middleware/grant";
+import {
+  idResource,
+  requireAssetGrant,
+  type RequireGrant,
+} from "../middleware/grant";
 import {
   lockDispatchableAllocation,
   lockWorkflowRunState,
@@ -196,6 +201,7 @@ export type CreateWorkflowRoutesDeps = {
   sidecarRouter: SidecarRouter;
   repoStore: RepoStore;
   grantStore: GrantStore;
+  conditionRegistry: ConditionRegistry;
   requireGrant: RequireGrant;
 };
 
@@ -207,6 +213,7 @@ export function createWorkflowRoutes({
   sidecarRouter,
   repoStore,
   grantStore,
+  conditionRegistry,
   requireGrant,
 }: CreateWorkflowRoutesDeps): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
@@ -247,9 +254,13 @@ export function createWorkflowRoutes({
           "Workflow deployment accepted for provisioning",
           WorkflowDeploymentResponse,
         ),
-        404: jsonResponse("Workflow asset not found", ErrorResponse),
+        403: jsonResponse(
+          "Caller lacks the read grant on the definition asset",
+          ErrorResponse,
+        ),
+        404: jsonResponse("Definition asset not found", ErrorResponse),
         409: jsonResponse(
-          "Workflow definition, source offering chain, or stored tenant config invalid, workflow provisioning unavailable, or provisioner selection failed",
+          "Asset kind does not match the source's package format, workflow definition, source offering chain, or stored tenant config invalid, workflow provisioning unavailable, or provisioner selection failed",
           ErrorResponse,
         ),
         500: jsonResponse(
@@ -264,11 +275,10 @@ export function createWorkflowRoutes({
       const tenant = c.get("tenant");
       const body = c.req.valid("json");
 
-      // The deployment anchors its frozen `workflow_definition` to a
-      // `workflow`-kind asset. An asset-sourced deploy projects the definition
-      // over the very asset it sources from; a registry-sourced deploy has no
-      // backing asset for the definition, so this route (which anchors every
-      // deployment to a workflow asset) does not support it yet.
+      // The deployment anchors its frozen `workflow_definition` to the asset
+      // it sources from, whichever kind the package format lives in. A
+      // registry-sourced deploy has no backing asset for the definition, so
+      // this route does not support it yet.
       if (body.source.kind !== "asset") {
         return errorResponse(
           c,
@@ -278,15 +288,32 @@ export function createWorkflowRoutes({
       }
       const definitionAssetId = body.source.assetId;
 
+      const denied = await requireAssetGrant({
+        c,
+        grantStore,
+        conditionRegistry,
+        assetId: definitionAssetId,
+      });
+      if (denied !== null) {
+        return denied;
+      }
+
       const assetRow = await db.query.asset.findFirst({
         where: and(
           eq(asset.id, definitionAssetId),
           eq(asset.tenantId, tenant.id),
-          eq(asset.kind, "workflow"),
         ),
       });
       if (!assetRow) {
-        return errorResponse(c, "not_found", "Workflow asset not found");
+        return errorResponse(c, "not_found", "Definition asset not found");
+      }
+      const expectedKind = workflowSourceRepoKind(body.source);
+      if (assetRow.kind !== expectedKind) {
+        return errorResponse(
+          c,
+          "asset_kind_mismatch",
+          `A ${body.source.package.format}-format workflow source must name a ${expectedKind} asset; ${assetRow.id} is a ${assetRow.kind} asset`,
+        );
       }
 
       if (workflowAllocationService === undefined) {
