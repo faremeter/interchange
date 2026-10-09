@@ -22,7 +22,7 @@ import {
   workflowDefinition,
   workflowRun,
 } from "@intx/db/schema";
-import type { DB, PrincipalKeyStore } from "@intx/db";
+import type { DB, DBExecutor, PrincipalKeyStore } from "@intx/db";
 import {
   loadFrozenGrantSnapshot,
   resolveFrameSenderKey,
@@ -57,6 +57,8 @@ import {
   collectCreatorGrants,
   commitRunGrants,
   loadCommittedRunGrants,
+  grantRowsWithLockedCredentialResolution,
+  lockAnchorCredentialResolution,
   lockDispatchableAllocation,
   lockWorkflowRunState,
   stageRunGrantsFromSnapshot,
@@ -217,6 +219,7 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
         allocationStatus: sidecarAllocation.status,
         anchorStatus: workflowRun.status,
         runStatus: topLevelRun.status,
+        credentialRefs: workflowRun.credentialRefs,
       })
       .from(workflowRun)
       .innerJoin(
@@ -384,6 +387,7 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
         invokerGrants,
         creatorGrants,
         grantRequirements: declaredGrantRequirements,
+        credentialBindings: anchor.credentialRefs?.bindings ?? [],
       });
       if (!staged.ok) {
         const { status, code, message } = staged.rejection;
@@ -433,6 +437,43 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
     const rawMessage = assembleMessage(headers, signedContent, signature);
     const base64 = base64Encode(rawMessage);
 
+    // The pre-transaction binding read races initialization. A first commit
+    // re-reads the anchor under its row lock and stamps from that row, or
+    // inserts nothing when resolution is still unrecorded.
+    const commitFirstOrCanonical = async (
+      tx: DBExecutor,
+    ): Promise<RunGrantsFrame["stepGrants"] | "not-ready"> => {
+      const grantArgs = {
+        db,
+        principalKeyStore,
+        tenantId: tenant.id,
+        anchorRunId,
+        definitionId: anchor.definitionId,
+        runId,
+        runPrincipalId,
+        now,
+      };
+      if (committedRunGrants !== null) {
+        return commitRunGrants(
+          { ...grantArgs, grantRows: stagedGrantRows },
+          tx,
+        );
+      }
+      const resolution = await lockAnchorCredentialResolution(tx, anchorRunId);
+      if (resolution === null) {
+        throw new Error(
+          `trigger run ${runId}: anchor run ${anchorRunId} disappeared while locking credential resolution`,
+        );
+      }
+      const grantRows = grantRowsWithLockedCredentialResolution(
+        stagedGrantRows,
+        resolution,
+        { tenantId: tenant.id, runPrincipalId, now },
+      );
+      if (grantRows === "not-ready") return grantRows;
+      return commitRunGrants({ ...grantArgs, grantRows }, tx);
+    };
+
     const allocationId = anchor.allocationId;
     if (allocationId !== null) {
       if (workflowDispatchService === undefined) {
@@ -469,20 +510,8 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
         );
         if (anchorState === "stopping") return "run-stopping" as const;
         if (anchorState !== "running") return "run-terminal" as const;
-        const canonicalStepGrants = await commitRunGrants(
-          {
-            db,
-            principalKeyStore,
-            tenantId: tenant.id,
-            anchorRunId,
-            definitionId: anchor.definitionId,
-            runId,
-            runPrincipalId,
-            now,
-            grantRows: stagedGrantRows,
-          },
-          tx,
-        );
+        const canonicalStepGrants = await commitFirstOrCanonical(tx);
+        if (canonicalStepGrants === "not-ready") return "not-ready" as const;
         await workflowDispatchService.enqueue(
           {
             id: `dispatch:${anchorRunId}:${messageId}`,
@@ -497,6 +526,19 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
         );
         return "committed" as const;
       });
+      if (committed === "not-ready") {
+        return {
+          ok: false,
+          status: 409,
+          body: {
+            error: {
+              code: "deployment_not_ready",
+              message:
+                "Workflow deployment has not recorded credential resolution",
+            },
+          },
+        };
+      }
       if (committed === "run-terminal")
         return runUnavailable(runId, "terminal");
       if (committed === "run-stopping")
@@ -530,21 +572,21 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
       );
       if (anchorState !== "running")
         return anchorState === "stopping" ? anchorState : "terminal";
-      return commitRunGrants(
-        {
-          db,
-          principalKeyStore,
-          tenantId: tenant.id,
-          anchorRunId,
-          definitionId: anchor.definitionId,
-          runId,
-          runPrincipalId,
-          now,
-          grantRows: stagedGrantRows,
-        },
-        tx,
-      );
+      return commitFirstOrCanonical(tx);
     });
+    if (reserved === "not-ready") {
+      return {
+        ok: false,
+        status: 409,
+        body: {
+          error: {
+            code: "deployment_not_ready",
+            message:
+              "Workflow deployment has not recorded credential resolution",
+          },
+        },
+      };
+    }
     if (reserved === "stopping" || reserved === "terminal")
       return runUnavailable(runId, reserved);
     stepGrants = reserved;

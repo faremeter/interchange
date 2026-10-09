@@ -109,6 +109,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         definitionId: DEFINITION,
         address: WORKFLOW_ADDRESS,
         status: "running",
+        publicKey: "test-public-key",
       });
       // The creator holds the grant its creator-sourced requirement demands,
       // so the happy path resolves it. The rejection test overrides the
@@ -196,6 +197,69 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const resources = grants.map((g) => `${g.resource}/${g.action}`).sort();
       expect(resources).toContain("tool:read_file/invoke");
       expect(resources).toContain("secret:vault/use");
+    });
+
+    test("commits a credential use grant from the anchor bindings", async () => {
+      await seedFrozenSnapshot(snapshot("secret:vault"));
+      const consumer = "tool:bundle-id";
+      await h.db
+        .update(workflowRun)
+        .set({
+          credentialRefs: {
+            credentialIds: ["cred-1", "inference-only"],
+            bindings: [
+              { handle: "api", credentialId: "cred-1", consumer },
+              { handle: "other", credentialId: "cred-1", consumer },
+            ],
+          },
+        })
+        .where(eq(workflowRun.id, DEPLOYMENT));
+
+      const runId = "<mail-run-cred@tenant.example>";
+      const result = await materializeOnce(runId);
+      if (result.outcome !== "materialized") {
+        throw new Error(`expected materialized, got ${result.outcome}`);
+      }
+
+      const principals = await h.db
+        .select()
+        .from(principal)
+        .where(eq(principal.refId, runId));
+      const runPrincipalId = principals[0]?.id;
+      const grants = await h.db
+        .select()
+        .from(grant)
+        .where(eq(grant.principalId, runPrincipalId ?? ""));
+      const credentialGrants = grants.filter((row) =>
+        row.resource.startsWith("credential:"),
+      );
+      expect(credentialGrants).toHaveLength(1);
+      expect(credentialGrants[0]).toMatchObject({
+        resource: "credential:cred-1",
+        action: "use",
+        effect: "allow",
+        origin: "system",
+        conditions: { tool: consumer },
+        expiresAt: null,
+      });
+    });
+
+    test("does not commit grants before credential resolution is recorded", async () => {
+      await seedFrozenSnapshot(snapshot("secret:vault"));
+      await h.db
+        .update(workflowRun)
+        .set({ publicKey: null })
+        .where(eq(workflowRun.id, DEPLOYMENT));
+
+      const runId = "<mail-run-unresolved@tenant.example>";
+      const result = await materializeOnce(runId);
+      expect(result).toEqual({ outcome: "notReady" });
+
+      const principals = await h.db
+        .select()
+        .from(principal)
+        .where(eq(principal.refId, runId));
+      expect(principals).toHaveLength(0);
     });
 
     test("fails closed when the definition has no approved grant snapshot", async () => {

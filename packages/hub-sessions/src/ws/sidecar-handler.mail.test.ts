@@ -1035,6 +1035,693 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
     ).not.toThrow();
   });
 
+  test("holds mail to a deployment whose credential resolution is unrecorded", async () => {
+    const undelivered: { rawMessage: string; recipients: string[] }[] = [];
+    let ready = false;
+    const router = createAllocatedRouter({
+      lookups: {
+        async materializeMailTriggeredRunGrants() {
+          if (!ready) return { outcome: "notReady" };
+          return { outcome: "materialized", stepGrants: [] };
+        },
+      },
+    });
+    router.events.on("mail.outbound.undelivered", (event) => {
+      undelivered.push(event);
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "mail.outbound",
+        senderAddress: TEST_IDENTITY.workflowRunAddress,
+        rawMessage,
+        recipients: [TEST_IDENTITY.workflowRunAddress],
+      }),
+    );
+    await tick();
+
+    expect(framesOfType(ws, "run.grants")).toHaveLength(0);
+    expect(framesOfType(ws, "mail.inbound")).toHaveLength(0);
+    expect(undelivered).toEqual([]);
+
+    ready = true;
+    router.noteSenderDeploySettled(TEST_IDENTITY.workflowRunAddress, {
+      recorded: "recipient-key",
+    });
+    await tick();
+
+    expect(undelivered).toEqual([]);
+    expect(framesOfType(ws, "mail.inbound")).toHaveLength(1);
+    expect(JSON.stringify(framesOfType(ws, "run.grants"))).not.toContain(
+      "recipient-key",
+    );
+  });
+
+  test("a resolution redrive keeps the sender key bound when the mail was accepted", async () => {
+    const senderKey = "ab".repeat(32);
+    const replacedKey = "cd".repeat(32);
+    let resolves = 0;
+    let ready = false;
+    const router = createAllocatedRouter({
+      lookups: {
+        async materializeMailTriggeredRunGrants() {
+          if (!ready) return { outcome: "notReady" };
+          return { outcome: "materialized", stepGrants: [] };
+        },
+        async resolveSenderKey() {
+          resolves += 1;
+          return resolves === 1 ? senderKey : replacedKey;
+        },
+      },
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "mail.outbound",
+        senderAddress: TEST_IDENTITY.workflowRunAddress,
+        rawMessage,
+        recipients: [TEST_IDENTITY.workflowRunAddress],
+      }),
+    );
+    await tick();
+    expect(resolves).toBe(1);
+    expect(framesOfType(ws, "mail.inbound")).toHaveLength(0);
+
+    ready = true;
+    router.noteSenderDeploySettled(TEST_IDENTITY.workflowRunAddress, {
+      recorded: "recipient-key",
+    });
+    await tick();
+
+    expect(resolves).toBe(1);
+    expect(framesOfType(ws, "mail.inbound")).toHaveLength(1);
+    expect(framesOfType(ws, "run.grants")[0]?.["senderIdentities"]).toEqual([
+      {
+        address: TEST_IDENTITY.workflowRunAddress,
+        publicKey: senderKey,
+      },
+    ]);
+    const rendered = JSON.stringify(framesOfType(ws, "run.grants"));
+    expect(rendered).not.toContain(replacedKey);
+    expect(rendered).not.toContain("recipient-key");
+  });
+
+  test("a resolution redrive keeps an absent sender key absent", async () => {
+    const replacedKey = "cd".repeat(32);
+    let resolves = 0;
+    let ready = false;
+    const router = createAllocatedRouter({
+      lookups: {
+        async materializeMailTriggeredRunGrants() {
+          if (!ready) return { outcome: "notReady" };
+          return { outcome: "materialized", stepGrants: [] };
+        },
+        async resolveSenderKey() {
+          resolves += 1;
+          return resolves === 1 ? null : replacedKey;
+        },
+      },
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "mail.outbound",
+        senderAddress: TEST_IDENTITY.workflowRunAddress,
+        rawMessage,
+        recipients: [TEST_IDENTITY.workflowRunAddress],
+      }),
+    );
+    await tick();
+    expect(resolves).toBe(1);
+    expect(framesOfType(ws, "mail.inbound")).toHaveLength(0);
+
+    ready = true;
+    router.noteSenderDeploySettled(TEST_IDENTITY.workflowRunAddress, {
+      recorded: "recipient-key",
+    });
+    await tick();
+
+    expect(resolves).toBe(1);
+    expect(framesOfType(ws, "mail.inbound")).toHaveLength(1);
+    expect(
+      framesOfType(ws, "run.grants")[0]?.["senderIdentities"],
+    ).toBeUndefined();
+    expect(JSON.stringify(framesOfType(ws, "run.grants"))).not.toContain(
+      replacedKey,
+    );
+  });
+
+  test("a failed settle leaves resolution mail parked for a later record", async () => {
+    const undelivered: { rawMessage: string; recipients: string[] }[] = [];
+    let ready = false;
+    const router = createAllocatedRouter({
+      lookups: {
+        async materializeMailTriggeredRunGrants() {
+          if (!ready) return { outcome: "notReady" };
+          return { outcome: "materialized", stepGrants: [] };
+        },
+      },
+    });
+    router.events.on("mail.outbound.undelivered", (event) => {
+      undelivered.push(event);
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "mail.outbound",
+        senderAddress: TEST_IDENTITY.workflowRunAddress,
+        rawMessage,
+        recipients: [TEST_IDENTITY.workflowRunAddress],
+      }),
+    );
+    await tick();
+    router.noteSenderDeploySettled(TEST_IDENTITY.workflowRunAddress, {
+      failed: "init failed",
+    });
+    await tick();
+    expect(framesOfType(ws, "mail.inbound")).toHaveLength(0);
+    expect(undelivered).toEqual([]);
+
+    ready = true;
+    router.noteSenderDeploySettled(TEST_IDENTITY.workflowRunAddress, {
+      recorded: "recipient-key",
+    });
+    await tick();
+    expect(framesOfType(ws, "mail.inbound")).toHaveLength(1);
+    expect(undelivered).toEqual([]);
+    expect(JSON.stringify(framesOfType(ws, "run.grants"))).not.toContain(
+      "recipient-key",
+    );
+  });
+
+  test("a settle during an in-flight not-ready materialize delivers once", async () => {
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let calls = 0;
+    const router = createAllocatedRouter({
+      lookups: {
+        async materializeMailTriggeredRunGrants() {
+          calls += 1;
+          if (calls === 1) {
+            await gate;
+            return { outcome: "notReady" };
+          }
+          return { outcome: "materialized", stepGrants: [] };
+        },
+      },
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "mail.outbound",
+        senderAddress: TEST_IDENTITY.workflowRunAddress,
+        rawMessage,
+        recipients: [TEST_IDENTITY.workflowRunAddress],
+      }),
+    );
+    await tick();
+    expect(calls).toBe(1);
+    router.noteSenderDeploySettled(TEST_IDENTITY.workflowRunAddress, {
+      recorded: "recipient-key",
+    });
+    await tick();
+    release?.();
+    await tick();
+    await tick();
+    expect(calls).toBe(2);
+    expect(framesOfType(ws, "mail.inbound")).toHaveLength(1);
+    expect(JSON.stringify(framesOfType(ws, "run.grants"))).not.toContain(
+      "recipient-key",
+    );
+  });
+
+  test("a failed settle during an in-flight not-ready materialize leaves the hold", async () => {
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let ready = false;
+    let calls = 0;
+    const undelivered: { recipients: string[] }[] = [];
+    const router = createAllocatedRouter({
+      lookups: {
+        async materializeMailTriggeredRunGrants() {
+          calls += 1;
+          if (calls === 1) {
+            await gate;
+            return { outcome: "notReady" };
+          }
+          if (!ready) return { outcome: "notReady" };
+          return { outcome: "materialized", stepGrants: [] };
+        },
+      },
+    });
+    router.events.on("mail.outbound.undelivered", (event) => {
+      undelivered.push({ recipients: event.recipients });
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "mail.outbound",
+        senderAddress: TEST_IDENTITY.workflowRunAddress,
+        rawMessage,
+        recipients: [TEST_IDENTITY.workflowRunAddress],
+      }),
+    );
+    await tick();
+    expect(calls).toBe(1);
+    router.noteSenderDeploySettled(TEST_IDENTITY.workflowRunAddress, {
+      failed: "init failed",
+    });
+    await tick();
+    release?.();
+    await tick();
+    await tick();
+    expect(calls).toBe(1);
+    expect(framesOfType(ws, "mail.inbound")).toHaveLength(0);
+    expect(undelivered).toEqual([]);
+
+    ready = true;
+    router.noteSenderDeploySettled(TEST_IDENTITY.workflowRunAddress, {
+      recorded: "recipient-key",
+    });
+    await tick();
+    expect(calls).toBe(2);
+    expect(framesOfType(ws, "mail.inbound")).toHaveLength(1);
+    expect(undelivered).toEqual([]);
+    expect(JSON.stringify(framesOfType(ws, "run.grants"))).not.toContain(
+      "recipient-key",
+    );
+  });
+
+  test("a recorded wake still delivers when a failed settle follows it", async () => {
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let calls = 0;
+    const undelivered: { recipients: string[] }[] = [];
+    const router = createAllocatedRouter({
+      lookups: {
+        async materializeMailTriggeredRunGrants() {
+          calls += 1;
+          if (calls === 1) {
+            await gate;
+            return { outcome: "notReady" };
+          }
+          return { outcome: "materialized", stepGrants: [] };
+        },
+      },
+    });
+    router.events.on("mail.outbound.undelivered", (event) => {
+      undelivered.push({ recipients: event.recipients });
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "mail.outbound",
+        senderAddress: TEST_IDENTITY.workflowRunAddress,
+        rawMessage,
+        recipients: [TEST_IDENTITY.workflowRunAddress],
+      }),
+    );
+    await tick();
+    expect(calls).toBe(1);
+    router.noteSenderDeploySettled(TEST_IDENTITY.workflowRunAddress, {
+      recorded: "recipient-key",
+    });
+    router.noteSenderDeploySettled(TEST_IDENTITY.workflowRunAddress, {
+      failed: "init failed",
+    });
+    await tick();
+    release?.();
+    await tick();
+    await tick();
+    expect(calls).toBe(2);
+    expect(framesOfType(ws, "mail.inbound")).toHaveLength(1);
+    expect(undelivered).toEqual([]);
+    expect(JSON.stringify(framesOfType(ws, "run.grants"))).not.toContain(
+      "recipient-key",
+    );
+  });
+
+  // Distinct from the ping deadline and the mail-ack retry so a manual
+  // scheduler can fire this hold without closing the socket or redelivering.
+  const resolutionTtlMs = 45_000;
+
+  test("a recorded settle during materialize is not dropped by the resolution TTL", async () => {
+    const ttl = createManualRetries(resolutionTtlMs);
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let calls = 0;
+    const undelivered: { recipients: string[] }[] = [];
+    const router = createAllocatedRouter({
+      disconnectQueueTTLMs: resolutionTtlMs,
+      scheduleTimeout: ttl.scheduleTimeout,
+      lookups: {
+        async materializeMailTriggeredRunGrants() {
+          calls += 1;
+          if (calls === 1) {
+            await gate;
+            return { outcome: "notReady" };
+          }
+          return { outcome: "materialized", stepGrants: [] };
+        },
+      },
+    });
+    router.events.on("mail.outbound.undelivered", (event) => {
+      undelivered.push({ recipients: event.recipients });
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "mail.outbound",
+        senderAddress: TEST_IDENTITY.workflowRunAddress,
+        rawMessage,
+        recipients: [TEST_IDENTITY.workflowRunAddress],
+      }),
+    );
+    await tick();
+    expect(calls).toBe(1);
+    expect(ttl.armedCount()).toBe(0);
+    router.noteSenderDeploySettled(TEST_IDENTITY.workflowRunAddress, {
+      recorded: "recipient-key",
+    });
+    await tick();
+    expect(ttl.armedCount()).toBe(0);
+    release?.();
+    await tick();
+    await tick();
+    expect(calls).toBe(2);
+    expect(framesOfType(ws, "mail.inbound")).toHaveLength(1);
+    expect(undelivered).toEqual([]);
+    expect(JSON.stringify(framesOfType(ws, "run.grants"))).not.toContain(
+      "recipient-key",
+    );
+  });
+
+  test("a materialized return is not dropped by the resolution TTL", async () => {
+    const ttl = createManualRetries(resolutionTtlMs);
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let calls = 0;
+    const undelivered: { recipients: string[] }[] = [];
+    const router = createAllocatedRouter({
+      disconnectQueueTTLMs: resolutionTtlMs,
+      scheduleTimeout: ttl.scheduleTimeout,
+      lookups: {
+        async materializeMailTriggeredRunGrants() {
+          calls += 1;
+          if (calls === 1) await gate;
+          return { outcome: "materialized", stepGrants: [] };
+        },
+      },
+    });
+    router.events.on("mail.outbound.undelivered", (event) => {
+      undelivered.push({ recipients: event.recipients });
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "mail.outbound",
+        senderAddress: TEST_IDENTITY.workflowRunAddress,
+        rawMessage,
+        recipients: [TEST_IDENTITY.workflowRunAddress],
+      }),
+    );
+    await tick();
+    expect(calls).toBe(1);
+    expect(ttl.armedCount()).toBe(0);
+    release?.();
+    await tick();
+    await tick();
+    expect(calls).toBe(1);
+    expect(framesOfType(ws, "mail.inbound")).toHaveLength(1);
+    expect(undelivered).toEqual([]);
+  });
+
+  test("an idle resolution hold undelivers when its TTL fires", async () => {
+    const ttl = createManualRetries(resolutionTtlMs);
+    const undelivered: { recipients: string[] }[] = [];
+    const router = createAllocatedRouter({
+      disconnectQueueTTLMs: resolutionTtlMs,
+      scheduleTimeout: ttl.scheduleTimeout,
+      lookups: {
+        async materializeMailTriggeredRunGrants() {
+          return { outcome: "notReady" };
+        },
+      },
+    });
+    router.events.on("mail.outbound.undelivered", (event) => {
+      undelivered.push({ recipients: event.recipients });
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "mail.outbound",
+        senderAddress: TEST_IDENTITY.workflowRunAddress,
+        rawMessage,
+        recipients: [TEST_IDENTITY.workflowRunAddress],
+      }),
+    );
+    await tick();
+    expect(framesOfType(ws, "mail.inbound")).toHaveLength(0);
+    expect(ttl.armedCount()).toBe(1);
+    ttl.fireNext();
+    expect(undelivered).toEqual([
+      { recipients: [TEST_IDENTITY.workflowRunAddress] },
+    ]);
+    expect(framesOfType(ws, "mail.inbound")).toHaveLength(0);
+    expect(ttl.armedCount()).toBe(0);
+  });
+
+  test("a settle during an in-flight ready materialize delivers the mail once", async () => {
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let calls = 0;
+    const router = createAllocatedRouter({
+      lookups: {
+        async materializeMailTriggeredRunGrants() {
+          calls += 1;
+          if (calls === 1) await gate;
+          return { outcome: "materialized", stepGrants: [] };
+        },
+      },
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "mail.outbound",
+        senderAddress: TEST_IDENTITY.workflowRunAddress,
+        rawMessage,
+        recipients: [TEST_IDENTITY.workflowRunAddress],
+      }),
+    );
+    await tick();
+    router.noteSenderDeploySettled(TEST_IDENTITY.workflowRunAddress, {
+      recorded: "recipient-key",
+    });
+    await tick();
+    release?.();
+    await tick();
+    await tick();
+    expect(calls).toBe(1);
+    expect(framesOfType(ws, "mail.inbound")).toHaveLength(1);
+    expect(framesOfType(ws, "run.grants")).toHaveLength(1);
+    expect(JSON.stringify(framesOfType(ws, "run.grants"))).not.toContain(
+      "recipient-key",
+    );
+  });
+
+  test("a thrown materializer does not undeliver the held recipient after the TTL", async () => {
+    const undelivered: { recipients: string[] }[] = [];
+    const router = createAllocatedRouter({
+      disconnectQueueTTLMs: 30,
+      lookups: {
+        async materializeMailTriggeredRunGrants() {
+          throw new Error("definition has no approved grant snapshot");
+        },
+      },
+    });
+    router.events.on("mail.outbound.undelivered", (event) => {
+      undelivered.push({ recipients: event.recipients });
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "mail.outbound",
+        senderAddress: TEST_IDENTITY.workflowRunAddress,
+        rawMessage,
+        recipients: [TEST_IDENTITY.workflowRunAddress, "other@example.test"],
+      }),
+    );
+    await tick();
+    const immediate = undelivered.map((event) => event.recipients);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(framesOfType(ws, "mail.inbound")).toHaveLength(0);
+    expect(immediate).toEqual([["other@example.test"]]);
+    expect(undelivered.map((event) => event.recipients)).toEqual([
+      ["other@example.test"],
+    ]);
+  });
+
+  // A non-run address bound on the allocation is routed. One after the
+  // workflow address must still be routed on the attempt that parks, and an
+  // address with no route is reported then, not when the hold later settles.
+  const peer = "peer@example.test";
+  const otherStep = "step@example.test";
+  const later = "later@example.test";
+  const mixedRecipients = [
+    peer,
+    TEST_IDENTITY.workflowRunAddress,
+    otherStep,
+    later,
+  ];
+
+  function inboundAddresses(ws: { sent: string[] }, address: string): number {
+    return framesOfType(ws, "mail.inbound").filter(
+      (frame) => frame["agentAddress"] === address,
+    ).length;
+  }
+
+  async function sendMixedResolutionMail(ready: () => boolean) {
+    const undelivered: { recipients: string[] }[] = [];
+    const router = createAllocatedRouter({
+      lookups: {
+        async materializeMailTriggeredRunGrants() {
+          if (!ready()) return { outcome: "notReady" };
+          return { outcome: "materialized", stepGrants: [] };
+        },
+      },
+    });
+    router.events.on("mail.outbound.undelivered", (event) => {
+      undelivered.push({ recipients: event.recipients });
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    await router.bindAllocatedStepRoute(TEST_TARGET, peer);
+    await router.bindAllocatedStepRoute(TEST_TARGET, otherStep);
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "mail.outbound",
+        senderAddress: TEST_IDENTITY.workflowRunAddress,
+        rawMessage,
+        recipients: mixedRecipients,
+      }),
+    );
+    await tick();
+    return { router, ws, undelivered };
+  }
+
+  test("a not-ready workflow recipient leaves its co-recipients on this attempt", async () => {
+    let ready = false;
+    const { router, ws, undelivered } = await sendMixedResolutionMail(
+      () => ready,
+    );
+
+    expect(inboundAddresses(ws, peer)).toBe(1);
+    expect(inboundAddresses(ws, otherStep)).toBe(1);
+    expect(inboundAddresses(ws, TEST_IDENTITY.workflowRunAddress)).toBe(0);
+    expect(undelivered.map((event) => event.recipients)).toEqual([[later]]);
+
+    ready = true;
+    router.noteSenderDeploySettled(TEST_IDENTITY.workflowRunAddress, {
+      recorded: "recipient-key",
+    });
+    await tick();
+
+    expect(inboundAddresses(ws, peer)).toBe(1);
+    expect(inboundAddresses(ws, otherStep)).toBe(1);
+    expect(inboundAddresses(ws, TEST_IDENTITY.workflowRunAddress)).toBe(1);
+    expect(undelivered.map((event) => event.recipients)).toEqual([[later]]);
+    expect(JSON.stringify(framesOfType(ws, "run.grants"))).not.toContain(
+      "recipient-key",
+    );
+  });
+
+  test("a failed resolution settle leaves the parked workflow recipient", async () => {
+    let ready = false;
+    const { router, ws, undelivered } = await sendMixedResolutionMail(
+      () => ready,
+    );
+
+    expect(inboundAddresses(ws, peer)).toBe(1);
+    expect(inboundAddresses(ws, otherStep)).toBe(1);
+    expect(inboundAddresses(ws, TEST_IDENTITY.workflowRunAddress)).toBe(0);
+    expect(undelivered.map((event) => event.recipients)).toEqual([[later]]);
+
+    router.noteSenderDeploySettled(TEST_IDENTITY.workflowRunAddress, {
+      failed: "init failed",
+    });
+    await tick();
+
+    expect(inboundAddresses(ws, TEST_IDENTITY.workflowRunAddress)).toBe(0);
+    expect(inboundAddresses(ws, peer)).toBe(1);
+    expect(inboundAddresses(ws, otherStep)).toBe(1);
+    expect(undelivered.map((event) => event.recipients)).toEqual([[later]]);
+
+    ready = true;
+    router.noteSenderDeploySettled(TEST_IDENTITY.workflowRunAddress, {
+      recorded: "recipient-key",
+    });
+    await tick();
+
+    expect(inboundAddresses(ws, TEST_IDENTITY.workflowRunAddress)).toBe(1);
+    expect(inboundAddresses(ws, peer)).toBe(1);
+    expect(inboundAddresses(ws, otherStep)).toBe(1);
+    expect(undelivered.map((event) => event.recipients)).toEqual([[later]]);
+    expect(JSON.stringify(framesOfType(ws, "run.grants"))).not.toContain(
+      "recipient-key",
+    );
+  });
+
   test("fails a rejected workflow recipient closed", async () => {
     const router = createAllocatedRouter({
       lookups: {

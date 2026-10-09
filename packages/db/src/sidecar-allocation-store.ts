@@ -944,12 +944,14 @@ export function createSidecarAllocationStore(db: DBHandle) {
         if (updated === undefined) return null;
 
         // The anchor public key is durable proof that this allocation
-        // generation completed restore and deployment. Clear it atomically
-        // with the generation advance so a replacement cannot mistake stale
-        // local sidecar state for a successfully restored workflow.
+        // generation completed restore and deployment. Clear the key and
+        // the credential refs with the generation advance so a replacement
+        // cannot mistake stale local sidecar state for a restored
+        // workflow. Leftover refs are the previous attempt, and a first
+        // grant commit would freeze them.
         await tx
           .update(workflowRun)
-          .set({ publicKey: null })
+          .set({ publicKey: null, credentialRefs: null })
           .where(eq(workflowRun.id, updated.anchorRunId));
 
         return parseSidecarAllocationRow(updated);

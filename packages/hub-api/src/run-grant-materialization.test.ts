@@ -1,15 +1,22 @@
 import { describe, test, expect } from "bun:test";
 
-import { createInMemoryGrantStore } from "@intx/authz";
+import { createInMemoryGrantStore, toolConsumer } from "@intx/authz";
 import type { GrantRule } from "@intx/types/authz";
 import type { GrantWalkSnapshot } from "@intx/types";
 import {
+  sidecarAllocation as sidecarAllocationTable,
   workflowDefinitionVersion as workflowDefinitionVersionTable,
   workflowRun as workflowRunTable,
 } from "@intx/db/schema";
 import type { PrincipalKeyStore } from "@intx/db";
 
-import { createMailTriggeredRunGrantsMaterializer } from "./run-grant-materialization";
+import { makeGrantRow } from "./grant-materialization";
+import {
+  createMailTriggeredRunGrantsMaterializer,
+  credentialResolutionUnrecorded,
+  deriveCredentialUseGrantRows,
+  grantRowsWithLockedCredentialResolution,
+} from "./run-grant-materialization";
 
 // This suite exercises grant materialization, not key minting. The key store is
 // a no-op stub so the winning-reservation path does not try to insert into
@@ -68,6 +75,11 @@ function invokerOnlySnapshot(): GrantWalkSnapshot {
 // the `workflow_definition_version` row read; `snapshotReads` counts how many
 // times that row is actually read, so a stable count across triggers proves the
 // materializer caches the snapshot rather than re-reading it per run.
+type CredentialRefs = {
+  credentialIds: string[];
+  bindings: { handle: string; credentialId: string; consumer: string }[];
+};
+
 function mockDb(opts: {
   deploymentRow:
     | { id: string; tenantId: string; definitionAssetId: string }
@@ -79,6 +91,14 @@ function mockDb(opts: {
   lockedRunStatus?: "running" | "completed" | "failed" | "cancelled";
   anchorCancellationRequestedAt?: Date;
   lockedCancellationRequestedAt?: Date;
+  credentialRefs?: CredentialRefs;
+  /** Null models an anchor whose initialization has not published a key. */
+  publicKey?: string | null;
+  /**
+   * Set while a deploy has cleared the key and left the previous refs.
+   * Absent means the anchor has no allocation row.
+   */
+  initializationLeaseId?: string | null;
 }) {
   function rows(table: unknown, joined: boolean): unknown[] {
     if (table === workflowRunTable && opts.deploymentRow) {
@@ -94,6 +114,9 @@ function mockDb(opts: {
               anchorCancellationRequestedAt:
                 opts.anchorCancellationRequestedAt ?? null,
               topLevelRunStatus: opts.topLevelRunStatus ?? null,
+              ...(opts.credentialRefs !== undefined
+                ? { credentialRefs: opts.credentialRefs }
+                : {}),
             },
           ]
         : [{ status: "running" }];
@@ -117,8 +140,18 @@ function mockDb(opts: {
           return chain;
         },
         where: () => ({
-          limit: () =>
-            Object.assign(Promise.resolve(rows(table, joined)), {
+          limit: () => {
+            const selected =
+              table === sidecarAllocationTable
+                ? opts.initializationLeaseId === undefined
+                  ? []
+                  : [
+                      {
+                        initializationLeaseId: opts.initializationLeaseId,
+                      },
+                    ]
+                : rows(table, joined);
+            return Object.assign(Promise.resolve(selected), {
               for: () =>
                 Promise.resolve(
                   table === workflowRunTable && opts.deploymentRow
@@ -128,11 +161,22 @@ function mockDb(opts: {
                           expiresAt: null,
                           cancellationRequestedAt:
                             opts.lockedCancellationRequestedAt ?? null,
+                          publicKey:
+                            opts.publicKey !== undefined
+                              ? opts.publicKey
+                              : "recorded-key",
+                          credentialRefs:
+                            opts.credentialRefs !== undefined
+                              ? opts.credentialRefs
+                              : null,
                         },
                       ]
-                    : [],
+                    : table === sidecarAllocationTable
+                      ? selected
+                      : [],
                 ),
-            }),
+            });
+          },
         }),
       };
       return chain;
@@ -194,6 +238,169 @@ function creatorGrant(): GrantRule {
     principalId: CREATOR_PRINCIPAL_ID,
   };
 }
+
+describe("deriveCredentialUseGrantRows", () => {
+  test("stamps one row per credential that shares a consumer", () => {
+    const now = new Date("2026-01-01T00:00:00.000Z");
+    const consumer = toolConsumer("bundle-id");
+    const rows = deriveCredentialUseGrantRows({
+      bindings: [
+        { credentialId: "cred-a", consumer },
+        { credentialId: "cred-b", consumer },
+        { credentialId: "cred-a", consumer },
+      ],
+      tenantId: TENANT_ID,
+      runPrincipalId: "prn_run",
+      now,
+    });
+    expect(rows.map((row) => row.resource)).toEqual([
+      "credential:cred-a",
+      "credential:cred-b",
+    ]);
+    expect(rows[0]).toMatchObject({
+      action: "use",
+      effect: "allow",
+      origin: "system",
+      conditions: { tool: consumer },
+      expiresAt: null,
+    });
+    expect(rows[1]).toMatchObject({
+      action: "use",
+      effect: "allow",
+      origin: "system",
+      conditions: { tool: consumer },
+      expiresAt: null,
+    });
+  });
+});
+
+describe("grantRowsWithLockedCredentialResolution", () => {
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const args = {
+    tenantId: TENANT_ID,
+    runPrincipalId: "prn_run",
+    now,
+  };
+
+  test("a recorded key with null refs stamps nothing and keeps a creator credential grant", () => {
+    expect(
+      credentialResolutionUnrecorded({
+        credentialRefs: null,
+        publicKey: "recorded-key",
+        initializationLeaseId: null,
+      }),
+    ).toBe(false);
+    const creator = makeGrantRow({
+      tenantId: TENANT_ID,
+      principalId: "prn_run",
+      resource: "credential:creator-owned",
+      action: "use",
+      effect: "allow",
+      conditions: null,
+      origin: "creator",
+      expiresAt: null,
+      now,
+    });
+    const stale = makeGrantRow({
+      tenantId: TENANT_ID,
+      principalId: "prn_run",
+      resource: "credential:stale",
+      action: "use",
+      effect: "allow",
+      conditions: { tool: "tool:stale" },
+      origin: "system",
+      expiresAt: null,
+      now,
+    });
+    const result = grantRowsWithLockedCredentialResolution(
+      [creator, stale],
+      {
+        credentialRefs: null,
+        publicKey: "recorded-key",
+        initializationLeaseId: null,
+      },
+      args,
+    );
+    if (result === "not-ready") throw new Error("expected rows");
+    expect(result.map((row) => row.resource)).toEqual([
+      "credential:creator-owned",
+    ]);
+    expect(result[0]?.origin).toBe("creator");
+  });
+
+  test("a null key with recorded bindings replaces staged system rows", () => {
+    const refs = {
+      credentialIds: ["cred-1", "inference-only"],
+      bindings: [
+        { handle: "api", credentialId: "cred-1", consumer: "tool:pkg" },
+        { handle: "other", credentialId: "cred-1", consumer: "tool:pkg" },
+        { handle: "b", credentialId: "cred-2", consumer: "tool:other" },
+      ],
+    };
+    expect(
+      credentialResolutionUnrecorded({
+        credentialRefs: refs,
+        publicKey: null,
+        initializationLeaseId: null,
+      }),
+    ).toBe(false);
+    const result = grantRowsWithLockedCredentialResolution(
+      [],
+      {
+        credentialRefs: refs,
+        publicKey: null,
+        initializationLeaseId: null,
+      },
+      args,
+    );
+    if (result === "not-ready") throw new Error("expected rows");
+    expect(
+      result.map((row) => ({
+        resource: row.resource,
+        origin: row.origin,
+        conditions: row.conditions,
+      })),
+    ).toEqual([
+      {
+        resource: "credential:cred-1",
+        origin: "system",
+        conditions: { tool: "tool:pkg" },
+      },
+      {
+        resource: "credential:cred-2",
+        origin: "system",
+        conditions: { tool: "tool:other" },
+      },
+    ]);
+  });
+
+  test("an initialization lease keeps leftover bindings from being stamped", () => {
+    const refs = {
+      credentialIds: ["cred-old"],
+      bindings: [
+        { handle: "api", credentialId: "cred-old", consumer: "tool:pkg" },
+      ],
+    };
+    expect(
+      credentialResolutionUnrecorded({
+        credentialRefs: refs,
+        publicKey: null,
+        initializationLeaseId: "lease-1",
+      }),
+    ).toBe(true);
+    expect(
+      grantRowsWithLockedCredentialResolution(
+        [],
+        {
+          credentialRefs: refs,
+          publicKey: null,
+          initializationLeaseId: "lease-1",
+        },
+        args,
+      ),
+    ).toBe("not-ready");
+  });
+});
 
 describe("createMailTriggeredRunGrantsMaterializer staging", () => {
   test("skips when the address names no deployed deployment", async () => {
@@ -375,6 +582,155 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
     // omitted and no creator requirement exists, so the run launches with the
     // tool.
     expect(resources).toEqual(["tool:read_file/invoke"]);
+  });
+
+  test("stamps a system credential use grant from the anchor bindings", async () => {
+    const consumer = toolConsumer("bundle-id");
+    const materialize = createMailTriggeredRunGrantsMaterializer({
+      db: mockDb({
+        deploymentRow,
+        assetRow,
+        grantSnapshot: invokerOnlySnapshot(),
+        credentialRefs: {
+          credentialIds: ["cred-1", "inference-only"],
+          bindings: [
+            { handle: "api", credentialId: "cred-1", consumer },
+            { handle: "other", credentialId: "cred-1", consumer },
+          ],
+        },
+      }),
+      principalKeyStore: stubPrincipalKeyStore,
+      grantStore: createInMemoryGrantStore([]),
+    });
+    const result = await materialize({
+      agentAddress: WORKFLOW_ADDRESS,
+      runId: WORKFLOW_ADDRESS,
+    });
+    if (result.outcome !== "materialized") {
+      throw new Error(`expected materialized, got ${result.outcome}`);
+    }
+    const credentialGrants = result.stepGrants.filter((g) =>
+      g.resource.startsWith("credential:"),
+    );
+    expect(credentialGrants).toEqual([
+      expect.objectContaining({
+        resource: "credential:cred-1",
+        action: "use",
+        effect: "allow",
+        origin: "system",
+        conditions: { tool: consumer },
+        expiresAt: null,
+      }),
+    ]);
+  });
+
+  test("stamps one credential use grant per consumer", async () => {
+    const first = toolConsumer("bundle-a");
+    const second = toolConsumer("bundle-b");
+    const materialize = createMailTriggeredRunGrantsMaterializer({
+      db: mockDb({
+        deploymentRow,
+        assetRow,
+        grantSnapshot: invokerOnlySnapshot(),
+        credentialRefs: {
+          credentialIds: ["cred-1"],
+          bindings: [
+            { handle: "api", credentialId: "cred-1", consumer: first },
+            { handle: "api", credentialId: "cred-1", consumer: second },
+          ],
+        },
+      }),
+      principalKeyStore: stubPrincipalKeyStore,
+      grantStore: createInMemoryGrantStore([]),
+    });
+    const result = await materialize({
+      agentAddress: WORKFLOW_ADDRESS,
+      runId: WORKFLOW_ADDRESS,
+    });
+    if (result.outcome !== "materialized") {
+      throw new Error(`expected materialized, got ${result.outcome}`);
+    }
+    const tools = result.stepGrants
+      .filter((g) => g.resource.startsWith("credential:"))
+      .map((g) =>
+        g.conditions !== null &&
+        typeof g.conditions === "object" &&
+        "tool" in g.conditions
+          ? g.conditions.tool
+          : undefined,
+      )
+      .sort();
+    expect(tools).toEqual([first, second].sort());
+  });
+
+  test("does not stamp an inference-only credential id", async () => {
+    const materialize = createMailTriggeredRunGrantsMaterializer({
+      db: mockDb({
+        deploymentRow,
+        assetRow,
+        grantSnapshot: invokerOnlySnapshot(),
+        credentialRefs: { credentialIds: ["inference-only"], bindings: [] },
+      }),
+      principalKeyStore: stubPrincipalKeyStore,
+      grantStore: createInMemoryGrantStore([]),
+    });
+    const result = await materialize({
+      agentAddress: WORKFLOW_ADDRESS,
+      runId: WORKFLOW_ADDRESS,
+    });
+    if (result.outcome !== "materialized") {
+      throw new Error(`expected materialized, got ${result.outcome}`);
+    }
+    expect(
+      result.stepGrants.some((g) => g.resource.startsWith("credential:")),
+    ).toBe(false);
+  });
+
+  test("does not commit when credential resolution is unrecorded", async () => {
+    const materialize = createMailTriggeredRunGrantsMaterializer({
+      db: mockDb({
+        deploymentRow,
+        assetRow,
+        grantSnapshot: invokerOnlySnapshot(),
+        publicKey: null,
+      }),
+      principalKeyStore: stubPrincipalKeyStore,
+      grantStore: createInMemoryGrantStore([]),
+    });
+    const result = await materialize({
+      agentAddress: WORKFLOW_ADDRESS,
+      runId: WORKFLOW_ADDRESS,
+    });
+    expect(result).toEqual({ outcome: "notReady" });
+  });
+
+  test("does not commit leftover bindings while an initialization lease is held", async () => {
+    const materialize = createMailTriggeredRunGrantsMaterializer({
+      db: mockDb({
+        deploymentRow,
+        assetRow,
+        grantSnapshot: invokerOnlySnapshot(),
+        publicKey: null,
+        credentialRefs: {
+          credentialIds: ["cred-old"],
+          bindings: [
+            {
+              handle: "api",
+              credentialId: "cred-old",
+              consumer: "tool:pkg",
+            },
+          ],
+        },
+        initializationLeaseId: "lease-1",
+      }),
+      principalKeyStore: stubPrincipalKeyStore,
+      grantStore: createInMemoryGrantStore([]),
+    });
+    const result = await materialize({
+      agentAddress: WORKFLOW_ADDRESS,
+      runId: WORKFLOW_ADDRESS,
+    });
+    expect(result).toEqual({ outcome: "notReady" });
   });
 
   test("fails closed when the definition has no approved grant snapshot", async () => {
