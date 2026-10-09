@@ -144,6 +144,7 @@ export interface InertLoop {
   readonly input?: Selector;
   readonly maxIterations: number;
   readonly onExhausted: string;
+  readonly onIterationFailure?: BodyFailurePolicy;
   readonly drainBehavior?: DrainBehavior;
   readonly after?: readonly string[];
 }
@@ -386,6 +387,9 @@ function projectLoop(primitive: LoopPrimitive): InertLoop {
     ...(primitive.input !== undefined ? { input: primitive.input } : {}),
     maxIterations: primitive.maxIterations,
     onExhausted: primitive.onExhausted,
+    ...(primitive.onIterationFailure !== undefined
+      ? { onIterationFailure: primitive.onIterationFailure }
+      : {}),
     ...(primitive.drainBehavior !== undefined
       ? { drainBehavior: primitive.drainBehavior }
       : {}),

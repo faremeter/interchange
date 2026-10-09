@@ -107,16 +107,25 @@ bare `(ref) => ActionHandler`.
 ## Loop semantics
 
 **6.** THE MOST IMPORTANT ONE. `while` and `carry` are called as
-`(iterationOutput, iterationInput)`. On convergence, `runLoop` breaks BEFORE
-it calls `carryFn`. The two fields the loop publishes are therefore NOT two
-views of the same thing: `carry` is the settling iteration's INPUT, the state
-that iteration worked from, and `final` is that same iteration's OUTPUT. A
-`while` that judges the iteration output is the natural form and it works:
-the value it settled on is `final`. A `while` that judges the carry state
-also works, and leaves its answer in `carry`. An author must pick the field
-that matches the argument their `while` reads. The scoped per-iteration step
-ids are not selector paths, so `final` is the only way a downstream step
-reaches inside the last iteration.
+`(iterationOutput, iterationInput)`, and only for an iteration that
+completed. On convergence, `runLoop` breaks BEFORE it calls `carryFn`.
+`carry` is the last attempt's INPUT. On convergence that is the state the
+converging iteration worked from, and `final` is that same iteration's
+OUTPUT. A `while` that judges the iteration output is the natural form and
+it works: the value it settled on is `final`. A `while` that judges the
+carry state also works, and leaves its answer in `carry`. An author must
+pick the field that matches the argument their `while` reads. The scoped
+per-iteration step ids are not selector paths, so `final` is the only way a
+downstream step reaches inside a completed iteration.
+
+`onIterationFailure` is absent or `"end"` unless the author sets
+`"tolerate"`. A tolerated failure does not call `while` or `carry`, so the
+next attempt receives the same input, and the attempt still counts toward
+`maxIterations`. `final` stays the last completed attempt's output, or
+`null` when every attempt was tolerated, so `final` and `carry` can describe
+different attempts. A cancelled attempt, or a failure that is an abort
+teardown, fails the loop. The field stays off the definition when unset, so
+an existing loop's hash does not change.
 
 Where it lives today: the `LoopPrimitive` doc comment,
 `packages/workflow/src/definition/primitives.ts` (implemented by `runLoop`,
@@ -134,7 +143,8 @@ Where it lives today: the `final` bullet of the `LoopPrimitive` doc comment,
 
 **8.** The loop's step output shape is
 `{ outcome: "converged" | "exhausted", iterations: number, carry: unknown, final: unknown }`.
-Keys may be ADDED to it but never renamed or removed: the record is persisted
+`final` is `null` when every attempt was a tolerated failure. Keys may be
+ADDED to it but never renamed or removed: the record is persisted
 inline on the loop's `StepCompleted`, and a resumed run whose log predates a
 rename fails on the missing key.
 
