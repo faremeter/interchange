@@ -45,7 +45,7 @@ const BindingLocator = type.enumerated(...credentialBindingLocators);
 
 export const CredentialBinding = type({
   package: type("string").describe(
-    "The tool package the declared handle belongs to; matches the resolved manifest's top-level package name.",
+    "The tool package the declared handle belongs to. On a source-ref workflow this field is the tool factory's bundle id. On a pinned package it is that package's name in the tool-package manifest's top level.",
   ),
   handle: ToolCredentialHandle.describe(
     "The credential handle the tool package declared; unique within its package.",
