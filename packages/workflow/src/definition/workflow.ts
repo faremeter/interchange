@@ -53,11 +53,10 @@ export interface WorkflowDefinition {
   grantRequirements?: readonly GrantRequirement[];
   /**
    * The credential bindings a launch resolves against tenant-owned
-   * credentials, each mapping a tool package's declared handle to a
-   * concrete provider and authorizing the delegation against the
-   * binding's authority. The launch reads these from the folded body and
-   * materializes a consumer-scoped `credential:{id}` / `use` grant per
-   * binding.
+   * credentials. Each maps a tool package's declared handle to a
+   * provider. Ownership authorizes the use, and the launch stamps a
+   * consumer-scoped `credential:{id}` / `use` grant with
+   * `origin = 'system'`.
    */
   credentialBindings?: readonly CredentialBinding[];
   sidecarPlacement?: SidecarCapabilityPolicy;
