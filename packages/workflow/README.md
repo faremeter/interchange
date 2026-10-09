@@ -191,12 +191,16 @@ work that belongs at an `action`/LoopFn seam.
 
 Two facts govern what a `loop` body can and cannot survive.
 
-First, crashes. An `action` runs at most once. A mid-invocation crash fails the
-run and the effect is never re-run -- and this is true everywhere, not just in a
-loop: a top-level action or agent step that crashes mid-invocation also settles
-`RunFailed` (it is not re-invoked on resume). So a crash inside a loop iteration
-fails the run exactly as a crash in any other step does; loops are not special
-here.
+First, crashes. An `action` runs at most once. A mid-invocation crash fails that
+iteration and the effect is never re-run -- and this is true everywhere, not
+just in a loop: a top-level action or agent step that crashes mid-invocation
+also settles `RunFailed` (it is not re-invoked on resume). The loop's response
+depends on `onIterationFailure`. Absent, or `"end"`, the failed iteration fails
+the run, the same as any other step. `"tolerate"` records a genuine iteration
+failure and continues with the same input, without calling `while` or `carry`;
+the crashed action is still not re-run. A cancelled iteration, or a failure
+that is an abort teardown, fails the loop either way. If every attempt is
+tolerated, the loop exhausts and publishes `final: null`.
 
 Second, suspension. The body-ban forbids a loop body from containing a `sleep`
 or an `onTrigger`. It does NOT forbid an `awaitSignal`, a `childWorkflow`, or a
@@ -269,8 +273,8 @@ pure `while`/`carry` says stop. Keep the gate in the body itself: an untimed
 `awaitSignal` inside a `childWorkflow` the body spawns, at any depth, fails the
 step rather than waiting. Model a `sleep` delay at a top-level step or an
 onTrigger section, not in a loop body. Keep a loop body's action idempotent
-where practical, since a mid-invocation crash fails the run and the effect is
-never re-run.
+where practical, since a mid-invocation crash is not re-run: the iteration
+fails, and the loop fails the run unless `onIterationFailure` is `"tolerate"`.
 
 These primitives are composed end to end by the interchange-demo dispatch
 orchestrator -- an outer per-level `loop` wrapping a Phase-5 verification `loop`

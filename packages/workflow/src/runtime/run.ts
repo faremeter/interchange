@@ -2031,11 +2031,16 @@ async function runLoop(
     });
   }
 
-  // Replay fully-done iterations (child terminal AND step completed) from
-  // the log to re-derive the cursor, the threaded input, and whether the
-  // loop already reached its outcome before the crash (the post-routing
-  // window). while/carry are pure, so replaying them over recorded inputs
-  // and outputs reproduces the pre-crash decisions.
+  // Replay finished attempts to re-derive the cursor and the threaded input.
+  // A completed attempt (child completed AND scoped step completed) replays
+  // while/carry, which are pure. A tolerated failure has no scoped
+  // StepCompleted: skip it without while/carry, keep the same input, and
+  // count the attempt, so the frontier below is the attempt planLoopResume
+  // must re-link. A terminal attempt the policy will not continue throws
+  // here, before that planner runs and before any drive: planLoopResume
+  // returns undefined for a terminal child, and occurrenceResume is cleared
+  // after the first drive, so driving the terminal attempt would spawn the
+  // later park with no resume token.
   const iterationZeroInput =
     primitive.input !== undefined
       ? evaluate(primitive.input, selectorCtx)
@@ -2045,29 +2050,63 @@ async function runLoop(
   let iteration = 0;
   let terminated = false;
   let outcome: "converged" | "exhausted" = "exhausted";
-  // The output of the most recent iteration, boxed so a legitimately
-  // `undefined` iteration output stays distinguishable from "no iteration
-  // has run yet". The settle path below needs it: the loop breaks the
-  // moment `while` goes false, BEFORE `carry` runs, so `currentInput` is
-  // the converging iteration's input and this is its output.
+  // The output of the most recent COMPLETED attempt, boxed so a legitimately
+  // `undefined` iteration output stays distinguishable from "no attempt has
+  // completed". A tolerated failure does not set this. The settle path
+  // publishes it as `final`, or `null` when every attempt was tolerated.
   let lastIteration: { output: unknown } | undefined;
-  while (isIterationDone(state, runId, primitive.id, iteration)) {
+  const policy = iterationFailurePolicyOf(primitive);
+  while (true) {
     const doneStepId = scopedStepId(primitive.id, iteration);
-    const doneInput = await resolveIterationInput(env, log, doneStepId);
-    const doneOutput = await resolveIterationOutput(env, log, doneStepId);
-    lastIteration = { output: doneOutput };
-    iteration += 1;
-    if (!whileFn(doneOutput, doneInput)) {
-      outcome = "converged";
-      terminated = true;
-      break;
+    const child = state.children.get(
+      loopBodyRunId(runId, primitive.id, iteration),
+    );
+    const step = state.steps.get(doneStepId);
+    if (isIterationDone(state, runId, primitive.id, iteration)) {
+      const doneInput = await resolveIterationInput(env, log, doneStepId);
+      const doneOutput = await resolveIterationOutput(env, log, doneStepId);
+      lastIteration = { output: doneOutput };
+      iteration += 1;
+      if (!whileFn(doneOutput, doneInput)) {
+        outcome = "converged";
+        terminated = true;
+        break;
+      }
+      if (iteration >= primitive.maxIterations) {
+        outcome = "exhausted";
+        terminated = true;
+        break;
+      }
+      currentInput = carryFn(doneOutput, doneInput);
+      continue;
     }
-    if (iteration >= primitive.maxIterations) {
-      outcome = "exhausted";
-      terminated = true;
-      break;
+    if (
+      child?.terminalStatus === "failed" &&
+      child.abortedTeardown !== true &&
+      policy === "tolerate" &&
+      step?.phase !== "completed"
+    ) {
+      iteration += 1;
+      if (iteration >= primitive.maxIterations) {
+        outcome = "exhausted";
+        terminated = true;
+        break;
+      }
+      continue;
     }
-    currentInput = carryFn(doneOutput, doneInput);
+    const terminalStatus = child?.terminalStatus;
+    if (
+      terminalStatus === "cancelled" ||
+      (terminalStatus === "failed" &&
+        (child?.abortedTeardown === true || policy !== "tolerate"))
+    ) {
+      // Durable half only. The recovering process's abort signal is not a
+      // reason to reclassify a recorded genuine failure as teardown.
+      throw new Error(
+        `loop ${primitive.id} iteration ${String(iteration)} ended ${terminalStatus}`,
+      );
+    }
+    break;
   }
 
   // Prefer the resume iteration's own recorded input (an in-flight
@@ -2111,26 +2150,60 @@ async function runLoop(
     // only on the recovered iteration of a crash resume, where it re-links a
     // body parked or mid-relay at the crash; it is cleared after this drive so
     // every later iteration spawns fresh.
-    const { terminalStatus } = await driveSuspendableOccurrence(
-      env,
-      runId,
-      primitive.id,
-      {
-        childRunId,
-        bodyRef,
-        input: currentInput,
-        resume: occurrenceResume,
-        spawnSuspendableChild: spawnLoopIteration,
-        depth,
-        maxChildSpawnDepth,
-        abort,
-      },
-    );
+    const driven = await driveSuspendableOccurrence(env, runId, primitive.id, {
+      childRunId,
+      bodyRef,
+      input: currentInput,
+      resume: occurrenceResume,
+      spawnSuspendableChild: spawnLoopIteration,
+      depth,
+      maxChildSpawnDepth,
+      abort,
+    });
     occurrenceResume = undefined;
+
+    // Trust the recorded child, not only the drive's return. A child log
+    // that is missing is re-executed, and that fresh terminal can disagree
+    // with a ChildCompleted the parent already recorded. `abortedTeardown`
+    // lives only on the record. `abort.aborted` is this process's live
+    // signal: an abort during the drive's commit/flush has no durable flag
+    // yet, and a tolerate loop must still end rather than continue.
+    const recorded = (await reloadState(env, runId)).children.get(childRunId);
+    const terminalStatus = recorded?.terminalStatus ?? driven.terminalStatus;
+    const abortedTeardown = recorded?.abortedTeardown === true;
+    const tolerated =
+      terminalStatus === "failed" &&
+      !abort.aborted &&
+      !abortedTeardown &&
+      policy === "tolerate";
+    if (terminalStatus !== "completed" && !tolerated) {
+      // A failed or cancelled iteration the policy will not continue is a
+      // real failure, not an exhaustion. Throw so runPrimitiveSafe lands
+      // StepFailed (or CancelPropagated when the run is cancelling) on the
+      // loop node. Throwing skips routeLoopOutcome, so neither branch is
+      // pruned; both the normal dependents and onExhausted then run before
+      // the run settles failed, per the engine's "a failed dependency is
+      // resolved" scheduling (the same as a failed gate). The
+      // mutually-exclusive routing holds only on the success path.
+      throw new Error(
+        `loop ${primitive.id} iteration ${String(i)} ended ${terminalStatus}`,
+      );
+    }
+    if (tolerated) {
+      // Leave the scoped step in-flight. StepFailed would make hasFailedStep
+      // fail the run after a tolerated exhaust, and StepCompleted would make
+      // the replay walk treat the failure as a success.
+      if (i + 1 >= primitive.maxIterations) {
+        outcome = "exhausted";
+        break;
+      }
+      continue;
+    }
 
     // The drive returns only the terminal status; the iteration's step outputs
     // live in the child's durable log, so hydrate them here -- the scoped
-    // StepCompleted records them, and while/carry read them.
+    // StepCompleted records them, and while/carry read them. Only a completed
+    // attempt gets that record. A tolerated failure has no output to carry.
     const output = await hydrateChildOutputs(env, childRunId);
     lastIteration = { output };
 
@@ -2139,20 +2212,6 @@ async function runLoop(
       await emitStepCompletedWithValue(env, runId, stepId, output);
     }
     await flush(env, runId);
-
-    if (terminalStatus !== "completed") {
-      // A failed or cancelled iteration is a real failure, not an
-      // exhaustion. Throw so runPrimitiveSafe lands StepFailed (or
-      // CancelPropagated when the run is cancelling) on the loop node.
-      // Note: throwing skips routeLoopOutcome, so neither branch is
-      // pruned; both the normal dependents and onExhausted then run
-      // before the run settles failed, per the engine's "a failed
-      // dependency is resolved" scheduling (the same as a failed gate).
-      // The mutually-exclusive routing holds only on the success path.
-      throw new Error(
-        `loop ${primitive.id} iteration ${String(i)} ended ${terminalStatus}`,
-      );
-    }
 
     if (!whileFn(output, currentInput)) {
       outcome = "converged";
@@ -2165,13 +2224,14 @@ async function runLoop(
     currentInput = carryFn(output, currentInput);
   }
 
-  if (lastIteration === undefined) {
+  if (iterations === 0) {
     // Unreachable through `loop()`, which rejects a non-positive
-    // maxIterations, so every settle follows at least one iteration --
+    // maxIterations, so every settle follows at least one attempt --
     // replayed or driven. A definition that reached here by another road
-    // has no last iteration to report; fail loud rather than publish a
-    // `final` the loop never produced. Checked BEFORE the route so the
-    // throw cannot leave one branch of the loop's dependents pruned.
+    // has no attempt to report; fail loud rather than publish a record the
+    // loop never produced. Checked BEFORE the route so the throw cannot
+    // leave one branch of the loop's dependents pruned. A positive count
+    // whose every attempt was tolerated is a real exhaust: `final` is null.
     throw new Error(
       `loop ${primitive.id} settled ${outcome} without running an iteration`,
     );
@@ -2181,7 +2241,7 @@ async function runLoop(
     outcome,
     iterations,
     carry: currentInput,
-    final: lastIteration.output,
+    final: lastIteration === undefined ? null : lastIteration.output,
   };
   await emitStepCompletedWithValue(env, runId, primitive.id, output);
   return output;
@@ -3634,6 +3694,15 @@ export function boundSignalForContainerAwait(
   return pairing.get(awaitSeq);
 }
 
+/**
+ * The loop's iteration-failure policy, defaulting an absent field to `"end"`.
+ * One read for the replay walk and the post-drive check so they cannot drift.
+ * Absent stays off the primitive; this is the only place that fills it in.
+ */
+function iterationFailurePolicyOf(primitive: LoopPrimitive): BodyFailurePolicy {
+  return primitive.onIterationFailure ?? "end";
+}
+
 function isIterationDone(
   state: RunState,
   runId: string,
@@ -3642,7 +3711,10 @@ function isIterationDone(
 ): boolean {
   const child = state.children.get(loopBodyRunId(runId, loopId, iteration));
   const step = state.steps.get(scopedStepId(loopId, iteration));
-  return child?.terminalStatus !== undefined && step?.phase === "completed";
+  // Completed only. Any other terminal child plus a completed scoped step is
+  // the crash window where StepCompleted landed before the failure throw, and
+  // replaying it as a success would continue a loop that had already failed.
+  return child?.terminalStatus === "completed" && step?.phase === "completed";
 }
 
 function findStepInputRef(

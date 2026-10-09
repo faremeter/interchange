@@ -300,15 +300,25 @@ export type ActionHandler = (
  * `{ outcome, iterations, carry, final }`:
  *
  * - `outcome` is `"converged"` or `"exhausted"`, the arm the loop routed to.
- * - `iterations` is how many iterations ran.
- * - `carry` is the LAST iteration's INPUT. The loop settles the instant
- *   `while` goes false, before `carry` runs on that iteration, so this is
- *   the state the converging iteration worked from, not a state derived
- *   from its result.
- * - `final` is the LAST iteration's OUTPUT -- the body's per-step output
- *   record, keyed by step id, exactly as `while` received it. This is where
- *   a `while` that judges the iteration output leaves its answer; the
- *   scoped iteration step ids are not selector paths.
+ * - `iterations` counts every attempt, including a tolerated failure.
+ * - `carry` is the last attempt's INPUT. The loop settles the instant
+ *   `while` goes false, before `carry` runs on that iteration, so on
+ *   convergence this is the state that iteration worked from. A tolerated
+ *   failure does not call `carry`, so the input does not advance.
+ * - `final` is the last completed attempt's OUTPUT -- the body's per-step
+ *   output record, keyed by step id -- or `null` when every attempt was a
+ *   tolerated failure. A tolerated failure records no output, so `final`
+ *   and `carry` can describe different attempts. The scoped iteration step
+ *   ids are not selector paths, so `final` is how a downstream step reaches
+ *   inside a completed iteration.
+ *
+ * `onIterationFailure` is absent or `"end"` unless the author opts in.
+ * `"tolerate"` records a genuine iteration failure and continues with the
+ * same input, without calling `while` or `carry`. The attempt still counts
+ * toward `maxIterations`. A cancelled attempt, or a failure that is an
+ * abort teardown, fails the loop either way. The field stays off the
+ * primitive when unset, so a default loop's hash is unchanged. See
+ * {@link BodyFailurePolicy}.
  *
  * That record is persisted on the loop's `StepCompleted`, and a run that
  * crashes after the loop settles replays the persisted value rather than
@@ -331,6 +341,7 @@ export interface LoopPrimitive extends PrimitiveBase {
   input?: Selector;
   maxIterations: number;
   onExhausted: string;
+  onIterationFailure?: BodyFailurePolicy;
   drainBehavior?: DrainBehavior;
 }
 
@@ -674,6 +685,7 @@ export interface LoopOpts {
   input?: Selector;
   maxIterations: number;
   onExhausted: string;
+  onIterationFailure?: BodyFailurePolicy;
   drainBehavior?: DrainBehavior;
   after?: readonly string[];
 }
@@ -693,6 +705,13 @@ export function loop(opts: LoopOpts): LoopPrimitive {
     onExhausted: opts.onExhausted,
     drainBehavior,
     ...(opts.input !== undefined ? { input: opts.input } : {}),
+    // Conditional passthrough (NOT resolved to a default like drainBehavior):
+    // an absent policy must leave the field off so a default loop's inert
+    // projection -- and therefore its approval hash -- is unchanged. An
+    // explicit "end" stays on the object; only absence is omitted.
+    ...(opts.onIterationFailure !== undefined
+      ? { onIterationFailure: opts.onIterationFailure }
+      : {}),
     ...(opts.after !== undefined ? { after: opts.after } : {}),
   };
 }

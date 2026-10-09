@@ -16,6 +16,7 @@ import {
   defineWorkflow,
   escalation,
   gate,
+  hashDefinition,
   loop,
   map,
   onTrigger,
@@ -868,6 +869,81 @@ describe("onTrigger onBodyFailure projection and hash", () => {
     );
     expect(await computeLiveDefinitionHash(tolerate)).not.toBe(
       await computeLiveDefinitionHash(dflt),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// loop onIterationFailure: same absence contract as onBodyFailure. The
+// definition hash spreads the live loop, and the approval hash hashes the
+// inert projection, so a set value has to move both.
+// ---------------------------------------------------------------------------
+
+describe("loop onIterationFailure projection and hash", () => {
+  function loopWorkflow(
+    onIterationFailure?: BodyFailurePolicy,
+  ): WorkflowDefinition {
+    return defineWorkflow({
+      id: "loop-policy-hash",
+      trigger: { type: "manual" },
+      steps: {
+        rework: loop({
+          body: defineWorkflow({
+            id: "body",
+            trigger: { type: "manual" },
+            steps: { work: action({ handler: "work" }) },
+          }),
+          while: "cont",
+          carry: "next",
+          maxIterations: 2,
+          onExhausted: "done",
+          ...(onIterationFailure !== undefined ? { onIterationFailure } : {}),
+        }),
+        done: action({ handler: "done", after: ["rework"] }),
+      },
+    });
+  }
+
+  test("an absent policy leaves both hashes unchanged and off the projection", async () => {
+    const plain = loopWorkflow();
+    const declared: BodyFailurePolicy | undefined = undefined;
+    const omitted = loopWorkflow(declared);
+    const rework = omitted.steps.rework;
+    expect(rework?.kind).toBe("loop");
+    if (rework?.kind === "loop") {
+      expect("onIterationFailure" in rework).toBe(false);
+    }
+    expect(canonicalJsonStringify(projectLiveToInert(plain))).not.toContain(
+      "onIterationFailure",
+    );
+    expect(hashDefinition(omitted)).toEqual(hashDefinition(plain));
+    expect(await computeLiveDefinitionHash(omitted)).toBe(
+      await computeLiveDefinitionHash(plain),
+    );
+  });
+
+  test("tolerate moves both the definition hash and the approval hash", async () => {
+    const plain = loopWorkflow();
+    const tolerate = loopWorkflow("tolerate");
+    expect(hashDefinition(tolerate)).not.toEqual(hashDefinition(plain));
+    expect(canonicalJsonStringify(projectLiveToInert(tolerate))).not.toBe(
+      canonicalJsonStringify(projectLiveToInert(plain)),
+    );
+    expect(await computeLiveDefinitionHash(tolerate)).not.toBe(
+      await computeLiveDefinitionHash(plain),
+    );
+  });
+
+  test("an explicit end stays on the object and moves both hashes", async () => {
+    const plain = loopWorkflow();
+    const explicitEnd = loopWorkflow("end");
+    const rework = explicitEnd.steps.rework;
+    if (rework?.kind === "loop") {
+      expect(rework.onIterationFailure).toBe("end");
+    }
+    expect(hashDefinition(explicitEnd)).not.toEqual(hashDefinition(plain));
+    expect(await computeLiveDefinitionHash(explicitEnd)).not.toBe(
+      await computeLiveDefinitionHash(plain),
     );
   });
 });

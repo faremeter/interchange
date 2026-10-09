@@ -794,6 +794,8 @@ function validateLoopBody(
       // input), so per-iteration "route and proceed" is incoherent -- a routed
       // body step yields no output to carry. Reject onFailure on any body
       // step, including a map's inner step reached through this walk.
+      // `onIterationFailure` is the loop's own policy for a failed iteration.
+      // It is not a body `onFailure`, and tolerate must not be rewritten as one.
       assertNoRoutableFailure(bodyStepId, bodyPrimitive);
     }
     // The body-only bans above run first so their message wins over a generic
