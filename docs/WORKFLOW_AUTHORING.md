@@ -335,3 +335,19 @@ doc comment, `packages/workflow/src/runtime/env.ts`, and the
 `AwaitSignalPrimitive` and `ChildWorkflowPrimitive` doc comments,
 `packages/workflow/src/definition/primitives.ts` (enforced by
 `parkOnSignalResult`, `packages/workflow/src/runtime/run.ts`)
+
+**27.** An action step inside an `onTrigger` body or a `childWorkflow` body
+runs. `buildChildRunEnv` installs `invokeAction` for that body only when the
+pre-rewrite body reaches an action: `createDefaultActionInvoker` closed over
+the body's capped authorize and a new in-memory effect ledger. Handlers for
+the actions this env runs are resolved at spawn. A loop nested in the body
+inherits that env through `createLoopIterationHandle`, so its action steps
+use the same invoker and ledger. A grandchild is a different env. An action
+there, including one the deployment establish pass does not check, is
+resolved when that grandchild's own `buildChildRunEnv` runs.
+
+Where it lives today: `buildChildRunEnv`,
+`packages/workflow-host/src/child/substrate-factory.ts`;
+`createDefaultActionInvoker`, `packages/workflow/src/runlocal/run-local.ts`;
+`createLoopIterationHandle`,
+`packages/workflow/src/runtime/loop-iteration-handle.ts`
