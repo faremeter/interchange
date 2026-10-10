@@ -15,12 +15,18 @@
 // the head of that queue. The loop starts on first `awaitNext` for a
 // name and tears down when the queue empties or `stop()` is called.
 //
-// Commit-ordering invariant: `deliver` commits the `SignalReceived`
-// event blob first, then returns. Resolution of an awaiter happens
-// from the `subscribeKind` loop only after the substrate has surfaced
-// the commit. The awaiter is never resolved from inside `deliver`'s
-// call site, so resume-after-crash sees a coherent log: an awaiter
-// that resolved must have a corresponding committed `SignalReceived`.
+// Commit-ordering invariant: `deliver` flushes the run's pending
+// buffer through `runtimeStore`, then commits the `SignalReceived`
+// blob, then returns. The flush runs under the run's commit barrier
+// so a sibling event already validated into the buffer keeps its
+// sequence and the signal takes the next durable sequence. A log that
+// already holds a terminal event is left unchanged, so a delivery that
+// loses the race does not append after it. Resolution
+// of an awaiter happens from the `subscribeKind` loop only after the
+// substrate has surfaced the commit. The awaiter is never resolved
+// from inside `deliver`'s call site, so resume-after-crash sees a
+// coherent log: an awaiter that resolved must have a corresponding
+// committed `SignalReceived`.
 
 import { type } from "arktype";
 
@@ -32,6 +38,10 @@ import type {
 } from "@intx/hub-sessions/substrate";
 import { subscribeKind } from "@intx/hub-sessions/substrate";
 import type { RunState, SignalChannel } from "@intx/workflow";
+import {
+  withRunCommitBarrier,
+  type RepoStore as RuntimeRepoStore,
+} from "@intx/workflow/runtime";
 
 /**
  * Substrate-shape envelope for the `SignalReceived` event blob
@@ -63,6 +73,13 @@ export type SignalChannelOpts = {
    * must accept that path layout.
    */
   repoStore: RepoStore;
+  /**
+   * Runtime store that owns this run's commit chain. `deliver` flushes
+   * its pending buffer before the substrate merge numbers the signal.
+   * One store serves every run in the deployment; the barrier selects
+   * the buffer by `runId`.
+   */
+  runtimeStore: RuntimeRepoStore;
   /**
    * Principal the channel presents to the substrate. The substrate
    * gates every operation behind `authorize`; the principal must be
@@ -260,59 +277,73 @@ export function createWorkflowHostSignalChannel(
       const id = signalId ?? opts.newId();
       const at = opts.clock().toISOString();
       const prefix = `runs/${opts.runId}/events/`;
-      await opts.repoStore.writeTreePreservingPrefix(
-        opts.principal,
-        opts.repoId,
-        opts.ref,
-        {
-          preservePrefix: prefix,
-          merge: async (existing) => {
-            let maxSeq = -1;
-            let duplicate = false;
-            for (const [filepath, contents] of existing) {
-              const fname = filepath.slice(prefix.length);
-              const match = /^(0|[1-9][0-9]*)\.json$/.exec(fname);
-              if (match === null) continue;
-              const seqStr = match[1];
-              if (seqStr === undefined) continue;
-              const seq = Number.parseInt(seqStr, 10);
-              if (seq > maxSeq) maxSeq = seq;
-              try {
-                const parsed: unknown = JSON.parse(
-                  new TextDecoder().decode(contents),
-                );
-                if (isMatchingSignalId(parsed, id)) {
-                  duplicate = true;
+      await withRunCommitBarrier(
+        { repoStore: opts.runtimeStore },
+        opts.runId,
+        () =>
+          opts.repoStore.writeTreePreservingPrefix(
+            opts.principal,
+            opts.repoId,
+            opts.ref,
+            {
+              preservePrefix: prefix,
+              merge: async (existing) => {
+                let maxSeq = -1;
+                let duplicate = false;
+                let terminal = false;
+                for (const [filepath, contents] of existing) {
+                  const fname = filepath.slice(prefix.length);
+                  const match = /^(0|[1-9][0-9]*)\.json$/.exec(fname);
+                  if (match === null) continue;
+                  const seqStr = match[1];
+                  if (seqStr === undefined) continue;
+                  const seq = Number.parseInt(seqStr, 10);
+                  if (seq > maxSeq) maxSeq = seq;
+                  try {
+                    const parsed: unknown = JSON.parse(
+                      new TextDecoder().decode(contents),
+                    );
+                    if (isMatchingSignalId(parsed, id)) {
+                      duplicate = true;
+                    }
+                    if (isTerminalOnDiskEvent(parsed)) {
+                      terminal = true;
+                    }
+                  } catch {
+                    // A corrupt blob is rejected by validatePush at write
+                    // time. Treat as non-matching here.
+                  }
                 }
-              } catch {
-                // A corrupt blob is rejected by validatePush at write
-                // time. Treat as non-matching here.
-              }
-            }
-            const out: Record<string, string> = {};
-            for (const [filepath, contents] of existing) {
-              out[filepath] = new TextDecoder().decode(contents);
-            }
-            if (duplicate) return out;
-            const nextSeq = maxSeq + 1;
-            // The workflow-run kind handler's `EventEnvelope`
-            // validator requires `seq: number` on every event blob;
-            // the same `nextSeq` we use to mint the filename also
-            // carries into the body so a reader that hydrates the
-            // envelope (state-machine resume, audit reads) sees a
-            // self-describing event without consulting the filename.
-            out[`${prefix}${String(nextSeq)}.json`] = JSON.stringify({
-              type: "SignalReceived",
-              seq: nextSeq,
-              signalName: name,
-              signalId: id,
-              payload,
-              at,
-            });
-            return out;
-          },
-          message: `SignalReceived ${id} (${name}) for run ${opts.runId}`,
-        },
+                const out: Record<string, string> = {};
+                for (const [filepath, contents] of existing) {
+                  out[filepath] = new TextDecoder().decode(contents);
+                }
+                // A repeated signalId and a log that already reached a
+                // terminal event both leave the tree unchanged. Appending
+                // past RunFailed/RunCompleted/RunCancelled would make the
+                // next resume disagree with the terminal result already
+                // reported.
+                if (duplicate || terminal) return out;
+                const nextSeq = maxSeq + 1;
+                // The workflow-run kind handler's `EventEnvelope`
+                // validator requires `seq: number` on every event blob;
+                // the same `nextSeq` we use to mint the filename also
+                // carries into the body so a reader that hydrates the
+                // envelope (state-machine resume, audit reads) sees a
+                // self-describing event without consulting the filename.
+                out[`${prefix}${String(nextSeq)}.json`] = JSON.stringify({
+                  type: "SignalReceived",
+                  seq: nextSeq,
+                  signalName: name,
+                  signalId: id,
+                  payload,
+                  at,
+                });
+                return out;
+              },
+              message: `SignalReceived ${id} (${name}) for run ${opts.runId}`,
+            },
+          ),
       );
     },
     async awaitNext(name, signal) {
@@ -379,6 +410,14 @@ export function createWorkflowHostSignalChannel(
       }
     },
   };
+}
+
+function isTerminalOnDiskEvent(parsed: unknown): boolean {
+  if (typeof parsed !== "object" || parsed === null) return false;
+  const type = (parsed as { type?: unknown }).type;
+  return (
+    type === "RunCompleted" || type === "RunFailed" || type === "RunCancelled"
+  );
 }
 
 function isMatchingSignalId(parsed: unknown, signalId: string): boolean {

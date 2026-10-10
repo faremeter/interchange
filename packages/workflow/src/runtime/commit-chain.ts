@@ -29,14 +29,15 @@
 // Because the seq the chain assigns and every `reloadState` caller's
 // next-seq computation must account for buffered-but-unflushed
 // events, `reloadState` folds the durable log together with the
-// pending buffer. The buffer is only ever non-empty for events the
-// current runtime process committed synchronously since the last
-// flush; the run body flushes before it parks (so an external writer
-// -- a separate-process scheduler committing `TimerFired`, or a
-// control-plane `cancel`) only ever advances the durable log while
-// the buffer is empty. `commit` (immediate) flushes any pending
-// buffer before its own event so a buffered run body and an external
-// immediate writer never compute a colliding seq.
+// pending buffer. The buffer holds events this process validated
+// since the last flush. A sibling primitive can buffer another event
+// after a park flush, so the buffer is not empty just because one
+// step has parked. Signal delivery, the host scheduler, and a
+// control-plane cancel take `withRunCommitBarrier`, which flushes
+// that buffer before their own write. The host scheduler still tails
+// the durable `TimerSet`. `commit` (immediate)
+// flushes any pending buffer before its own event so a buffered run
+// body and an immediate writer never compute a colliding seq.
 
 import {
   applyEvent,
@@ -71,6 +72,24 @@ function getBuffer(runId: string): WorkflowEvent[] {
   return buf;
 }
 
+const bufferWaiters = new Map<string, (() => void)[]>();
+
+function wake(waiters: Map<string, (() => void)[]>, runId: string): void {
+  const list = waiters.get(runId);
+  if (list === undefined) return;
+  waiters.delete(runId);
+  for (const resolve of list) resolve();
+}
+
+/** Resolves when the next event is pushed into this run's buffer. */
+export function whenRunNextBuffers(runId: string): Promise<void> {
+  return new Promise((resolve) => {
+    const list = bufferWaiters.get(runId) ?? [];
+    list.push(resolve);
+    bufferWaiters.set(runId, list);
+  });
+}
+
 /**
  * Reconstruct the run's current state from the durable log folded
  * with any pending (buffered-but-unflushed) events. Used inside the
@@ -98,12 +117,94 @@ async function readStateWithPending(
  * the per-runId chain lock so the flushed seqs are contiguous on the
  * durable tip. No-op when the buffer is empty.
  */
+const repoWriteFailure = Symbol("repoWriteFailure");
+
+/**
+ * The durable append threw, so this batch is not on disk. Settlement
+ * must rethrow it: a substitute terminal event would replace the
+ * prefix a re-fire adopts after a crash mid-flush.
+ */
+export function markRepoWriteFailure(cause: unknown): void {
+  if (typeof cause === "object" && cause !== null) {
+    Object.defineProperty(cause, repoWriteFailure, { value: true });
+  }
+}
+
+export function isRepoWriteFailure(cause: unknown): boolean {
+  return (
+    typeof cause === "object" && cause !== null && repoWriteFailure in cause
+  );
+}
+
+// A flush that threw dropped its batch: the events are neither durable
+// nor still buffered. The writer that flushed them rejects on its own
+// promise, and a barrier's finally drops the chain, so a later link
+// would otherwise see an empty buffer and succeed. Later links rethrow
+// the first cause. `dropChain` forgets it when the run settles.
+const failedFlushes = new Map<string, unknown>();
+const flushWaiters = new Map<string, (() => void)[]>();
+
+/**
+ * The cause is the failed flush recorded for this run. The marker on
+ * the error is not enough: a nested run stamps the same marker, and
+ * that error rejects into the parent with the marker still set.
+ */
+export function isRunFlushFailure(runId: string, cause: unknown): boolean {
+  const recorded = failedFlushes.get(runId);
+  return recorded !== undefined && recorded === cause;
+}
+
+/** The failed flush recorded for this run, if this process has seen one. */
+export function flushFailureCause(runId: string): unknown {
+  return failedFlushes.get(runId);
+}
+
+/**
+ * Resolves when this run's buffer flush throws. Already resolved when
+ * the failure was recorded before the caller started waiting. A parked
+ * step never rejects, so the drive loop races this with its step
+ * promises.
+ */
+export function whenRunFlushFails(runId: string): Promise<void> {
+  if (failedFlushes.has(runId)) return Promise.resolve();
+  return new Promise((resolve) => {
+    const list = flushWaiters.get(runId) ?? [];
+    list.push(resolve);
+    flushWaiters.set(runId, list);
+  });
+}
+
+function throwIfFlushFailed(runId: string): void {
+  const cause = failedFlushes.get(runId);
+  if (cause !== undefined) throw cause;
+}
+
+function followChain<T>(runId: string, body: () => Promise<T>): Promise<T> {
+  const prev = commitChains.get(runId) ?? Promise.resolve();
+  const next = (async () => {
+    await prev.catch(() => undefined);
+    throwIfFlushFailed(runId);
+    return body();
+  })();
+  commitChains.set(runId, next);
+  return next;
+}
+
 async function flushBuffer(env: CommitEnv, runId: string): Promise<void> {
   const buf = pendingBuffers.get(runId);
   if (buf === undefined || buf.length === 0) return;
   const events = buf.slice();
   buf.length = 0;
-  await env.repoStore.appendBatch(runId, events);
+  try {
+    await env.repoStore.appendBatch(runId, events);
+  } catch (cause) {
+    markRepoWriteFailure(cause);
+    if (!failedFlushes.has(runId)) {
+      failedFlushes.set(runId, cause);
+      wake(flushWaiters, runId);
+    }
+    throw cause;
+  }
 }
 
 /**
@@ -120,25 +221,22 @@ async function flushBuffer(env: CommitEnv, runId: string): Promise<void> {
  * (segment boundary). Use this for the run body's intra-segment
  * events; use `commit` for events that must persist immediately
  * (the segment-boundary suspension/terminal events flushed via the
- * run body's explicit `flushChain`, and external writers such as the
- * scheduler's `TimerFired` and the control-plane `cancel`).
+ * run body's explicit `flushChain`, the run-local scheduler's
+ * `TimerFired`, and the control-plane `cancel`).
  */
 export async function commitBuffered(
   env: CommitEnv,
   runId: string,
   event: WorkflowEvent,
 ): Promise<RunState> {
-  const prev = commitChains.get(runId) ?? Promise.resolve();
-  const next = (async (): Promise<RunState> => {
-    await prev.catch(() => undefined);
+  return followChain(runId, async () => {
     const fresh = await readStateWithPending(env, runId);
     const adjustedEvent: WorkflowEvent = { ...event, seq: fresh.lastSeq + 1 };
     const nextState = applyEvent(fresh, adjustedEvent);
     getBuffer(runId).push(adjustedEvent);
+    wake(bufferWaiters, runId);
     return nextState;
-  })();
-  commitChains.set(runId, next);
-  return next;
+  });
 }
 
 /**
@@ -158,9 +256,7 @@ export async function commit(
   runId: string,
   event: WorkflowEvent,
 ): Promise<RunState> {
-  const prev = commitChains.get(runId) ?? Promise.resolve();
-  const next = (async (): Promise<RunState> => {
-    await prev.catch(() => undefined);
+  return followChain(runId, async () => {
     const fresh = await readStateWithPending(env, runId);
     const adjustedEvent: WorkflowEvent = { ...event, seq: fresh.lastSeq + 1 };
     // Validate the transition before appending so a state-machine
@@ -171,9 +267,7 @@ export async function commit(
     getBuffer(runId).push(adjustedEvent);
     await flushBuffer(env, runId);
     return nextState;
-  })();
-  commitChains.set(runId, next);
-  return next;
+  });
 }
 
 /**
@@ -185,13 +279,26 @@ export async function commit(
  * No-op when the buffer is empty.
  */
 export async function flushChain(env: CommitEnv, runId: string): Promise<void> {
-  const prev = commitChains.get(runId) ?? Promise.resolve();
-  const next = (async (): Promise<void> => {
-    await prev.catch(() => undefined);
+  await followChain(runId, async () => {
     await flushBuffer(env, runId);
-  })();
-  commitChains.set(runId, next);
-  await next;
+  });
+}
+
+/**
+ * Queue `body` behind this run's commit chain, then discard the pending
+ * buffer before `body` runs. Links already on the chain finish first,
+ * including a barrier `write()` that has started. `body` appends through
+ * the repo store. `commit`, `commitBuffered`, `flushChain`, and
+ * `withRunCommitBarrier` queue another link that waits on this one.
+ */
+export function runAfterDiscardingBuffer<T>(
+  runId: string,
+  body: () => Promise<T>,
+): Promise<T> {
+  return followChain(runId, async () => {
+    pendingBuffers.delete(runId);
+    return body();
+  });
 }
 
 /** Flush and exclude runtime commits while an external writer advances the log. */
@@ -200,13 +307,10 @@ export function withRunCommitBarrier<T>(
   runId: string,
   write: () => Promise<T>,
 ): Promise<T> {
-  const prev = commitChains.get(runId) ?? Promise.resolve();
-  const next = (async () => {
-    await prev.catch(() => undefined);
+  const next = followChain(runId, async () => {
     await flushBuffer(env, runId);
     return write();
-  })();
-  commitChains.set(runId, next);
+  });
   return next.finally(() => {
     if (commitChains.get(runId) !== next) return;
     commitChains.delete(runId);
@@ -234,4 +338,7 @@ export async function reloadState(
 export function dropChain(runId: string): void {
   commitChains.delete(runId);
   pendingBuffers.delete(runId);
+  failedFlushes.delete(runId);
+  flushWaiters.delete(runId);
+  bufferWaiters.delete(runId);
 }

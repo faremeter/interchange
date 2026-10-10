@@ -1368,6 +1368,7 @@ async function handleControlPayload(
       // delivery.
       const transientSignalChannel = createWorkflowHostSignalChannel({
         repoStore: ctx.bindings.substrate,
+        runtimeStore: ctx.runtimeRepoStore,
         principal: ctx.bindings.principal,
         repoId: ctx.bindings.workflowRunRepoId,
         ref: ctx.bindings.workflowRunRef,
@@ -1744,6 +1745,7 @@ function buildRuntimeEnv(args: {
 }): WorkflowRuntimeEnv {
   const signalChannel = createWorkflowHostSignalChannel({
     repoStore: args.bindings.substrate,
+    runtimeStore: args.runtimeRepoStore,
     principal: args.bindings.principal,
     repoId: args.bindings.workflowRunRepoId,
     ref: args.bindings.workflowRunRef,
@@ -1899,6 +1901,7 @@ function buildRuntimeEnv(args: {
       });
       const childSignalChannel = createWorkflowHostSignalChannel({
         repoStore: args.bindings.substrate,
+        runtimeStore: args.runtimeRepoStore,
         principal: args.bindings.principal,
         repoId: args.bindings.workflowRunRepoId,
         ref: args.bindings.workflowRunRef,

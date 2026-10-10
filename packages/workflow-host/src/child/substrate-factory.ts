@@ -1902,6 +1902,7 @@ async function buildChildRunEnv(args: {
   });
   const signalChannel = createWorkflowHostSignalChannel({
     repoStore: deps.substrate,
+    runtimeStore: args.repoStore,
     principal: deps.principal,
     repoId: deps.workflowRunRepoId,
     ref: deps.workflowRunRef,
@@ -2092,6 +2093,7 @@ async function buildChildRunEnv(args: {
         });
         const iterationSignalChannel = createWorkflowHostSignalChannel({
           repoStore: deps.substrate,
+          runtimeStore: args.repoStore,
           principal: deps.principal,
           repoId: deps.workflowRunRepoId,
           ref: deps.workflowRunRef,
@@ -2302,6 +2304,12 @@ export function createSidecarSubstrateFactory(
 
     const hostScheduler = createWorkflowHostScheduler({
       repoStore: substrate,
+      runtimeStore: createWorkflowRunRepoStore({
+        substrate,
+        principal,
+        repoId: workflowRunRepoId,
+        ref: validated.WORKFLOW_RUN_REF,
+      }),
       principal,
       listActiveDeployments: () => [workflowRunRepoId],
       ref: validated.WORKFLOW_RUN_REF,

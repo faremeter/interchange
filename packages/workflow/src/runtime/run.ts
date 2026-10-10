@@ -45,7 +45,13 @@ import {
   commitBuffered as commitBufferedToChain,
   dropChain,
   flushChain,
+  isRepoWriteFailure,
+  flushFailureCause,
+  isRunFlushFailure,
+  markRepoWriteFailure,
+  whenRunFlushFails,
   reloadState as reloadStateInChain,
+  runAfterDiscardingBuffer,
 } from "./commit-chain";
 import type {
   RunResult,
@@ -61,10 +67,14 @@ import {
   assertSpawnDepthWithinLimit,
   resolveMaxChildSpawnDepth,
 } from "./child-depth";
-import { RuntimeResumeUnsupportedError } from "./errors";
+import {
+  EphemeralResumeSeedError,
+  RuntimeResumeUnsupportedError,
+} from "./errors";
 import { loopBodyRunId, scopedStepId, sectionBodyRunId } from "./step-scope";
 import { inlineBodyRef } from "../ontrigger-bodies";
 import {
+  applyEvent,
   controlParkKindOf,
   decideTerminalRunFlip,
   isTerminalRunPhase,
@@ -166,8 +176,8 @@ export interface RuntimeRunOptions {
  *      otherwise `in-flight` (a `childWorkflow`) is unsupported: the
  *      runtime body has no surface for re-arming the timer scheduler
  *      entry or the inner-map iteration state from the log alone, so it
- *      surfaces as `RuntimeResumeUnsupportedError` and the host
- *      (supervisor) owns the recovery decision.
+ *      throws `RuntimeResumeUnsupportedError`. That throw is recorded as
+ *      `RunFailed`, and the run is terminal.
  */
 export function runtimeRun(
   definition: WorkflowDefinition,
@@ -288,6 +298,12 @@ async function executeRun(
       cancelController,
       options,
     );
+  } catch (cause) {
+    // The body escaped. A nested `commitDurable` would wait on this
+    // settlement forever, so the terminal event is appended directly
+    // once the chain's current link finishes and the pending buffer
+    // is discarded. The buffer is what a folding read just rejected.
+    return await settleThrownBody(env, runId, cause);
   } finally {
     // Always drop the per-runId commit chain entry, even on a thrown
     // body, so long-running processes accumulating many workflows do
@@ -295,6 +311,197 @@ async function executeRun(
     // resume seeding or a stall guard.
     dropChain(runId);
   }
+}
+
+function thrownMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
+}
+
+async function durableState(
+  env: WorkflowRuntimeEnv,
+  runId: string,
+): Promise<RunState> {
+  return resumeFromLog(runId, await env.repoStore.read(runId));
+}
+
+function rethrowOriginal(cause: unknown, failure: unknown): never {
+  throw new Error(thrownMessage(cause), { cause: failure });
+}
+
+/**
+ * Child-cancel cascade plus `RunCancelled`, applied in memory. The
+ * caller appends the batch itself. `commit` from inside the settlement
+ * link waits on that link.
+ */
+function cancellingTerminalEvents(
+  state: RunState,
+  at: string,
+): { events: WorkflowEvent[]; next: RunState } {
+  const events: WorkflowEvent[] = [];
+  let current = state;
+  for (const [childRunId, childState] of state.children) {
+    if (childState.cancelRequested) continue;
+    if (childState.terminalStatus !== undefined) continue;
+    const event: WorkflowEvent = {
+      kind: "ChildCancelRequested",
+      seq: current.lastSeq + 1,
+      at,
+      childRunId,
+    };
+    current = applyEvent(current, event);
+    events.push(event);
+  }
+  const cancelled: WorkflowEvent = {
+    kind: "RunCancelled",
+    seq: current.lastSeq + 1,
+    at,
+  };
+  current = applyEvent(current, cancelled);
+  events.push(cancelled);
+  return { events, next: current };
+}
+
+/**
+ * The log is already terminal. Strict output resolution can still
+ * throw. Discovery skips a terminal log, so that throw would leave
+ * the host without the event. Unreadable outputs are omitted.
+ */
+async function resultFromDurableTerminal(
+  env: WorkflowRuntimeEnv,
+  runId: string,
+  state: RunState,
+): Promise<RunResult> {
+  try {
+    return await buildResultFromLog(env, runId, state);
+  } catch {
+    const events = await env.repoStore.read(runId);
+    const outputs: Record<string, unknown> = {};
+    for (const event of events) {
+      if (event.kind !== "StepCompleted") continue;
+      try {
+        outputs[event.stepId] = await env.blobs.resolveRef(event.output.ref);
+      } catch {
+        // This output is unreadable. Omit it.
+      }
+    }
+    return {
+      runId,
+      terminalStatus: decideTerminalRunFlip(state.phase),
+      outputs,
+      events,
+    };
+  }
+}
+
+async function appendEvents(
+  env: WorkflowRuntimeEnv,
+  runId: string,
+  events: readonly WorkflowEvent[],
+  next: RunState,
+  cause: unknown,
+  settleCancelling = true,
+): Promise<RunResult> {
+  try {
+    await env.repoStore.appendBatch(runId, events);
+  } catch (failure) {
+    const again = await durableState(env, runId);
+    if (isTerminalRunPhase(again.phase)) {
+      return resultFromDurableTerminal(env, runId, again);
+    }
+    // A cancel written on the supervisor store can land while this
+    // append is in flight. The phase is then `cancelling` and nothing
+    // in the body is left to record `RunCancelled`. One attempt does.
+    // That attempt appends with `settleCancelling` false, so a second
+    // failure rejects instead of recursing for as long as the store
+    // keeps failing.
+    if (settleCancelling && again.phase === "cancelling") {
+      return appendCancellingTerminal(env, runId, again, cause);
+    }
+    rethrowOriginal(cause, failure);
+  }
+  return resultFromDurableTerminal(env, runId, next);
+}
+
+async function appendRunFailed(
+  env: WorkflowRuntimeEnv,
+  runId: string,
+  state: RunState,
+  cause: unknown,
+): Promise<RunResult> {
+  const at = env.clock().toISOString();
+  const failed: WorkflowEvent = {
+    kind: "RunFailed",
+    seq: state.lastSeq + 1,
+    at,
+    error: { message: thrownMessage(cause) },
+  };
+  let next: RunState;
+  try {
+    next = applyEvent(state, failed);
+  } catch (failure) {
+    const again = await durableState(env, runId);
+    if (isTerminalRunPhase(again.phase)) {
+      return resultFromDurableTerminal(env, runId, again);
+    }
+    if (again.phase === "cancelling") {
+      return appendCancellingTerminal(env, runId, again, cause);
+    }
+    rethrowOriginal(cause, failure);
+  }
+  return appendEvents(env, runId, [failed], next, cause);
+}
+
+async function appendCancellingTerminal(
+  env: WorkflowRuntimeEnv,
+  runId: string,
+  state: RunState,
+  cause: unknown,
+): Promise<RunResult> {
+  const at = env.clock().toISOString();
+  let built: { events: WorkflowEvent[]; next: RunState };
+  try {
+    built = cancellingTerminalEvents(state, at);
+  } catch (failure) {
+    const again = await durableState(env, runId);
+    if (isTerminalRunPhase(again.phase)) {
+      return resultFromDurableTerminal(env, runId, again);
+    }
+    rethrowOriginal(cause, failure);
+  }
+  return appendEvents(env, runId, built.events, built.next, cause, false);
+}
+
+async function settleThrownBody(
+  env: WorkflowRuntimeEnv,
+  runId: string,
+  cause: unknown,
+): Promise<RunResult> {
+  // The store rejected the write. The durable prefix is what recovery
+  // adopts; appending RunFailed here would hide that crash. A seeded
+  // resume that names blob refs on an ephemeral substrate is the same
+  // kind of refusal: the seed is still runnable once those blobs are
+  // present.
+  if (isRepoWriteFailure(cause) || cause instanceof EphemeralResumeSeedError) {
+    throw cause;
+  }
+  return runAfterDiscardingBuffer(runId, async () => {
+    const state = await durableState(env, runId);
+    if (isTerminalRunPhase(state.phase)) {
+      try {
+        return await buildResultFromLog(env, runId, state);
+      } catch (failure) {
+        // The seed is already terminal, and rebuilding its result failed
+        // (a fresh ephemeral substrate cannot resolve the seed's blob
+        // refs). Surface the error the body threw.
+        rethrowOriginal(cause, failure);
+      }
+    }
+    if (state.phase === "pending") throw cause;
+    if (state.phase === "cancelling") {
+      return appendCancellingTerminal(env, runId, state, cause);
+    }
+    return appendRunFailed(env, runId, state, cause);
+  });
 }
 
 // Intra-segment commit: validates the transition and assigns the seq
@@ -337,9 +544,10 @@ function commitDurable(
 // Called at a suspension boundary AFTER buffering the suspension
 // marker (`SignalAwaited`/`TimerSet`) so the marker -- and everything
 // before it in the segment -- is durable BEFORE the run parks. The
-// out-of-process scheduler tails the durable `TimerSet`; resume after
-// a crash-while-suspended reconstructs the awaiting state from the
-// durable log. A buffered suspension marker that never flushed would
+// host scheduler tails the durable `TimerSet`. A crash-while-suspended
+// reconstructs the awaiting state from that log. `TimerFired`'s
+// sequence is assigned when the timer fires, after anything buffered
+// past this flush. A buffered suspension marker that never flushed would
 // be lost on a park, so this flush is load-bearing, not an
 // optimisation knob.
 async function flush(env: WorkflowRuntimeEnv, runId: string): Promise<void> {
@@ -399,7 +607,14 @@ async function executeRunBody(
       }
       continue;
     }
-    await env.repoStore.append(runId, event);
+    try {
+      await env.repoStore.append(runId, event);
+    } catch (cause) {
+      // Same as a failed flush: settlement must not hide a write the
+      // store rejected.
+      markRepoWriteFailure(cause);
+      throw cause;
+    }
   }
 
   // Seed-contract guard, before any blob resolution. A resume that
@@ -419,9 +634,7 @@ async function executeRunBody(
       e.kind === "StepCompleted" && e.output.ref.startsWith("blob:"),
   );
   if (seedBlobRefs.length > 0 && env.blobs.ephemeral) {
-    throw new Error(
-      `resume requires the BlobSubstrate that recorded the seed log's blob refs (${String(seedBlobRefs.length)} blob output(s) present); the runLocal in-memory substrate is ephemeral and starts empty. Pass the originating env, or use a durable substrate.`,
-    );
+    throw new EphemeralResumeSeedError(seedBlobRefs.length);
   }
 
   // Establish canonical state from the durable log itself, not from the
@@ -467,9 +680,8 @@ async function executeRunBody(
   // it as a terminal `StepFailed`. Every OTHER non-terminal residual --
   // an `in-flight` coordination container (mid-`map`, `childWorkflow`),
   // or an `awaiting-signal`/`awaiting-timer` step -- still surfaces
-  // `RuntimeResumeUnsupportedError`: those have a live re-arming surface
-  // the host owns (rebuild the map state, re-park on a later signal), so
-  // declining honestly is correct there.
+  // `RuntimeResumeUnsupportedError`. The log alone cannot re-arm that
+  // step, so the throw is recorded as `RunFailed`.
   //
   // The pass runs whenever canonical state is `running`, whether the
   // residual arrived via a `resumeFromEvents` seed OR was adopted from a
@@ -558,12 +770,12 @@ async function executeRunBody(
         }
         continue;
       }
-      // Every other non-terminal residual keeps declining: the host owns
-      // the recovery decision (crash, alert, or redeploy).
+      // Every other non-terminal residual still throws. The throw is
+      // recorded as `RunFailed`.
       if (residual === "unsupported") {
         // `resumeResidualOf` returns this only for a non-terminal phase.
         // The constructor's phase is that same set, so a terminal phase
-        // here is a broken guard rather than a resume the host can own.
+        // here is a broken guard.
         if (
           stepState.phase !== "in-flight" &&
           stepState.phase !== "awaiting-signal" &&
@@ -778,12 +990,34 @@ async function executeRunBody(
   // this map to abort in-flight cancel-mode steps when drain fires
   // after the step was already scheduled.
   const stepAborts = new Map<string, AbortController>();
+  // A failed flush drops its batch and the step runner rejects with
+  // that same error. The loop below would otherwise treat the
+  // rejection as a settled step and schedule the step again, or wait
+  // forever on a sibling that is already parked. Remember the first
+  // error and rethrow it once every in-flight step has stopped.
+  let repoWriteFailure: unknown;
+  // One waiter for the whole loop. A flush that already failed resolves
+  // it immediately, so the next race observes it without a new registration.
+  const flushFailed = whenRunFlushFails(runId);
+  async function throwRememberedWriteFailure(): Promise<void> {
+    if (repoWriteFailure === undefined) {
+      repoWriteFailure = flushFailureCause(runId);
+    }
+    const cause = repoWriteFailure;
+    if (cause === undefined) return;
+    for (const controller of stepAborts.values()) {
+      if (!controller.signal.aborted) controller.abort();
+    }
+    await Promise.allSettled(stepPromises.values());
+    throw cause;
+  }
 
   // Tick loop: schedule everything ready, await any in-flight to
   // settle, repeat until done. Cancellation aborts every in-flight
   // executor; we still loop to commit `CancelPropagated` and the
   // terminal `RunCancelled`.
   while (!isRunDone(definition, state)) {
+    await throwRememberedWriteFailure();
     if (cancelController.signal.aborted && state.phase !== "cancelling") {
       state = await reloadState(env, runId);
     }
@@ -831,7 +1065,11 @@ async function executeRunBody(
         .then((output) => {
           stepOutputs[primitive.id] = output;
         })
-        .catch(() => {
+        .catch((cause: unknown) => {
+          if (isRunFlushFailure(runId, cause)) {
+            if (repoWriteFailure === undefined) repoWriteFailure = cause;
+            return;
+          }
           // Errors are committed as StepFailed inside the primitive
           // runner; the main loop notices the failed phase on the
           // next state reload.
@@ -874,6 +1112,7 @@ async function executeRunBody(
     }
 
     if (stepPromises.size === 0) {
+      await throwRememberedWriteFailure();
       if (ready.length === 0) {
         throw new Error(
           `workflow ${definition.id} run ${runId} stalled with no schedulable primitives`,
@@ -882,16 +1121,21 @@ async function executeRunBody(
       // Promises were scheduled this tick but already completed
       // synchronously; reload state and continue.
       state = await reloadState(env, runId);
+      await throwRememberedWriteFailure();
       continue;
     }
 
-    // Wait for at least one in-flight primitive to settle. Each
-    // primitive's runner already swallows its own errors into
-    // StepFailed events so the race resolves cleanly.
-    await Promise.race(
-      Array.from(stepPromises.values()).map((p) => p.catch(() => undefined)),
-    );
+    // Wait for at least one in-flight primitive to settle. Step
+    // failures are already `StepFailed`. A parked step never settles,
+    // so the flush waiter is what wakes the loop when an external
+    // writer drops the buffer.
+    await Promise.race([
+      ...Array.from(stepPromises.values()).map((p) => p.catch(() => undefined)),
+      flushFailed,
+    ]);
+    await throwRememberedWriteFailure();
     state = await reloadState(env, runId);
+    await throwRememberedWriteFailure();
     for (const stepId of justSettled) {
       stepPromises.delete(stepId);
     }
@@ -1205,6 +1449,12 @@ async function runPrimitiveSafe(
       maxChildSpawnDepth,
     );
   } catch (cause) {
+    // Only this run's failed flush. A nested run stamps the same
+    // marker on its own append error, and that error rejects the
+    // child. The parent still records this step's failure; rethrowing
+    // the marker here would drop the buffered ChildCompleted and
+    // leave the parent without a terminal event.
+    if (isRunFlushFailure(runId, cause)) throw cause;
     let state = await reloadState(env, runId);
     const stepState = state.steps.get(primitive.id);
     if (!stepState) {
@@ -4049,9 +4299,9 @@ async function waitForTimer(
   // the scheduler-committed `TimerFired`. Flush the buffered segment
   // (the `TimerSet` -- and, on the retry path, the preceding
   // `StepFailed`/`AttemptScheduled`) to durable storage BEFORE
-  // computing `subscribeFromSeq` and subscribing, so the out-of-process
-  // scheduler can tail the durable `TimerSet` and a crash-while-waiting
-  // leaves a resumable pre-suspension log.
+  // computing `subscribeFromSeq` and subscribing, so the scheduler can
+  // tail the durable `TimerSet` and a crash-while-waiting leaves a
+  // resumable pre-suspension log.
   await flush(env, runId);
   const subscribeFromSeq = (await reloadState(env, runId)).lastSeq + 1;
   const ac = new AbortController();
@@ -4799,11 +5049,11 @@ async function parkOnSignalResult(
   // (and, when a timeout is set, tail the durable log for the
   // scheduler-committed `TimerFired`). Flush the buffered
   // `SignalAwaited` (+ `TimerSet`) to durable storage BEFORE parking so
-  // (a) the out-of-process scheduler can tail the durable `TimerSet`
-  // and arm the timeout, (b) a crash-while-suspended leaves a
-  // complete pre-suspension log that resume reconstructs the
-  // awaiting-signal state from, and (c) the control-plane suspension is
-  // durable in the log before the host is notified below, so the hub is
+  // (a) the scheduler can tail the durable `TimerSet` and arm the
+  // timeout, (b) a crash-while-suspended leaves a complete
+  // pre-suspension log that resume reconstructs the awaiting-signal
+  // state from, and (c) the control-plane suspension is durable in
+  // the log before the host is notified below, so the hub is
   // never told about a correlation the log cannot reconstruct on resume.
   // `subscribeFromSeq` above was computed from the in-memory tip; the
   // flush makes the durable tip match, so the timer-watch subscription
