@@ -1,6 +1,7 @@
 import { type } from "arktype";
 
 import { sha256 } from "@intx/crypto";
+import { DeploymentRejectedError } from "@intx/types/sidecar";
 import {
   SIDECAR_DEPLOYMENT_STOPPED_FAILURE_CODE,
   SIDECAR_CLEANUP_UNCONFIRMED_FAILURE_CODE,
@@ -637,6 +638,16 @@ export function createSidecarAllocationReconciler({
         );
       } catch (error) {
         if (error instanceof ReconciliationLeaseLostError) throw error;
+        if (error instanceof DeploymentRejectedError) {
+          await replaceAfterFailure(
+            allocation,
+            leaseId,
+            "sidecar_deployment_rejected",
+            error.message,
+            { onlyIfInitializationIncomplete: true },
+          );
+          return;
+        }
         if (error instanceof SidecarDeploymentMissingError) {
           await replaceAfterFailure(
             allocation,

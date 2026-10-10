@@ -23,6 +23,7 @@ import {
 } from "@intx/workflow-host";
 import type { WorkflowDefinition } from "@intx/workflow";
 import {
+  DeploymentRejectedError,
   DeploymentStoppedFrame,
   HostedIncarnation,
   MAX_DEPLOYMENT_ERROR_LENGTH,
@@ -3223,10 +3224,30 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     await spawner.driveReadyFor(0);
     await deployed;
 
-    await expect(
-      router.deploy(singleStepFrame("run_cap_other@example.com", "wf-cap")),
-    ).rejects.toThrow("this sidecar has no active deployment slot");
+    const error = await router
+      .deploy(singleStepFrame("run_cap_other@example.com", "wf-cap"))
+      .catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(DeploymentRejectedError);
+    expect(error).toMatchObject({ code: "capacity_full" });
+    expect(
+      await recordExists(
+        dataDir,
+        deriveWorkflowRunRepoId("run_cap_other@example.com"),
+      ),
+    ).toBe(false);
+    expect(spawner.spawnCount()).toBe(1);
     expect(heldAddresses(router)).toEqual([held]);
+    const duplicate = await router
+      .deploy(singleStepFrame(held, "wf-cap"))
+      .catch((cause: unknown) => cause);
+    expect(duplicate).not.toBeInstanceOf(DeploymentRejectedError);
+    expect(duplicate).toMatchObject({
+      message: expect.stringContaining("is live here"),
+    });
+    expect(await recordExists(dataDir, deriveWorkflowRunRepoId(held))).toBe(
+      true,
+    );
+    expect(spawner.spawnCount()).toBe(1);
   });
 
   function retainCommand(agentAddress: string) {

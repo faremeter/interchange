@@ -21,6 +21,7 @@ import type { GrantWalkSnapshot } from "@intx/types";
 import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 import { type } from "arktype";
 import {
+  DeploymentRejectedError,
   MAX_MAIL_OUTBOUND_BODY_BYTES,
   SidecarFrame,
   WORKFLOW_CONTROL_INITIALIZING_ERROR,
@@ -962,7 +963,12 @@ export function createSidecarRouter(
   // generation. One deploy per address is in flight at a time; a reply that
   // names another request answers a deploy the Hub already gave up on.
   type PendingDeploy = { requestId: string; generation: number };
-  const pendingDeploys = new PendingTracker<string, string, PendingDeploy>();
+  const pendingDeploys = new PendingTracker<
+    string,
+    string,
+    PendingDeploy,
+    DeploymentRejectedError
+  >();
   // Run addresses whose ALLOCATED deploy is mid-flight -- key-record has been
   // started but not yet committed. pendingDeploys clears at the deploy ack, but an
   // allocated run's key is recorded LATER by session-service's anchor-key update,
@@ -4802,7 +4808,9 @@ export function createSidecarRouter(
   function deployAnsweredBy(
     ws: WsHandle,
     frame: AgentDeployAckFrame | AgentDeployErrorFrame,
-  ): PendingEntry<string, string, PendingDeploy> | undefined {
+  ):
+    | PendingEntry<string, string, PendingDeploy, DeploymentRejectedError>
+    | undefined {
     const req = pendingDeploys.get(frame.agentAddress);
     return req?.ws === ws &&
       req.meta.requestId === frame.requestId &&
@@ -4869,10 +4877,15 @@ export function createSidecarRouter(
   ): void {
     connections.get(ws)?.unansweredDeploys.delete(frame.requestId);
     if (deployAnsweredBy(ws, frame) === undefined) {
-      logger.warn`Ignoring agent.deploy.error ${frame.requestId} for ${frame.agentAddress} generation ${String(frame.generation)}: it answers no deploy in flight on this connection: ${frame.error}`;
+      logger.warn`Ignoring agent.deploy.error ${frame.requestId} for ${frame.agentAddress} generation ${String(frame.generation)}: it answers no deploy in flight on this connection: ${frame.error.code}: ${frame.error.message}`;
       return;
     }
-    pendingDeploys.reject(frame.agentAddress, frame.error);
+    pendingDeploys.reject(
+      frame.agentAddress,
+      frame.error.code === "capacity_full"
+        ? new DeploymentRejectedError(frame.error.code, frame.error.message)
+        : frame.error.message,
+    );
   }
 
   function sendAgentDeployOnConnection(
@@ -4902,8 +4915,8 @@ export function createSidecarRouter(
 
     const requestId = nextRequestId();
     const response = Promise.withResolvers<{ publicKey: string }>();
-    // Timeout and frame-error rejections share this closure, so the routing
-    // rollback and the `frameSent: true` tag live in one place.
+    // Every failure removes the provisional route. Only an explicit rejection
+    // proves the sidecar did not start; other replies and timeouts stay uncertain.
     pendingDeploys.register(
       agentAddress,
       ws,
@@ -4913,14 +4926,16 @@ export function createSidecarRouter(
         resolve(publicKey) {
           response.resolve({ publicKey });
         },
-        reject(error: string) {
+        reject(error) {
           if (addressIndex.get(agentAddress) === ws) {
             conn.workflowAddresses.delete(agentAddress);
             addressIndex.delete(agentAddress);
           }
           // The deployment's owner settles any pre-ack sender mail parked on
           // this address once it knows the outcome.
-          response.reject(deployFrameFailure(error, true));
+          response.reject(
+            typeof error === "string" ? deployFrameFailure(error, true) : error,
+          );
         },
       },
       { requestId, generation: target.generation },
@@ -5070,8 +5085,8 @@ export function createSidecarRouter(
           resolve(_publicKey) {
             resolve();
           },
-          reject(error: string) {
-            reject(new Error(error));
+          reject(error) {
+            reject(typeof error === "string" ? new Error(error) : error);
           },
         },
         { requestId, generation },

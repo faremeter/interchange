@@ -9,6 +9,7 @@ import { hexEncode } from "@intx/types";
 import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import { projectLiveToInert } from "@intx/workflow";
 import {
+  DeploymentRejectedError,
   type AgentDeployFrame,
   WorkflowProjectionDefinition,
 } from "@intx/types/sidecar";
@@ -1395,15 +1396,18 @@ describe("deployCodeSourcedWorkflow", () => {
     }),
   } as unknown as DB["db"];
 
-  async function capturePreparedDeployError(failure: Error): Promise<unknown> {
+  async function capturePreparedDeployError(failure: Error, cancelled = false) {
+    const controller = new AbortController();
+    const sidecarRouter = createMockRouter();
     const allocationRouter = createMockAllocationRouter();
     allocationRouter.sendAgentDeployToAllocation = async () => {
+      if (cancelled) controller.abort(new Error("Initialization cancelled"));
       throw failure;
     };
     const preparedRepoStore = createMockRepoStore();
     preparedRepoStore.repoStore.resolveRef = async () => null;
     const service = createSessionService({
-      sidecarRouter: createMockRouter(),
+      sidecarRouter,
       sidecarAllocationRouter: allocationRouter,
       agentRepoStore: preparedRepoStore,
       db: CAPTURING_DB,
@@ -1413,7 +1417,7 @@ describe("deployCodeSourcedWorkflow", () => {
     ]);
     if (!approval.ok) throw new Error("expected approval");
 
-    return service
+    const error = await service
       .deployPreparedCodeSourcedWorkflow({
         tenantId: TENANT,
         anchorRunId: ANCHOR_RUN_ID,
@@ -1425,11 +1429,17 @@ describe("deployCodeSourcedWorkflow", () => {
         allocationTarget: { allocationId: "alloc-test", generation: 1 },
         reconciliation: {
           leaseId: "lease-test",
-          signal: new AbortController().signal,
+          signal: controller.signal,
         },
         credentialCipher: createNoopCredentialCipher(),
       })
       .catch((error: unknown) => error);
+    return {
+      error,
+      settlements: sidecarRouter.calls.filter(
+        (call) => call.method === "noteSenderDeploySettled",
+      ),
+    };
   }
 
   describe("deployPreparedCodeSourcedWorkflow", () => {
@@ -2128,7 +2138,7 @@ describe("deployCodeSourcedWorkflow", () => {
         const failure = Object.assign(new Error("deploy failed"), {
           frameSent,
         });
-        const error = await capturePreparedDeployError(failure);
+        const { error } = await capturePreparedDeployError(failure);
 
         expect(error).toBeInstanceOf(SessionLaunchError);
         if (!(error instanceof SessionLaunchError)) {
@@ -2143,8 +2153,24 @@ describe("deployCodeSourcedWorkflow", () => {
     test("does not classify an untagged pre-send failure as possibly live", async () => {
       const failure = new Error("allocation route unavailable");
 
-      expect(await capturePreparedDeployError(failure)).toBe(failure);
+      expect((await capturePreparedDeployError(failure)).error).toBe(failure);
     });
+
+    test.each([false, true])(
+      "preserves a proven rejection and settles sender mail only before cancellation: %s",
+      async (cancelled) => {
+        const failure = new DeploymentRejectedError(
+          "capacity_full",
+          "No active slot",
+        );
+        const { error, settlements } = await capturePreparedDeployError(
+          failure,
+          cancelled,
+        );
+        expect(error).toBe(failure);
+        expect(settlements).toHaveLength(cancelled ? 0 : 1);
+      },
+    );
   });
 
   test("builds a self-consistent source-ref frame that binds to the gate's frozen hash and inert projection", async () => {

@@ -5,7 +5,11 @@ import { upgradeWebSocket, websocket } from "hono/bun";
 
 import { createInMemoryTransport } from "@intx/mail-memory";
 import type { HarnessConfig } from "@intx/types/runtime";
-import { MAX_DEPLOYMENT_ERROR_LENGTH, SidecarFrame } from "@intx/types/sidecar";
+import {
+  DeploymentError,
+  MAX_DEPLOYMENT_ERROR_LENGTH,
+  SidecarFrame,
+} from "@intx/types/sidecar";
 
 import type { AgentKeyStore } from "../agent-key-store";
 import type { SessionManager } from "../session-manager";
@@ -21,7 +25,7 @@ const ReceivedFrame = type({
   "sidecarId?": "string",
   "agentAddress?": "string",
   "requestId?": "string",
-  "error?": "string",
+  "error?": DeploymentError.or("string"),
 });
 type ReceivedFrame = typeof ReceivedFrame.infer;
 
@@ -991,7 +995,11 @@ describe("an undeploy the sidecar cannot finish", () => {
       );
 
       for (const answer of [deployAnswer, undeployAnswer]) {
-        expect(answer.error).toHaveLength(MAX_DEPLOYMENT_ERROR_LENGTH);
+        const message =
+          typeof answer.error === "string"
+            ? answer.error
+            : answer.error?.message;
+        expect(message).toHaveLength(MAX_DEPLOYMENT_ERROR_LENGTH);
         expect(SidecarFrame(answer) instanceof type.errors).toBe(false);
       }
     } finally {

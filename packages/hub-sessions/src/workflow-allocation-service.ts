@@ -26,7 +26,10 @@ import {
   type ResolvedWorkflowLifecyclePolicy,
   type CredentialCipher,
 } from "@intx/types";
-import type { FrozenApprovalBundle } from "@intx/types/sidecar";
+import {
+  DeploymentRejectedError,
+  type FrozenApprovalBundle,
+} from "@intx/types/sidecar";
 import type { HarnessConfig } from "@intx/types/runtime";
 import type { ToolPackagePin } from "@intx/types/tool-packages";
 import type { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
@@ -924,6 +927,7 @@ export function createWorkflowAllocationService({
       // uncertain, and a lost lease ends this attempt; the reconciler handles
       // both. Anything else failed before the sidecar ran the deployment.
       if (
+        error instanceof DeploymentRejectedError ||
         (error instanceof SessionLaunchError && error.leakedAgent) ||
         reconciliation.signal.aborted
       )

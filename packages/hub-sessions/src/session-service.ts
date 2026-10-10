@@ -20,6 +20,7 @@ import type {
   CredentialDelivery,
   CredentialMaterialEntry,
 } from "@intx/types/credential-delivery";
+import { DeploymentRejectedError } from "@intx/types/sidecar";
 import type { CredentialCipher } from "@intx/types";
 import { sessionAsset as sessionAssetTable } from "@intx/db/schema";
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
@@ -798,7 +799,7 @@ async function emitSourceRefDeployFrame(
   args: DeployCodeSourcedWorkflowArgs & {
     allocationTarget?: AllocatedSidecarTarget;
     sidecarAllocationRouter?: SidecarAllocationRouter;
-    onUnsentInitializationCleared(): void;
+    onInitializationCleared(): void;
   },
   reconciliation: SidecarReconciliationContext,
 ): Promise<{
@@ -841,6 +842,28 @@ async function emitSourceRefDeployFrame(
         : {}),
     };
   } catch (cause) {
+    if (cause instanceof DeploymentRejectedError && reserved) {
+      logger.error`Deployment ${args.anchorRunId} was rejected before starting: ${cause.code}: ${cause.message}`;
+      try {
+        const releasing = await allocationStore.rejectInitialization({
+          ...initialization,
+          message: cause.message,
+        });
+        if (releasing !== null) {
+          sendArgs.sidecarAllocationRouter.fenceAllocation(
+            releasing.id,
+            releasing.generation,
+            releasing.sidecarId === undefined
+              ? {}
+              : { cleanup: { sidecarId: releasing.sidecarId } },
+          );
+          args.onInitializationCleared();
+        }
+      } catch (error) {
+        logger.error`Could not record deployment rejection for ${initialization.allocationId}: ${error instanceof Error ? error.message : String(error)}`;
+      }
+      throw cause;
+    }
     if (!isDeployFrameFailure(cause)) throw cause;
     // Only a confirmed reservation can be rolled back. An ambiguous
     // reservation response leaves its durable marker for conservative cleanup.
@@ -849,7 +872,7 @@ async function emitSourceRefDeployFrame(
       try {
         const cleared =
           await allocationStore.clearUnsentInitialization(initialization);
-        if (cleared) args.onUnsentInitializationCleared();
+        if (cleared) args.onInitializationCleared();
       } catch (error) {
         logger.warn`Could not clear unsent initialization for ${initialization.allocationId}: ${error instanceof Error ? error.message : String(error)}`;
       }
@@ -888,7 +911,8 @@ async function emitSourceRefDeployFrame(
  * the wire (`isDeployFrameFailure && frameSent === false`); every other failure
  * -- a sent-but-unacked frame OR any untagged error -- is treated as
  * possibly-live: the anchor is fenced `deployed` -> `failed` and the error is
- * `leakedAgent: true`.
+ * `leakedAgent: true`. An explicit pre-start rejection also fails the anchor,
+ * but preserves the rejection instead of claiming the worker may be live.
  *
  * The prepared provisioned path does NOT use this composition: its anchor row
  * already exists from prepare time, so it drives `emitSourceRefDeployFrame` and
@@ -950,8 +974,8 @@ export async function deployCodeSourcedWorkflow(
       }
       throw new SessionLaunchError("start", cause, false);
     }
-    // A sent-but-unacked frame, OR any untagged/unexpected error: no positive
-    // proof of a clean send, so treat the agent as possibly-live. Fence the
+    // Preserve a rejected deployment's anchor as a recorded failure. Otherwise
+    // a sent-but-unacked frame or unexpected error leaves it possibly live. Fence the
     // anchor `deployed` -> `failed` (guarded so a self-flip to "running" by a
     // trigger that already landed is left alone). Do NOT delete: a live child
     // needs the anchor to bootstrap.
@@ -974,6 +998,9 @@ export async function deployCodeSourcedWorkflow(
       // despite the ack failure. Leave it; the leaked-agent disposition still
       // holds because the frame was (or may have been) sent.
       logger.warn`anchor-before-frame: anchor ${args.anchorRunId} already advanced past deployed on an unacked/failed emit; the agent is live and the run is progressing despite the ack failure`;
+    } else if (cause instanceof DeploymentRejectedError) {
+      logger.error`Deployment ${args.anchorRunId} was rejected before starting: ${cause.code}: ${cause.message}`;
+      throw cause;
     } else {
       logger.warn`anchor-before-frame: fenced anchor ${args.anchorRunId} deployed->failed on an unacked/failed emit; the agent may be leaked but the run is dead`;
     }
@@ -1633,10 +1660,10 @@ export function createSessionService(
     });
     signal.throwIfAborted();
 
-    let unsentCleared = false;
+    let initializationCleared = false;
     const commonEmit = {
-      onUnsentInitializationCleared() {
-        unsentCleared = true;
+      onInitializationCleared() {
+        initializationCleared = true;
       },
       approved: params.approved,
       sidecarAllocationRouter: allocationRouter,
@@ -1718,10 +1745,10 @@ export function createSessionService(
     } catch (error) {
       // A sent deploy or cancelled publication may have committed despite its
       // lost response, as may an unsent rollback. Without a confirmed rollback,
-      // recovery owns transport failures too. Only a confirmed rollback or an
-      // uncancelled preparation failure can settle definitively here.
+      // recovery owns transport failures too. A recorded rejection, confirmed
+      // rollback, or uncancelled preparation failure can settle here.
       if (
-        unsentCleared ||
+        initializationCleared ||
         (!signal.aborted && !(error instanceof SessionLaunchError))
       ) {
         sidecarRouter.noteSenderDeploySettled(senderAttempt, {

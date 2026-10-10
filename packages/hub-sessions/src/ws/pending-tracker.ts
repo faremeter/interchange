@@ -39,7 +39,7 @@ const scheduleOnGlobalTimer: ScheduleTimeout = (handler, ms) => {
   };
 };
 
-export type PendingEntry<Key, Value, Meta> = {
+export type PendingEntry<Key, Value, Meta, Failure = never> = {
   key: Key;
   ws: WsHandle;
   /**
@@ -50,7 +50,7 @@ export type PendingEntry<Key, Value, Meta> = {
    */
   meta: Meta;
   resolve(value: Value): void;
-  reject(error: string): void;
+  reject(error: string | Failure): void;
   /**
    * Disarms this entry's timeout.
    *
@@ -70,12 +70,25 @@ export type PendingEntry<Key, Value, Meta> = {
  * `token` can, because it is allocated per `register` call. It is internal
  * to the tracker: `get` hands callers the `PendingEntry` view.
  */
-type TrackedEntry<Key, Value, Meta> = PendingEntry<Key, Value, Meta> & {
+type TrackedEntry<Key, Value, Meta, Failure> = PendingEntry<
+  Key,
+  Value,
+  Meta,
+  Failure
+> & {
   readonly token: symbol;
 };
 
-export class PendingTracker<Key, Value = void, Meta = undefined> {
-  private readonly entries = new Map<Key, TrackedEntry<Key, Value, Meta>>();
+export class PendingTracker<
+  Key,
+  Value = void,
+  Meta = undefined,
+  Failure = never,
+> {
+  private readonly entries = new Map<
+    Key,
+    TrackedEntry<Key, Value, Meta, Failure>
+  >();
 
   /**
    * `schedule` defaults to the global timer, which is what every production
@@ -103,7 +116,7 @@ export class PendingTracker<Key, Value = void, Meta = undefined> {
       timeoutMs: number;
       timeoutMessage: string;
       resolve(value: Value): void;
-      reject(error: string): void;
+      reject(error: string | Failure): void;
     },
     meta: Meta,
   ): void {
@@ -142,7 +155,7 @@ export class PendingTracker<Key, Value = void, Meta = undefined> {
     return this.entries.has(key);
   }
 
-  get(key: Key): PendingEntry<Key, Value, Meta> | undefined {
+  get(key: Key): PendingEntry<Key, Value, Meta, Failure> | undefined {
     return this.entries.get(key);
   }
 
@@ -163,7 +176,7 @@ export class PendingTracker<Key, Value = void, Meta = undefined> {
    * Settle a pending entry as rejected. No-op when the entry is already
    * gone (timed out or swept on disconnect).
    */
-  reject(key: Key, error: string): boolean {
+  reject(key: Key, error: string | Failure): boolean {
     const entry = this.entries.get(key);
     if (entry === undefined) return false;
     entry.cancelTimeout();
@@ -201,7 +214,7 @@ export class PendingTracker<Key, Value = void, Meta = undefined> {
    */
   rejectForWs(
     ws: WsHandle,
-    matches: (entry: PendingEntry<Key, Value, Meta>) => boolean,
+    matches: (entry: PendingEntry<Key, Value, Meta, Failure>) => boolean,
     error: string,
   ): void {
     for (const [key, entry] of this.entries) {

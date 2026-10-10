@@ -702,7 +702,10 @@ describe("frame array-length ceilings", () => {
             requestId: "req-1",
             agentAddress: "wf@example.test",
             generation: 1,
-            error,
+            error:
+              frameType === "agent.deploy.error"
+                ? { code: "deployment_failed", message: error }
+                : error,
           }) instanceof type.errors;
         expect(rejects("x".repeat(MAX_DEPLOYMENT_ERROR_LENGTH))).toBe(false);
         expect(rejects("x".repeat(MAX_DEPLOYMENT_ERROR_LENGTH + 1))).toBe(true);

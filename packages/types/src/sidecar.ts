@@ -257,13 +257,30 @@ export const AgentDeployAckFrame = type({
 });
 export type AgentDeployAckFrame = typeof AgentDeployAckFrame.infer;
 
+/** Capacity refusal starts nothing; a general failure may leave deployment state. */
+export const DeploymentError = type({
+  code: "'capacity_full' | 'deployment_failed'",
+  message: type("string").atMostLength(MAX_DEPLOYMENT_ERROR_LENGTH),
+});
+export type DeploymentError = typeof DeploymentError.infer;
+
+export class DeploymentRejectedError extends Error {
+  constructor(
+    readonly code: "capacity_full",
+    message: string,
+  ) {
+    super(message);
+    this.name = "DeploymentRejectedError";
+  }
+}
+
 /** Reports that the `agent.deploy` with this request id failed. */
 export const AgentDeployErrorFrame = type({
   type: "'agent.deploy.error'",
   requestId: "string",
   agentAddress: "string",
   generation: Generation,
-  error: type("string").atMostLength(MAX_DEPLOYMENT_ERROR_LENGTH),
+  error: DeploymentError,
 });
 export type AgentDeployErrorFrame = typeof AgentDeployErrorFrame.infer;
 

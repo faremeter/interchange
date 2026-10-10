@@ -42,6 +42,7 @@ import type {
   InboundMailPolicy,
 } from "@intx/types/inbound-mail-policy";
 import {
+  DeploymentRejectedError,
   fitDeploymentError,
   MAX_SIDECAR_ACTIVE_DEPLOYMENTS,
   MAX_SIDECAR_RETAINED_DEPLOYMENTS,
@@ -2432,7 +2433,8 @@ export function createSidecarDeployRouter<
       );
     }
     if (deployments.size - retainedCount() >= maxActiveDeployments) {
-      throw new Error(
+      throw new DeploymentRejectedError(
+        "capacity_full",
         `sidecar deploy router: this sidecar has no active deployment slot for ${frame.agentAddress}`,
       );
     }

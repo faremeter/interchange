@@ -12,6 +12,7 @@ import { hexEncode } from "@intx/types";
 import { configureSync, getConfig } from "@intx/log";
 
 import { SessionLaunchError } from "../session-service";
+import { DeploymentRejectedError } from "@intx/types/sidecar";
 import {
   isDeployFrameFailure,
   SidecarIdentityValidationError,
@@ -3414,65 +3415,78 @@ describe("createSidecarAllocationReconciler", () => {
     ]);
   });
 
-  test("releases a generation whose initialization leaked a supervisor", async () => {
-    const allocated = allocation({
-      status: "allocated",
-      generation: 1,
-      sidecarId: "sc-current",
-      ensureAcceptedGeneration: 1,
-      connectDeadline: NOW,
-      reconciliationLeaseId: "lease-1",
-    });
-    const releasing = allocation({
-      status: "releasing",
-      generation: 2,
-      sidecarId: "sc-current",
-    });
-    let claimed = false;
-    let released:
-      | Parameters<AllocationStore["beginUnrecoverableRelease"]>[0]
-      | undefined;
-    const fences: [string, number][] = [];
-    const store = fakeStore({
-      claimNextReconcilable: async () => {
-        if (claimed) return null;
-        claimed = true;
-        return allocated;
-      },
-      beginUnrecoverableRelease: async (args) => {
-        released = args;
-        return releasing;
-      },
-    });
-    const reconciler = createSidecarAllocationReconciler(
-      deps({
-        store,
-        fences,
-        ready: true,
-        onReady: async () => {
-          throw new SessionLaunchError(
-            "provision",
-            new Error("deploy pack failed"),
-            true,
-          );
+  test.each(["uncertain", "rejected"] as const)(
+    "releases a generation after an %s initialization with its actual cause",
+    async (outcome) => {
+      const allocated = allocation({
+        status: "allocated",
+        generation: 1,
+        sidecarId: "sc-current",
+        ensureAcceptedGeneration: 1,
+        connectDeadline: NOW,
+        reconciliationLeaseId: "lease-1",
+      });
+      const releasing = allocation({
+        status: "releasing",
+        generation: 2,
+        sidecarId: "sc-current",
+      });
+      let claimed = false;
+      let released:
+        | Parameters<AllocationStore["beginUnrecoverableRelease"]>[0]
+        | undefined;
+      const fences: [string, number][] = [];
+      const store = fakeStore({
+        claimNextReconcilable: async () => {
+          if (claimed) return null;
+          claimed = true;
+          return allocated;
         },
-      }),
-    );
+        beginUnrecoverableRelease: async (args) => {
+          released = args;
+          return releasing;
+        },
+      });
+      const reconciler = createSidecarAllocationReconciler(
+        deps({
+          store,
+          fences,
+          ready: true,
+          onReady: async () => {
+            if (outcome === "rejected")
+              throw new DeploymentRejectedError(
+                "capacity_full",
+                "No active slot",
+              );
+            throw new SessionLaunchError(
+              "provision",
+              new Error("deploy pack failed"),
+              true,
+            );
+          },
+        }),
+      );
 
-    await reconciler.reconcileNext();
+      await reconciler.reconcileNext();
 
-    expect(released).toMatchObject({
-      allocationId: "alloc-1",
-      expectedGeneration: 1,
-      expectedLeaseId: "lease-1",
-      failureCode: "sidecar_initialization_uncertain",
-      failureMessage: "deploy pack failed",
-    });
-    expect(fences).toEqual([
-      ["alloc-1", 1],
-      ["alloc-1", 2],
-    ]);
-  });
+      expect(released).toMatchObject({
+        allocationId: "alloc-1",
+        expectedGeneration: 1,
+        expectedLeaseId: "lease-1",
+        failureCode:
+          outcome === "rejected"
+            ? "sidecar_deployment_rejected"
+            : "sidecar_initialization_uncertain",
+        failureMessage:
+          outcome === "rejected" ? "No active slot" : "deploy pack failed",
+        onlyIfInitializationIncomplete: true,
+      });
+      expect(fences).toEqual([
+        ["alloc-1", 1],
+        ["alloc-1", 2],
+      ]);
+    },
+  );
 
   test("releases a generation whose sidecar no longer holds its deployment", async () => {
     const allocated = allocation({

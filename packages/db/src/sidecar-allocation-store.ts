@@ -701,8 +701,11 @@ function buildSidecarAllocationStore(
           eq(sidecarAllocation.status, args.expectedStatus),
           eq(sidecarAllocation.generation, args.expectedGeneration),
           ...leaseCondition(args.expectedLeaseId),
-          // A caller without the lease cannot interrupt an active reconciler.
-          ...(args.expectedLeaseId === undefined
+          // An ordinary caller cannot interrupt an active reconciler. A
+          // definitive initialization refusal instead owns the exact attempt
+          // marker, which outlives a disconnect's reconciliation lease.
+          ...(args.expectedLeaseId === undefined &&
+          args.expectedInitializationLeaseId === undefined
             ? [
                 or(
                   isNull(sidecarAllocation.reconciliationLeaseExpiresAt),
@@ -725,6 +728,30 @@ function buildSidecarAllocationStore(
       )
       .returning();
     return updated === undefined ? null : parseSidecarAllocationRow(updated);
+  }
+
+  async function releaseFailedAllocation(
+    tx: DBExecutor,
+    args: BeginSidecarReleaseArgs & {
+      readonly failureCode: string;
+      readonly failureMessage: string;
+    },
+  ): Promise<SidecarAllocation | null> {
+    const releasing = await beginRelease(args, tx);
+    if (releasing === null) return null;
+    const now = databaseTimestamp(args.now);
+    await failRunningRuns(tx, releasing.anchorRunId, now, {
+      code: args.failureCode,
+      message: args.failureMessage,
+    });
+    await workflowRunDispatchStore.abandonUnsettled(
+      releasing.anchorRunId,
+      args.failureCode,
+      args.failureMessage,
+      now,
+      tx,
+    );
+    return releasing;
   }
 
   async function insertAdopted(
@@ -804,6 +831,34 @@ function buildSidecarAllocationStore(
         )
         .returning({ id: sidecarAllocation.id });
       return updated !== undefined;
+    },
+
+    async rejectInitialization(
+      args: InitializationArgs & { readonly message: string },
+    ): Promise<SidecarAllocation | null> {
+      // Like an unsent rollback, a proven refusal remains valid after lease
+      // cancellation. Lock the attempt marker before changing either the
+      // allocation or its runs; a completion or newer generation wins otherwise.
+      return db.transaction(async (tx) => {
+        const [allocation] = await tx
+          .select({ id: sidecarAllocation.id })
+          .from(sidecarAllocation)
+          .where(
+            initializationConditions(args, args.leaseId, {
+              requireCurrentLease: false,
+            }),
+          )
+          .for("update");
+        if (allocation === undefined) return null;
+        return releaseFailedAllocation(tx, {
+          allocationId: args.allocationId,
+          expectedStatus: "allocated",
+          expectedGeneration: args.generation,
+          expectedInitializationLeaseId: args.leaseId,
+          failureCode: "sidecar_deployment_rejected",
+          failureMessage: args.message,
+        });
+      });
     },
 
     async createPending(
@@ -1280,28 +1335,13 @@ function buildSidecarAllocationStore(
     async beginUnrecoverableRelease(
       args: BeginUnrecoverableSidecarReleaseArgs,
     ): Promise<SidecarAllocation | null> {
-      const now = databaseTimestamp(args.now);
       return db.transaction(async (tx) => {
         if (
           args.onlyIfInitializationIncomplete &&
           (await initializationCompleted(tx, args))
         )
           return null;
-        const releasing = await beginRelease(args, tx);
-        if (releasing === null) return null;
-
-        await failRunningRuns(tx, releasing.anchorRunId, now, {
-          code: args.failureCode,
-          message: args.failureMessage,
-        });
-        await workflowRunDispatchStore.abandonUnsettled(
-          releasing.anchorRunId,
-          args.failureCode,
-          args.failureMessage,
-          now,
-          tx,
-        );
-        return releasing;
+        return releaseFailedAllocation(tx, args);
       });
     },
 

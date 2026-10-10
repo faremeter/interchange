@@ -27,6 +27,7 @@ import {
   type ReconnectScheduler,
 } from "./hub-link";
 import {
+  DeploymentRejectedError,
   MAX_DEPLOYMENT_ERROR_LENGTH,
   SidecarFrame,
   type AgentDeployErrorFrame,
@@ -474,6 +475,63 @@ async function provisionDeploymentKey(
 }
 
 describe("sidecar↔hub integration", () => {
+  test.each([true, false])(
+    "preserves only a proven deployment rejection across the link: %s",
+    async (rejected) => {
+      const hello = Promise.withResolvers<undefined>();
+      const answered = Promise.withResolvers<SidecarFrame>();
+      const hub = startWelcomingHub((raw) => {
+        const frame = SidecarFrame.assert(JSON.parse(raw));
+        if (frame.type === "hello") hello.resolve(undefined);
+        if (frame.type === "agent.deploy.error") answered.resolve(frame);
+      });
+      const client = createHubLink({
+        hubURL: `ws://localhost:${hub.server.port}/ws`,
+        sidecarId: "deploy-rejection",
+        token: "test-token",
+        transport: createInMemoryTransport(),
+        sessions: createMockSessionManager(),
+        ...withTestDeployBindings(),
+        deployRouter: {
+          deploy: async () => {
+            if (rejected)
+              throw new DeploymentRejectedError(
+                "capacity_full",
+                "No active slot",
+              );
+            throw new Error("No active slot");
+          },
+        },
+      });
+      try {
+        client.connect();
+        await hello.promise;
+        hub.send({
+          type: "agent.deploy",
+          requestId: "deploy-capacity",
+          agentAddress: "run_capacity@example.test",
+          generation: 1,
+          agentId: "run_capacity",
+          config: TEST_CONFIG,
+          hubPublicKey: "a".repeat(64),
+        });
+        expect(await answered.promise).toEqual({
+          type: "agent.deploy.error",
+          requestId: "deploy-capacity",
+          agentAddress: "run_capacity@example.test",
+          generation: 1,
+          error: {
+            code: rejected ? "capacity_full" : "deployment_failed",
+            message: "No active slot",
+          },
+        });
+      } finally {
+        client.close();
+        await hub.server.stop(true);
+      }
+    },
+  );
+
   test.each(["kept", "refused"] as const)(
     "forwards a %s retention decision in its control acknowledgement",
     async (retention) => {
@@ -3676,7 +3734,10 @@ describe("answerMalformedRequestFrame", () => {
       requestId: "req-deploy",
       agentAddress: "run_deploy@example.com",
       generation: 3,
-      error: expect.stringMatching(/malformed agent.deploy frame/),
+      error: {
+        code: "deployment_failed",
+        message: expect.stringMatching(/malformed agent.deploy frame/),
+      },
     });
   });
 

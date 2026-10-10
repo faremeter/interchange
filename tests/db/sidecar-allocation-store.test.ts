@@ -1355,6 +1355,106 @@ describe.skipIf(!harnessDbEnvAvailable())(
       ).toBe(false);
     });
 
+    test("a proven rejection survives disconnect and a new reconciliation claim", async () => {
+      const { store, allocation, initialization } =
+        await createClaimedAllocation("alloc-rejected-disconnected");
+      expect(await store.beginInitialization(initialization)).toBe(true);
+      await store.markConnectionLost({
+        allocationId: allocation.id,
+        generation: allocation.generation,
+        now: new Date(0),
+        firstConnectDeadline: new Date(120_000),
+      });
+      const claimed = await store.claimNextReconcilable({
+        leaseId: "recovery-owner",
+        leaseDurationMs: 60_000,
+      });
+      expect(claimed?.initializationLeaseId).toBe(initialization.leaseId);
+      const controller = new AbortController();
+      controller.abort(new Error("Disconnected after refusal"));
+      const rejection = {
+        ...initialization,
+        signal: controller.signal,
+        message: "No active slot",
+      };
+      for (const stale of [
+        { ...rejection, leaseId: "different-attempt" },
+        { ...rejection, generation: allocation.generation + 1 },
+        { ...rejection, tenantId: "different-tenant" },
+      ]) {
+        expect(await store.rejectInitialization(stale)).toBeNull();
+      }
+      expect(await store.rejectInitialization(rejection)).toMatchObject({
+        status: "releasing",
+        generation: allocation.generation + 1,
+        failureCode: "sidecar_deployment_rejected",
+        failureMessage: "No active slot",
+      });
+      const released = await store.findById(allocation.id);
+      expect(released?.initializationLeaseId).toBeUndefined();
+      expect(released?.reconciliationLeaseId).toBeUndefined();
+      expect(
+        await h.db.query.workflowRun.findFirst({
+          where: eq(workflowRun.id, ANCHOR_RUN_ID),
+        }),
+      ).toMatchObject({
+        status: "failed",
+        failureCode: "sidecar_deployment_rejected",
+      });
+      expect(await store.rejectInitialization(rejection)).toBeNull();
+      expect(
+        await store.beginUnrecoverableRelease({
+          allocationId: allocation.id,
+          expectedStatus: "allocated",
+          expectedGeneration: allocation.generation,
+          expectedLeaseId: "recovery-owner",
+          expectedInitializationLeaseId: initialization.leaseId,
+          onlyIfInitializationIncomplete: true,
+          failureCode: "sidecar_initialization_uncertain",
+          failureMessage: "Stale claim observed an outstanding attempt",
+        }),
+      ).toBeNull();
+      expect((await store.findById(allocation.id))?.failureCode).toBe(
+        "sidecar_deployment_rejected",
+      );
+    });
+
+    test("a stale refusal cannot undo a newer attempt or completed initialization", async () => {
+      const { store, allocation, initialization } =
+        await createClaimedAllocation("alloc-rejected-stale");
+      expect(await store.beginInitialization(initialization)).toBe(true);
+      expect(await store.clearUnsentInitialization(initialization)).toBe(true);
+      await store.markConnectionLost({
+        allocationId: allocation.id,
+        generation: allocation.generation,
+        now: new Date(0),
+        firstConnectDeadline: new Date(120_000),
+      });
+      await store.claimNextReconcilable({
+        leaseId: "new-attempt",
+        leaseDurationMs: 60_000,
+      });
+      const next = { ...initialization, leaseId: "new-attempt" };
+      expect(await store.beginInitialization(next)).toBe(true);
+      const rejection = { ...initialization, message: "Old refusal" };
+      expect(await store.rejectInitialization(rejection)).toBeNull();
+      expect(
+        await store.completeInitialization({ ...next, publicKey: "new-key" }),
+      ).toBe(true);
+      expect(
+        await store.rejectInitialization({ ...next, message: "Late refusal" }),
+      ).toBeNull();
+      expect(await store.findById(allocation.id)).toMatchObject({
+        status: "allocated",
+        generation: allocation.generation,
+      });
+      expect(
+        await h.db.query.workflowRun.findFirst({
+          where: eq(workflowRun.id, ANCHOR_RUN_ID),
+        }),
+      ).toMatchObject({ publicKey: "new-key" });
+    });
+
     test("unsent rollback clears its marker after lease loss without overwriting a later completion", async () => {
       const { store, allocation, initialization } =
         await createClaimedAllocation("alloc-key-rollback");

@@ -34,7 +34,9 @@ import { type } from "arktype";
 import { eq } from "drizzle-orm";
 
 import { defineAgent } from "@intx/agent";
+import { DeploymentRejectedError } from "@intx/types/sidecar";
 import { createNoopCredentialCipher, generateKeyPair } from "@intx/crypto";
+import { createSidecarAllocationStore } from "@intx/db";
 import {
   sidecarAllocation,
   workflowDefinition,
@@ -44,6 +46,8 @@ import {
   createWorkflowHistoryReceiveTracker,
   createAgentRepoStore,
   createHubSessionLookups,
+  createSessionService,
+  createSidecarRouter,
   deployCodeSourcedWorkflow,
   SessionLaunchError,
   type AgentRepoStore,
@@ -401,6 +405,119 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await expectLeaked(deployWith(router), true);
       const row = await readAnchor();
       expect(row?.status).toBe("failed");
+    });
+
+    test("a proven rejection fails the anchor without reporting an uncertain worker", async () => {
+      const rejection = new DeploymentRejectedError(
+        "capacity_full",
+        "No active slot",
+      );
+      await expect(deployWith(throwingRouter(rejection))).rejects.toBe(
+        rejection,
+      );
+      expect((await readAnchor())?.status).toBe("failed");
+    });
+
+    test("a prepared deploy records and fences a refusal even when the connection drops before recovery", async () => {
+      await seedWorkflowRun(h.db, {
+        id: ANCHOR_RUN_ID,
+        anchorRunId: ANCHOR_RUN_ID,
+        tenantId: TENANT_ID,
+        definitionId: DEFINITION_ID,
+        address: DEPLOY_ADDRESS,
+        status: "deployed",
+      });
+      await seedAllocation();
+      const allocations = createSidecarAllocationStore(h.db);
+      await allocations.wakeReconciliation(ALLOC_ID, ALLOC_GENERATION);
+      const leaseId = "prepared-attempt";
+      expect(
+        await allocations.claimNextReconcilable({
+          leaseId,
+          leaseDurationMs: 60_000,
+        }),
+      ).not.toBeNull();
+      const controller = new AbortController();
+      const rejection = new DeploymentRejectedError(
+        "capacity_full",
+        "No active slot",
+      );
+      const router = createSidecarRouter({
+        withExecutableWorkflowRun: async (_target, send) => send(),
+        authenticateSidecar: async () => null,
+        validateSidecarIdentity: async () => false,
+        resolveSidecarBindings: async () => [],
+      });
+      router.sendAgentDeployToAllocation = async (
+        _target,
+        _address,
+        _config,
+        _workflow,
+        _signal,
+        beforeSend,
+      ) => {
+        expect(beforeSend).toBeDefined();
+        await beforeSend?.();
+        expect(
+          (await allocations.findById(ALLOC_ID))?.initializationLeaseId,
+        ).toBe(leaseId);
+        await allocations.markConnectionLost({
+          allocationId: ALLOC_ID,
+          generation: ALLOC_GENERATION,
+          now: new Date(0),
+          firstConnectDeadline: new Date(120_000),
+        });
+        controller.abort(new Error("Sidecar disconnected after refusing"));
+        throw rejection;
+      };
+      const fences: number[] = [];
+      const fence = router.fenceAllocation;
+      router.fenceAllocation = (id, generation, options) => {
+        fences.push(generation);
+        fence(id, generation, options);
+      };
+      const dataDir = await fs.promises.mkdtemp(
+        path.join(os.tmpdir(), "prepared-refusal-"),
+      );
+      tempDirs.push(dataDir);
+      const service = createSessionService({
+        db: h.db,
+        sidecarRouter: router,
+        sidecarAllocationRouter: router,
+        agentRepoStore: createAgentRepoStore({ dataDir, signingKey }),
+      });
+      const approved = await makeApproveBundle();
+      approved.approval.approvedSurface = createApprovalSet([
+        "inference.source:anthropic:mock-model",
+      ]);
+      await seedInferenceCredentials(h.db, TENANT_ID, SOURCES, CONFIG);
+      await expect(
+        service.deployPreparedCodeSourcedWorkflow({
+          tenantId: TENANT_ID,
+          anchorRunId: ANCHOR_RUN_ID,
+          deploymentDomain: DEPLOYMENT_DOMAIN,
+          agentAddress: DEPLOY_ADDRESS,
+          source: { kind: "registry", registry: "npm" },
+          approved,
+          config: CONFIG,
+          allocationTarget: {
+            allocationId: ALLOC_ID,
+            generation: ALLOC_GENERATION,
+          },
+          reconciliation: { leaseId, signal: controller.signal },
+          credentialCipher: createNoopCredentialCipher(),
+        }),
+      ).rejects.toBe(rejection);
+      expect(await allocations.findById(ALLOC_ID)).toMatchObject({
+        status: "releasing",
+        generation: ALLOC_GENERATION + 1,
+        failureCode: "sidecar_deployment_rejected",
+      });
+      expect(
+        (await allocations.findById(ALLOC_ID))?.initializationLeaseId,
+      ).toBeUndefined();
+      expect((await readAnchor())?.status).toBe("failed");
+      expect(fences).toEqual([ALLOC_GENERATION + 1]);
     });
 
     test("an anchor insert collision fails closed before the frame with no leak", async () => {
