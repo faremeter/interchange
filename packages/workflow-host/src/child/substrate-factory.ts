@@ -1902,6 +1902,7 @@ async function buildChildRunEnv(args: {
   });
   const signalChannel = createWorkflowHostSignalChannel({
     repoStore: deps.substrate,
+    runtimeStore: args.repoStore,
     principal: deps.principal,
     repoId: deps.workflowRunRepoId,
     ref: deps.workflowRunRef,
@@ -2092,6 +2093,7 @@ async function buildChildRunEnv(args: {
         });
         const iterationSignalChannel = createWorkflowHostSignalChannel({
           repoStore: deps.substrate,
+          runtimeStore: args.repoStore,
           principal: deps.principal,
           repoId: deps.workflowRunRepoId,
           ref: deps.workflowRunRef,
