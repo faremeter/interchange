@@ -55,7 +55,7 @@ async function createHarness(stopTimeoutMs = 10) {
   );
   tempDirs.push(dataRoot);
   const spawned: ReturnType<typeof createFakeProcess>[] = [];
-  const local = createLocalProcessSidecarProvisioner({
+  const local = await createLocalProcessSidecarProvisioner({
     dataRoot,
     spawnSidecar() {
       const fake = createFakeProcess(1000 + spawned.length);
@@ -76,10 +76,107 @@ test.describe("createLocalProcessSidecarProvisioner", () => {
     controller.abort(new Error("ensure timed out"));
     const destroying = local.provisioner.destroy(request);
     await expect(ensuring).rejects.toThrow("ensure timed out");
-    expect(await destroying).toEqual({ kind: "destroyed" });
+    expect(await destroying).toEqual({
+      kind: "destroyed",
+      cleanup: "confirmed",
+    });
     expect(spawned).toEqual([]);
     expect(await fs.readdir(dataRoot)).toEqual([]);
     await local.shutdown();
+  });
+
+  test("a clean harness restart confirms old cleanup even after unrelated work starts", async () => {
+    const { local, spawned, dataRoot } = await createHarness();
+    const request = createRequest(1);
+    await local.provisioner.ensure(request);
+    await local.shutdown();
+    expect(spawned[0]?.signals).toEqual(["SIGTERM"]);
+    await expect(fs.stat(dataRoot)).rejects.toMatchObject({ code: "ENOENT" });
+
+    const next = createFakeProcess(2000);
+    const restarted = await createLocalProcessSidecarProvisioner({
+      dataRoot,
+      spawnSidecar: () => next.process,
+    });
+    try {
+      await restarted.provisioner.ensure({
+        ...createRequest(1, "sc_new"),
+        allocationId: "sal_new",
+      });
+      const release = { ...request, generation: 2 };
+      expect(await restarted.provisioner.destroy(release)).toEqual({
+        kind: "destroyed",
+        cleanup: "confirmed",
+      });
+      expect(await restarted.provisioner.destroy(release)).toEqual({
+        kind: "destroyed",
+        cleanup: "confirmed",
+      });
+      expect(next.signals).toEqual([]);
+      expect(restarted.sidecars()).toEqual([{ pid: 2000, hosts: ["sal_new"] }]);
+    } finally {
+      await restarted.shutdown();
+    }
+  });
+
+  test("a restart with old state does not claim an unknown worker is gone or erase its files", async () => {
+    const { local, spawned, dataRoot } = await createHarness();
+    const request = createRequest(1);
+    await local.provisioner.ensure(request);
+    const [directory] = await fs.readdir(dataRoot);
+    if (directory === undefined) throw new Error("Missing worker directory");
+    const record = path.join(dataRoot, directory, "deployment.json");
+    await fs.writeFile(record, "preserved worker state");
+    const restarted = await createLocalProcessSidecarProvisioner({
+      dataRoot,
+      spawnSidecar: () => {
+        throw new Error("Unexpected spawn");
+      },
+    });
+    try {
+      expect(
+        await restarted.provisioner.destroy({ ...request, generation: 2 }),
+      ).toEqual({ kind: "destroyed", cleanup: "required" });
+      expect(spawned[0]?.signals).toEqual([]);
+      await expect(restarted.shutdown()).rejects.toMatchObject({
+        code: "ENOTEMPTY",
+      });
+      expect(await fs.readFile(record, "utf8")).toBe("preserved worker state");
+    } finally {
+      await local.shutdown();
+    }
+  });
+
+  test("a failed process stop preserves the state that prevents a false cleanup confirmation on restart", async () => {
+    const { local, spawned, dataRoot } = await createHarness();
+    const request = createRequest(1);
+    await local.provisioner.ensure(request);
+    const worker = spawned[0];
+    if (worker === undefined) throw new Error("Missing worker");
+    worker.process.kill = (signal) => {
+      worker.signals.push(signal);
+    };
+    try {
+      await expect(local.shutdown()).rejects.toThrow(
+        "Failed to stop every local sidecar process",
+      );
+      expect(await fs.readdir(dataRoot)).toHaveLength(1);
+      const restarted = await createLocalProcessSidecarProvisioner({
+        dataRoot,
+        spawnSidecar: () => {
+          throw new Error("Unexpected spawn");
+        },
+      });
+      expect(
+        await restarted.provisioner.destroy({ ...request, generation: 2 }),
+      ).toEqual({ kind: "destroyed", cleanup: "required" });
+      await expect(restarted.shutdown()).rejects.toMatchObject({
+        code: "ENOTEMPTY",
+      });
+    } finally {
+      worker.exit();
+      await worker.process.exited;
+    }
   });
 
   test("serializes one allocation while another can still start", async () => {
@@ -242,7 +339,7 @@ test.describe("createLocalProcessSidecarProvisioner sharing sidecars", () => {
     );
     tempDirs.push(dataRoot);
     const spawned: ReturnType<typeof createFakeProcess>[] = [];
-    const local = createLocalProcessSidecarProvisioner({
+    const local = await createLocalProcessSidecarProvisioner({
       dataRoot,
       spawnSidecar() {
         const fake = createFakeProcess(1000 + spawned.length);
@@ -252,7 +349,7 @@ test.describe("createLocalProcessSidecarProvisioner sharing sidecars", () => {
       shareSidecarsBy: (request) => request.tenantId,
       stopTimeoutMs: 10,
     });
-    return { local, spawned };
+    return { local, spawned, dataRoot };
   }
 
   function requestFor(
@@ -292,25 +389,48 @@ test.describe("createLocalProcessSidecarProvisioner sharing sidecars", () => {
   });
 
   test("keeps a shared sidecar until its last allocation leaves", async () => {
-    const { local, spawned } = await createSharingHarness();
+    const { local, spawned, dataRoot } = await createSharingHarness();
     await local.provisioner.ensure(requestFor("sal_a"));
     await local.provisioner.ensure(requestFor("sal_b"));
+    const [directory] = await fs.readdir(dataRoot);
+    if (directory === undefined)
+      throw new Error("Missing shared worker directory");
+    const record = path.join(dataRoot, directory, "deployment.json");
+    await fs.writeFile(record, "restorable deployment state");
 
-    await local.provisioner.destroy({
+    const firstRelease = {
       allocationId: "sal_a",
       generation: 0,
       sidecarId: "sc_sal_a",
+    };
+    expect(await local.provisioner.destroy(firstRelease)).toEqual({
+      kind: "destroyed",
+      cleanup: "required",
+    });
+    expect(await local.provisioner.destroy(firstRelease)).toEqual({
+      kind: "destroyed",
+      cleanup: "required",
     });
     expect(spawned[0]?.signals).toEqual([]);
+    expect(await fs.readFile(record, "utf8")).toBe(
+      "restorable deployment state",
+    );
     expect(local.sidecars()).toEqual([{ pid: 1000, hosts: ["sal_b"] }]);
 
-    await local.provisioner.destroy({
-      allocationId: "sal_b",
-      generation: 0,
-      sidecarId: "sc_sal_a",
-    });
+    expect(
+      await local.provisioner.destroy({
+        allocationId: "sal_b",
+        generation: 0,
+        sidecarId: "sc_sal_a",
+      }),
+    ).toEqual({ kind: "destroyed", cleanup: "confirmed" });
     expect(spawned[0]?.signals).toEqual(["SIGTERM"]);
+    expect(await fs.readdir(dataRoot)).toEqual([]);
     expect(local.sidecars()).toEqual([]);
+    expect(await local.provisioner.destroy(firstRelease)).toEqual({
+      kind: "destroyed",
+      cleanup: "confirmed",
+    });
   });
 
   test("releases work named by the identity its ensure was offered", async () => {

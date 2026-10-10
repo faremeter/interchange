@@ -400,6 +400,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       let current = observedAt;
       const lifecycle = createWorkflowLifecycleService({
+        retentionRouter: { fenceAllocation: () => undefined },
         db: h.db,
         historyReceives: createWorkflowHistoryReceiveTracker(),
         now: () => current,
@@ -1067,6 +1068,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           .values({ id: "stop-worker", tokenHashSha256: new Uint8Array(32) });
         await h.db.update(sidecarAllocation).set({ sidecarId: "stop-worker" });
         const lifecycle = createWorkflowLifecycleService({
+          retentionRouter: { fenceAllocation: () => undefined },
           db: h.db,
           historyReceives: createWorkflowHistoryReceiveTracker(),
           runReader: createWorkflowRunReader(store.repoStore),
@@ -1369,6 +1371,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         await Promise.race([reading.promise, result]);
         await enqueue("later-mail");
         const lifecycle = createWorkflowLifecycleService({
+          retentionRouter: { fenceAllocation: () => undefined },
           db: h.db,
           historyReceives: createWorkflowHistoryReceiveTracker(),
           runReader: {
@@ -1728,6 +1731,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         1,
       );
       const lifecycle = createWorkflowLifecycleService({
+        retentionRouter: { fenceAllocation: () => undefined },
         db: h.db,
         historyReceives: createWorkflowHistoryReceiveTracker(),
         runReader: createWorkflowRunReader(repoStore.repoStore),

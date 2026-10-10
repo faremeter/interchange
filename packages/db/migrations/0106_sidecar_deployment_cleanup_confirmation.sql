@@ -1,0 +1,1 @@
+ALTER TABLE "sidecar_allocation" ADD COLUMN "deployment_cleanup_confirmed" boolean DEFAULT false NOT NULL;

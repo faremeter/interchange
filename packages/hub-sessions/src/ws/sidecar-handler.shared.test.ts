@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 
-import type { HostedIncarnation } from "@intx/types/sidecar";
+import {
+  AgentUndeployFrame,
+  WorkflowControlFrame,
+  type HostedIncarnation,
+} from "@intx/types/sidecar";
 import { waitUntil } from "@intx/types/testing";
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
 
@@ -179,6 +183,423 @@ function framesOfType(ws: TestWs, type: string): Record<string, unknown>[] {
     return [Object.fromEntries(Object.entries(frame))];
   });
 }
+
+describe("SidecarRouter allocation cleanup", () => {
+  test("sync transfers a committed release before its caller publishes the fence", async () => {
+    const { router, hosted } = createSharedRouter([first, second]);
+    const ws = await reconnect(router, [
+      first.workflowRunAddress,
+      second.workflowRunAddress,
+    ]);
+    const cleanup = { ...first, kind: "cleanup", generation: 2 } as const;
+    hosted.bindings = [cleanup, second];
+    await router.syncSidecar(SIDECAR);
+    expect(router.getCleanupConnection(target(cleanup))).toBe(ws);
+    expect(framesOfType(ws, "agent.undeploy")).toEqual([]);
+    router.handleClose(ws);
+  });
+
+  test.each(["transfer", "retire"] as const)(
+    "a stale binding read cannot undo a cleanup %s",
+    async (change) => {
+      const cleanup = { ...first, kind: "cleanup", generation: 2 } as const;
+      let bindings: readonly SidecarAuthIdentity[] =
+        change === "retire" ? [cleanup, second] : [first, second];
+      let blocking = false;
+      const reading = Promise.withResolvers<undefined>();
+      const finish = Promise.withResolvers<undefined>();
+      const { router } = createSharedRouter(bindings, {
+        resolveSidecarBindings: async () => {
+          const snapshot = bindings;
+          if (blocking) {
+            reading.resolve(undefined);
+            await finish.promise;
+          }
+          return snapshot;
+        },
+      });
+      const ws = await reconnect(router, [
+        first.workflowRunAddress,
+        second.workflowRunAddress,
+      ]);
+      blocking = true;
+      const syncing = router.syncSidecar(SIDECAR);
+      try {
+        await reading.promise;
+        if (change === "transfer") {
+          bindings = [cleanup, second];
+          router.fenceAllocation(first.allocationId, 2, {
+            cleanup: { sidecarId: SIDECAR },
+          });
+        } else {
+          bindings = [second];
+          router.retireAllocation(target(cleanup));
+        }
+        finish.resolve(undefined);
+        await syncing;
+        expect(router.getCleanupConnection(target(cleanup))).toBe(
+          change === "transfer" ? ws : undefined,
+        );
+        expect(framesOfType(ws, "agent.undeploy")).toEqual([]);
+      } finally {
+        finish.resolve(undefined);
+        router.handleClose(ws);
+      }
+    },
+  );
+
+  test("a late stop acknowledgement preserves the committed cleanup binding", async () => {
+    let released = false;
+    const { router, hosted } = createSharedRouter([first], {
+      validateSidecarIdentity: async (binding) =>
+        !released || binding.kind === "cleanup",
+    });
+    const ws = await reconnect(router, [first.workflowRunAddress]);
+    const pending = router
+      .sendWorkflowControl(
+        target(first),
+        {
+          runId: first.anchorRunId,
+          agentAddress: first.workflowRunAddress,
+          action: "stop",
+          reason: "Policy expired",
+        },
+        500,
+      )
+      .catch((cause: unknown) => cause);
+    await ws.awaitSent((sent) =>
+      sent.some((frame) => frame.includes('"workflow.control"')),
+    );
+    const frame = WorkflowControlFrame.assert(
+      framesOfType(ws, "workflow.control")[0],
+    );
+    const cleanup = { ...first, kind: "cleanup", generation: 2 } as const;
+    hosted.bindings = [cleanup];
+    released = true;
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "workflow.control.ack",
+        requestId: frame.requestId,
+        refTips: {},
+      }),
+    );
+    expect(await pending).toBeInstanceOf(Error);
+    expect(router.getCleanupConnection(target(cleanup))).toBe(ws);
+    expect(framesOfType(ws, "agent.undeploy")).toEqual([]);
+    expect(ws.closed).toBe(false);
+    router.handleClose(ws);
+  });
+  const cleanup = { ...first, kind: "cleanup", generation: 2 } as const;
+
+  async function connectForCleanup(
+    router: TestRouter,
+    reported: readonly Reported[] = [],
+  ) {
+    const ws = openSocket(router, reported);
+    await ws.awaitSent((sent) => sent.some((raw) => raw.includes('"welcome"')));
+    return ws;
+  }
+
+  async function requestCleanup(
+    router: TestRouter,
+    ws: TestWs,
+    signal = new AbortController().signal,
+    expectedConnection: object = ws,
+  ) {
+    const sentBefore = ws.sent.length;
+    const pending = router
+      .undeployAllocation(target(cleanup), 1234, signal, expectedConnection)
+      .catch((error: unknown) => error);
+    await ws.awaitSent((sent) =>
+      sent.slice(sentBefore).some((raw) => raw.includes('"agent.undeploy"')),
+    );
+    const frame = AgentUndeployFrame.assert(
+      framesOfType(ws, "agent.undeploy").at(-1),
+    );
+    return { pending, frame };
+  }
+
+  test.each([false, true])(
+    "hands a live release to one tracked cleanup request with another allocation present = %s",
+    async (shared) => {
+      const others = shared ? [second] : [];
+      const { router, hosted } = createSharedRouter([first, ...others]);
+      const ws = openSocket(router, [
+        first.workflowRunAddress,
+        ...others.map((held) => held.workflowRunAddress),
+      ]);
+      await ws.awaitSent((sent) =>
+        sent.some((raw) => raw.includes('"welcome"')),
+      );
+      hosted.bindings = [cleanup, ...others];
+      router.fenceAllocation(cleanup.allocationId, cleanup.generation, {
+        cleanup: { sidecarId: SIDECAR },
+      });
+      expect(ws.closed).toBe(false);
+      await router.syncSidecar(SIDECAR);
+      expect(framesOfType(ws, "agent.undeploy")).toEqual([]);
+      expect(router.getRoutableAddresses()).toEqual(
+        others.map((held) => held.workflowRunAddress),
+      );
+
+      // A repeated hello still reporting the old generation must not send an
+      // untracked undeploy ahead of the reconciler's acknowledged request.
+      sendHandshake(router, ws, [
+        first.workflowRunAddress,
+        ...others.map((held) => held.workflowRunAddress),
+      ]);
+      await router.syncSidecar(SIDECAR);
+      expect(framesOfType(ws, "agent.undeploy")).toEqual([]);
+      const stopped = () =>
+        router.handleMessage(
+          ws,
+          JSON.stringify({
+            type: "deployment.stopped",
+            agentAddress: first.workflowRunAddress,
+            generation: first.generation,
+            error: "child stopped while releasing",
+          }),
+        );
+      stopped();
+      await router.syncSidecar(SIDECAR);
+      expect(framesOfType(ws, "agent.undeploy")).toEqual([]);
+      const { pending, frame } = await requestCleanup(router, ws);
+      stopped();
+      await router.syncSidecar(SIDECAR);
+      expect(framesOfType(ws, "agent.undeploy")).toHaveLength(1);
+      router.handleMessage(
+        ws,
+        JSON.stringify({ ...frame, type: "agent.undeploy.ack" }),
+      );
+      expect(await pending).toBeUndefined();
+      router.handleClose(ws);
+    },
+  );
+
+  test("a cleanup connection guard refuses to send on a replacement socket", async () => {
+    const { router } = createSharedRouter([cleanup]);
+    const original = await connectForCleanup(router);
+    expect(router.getCleanupConnection(target(cleanup))).toBe(original);
+    router.handleClose(original);
+    const replacement = await connectForCleanup(router);
+    expect(router.getCleanupConnection(target(cleanup))).toBe(replacement);
+    await expect(
+      router.undeployAllocation(
+        target(cleanup),
+        1234,
+        new AbortController().signal,
+        original,
+      ),
+    ).rejects.toThrow("Cleanup connection changed");
+    expect(framesOfType(replacement, "agent.undeploy")).toEqual([]);
+    const { pending, frame } = await requestCleanup(
+      router,
+      replacement,
+      undefined,
+      replacement,
+    );
+    router.handleMessage(
+      replacement,
+      JSON.stringify({ ...frame, type: "agent.undeploy.ack" }),
+    );
+    expect(await pending).toBeUndefined();
+    router.handleClose(replacement);
+  });
+
+  test("retiring a release fence before binding sync closes its cleanup connection", async () => {
+    const { router } = createSharedRouter([first]);
+    const ws = await connectForCleanup(router, [first.workflowRunAddress]);
+    router.fenceAllocation(cleanup.allocationId, cleanup.generation, {
+      cleanup: { sidecarId: SIDECAR },
+    });
+    expect(ws.closed).toBe(false);
+    expect(router.getRoutableAddresses()).toEqual([]);
+    router.retireAllocation(target(cleanup));
+    expect(ws.closed).toBe(true);
+    expect(framesOfType(ws, "agent.undeploy")).toEqual([]);
+  });
+
+  test.each(["allocated", "cleanup"] as const)(
+    "rejects a second %s undeploy without disturbing the first caller",
+    async (kind) => {
+      const binding = kind === "cleanup" ? cleanup : first;
+      const { router } = createSharedRouter([binding]);
+      const ws = await connectForCleanup(
+        router,
+        kind === "allocated" ? [first.workflowRunAddress] : [],
+      );
+      const request = () =>
+        kind === "cleanup"
+          ? router.undeployAllocation(
+              target(cleanup),
+              1234,
+              new AbortController().signal,
+              ws,
+            )
+          : router.sendAgentUndeploy(first.workflowRunAddress, "test");
+      const pending = request().catch((error: unknown) => error);
+      await ws.awaitSent((sent) =>
+        sent.some((raw) => raw.includes('"agent.undeploy"')),
+      );
+      const frame = AgentUndeployFrame.assert(
+        framesOfType(ws, "agent.undeploy").at(-1),
+      );
+      await expect(request()).rejects.toThrow("already pending");
+      expect(framesOfType(ws, "agent.undeploy")).toHaveLength(1);
+      router.handleMessage(
+        ws,
+        JSON.stringify({ ...frame, type: "agent.undeploy.ack" }),
+      );
+      expect(await pending).toBeUndefined();
+      router.handleClose(ws);
+    },
+  );
+
+  test("welcomes a sidecar whose only remaining allocation is cleanup, without routing it", async () => {
+    const { router } = createSharedRouter([cleanup]);
+    const ws = await connectForCleanup(router, [first.workflowRunAddress]);
+    expect(framesOfType(ws, "welcome")).toEqual([
+      { type: "welcome", routed: [] },
+    ]);
+    expect(router.getRoutableAddresses()).toEqual([]);
+    expect(ws.closed).toBe(false);
+    expect(await router.isAllocatedSidecarReady(target(cleanup))).toBe(false);
+    await expect(
+      router.sendAgentDeployToAllocation(
+        target(cleanup),
+        first.workflowRunAddress,
+        configFor(first),
+      ),
+    ).rejects.toThrow("does not permit");
+
+    const { pending, frame } = await requestCleanup(router, ws);
+    expect(frame.generation).toBe(2);
+    router.handleMessage(
+      ws,
+      JSON.stringify({ ...frame, type: "agent.undeploy.ack" }),
+    );
+    expect(await pending).toBeUndefined();
+    router.retireAllocation(target(cleanup));
+    expect(ws.closed).toBe(true);
+  });
+
+  test.each(["error", "disconnect", "abort", "timeout"] as const)(
+    "a cleanup %s fails the attempt and permits a fresh request",
+    async (outcome) => {
+      const timers = new Set<() => void>();
+      const { router } = createSharedRouter([cleanup], {
+        scheduleTimeout(handler, ms) {
+          if (ms === 1234) timers.add(handler);
+          return () => {
+            timers.delete(handler);
+          };
+        },
+      });
+      let ws = await connectForCleanup(router);
+      const controller = new AbortController();
+      const { pending, frame } = await requestCleanup(
+        router,
+        ws,
+        controller.signal,
+      );
+      if (outcome === "error") {
+        router.handleMessage(
+          ws,
+          JSON.stringify({
+            ...frame,
+            type: "agent.undeploy.error",
+            error: "disk busy",
+          }),
+        );
+      } else if (outcome === "disconnect") {
+        router.handleClose(ws);
+      } else if (outcome === "abort") {
+        controller.abort(new Error("lease ended"));
+      } else {
+        expect(timers.size).toBe(1);
+        for (const fire of [...timers]) {
+          timers.delete(fire);
+          fire();
+        }
+      }
+      expect(await pending).toBeInstanceOf(Error);
+      expect(timers.size).toBe(0);
+
+      if (outcome === "disconnect") ws = await connectForCleanup(router);
+      const retry = await requestCleanup(router, ws);
+      expect(retry.frame.requestId).not.toBe(frame.requestId);
+      router.handleMessage(
+        ws,
+        JSON.stringify({ ...retry.frame, type: "agent.undeploy.ack" }),
+      );
+      expect(await retry.pending).toBeUndefined();
+      router.handleClose(ws);
+    },
+  );
+
+  test("a lost acknowledgement can be confirmed after both Hub and sidecar restart with no record left", async () => {
+    const before = createSharedRouter([cleanup]).router;
+    const oldWs = await connectForCleanup(before);
+    const original = await requestCleanup(before, oldWs);
+    // Cleanup completed, but the socket dropped before the reply reached the Hub.
+    before.handleClose(oldWs);
+    expect(await original.pending).toBeInstanceOf(Error);
+
+    const after = createSharedRouter([cleanup]).router;
+    const newWs = await connectForCleanup(after);
+    const retry = await requestCleanup(after, newWs);
+    expect(retry.frame.generation).toBe(original.frame.generation);
+    after.handleMessage(
+      newWs,
+      JSON.stringify({ ...retry.frame, type: "agent.undeploy.ack" }),
+    );
+    expect(await retry.pending).toBeUndefined();
+    after.handleClose(newWs);
+  });
+
+  test.each(["generation", "request", "socket"] as const)(
+    "an acknowledgement with the wrong %s cannot confirm cleanup",
+    async (mismatch) => {
+      const { router } = createSharedRouter([cleanup]);
+      const ws = await connectForCleanup(router);
+      const { pending, frame } = await requestCleanup(router, ws);
+      router.handleMessage(
+        mismatch === "socket" ? createMockWs() : ws,
+        JSON.stringify({
+          ...frame,
+          type: "agent.undeploy.ack",
+          ...(mismatch === "generation" ? { generation: 1 } : {}),
+          ...(mismatch === "request" ? { requestId: "old-request" } : {}),
+        }),
+      );
+      // Replies bypass the connection queue. The actual failure must still win.
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          ...frame,
+          type: "agent.undeploy.error",
+          error: "not removed",
+        }),
+      );
+      expect(await pending).toMatchObject({ message: "not removed" });
+      router.handleClose(ws);
+    },
+  );
+
+  test("advancing the allocation fence rejects a cleanup still awaiting its reply", async () => {
+    const { router } = createSharedRouter([cleanup]);
+    const ws = await connectForCleanup(router);
+    const { pending, frame } = await requestCleanup(router, ws);
+    router.fenceAllocation(cleanup.allocationId, 3);
+    router.handleMessage(
+      ws,
+      JSON.stringify({ ...frame, type: "agent.undeploy.ack" }),
+    );
+    expect(await pending).toBeInstanceOf(Error);
+    expect(ws.closed).toBe(true);
+  });
+});
 
 function recordDisconnects(router: TestRouter) {
   const events: unknown[] = [];
@@ -1657,6 +2078,81 @@ describe("SidecarRouter replacing a generation on the same sidecar", () => {
     ]);
     expect(ws.closed).toBe(false);
   });
+
+  test.each(
+    (["live", "stopped", "tearing-down"] as const).flatMap((state) =>
+      [SIDECAR, "sc-replacement"].map((cleanupSidecarId) => ({
+        state,
+        cleanupSidecarId,
+      })),
+    ),
+  )(
+    "hello rechecks cleanup ownership for a $state copy when cleanup belongs to $cleanupSidecarId",
+    async ({ state, cleanupSidecarId }) => {
+      const checkingNeighbour = Promise.withResolvers<undefined>();
+      const finishCheck = Promise.withResolvers<boolean>();
+      const { router, hosted } = createSharedRouter([first, second], {
+        validateSidecarIdentity: async (identity, use) => {
+          if (
+            identity.allocationId === second.allocationId &&
+            use === "reclaim"
+          ) {
+            checkingNeighbour.resolve(undefined);
+            return finishCheck.promise;
+          }
+          return true;
+        },
+      });
+      const sameSidecar = cleanupSidecarId === SIDECAR;
+      const cleanup = {
+        ...first,
+        kind: "cleanup",
+        sidecarId: cleanupSidecarId,
+        generation: sameSidecar ? 2 : 3,
+      } as const;
+      const ws = openSocket(router, [
+        { address: first.workflowRunAddress, generation: 1, state },
+        second.workflowRunAddress,
+      ]);
+      try {
+        await checkingNeighbour.promise;
+        hosted.bindings = sameSidecar ? [cleanup, second] : [second];
+        router.fenceAllocation(first.allocationId, cleanup.generation, {
+          cleanup: { sidecarId: cleanupSidecarId },
+        });
+        finishCheck.resolve(true);
+        await ws.awaitSent((sent) =>
+          sent.some((raw) => raw.includes('"welcome"')),
+        );
+        const removals = framesOfType(ws, "agent.undeploy");
+        expect(removals).toHaveLength(sameSidecar ? 0 : 1);
+        if (!sameSidecar)
+          expect(removals[0]).toMatchObject({
+            agentAddress: first.workflowRunAddress,
+            generation: 1,
+          });
+        expect(router.getRoutableAddresses()).toEqual([
+          second.workflowRunAddress,
+        ]);
+
+        // A sync attaches only this sidecar's cleanup binding. Cleanup of a
+        // replacement elsewhere must not protect the old copy from removal.
+        await router.syncSidecar(SIDECAR);
+        expect(router.getCleanupConnection(target(cleanup)) !== undefined).toBe(
+          sameSidecar,
+        );
+        expect(framesOfType(ws, "agent.undeploy")).toHaveLength(
+          sameSidecar ? 0 : 1,
+        );
+        expect(router.getRoutableAddresses()).toEqual([
+          second.workflowRunAddress,
+        ]);
+      } finally {
+        finishCheck.resolve(true);
+        router.handleClose(ws);
+      }
+    },
+  );
 
   test.each([false, true])(
     "undeploys a stopped copy released during hello (reported error: %s)",

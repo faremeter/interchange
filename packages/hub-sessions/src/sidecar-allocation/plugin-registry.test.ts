@@ -17,7 +17,7 @@ function provisioner(
       return { kind: "accepted" };
     },
     async destroy() {
-      return { kind: "destroyed" };
+      return { kind: "destroyed", cleanup: "confirmed" };
     },
   };
 }

@@ -3,6 +3,7 @@ import path from "node:path";
 
 import type {
   DestroySidecarRequest,
+  DestroySidecarResult,
   EnsureSidecarRequest,
   SidecarProvisioner,
 } from "@intx/hub-sessions";
@@ -31,6 +32,7 @@ export type ShareLocalSidecarsBy = (
 ) => string | null;
 
 export type CreateLocalProcessSidecarProvisionerOpts = {
+  /** Owned exclusively by this harness; leftover entries may belong to a prior worker. */
   readonly dataRoot: string;
   readonly spawnSidecar?: SpawnLocalSidecar;
   readonly shareSidecarsBy?: ShareLocalSidecarsBy;
@@ -70,6 +72,8 @@ type AllocationState =
       readonly kind: "destroyed";
       readonly generation: number;
       readonly sidecarId: string;
+      /** Keep the worker identity so retries cannot mistake a dropped hold for cleanup. */
+      readonly sidecar?: LocalSidecar;
     };
 
 function spawnSidecarProcess({
@@ -138,14 +142,26 @@ function chain() {
   };
 }
 
-export function createLocalProcessSidecarProvisioner({
+export async function createLocalProcessSidecarProvisioner({
   dataRoot,
   spawnSidecar = spawnSidecarProcess,
   shareSidecarsBy = () => null,
   stopTimeoutMs = DEFAULT_STOP_TIMEOUT_MS,
-}: CreateLocalProcessSidecarProvisionerOpts): LocalProcessSidecarProvisioner {
+}: CreateLocalProcessSidecarProvisionerOpts): Promise<LocalProcessSidecarProvisioner> {
   if (stopTimeoutMs <= 0) {
     throw new Error("Local sidecar stop timeout must be positive");
+  }
+
+  // Every worker gets a directory before spawning, and only a confirmed stop
+  // removes it. An empty exclusive root therefore proves no prior worker state
+  // was inherited. Unknown allocations remain unconfirmed after an unclean start.
+  let startedClean: boolean;
+  try {
+    startedClean = (await fs.readdir(dataRoot)).length === 0;
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "ENOENT"))
+      throw error;
+    startedClean = true;
   }
 
   const allocations = new Map<string, AllocationState>();
@@ -203,8 +219,8 @@ export function createLocalProcessSidecarProvisioner({
         }
       }
     }
-    sidecars.delete(sidecar);
     await fs.rm(sidecar.dataDir, { recursive: true, force: true });
+    sidecars.delete(sidecar);
   }
 
   function release(
@@ -350,10 +366,12 @@ export function createLocalProcessSidecarProvisioner({
     return accepted(state);
   }
 
-  async function destroy(request: DestroySidecarRequest) {
+  async function destroy(
+    request: DestroySidecarRequest,
+  ): Promise<DestroySidecarResult> {
     const existing = allocations.get(request.allocationId);
     if (existing !== undefined && existing.generation > request.generation) {
-      return { kind: "destroyed" as const };
+      return { kind: "destroyed", cleanup: "required" };
     }
     // A delayed destroy for the superseded identity must not terminate the
     // replacement that already owns this generation. The Hub names either the
@@ -363,23 +381,32 @@ export function createLocalProcessSidecarProvisioner({
       request.sidecarId !== existing.offeredSidecarId &&
       request.sidecarId !== existing.sidecar.sidecarId
     ) {
-      return { kind: "destroyed" as const };
+      return { kind: "destroyed", cleanup: "required" };
     }
     if (
       existing?.kind === "destroyed" &&
       existing.sidecarId !== request.sidecarId
     ) {
-      return { kind: "destroyed" as const };
+      return { kind: "destroyed", cleanup: "required" };
     }
     if (existing?.kind === "live") {
       await release(request.allocationId, existing);
     }
+    const releasedSidecar = existing?.sidecar;
     allocations.set(request.allocationId, {
       kind: "destroyed",
       generation: request.generation,
       sidecarId: request.sidecarId,
+      ...(releasedSidecar !== undefined ? { sidecar: releasedSidecar } : {}),
     });
-    return { kind: "destroyed" as const };
+    const cleanupConfirmed =
+      releasedSidecar === undefined
+        ? startedClean
+        : !sidecars.has(releasedSidecar);
+    return {
+      kind: "destroyed",
+      cleanup: cleanupConfirmed ? "confirmed" : "required",
+    };
   }
 
   const provisioner: SidecarProvisioner = {
@@ -413,13 +440,26 @@ export function createLocalProcessSidecarProvisioner({
             failures.push(error);
           }
         }
-        allocations.clear();
-        await fs.rm(dataRoot, { recursive: true, force: true });
         if (failures.length > 0) {
           throw new AggregateError(
             failures,
             "Failed to stop every local sidecar process",
           );
+        }
+        allocations.clear();
+        // Remove only an empty root. Never erase inherited, untracked workers'
+        // state or make an unsuccessful shutdown look clean to the next Hub.
+        try {
+          await fs.rmdir(dataRoot);
+        } catch (error) {
+          if (
+            !(
+              error instanceof Error &&
+              "code" in error &&
+              error.code === "ENOENT"
+            )
+          )
+            throw error;
         }
       })();
       return shutdownPromise;

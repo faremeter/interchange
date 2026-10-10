@@ -176,7 +176,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         },
         async destroy(request) {
           args.destroyCalls.push(request);
-          return { kind: "destroyed" };
+          return { kind: "destroyed", cleanup: "confirmed" };
         },
       };
     }
@@ -735,7 +735,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           return { kind: "accepted" };
         },
         async destroy() {
-          return { kind: "destroyed" };
+          return { kind: "destroyed", cleanup: "confirmed" };
         },
       };
       const service = createWorkflowAllocationService({
@@ -870,7 +870,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           if (destroyAttempts === 1) {
             throw new Error("transient probe cleanup failure");
           }
-          return { kind: "destroyed" };
+          return { kind: "destroyed", cleanup: "confirmed" };
         },
       };
       const deploymentProvisioner = makeProvisioner({
@@ -959,7 +959,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           if (destroyAttempts === 1) {
             throw new Error("startup cleanup unavailable");
           }
-          return { kind: "destroyed" };
+          return { kind: "destroyed", cleanup: "confirmed" };
         },
       };
       const probeStore = createWorkflowProbeStore(h.db);

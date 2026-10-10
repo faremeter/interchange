@@ -1,4 +1,4 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, or } from "drizzle-orm";
 import { sha256 } from "@intx/crypto";
 import { workflowRunExecutability, type DB } from "@intx/db";
 import {
@@ -33,6 +33,10 @@ export type CreateSidecarTokenAuthenticatorDeps = {
 export function createSidecarCredentialResolver({
   db,
 }: CreateSidecarTokenAuthenticatorDeps): SidecarCredentialResolver {
+  const cleanupStatus = inArray(sidecarAllocation.status, [
+    "releasing",
+    "destroy_failed",
+  ]);
   async function resolveBindings(
     sidecarId: string,
   ): Promise<SidecarCredentialIdentity[]> {
@@ -43,10 +47,14 @@ export function createSidecarCredentialResolver({
           tenantId: true,
           anchorRunId: true,
           generation: true,
+          status: true,
         },
         where: and(
           eq(sidecarAllocation.sidecarId, sidecarId),
-          inArray(sidecarAllocation.status, ["provisioning", "allocated"]),
+          or(
+            inArray(sidecarAllocation.status, ["provisioning", "allocated"]),
+            cleanupStatus,
+          ),
         ),
       }),
       db.query.workflowProbe.findMany({
@@ -77,7 +85,11 @@ export function createSidecarCredentialResolver({
           ? []
           : [
               {
-                kind: "allocated",
+                kind:
+                  allocation.status === "releasing" ||
+                  allocation.status === "destroy_failed"
+                    ? "cleanup"
+                    : "allocated",
                 sidecarId,
                 allocationId: allocation.id,
                 tenantId: allocation.tenantId,
@@ -113,6 +125,13 @@ export function createSidecarCredentialResolver({
     use: SidecarIdentityUse,
   ): Promise<boolean> {
     const copyCheck = use === "reclaim" || use === "retention";
+    if (
+      identity.kind === "cleanup" &&
+      use !== "registration" &&
+      use !== "cleanup"
+    )
+      return false;
+    if (use === "cleanup" && identity.kind !== "cleanup") return false;
     if (identity.kind === "probe") {
       if (copyCheck) return false;
       const statuses =
@@ -132,10 +151,15 @@ export function createSidecarCredentialResolver({
       return probe !== undefined;
     }
 
-    const statuses =
-      use === "registration"
-        ? (["provisioning", "allocated"] as const)
-        : (["allocated"] as const);
+    const statusCondition =
+      identity.kind === "cleanup"
+        ? cleanupStatus
+        : inArray(
+            sidecarAllocation.status,
+            use === "registration"
+              ? ["provisioning", "allocated"]
+              : ["allocated"],
+          );
     const allocation = await db.query.sidecarAllocation.findFirst({
       where: and(
         eq(sidecarAllocation.id, identity.allocationId),
@@ -143,12 +167,15 @@ export function createSidecarCredentialResolver({
         eq(sidecarAllocation.tenantId, identity.tenantId),
         eq(sidecarAllocation.anchorRunId, identity.anchorRunId),
         eq(sidecarAllocation.generation, identity.generation),
-        inArray(sidecarAllocation.status, statuses),
+        statusCondition,
       ),
     });
     if (allocation === undefined) return false;
     if (use === "registration") return true;
-    if (allocation.ensureAcceptedGeneration !== identity.generation) {
+    if (
+      identity.kind !== "cleanup" &&
+      allocation.ensureAcceptedGeneration !== identity.generation
+    ) {
       return false;
     }
     if (copyCheck && allocation.initializationLeaseId !== null) {

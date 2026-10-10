@@ -75,6 +75,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         ...options.runReader,
       };
       return createWorkflowLifecycleService({
+        retentionRouter: { fenceAllocation: () => undefined },
         ...options,
         db: options.db ?? h.db,
         historyReceives:
@@ -912,12 +913,16 @@ describe.skipIf(!harnessDbEnvAvailable())(
               },
               destroy: async (request) => {
                 destroyed.push(request.allocationId);
-                return { kind: "destroyed" };
+                return { kind: "destroyed", cleanup: "confirmed" };
               },
             },
           ],
         }),
         router: {
+          getCleanupConnection: () => undefined,
+          async undeployAllocation() {
+            throw new Error("This test must not request sidecar cleanup");
+          },
           fenceAllocation: () => undefined,
           retireAllocation: () => undefined,
           isAllocatedSidecarReady: async () => true,
@@ -1530,12 +1535,16 @@ describe.skipIf(!harnessDbEnvAvailable())(
               destroy: async (request) => {
                 expect(request.externalRef).toBe("vm-1");
                 destroyed = true;
-                return { kind: "destroyed" };
+                return { kind: "destroyed", cleanup: "confirmed" };
               },
             },
           ],
         }),
         router: {
+          getCleanupConnection: () => undefined,
+          async undeployAllocation() {
+            throw new Error("This test must not request sidecar cleanup");
+          },
           fenceAllocation: () => undefined,
           retireAllocation: () => undefined,
           isAllocatedSidecarReady: async () => false,

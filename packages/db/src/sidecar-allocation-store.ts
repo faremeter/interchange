@@ -58,6 +58,8 @@ const activeStatuses = [
 // Why the Hub fails a deployment whose sidecar reported it stopped.
 export const SIDECAR_DEPLOYMENT_STOPPED_FAILURE_CODE =
   "sidecar_deployment_stopped";
+export const SIDECAR_CLEANUP_UNCONFIRMED_FAILURE_CODE =
+  "sidecar_cleanup_unconfirmed";
 
 export type SidecarAllocation = {
   readonly id: string;
@@ -78,6 +80,8 @@ export type SidecarAllocation = {
   readonly initializationLeaseId?: string;
   readonly ensureAttempts: number;
   readonly destroyAttempts: number;
+  /** Confirmed removal for this cleanup generation, retained across retries. */
+  readonly deploymentCleanupConfirmed: boolean;
   readonly connectDeadline?: Date;
   /** How long the sidecar may stay disconnected before the Hub fails it. */
   readonly maxDisconnectedMs: number;
@@ -162,15 +166,24 @@ export type ScheduleSidecarAllocationRetryArgs = {
   readonly expectedStatus: (typeof activeStatuses)[number];
   readonly expectedGeneration: number;
   readonly nextAttemptAt: Date;
+  /** Minimum wait measured on the database clock, despite Hub clock skew. */
+  readonly minimumDelayMs?: number;
   readonly expectedLeaseId?: string;
-  readonly attempt?: "ensure" | "destroy";
-  readonly failure?: {
-    readonly code: string;
-    readonly message: string;
-  };
   readonly firstDeployFailedAt?: Date;
   readonly now?: Date;
-};
+} & (
+  | {
+      readonly attempt: "destroy";
+      readonly failure?: never;
+    }
+  | {
+      readonly attempt?: "ensure";
+      readonly failure?: {
+        readonly code: string;
+        readonly message: string;
+      };
+    }
+);
 
 export type BeginSidecarReplacementArgs = {
   readonly allocationId: string;
@@ -299,6 +312,7 @@ function parseSidecarAllocationRow(
       : {}),
     ensureAttempts: row.ensureAttempts,
     destroyAttempts: row.destroyAttempts,
+    deploymentCleanupConfirmed: row.deploymentCleanupConfirmed,
     ...(row.connectDeadline !== null
       ? { connectDeadline: row.connectDeadline }
       : {}),
@@ -627,6 +641,7 @@ export function createSidecarAllocationStore(db: DBHandle) {
       .update(sidecarAllocation)
       .set({
         status: "releasing",
+        deploymentCleanupConfirmed: false,
         generation: args.expectedGeneration + 1,
         initializationLeaseId: null,
         nextAttemptAt: now,
@@ -867,6 +882,7 @@ export function createSidecarAllocationStore(db: DBHandle) {
           .set({
             sidecarId: args.sidecarId,
             status: "provisioning",
+            deploymentCleanupConfirmed: false,
             generation: args.expectedGeneration + 1,
             ensureAcceptedGeneration: null,
             externalRef: null,
@@ -919,6 +935,7 @@ export function createSidecarAllocationStore(db: DBHandle) {
           .set({
             sidecarId: args.sidecarId,
             status: "provisioning",
+            deploymentCleanupConfirmed: false,
             ensureAcceptedGeneration: null,
             externalRef: null,
             connectDeadline: args.connectDeadline,
@@ -1025,7 +1042,10 @@ export function createSidecarAllocationStore(db: DBHandle) {
       const [updated] = await db
         .update(sidecarAllocation)
         .set({
-          nextAttemptAt: args.nextAttemptAt,
+          nextAttemptAt:
+            args.minimumDelayMs === undefined
+              ? args.nextAttemptAt
+              : sql`greatest(${sql.param(args.nextAttemptAt, sidecarAllocation.nextAttemptAt)}, clock_timestamp() + (${args.minimumDelayMs} * interval '1 millisecond'))`,
           reconciliationLeaseId: null,
           reconciliationLeaseExpiresAt: null,
           ...(args.attempt === "ensure"
@@ -1059,6 +1079,31 @@ export function createSidecarAllocationStore(db: DBHandle) {
 
     // Only provisioning is replaced: nothing has run on it, so a new
     // generation starts the deployment from scratch.
+    async confirmDeploymentCleanup(args: {
+      readonly allocationId: string;
+      readonly generation: number;
+      readonly expectedLeaseId: string;
+      readonly now?: Date;
+    }): Promise<boolean> {
+      const [updated] = await db
+        .update(sidecarAllocation)
+        .set({
+          deploymentCleanupConfirmed: true,
+          connectDeadline: null,
+          updatedAt: databaseTimestamp(args.now),
+        })
+        .where(
+          and(
+            eq(sidecarAllocation.id, args.allocationId),
+            eq(sidecarAllocation.generation, args.generation),
+            inArray(sidecarAllocation.status, ["releasing", "replacing"]),
+            ...leaseCondition(args.expectedLeaseId),
+          ),
+        )
+        .returning({ id: sidecarAllocation.id });
+      return updated !== undefined;
+    },
+
     async beginReplacement(
       args: BeginSidecarReplacementArgs,
     ): Promise<SidecarAllocation | null> {
@@ -1067,6 +1112,7 @@ export function createSidecarAllocationStore(db: DBHandle) {
         .update(sidecarAllocation)
         .set({
           status: "replacing",
+          deploymentCleanupConfirmed: false,
           generation: args.expectedGeneration + 1,
           initializationLeaseId: null,
           ensureAcceptedGeneration: null,
@@ -1212,6 +1258,7 @@ export function createSidecarAllocationStore(db: DBHandle) {
           .update(sidecarAllocation)
           .set({
             status: "released",
+            deploymentCleanupConfirmed: true,
             nextAttemptAt: null,
             reconciliationLeaseId: null,
             reconciliationLeaseExpiresAt: null,
@@ -1645,7 +1692,12 @@ export function createSidecarAllocationStore(db: DBHandle) {
       const rows = await db
         .select()
         .from(sidecarAllocation)
-        .where(inArray(sidecarAllocation.status, activeStatuses));
+        .where(
+          or(
+            inArray(sidecarAllocation.status, activeStatuses),
+            eq(sidecarAllocation.status, "destroy_failed"),
+          ),
+        );
       return rows.map(parseSidecarAllocationRow);
     },
   };

@@ -2965,6 +2965,7 @@ describe("initial handshake on connect", () => {
     const calls: string[] = [];
     const deploying = Promise.withResolvers<boolean>();
     const finishDeploy = Promise.withResolvers<boolean>();
+    const retryReceived = Promise.withResolvers<undefined>();
     const hub = startWelcomingHub();
     const client = createHubLink({
       hubURL: `ws://localhost:${hub.server.port}/ws`,
@@ -2973,6 +2974,9 @@ describe("initial handshake on connect", () => {
       transport: createInMemoryTransport(),
       sessions: createMockSessionManager(),
       ...withTestDeployBindings(),
+      cacheSenderKey: async () => {
+        retryReceived.resolve(undefined);
+      },
       pingIntervalMs: 20,
       reconnectDelayMs: 10,
       deployRouter: {
@@ -3016,9 +3020,7 @@ describe("initial handshake on connect", () => {
       hub.silence();
       await waitUntil(() => hellos().length === 2);
 
-      finishDeploy.resolve(true);
-      // A later undeploy of the address runs behind the orphaned one on its
-      // lane, so its answer comes after any the orphaned one could send.
+      // Retry on the new socket while the original teardown is still queued.
       hub.send({
         type: "agent.undeploy",
         requestId: "undeploy-2",
@@ -3026,13 +3028,20 @@ describe("initial handshake on connect", () => {
         generation: 1,
         reason: "released",
       });
+      hub.send({
+        type: "sender.key.refresh",
+        address: "sentinel@tenant.example",
+        publicKey: "aa".repeat(32),
+      });
+      await retryReceived.promise;
+      finishDeploy.resolve(true);
       const answered = () =>
         hub.frames.flatMap((raw) => {
           const frame: { requestId?: string } = JSON.parse(raw);
           return frame.requestId === undefined ? [] : [frame.requestId];
         });
       await waitUntil(() => answered().includes("undeploy-2"));
-      expect(calls).toEqual(["deploy", "undeploy", "undeploy"]);
+      expect(calls).toEqual(["deploy", "undeploy"]);
       expect(answered()).toEqual(["undeploy-2"]);
     } finally {
       client.close();

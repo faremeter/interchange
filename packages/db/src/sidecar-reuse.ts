@@ -1,4 +1,4 @@
-import { and, count, eq, inArray, ne } from "drizzle-orm";
+import { and, count, eq, inArray, ne, or } from "drizzle-orm";
 
 import { MAX_SIDECAR_INCARNATIONS } from "@intx/types/sidecar";
 
@@ -134,12 +134,17 @@ export async function assertSidecarHasRoom(
       and(
         eq(sidecarAllocation.sidecarId, args.sidecarId),
         ne(sidecarAllocation.id, args.placing.allocationId),
-        inArray(sidecarAllocation.status, [
-          "provisioning",
-          "allocated",
-          "replacing",
-          "releasing",
-        ]),
+        or(
+          inArray(sidecarAllocation.status, ["provisioning", "allocated"]),
+          and(
+            inArray(sidecarAllocation.status, [
+              "replacing",
+              "releasing",
+              "destroy_failed",
+            ]),
+            eq(sidecarAllocation.deploymentCleanupConfirmed, false),
+          ),
+        ),
       ),
     );
   if (row === undefined) {

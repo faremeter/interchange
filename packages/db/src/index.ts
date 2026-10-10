@@ -79,6 +79,7 @@ export {
 export {
   createSidecarAllocationStore,
   SIDECAR_DEPLOYMENT_STOPPED_FAILURE_CODE,
+  SIDECAR_CLEANUP_UNCONFIRMED_FAILURE_CODE,
   type BeginSidecarReleaseArgs,
   type BeginSidecarReplacementArgs,
   type BindInitialSidecarArgs,

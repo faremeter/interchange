@@ -211,6 +211,10 @@ function createMockAllocationRouter(
   const calls: Call[] = [];
   return {
     calls,
+    getCleanupConnection: () => undefined,
+    async undeployAllocation() {
+      throw new Error("session tests do not release allocation capacity");
+    },
     fenceAllocation() {
       throw new Error("mock allocation fence is not used by session service");
     },
@@ -1630,6 +1634,7 @@ describe("deployCodeSourcedWorkflow", () => {
               status: "allocated",
               ensureAttempts: 1,
               destroyAttempts: 0,
+              deploymentCleanupConfirmed: false,
               createdAt: new Date(),
               updatedAt: new Date(),
               ...(initializationLeaseId !== null
@@ -1722,6 +1727,7 @@ describe("deployCodeSourcedWorkflow", () => {
         status: "allocated",
         ensureAttempts: 1,
         destroyAttempts: 0,
+        deploymentCleanupConfirmed: false,
         createdAt: new Date(),
         updatedAt: new Date(),
       };
@@ -1985,6 +1991,7 @@ describe("deployCodeSourcedWorkflow", () => {
             maxDisconnectedMs: 900_000,
             ensureAttempts: 0,
             destroyAttempts: 0,
+            deploymentCleanupConfirmed: false,
             createdAt: new Date(),
             updatedAt: new Date(),
           },

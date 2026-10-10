@@ -441,6 +441,7 @@ export async function createHubServer({
   const sidecarAllocationStore = createSidecarAllocationStore(db);
   const workflowLifecycleService = createWorkflowLifecycleService({
     db,
+    retentionRouter: sidecarRouter,
     runReader: createWorkflowRunReader(agentRepoStore.repoStore),
     historyReceives: workflowHistoryReceives,
     sendControl: (target, command, timeoutMs) =>

@@ -23,6 +23,8 @@ import {
   parseWorkflowRunRow,
   type DB,
   type DBExecutor,
+  type BeginSidecarReleaseArgs,
+  type SidecarAllocation,
 } from "@intx/db";
 import {
   liveWorkflowRunStatuses,
@@ -86,6 +88,7 @@ type RecoveryTrigger = "request" | "stop" | "sweep";
 
 export type WorkflowLifecycleServiceDeps = {
   db: DB["db"];
+  retentionRouter: Pick<SidecarAllocationRouter, "fenceAllocation">;
   runReader: WorkflowRunReader;
   historyReceives: WorkflowHistoryReceiveTracker;
   now?: () => Date;
@@ -96,6 +99,7 @@ export type WorkflowLifecycleServiceDeps = {
 
 export function createWorkflowLifecycleService({
   db,
+  retentionRouter,
   runReader,
   historyReceives,
   now = () => new Date(),
@@ -126,9 +130,13 @@ export function createWorkflowLifecycleService({
       tx: DBExecutor,
       run: Run,
       allocation: Allocation | undefined,
+      release: (
+        args: BeginSidecarReleaseArgs,
+      ) => Promise<SidecarAllocation | null>,
     ) => Promise<T>,
   ) {
-    return db.transaction(async (tx) => {
+    const releases: SidecarAllocation[] = [];
+    const result = await db.transaction(async (tx) => {
       // Match pack ingestion's lock order: allocation row first.
       const [allocation] = await tx
         .select()
@@ -152,8 +160,19 @@ export function createWorkflowLifecycleService({
         )
         .for("update");
       if (row === undefined) return null;
-      return action(tx, parseWorkflowRunRow(row), allocation);
+      return action(tx, parseWorkflowRunRow(row), allocation, async (args) => {
+        const released = await allocations.beginRelease(args, tx);
+        if (released !== null) releases.push(released);
+        return released;
+      });
     });
+    for (const released of releases)
+      retentionRouter.fenceAllocation(released.id, released.generation, {
+        ...(released.sidecarId === undefined
+          ? {}
+          : { cleanup: { sidecarId: released.sidecarId } }),
+      });
+    return result;
   }
 
   // Project accepted history for the deployment and claim the pending rows
@@ -509,7 +528,7 @@ export function createWorkflowLifecycleService({
     await withRun(
       command.tenantId,
       command.runId,
-      async (tx, run, allocation) => {
+      async (_tx, run, allocation, release) => {
         if (
           !isLiveWorkflowRunStatus(run.status) ||
           allocation === undefined ||
@@ -517,18 +536,15 @@ export function createWorkflowLifecycleService({
           !isSidecarAllocationDispatchable(allocation.status)
         )
           return;
-        await allocations.beginRelease(
-          {
-            allocationId: allocation.id,
-            expectedGeneration: allocation.generation,
-            expectedStatus: allocation.status,
-            failureCode: "workflow_stop_failed",
-            failureMessage:
-              "Workflow stop could not be confirmed; reclaiming capacity",
-            now: now(),
-          },
-          tx,
-        );
+        await release({
+          allocationId: allocation.id,
+          expectedGeneration: allocation.generation,
+          expectedStatus: allocation.status,
+          failureCode: "workflow_stop_failed",
+          failureMessage:
+            "Workflow stop could not be confirmed; reclaiming capacity",
+          now: now(),
+        });
       },
     );
   }
@@ -588,7 +604,12 @@ export function createWorkflowLifecycleService({
     const command = await withRun(
       tenantId,
       runId,
-      async (tx, original, allocation): Promise<ControlRequest | null> => {
+      async (
+        tx,
+        original,
+        allocation,
+        release,
+      ): Promise<ControlRequest | null> => {
         // Capacity was lost for good while accepted history was unreconciled;
         // once recovery has recorded that history, the runs still live fail.
         if (original.infrastructureFailedAt !== null) {
@@ -623,15 +644,12 @@ export function createWorkflowLifecycleService({
             allocation.sidecarId === null ||
             run.address === null
           ) {
-            await allocations.beginRelease(
-              {
-                allocationId: allocation.id,
-                expectedStatus: allocation.status,
-                expectedGeneration: allocation.generation,
-                now: now(),
-              },
-              tx,
-            );
+            await release({
+              allocationId: allocation.id,
+              expectedStatus: allocation.status,
+              expectedGeneration: allocation.generation,
+              now: now(),
+            });
             return null;
           }
           const cancellation = getRequestedCancellation(run);
@@ -672,15 +690,12 @@ export function createWorkflowLifecycleService({
             .set({ capacityReleaseAt: releaseAt })
             .where(eq(workflowRun.id, runId));
         if (releaseAt > now()) return null;
-        await allocations.beginRelease(
-          {
-            allocationId: allocation.id,
-            expectedStatus: allocation.status,
-            expectedGeneration: allocation.generation,
-            now: now(),
-          },
-          tx,
-        );
+        await release({
+          allocationId: allocation.id,
+          expectedStatus: allocation.status,
+          expectedGeneration: allocation.generation,
+          now: now(),
+        });
         return null;
       },
     );

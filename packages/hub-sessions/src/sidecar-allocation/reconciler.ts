@@ -3,6 +3,7 @@ import { type } from "arktype";
 import { sha256 } from "@intx/crypto";
 import {
   SIDECAR_DEPLOYMENT_STOPPED_FAILURE_CODE,
+  SIDECAR_CLEANUP_UNCONFIRMED_FAILURE_CODE,
   SidecarReuseRejectedError,
   type SidecarAllocation,
   type SidecarAllocationStore,
@@ -55,6 +56,7 @@ type AllocationStore = Pick<
   | "markConnectionReady"
   | "markDestroyFailed"
   | "markReleased"
+  | "confirmDeploymentCleanup"
   | "parkReconciliation"
   | "scheduleReconnectAfterHubStart"
   | "scheduleReconnectIfUnscheduled"
@@ -68,11 +70,13 @@ export type SidecarAllocationReconcilerDeps = {
   readonly router: Pick<
     SidecarAllocationRouter,
     | "fenceAllocation"
+    | "getCleanupConnection"
     | "holdsAllocatedBinding"
     | "isAllocatedSidecarReady"
     | "reportedDeploymentFailure"
     | "retireAllocation"
     | "syncSidecar"
+    | "undeployAllocation"
     | "waitForAllocatedSidecar"
   >;
   readonly hubWebSocketUrl: string;
@@ -137,6 +141,7 @@ const MAX_RETRY_BACKOFF_ATTEMPT = 5;
 // How long a first deploy that keeps failing before its deploy frame is sent
 // is retried, from its first failure.
 const FIRST_DEPLOY_RETRY_LIMIT_MS = 60_000;
+const PROVISIONER_AVAILABILITY_RETRY_MS = 30_000;
 
 function randomHex(bytes: number): string {
   return hexEncode(crypto.getRandomValues(new Uint8Array(bytes)));
@@ -197,6 +202,16 @@ export function createSidecarAllocationReconciler({
     throw new Error("maxConcurrentClaims must be a positive integer");
   }
 
+  function fence(allocation: SidecarAllocation): void {
+    router.fenceAllocation(allocation.id, allocation.generation, {
+      ...(allocation.sidecarId !== undefined &&
+      (allocation.status === "releasing" ||
+        allocation.status === "destroy_failed")
+        ? { cleanup: { sidecarId: allocation.sidecarId } }
+        : {}),
+    });
+  }
+
   const activeAllocations = new Map<
     string,
     {
@@ -234,17 +249,24 @@ export function createSidecarAllocationReconciler({
 
   function provisionerFor(
     allocation: SidecarAllocation,
-  ): SidecarProvisioner | null {
+  ): { provisioner: SidecarProvisioner } | { error: string } {
     const provisioner = plugins.getProvisioner(allocation.provisionerId);
+    if (provisioner === null)
+      return {
+        error: `Provisioner ${allocation.provisionerId} is missing from the plugin registry`,
+      };
+    if (provisioner.apiVersion !== allocation.provisionerApiVersion)
+      return {
+        error: `Provisioner ${allocation.provisionerId} has API version ${String(provisioner.apiVersion)}; this allocation requires version ${String(allocation.provisionerApiVersion)}`,
+      };
     if (
-      provisioner === null ||
-      provisioner.apiVersion !== allocation.provisionerApiVersion ||
       provisioner.bindingFingerprint !==
-        allocation.provisionerBindingFingerprint
-    ) {
-      return null;
-    }
-    return provisioner;
+      allocation.provisionerBindingFingerprint
+    )
+      return {
+        error: `Provisioner ${allocation.provisionerId} has binding ${provisioner.bindingFingerprint}; this allocation requires binding ${allocation.provisionerBindingFingerprint}`,
+      };
+    return { provisioner };
   }
 
   function retryAt(attempt: number): Date {
@@ -403,7 +425,7 @@ export function createSidecarAllocationReconciler({
         if (updated !== null) {
           // A late commit still advances the fence before this queued work
           // settles and its allocation becomes eligible for another claim.
-          router.fenceAllocation(updated.id, updated.generation);
+          fence(updated);
         } else {
           shouldRetryInitialization = onlyIfInitializationIncomplete;
         }
@@ -774,8 +796,7 @@ export function createSidecarAllocationReconciler({
         expectedLeaseId: leaseId,
         now: now(),
       });
-      if (releasing !== null)
-        router.fenceAllocation(releasing.id, releasing.generation);
+      if (releasing !== null) fence(releasing);
       return;
     }
     const token = createToken();
@@ -803,13 +824,14 @@ export function createSidecarAllocationReconciler({
     if (bound === null) return;
 
     trackAllocation(bound);
-    router.fenceAllocation(bound.id, bound.generation);
+    fence(bound);
     await acceptEnsure(bound, leaseId, provisioner, token);
   }
 
   async function retryDestroy(
     allocation: SidecarAllocation,
     leaseId: string,
+    failure: { code: string; message: string },
   ): Promise<void> {
     if (
       allocation.status !== "replacing" &&
@@ -820,6 +842,7 @@ export function createSidecarAllocationReconciler({
       );
     }
     const status = allocation.status;
+    logger.warn`Cleanup attempt ${String(allocation.destroyAttempts + 1)} failed for allocation ${allocation.id} on sidecar ${allocation.sidecarId ?? "unknown"} generation ${String(allocation.generation)}: ${failure.code}: ${failure.message}`;
     await finishReconciliation(allocation.id, () =>
       allocationStore.scheduleRetry({
         allocationId: allocation.id,
@@ -833,10 +856,89 @@ export function createSidecarAllocationReconciler({
     );
   }
 
+  type CleanupProgress = {
+    confirmed: boolean;
+    failed: boolean;
+    attemptedConnections: Set<object>;
+    message: string;
+  };
+
+  async function confirmCleanup(
+    allocation: SidecarAllocation,
+    leaseId: string,
+    cleanup: CleanupProgress,
+  ): Promise<void> {
+    if (cleanup.confirmed) return;
+    const target = {
+      allocationId: allocation.id,
+      generation: allocation.generation,
+    };
+    await queueReconciliationStep(target, async () => {
+      if (
+        !(await allocationStore.confirmDeploymentCleanup({
+          ...target,
+          expectedLeaseId: leaseId,
+          now: now(),
+        }))
+      )
+        throw new ReconciliationLeaseLostError(allocation.id);
+      cleanup.confirmed = true;
+    });
+  }
+
+  async function cleanUpConnectedSidecar(
+    allocation: SidecarAllocation,
+    leaseId: string,
+    cleanup: CleanupProgress,
+  ): Promise<void> {
+    if (cleanup.confirmed || allocation.sidecarId === undefined) return;
+    const sidecarId = allocation.sidecarId;
+    try {
+      const acknowledged = await withReconciliationLease(
+        allocation,
+        leaseId,
+        "Sidecar deployment cleanup",
+        ({ signal }) =>
+          trackAllocationQuery(allocation.id, async () => {
+            await router.syncSidecar(sidecarId, signal);
+            signal.throwIfAborted();
+            const target = {
+              allocationId: allocation.id,
+              generation: allocation.generation,
+            };
+            const connection = router.getCleanupConnection(target);
+            if (
+              connection === undefined ||
+              cleanup.attemptedConnections.has(connection)
+            )
+              return false;
+            cleanup.attemptedConnections.add(connection);
+            await router.undeployAllocation(
+              target,
+              operationTimeoutMs,
+              signal,
+              connection,
+            );
+            return true;
+          }),
+        operationTimeoutMs,
+      );
+      if (!acknowledged) return;
+    } catch (error) {
+      if (error instanceof ReconciliationLeaseLostError) throw error;
+      cleanup.failed = true;
+      cleanup.message = error instanceof Error ? error.message : String(error);
+      logger.warn`Sidecar cleanup request failed for allocation ${allocation.id} on sidecar ${sidecarId} generation ${String(allocation.generation)}: ${cleanup.message}`;
+      return;
+    }
+    await confirmCleanup(allocation, leaseId, cleanup);
+  }
+
   async function destroyCurrent(
     allocation: SidecarAllocation,
     leaseId: string,
     provisioner: SidecarProvisioner,
+    cleanup: CleanupProgress,
   ): Promise<boolean> {
     if (allocation.sidecarId === undefined) return true;
     const sidecarId = allocation.sidecarId;
@@ -862,12 +964,34 @@ export function createSidecarAllocationReconciler({
       );
     } catch (error) {
       if (error instanceof ReconciliationLeaseLostError) throw error;
-      logger.warn`Destroy failed for allocation ${allocation.id}: ${error instanceof Error ? error.message : String(error)}`;
-      await retryDestroy(allocation, leaseId);
+      await cleanUpConnectedSidecar(allocation, leaseId, cleanup);
+      await retryDestroy(allocation, leaseId, {
+        code: SIDECAR_CLEANUP_UNCONFIRMED_FAILURE_CODE,
+        message: error instanceof Error ? error.message : String(error),
+      });
       return false;
     }
-    if (result.kind === "destroyed") return true;
+    if (result.kind === "destroyed" && result.cleanup === "confirmed")
+      await confirmCleanup(allocation, leaseId, cleanup);
+    if (
+      result.kind === "destroyed" &&
+      (result.cleanup === "confirmed" || cleanup.confirmed)
+    )
+      return true;
+
+    // A sidecar may have connected during destruction, including a failed
+    // provider call. Try that connection without repeating an earlier request.
+    await cleanUpConnectedSidecar(allocation, leaseId, cleanup);
+    if (result.kind === "destroyed") {
+      if (cleanup.confirmed) return true;
+      await retryDestroy(allocation, leaseId, {
+        code: SIDECAR_CLEANUP_UNCONFIRMED_FAILURE_CODE,
+        message: cleanup.message,
+      });
+      return false;
+    }
     if (!result.retryable) {
+      logger.error`Provisioner permanently rejected cleanup for allocation ${allocation.id} on sidecar ${sidecarId} generation ${String(allocation.generation)}: ${result.code} ${result.message}. Prior allocation reason: ${allocation.failureCode ?? "none"} ${allocation.failureMessage ?? ""}`;
       const failed = await allocationStore.markDestroyFailed({
         allocationId: allocation.id,
         expectedGeneration: allocation.generation,
@@ -876,28 +1000,97 @@ export function createSidecarAllocationReconciler({
         message: result.message,
         now: now(),
       });
-      if (failed !== null) {
-        router.retireAllocation({
-          allocationId: failed.id,
-          generation: failed.generation,
-        });
-      }
+      if (failed !== null) fence(failed);
       return false;
     }
-    await retryDestroy(allocation, leaseId);
+    await retryDestroy(allocation, leaseId, {
+      code: SIDECAR_CLEANUP_UNCONFIRMED_FAILURE_CODE,
+      message: result.message,
+    });
     return false;
+  }
+
+  async function reconcileCleanup(
+    allocation: SidecarAllocation,
+    leaseId: string,
+  ): Promise<void> {
+    const cleanup: CleanupProgress = {
+      // An unaccepted ensure could not have received a deployment frame.
+      confirmed:
+        allocation.deploymentCleanupConfirmed ||
+        allocation.ensureAcceptedGeneration === undefined,
+      failed: false,
+      attemptedConnections: new Set(),
+      message: "No sidecar connection is available to confirm cleanup",
+    };
+    // Stopping a connected deployment must not depend on provider availability.
+    await cleanUpConnectedSidecar(allocation, leaseId, cleanup);
+    const selected = provisionerFor(allocation);
+    if ("error" in selected) {
+      logger.error`Cleanup blocked for allocation ${allocation.id} on sidecar ${allocation.sidecarId ?? "unknown"} generation ${String(allocation.generation)}: ${selected.error}. Restore the matching provisioner to finish releasing capacity`;
+      if (cleanup.failed) {
+        // An actual sidecar failure still spends an attempt even though its
+        // provider is unavailable. Missing configuration alone does not.
+        await retryDestroy(allocation, leaseId, {
+          code: SIDECAR_CLEANUP_UNCONFIRMED_FAILURE_CODE,
+          message: cleanup.message,
+        });
+      } else {
+        await finishReconciliation(allocation.id, () =>
+          allocationStore.scheduleRetry({
+            allocationId: allocation.id,
+            expectedStatus:
+              allocation.status === "replacing" ? "replacing" : "releasing",
+            expectedGeneration: allocation.generation,
+            expectedLeaseId: leaseId,
+            nextAttemptAt: new Date(
+              now().getTime() + PROVISIONER_AVAILABILITY_RETRY_MS,
+            ),
+            minimumDelayMs: PROVISIONER_AVAILABILITY_RETRY_MS,
+            now: now(),
+          }),
+        );
+      }
+      return;
+    }
+    const { provisioner } = selected;
+    if (!(await destroyCurrent(allocation, leaseId, provisioner, cleanup)))
+      return;
+    if (allocation.status === "replacing") {
+      await bindAndEnsure(allocation, leaseId, provisioner, true);
+      return;
+    }
+    const released = await allocationStore.markReleased({
+      allocationId: allocation.id,
+      generation: allocation.generation,
+      expectedLeaseId: leaseId,
+      now: now(),
+    });
+    if (released !== null) {
+      router.retireAllocation({
+        allocationId: released.id,
+        generation: released.generation,
+      });
+    }
   }
 
   async function reconcile(
     allocation: SidecarAllocation,
     leaseId: string,
   ): Promise<void> {
-    router.fenceAllocation(allocation.id, allocation.generation);
+    fence(allocation);
     if (
       allocation.status === "released" ||
       allocation.status === "failed" ||
       allocation.status === "destroy_failed"
     ) {
+      return;
+    }
+    if (
+      allocation.status === "releasing" ||
+      allocation.status === "replacing"
+    ) {
+      await reconcileCleanup(allocation, leaseId);
       return;
     }
     if (
@@ -915,15 +1108,15 @@ export function createSidecarAllocationReconciler({
         operationTimeoutMs,
       );
     }
-    const provisioner = provisionerFor(allocation);
-    if (provisioner === null) {
+    const selected = provisionerFor(allocation);
+    if ("error" in selected) {
       if (allocation.status === "pending") {
         const failed = await allocationStore.failWithoutInfrastructure({
           allocationId: allocation.id,
           expectedStatus: "pending",
           expectedGeneration: allocation.generation,
           code: "provisioner_unavailable",
-          message: `Provisioner ${allocation.provisionerId} is unavailable or its binding changed`,
+          message: selected.error,
           expectedLeaseId: leaseId,
           now: now(),
         });
@@ -950,6 +1143,7 @@ export function createSidecarAllocationReconciler({
       }
       return;
     }
+    const { provisioner } = selected;
 
     switch (allocation.status) {
       case "pending":
@@ -978,26 +1172,6 @@ export function createSidecarAllocationReconciler({
         }
         await waitUntilReady(allocation, leaseId);
         return;
-      case "replacing":
-        if (!(await destroyCurrent(allocation, leaseId, provisioner))) return;
-        await bindAndEnsure(allocation, leaseId, provisioner, true);
-        return;
-      case "releasing": {
-        if (!(await destroyCurrent(allocation, leaseId, provisioner))) return;
-        const released = await allocationStore.markReleased({
-          allocationId: allocation.id,
-          generation: allocation.generation,
-          expectedLeaseId: leaseId,
-          now: now(),
-        });
-        if (released !== null) {
-          router.retireAllocation({
-            allocationId: released.id,
-            generation: released.generation,
-          });
-        }
-        return;
-      }
       default: {
         const exhaustive: never = allocation.status;
         throw new Error(
@@ -1010,7 +1184,7 @@ export function createSidecarAllocationReconciler({
   async function initialize(): Promise<void> {
     const startedAt = now();
     for (const allocation of await allocationStore.listActive()) {
-      router.fenceAllocation(allocation.id, allocation.generation);
+      fence(allocation);
       if (allocation.status === "allocated") {
         await allocationStore.scheduleReconnectAfterHubStart({
           allocationId: allocation.id,
@@ -1020,7 +1194,10 @@ export function createSidecarAllocationReconciler({
             startedAt.getTime() + connectTimeoutMs,
           ),
         });
-      } else if (allocation.nextAttemptAt === undefined) {
+      } else if (
+        allocation.status !== "destroy_failed" &&
+        allocation.nextAttemptAt === undefined
+      ) {
         // Scheduled retries are durable state. Only repair an unscheduled
         // active row; moving an existing deadline earlier would erase provider
         // backoff whenever the Hub restarts.

@@ -1,3 +1,4 @@
+import { MAX_SIDECAR_INCARNATIONS } from "@intx/types/sidecar";
 import {
   afterAll,
   beforeAll,
@@ -80,7 +81,7 @@ describe.skipIf(!harnessDbEnvAvailable())("sidecar ownership locking", () => {
 
   async function seedAllocation(
     id: string,
-    status: "provisioning" | "releasing" | "replacing",
+    status: "provisioning" | "releasing" | "replacing" | "allocated",
     sidecarId = SHARED_SIDECAR_ID,
   ) {
     await seedWorkflowRun(h.db, {
@@ -394,4 +395,71 @@ describe.skipIf(!harnessDbEnvAvailable())("sidecar ownership locking", () => {
       sidecarId: "sidecar-other",
     });
   });
+  test.each(["removed"])(
+    "%s capacity admits only one of two placements into the last active slot",
+    async (proof) => {
+      for (let index = 0; index < MAX_SIDECAR_INCARNATIONS; index++) {
+        await seedAllocation(`holder-${String(index)}`, "allocated");
+      }
+      await seedAllocation("first", "provisioning", "sidecar-offered");
+      await seedAllocation("second", "provisioning", "sidecar-other");
+      const store = createSidecarAllocationStore(h.db);
+      if (proof === "removed") {
+        await store.beginRelease({
+          allocationId: "holder-0",
+          expectedGeneration: 1,
+          expectedStatus: "allocated",
+        });
+        const leaseId = "cleanup";
+        expect(
+          (
+            await store.claimNextReconcilable({
+              leaseId,
+              leaseDurationMs: 60_000,
+            })
+          )?.id,
+        ).toBe("holder-0");
+        expect(
+          await store.confirmDeploymentCleanup({
+            allocationId: "holder-0",
+            generation: 2,
+            expectedLeaseId: leaseId,
+          }),
+        ).toBe(true);
+        await store.markDestroyFailed({
+          allocationId: "holder-0",
+          expectedGeneration: 2,
+          expectedLeaseId: leaseId,
+          code: "provider_permission_denied",
+          message: "Provider hold still requires recovery",
+        });
+      }
+      const results = await runInLockOrder(
+        () =>
+          store.markAllocated({
+            allocationId: "first",
+            generation: 1,
+            sidecarId: SHARED_SIDECAR_ID,
+          }),
+        () =>
+          store.markAllocated({
+            allocationId: "second",
+            generation: 1,
+            sidecarId: SHARED_SIDECAR_ID,
+          }),
+      );
+      expect(results[0]).toMatchObject({
+        status: "fulfilled",
+        value: { status: "allocated", sidecarId: SHARED_SIDECAR_ID },
+      });
+      expect(results[1]).toMatchObject({
+        status: "rejected",
+        reason: expect.any(SidecarReuseRejectedError),
+      });
+      expect(await store.findById("second")).toMatchObject({
+        status: "provisioning",
+        sidecarId: "sidecar-other",
+      });
+    },
+  );
 });

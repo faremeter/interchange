@@ -851,8 +851,9 @@ export type DeploymentStoppedFrame = typeof DeploymentStoppedFrame.infer;
  * incarnations. `routed` lists the incarnations it routes on this connection;
  * it has already asked the sidecar to undeploy every other one reported, but
  * for the ones it keeps unrouted: stopped ones, and live ones whose run ended
- * on its own. From here on the sidecar may send what must be delivered, and
- * it re-drives what it owes the Hub for each routed incarnation.
+ * on its own, and copies under a cleanup binding whose removal belongs to the
+ * allocation reconciler. From here on the sidecar may send what must be
+ * delivered, and it re-drives what it owes the Hub for each routed incarnation.
  */
 export const WelcomeFrame = type({
   type: "'welcome'",
