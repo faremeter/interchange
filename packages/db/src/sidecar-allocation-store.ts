@@ -62,6 +62,20 @@ export const SIDECAR_CLEANUP_UNCONFIRMED_FAILURE_CODE =
   "sidecar_cleanup_unconfirmed";
 export const SIDECAR_PROVISIONER_RELEASE_FAILURE_CODE =
   "sidecar_provisioner_release_failed";
+export const SIDECAR_CLEANUP_RETRY_EXHAUSTED_FAILURE_CODE =
+  "sidecar_cleanup_retry_exhausted";
+export const SIDECAR_CLEANUP_DISCONNECT_TIMEOUT_FAILURE_CODE =
+  "sidecar_cleanup_disconnect_timeout";
+export const SIDECAR_CLEANUP_PREPARATION_TIMEOUT_FAILURE_CODE =
+  "sidecar_cleanup_preparation_timeout";
+// Codes that stopped cleanup itself. A completed release clears them, so an
+// allocation keeps a workflow failure only if failed cleanup never replaced it;
+// the runs record their own failure either way.
+const CLEANUP_STOP_FAILURE_CODES: readonly string[] = [
+  SIDECAR_CLEANUP_RETRY_EXHAUSTED_FAILURE_CODE,
+  SIDECAR_CLEANUP_DISCONNECT_TIMEOUT_FAILURE_CODE,
+  SIDECAR_CLEANUP_PREPARATION_TIMEOUT_FAILURE_CODE,
+];
 
 export type SidecarAllocation = {
   readonly id: string;
@@ -90,6 +104,9 @@ export type SidecarAllocation = {
   readonly destroyAttempts: number;
   /** Confirmed removal for this cleanup generation, retained across retries. */
   readonly deploymentCleanupConfirmed: boolean;
+  /** Confirmed provider release for this cleanup generation, retained across retries. */
+  readonly providerHoldReleased: boolean;
+  /** Also bounds waiting for a cleanup connection while releasing. */
   readonly connectDeadline?: Date;
   /** How long the sidecar may stay disconnected before the Hub fails it. */
   readonly maxDisconnectedMs: number;
@@ -286,7 +303,10 @@ export type FailSidecarAllocationArgs = {
 export type MarkSidecarDestroyFailedArgs = Omit<
   FailSidecarAllocationArgs,
   "expectedStatus"
->;
+> & {
+  /** A connection-wait deadline is not a failed cleanup attempt. */
+  readonly countAttempt?: boolean;
+};
 
 type InitializationArgs = {
   readonly allocationId: string;
@@ -330,6 +350,7 @@ function parseSidecarAllocationRow(
     ensureAttempts: row.ensureAttempts,
     destroyAttempts: row.destroyAttempts,
     deploymentCleanupConfirmed: row.deploymentCleanupConfirmed,
+    providerHoldReleased: row.providerHoldReleased,
     ...(row.connectDeadline !== null
       ? { connectDeadline: row.connectDeadline }
       : {}),
@@ -479,6 +500,9 @@ export function createSidecarAllocationStore(db: DBHandle) {
         .update(sidecarAllocation)
         .set({
           initializationLeaseId: completion === undefined ? args.leaseId : null,
+          // Completion proves the first connection succeeded. A later disconnect
+          // acquires this same row lock and starts its own deadline.
+          ...(completion === undefined ? {} : { connectDeadline: null }),
         })
         .where(condition)
         .returning({ id: sidecarAllocation.id });
@@ -674,20 +698,29 @@ export function createSidecarAllocationStore(db: DBHandle) {
       .set({
         status: "releasing",
         generation: args.expectedGeneration + 1,
+        destroyAttempts: 0,
         // Replacement clears ensure acceptance before removing the old copy.
         // Preserve that cleanup obligation when release interrupts replacement.
         deploymentCleanupConfirmed: sql`case when ${sidecarAllocation.status} = 'replacing' then ${sidecarAllocation.deploymentCleanupConfirmed} else ${sidecarAllocation.ensureAcceptedGeneration} is null end`,
+        // Abandoning replacement does not create another provider hold.
+        providerHoldReleased: sql`case when ${sidecarAllocation.status} = 'replacing' then ${sidecarAllocation.providerHoldReleased} else false end`,
         initializationLeaseId: null,
         nextAttemptAt: now,
         reconciliationLeaseId: null,
         reconciliationLeaseExpiresAt: null,
-        connectDeadline: null,
-        ...(args.failureCode !== undefined
-          ? { failureCode: args.failureCode }
-          : {}),
-        ...(args.failureMessage !== undefined
-          ? { failureMessage: args.failureMessage }
-          : {}),
+        // Preserve an initialized deployment's existing disconnect window.
+        // A first-connect deadline does not bound subsequent cleanup waiting.
+        connectDeadline: sql`case when exists (select 1 from ${workflowRun} where ${workflowRun.id} = ${sidecarAllocation.anchorRunId} and ${workflowRun.publicKey} is not null) then ${sidecarAllocation.connectDeadline} else null end`,
+        // Placement and initialization retry diagnostics are not release causes.
+        // Preserve a recorded workflow failure, or the reason supplied by release.
+        failureCode:
+          args.failureCode ??
+          sql`(select ${workflowRun.failureCode} from ${workflowRun} where ${workflowRun.id} = ${sidecarAllocation.anchorRunId})`,
+        failureMessage:
+          args.failureMessage ??
+          (args.failureCode === undefined
+            ? sql`(select ${workflowRun.failureMessage} from ${workflowRun} where ${workflowRun.id} = ${sidecarAllocation.anchorRunId})`
+            : null),
         updatedAt: now,
       })
       .where(
@@ -921,6 +954,7 @@ export function createSidecarAllocationStore(db: DBHandle) {
             status: "provisioning",
             generation: args.expectedGeneration + 1,
             deploymentCleanupConfirmed: false,
+            providerHoldReleased: false,
             ensureAcceptedGeneration: null,
             externalRef: null,
             connectDeadline: args.connectDeadline,
@@ -951,15 +985,15 @@ export function createSidecarAllocationStore(db: DBHandle) {
       args: BindReplacementSidecarArgs,
     ): Promise<SidecarAllocation | null> {
       return db.transaction(async (tx) => {
-        const allocation = await lockAllocationWithSidecars(
-          tx,
-          and(
-            eq(sidecarAllocation.id, args.allocationId),
-            eq(sidecarAllocation.status, "replacing"),
-            eq(sidecarAllocation.generation, args.generation),
-            ...leaseCondition(args.expectedLeaseId),
-          ),
+        const condition = and(
+          eq(sidecarAllocation.id, args.allocationId),
+          eq(sidecarAllocation.status, "replacing"),
+          eq(sidecarAllocation.generation, args.generation),
+          eq(sidecarAllocation.deploymentCleanupConfirmed, true),
+          eq(sidecarAllocation.providerHoldReleased, true),
+          ...leaseCondition(args.expectedLeaseId),
         );
+        const allocation = await lockAllocationWithSidecars(tx, condition);
         if (allocation === undefined) return null;
         const now = databaseTimestamp(args.now);
         await insertSidecarIdentity(tx, {
@@ -976,6 +1010,7 @@ export function createSidecarAllocationStore(db: DBHandle) {
             // A delayed cleanup hello must not match the replacement binding.
             generation: args.generation + 1,
             deploymentCleanupConfirmed: false,
+            providerHoldReleased: false,
             ensureAcceptedGeneration: null,
             externalRef: null,
             connectDeadline: args.connectDeadline,
@@ -985,14 +1020,7 @@ export function createSidecarAllocationStore(db: DBHandle) {
             failureMessage: null,
             updatedAt: now,
           })
-          .where(
-            and(
-              eq(sidecarAllocation.id, args.allocationId),
-              eq(sidecarAllocation.status, "replacing"),
-              eq(sidecarAllocation.generation, args.generation),
-              ...leaseCondition(args.expectedLeaseId),
-            ),
-          )
+          .where(condition)
           .returning();
         if (updated === undefined) {
           throw new Error(
@@ -1143,6 +1171,58 @@ export function createSidecarAllocationStore(db: DBHandle) {
       return updated !== undefined;
     },
 
+    async confirmProviderRelease(args: {
+      readonly allocationId: string;
+      readonly generation: number;
+      readonly expectedLeaseId: string;
+      readonly now?: Date;
+    }): Promise<boolean> {
+      const [updated] = await db
+        .update(sidecarAllocation)
+        .set({
+          providerHoldReleased: true,
+          updatedAt: databaseTimestamp(args.now),
+        })
+        .where(
+          and(
+            eq(sidecarAllocation.id, args.allocationId),
+            eq(sidecarAllocation.generation, args.generation),
+            inArray(sidecarAllocation.status, ["releasing", "replacing"]),
+            ...leaseCondition(args.expectedLeaseId),
+          ),
+        )
+        .returning({ id: sidecarAllocation.id });
+      return updated !== undefined;
+    },
+
+    /** Record observed cleanup connectivity without releasing the reconciliation lease. */
+    async recordCleanupConnection(args: {
+      readonly allocationId: string;
+      readonly generation: number;
+      readonly expectedLeaseId: string;
+      readonly connected: boolean;
+      readonly now?: Date;
+    }): Promise<SidecarAllocation | null> {
+      const [updated] = await db
+        .update(sidecarAllocation)
+        .set({
+          connectDeadline: args.connected
+            ? null
+            : sql`coalesce(${sidecarAllocation.connectDeadline}, ${disconnectDeadline(args.now)})`,
+          updatedAt: databaseTimestamp(args.now),
+        })
+        .where(
+          and(
+            eq(sidecarAllocation.id, args.allocationId),
+            eq(sidecarAllocation.status, "releasing"),
+            eq(sidecarAllocation.generation, args.generation),
+            ...leaseCondition(args.expectedLeaseId),
+          ),
+        )
+        .returning();
+      return updated === undefined ? null : parseSidecarAllocationRow(updated);
+    },
+
     // Provisioning is replaced because nothing has run. An allocated
     // generation is replaced only when the caller names that status: a
     // parked run, whose committed log is enough to continue.
@@ -1165,6 +1245,7 @@ export function createSidecarAllocationStore(db: DBHandle) {
             status: "replacing",
             generation: args.expectedGeneration + 1,
             deploymentCleanupConfirmed: sql`${sidecarAllocation.ensureAcceptedGeneration} is null`,
+            providerHoldReleased: false,
             initializationLeaseId: null,
             ensureAcceptedGeneration: null,
             nextAttemptAt: args.nextAttemptAt,
@@ -1325,11 +1406,23 @@ export function createSidecarAllocationStore(db: DBHandle) {
       args: MarkSidecarReleasedArgs,
     ): Promise<SidecarAllocation | null> {
       const now = databaseTimestamp(args.now);
+      const cleanupFailure = inArray(
+        sidecarAllocation.failureCode,
+        CLEANUP_STOP_FAILURE_CODES,
+      );
       return db.transaction(async (tx) => {
         const condition = and(
           eq(sidecarAllocation.id, args.allocationId),
           eq(sidecarAllocation.status, "releasing"),
           eq(sidecarAllocation.generation, args.generation),
+          // An allocation that never bound capacity has nothing to clean up.
+          or(
+            isNull(sidecarAllocation.sidecarId),
+            and(
+              eq(sidecarAllocation.deploymentCleanupConfirmed, true),
+              eq(sidecarAllocation.providerHoldReleased, true),
+            ),
+          ),
           ...leaseCondition(args.expectedLeaseId),
         );
         if ((await lockAllocationWithSidecars(tx, condition)) === undefined)
@@ -1339,6 +1432,9 @@ export function createSidecarAllocationStore(db: DBHandle) {
           .set({
             status: "released",
             deploymentCleanupConfirmed: true,
+            providerHoldReleased: true,
+            failureCode: sql`case when ${cleanupFailure} then null else ${sidecarAllocation.failureCode} end`,
+            failureMessage: sql`case when ${cleanupFailure} then null else ${sidecarAllocation.failureMessage} end`,
             nextAttemptAt: null,
             reconciliationLeaseId: null,
             reconciliationLeaseExpiresAt: null,
@@ -1375,8 +1471,19 @@ export function createSidecarAllocationStore(db: DBHandle) {
           eq(sidecarAllocation.generation, args.expectedGeneration),
           ...leaseCondition(args.expectedLeaseId),
         );
-        if ((await lockAllocationWithSidecars(tx, condition)) === undefined)
-          return null;
+        const allocation = await lockAllocationWithSidecars(tx, condition);
+        if (allocation === undefined) return null;
+        // Preserve the workflow's cause before the allocation code becomes
+        // the cleanup outcome recorded on the allocation.
+        const workflowFailure =
+          allocation.status === "releasing" &&
+          allocation.failureCode !== null &&
+          !CLEANUP_STOP_FAILURE_CODES.includes(allocation.failureCode)
+            ? {
+                code: allocation.failureCode,
+                message: allocation.failureMessage ?? allocation.failureCode,
+              }
+            : { code: args.code, message: args.message };
         const [updated] = await tx
           .update(sidecarAllocation)
           .set({
@@ -1387,7 +1494,11 @@ export function createSidecarAllocationStore(db: DBHandle) {
             reconciliationLeaseId: null,
             reconciliationLeaseExpiresAt: null,
             connectDeadline: null,
-            destroyAttempts: sql`${sidecarAllocation.destroyAttempts} + 1`,
+            ...(args.countAttempt === false
+              ? {}
+              : {
+                  destroyAttempts: sql`${sidecarAllocation.destroyAttempts} + 1`,
+                }),
             updatedAt: now,
           })
           .where(condition)
@@ -1401,10 +1512,7 @@ export function createSidecarAllocationStore(db: DBHandle) {
           !updated.deploymentCleanupConfirmed ||
           !(await hasPendingCancellation(tx, updated.anchorRunId))
         ) {
-          await failRunningRuns(tx, updated.anchorRunId, now, {
-            code: args.code,
-            message: args.message,
-          });
+          await failRunningRuns(tx, updated.anchorRunId, now, workflowFailure);
           await workflowRunDispatchStore.abandonUnsettled(
             updated.anchorRunId,
             args.code,
@@ -1762,14 +1870,91 @@ export function createSidecarAllocationStore(db: DBHandle) {
       return updated !== undefined;
     },
 
-    async wakeReconciliation(
+    /** Resume a timeout or an unchanged parked wait, without reviving its workflow. */
+    async resumeCleanupAfterDisconnect(
       allocationId: string,
       generation: number,
+      parked?: { readonly deadline: Date; readonly destroyAttempts: number },
     ): Promise<boolean> {
       const [updated] = await db
         .update(sidecarAllocation)
         .set({
+          status: "releasing",
+          connectDeadline: null,
           nextAttemptAt: sql`now()`,
+          updatedAt: sql`now()`,
+        })
+        .where(
+          and(
+            eq(sidecarAllocation.id, allocationId),
+            eq(sidecarAllocation.generation, generation),
+            or(
+              and(
+                eq(sidecarAllocation.status, "destroy_failed"),
+                eq(
+                  sidecarAllocation.failureCode,
+                  SIDECAR_CLEANUP_DISCONNECT_TIMEOUT_FAILURE_CODE,
+                ),
+              ),
+              parked === undefined
+                ? undefined
+                : and(
+                    eq(sidecarAllocation.status, "releasing"),
+                    eq(sidecarAllocation.connectDeadline, parked.deadline),
+                    eq(sidecarAllocation.nextAttemptAt, parked.deadline),
+                    eq(
+                      sidecarAllocation.destroyAttempts,
+                      parked.destroyAttempts,
+                    ),
+                    or(
+                      isNull(sidecarAllocation.reconciliationLeaseExpiresAt),
+                      lte(
+                        sidecarAllocation.reconciliationLeaseExpiresAt,
+                        sql`clock_timestamp()`,
+                      ),
+                    ),
+                  ),
+            ),
+          ),
+        )
+        .returning({ id: sidecarAllocation.id });
+      return updated !== undefined;
+    },
+
+    async wakeReconciliation(
+      allocationId: string,
+      generation: number,
+      {
+        connected = false,
+        preserveRetryBackoff = false,
+      }: {
+        readonly connected?: boolean;
+        readonly preserveRetryBackoff?: boolean;
+      } = {},
+    ): Promise<boolean> {
+      const [updated] = await db
+        .update(sidecarAllocation)
+        .set({
+          // A parked disconnect wait wakes immediately. Reconnect notifications
+          // preserve counted-failure backoff even if the socket closed again.
+          nextAttemptAt: preserveRetryBackoff
+            ? sql`case
+                when ${sidecarAllocation.status} in ('releasing', 'replacing')
+                  and ${sidecarAllocation.destroyAttempts} > 0
+                  and ${sidecarAllocation.nextAttemptAt} is not null
+                  and ${sidecarAllocation.nextAttemptAt} is distinct from ${sidecarAllocation.connectDeadline}
+                then ${sidecarAllocation.nextAttemptAt}
+                else now()
+              end`
+            : sql`now()`,
+          // A reconnect ends an initialized copy's disconnect window before
+          // the readiness pass. Preserve the first-connect limit until deploy
+          // completes; repeated hellos must not extend initialization forever.
+          ...(connected
+            ? {
+                connectDeadline: sql`case when ${sidecarAllocation.status} = 'releasing' or exists (select 1 from ${workflowRun} where ${workflowRun.id} = ${sidecarAllocation.anchorRunId} and ${workflowRun.publicKey} is not null) then null else ${sidecarAllocation.connectDeadline} end`,
+              }
+            : {}),
         })
         .where(
           and(
@@ -1780,6 +1965,26 @@ export function createSidecarAllocationStore(db: DBHandle) {
         )
         .returning({ id: sidecarAllocation.id });
       return updated !== undefined;
+    },
+
+    /** Active work and the failed cleanups that connection repair can resume. */
+    async listForConnectionRepair(): Promise<SidecarAllocation[]> {
+      const rows = await db
+        .select()
+        .from(sidecarAllocation)
+        .where(
+          or(
+            inArray(sidecarAllocation.status, activeStatuses),
+            and(
+              eq(sidecarAllocation.status, "destroy_failed"),
+              eq(
+                sidecarAllocation.failureCode,
+                SIDECAR_CLEANUP_DISCONNECT_TIMEOUT_FAILURE_CODE,
+              ),
+            ),
+          ),
+        );
+      return rows.map(parseSidecarAllocationRow);
     },
 
     /** Includes failed cleanup obligations whose fences must survive a restart. */

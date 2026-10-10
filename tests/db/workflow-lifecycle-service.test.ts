@@ -18,6 +18,8 @@ import { seedPrincipal, seedTenants } from "@intx/test-harness/seed";
 import {
   createSidecarAllocationStore,
   createWorkflowRunDispatchStore,
+  SIDECAR_CLEANUP_RETRY_EXHAUSTED_FAILURE_CODE,
+  SIDECAR_CLEANUP_DISCONNECT_TIMEOUT_FAILURE_CODE,
   withExecutableWorkflowRun,
 } from "@intx/db";
 import * as dbSchema from "@intx/db/schema";
@@ -264,6 +266,38 @@ describe.skipIf(!harnessDbEnvAvailable())(
         ensureAcceptedGeneration: 1,
       });
     }
+
+    test.each([
+      [SIDECAR_CLEANUP_RETRY_EXHAUSTED_FAILURE_CODE, "cleanup_exhausted"],
+      [SIDECAR_CLEANUP_DISCONNECT_TIMEOUT_FAILURE_CODE, "cleanup_disconnected"],
+    ] as const)(
+      "reports cleanup failure %s without resetting its budget",
+      async (failureCode, result) => {
+        await h.db
+          .update(workflowRun)
+          .set({ status: "failed", endedAt: current })
+          .where(eq(workflowRun.id, runId));
+        await h.db
+          .update(sidecarAllocation)
+          .set({
+            status: "destroy_failed",
+            failureCode,
+            destroyAttempts: 10,
+            nextAttemptAt: null,
+          })
+          .where(eq(sidecarAllocation.id, allocationId));
+        expect(await service().releaseCapacity(tenantId, runId)).toBe(result);
+        expect(
+          await h.db.query.sidecarAllocation.findFirst({
+            where: eq(sidecarAllocation.id, allocationId),
+          }),
+        ).toMatchObject({
+          status: "destroy_failed",
+          destroyAttempts: 10,
+          nextAttemptAt: null,
+        });
+      },
+    );
 
     test("the shared scheduler bounds expired runs to eight and refills a free slot independently", async () => {
       await expire();
@@ -1279,14 +1313,18 @@ describe.skipIf(!harnessDbEnvAvailable())(
       return {
         lifecycle,
         dispatches,
-        release: () =>
-          store.markReleased({
+        release: async () => {
+          const target = {
             allocationId,
             generation: releasing.generation,
             expectedLeaseId: leaseId,
             now: current,
-          }),
-        fail: (code = "provider_rejected") =>
+          };
+          expect(await store.confirmDeploymentCleanup(target)).toBe(true);
+          expect(await store.confirmProviderRelease(target)).toBe(true);
+          return store.markReleased(target);
+        },
+        fail: (code = SIDECAR_CLEANUP_RETRY_EXHAUSTED_FAILURE_CODE) =>
           store.markDestroyFailed({
             allocationId,
             expectedGeneration: releasing.generation,
@@ -1299,6 +1337,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
     }
 
     test.each([
+      [SIDECAR_CLEANUP_RETRY_EXHAUSTED_FAILURE_CODE, "before"],
+      [SIDECAR_CLEANUP_RETRY_EXHAUSTED_FAILURE_CODE, "after"],
       ["provider_rejected", "before"],
       ["provider_rejected", "after"],
       ["released", "before"],
@@ -1471,6 +1511,20 @@ describe.skipIf(!harnessDbEnvAvailable())(
         status: "failed",
         failureCode: "workflow_error",
         failureMessage: "The workflow failed before cleanup",
+      });
+    });
+
+    test("unconfirmed cancellation keeps the cleanup failure outcome", async () => {
+      const { lifecycle, fail } = await cancelledCleanup(false);
+      await fail();
+      await lifecycle.reconcileNext();
+      expect(
+        await h.db.query.workflowRun.findFirst({
+          where: eq(workflowRun.id, runId),
+        }),
+      ).toMatchObject({
+        status: "failed",
+        failureCode: "workflow_stop_failed",
       });
     });
 

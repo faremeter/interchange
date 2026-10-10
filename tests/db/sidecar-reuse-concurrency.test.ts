@@ -195,6 +195,14 @@ describe.skipIf(!harnessDbEnvAvailable())("sidecar ownership locking", () => {
               ? "replacing"
               : "releasing";
         await seedAllocation("holder", status);
+        if (removal === "release" || removal === "replacement")
+          await h.db
+            .update(sidecarAllocation)
+            .set({
+              deploymentCleanupConfirmed: true,
+              providerHoldReleased: true,
+            })
+            .where(eq(sidecarAllocation.id, "holder"));
         await seedAllocation("joining", "provisioning", "sidecar-offered");
         const store = createSidecarAllocationStore(h.db);
         const place = () =>

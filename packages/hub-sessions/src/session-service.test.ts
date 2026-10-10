@@ -1647,6 +1647,7 @@ describe("deployCodeSourcedWorkflow", () => {
               ensureAttempts: 1,
               destroyAttempts: 0,
               deploymentCleanupConfirmed: false,
+              providerHoldReleased: false,
               createdAt: new Date(),
               updatedAt: new Date(),
               ...(initializationLeaseId !== null
@@ -1741,6 +1742,7 @@ describe("deployCodeSourcedWorkflow", () => {
         ensureAttempts: 1,
         destroyAttempts: 0,
         deploymentCleanupConfirmed: false,
+        providerHoldReleased: false,
         createdAt: new Date(),
         updatedAt: new Date(),
       };
@@ -1852,7 +1854,10 @@ describe("deployCodeSourcedWorkflow", () => {
         if (reserve) {
           expect(result).toMatchObject({ publicKey: "completed-key" });
           expect(selections).toBe(2);
-          expect(writes.at(-1)).toEqual({ initializationLeaseId: null });
+          expect(writes.at(-1)).toEqual({
+            initializationLeaseId: null,
+            connectDeadline: null,
+          });
           expect(writes[1]).toMatchObject({ publicKey: "completed-key" });
         } else {
           expect(result).toMatchObject({ leakedAgent: false });
@@ -2006,6 +2011,7 @@ describe("deployCodeSourcedWorkflow", () => {
             ensureAttempts: 0,
             destroyAttempts: 0,
             deploymentCleanupConfirmed: false,
+            providerHoldReleased: false,
             createdAt: new Date(),
             updatedAt: new Date(),
           },

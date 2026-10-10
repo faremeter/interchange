@@ -143,13 +143,19 @@ whole 30-second ready timeout, a full one spends about 8 minutes on those
 timeouts alone, so a shorter limit can fail the deployments of a sidecar that
 is only restarting.
 
-On a sidecar that also hosts other work, release removes only this deployment's
-hold on the sidecar. A connected sidecar is told to undeploy the deployment,
-which stops its child at once. An unreachable one keeps running it until it
-reconnects and the Hub undeploys it, or until its other deployments also stay
-away past their disconnect limits and the provisioner stops the emptied
-sidecar. Destroying dedicated capacity guarantees the stop; on a shared sidecar
-the stop only takes effect once the sidecar hears from the Hub.
+On a sidecar that also hosts other work, release removes only this
+deployment's hold on the sidecar. A connected sidecar is told to undeploy the
+deployment, which stops its child as part of teardown. An unreachable copy can
+keep running past the Hub's cleanup disconnect deadline: a recorded failure
+cannot stop a disconnected process. Expiry records `destroy_failed` with
+`sidecar_cleanup_disconnect_timeout`; automatic cleanup resumes only if the
+sidecar reconnects. If the sidecar has been destroyed, operator recovery is
+required. Exhausted retries, permanent provider rejection, and
+`sidecar_cleanup_preparation_timeout` require operator recovery and preserve
+cleanup-only bindings for inventory without restoring workflow routes.
+Removal is confirmed by an undeploy acknowledgement
+or by provider destruction that guarantees the worker and its restorable state
+cannot return.
 
 `capacityRetention` starts when the top-level run becomes terminal. Here, failure
 retains the environment for 15 minutes; success and cancellation request
@@ -264,14 +270,18 @@ The caller needs `manage` on `workflow-run:<runId>`, matching the existing stop
 route, and the run must belong to the tenant in the path. Deployment creation's
 `workflow:*/create` grant alone does not authorize release.
 
-This endpoint accepts a terminal top-level run: `202` for pending
-release, `204` if already released, `409` for a live run, and `503` while the
-run's accepted history is not reconciled yet. Release status is
-available at `GET /api/tenants/:tenantId/workflows/runs/:runId/lifecycle`,
-alongside the saved policy, deadlines, and cleanup errors. Permanent cleanup
-failure returns `409` on a new release request and requires operator intervention.
-`DELETE /api/tenants/:tenantId/workflows/runs/:runId` requests cancellation of a
-live run and returns `202`; its cancellation retention policy then applies.
+Any `destroy_failed` allocation returns `409`. Otherwise, unreconciled accepted
+history returns `503` before checking whether the run is live (`409`). A terminal
+top-level run returns `202` for pending release or `204` if already released.
+Release status is available at
+`GET /api/tenants/:tenantId/workflows/runs/:runId/lifecycle`, alongside the saved
+policy, deadlines, and cleanup errors. After a cleanup disconnect timeout,
+automatic cleanup resumes only if the sidecar reconnects. If the sidecar has been
+destroyed, operator recovery is required. Exhausted retries, permanent provider
+rejection, and `sidecar_cleanup_preparation_timeout` require operator recovery.
+`DELETE /api/tenants/:tenantId/workflows/runs/:runId` requests
+cancellation of a live run and returns `202`; its cancellation retention
+policy then applies.
 
 Beginning release removes workflow routes. The allocation reaches `released`
 only after the provider's hold is released and deployment cleanup is confirmed.

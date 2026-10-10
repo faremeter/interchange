@@ -535,12 +535,12 @@ Returns the deployment's saved policy, deadlines, and allocation cleanup status.
 ### POST /api/tenants/:tenantId/workflows/runs/:runId/capacity/release
 Release workflow capacity
 
-Durably requests release of a terminal top-level run's allocation. Poll the Location header for cleanup status. Permanent cleanup failures require operator intervention and return 409. Returns 503 while accepted run history cannot yet be reconciled; retry later.
+Durably requests release of a terminal top-level run's allocation. Poll the Location header for cleanup status. Stopped cleanup returns 409. After a cleanup disconnect timeout, automatic cleanup resumes only if the sidecar reconnects. If the sidecar has been destroyed, operator recovery is required. Exhausted retries, permanent provider rejections, and `sidecar_cleanup_preparation_timeout` require operator recovery. Reconnects and this request do not restart exhausted cleanup. Returns 503 while accepted run history cannot yet be reconciled; retry later.
 
 202: (no content) -- Release requested
 204: (no content) -- Capacity already released or absent
 404: ErrorResponse -- Run not found
-409: ErrorResponse -- Run is live or cleanup requires operator intervention
+409: ErrorResponse -- Run is live or automatic cleanup has stopped
 503: ErrorResponse -- Workflow lifecycle service or run history unavailable
 
 ### GET /api/tenants/:tenantId/workflows/runs/:runId/events
@@ -1685,7 +1685,7 @@ Source: packages/types/src/workflows.ts
 `{ createdAt: string, definitionAssetId: string, id: string, status: "deployed" | "destroy_failed" | "failed" | "pending" | "recovering" | "released" | "releasing", tenantId: string }`
 Source: packages/types/src/workflows.ts
 
-**status**: Deployment lifecycle status. `recovering` means the Hub is replacing capacity whose provisioning failed before the deployment first ran. `failed` is a terminal failure with no infrastructure. `destroy_failed` is a permanent cleanup failure where infrastructure may remain and require operator cleanup.
+**status**: Deployment lifecycle status. `recovering` means the Hub is replacing deployment capacity. `failed` is a terminal allocation failure with no infrastructure. `destroy_failed` means automatic cleanup stopped. Read `GET /api/tenants/:tenantId/workflows/runs/:runId/lifecycle` for the allocation's failure code and message.
 
 ### WorkflowLifecycleResponse
 `{ allocation: { failureCode: string | null, failureMessage: string | null, id: string, status: "allocated" | "destroy_failed" | "failed" | "pending" | "provisioning" | "released" | "releasing" | "replacing" } | null, cancellationDeadline: string | null, cancellationReason: string | null, cancellationRequestedAt: string | null, capacityReleaseAt: string | null, expiresAt: string | null, policy: { capacityRetention?: { cancelled?: string , completed?: string , failed?: string , + (undeclared): reject }, maxDisconnected?: string , maxLifetime?: string , + (undeclared): reject }, runId: string, status: "cancelled" | "completed" | "deployed" | "failed" | "running" }`

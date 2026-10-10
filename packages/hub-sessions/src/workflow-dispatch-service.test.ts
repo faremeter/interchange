@@ -59,6 +59,7 @@ function allocation(
     ensureAttempts: 1,
     destroyAttempts: 0,
     deploymentCleanupConfirmed: false,
+    providerHoldReleased: false,
     createdAt: NOW,
     updatedAt: NOW,
     ...overrides,

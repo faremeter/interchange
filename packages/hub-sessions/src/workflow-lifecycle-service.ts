@@ -21,6 +21,8 @@ import {
   createWorkflowRunStore,
   createWorkflowRunDispatchStore,
   parseWorkflowRunRow,
+  SIDECAR_CLEANUP_RETRY_EXHAUSTED_FAILURE_CODE,
+  SIDECAR_CLEANUP_DISCONNECT_TIMEOUT_FAILURE_CODE,
   type DB,
   type DBExecutor,
   type BeginSidecarReleaseArgs,
@@ -80,6 +82,8 @@ type ReleaseResult =
   | "live"
   | "history_pending"
   | "not_found"
+  | "cleanup_exhausted"
+  | "cleanup_disconnected"
   | "cleanup_failed";
 // `request` is an explicit caller waiting on the answer, so it reads Git even
 // while the sweep is backing off; `stop` and `sweep` respect the backoff, and
@@ -394,9 +398,19 @@ export function createWorkflowLifecycleService({
       tenantId,
       runId,
       async (tx, run, allocation): Promise<ReleaseResult> => {
-        // Permanent cleanup failure needs an operator whatever history is
-        // pending, so it must not be reported as retryable.
-        if (allocation?.status === "destroy_failed") return "cleanup_failed";
+        // Report the cleanup outcome before pending history can mask it.
+        // Disconnect timeouts resume on reconnect; other failures need an operator.
+        if (allocation?.status === "destroy_failed") {
+          if (
+            allocation.failureCode ===
+            SIDECAR_CLEANUP_DISCONNECT_TIMEOUT_FAILURE_CODE
+          )
+            return "cleanup_disconnected";
+          return allocation.failureCode ===
+            SIDECAR_CLEANUP_RETRY_EXHAUSTED_FAILURE_CODE
+            ? "cleanup_exhausted"
+            : "cleanup_failed";
+        }
         // A pending projection may hold the anchor's or a child's accepted
         // terminal outcome, even when the anchor row is already terminal.
         if (await pendingProjections.hasAny(runId, tx))

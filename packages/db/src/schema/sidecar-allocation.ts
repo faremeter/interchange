@@ -58,6 +58,9 @@ export const sidecarAllocation = pgTable(
     deploymentCleanupConfirmed: boolean("deployment_cleanup_confirmed")
       .notNull()
       .default(false),
+    providerHoldReleased: boolean("provider_hold_released")
+      .notNull()
+      .default(false),
     connectDeadline: timestamp("connect_deadline"),
     // How long the sidecar may stay disconnected before the Hub fails the
     // deployment, from the deployment's lifecycle policy.

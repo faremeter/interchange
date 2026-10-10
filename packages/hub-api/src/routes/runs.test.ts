@@ -1258,6 +1258,22 @@ describe("workflow lifecycle endpoints", () => {
     expect(calls).toEqual([[TENANT_ID, RUN_ID]]);
   });
 
+  test("exhausted cleanup reports the required intervention", async () => {
+    const app = createTestApp({
+      grants: [makeGrant({ action: "manage" })],
+      lifecycleService: lifecycleService({
+        releaseCapacity: async () => "cleanup_exhausted",
+      }),
+    });
+    const response = await app.request(`${runURL()}/capacity/release`, {
+      method: "POST",
+    });
+    expect(response.status).toBe(409);
+    const body = await response.text();
+    expect(body).toContain("Automatic cleanup retries are exhausted");
+    expect(body).toContain("operator intervention is required");
+  });
+
   test("permanent cleanup failure is visible rather than accepted as a retry", async () => {
     const app = createTestApp({
       grants: [makeGrant({ action: "manage" })],
@@ -1269,6 +1285,24 @@ describe("workflow lifecycle endpoints", () => {
       (await app.request(`${runURL()}/capacity/release`, { method: "POST" }))
         .status,
     ).toBe(409);
+  });
+
+  test("a cleanup disconnect timeout explains reconnect and operator recovery", async () => {
+    const app = createTestApp({
+      grants: [makeGrant({ action: "manage" })],
+      lifecycleService: lifecycleService({
+        releaseCapacity: async () => "cleanup_disconnected",
+      }),
+    });
+    const response = await app.request(`${runURL()}/capacity/release`, {
+      method: "POST",
+    });
+    expect(response.status).toBe(409);
+    const body = await response.text();
+    expect(body).toContain("resumes only if the sidecar reconnects");
+    expect(body).toContain(
+      "If the sidecar has been destroyed, operator recovery is required",
+    );
   });
 
   test("read access can observe policy and deadlines without management access", async () => {
