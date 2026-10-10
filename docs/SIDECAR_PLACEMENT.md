@@ -165,20 +165,82 @@ lost commit response can be recovered by reading the row on the next attempt.
 Binding replacement capacity advances the generation again after cleanup, so a
 delayed hello carrying the old cleanup binding cannot displace the replacement.
 
-A permanent provider rejection records `destroy_failed`, stops reconciliation,
-and keeps a cleanup-only binding for inventory and operator recovery. Reconnect
-does not issue an untracked undeploy for such a copy. The active reservation
-remains only while removal is unconfirmed.
+The independent `provider_hold_released` flag records any successful `destroy`
+result under the current generation and lease, even when cleanup is still required.
+It survives retries and Hub restarts and resets with a new release, replacement,
+or capacity binding; releasing a replacement preserves it. Once recorded, provider
+failures cannot spend the cleanup budget or prevent release after the sidecar
+confirms removal. While removal is unconfirmed, the Hub can still ask the provider
+for destruction confirmation; provider unavailability then falls back to sidecar
+cleanup or the disconnect wait.
 
-If the provisioner is missing from the Hub's plugin registry, or its version or
-binding differs from the allocation's recorded provider, the Hub logs that exact
+When the provider has released its hold but cleanup still needs a disconnected
+sidecar, the allocation stays `releasing` without spending cleanup attempts.
+It waits until reconnect or a durable deadline based on `maxDisconnected`.
+An initialized deployment's disconnect deadline survives release;
+otherwise the first observed cleanup wait starts the window. Repeated checks and
+Hub restarts do not extend it. A current reconnect clears the disconnect
+deadline with its reconciliation wake, so a later disconnection gets a new
+window even if the readiness or cleanup pass has not run yet. The initial
+deployment's first-connect deadline stays until initialization completes.
+
+Expiry records `sidecar_cleanup_disconnect_timeout`, logs an error, and keeps
+the reservation and cleanup binding. A returned cleanup connection moves only
+this failure back to `releasing`, preserving its attempt count. The workflow's
+terminal outcome stays unchanged and it regains no routes; the reconciler owns
+the acknowledged undeploy.
+The repair sweep retries a missed reconnect write for a parked release
+or a disconnect-timeout failure while the cleanup connection is present. A parked
+release is woken only while its deadline schedule and attempt count are unchanged
+and no active reconciliation lease owns it. Repeated notifications cannot reset the attempt budget
+or reopen exhaustion or permanent provider rejection. Failed provider calls while
+the hold remains unreleased and attempted undeploys spend the retry budget,
+including a request whose connection disappears before its acknowledgement. Provider confirmation
+of removal completes cleanup even while the sidecar is disconnected.
+Binding synchronization and identity lookup failures retry without spending
+cleanup attempts, with a five-minute grace per Hub process. Sending the request
+or confirming removal clears this grace; disconnects and reconnects do not.
+Expiry records `sidecar_cleanup_preparation_timeout`
+and requires operator recovery. Hub restart resets the grace. Failed provider
+calls for an unreleased hold still count if sidecar preparation also fails.
+
+If an unreleased hold's provisioner is missing from the Hub's plugin registry, or
+its version or binding differs from the recorded provider, the Hub logs that exact
 configuration problem. A cleanup pass with no sidecar failure waits 30 seconds
-without spending an attempt. Release remains pending until the original
-matching provisioner returns and releases its hold. Connected-sidecar cleanup
-still runs independently, and its confirmation survives this wait; an actual
-sidecar cleanup failure still spends an attempt while the provider is missing.
+without spending an attempt. Connected-sidecar cleanup still runs independently,
+and its confirmation survives this wait. Actual sidecar cleanup failures spend
+attempts and can exhaust the budget even while the provider is missing. Otherwise,
+release remains pending until the matching provisioner returns and releases its hold.
+
+Provider and sidecar failures share `maxCleanupAttempts` (10 by default).
+Exhaustion records `destroy_failed` with `sidecar_cleanup_retry_exhausted` and
+stops polling. Exhaustion and permanent provider rejections both keep a cleanup
+binding and generation fence for inventory reconciliation. Neither reconnect nor Hub restart reopens them, and their reported copies
+are not removed through the hello orphan-cleanup path. A copy whose removal is confirmed does not occupy an active slot; the failed provider
+obligation remains recorded independently. Unconfirmed copies keep their active
+reservation. Both failures require operator recovery; there is no in-product
+action to retry cleanup or clear an unconfirmed reservation. Reconnects resume
+disconnected waits immediately but preserve backoff after counted failures.
+If neither undeploy nor provider destruction stopped the copy, it may remain
+running without Hub routes until cleanup resumes after a disconnect timeout
+or an operator stops it after another cleanup failure.
+
+These bounds intentionally give up automatic convergence with later infrastructure
+changes. If A times out before B releases the last hold on their shared sidecar,
+B can confirm destruction while A remains failed: the Hub no longer polls A's
+provider, and the destroyed sidecar cannot reconnect. External removal after a
+timeout has the same limitation. A successful removal whose final acknowledgement
+is lost can also exhaust retries and leave a failed record after the copy is gone.
+Such records require operator recovery. A disconnect deadline limits Hub waiting;
+it neither proves removal nor stops an unreachable worker.
 
 Cleanup retries log warnings without replacing the allocation's release reason.
+Exhaustion and permanent rejection log errors and record the cleanup outcome on
+the allocation. When cleanup fails a live deployment, its original workflow or
+allocation reason takes precedence for the workflow failure. Dispatch abandonment
+caused by that failure records the cleanup error separately.
+Successful release after a reconnect clears the disconnect-timeout marker.
+Detailed cleanup history is kept in logs.
 
 ## Tenant policy
 

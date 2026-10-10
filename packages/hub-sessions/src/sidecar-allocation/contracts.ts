@@ -100,9 +100,9 @@ export type EnsureSidecarResult = typeof EnsureSidecarResult.infer;
  * Stopping the last worker must also remove its restorable deployment state
  * and confirm cleanup. A result requiring sidecar cleanup must leave that
  * cleanup path available; absence from a provider's in-memory map is not proof.
- * A non-retryable rejection stops automatic cleanup and leaves the provider
- * obligation and cleanup binding for operator recovery. A copy holds a slot
- * until removal is confirmed.
+ * A non-retryable rejection of an outstanding hold release stops automatic cleanup
+ * and leaves the provider obligation and cleanup binding for operator recovery.
+ * A copy holds a slot until removal is confirmed.
  */
 export const DestroySidecarResult = type({
   kind: "'destroyed'",
@@ -172,10 +172,12 @@ export type SidecarCredentials = {
  * reconnect does not cut short the retention the deployment's policy sets. A
  * copy of a run the Hub ended is undeployed, since a restart that lost its
  * stopped mark may be running that run again. `cleanup` accepts releasing or
- * replacing allocations and failed cleanup obligations. Their registration keeps
- * the cleanup connection alive but grants none of the running or retained copy's
- * rights. Replacing a parked deployment must confirm removal of its previous copy
- * before binding replacement capacity.
+ * replacing allocations and every failed cleanup, whatever stopped it. Their
+ * connection grants no workflow routes and preserves inventory. A reconnect can
+ * resume a disconnect timeout's cleanup, preserving its attempts and terminal
+ * workflow outcome. Other failed cleanups do not reopen. Replacing a parked
+ * deployment must confirm removal of its previous copy before binding
+ * replacement capacity.
  */
 export type SidecarIdentityUse =
   | "registration"

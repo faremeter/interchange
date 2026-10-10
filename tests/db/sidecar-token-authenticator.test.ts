@@ -9,6 +9,10 @@ import {
 
 import { sha256 } from "@intx/crypto";
 import {
+  SIDECAR_CLEANUP_RETRY_EXHAUSTED_FAILURE_CODE,
+  SIDECAR_CLEANUP_DISCONNECT_TIMEOUT_FAILURE_CODE,
+} from "@intx/db";
+import {
   sidecar,
   sidecarAllocation,
   workflowProbe,
@@ -160,7 +164,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
       },
     );
 
-    test.each(["provider_permission_denied"])(
+    test.each([
+      SIDECAR_CLEANUP_RETRY_EXHAUSTED_FAILURE_CODE,
+      SIDECAR_CLEANUP_DISCONNECT_TIMEOUT_FAILURE_CODE,
+      "provider_permission_denied",
+    ])(
       "failed cleanup %s can report inventory without granting work",
       async (failureCode) => {
         const original = await seedSidecar({

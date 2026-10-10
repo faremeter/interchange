@@ -1,0 +1,1 @@
+ALTER TABLE "sidecar_allocation" ADD COLUMN "provider_hold_released" boolean DEFAULT false NOT NULL;
