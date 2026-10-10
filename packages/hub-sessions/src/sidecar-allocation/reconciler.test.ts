@@ -1744,6 +1744,37 @@ describe("durable initialization outcomes", () => {
     expect(calls).toEqual(["recover", "wait", "release"]);
   });
 
+  test("a timed-out error park stays inside the claim", async () => {
+    const parked = Promise.withResolvers<boolean>();
+    let parkCalls = 0;
+    const reconciler = createSidecarAllocationReconciler({
+      ...deps({
+        store: fakeStore({
+          claimNextReconcilable: async () =>
+            allocation({
+              status: "allocated",
+              generation: 1,
+              ensureAcceptedGeneration: 1,
+            }),
+          parkReconciliation: async () => {
+            parkCalls += 1;
+            await parked.promise;
+            return true;
+          },
+        }),
+      }),
+      operationTimeoutMs: 30,
+      onInitializationRecovery: () => new Promise<void>(() => undefined),
+    });
+
+    try {
+      await expect(reconciler.reconcileNext()).resolves.toBe(true);
+      expect(parkCalls).toBe(1);
+    } finally {
+      parked.resolve(true);
+    }
+  });
+
   for (const recovery of [false, true]) {
     test(`a cancelled deploy with a late acknowledgement is fenced before retry (recovery=${String(recovery)})`, async () => {
       let current = allocation({
