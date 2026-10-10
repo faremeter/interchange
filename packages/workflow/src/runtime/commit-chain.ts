@@ -32,10 +32,10 @@
 // pending buffer. The buffer holds events this process validated
 // since the last flush. A sibling primitive can buffer another event
 // after a park flush, so the buffer is not empty just because one
-// step has parked. Signal delivery and a control-plane cancel take
-// `withRunCommitBarrier`, which flushes that buffer before their own
-// write. The host scheduler still numbers `TimerFired` from the
-// durable tip and tails the durable `TimerSet`. `commit` (immediate)
+// step has parked. Signal delivery, the host scheduler, and a
+// control-plane cancel take `withRunCommitBarrier`, which flushes
+// that buffer before their own write. The host scheduler still tails
+// the durable `TimerSet`. `commit` (immediate)
 // flushes any pending buffer before its own event so a buffered run
 // body and an immediate writer never compute a colliding seq.
 
@@ -145,8 +145,8 @@ async function flushBuffer(env: CommitEnv, runId: string): Promise<void> {
  * (segment boundary). Use this for the run body's intra-segment
  * events; use `commit` for events that must persist immediately
  * (the segment-boundary suspension/terminal events flushed via the
- * run body's explicit `flushChain`, and external writers such as the
- * scheduler's `TimerFired` and the control-plane `cancel`).
+ * run body's explicit `flushChain`, the run-local scheduler's
+ * `TimerFired`, and the control-plane `cancel`).
  */
 export async function commitBuffered(
   env: CommitEnv,
