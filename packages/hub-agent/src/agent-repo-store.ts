@@ -1,16 +1,14 @@
 // Per-agent on-disk repository layout.
 //
-// Owns the isogit repo wrapper and the deploy-pack apply / state-pack
-// produce flow. Key custody lives in AgentKeyStore alongside this
-// store; both share the directory-layout helpers in agent-paths.
+// Owns the isogit repo wrapper and the deploy-pack apply flow. Key custody
+// lives in AgentKeyStore alongside this store; both share the
+// directory-layout helpers in agent-paths.
 
 import fsp from "node:fs/promises";
 import { getLogger } from "@intx/log";
 import {
   initAgentRepo,
   applyPack,
-  createDeployPack,
-  currentBranch,
   type CommitVerifier,
 } from "@intx/storage-isogit/node";
 
@@ -36,9 +34,6 @@ export type AgentRepoStore = {
   getAgentDir(address: string): string;
   initRepo(address: string): Promise<void>;
   applyDeployPack(args: ApplyDeployPackArgs): Promise<void>;
-  createStatePack(
-    address: string,
-  ): Promise<{ pack: Uint8Array; commitSha: string; ref: string }>;
   remove(address: string): Promise<void>;
 };
 
@@ -68,18 +63,8 @@ export function createAgentRepoStore(config: {
     logger.info`Applied deploy pack for ${address} at ${commitSha.slice(0, 8)}`;
   }
 
-  async function createStatePack(
-    address: string,
-  ): Promise<{ pack: Uint8Array; commitSha: string; ref: string }> {
-    const dir = getAgentDir(address);
-    const branch = await currentBranch(dir);
-    const ref = `refs/heads/${branch}`;
-    const { pack, commitSha } = await createDeployPack(dir, ref);
-    return { pack, commitSha, ref };
-  }
-
   async function remove(address: string): Promise<void> {
-    await fsp.rm(getAgentDir(address), { recursive: true });
+    await fsp.rm(getAgentDir(address), { recursive: true, force: true });
     logger.info`Deleted agent directory for ${address}`;
   }
 
@@ -87,7 +72,6 @@ export function createAgentRepoStore(config: {
     getAgentDir,
     initRepo,
     applyDeployPack: applyDeployPackImpl,
-    createStatePack,
     remove,
   };
 }

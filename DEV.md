@@ -66,6 +66,7 @@ files next to the matching service config.
 | `DB_STATEMENT_TIMEOUT_MS`              | hub (`apps/hub`), db scripts (`bin/`)        | 60000 (60s)                         | Positive integer milliseconds, up to 2147483647. Cancels SQL statements exceeding this duration, including lock waits.                               |
 | `PG_SCHEMA`                            | hub (`apps/hub`)                             | unset                               | Pins the hub to a postgres schema. Integration-test-only; leave unset normally.                                                                      |
 | `WORKFLOW_DEFAULT_MAX_LIFETIME`        | hub (`apps/hub`)                             | `7d`                                | Maximum deployment lifetime when no tenant or installed workflow sets one. See `docs/workflow-lifecycle-policy.md`.                                  |
+| `WORKFLOW_DEFAULT_MAX_DISCONNECTED`    | hub (`apps/hub`)                             | `15m`                               | How long a deployment's sidecar may stay disconnected before the Hub fails it, when no tenant or installed workflow sets it.                         |
 | `WORKFLOW_DEFAULT_RETENTION_COMPLETED` | hub (`apps/hub`)                             | `30m`                               | How long a completed deployment keeps its capacity when no tenant or installed workflow sets it.                                                     |
 | `WORKFLOW_DEFAULT_RETENTION_FAILED`    | hub (`apps/hub`)                             | `24h`                               | How long a failed deployment keeps its capacity for inspection when no tenant or installed workflow sets it.                                         |
 | `WORKFLOW_DEFAULT_RETENTION_CANCELLED` | hub (`apps/hub`)                             | `1h`                                | How long a cancelled deployment keeps its capacity when no tenant or installed workflow sets it.                                                     |
@@ -73,7 +74,7 @@ files next to the matching service config.
 | `PRINCIPAL_KEY_ENCRYPTION_KEY`         | hub (`apps/hub`)                             | none (required)                     | 32-byte hex key that seals per-principal signing keys at rest, separate from `CREDENTIAL_ENCRYPTION_KEY`. The hub refuses to start without it.       |
 | `SIDECAR_CREDENTIAL_ENCRYPTION_KEY`    | sidecar (`apps/sidecar`)                     | none (required)                     | 32-byte hex key that seals credential material (inference apiKeys) at rest under `SIDECAR_DATA_DIR`. The sidecar refuses to start without it.        |
 | `SIDECAR_CACHE_DIR`                    | sidecar (`apps/sidecar`)                     | `<SIDECAR_DATA_DIR>/cache/tarballs` | Directory for the tool-package tarball cache.                                                                                                        |
-| `SIDECAR_CACHE_MAX_BYTES`              | sidecar (`apps/sidecar`)                     | 10 GiB                              | Maximum total size of the tarball cache.                                                                                                             |
+| `SIDECAR_CACHE_MAX_BYTES`              | sidecar (`apps/sidecar`)                     | 10 GiB                              | Target total size of cached tarballs and extracted trees. Entries in use can exceed it until they are released.                                      |
 | `SIDECAR_REGISTRY_MAX_TARBALL_BYTES`   | sidecar (`apps/sidecar`)                     | 10 MiB                              | Per-tarball cap enforced when pulling from upstream tool registries.                                                                                 |
 | `SIDECAR_TOOL_REGISTRIES`              | sidecar (`apps/sidecar`)                     | public npmjs                        | JSON array of `{name, url, auth?}` tool registries. Unset the variable to use npmjs; do not set it to an empty string.                               |
 | `SIDECAR_LATENCY_BENCH_FILE`           | sidecar (`apps/sidecar`)                     | unset (disabled)                    | When set to a file path, appends a per-operation latency line to that file. A dev latency-benchmarking hook; leave unset in normal use.              |
@@ -107,7 +108,7 @@ bin/dev
 
 This runs database migration, the Hub server (with `--watch` for auto-reload), and the admin UI dev server. Press Ctrl+C for graceful shutdown of all services.
 
-The Hub does not start or trust an ambient sidecar. Workflow probing and execution both require a configured sidecar provisioner; the provisioner receives a probe- or allocation-scoped identity and starts or reuses suitable capacity. The production composition registers no provisioner by default, so deployment is unavailable until one is injected. The admin UI E2E harness injects a test-only local-process provisioner.
+The Hub does not start or trust an ambient sidecar. Workflow probing and execution both require a configured sidecar provisioner; the provisioner receives a sidecar identity minted for the probe or allocation and starts or reuses suitable capacity, and the identity's token authenticates that sidecar for all work later placed on it. The production composition registers no provisioner by default, so deployment is unavailable until one is injected. The admin UI E2E harness injects a test-only local-process provisioner.
 
 Options:
 
@@ -206,7 +207,10 @@ It builds the admin UI bundle (`make build-admin-ui`), brings up a
 hermetic stack headless -- a fresh per-run database, a hub, and a vite
 preview server serving the built admin UI -- and drives a real browser
 through a login against that UI. It is excluded from `make all` and
-`make test`; run it on its own.
+`make test`; run it on its own. With `E2E_SHARE_SIDECARS=tenant` the
+harness provisioner places each tenant's probes and deployments on one
+sidecar process, and the shared-sidecar spec, which is skipped otherwise,
+runs.
 
 Local prerequisites:
 

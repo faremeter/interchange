@@ -39,7 +39,7 @@ import type {
 } from "@intx/types/sidecar";
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
 
-import { createTarballCache } from "./cache";
+import type { TarballCache } from "./cache";
 import {
   createToolLoader,
   type HostPlatform,
@@ -61,10 +61,12 @@ interface MaterializedProbeClosure {
 }
 
 export interface WorkflowClosureMaterializerConfig {
-  /** Content-addressable tarball cache root shared across materializations. */
-  readonly cacheRoot: string;
-  /** Byte cap for the tarball cache. */
-  readonly cacheMaxBytes: number;
+  /**
+   * Tarball cache shared by every materialization over its root. Its in-use
+   * count keeps one probe from evicting an extraction another is still
+   * copying, and it counts only callers of the same instance.
+   */
+  readonly cache: TarballCache;
   /** Byte cap for a single HTTP-registry tarball fetch. */
   readonly registryMaxTarballBytes: number;
   /**
@@ -172,12 +174,8 @@ export function createWorkflowClosureMaterializer(
     };
 
     try {
-      const cache = createTarballCache({
-        rootDir: config.cacheRoot,
-        maxBytes: config.cacheMaxBytes,
-      });
       const loader = createToolLoader({
-        cache,
+        cache: config.cache,
         registries: config.registries,
         host: config.host,
         maxRegistryTarballBytes: config.registryMaxTarballBytes,

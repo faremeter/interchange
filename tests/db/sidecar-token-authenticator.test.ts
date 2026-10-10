@@ -8,14 +8,27 @@ import {
 } from "bun:test";
 
 import { sha256 } from "@intx/crypto";
-import { sidecar, sidecarAllocation } from "@intx/db/schema";
-import { createSidecarTokenAuthenticator } from "@intx/hub-sessions";
+import {
+  sidecar,
+  sidecarAllocation,
+  workflowProbe,
+  workflowRun,
+} from "@intx/db/schema";
+import {
+  createSidecarCredentialResolver,
+  createSidecarTokenAuthenticator,
+} from "@intx/hub-sessions";
+import { eq } from "drizzle-orm";
 import {
   createTestDb,
   harnessDbEnvAvailable,
   type TestDb,
 } from "@intx/test-harness/db-harness";
-import { seedTenants, seedWorkflowRun } from "@intx/test-harness/seed";
+import {
+  seedAsset,
+  seedTenants,
+  seedWorkflowRun,
+} from "@intx/test-harness/seed";
 
 const TENANT_ID = "tnt-sidecar-auth";
 
@@ -84,6 +97,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           provisionerId: "test",
           provisionerApiVersion: 1,
           provisionerBindingFingerprint: "test:v1",
+          maxDisconnectedMs: 900_000,
           sidecarId: opts.id,
           status: "allocated",
           generation: 1,
@@ -103,12 +117,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     test("resolves a valid token to the seeded sidecar's identity", async () => {
       const token = "sidecar-secret";
-      const expected = await seedSidecar({ id: "sc-1", token });
+      await seedSidecar({ id: "sc-1", token });
       const authenticate = createSidecarTokenAuthenticator({ db: h.db });
 
       const identity = await authenticate({ sidecarId: "sc-1", token });
 
-      expect(identity).toEqual(expected);
+      expect(identity).toEqual({ sidecarId: "sc-1" });
     });
 
     test("rejects a wrong token with null", async () => {
@@ -135,28 +149,29 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(identity).toBeNull();
     });
 
-    test("rejects an allocated token without a current allocation", async () => {
+    test("resolves an allocated token without a current allocation to no bindings", async () => {
       const token = "stale-allocated-secret";
       await seedSidecar({
         id: "sc-replaced",
         token,
         allocated: false,
       });
-      const authenticate = createSidecarTokenAuthenticator({ db: h.db });
+      const resolver = createSidecarCredentialResolver({ db: h.db });
 
-      expect(
-        await authenticate({ sidecarId: "sc-replaced", token }),
-      ).toBeNull();
+      expect(await resolver.resolve(token)).toEqual({
+        sidecarId: "sc-replaced",
+      });
+      expect(await resolver.resolveBindings("sc-replaced")).toEqual([]);
     });
 
     test("derives identity from the token, not a spoofed claimed sidecarId", async () => {
       const token = "sidecar-secret";
-      const expected = await seedSidecar({ id: "sc-real", token });
+      await seedSidecar({ id: "sc-real", token });
       const authenticate = createSidecarTokenAuthenticator({ db: h.db });
 
       const identity = await authenticate({ sidecarId: "sc-spoofed", token });
 
-      expect(identity).toEqual(expected);
+      expect(identity).toEqual({ sidecarId: "sc-real" });
     });
 
     test("selects the matching row by hash among several sidecars", async () => {
@@ -166,16 +181,140 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // equality actually keys the lookup on the presented token's digest.
       const tokenA = "sidecar-secret-a";
       const tokenB = "sidecar-secret-b";
-      const expectedA = await seedSidecar({ id: "sc-a", token: tokenA });
-      const expectedB = await seedSidecar({ id: "sc-b", token: tokenB });
+      await seedSidecar({ id: "sc-a", token: tokenA });
+      await seedSidecar({ id: "sc-b", token: tokenB });
       const authenticate = createSidecarTokenAuthenticator({ db: h.db });
 
-      expect(await authenticate({ sidecarId: "sc-a", token: tokenA })).toEqual(
-        expectedA,
-      );
-      expect(await authenticate({ sidecarId: "sc-b", token: tokenB })).toEqual(
-        expectedB,
-      );
+      expect(await authenticate({ sidecarId: "sc-a", token: tokenA })).toEqual({
+        sidecarId: "sc-a",
+      });
+      expect(await authenticate({ sidecarId: "sc-b", token: tokenB })).toEqual({
+        sidecarId: "sc-b",
+      });
+    });
+
+    test("resolves a probe hosted beside an allocation", async () => {
+      const token = "shared-secret";
+      const allocated = await seedSidecar({ id: "sc-shared", token });
+      await seedAsset(h.db, {
+        id: "asset-shared",
+        tenantId: TENANT_ID,
+        kind: "workflow",
+        name: "shared-workflow",
+      });
+      await h.db.insert(workflowProbe).values({
+        id: "probe-shared",
+        tenantId: TENANT_ID,
+        definitionAssetId: "asset-shared",
+        source: { kind: "registry", registry: "npmjs" },
+        entry: "./workflow.js",
+        status: "probing",
+        provisionerId: "test",
+        provisionerApiVersion: 1,
+        provisionerBindingFingerprint: "test:v1",
+        sidecarId: "sc-shared",
+      });
+      const resolver = createSidecarCredentialResolver({ db: h.db });
+
+      expect(await resolver.resolve(token)).toEqual({ sidecarId: "sc-shared" });
+      expect(await resolver.resolveBindings("sc-shared")).toEqual([
+        allocated,
+        {
+          kind: "probe",
+          sidecarId: "sc-shared",
+          allocationId: "probe-shared",
+          tenantId: TENANT_ID,
+          generation: 0,
+        },
+      ]);
+    });
+
+    test("leaves out an allocation that is no longer active", async () => {
+      const token = "released-secret";
+      await seedSidecar({ id: "sc-released", token });
+      await h.db
+        .update(sidecarAllocation)
+        .set({ status: "released" })
+        .where(eq(sidecarAllocation.sidecarId, "sc-released"));
+      const resolver = createSidecarCredentialResolver({ db: h.db });
+
+      expect(await resolver.resolve(token)).toEqual({
+        sidecarId: "sc-released",
+      });
+      expect(await resolver.resolveBindings("sc-released")).toEqual([]);
+    });
+
+    test("reclaims only a deployment whose first deploy completed", async () => {
+      const binding = await seedSidecar({ id: "sc-reclaim", token: "t" });
+      const resolver = createSidecarCredentialResolver({ db: h.db });
+
+      expect(await resolver.isCurrent(binding, "routing")).toBe(true);
+      expect(await resolver.isCurrent(binding, "reclaim")).toBe(false);
+
+      await h.db
+        .update(workflowRun)
+        .set({ publicKey: "public-key" })
+        .where(eq(workflowRun.id, binding.anchorRunId));
+      expect(await resolver.isCurrent(binding, "reclaim")).toBe(true);
+
+      await h.db
+        .update(sidecarAllocation)
+        .set({ initializationLeaseId: "uncertain-attempt" })
+        .where(eq(sidecarAllocation.sidecarId, "sc-reclaim"));
+      expect(await resolver.isCurrent(binding, "reclaim")).toBe(false);
+    });
+
+    test("retains instead of reclaiming a copy of a run that ended on its own", async () => {
+      const binding = await seedSidecar({ id: "sc-ended", token: "t" });
+      const resolver = createSidecarCredentialResolver({ db: h.db });
+      await h.db
+        .update(workflowRun)
+        .set({ publicKey: "public-key", status: "failed", endedAt: new Date() })
+        .where(eq(workflowRun.id, binding.anchorRunId));
+      expect(await resolver.isCurrent(binding, "reclaim")).toBe(false);
+      // Its copy stays, unrouted, until the Hub releases the deployment.
+      expect(await resolver.isCurrent(binding, "retention")).toBe(true);
+      // The Hub can still reach it to stop or undeploy it.
+      expect(await resolver.isCurrent(binding, "routing")).toBe(true);
+    });
+
+    test("neither reclaims nor retains a copy of a run the Hub ended", async () => {
+      const binding = await seedSidecar({ id: "sc-cancelled", token: "t" });
+      const resolver = createSidecarCredentialResolver({ db: h.db });
+      await h.db
+        .update(workflowRun)
+        .set({ publicKey: "public-key", cancellationRequestedAt: new Date() })
+        .where(eq(workflowRun.id, binding.anchorRunId));
+      // A run still cancelling keeps its copy, which records the cancel.
+      expect(await resolver.isCurrent(binding, "reclaim")).toBe(true);
+      expect(await resolver.isCurrent(binding, "retention")).toBe(false);
+
+      await h.db
+        .update(workflowRun)
+        .set({ status: "cancelled", endedAt: new Date() })
+        .where(eq(workflowRun.id, binding.anchorRunId));
+      expect(await resolver.isCurrent(binding, "reclaim")).toBe(false);
+      expect(await resolver.isCurrent(binding, "retention")).toBe(false);
+
+      const failed = await seedSidecar({ id: "sc-failed", token: "t2" });
+      await h.db
+        .update(workflowRun)
+        .set({
+          publicKey: "public-key",
+          failureCode: "sidecar_deployment_stopped",
+          infrastructureFailedAt: new Date(),
+        })
+        .where(eq(workflowRun.id, failed.anchorRunId));
+      // A deferred failure leaves the run live while accepted history is projected.
+      expect(await resolver.isCurrent(failed, "reclaim")).toBe(false);
+      expect(await resolver.isCurrent(failed, "retention")).toBe(false);
+
+      await h.db
+        .update(workflowRun)
+        .set({ status: "failed", endedAt: new Date() })
+        .where(eq(workflowRun.id, failed.anchorRunId));
+      expect(await resolver.isCurrent(failed, "reclaim")).toBe(false);
+      expect(await resolver.isCurrent(failed, "retention")).toBe(false);
     });
   },
 );

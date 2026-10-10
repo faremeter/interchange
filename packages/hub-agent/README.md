@@ -10,7 +10,7 @@ In-process harness construction and agent provisioning are retired:
 every agent now runs as a supervised workflow-process child on the
 workflow-run substrate. What remains in `createSessionManager` is a
 thin serialization layer over the agent repo store (deploy/asset-pack
-applies, state-pack reads, deploy-ref reads, directory teardown);
+applies and directory teardown);
 operations run one at a time per agent so a teardown never races an
 in-flight git op.
 
@@ -24,8 +24,9 @@ crypto operations (`cryptoOps`), and the host-injected deploy-router
 factory (`createDeployRouter`) that routes every `agent.deploy` frame
 on the link. Optional fields supply the multi-step inbound routers
 (`mailInboundRouter`, `signalInboundRouter`, `drainInboundRouter`,
-`sourcesInboundRouter`), the workflow-address announce and routability
-hooks, and the reconnect cadence. See `SidecarOrchestratorConfig` in
+`sourcesInboundRouter`), the incarnation report the `hello` carries
+(`getIncarnations`) and the routability hooks, and the reconnect
+cadence. See `SidecarOrchestratorConfig` in
 `src/sidecar-orchestrator.ts` for the full surface.
 
 `HarnessBuilder` is a one-method source-admission seam

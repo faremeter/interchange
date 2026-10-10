@@ -441,7 +441,7 @@ export function createHubSessionLookups(
             } as const;
           }
 
-          // Replacement advances this same row. Keep its lock until the
+          // A release advances this same row. Keep its lock until the
           // repository ref has advanced so ownership cannot change after
           // validation but before the old worker's pack becomes authoritative.
           reachedGit = true;
@@ -714,6 +714,9 @@ export interface RoutableRecord {
   readonly principalId: string | null;
   readonly kernelId: string | null;
   readonly sidecarId: string | null;
+  /** Why the Hub failed the deployment when it lost its capacity. */
+  readonly failureCode: string | null;
+  readonly failureMessage: string | null;
 }
 
 /**
@@ -735,9 +738,17 @@ export function runRowToRoutableRecord(
     principalId: string | null;
     kernelId: string | null;
     sidecarId: string | null;
+    failureCode: string | null;
+    failureMessage: string | null;
+    infrastructureFailedAt: Date | null;
   },
   address: string,
 ): RoutableRecord {
+  // A failure the Hub decided waits on history still being reconciled, and is
+  // dropped if that history ends the run first, so only a failed run whose
+  // failure is no longer waiting reports it.
+  const reportsFailure =
+    run.status === "failed" && run.infrastructureFailedAt === null;
   return {
     id: run.id,
     tenantId: run.tenantId,
@@ -751,6 +762,8 @@ export function runRowToRoutableRecord(
     principalId: run.principalId,
     kernelId: run.kernelId,
     sidecarId: run.sidecarId,
+    failureCode: reportsFailure ? run.failureCode : null,
+    failureMessage: reportsFailure ? run.failureMessage : null,
   };
 }
 
@@ -793,6 +806,9 @@ export async function findRoutableById(
       kernelId: workflowRun.kernelId,
       sidecarId: workflowRun.sidecarId,
       definitionId: workflowRun.definitionId,
+      failureCode: workflowRun.failureCode,
+      failureMessage: workflowRun.failureMessage,
+      infrastructureFailedAt: workflowRun.infrastructureFailedAt,
     })
     .from(workflowRun)
     .where(and(eq(workflowRun.id, id), eq(workflowRun.tenantId, tenantId)))

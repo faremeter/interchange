@@ -112,6 +112,8 @@ export {
   type EnsureSidecarResult,
   type SidecarCredentialIdentity,
   type SidecarCredentialResolver,
+  type SidecarCredentials,
+  type SidecarIdentityUse,
   type SidecarOperationFailure,
   type SidecarPluginRegistry,
   type SidecarProvisioner,

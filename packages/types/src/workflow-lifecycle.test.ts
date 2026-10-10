@@ -41,7 +41,7 @@ describe("workflow lifecycle policy", () => {
     }
   });
 
-  test("accepts immediate release but rejects a zero lifetime and malformed durations", () => {
+  test("accepts immediate release but rejects a zero lifetime or disconnect limit and malformed durations", () => {
     expect(
       WorkflowLifecyclePolicy({ capacityRetention: { completed: "0s" } }),
     ).toEqual({ capacityRetention: { completed: "0s" } });
@@ -56,6 +56,9 @@ describe("workflow lifecycle policy", () => {
       expect(WorkflowLifecyclePolicy({ maxLifetime: duration })).toBeInstanceOf(
         type.errors,
       );
+      expect(
+        WorkflowLifecyclePolicy({ maxDisconnected: duration }),
+      ).toBeInstanceOf(type.errors);
     }
     expect(
       WorkflowLifecyclePolicy({ capacityRetention: { typo: "1h" } }),
@@ -114,16 +117,41 @@ describe("workflow lifecycle policy", () => {
   test("clamping caps each value at its inherited limit and keeps valid shorter ones", () => {
     expect(
       clampWorkflowLifecyclePolicy([
-        { maxLifetime: "6h", capacityRetention: { completed: "0s" } },
+        {
+          maxLifetime: "6h",
+          maxDisconnected: "30m",
+          capacityRetention: { completed: "0s" },
+        },
         {
           maxLifetime: "12h",
+          maxDisconnected: "1h",
           capacityRetention: { completed: "1h", failed: "30m" },
         },
-        { maxLifetime: "2h", capacityRetention: { failed: "2h" } },
+        {
+          maxLifetime: "2h",
+          maxDisconnected: "10m",
+          capacityRetention: { failed: "2h" },
+        },
       ]),
     ).toEqual({
       maxLifetime: "2h",
+      maxDisconnected: "10m",
       capacityRetention: { completed: "0s", failed: "30m" },
+    });
+  });
+
+  test("a descendant cannot extend an inherited disconnect limit", () => {
+    expect(
+      resolveWorkflowLifecyclePolicy([
+        { maxDisconnected: "15m" },
+        {},
+        { maxDisconnected: "1h" },
+      ]),
+    ).toEqual({
+      ok: false,
+      field: "maxDisconnected",
+      requested: "1h",
+      limit: "15m",
     });
   });
 

@@ -14,6 +14,7 @@ import {
   createInboundMailPolicyRegistry,
   createInboundMailPolicyLookup,
   createSidecarOrchestrator,
+  isConnectionLost,
   MAX_INLINE_ASSET_PAYLOAD_BYTES,
   materializeWorkflowAssets,
   resolveInboundMailPolicy,
@@ -63,6 +64,7 @@ import {
   createWorkflowRunPackClient,
   createWorkflowRunPackPushingRepoStore,
   createWorkflowRunPackRestorer,
+  WORKFLOW_RUN_RECORD_FILENAME,
   removeFileAtomicDurable,
   writeFileAtomicDurable,
   type SidecarDeployRouter,
@@ -215,7 +217,8 @@ if (consumedRetentionRaw !== undefined && consumedRetentionRaw.trim() !== "") {
 // Bound on the child's spawn-time `ready` handshake. Threaded to every
 // per-deployment supervisor; on expiry the supervisor kills the child and
 // rejects the spawn, so a child that spawns but never signals ready fails
-// the deploy (or is skipped by boot-time restore) instead of hanging it.
+// the deploy, or a boot-time restore holds it as stopped, instead of hanging
+// it.
 // Absent, the supervisor applies its 30s default.
 const readyTimeoutRaw = process.env["CHILD_READY_TIMEOUT_MS"];
 let readyTimeoutMs: number | undefined;
@@ -237,15 +240,20 @@ const reconnectDelayMs = parseReconnectDelayMs(
   process.env["SIDECAR_RECONNECT_DELAY_MS"],
 );
 
+// Probes run concurrently, and the cache's in-use count protects an extraction
+// from eviction only among callers of one instance, so every probe shares this
+// one.
+const probeTarballCache = createTarballCache({
+  rootDir: cacheRoot,
+  maxBytes: cacheMaxBytes,
+});
+
 // Sweep any tmp staging directories left behind by a `put` or
 // `extractTarball` that crashed between staging and the final rename
 // on a previous boot. Running here, before the orchestrator starts
 // accepting apply work, keeps the cache root from accumulating
 // orphans for the lifetime of the sidecar's data directory.
-await createTarballCache({
-  rootDir: cacheRoot,
-  maxBytes: cacheMaxBytes,
-}).sweepOrphans();
+await probeTarballCache.sweepOrphans();
 
 // Load or mint the sidecar's local Ed25519 keypair. The supervisor
 // principal signs every workflow-run commit with this key; the
@@ -269,8 +277,8 @@ const agentRepoStore = createAgentRepoStore({
 });
 
 // Cache of the hub-vouched public keys of senders this sidecar's deployments
-// are authorized to receive mail from. The grants handler writes each key the
-// hub co-delivers on a `run.grants` frame; the recipient's inbound-mail verify
+// are authorized to receive mail from. The hub-link writes each key the hub
+// co-delivers on a `run.grants` frame; the recipient's inbound-mail verify
 // reads it back. The keyring is loaded here at boot so a restart keeps every
 // previously-cached key. The durable-write primitive is injected so the cache
 // write is atomic and fsynced -- at least as durable as the run-grants write it
@@ -359,7 +367,12 @@ const multistepSourcesRouter = createMultistepSourcesRouter();
 // unrouted.
 const multistepCredentialsRouter = createMultistepCredentialsRouter();
 
-const transport = createInMemoryTransport();
+// Deployments register here only to sign their mail; inbound mail reaches
+// them from the Hub through their supervisors. Relaying every recipient
+// sends mail between two deployments on this sidecar, or to the sender
+// itself, through the Hub like any other mail instead of into a local
+// inbox nothing reads.
+const transport = createInMemoryTransport({ relayOnly: true });
 
 // The pack-push client closes over the substrate (for `createPack`)
 // and a lazy hub-link binding (for `pushWorkflowRunPack`). The link
@@ -396,6 +409,7 @@ const restoreWorkflowRunPack = createWorkflowRunPackRestorer({
 // (today, the agent-state deploy-applier path) flow through
 // unchanged.
 const wrappedRepoStore = createWorkflowRunPackPushingRepoStore({
+  isConnectionLost,
   underlying: agentRepoStore.repoStore,
   packClient: workflowRunPackClient,
   registry: deploymentAddressRegistry,
@@ -408,11 +422,14 @@ const sidecarToken = requireEnv("SIDECAR_TOKEN");
 
 // Multi-step substrate-config the deploy router threads into the
 // workflow-process child's spawn-time env. The child's substrate
-// factory consumes these via the typed `SubstrateConfig` validator so
-// the per-step pack-push wrap can identify the deployment's hub-side
-// trust anchors. Today the IPC bridge in `pack.push.request` carries
-// the pack; the WebSocket-connection keys are reserved for a future
-// child-local hub link without redoing the boot-edge wiring.
+// factory consumes these via the typed `SubstrateConfig` validator.
+// The sidecar's Hub credential stays out of it: the child runs
+// deployment code and never talks to the Hub itself, and the token
+// authenticates the sidecar for every deployment it hosts. That keeps the
+// token out of what the child is handed, not out of its reach: a child
+// running as the sidecar's OS user can still read the sidecar's own
+// environment, token and credential encryption key included (see
+// docs/SIDECAR_PLACEMENT.md).
 //
 // `PATH`, `HOME`, and `TMPDIR` are propagated from the boot edge's own
 // environment so the child's `#!/usr/bin/env bun` shebang can resolve
@@ -424,9 +441,6 @@ const multistepSubstrateEnv: Record<string, string> = {
   SIDECAR_DATA_DIR: dataDir,
   SIDECAR_SIGNING_PUBLIC_KEY: hexEncode(sidecarSigningKey.publicKey),
   SIDECAR_SIGNING_PRIVATE_KEY: hexEncode(sidecarSigningKey.privateKey),
-  HUB_WS_URL: hubWsUrl,
-  SIDECAR_ID: sidecarId,
-  SIDECAR_TOKEN: sidecarToken,
   PATH: requireEnv("PATH"),
   // Tool-loader caps the child's per-step tool materialization uses.
   // Resolved once at the boot edge and threaded into the child through
@@ -475,8 +489,7 @@ const workflowProbeExecutor = createWorkflowProbeExecutor({
   binaryPath: SIDECAR_WORKFLOW_PROBE_CHILD_BINARY,
   spawnProbeChild: defaultProbeChildSpawner,
   materialize: createWorkflowClosureMaterializer({
-    cacheRoot,
-    cacheMaxBytes,
+    cache: probeTarballCache,
     registryMaxTarballBytes,
     maxAssetPayloadBytes: MAX_INLINE_ASSET_PAYLOAD_BYTES,
     registries: readRegistries(),
@@ -504,7 +517,8 @@ const orchestrator = createSidecarOrchestrator({
   resolveSenderCrypto,
   lookupInboundMailPolicy,
   // Write peer of `resolveSenderCrypto`: an inbound `sender.key.refresh` frame
-  // re-pushes a rotated sender key here. Decode the hex and persist through the
+  // re-pushes a rotated sender key here, and the keys a `run.grants` frame
+  // carries land here too. Decode the hex and persist through the
   // same cache the read side serves from; `put` owns the 32-byte length check
   // and `hexDecode` owns hex validity, so both faults surface to the link's
   // handler rather than being masked here.
@@ -524,19 +538,19 @@ const orchestrator = createSidecarOrchestrator({
   // Test-only override of the hub-link reconnect backoff; unset in
   // production, where the link applies its 3s default.
   ...(reconnectDelayMs !== undefined ? { reconnectDelayMs } : {}),
-  // The hub link calls this on every (re)connect to announce the workflow
-  // deployments this sidecar hosts so the hub re-registers their routes.
-  // `createDeployRouter` runs synchronously during construction (below), so
-  // the router is captured before the link ever connects; assert rather than
-  // optional-chain so a wiring regression fails loud instead of silently
-  // announcing no deployments.
-  getWorkflowAddresses: () => {
+  // The hub link reports these in every `hello` so the Hub reconciles against
+  // what this sidecar holds, and delivers a Hub frame only to an incarnation
+  // held live. `createDeployRouter` runs synchronously during construction
+  // (below), so the router is captured before the link ever connects; assert
+  // rather than optional-chain so a wiring regression fails loud instead of
+  // silently reporting no deployments.
+  getIncarnations: () => {
     if (sidecarDeployRouter === undefined) {
       throw new Error(
-        "sidecar boot: deploy router was not constructed before the hub link requested workflow addresses",
+        "sidecar boot: deploy router was not constructed before the hub link requested its incarnations",
       );
     }
-    return sidecarDeployRouter.activeAddresses();
+    return sidecarDeployRouter.incarnations();
   },
   // Report the sidecar's cached rotatable senders on every (re)connect so the
   // hub re-resolves each current key and re-pushes it, catching a rotation that
@@ -545,22 +559,21 @@ const orchestrator = createSidecarOrchestrator({
   // workflow_run.public_key); the link stays source-opaque and reports whatever
   // this returns.
   getCachedSenderAddresses: () => senderKeyCache.rotatableAddresses(),
-  // When the hub-link re-announces a deployment address in an authenticated
-  // reconnect, re-drive any workflow-run pack the disconnect cancelled. The
-  // link fires this AFTER sending the reconnect frame, so the hub routes the
-  // address before it sees the re-shipped pack (both frame families queue on
-  // the hub's per-connection chain). This is the liveness half of
-  // reconnect recovery: without it, a synchronous single-step run whose only
-  // pack was interrupted mid-transfer never re-ships, because it has no later
-  // local write to re-arm the coalescing loop.
+  // When the Hub's `welcome` routes a held incarnation again, re-drive any
+  // workflow-run pack the disconnect cancelled. The Hub has routed the
+  // address by the time it sends `welcome`, so it accepts the re-shipped
+  // pack. This is the liveness half of reconnect recovery: without it, a
+  // synchronous single-step run whose only pack was interrupted mid-transfer
+  // never re-ships, because it has no later local write to re-arm the
+  // coalescing loop.
   onWorkflowAddressesRoutable: (addresses) => {
     // The deploy router is captured synchronously during orchestrator
     // construction, before the link ever connects, so a routable callback can
-    // only fire once it exists; assert (like `getWorkflowAddresses`) rather
+    // only fire once it exists; assert (like `getIncarnations`) rather
     // than optional-chain so a wiring regression fails loud.
     if (sidecarDeployRouter === undefined) {
       throw new Error(
-        "sidecar boot: deploy router was not constructed before a reconnect made workflow addresses routable",
+        "sidecar boot: deploy router was not constructed before a welcome made workflow addresses routable",
       );
     }
     for (const address of addresses) {
@@ -574,9 +587,8 @@ const orchestrator = createSidecarOrchestrator({
       //     at DEPLOY time and persists across the outage -- the reconnect
       //     re-routes the address in the hub's in-memory index but writes no DB
       //     status, so the lookup already resolves. (The frame also lands after
-      //     the address is wire-routable: the link fires this after the
-      //     reconnect frame, and both frames queue on the hub's per-connection
-      //     chain -- see the pack re-ship note above.)
+      //     the address is routable: the link fires this on `welcome`, which
+      //     the Hub sends once it has routed the address.)
       //   - A sidecar restart re-emits the parked set twice (child
       //     re-establishment fires Trigger A too), but the co-write dedups on
       //     the `correlationId` PK/unique constraints via `onConflictDoNothing`,
@@ -586,11 +598,12 @@ const orchestrator = createSidecarOrchestrator({
       //     here.
       sidecarDeployRouter.reEmitParkedCorrelations(address);
     }
+    sidecarDeployRouter.reportStoppedDeployments();
   },
-  // On disconnect, block the deployment addresses' workflow-run pushes until
-  // the authenticated reconnect above re-routes them. Without the block, the
-  // coalescing pusher re-ships onto the fresh, not-yet-registered connection
-  // and the hub drops the frames as "unrouted".
+  // When a connection opens or closes, block the deployment addresses'
+  // workflow-run pushes until the next `welcome` routes them. Without the
+  // block, the coalescing pusher keeps trying to send packs the link cannot
+  // carry until then.
   onWorkflowAddressesUnroutable: (addresses) => {
     for (const address of addresses) {
       wrappedRepoStore.markAddressUnroutable(address);
@@ -601,25 +614,36 @@ const orchestrator = createSidecarOrchestrator({
     keyStore,
     publishWorkflowInferenceEvent,
     publishWorkflowSuspension,
+    publishDeploymentStopped,
   }) => {
     const router = createSidecarDeployRouter({
       sessions,
       keyStore,
-      senderKeyCache,
       transport,
       repoStore: wrappedRepoStore,
       signingKeySeed: sidecarSigningKey.privateKey,
       credentialCipher,
       createAgentCrypto: createEd25519Crypto,
       assertSourceBuildable: buildHarness.canBuildSource,
-      registerDeployment: ({ runId, agentAddress }) => {
-        deploymentAddressRegistry.record(runId, agentAddress);
+      registerDeployment: ({ runId, agentAddress, generation }) => {
+        deploymentAddressRegistry.record(runId, { agentAddress, generation });
       },
-      unregisterDeployment: ({ runId }) => {
+      unregisterDeployment: ({ runId, agentAddress }) => {
         deploymentAddressRegistry.unregister(runId);
+        wrappedRepoStore.forgetDeployment(runId, agentAddress);
       },
-      reportDeploymentRefTips: (agentAddress) =>
-        wrappedRepoStore.reportWorkflowRunRefTips(agentAddress),
+      reportDeploymentRefTips: (incarnation) =>
+        wrappedRepoStore.reportWorkflowRunRefTips(incarnation),
+      publishDeploymentStopped,
+      // The run record lives in the repository and goes last, so a crash
+      // partway through leaves it for the next boot to report.
+      removeRunRepository: (runId) =>
+        agentRepoStore.repoStore.removeRepo(
+          { kind: "workflow-run", id: runId },
+          { last: WORKFLOW_RUN_RECORD_FILENAME },
+        ),
+      removeAgentStateRepository: (id) =>
+        agentRepoStore.repoStore.removeRepo({ kind: "agent-state", id }),
       multistepMailRouter,
       inboundMailPolicyRegistry,
       multistepSignalRouter,
@@ -630,6 +654,7 @@ const orchestrator = createSidecarOrchestrator({
       multistepSubstrateEnv,
       multistepSubprocessSpawner: defaultSubprocessSpawner,
       multistepBinaryPath: SIDECAR_WORKFLOW_CHILD_BINARY,
+      createWorkflowCache: createTarballCache,
       applyFrozenWorkflowClosure,
       readRegistries,
       resolveHostPlatform,

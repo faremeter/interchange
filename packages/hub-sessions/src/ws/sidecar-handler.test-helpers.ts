@@ -1,4 +1,7 @@
 import type { HarnessConfig } from "@intx/types/runtime";
+import type { HostedIncarnation } from "@intx/types/sidecar";
+
+import type { SidecarCredentials } from "../sidecar-allocation/contracts";
 
 import {
   createSidecarRouter,
@@ -20,6 +23,24 @@ export const TEST_IDENTITY: Extract<
   workflowRunAddress: "run_anchor@tenant.example",
   generation: 1,
 };
+
+export const TEST_CREDENTIALS: SidecarCredentials = {
+  sidecarId: TEST_IDENTITY.sidecarId,
+};
+
+/**
+ * Router authentication that verifies each claimed sidecar id as hosting the
+ * bindings `lookup` returns for it. Like the production resolver, it accepts
+ * a sidecar that hosts nothing, and the router turns that sidecar away.
+ */
+export function sidecarAuth(
+  lookup: (sidecarId: string) => readonly SidecarAuthIdentity[],
+): Pick<SidecarRouterConfig, "authenticateSidecar" | "resolveSidecarBindings"> {
+  return {
+    authenticateSidecar: async ({ sidecarId }) => ({ sidecarId }),
+    resolveSidecarBindings: async (sidecarId) => lookup(sidecarId),
+  };
+}
 
 export const TEST_TARGET: AllocatedSidecarTarget = {
   allocationId: TEST_IDENTITY.allocationId,
@@ -98,8 +119,9 @@ export function createAllocatedRouter(
 ) {
   const router = createSidecarRouter({
     withExecutableWorkflowRun: async (_target, send) => send(),
-    authenticateSidecar: async () => TEST_IDENTITY,
+    authenticateSidecar: async () => TEST_CREDENTIALS,
     validateSidecarIdentity: async () => true,
+    resolveSidecarBindings: async () => [TEST_IDENTITY],
     hubPublicKey: "a".repeat(64),
     requestTimeoutMs: 500,
     ...config,
@@ -112,24 +134,119 @@ export function createAllocatedRouter(
   return router;
 }
 
+/** Live incarnations of `addresses` at `generation`, as a hello reports them. */
+export function liveIncarnations(
+  addresses: readonly string[],
+  generation = TEST_IDENTITY.generation,
+): HostedIncarnation[] {
+  return addresses.map((address) => ({ address, generation, state: "live" }));
+}
+
+/** The `hello` a sidecar sends first, reporting what it holds. */
+export function helloFrame(
+  sidecarId: string,
+  incarnations: readonly HostedIncarnation[] = [],
+  token = "token",
+): string {
+  return JSON.stringify({ type: "hello", sidecarId, token, incarnations });
+}
+
+/**
+ * Connect the test sidecar, reporting a live incarnation of each address at
+ * the test allocation's generation.
+ */
 export async function connectAllocated(
   router: ReturnType<typeof createSidecarRouter>,
   agentAddresses: string[] = [],
-  frameType: "register" | "reconnect" = "register",
 ) {
   const ws = createMockWs();
   router.handleOpen(ws);
   router.handleMessage(
     ws,
-    JSON.stringify({
-      type: frameType,
-      sidecarId: TEST_IDENTITY.sidecarId,
-      token: "token",
-      agentAddresses,
-    }),
+    helloFrame(TEST_IDENTITY.sidecarId, liveIncarnations(agentAddresses)),
   );
   await tick();
   return ws;
+}
+
+type SentLifecycleRequest = {
+  type: string;
+  requestId: string;
+  agentAddress: string;
+  generation: number;
+};
+
+/** The last `agent.deploy` or `agent.undeploy` the router sent on `ws`. */
+export function lastRequest(
+  ws: { sent: string[] },
+  type: "agent.deploy" | "agent.undeploy",
+  agentAddress?: string,
+): SentLifecycleRequest {
+  const found = ws.sent
+    .map((raw): SentLifecycleRequest => JSON.parse(raw))
+    .filter(
+      (frame) =>
+        frame.type === type &&
+        (agentAddress === undefined || frame.agentAddress === agentAddress),
+    )
+    .at(-1);
+  if (found === undefined) {
+    throw new Error(
+      `No ${type} was sent${agentAddress === undefined ? "" : ` for ${agentAddress}`}`,
+    );
+  }
+  return found;
+}
+
+/**
+ * The sidecar's answer to the last `agent.deploy` sent on `ws`, naming its
+ * request id and incarnation.
+ */
+export function deployReply(
+  ws: { sent: string[] },
+  answer: { publicKey: string } | { error: string },
+  agentAddress?: string,
+): string {
+  const {
+    requestId,
+    agentAddress: address,
+    generation,
+  } = lastRequest(ws, "agent.deploy", agentAddress);
+  return JSON.stringify(
+    "publicKey" in answer
+      ? {
+          type: "agent.deploy.ack",
+          requestId,
+          agentAddress: address,
+          generation,
+          publicKey: answer.publicKey,
+        }
+      : {
+          type: "agent.deploy.error",
+          requestId,
+          agentAddress: address,
+          generation,
+          error: answer.error,
+        },
+  );
+}
+
+/** The sidecar's acknowledgement of the last `agent.undeploy` sent on `ws`. */
+export function undeployAck(
+  ws: { sent: string[] },
+  agentAddress?: string,
+): string {
+  const {
+    requestId,
+    agentAddress: address,
+    generation,
+  } = lastRequest(ws, "agent.undeploy", agentAddress);
+  return JSON.stringify({
+    type: "agent.undeploy.ack",
+    requestId,
+    agentAddress: address,
+    generation,
+  });
 }
 
 export function parsedFrames(ws: { sent: string[] }): unknown[] {

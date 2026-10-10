@@ -4,16 +4,15 @@
 // HubLink, a real SenderKeyCache, and a real hub-side createSidecarRouter -- so
 // the pieces the per-commit unit tests cover in isolation are proven to compose:
 //
-//   1. The sidecar reports its cached rotatable senders on the reconnect frame.
+//   1. The sidecar reports its cached rotatable senders in its hello.
 //   2. The hub re-resolves each reported sender's CURRENT key (a per-call DB
 //      lookup, so it sees the rotation) and pushes a sender.key.refresh.
 //   3. The sidecar applies the pushed key to its cache.
 //
 // The reconnecting sidecar loads its cache cold from the same data dir the first
 // connection persisted to, modelling a real drop-and-reconnect where the cache
-// survives on disk. The reconnect connect carries a restored workflow address so
-// it emits a genuine `reconnect` frame (not `register`), pinning both hub
-// handshake paths to this behavior.
+// survives on disk. The reconnect reports a restored incarnation, so the hub
+// takes the path that routes it back as well as the resync.
 
 import { describe, test, expect, afterEach } from "bun:test";
 import fs from "node:fs/promises";
@@ -23,7 +22,7 @@ import { Hono } from "hono";
 import { upgradeWebSocket, websocket } from "hono/bun";
 import {
   createSidecarRouter,
-  type SidecarAuthenticator,
+  type SidecarAuthIdentity,
   type WsHandle,
 } from "@intx/hub-sessions";
 import { createInMemoryTransport } from "@intx/mail-memory";
@@ -65,14 +64,7 @@ function createStubSessionManager(): SessionManager {
     initRepo: () => Promise.resolve(),
     applyDeployPack: () => Promise.resolve(),
     applyAssetPack: () => Promise.resolve(),
-    createStatePack: () =>
-      Promise.resolve({
-        pack: new Uint8Array([1, 2, 3]),
-        commitSha: "abc123",
-        ref: "refs/heads/main",
-      }),
     deleteAgentDir: () => Promise.resolve(),
-    getAddresses: () => [],
     getSessionId: () => undefined,
   };
 }
@@ -113,13 +105,11 @@ function makeKey(seed: number): Uint8Array {
 // Test server: a real createSidecarRouter behind a ws server. It fences the
 // reporting sidecar's allocation and pins its workflow address from the
 // handshake frame (mirroring the production allocation-authenticated flow), and
-// records the handshake frame types so the test can assert a real reconnect.
+// records the incarnations each hello reported so the test can assert a real
+// reconnect.
 // ---------------------------------------------------------------------------
 
-type AllocatedIdentity = Extract<
-  Awaited<ReturnType<SidecarAuthenticator>>,
-  { kind: "allocated" }
->;
+type AllocatedIdentity = Extract<SidecarAuthIdentity, { kind: "allocated" }>;
 
 function startRotationServer(
   resolveSenderKeyStrict: (address: string) => Promise<string | null>,
@@ -127,7 +117,7 @@ function startRotationServer(
   const observedHandshakes: string[] = [];
   // Memoize one mutable identity per sidecarId so the handshake frame can pin
   // its workflow address before authentication reads it back (mirroring the
-  // production allocation-authenticated reconnect flow).
+  // production hello/welcome reconnect flow).
   const identities = new Map<string, AllocatedIdentity>();
   function ensureIdentity(sidecarId: string): AllocatedIdentity {
     const existing = identities.get(sidecarId);
@@ -147,7 +137,8 @@ function startRotationServer(
 
   const router = createSidecarRouter({
     withExecutableWorkflowRun: async (_target, send) => send(),
-    authenticateSidecar: async ({ sidecarId }) => ensureIdentity(sidecarId),
+    authenticateSidecar: async ({ sidecarId }) => ({ sidecarId }),
+    resolveSidecarBindings: async (sidecarId) => [ensureIdentity(sidecarId)],
     validateSidecarIdentity: async () => true,
     hubPublicKey: "a".repeat(64),
     requestTimeoutMs: 5000,
@@ -160,19 +151,28 @@ function startRotationServer(
       typeof raw !== "object" ||
       raw === null ||
       !("type" in raw) ||
-      (raw.type !== "register" && raw.type !== "reconnect") ||
+      raw.type !== "hello" ||
       !("sidecarId" in raw) ||
       typeof raw.sidecarId !== "string"
     ) {
       return;
     }
-    observedHandshakes.push(raw.type);
     router.fenceAllocation(`allocation-${raw.sidecarId}`, 1);
     const identity = ensureIdentity(raw.sidecarId);
     const addresses =
-      "agentAddresses" in raw && Array.isArray(raw.agentAddresses)
-        ? raw.agentAddresses
+      "incarnations" in raw && Array.isArray(raw.incarnations)
+        ? raw.incarnations.flatMap((incarnation: unknown) =>
+            typeof incarnation === "object" &&
+            incarnation !== null &&
+            "address" in incarnation &&
+            typeof incarnation.address === "string"
+              ? [incarnation.address]
+              : [],
+          )
         : [];
+    observedHandshakes.push(
+      addresses.length > 0 ? "hello reporting incarnations" : "empty hello",
+    );
     if (addresses.length === 1 && typeof addresses[0] === "string") {
       // The identity's workflowRunAddress is readonly on the type; the
       // production allocation flow pins it from the frame the same way.
@@ -263,7 +263,7 @@ describe("hub-link sender-key rotation on reconnect", () => {
       currentKey = hexEncode(newKey);
 
       // The sidecar reconnects, cold-loading its cache from the same data dir.
-      // A restored workflow address makes this a genuine `reconnect` frame.
+      // Reporting a restored incarnation makes this a genuine reconnect.
       const reconnectCache = await createSenderKeyCache({
         dataDir,
         writeFileDurable,
@@ -284,7 +284,9 @@ describe("hub-link sender-key rotation on reconnect", () => {
           reconnectCache.put(address, hexDecode(publicKey)),
         evictSenderKey: (address) => reconnectCache.evict(address),
         deployRouter: createStubDeployRouter(),
-        getWorkflowAddresses: () => [workflowAddress],
+        getIncarnations: () => [
+          { address: workflowAddress, generation: 1, state: "live" },
+        ],
         getCachedSenderAddresses: () => reconnectCache.rotatableAddresses(),
       });
       second.connect();
@@ -296,7 +298,7 @@ describe("hub-link sender-key rotation on reconnect", () => {
         });
         expect(reconnectCache.get(sender)).toEqual(newKey);
         expect(reconnectCache.get(sender)).not.toEqual(oldKey);
-        expect(observedHandshakes).toContain("reconnect");
+        expect(observedHandshakes).toContain("hello reporting incarnations");
       } finally {
         second.close();
       }
@@ -364,7 +366,7 @@ describe("hub-link sender-key rotation on reconnect", () => {
 
       // The sidecar reconnects, cold-loading the cache (which still holds the
       // now-revoked key) from the same data dir. A restored workflow address
-      // makes this a genuine `reconnect` frame.
+      // makes this a genuine reconnect.
       const reconnectCache = await createSenderKeyCache({
         dataDir,
         writeFileDurable,
@@ -389,7 +391,9 @@ describe("hub-link sender-key rotation on reconnect", () => {
           reconnectCache.put(address, hexDecode(publicKey)),
         evictSenderKey: (address) => reconnectCache.evict(address),
         deployRouter: createStubDeployRouter(),
-        getWorkflowAddresses: () => [workflowAddress],
+        getIncarnations: () => [
+          { address: workflowAddress, generation: 1, state: "live" },
+        ],
         getCachedSenderAddresses: () => reconnectCache.rotatableAddresses(),
       });
       second.connect();
@@ -397,7 +401,7 @@ describe("hub-link sender-key rotation on reconnect", () => {
         // The evict push is fire-and-forget, so poll for the cache to drop it.
         await waitUntil(() => reconnectCache.get(sender) === undefined);
         expect(reconnectCache.get(sender)).toBeUndefined();
-        expect(observedHandshakes).toContain("reconnect");
+        expect(observedHandshakes).toContain("hello reporting incarnations");
       } finally {
         second.close();
       }

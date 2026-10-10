@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { sha256 } from "@intx/crypto";
-import type { SidecarAllocation, SidecarAllocationStore } from "@intx/db";
+import {
+  SidecarReuseRejectedError,
+  type SidecarAllocation,
+  type SidecarAllocationStore,
+} from "@intx/db";
 import { hexEncode } from "@intx/types";
 
 import { SessionLaunchError } from "../session-service";
@@ -11,12 +15,19 @@ import {
 import {
   connectAllocated,
   createAllocatedRouter,
+  deployReply,
   TEST_CONFIG,
   TEST_IDENTITY,
   TEST_TARGET,
   tick,
 } from "../ws/sidecar-handler.test-helpers";
 import type { EnsureSidecarResult, SidecarProvisioner } from "./contracts";
+import {
+  SidecarDeploymentMissingError,
+  SidecarDeploymentHistoryPendingError,
+  SidecarDeploymentStoppedError,
+  SidecarFirstDeployError,
+} from "./operation";
 import {
   createSidecarAllocationReconciler,
   type SidecarAllocationReconcilerDeps,
@@ -34,6 +45,7 @@ function allocation(
     provisionerId: "test",
     provisionerApiVersion: 1,
     provisionerBindingFingerprint: "test:v1",
+    maxDisconnectedMs: 900_000,
     status: "pending",
     generation: 0,
     nextAttemptAt: NOW,
@@ -53,6 +65,7 @@ function fakeStore(overrides: Partial<AllocationStore> = {}): AllocationStore {
   };
   return {
     beginReplacement: notUsed("beginReplacement"),
+    failStoppedDeployment: notUsed("failStoppedDeployment"),
     beginRelease: notUsed("beginRelease"),
     beginUnrecoverableRelease: notUsed("beginUnrecoverableRelease"),
     bindInitialSidecar: notUsed("bindInitialSidecar"),
@@ -69,6 +82,7 @@ function fakeStore(overrides: Partial<AllocationStore> = {}): AllocationStore {
     markDestroyFailed: notUsed("markDestroyFailed"),
     markReleased: notUsed("markReleased"),
     parkReconciliation: async () => true,
+    scheduleReconnectAfterHubStart: notUsed("scheduleReconnectAfterHubStart"),
     scheduleReconnectIfUnscheduled: notUsed("scheduleReconnectIfUnscheduled"),
     scheduleRetry: notUsed("scheduleRetry"),
     wakeReconciliation: async () => true,
@@ -100,12 +114,20 @@ function deps(args: {
   fences?: [string, number][];
   retired?: [string, number][];
   ready?: boolean;
+  /** The binding attaches only once its sidecar is synced. */
+  readyOnlyAfterSync?: boolean;
+  synced?: string[];
+  /** Sidecar syncs and readiness checks, in the order they ran. */
+  checks?: string[];
   readyError?: Error;
   waitError?: Error;
+  /** Why the sidecar reported the deployment stopped on its own, if it did. */
+  reportedStop?: string;
   onReady?: (row: SidecarAllocation) => Promise<void>;
   classifyParkedRun?: SidecarAllocationReconcilerDeps["classifyParkedRun"];
 }): SidecarAllocationReconcilerDeps {
   const provisioner = args.provisioner ?? testProvisioner();
+  let syncedOnce = false;
   return {
     allocationStore: args.store,
     plugins: {
@@ -120,11 +142,21 @@ function deps(args: {
         args.retired?.push([allocationId, generation]);
       },
       isAllocatedSidecarReady: async () => {
+        args.checks?.push("ready");
         if (args.readyError !== undefined) throw args.readyError;
+        if (args.readyOnlyAfterSync === true) return syncedOnce;
         return args.ready ?? true;
       },
       waitForAllocatedSidecar: async () => {
         if (args.waitError !== undefined) throw args.waitError;
+      },
+      holdsAllocatedBinding: () =>
+        args.readyOnlyAfterSync === true ? syncedOnce : true,
+      reportedDeploymentFailure: () => args.reportedStop,
+      syncSidecar: async (sidecarId) => {
+        syncedOnce = true;
+        args.synced?.push(sidecarId);
+        args.checks?.push(`sync:${sidecarId}`);
       },
     },
     hubWebSocketUrl: "wss://hub.example/ws/sidecar",
@@ -224,6 +256,101 @@ describe("createSidecarAllocationReconciler", () => {
     expect(hexEncode(storedHash ?? new Uint8Array())).toBe(
       hexEncode(await sha256("token-new")),
     );
+  });
+
+  test("records the existing sidecar a provisioner placed the generation on", async () => {
+    const pending = allocation();
+    const provisioning = allocation({
+      status: "provisioning",
+      generation: 1,
+      sidecarId: "sc-new",
+      connectDeadline: new Date(NOW.getTime() + 120_000),
+      reconciliationLeaseId: "lease-1",
+    });
+    const allocated = allocation({
+      ...provisioning,
+      status: "allocated",
+      sidecarId: "sc-shared",
+      ensureAcceptedGeneration: 1,
+    });
+    let claimed = false;
+    const placements: (string | undefined)[] = [];
+    const synced: string[] = [];
+    const store = fakeStore({
+      claimNextReconcilable: async () => {
+        if (claimed) return null;
+        claimed = true;
+        return pending;
+      },
+      bindInitialSidecar: async () => provisioning,
+      markAllocated: async (args) => {
+        placements.push(args.sidecarId);
+        return allocated;
+      },
+      markConnectionReady: async () => allocated,
+    });
+    const provisioner = testProvisioner({
+      async ensure() {
+        return { kind: "accepted", sidecarId: "sc-shared" };
+      },
+    });
+    const reconciler = createSidecarAllocationReconciler(
+      deps({ store, provisioner, synced, readyOnlyAfterSync: true }),
+    );
+
+    await reconciler.reconcileNext();
+
+    expect(placements).toEqual(["sc-shared"]);
+    expect(synced).toContain("sc-shared");
+  });
+
+  test("replaces a generation placed on a sidecar the Hub cannot reuse", async () => {
+    const pending = allocation();
+    const provisioning = allocation({
+      status: "provisioning",
+      generation: 1,
+      sidecarId: "sc-new",
+      connectDeadline: new Date(NOW.getTime() + 120_000),
+      reconciliationLeaseId: "lease-1",
+    });
+    let claimed = false;
+    const replacements: string[] = [];
+    const store = fakeStore({
+      claimNextReconcilable: async () => {
+        if (claimed) return null;
+        claimed = true;
+        return pending;
+      },
+      bindInitialSidecar: async () => provisioning,
+      markAllocated: async () => {
+        throw new SidecarReuseRejectedError(
+          "sc-foreign",
+          "it hosts no current probe or allocation of provisioner test",
+        );
+      },
+      beginReplacement: async (args) => {
+        replacements.push(args.failureCode);
+        return allocation({
+          ...provisioning,
+          status: "replacing",
+          generation: 2,
+        });
+      },
+    });
+    const provisioner = testProvisioner({
+      async ensure() {
+        return { kind: "accepted", sidecarId: "sc-foreign" };
+      },
+    });
+    const fences: [string, number][] = [];
+    const reconciler = createSidecarAllocationReconciler(
+      deps({ store, provisioner, fences }),
+    );
+
+    await reconciler.reconcileNext();
+
+    expect(replacements).toEqual(["sidecar_reuse_rejected"]);
+    expect(fences.at(-1)).toEqual(["alloc-1", 2]);
   });
 
   test("parks an accepted provision without waiting for its websocket", async () => {
@@ -564,7 +691,6 @@ describe("createSidecarAllocationReconciler", () => {
 
     expect(replacement).toEqual({
       allocationId: "alloc-1",
-      expectedStatus: "provisioning",
       expectedGeneration: 1,
       expectedLeaseId: "lease-1",
       failureCode: "capacity_unavailable",
@@ -742,55 +868,6 @@ describe("createSidecarAllocationReconciler", () => {
     expect(calls).toEqual(["destroy", "bind", "ensure"]);
   });
 
-  test("replaces an allocated worker that misses its connection deadline", async () => {
-    const allocated = allocation({
-      status: "allocated",
-      generation: 1,
-      sidecarId: "sc-old",
-      ensureAcceptedGeneration: 1,
-      connectDeadline: NOW,
-    });
-    const replacing = allocation({
-      status: "replacing",
-      generation: 2,
-      sidecarId: "sc-old",
-    });
-    let replacement:
-      | {
-          failureCode: string;
-          expectedLeaseId: string;
-          nextAttemptAt: Date;
-        }
-      | undefined;
-    const store = fakeStore({
-      claimNextReconcilable: async () => allocated,
-      beginReplacement: async (args) => {
-        replacement = {
-          failureCode: args.failureCode,
-          expectedLeaseId: args.expectedLeaseId,
-          nextAttemptAt: args.nextAttemptAt,
-        };
-        return replacing;
-      },
-    });
-    const reconciler = createSidecarAllocationReconciler({
-      ...deps({
-        store,
-        ready: false,
-        waitError: new Error("connect timeout"),
-      }),
-      enableAutomaticReplacementRecovery: true,
-    });
-
-    await reconciler.reconcileNext();
-
-    expect(replacement).toEqual({
-      failureCode: "sidecar_connect_failed",
-      expectedLeaseId: "lease-1",
-      nextAttemptAt: new Date(NOW.getTime() + 1_000),
-    });
-  });
-
   test("retries when identity validation fails inside the connection wait", async () => {
     const allocated = allocation({
       status: "allocated",
@@ -955,6 +1032,123 @@ describe("createSidecarAllocationReconciler", () => {
     });
   });
 
+  test("retries a first deploy that failed before its frame was sent, from its first failure", async () => {
+    for (const firstDeployFailedAt of [
+      undefined,
+      new Date(NOW.getTime() - 30_000),
+    ]) {
+      const allocated = allocation({
+        status: "allocated",
+        generation: 1,
+        sidecarId: "sc-current",
+        ensureAcceptedGeneration: 1,
+        reconciliationLeaseId: "lease-1",
+        ...(firstDeployFailedAt !== undefined ? { firstDeployFailedAt } : {}),
+      });
+      let claimed = false;
+      let scheduled:
+        | Parameters<AllocationStore["scheduleRetry"]>[0]
+        | undefined;
+      const store = fakeStore({
+        claimNextReconcilable: async () => {
+          if (claimed) return null;
+          claimed = true;
+          return allocated;
+        },
+        scheduleRetry: async (args) => {
+          scheduled = args;
+          return allocated;
+        },
+      });
+      const reconciler = createSidecarAllocationReconciler(
+        deps({
+          store,
+          ready: true,
+          onReady: async () => {
+            throw new SidecarFirstDeployError(
+              new Error("catalog temporarily unavailable"),
+            );
+          },
+        }),
+      );
+
+      await reconciler.reconcileNext();
+
+      expect(scheduled).toEqual({
+        allocationId: "alloc-1",
+        expectedStatus: "allocated",
+        expectedGeneration: 1,
+        nextAttemptAt: new Date(NOW.getTime() + 30_000),
+        expectedLeaseId: "lease-1",
+        failure: {
+          code: "sidecar_initialization_failed",
+          message: "catalog temporarily unavailable",
+        },
+        firstDeployFailedAt: firstDeployFailedAt ?? NOW,
+        now: NOW,
+      });
+    }
+  });
+
+  test("fails a first deploy that keeps failing for a minute", async () => {
+    const allocated = allocation({
+      status: "allocated",
+      generation: 1,
+      sidecarId: "sc-current",
+      ensureAcceptedGeneration: 1,
+      reconciliationLeaseId: "lease-1",
+      firstDeployFailedAt: new Date(NOW.getTime() - 60_000),
+    });
+    const releasing = allocation({
+      status: "releasing",
+      generation: 2,
+      sidecarId: "sc-current",
+    });
+    let claimed = false;
+    let released:
+      | Parameters<AllocationStore["beginUnrecoverableRelease"]>[0]
+      | undefined;
+    const fences: [string, number][] = [];
+    const store = fakeStore({
+      claimNextReconcilable: async () => {
+        if (claimed) return null;
+        claimed = true;
+        return allocated;
+      },
+      beginUnrecoverableRelease: async (args) => {
+        released = args;
+        return releasing;
+      },
+    });
+    const reconciler = createSidecarAllocationReconciler(
+      deps({
+        store,
+        fences,
+        ready: true,
+        onReady: async () => {
+          throw new SidecarFirstDeployError(
+            new Error("catalog temporarily unavailable"),
+          );
+        },
+      }),
+    );
+
+    await reconciler.reconcileNext();
+
+    expect(released).toMatchObject({
+      allocationId: "alloc-1",
+      expectedGeneration: 1,
+      expectedLeaseId: "lease-1",
+      failureCode: "sidecar_initialization_failed",
+      failureMessage:
+        "The first deploy kept failing for 60 seconds: catalog temporarily unavailable",
+    });
+    expect(fences).toEqual([
+      ["alloc-1", 1],
+      ["alloc-1", 2],
+    ]);
+  });
+
   test("releases a generation whose initialization leaked a supervisor", async () => {
     const allocated = allocation({
       status: "allocated",
@@ -1007,11 +1201,174 @@ describe("createSidecarAllocationReconciler", () => {
       expectedGeneration: 1,
       expectedLeaseId: "lease-1",
       failureCode: "sidecar_initialization_uncertain",
-      failureMessage: "Automatic recovery is disabled: deploy pack failed",
+      failureMessage: "deploy pack failed",
     });
     expect(fences).toEqual([
       ["alloc-1", 1],
       ["alloc-1", 2],
+    ]);
+  });
+
+  test("releases a generation whose sidecar no longer holds its deployment", async () => {
+    const allocated = allocation({
+      status: "allocated",
+      generation: 1,
+      sidecarId: "sc-current",
+      ensureAcceptedGeneration: 1,
+      connectDeadline: NOW,
+      reconciliationLeaseId: "lease-1",
+    });
+    let claimed = false;
+    let released:
+      | Parameters<AllocationStore["beginUnrecoverableRelease"]>[0]
+      | undefined;
+    const fences: [string, number][] = [];
+    const store = fakeStore({
+      claimNextReconcilable: async () => {
+        if (claimed) return null;
+        claimed = true;
+        return allocated;
+      },
+      beginUnrecoverableRelease: async (args) => {
+        released = args;
+        return allocation({ status: "releasing", generation: 2 });
+      },
+    });
+    const reconciler = createSidecarAllocationReconciler(
+      deps({
+        store,
+        fences,
+        ready: true,
+        onReady: async () => {
+          throw new SidecarDeploymentMissingError("alloc-1", 1);
+        },
+      }),
+    );
+
+    await reconciler.reconcileNext();
+
+    // A completed initialization is no reason to keep it: the sidecar's own
+    // report says the deployment is gone.
+    expect(released).toEqual({
+      allocationId: "alloc-1",
+      expectedGeneration: 1,
+      expectedLeaseId: "lease-1",
+      failureCode: "sidecar_deployment_missing",
+      failureMessage:
+        "The sidecar of allocation alloc-1 generation 1 no longer holds its deployment",
+      now: NOW,
+    });
+    expect(fences).toEqual([
+      ["alloc-1", 1],
+      ["alloc-1", 2],
+    ]);
+  });
+
+  test("fails a deployment its sidecar reports stopped and keeps the capacity", async () => {
+    const allocated = allocation({
+      status: "allocated",
+      generation: 1,
+      sidecarId: "sc-current",
+      ensureAcceptedGeneration: 1,
+      connectDeadline: NOW,
+      reconciliationLeaseId: "lease-1",
+    });
+    let claimed = false;
+    const calls: unknown[] = [];
+    const fences: [string, number][] = [];
+    const store = fakeStore({
+      claimNextReconcilable: async () => {
+        if (claimed) return null;
+        claimed = true;
+        return allocated;
+      },
+      failStoppedDeployment: async (args) => {
+        calls.push(["fail", args]);
+        return true;
+      },
+    });
+    const reconciler = createSidecarAllocationReconciler(
+      deps({
+        store,
+        fences,
+        ready: true,
+        onReady: async () => {
+          throw new SidecarDeploymentStoppedError("The child ended itself");
+        },
+      }),
+    );
+
+    await reconciler.reconcileNext();
+
+    // One store call fails it and settles it, keeping the reason: marking the
+    // connection ready separately would clear it.
+    expect(calls).toEqual([
+      [
+        "fail",
+        {
+          allocationId: "alloc-1",
+          expectedGeneration: 1,
+          expectedLeaseId: "lease-1",
+          failureCode: "sidecar_deployment_stopped",
+          failureMessage: "The child ended itself",
+          now: NOW,
+        },
+      ],
+    ]);
+    // The generation is not fenced: its stopped copy stays for inspection.
+    expect(fences).toEqual([["alloc-1", 1]]);
+  });
+
+  test("looks again while the Hub waits for a stopped deployment's history", async () => {
+    const allocated = allocation({
+      status: "allocated",
+      generation: 1,
+      sidecarId: "sc-current",
+      ensureAcceptedGeneration: 1,
+      connectDeadline: NOW,
+      reconciliationLeaseId: "lease-1",
+    });
+    let claimed = false;
+    const calls: unknown[] = [];
+    const retryAt = new Date(NOW.getTime() + 1_000);
+    const store = fakeStore({
+      claimNextReconcilable: async () => {
+        if (claimed) return null;
+        claimed = true;
+        return allocated;
+      },
+      scheduleRetry: async (args) => {
+        calls.push(["retry", args]);
+        return allocated;
+      },
+    });
+    const reconciler = createSidecarAllocationReconciler(
+      deps({
+        store,
+        ready: true,
+        onReady: async () => {
+          throw new SidecarDeploymentHistoryPendingError(
+            "refs/heads/main is at b on the Hub and c on the worker",
+            retryAt,
+          );
+        },
+      }),
+    );
+
+    await reconciler.reconcileNext();
+
+    expect(calls).toEqual([
+      [
+        "retry",
+        {
+          allocationId: "alloc-1",
+          expectedStatus: "allocated",
+          expectedGeneration: 1,
+          expectedLeaseId: "lease-1",
+          nextAttemptAt: retryAt,
+          now: NOW,
+        },
+      ],
     ]);
   });
 
@@ -1092,6 +1449,44 @@ describe("createSidecarAllocationReconciler", () => {
     expect(calls).toEqual(["initialize", "ready"]);
   });
 
+  test("syncs the sidecar's bindings only for a binding not yet attached", async () => {
+    const allocated = allocation({
+      status: "allocated",
+      generation: 1,
+      sidecarId: "sc-connected",
+      ensureAcceptedGeneration: 1,
+      connectDeadline: NOW,
+      reconciliationLeaseId: "lease-1",
+    });
+    for (const { readyOnlyAfterSync, expected } of [
+      // The sync queues behind the sidecar's other frames, so an attached
+      // binding skips it.
+      { readyOnlyAfterSync: false, expected: ["ready"] },
+      {
+        readyOnlyAfterSync: true,
+        expected: ["sync:sc-connected", "ready"],
+      },
+    ]) {
+      let claimed = false;
+      const checks: string[] = [];
+      const store = fakeStore({
+        claimNextReconcilable: async () => {
+          if (claimed) return null;
+          claimed = true;
+          return allocated;
+        },
+        markConnectionReady: async () => allocated,
+      });
+      const reconciler = createSidecarAllocationReconciler(
+        deps({ store, ready: true, readyOnlyAfterSync, checks }),
+      );
+
+      await reconciler.reconcileNext();
+
+      expect(checks).toEqual(expected);
+    }
+  });
+
   test("does not release capacity when the final ready write fails", async () => {
     const allocated = allocation({
       status: "allocated",
@@ -1132,7 +1527,47 @@ describe("createSidecarAllocationReconciler", () => {
     expect(parked).toBe(true);
   });
 
-  test("fails a lost allocated worker instead of recovering by default", async () => {
+  test("fails a lost worker that reported its deployment stopped for the reason it gave", async () => {
+    const allocated = allocation({
+      status: "allocated",
+      generation: 1,
+      sidecarId: "sc-old",
+      ensureAcceptedGeneration: 1,
+      connectDeadline: NOW,
+    });
+    let failure:
+      | Parameters<AllocationStore["beginUnrecoverableRelease"]>[0]
+      | undefined;
+    const store = fakeStore({
+      claimNextReconcilable: async () => allocated,
+      beginUnrecoverableRelease: async (args) => {
+        failure = args;
+        return allocation({
+          status: "releasing",
+          generation: 2,
+          sidecarId: "sc-old",
+        });
+      },
+    });
+    const reconciler = createSidecarAllocationReconciler(
+      deps({
+        store,
+        ready: false,
+        waitError: new Error("connect timeout"),
+        reportedStop: "Its workflow child ended itself (running): crash loop",
+      }),
+    );
+
+    await reconciler.reconcileNext();
+
+    expect(failure).toMatchObject({
+      failureCode: "sidecar_deployment_stopped",
+      failureMessage:
+        "Its workflow child ended itself (running): crash loop; its sidecar disconnected, and history the Hub never received may be lost",
+    });
+  });
+
+  test("fails a lost allocated worker", async () => {
     const allocated = allocation({
       status: "allocated",
       generation: 1,
@@ -1173,7 +1608,7 @@ describe("createSidecarAllocationReconciler", () => {
 
     expect(failure).toEqual({
       failureCode: "sidecar_connect_failed",
-      failureMessage: "Automatic recovery is disabled: connect timeout",
+      failureMessage: "connect timeout",
       expectedLeaseId: "lease-1",
     });
     expect(fences).toEqual([
@@ -1279,7 +1714,7 @@ describe("createSidecarAllocationReconciler", () => {
 
       expect(failure).toEqual({
         failureCode: "sidecar_connect_failed",
-        failureMessage: "Automatic recovery is disabled: connect timeout",
+        failureMessage: "connect timeout",
         expectedLeaseId: "lease-1",
       });
     },
@@ -1339,10 +1774,15 @@ describe("createSidecarAllocationReconciler", () => {
         nextAttemptAt: new Date(NOW.getTime() + 30_000),
       }),
       unscheduled,
-      allocation({ id: "alloc-b", status: "allocated", generation: 4 }),
+      allocation({
+        id: "alloc-b",
+        status: "allocated",
+        generation: 4,
+        connectDeadline: new Date(NOW.getTime() - 60_000),
+      }),
     ];
     const wakes: [string, number][] = [];
-    const reconnects: [string, number, Date][] = [];
+    const reconnects: unknown[] = [];
     const fences: [string, number][] = [];
     const store = fakeStore({
       listActive: async () => active,
@@ -1350,12 +1790,8 @@ describe("createSidecarAllocationReconciler", () => {
         wakes.push([id, generation]);
         return true;
       },
-      markConnectionLost: async (args) => {
-        reconnects.push([
-          args.allocationId,
-          args.generation,
-          args.connectDeadline,
-        ]);
+      scheduleReconnectAfterHubStart: async (args) => {
+        reconnects.push(args);
         return active[2] ?? null;
       },
     });
@@ -1371,17 +1807,23 @@ describe("createSidecarAllocationReconciler", () => {
       ["alloc-b", 4],
     ]);
     expect(wakes).toEqual([["alloc-unscheduled", 2]]);
+    // Both windows count from Hub start; the store picks the one that applies.
     expect(reconnects).toEqual([
-      ["alloc-b", 4, new Date(NOW.getTime() + 120_000)],
+      {
+        allocationId: "alloc-b",
+        generation: 4,
+        now: NOW,
+        firstConnectDeadline: new Date(NOW.getTime() + 120_000),
+      },
     ]);
   });
 
-  test("durably schedules reconnect grace and wakes the exact generation on reconnect", async () => {
+  test("durably starts the disconnect limit and wakes the exact generation on reconnect", async () => {
     const calls: string[] = [];
     const store = fakeStore({
       markConnectionLost: async (args) => {
         calls.push(
-          `lost:${args.allocationId}:${String(args.generation)}:${args.connectDeadline.toISOString()}`,
+          `lost:${args.allocationId}:${String(args.generation)}:${String(args.now?.toISOString())}`,
         );
         return allocation({ status: "allocated", generation: args.generation });
       },
@@ -1402,7 +1844,7 @@ describe("createSidecarAllocationReconciler", () => {
     });
 
     expect(calls).toEqual([
-      "lost:alloc-1:3:2026-08-03T12:02:00.000Z",
+      `lost:alloc-1:3:${NOW.toISOString()}`,
       "connected:alloc-1:3",
     ]);
   });
@@ -1413,18 +1855,14 @@ describe("createSidecarAllocationReconciler", () => {
       generation: 3,
       ensureAcceptedGeneration: 3,
     });
-    const repairs: [string, number, Date][] = [];
+    const repairs: [string, number, Date | undefined][] = [];
     const store = fakeStore({
       listActive: async () => [unscheduled],
       markConnectionLost: async () => {
         throw new Error("database unavailable");
       },
       scheduleReconnectIfUnscheduled: async (args) => {
-        repairs.push([
-          args.allocationId,
-          args.generation,
-          args.connectDeadline,
-        ]);
+        repairs.push([args.allocationId, args.generation, args.now]);
         return unscheduled;
       },
     });
@@ -1440,9 +1878,7 @@ describe("createSidecarAllocationReconciler", () => {
     ).rejects.toThrow("database unavailable");
     await reconciler.repairUnscheduledConnections();
 
-    expect(repairs).toEqual([
-      ["alloc-1", 3, new Date(NOW.getTime() + 120_000)],
-    ]);
+    expect(repairs).toEqual([["alloc-1", 3, NOW]]);
   });
 
   test("does not repair an allocation with a ready connection", async () => {
@@ -1466,6 +1902,42 @@ describe("createSidecarAllocationReconciler", () => {
     await reconciler.repairUnscheduledConnections();
 
     expect(repairs).toEqual([]);
+  });
+
+  test("wakes a ready allocation whose reported stop the Hub has not recorded", async () => {
+    for (const { failureCode, runnable, woken } of [
+      { failureCode: undefined, runnable: true, woken: true },
+      {
+        failureCode: "sidecar_deployment_stopped",
+        runnable: true,
+        woken: false,
+      },
+      // A cancel that raced the report left nothing for a wake to fail.
+      { failureCode: undefined, runnable: false, woken: false },
+    ]) {
+      const { nextAttemptAt: _nextAttemptAt, ...unscheduled } = allocation({
+        status: "allocated",
+        generation: 1,
+        ensureAcceptedGeneration: 1,
+        ...(failureCode !== undefined ? { failureCode } : {}),
+      });
+      const wakes: [string, number][] = [];
+      const store = fakeStore({
+        listActive: async () => [unscheduled],
+        hasRunnableAnchor: async () => runnable,
+        wakeReconciliation: async (id, generation) => {
+          wakes.push([id, generation]);
+          return true;
+        },
+      });
+      const reconciler = createSidecarAllocationReconciler(
+        deps({ store, ready: true, reportedStop: "The child ended itself" }),
+      );
+
+      await reconciler.repairUnscheduledConnections();
+
+      expect(wakes).toEqual(woken ? [["alloc-1", 1]] : []);
+    }
   });
 
   test("leaves an allocation with inconclusive readiness for the next repair sweep", async () => {
@@ -1571,141 +2043,137 @@ describe("durable initialization outcomes", () => {
     ]);
   });
 
-  for (const recovery of [false, true]) {
-    for (const scenario of [
-      { interruption: "lease loss", outcome: "committed" },
-      { interruption: "renewal failure", outcome: "committed" },
-      { interruption: "lease expiry", outcome: "committed" },
-      { interruption: "operation deadline", outcome: "committed" },
-      { interruption: "operation deadline", outcome: "unchanged" },
-      { interruption: "operation deadline", outcome: "rejected" },
-    ] as const) {
-      test(`releases a cleanup slot on ${scenario.interruption} before its ${scenario.outcome} response (recovery=${String(recovery)})`, async () => {
-        const current = allocation({
-          status: "allocated",
-          generation: 1,
-          ensureAcceptedGeneration: 1,
-          initializationLeaseId: "old-initializer",
-        });
-        const other = allocation({
-          id: "alloc-2",
-          status: "allocated",
-          generation: 1,
-          ensureAcceptedGeneration: 1,
-        });
-        const transitioned = allocation({
-          status: recovery ? "replacing" : "releasing",
-          generation: 2,
-        });
-        const entered = Promise.withResolvers<boolean>();
-        const response = Promise.withResolvers<SidecarAllocation | null>();
-        const renewal = Promise.withResolvers<boolean>();
-        const exclusions: (readonly string[])[] = [];
-        const fences: [string, number][] = [];
-        const ready: string[] = [];
-        let cleanupSettled = false;
-        let cleanupCalls = 0;
-        let parked = false;
-        let finished = false;
-        const cleanup: AllocationStore["beginUnrecoverableRelease"] = async (
-          args,
-        ) => {
-          expect(args).toMatchObject({
-            expectedGeneration: 1,
-            expectedLeaseId: "lease-1",
-            onlyIfInitializationIncomplete: true,
-            expectedInitializationLeaseId: "old-initializer",
-          });
-          cleanupCalls += 1;
-          entered.resolve(true);
-          try {
-            return await response.promise;
-          } finally {
-            cleanupSettled = true;
-          }
-        };
-        const reconciler = createSidecarAllocationReconciler({
-          ...deps({
-            fences,
-            store: fakeStore({
-              claimNextReconcilable: async (args) => {
-                const excluded = args.excludedAllocationIds ?? [];
-                exclusions.push(excluded);
-                if (!cleanupSettled && !excluded.includes(current.id))
-                  return current;
-                return ready.includes(other.id) ? null : other;
-              },
-              beginUnrecoverableRelease: cleanup,
-              beginReplacement: cleanup,
-              extendReconciliationLease: async (id) => {
-                if (id !== current.id) return true;
-                switch (scenario.interruption) {
-                  case "lease loss":
-                    return false;
-                  case "renewal failure":
-                    throw new Error("Renewal connection failed");
-                  case "lease expiry":
-                    return renewal.promise;
-                  case "operation deadline":
-                    return true;
-                }
-              },
-              parkReconciliation: async () => {
-                parked = true;
-                // A fallback write would wait behind the same stalled cleanup.
-                await response.promise;
-                return true;
-              },
-              markConnectionReady: async (args) => {
-                ready.push(args.allocationId);
-                return other;
-              },
-            }),
-          }),
-          enableAutomaticReplacementRecovery: recovery,
-          leaseDurationMs:
-            scenario.interruption === "operation deadline" ? 1_000 : 60,
-          operationTimeoutMs:
-            scenario.interruption === "operation deadline" ? 30 : 1_000,
-        });
-        const work = reconciler.reconcileNext().then(() => {
-          finished = true;
-        });
-        await entered.promise;
-        try {
-          await new Promise((resolve) => setTimeout(resolve, 150));
-          expect(finished).toBe(true);
-          expect(parked).toBe(false);
-          expect(await reconciler.reconcileNext()).toBe(true);
-          expect(exclusions[1]).toContain(current.id);
-          expect(ready).toEqual([other.id]);
-          expect(await reconciler.reconcileNext()).toBe(false);
-          expect(cleanupCalls).toBe(1);
-          expect(fences).not.toContainEqual([current.id, 2]);
-        } finally {
-          if (scenario.outcome === "rejected")
-            response.reject(new Error("Cleanup response lost"));
-          else
-            response.resolve(
-              scenario.outcome === "committed" ? transitioned : null,
-            );
-          renewal.resolve(false);
-          await work;
-        }
-        await tick();
-        const expectedFences: [string, number][] = [
-          [current.id, 1],
-          [other.id, 1],
-        ];
-        if (scenario.outcome === "committed")
-          expectedFences.push([current.id, 2]);
-        expect(fences).toEqual(expectedFences);
-        expect(await reconciler.reconcileNext()).toBe(false);
-        expect(exclusions.at(-1)).not.toContain(current.id);
-        expect(ready).toEqual([other.id]);
-        expect(parked).toBe(false);
+  for (const scenario of [
+    { interruption: "lease loss", outcome: "committed" },
+    { interruption: "renewal failure", outcome: "committed" },
+    { interruption: "lease expiry", outcome: "committed" },
+    { interruption: "operation deadline", outcome: "committed" },
+    { interruption: "operation deadline", outcome: "unchanged" },
+    { interruption: "operation deadline", outcome: "rejected" },
+  ] as const) {
+    test(`releases a cleanup slot on ${scenario.interruption} before its ${scenario.outcome} response`, async () => {
+      const current = allocation({
+        status: "allocated",
+        generation: 1,
+        ensureAcceptedGeneration: 1,
+        initializationLeaseId: "old-initializer",
       });
-    }
+      const other = allocation({
+        id: "alloc-2",
+        status: "allocated",
+        generation: 1,
+        ensureAcceptedGeneration: 1,
+      });
+      const transitioned = allocation({
+        status: "releasing",
+        generation: 2,
+      });
+      const entered = Promise.withResolvers<boolean>();
+      const response = Promise.withResolvers<SidecarAllocation | null>();
+      const renewal = Promise.withResolvers<boolean>();
+      const exclusions: (readonly string[])[] = [];
+      const fences: [string, number][] = [];
+      const ready: string[] = [];
+      let cleanupSettled = false;
+      let cleanupCalls = 0;
+      let parked = false;
+      let finished = false;
+      const cleanup: AllocationStore["beginUnrecoverableRelease"] = async (
+        args,
+      ) => {
+        expect(args).toMatchObject({
+          expectedGeneration: 1,
+          expectedLeaseId: "lease-1",
+          onlyIfInitializationIncomplete: true,
+          expectedInitializationLeaseId: "old-initializer",
+        });
+        cleanupCalls += 1;
+        entered.resolve(true);
+        try {
+          return await response.promise;
+        } finally {
+          cleanupSettled = true;
+        }
+      };
+      const reconciler = createSidecarAllocationReconciler({
+        ...deps({
+          fences,
+          store: fakeStore({
+            claimNextReconcilable: async (args) => {
+              const excluded = args.excludedAllocationIds ?? [];
+              exclusions.push(excluded);
+              if (!cleanupSettled && !excluded.includes(current.id))
+                return current;
+              return ready.includes(other.id) ? null : other;
+            },
+            beginUnrecoverableRelease: cleanup,
+            extendReconciliationLease: async (id) => {
+              if (id !== current.id) return true;
+              switch (scenario.interruption) {
+                case "lease loss":
+                  return false;
+                case "renewal failure":
+                  throw new Error("Renewal connection failed");
+                case "lease expiry":
+                  return renewal.promise;
+                case "operation deadline":
+                  return true;
+              }
+            },
+            parkReconciliation: async () => {
+              parked = true;
+              // A fallback write would wait behind the same stalled cleanup.
+              await response.promise;
+              return true;
+            },
+            markConnectionReady: async (args) => {
+              ready.push(args.allocationId);
+              return other;
+            },
+          }),
+        }),
+        leaseDurationMs:
+          scenario.interruption === "operation deadline" ? 1_000 : 60,
+        operationTimeoutMs:
+          scenario.interruption === "operation deadline" ? 30 : 1_000,
+      });
+      const work = reconciler.reconcileNext().then(() => {
+        finished = true;
+      });
+      await entered.promise;
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        expect(finished).toBe(true);
+        expect(parked).toBe(false);
+        expect(await reconciler.reconcileNext()).toBe(true);
+        expect(exclusions[1]).toContain(current.id);
+        expect(ready).toEqual([other.id]);
+        expect(await reconciler.reconcileNext()).toBe(false);
+        expect(cleanupCalls).toBe(1);
+        expect(fences).not.toContainEqual([current.id, 2]);
+      } finally {
+        if (scenario.outcome === "rejected")
+          response.reject(new Error("Cleanup response lost"));
+        else
+          response.resolve(
+            scenario.outcome === "committed" ? transitioned : null,
+          );
+        renewal.resolve(false);
+        await work;
+      }
+      await tick();
+      const expectedFences: [string, number][] = [
+        [current.id, 1],
+        [other.id, 1],
+      ];
+      if (scenario.outcome === "committed")
+        expectedFences.push([current.id, 2]);
+      expect(fences).toEqual(expectedFences);
+      expect(await reconciler.reconcileNext()).toBe(false);
+      expect(exclusions.at(-1)).not.toContain(current.id);
+      expect(ready).toEqual([other.id]);
+      expect(parked).toBe(false);
+    });
   }
 
   test("recovers deferred mail before waiting for a disconnected worker", async () => {
@@ -1775,144 +2243,129 @@ describe("durable initialization outcomes", () => {
     }
   });
 
-  for (const recovery of [false, true]) {
-    test(`a cancelled deploy with a late acknowledgement is fenced before retry (recovery=${String(recovery)})`, async () => {
-      let current = allocation({
-        id: TEST_TARGET.allocationId,
-        status: "allocated",
-        generation: TEST_TARGET.generation,
-        anchorRunId: TEST_IDENTITY.anchorRunId,
-        tenantId: TEST_IDENTITY.tenantId,
-        ensureAcceptedGeneration: TEST_TARGET.generation,
-        sidecarId: TEST_IDENTITY.sidecarId,
-      });
-      const router = createAllocatedRouter({ requestTimeoutMs: 80 });
-      const ws = await connectAllocated(router);
-      const timedOut = Promise.withResolvers<boolean>();
-      let claims = 0;
-      let initialized = 0;
-      let cleanedUp = false;
-      const transition = async () => {
-        cleanedUp = true;
-        current = {
-          ...current,
-          status: recovery ? "replacing" : "releasing",
-          generation: current.generation + 1,
-        };
-        return current;
-      };
-      const store = fakeStore({
-        claimNextReconcilable: async () => (claims++ < 2 ? current : null),
-        extendReconciliationLease: async () => {
-          throw new Error("transient renewal failure");
-        },
-        beginReplacement: transition,
-        beginUnrecoverableRelease: transition,
-      });
-      const reconciler = createSidecarAllocationReconciler({
-        ...deps({ store }),
-        router,
-        leaseDurationMs: 60,
-        retryDelayMs: () => 1,
-        enableAutomaticReplacementRecovery: recovery,
-        onReady: async (_row, { signal, leaseId }) => {
-          initialized += 1;
-          try {
-            await router.sendAgentDeployToAllocation(
-              TEST_TARGET,
-              TEST_IDENTITY.workflowRunAddress,
-              TEST_CONFIG,
-              undefined,
-              signal,
-              async () => {
-                current = { ...current, initializationLeaseId: leaseId };
-              },
-            );
-          } catch (cause) {
-            if (!isDeployFrameFailure(cause)) throw cause;
-            expect(cause.frameSent).toBe(true);
-            timedOut.resolve(true);
-            throw new SessionLaunchError("start", cause, true);
-          }
-        },
-      });
-      await reconciler.reconcileNext();
-      expect(current.initializationLeaseId).toBe("lease-1");
-      await timedOut.promise;
-      router.handleMessage(
-        ws,
-        JSON.stringify({
-          type: "agent.deploy.ack",
-          agentAddress: TEST_IDENTITY.workflowRunAddress,
-          publicKey: "c".repeat(64),
-        }),
-      );
-      await tick();
-      expect(await router.isAllocatedWorkflowActive(TEST_TARGET)).toBe(false);
-      await reconciler.reconcileNext();
-      expect(initialized).toBe(1);
-      expect(cleanedUp).toBe(true);
-      expect(ws.closed).toBe(true);
-      expect(
-        ws.sent.some((frame) => frame.includes('"type":"repo.pack.push"')),
-      ).toBe(false);
+  test(`a cancelled deploy with a late acknowledgement is fenced before retry`, async () => {
+    let current = allocation({
+      id: TEST_TARGET.allocationId,
+      status: "allocated",
+      generation: TEST_TARGET.generation,
+      anchorRunId: TEST_IDENTITY.anchorRunId,
+      tenantId: TEST_IDENTITY.tenantId,
+      ensureAcceptedGeneration: TEST_TARGET.generation,
+      sidecarId: TEST_IDENTITY.sidecarId,
     });
-  }
-
-  for (const recovery of [false, true]) {
-    test(`rechecks readiness after the observed initialization is rolled back (recovery=${String(recovery)})`, async () => {
-      const current = allocation({
-        status: "allocated",
-        generation: 1,
-        ensureAcceptedGeneration: 1,
-      });
-      const calls: string[] = [];
-      let claims = 0;
-      const cleanup: AllocationStore["beginUnrecoverableRelease"] = async (
-        args,
-      ) => {
-        expect(args).toMatchObject({
-          onlyIfInitializationIncomplete: true,
-          expectedInitializationLeaseId: "old-owner",
-        });
-        calls.push("rollback observed");
-        return null;
+    const router = createAllocatedRouter({ requestTimeoutMs: 80 });
+    const ws = await connectAllocated(router);
+    const timedOut = Promise.withResolvers<boolean>();
+    let claims = 0;
+    let initialized = 0;
+    let cleanedUp = false;
+    const transition = async () => {
+      cleanedUp = true;
+      current = {
+        ...current,
+        status: "releasing",
+        generation: current.generation + 1,
       };
-      const reconciler = createSidecarAllocationReconciler({
-        ...deps({
-          store: fakeStore({
-            claimNextReconcilable: async () =>
-              claims++ === 0
-                ? { ...current, initializationLeaseId: "old-owner" }
-                : current,
-            beginUnrecoverableRelease: cleanup,
-            beginReplacement: cleanup,
-            scheduleRetry: async () => {
-              calls.push("retry");
-              return current;
+      return current;
+    };
+    const store = fakeStore({
+      claimNextReconcilable: async () => (claims++ < 2 ? current : null),
+      extendReconciliationLease: async () => {
+        throw new Error("transient renewal failure");
+      },
+      beginUnrecoverableRelease: transition,
+    });
+    const reconciler = createSidecarAllocationReconciler({
+      ...deps({ store }),
+      router,
+      leaseDurationMs: 60,
+      retryDelayMs: () => 1,
+      onReady: async (_row, { signal, leaseId }) => {
+        initialized += 1;
+        try {
+          await router.sendAgentDeployToAllocation(
+            TEST_TARGET,
+            TEST_IDENTITY.workflowRunAddress,
+            TEST_CONFIG,
+            undefined,
+            signal,
+            async () => {
+              current = { ...current, initializationLeaseId: leaseId };
             },
-            markConnectionReady: async () => {
-              calls.push("ready");
-              return current;
-            },
-          }),
-          onReady: async () => {
-            calls.push("initialize");
+          );
+        } catch (cause) {
+          if (!isDeployFrameFailure(cause)) throw cause;
+          expect(cause.frameSent).toBe(true);
+          timedOut.resolve(true);
+          throw new SessionLaunchError("start", cause, true);
+        }
+      },
+    });
+    await reconciler.reconcileNext();
+    expect(current.initializationLeaseId).toBe("lease-1");
+    await timedOut.promise;
+    router.handleMessage(ws, deployReply(ws, { publicKey: "c".repeat(64) }));
+    await tick();
+    expect(await router.isAllocatedWorkflowActive(TEST_TARGET)).toBe(false);
+    await reconciler.reconcileNext();
+    expect(initialized).toBe(1);
+    expect(cleanedUp).toBe(true);
+    expect(ws.closed).toBe(true);
+    expect(
+      ws.sent.some((frame) => frame.includes('"type":"repo.pack.push"')),
+    ).toBe(false);
+  });
+
+  test(`rechecks readiness after the observed initialization is rolled back`, async () => {
+    const current = allocation({
+      status: "allocated",
+      generation: 1,
+      ensureAcceptedGeneration: 1,
+    });
+    const calls: string[] = [];
+    let claims = 0;
+    const cleanup: AllocationStore["beginUnrecoverableRelease"] = async (
+      args,
+    ) => {
+      expect(args).toMatchObject({
+        onlyIfInitializationIncomplete: true,
+        expectedInitializationLeaseId: "old-owner",
+      });
+      calls.push("rollback observed");
+      return null;
+    };
+    const reconciler = createSidecarAllocationReconciler({
+      ...deps({
+        store: fakeStore({
+          claimNextReconcilable: async () =>
+            claims++ === 0
+              ? { ...current, initializationLeaseId: "old-owner" }
+              : current,
+          beginUnrecoverableRelease: cleanup,
+          scheduleRetry: async () => {
+            calls.push("retry");
+            return current;
+          },
+          markConnectionReady: async () => {
+            calls.push("ready");
+            return current;
           },
         }),
-        enableAutomaticReplacementRecovery: recovery,
-      });
-      await reconciler.reconcileNext();
-      expect(calls).toEqual(["rollback observed", "retry"]);
-      await reconciler.reconcileNext();
-      expect(calls).toEqual([
-        "rollback observed",
-        "retry",
-        "initialize",
-        "ready",
-      ]);
+        onReady: async () => {
+          calls.push("initialize");
+        },
+      }),
     });
-  }
+    await reconciler.reconcileNext();
+    expect(calls).toEqual(["rollback observed", "retry"]);
+    await reconciler.reconcileNext();
+    expect(calls).toEqual([
+      "rollback observed",
+      "retry",
+      "initialize",
+      "ready",
+    ]);
+  });
 
   test("an interrupted initialization is released without waiting for a socket", async () => {
     const current = allocation({
@@ -4002,8 +4455,8 @@ describe("reconciliation ownership", () => {
         await first;
       }
       // A late connect schedules an immediate follow-up however the
-      // initialization went: the follow-up redeploys a replaced worker and
-      // is a no-op when the worker is unchanged.
+      // initialization went: the follow-up fails a deployment a restarted
+      // worker no longer holds and is a no-op when the worker is unchanged.
       expect(calls).toEqual(["retry"]);
       await reconciler.reconcileNext();
       expect(calls).toEqual(["retry", "ready"]);

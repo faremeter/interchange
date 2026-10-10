@@ -18,7 +18,7 @@ import { Hono } from "hono";
 import { upgradeWebSocket, websocket } from "hono/bun";
 import {
   createSidecarRouter,
-  type SidecarAuthenticator,
+  type SidecarAuthIdentity,
   type WsHandle,
 } from "@intx/hub-sessions";
 import { createInMemoryTransport } from "@intx/mail-memory";
@@ -31,15 +31,17 @@ import { createSidecarOrchestrator } from "./sidecar-orchestrator";
 import { resolveInboundMailPolicy } from "./ws/inbound-signature";
 import type { WorkflowProbeExecutor, WorkflowProbeResult } from "./ws/hub-link";
 
-const acceptAnySidecar: SidecarAuthenticator = async ({ sidecarId }) => ({
-  kind: "allocated",
-  sidecarId,
-  allocationId: `allocation-${sidecarId}`,
-  tenantId: "tenant-test",
-  anchorRunId: `anchor-${sidecarId}`,
-  workflowRunAddress: "workflow",
-  generation: 1,
-});
+function bindingFor(sidecarId: string): SidecarAuthIdentity {
+  return {
+    kind: "allocated",
+    sidecarId,
+    allocationId: `allocation-${sidecarId}`,
+    tenantId: "tenant-test",
+    anchorRunId: `anchor-${sidecarId}`,
+    workflowRunAddress: "workflow",
+    generation: 1,
+  };
+}
 
 function startTestServer(): {
   server: ReturnType<typeof Bun.serve>;
@@ -47,7 +49,8 @@ function startTestServer(): {
 } {
   const router = createSidecarRouter({
     withExecutableWorkflowRun: async (_target, send) => send(),
-    authenticateSidecar: acceptAnySidecar,
+    authenticateSidecar: async ({ sidecarId }) => ({ sidecarId }),
+    resolveSidecarBindings: async (sidecarId) => [bindingFor(sidecarId)],
     validateSidecarIdentity: async () => true,
     requestTimeoutMs: 5000,
     probeTimeoutMs: 5000,

@@ -19,6 +19,12 @@ import {
   type WsHandle,
 } from "./sidecar-handler";
 import type { SidecarLookups } from "./sidecar-events";
+import {
+  deployReply,
+  helloFrame,
+  liveIncarnations,
+  sidecarAuth,
+} from "./sidecar-handler.test-helpers";
 
 const identity: Extract<SidecarAuthIdentity, { kind: "allocated" }> = {
   kind: "allocated",
@@ -83,7 +89,7 @@ function createAllocatedRouter(
   const resolved = { ...identity, ...overrides };
   const router = createSidecarRouter({
     withExecutableWorkflowRun: async (_target, send) => send(),
-    authenticateSidecar: async () => resolved,
+    ...sidecarAuth(() => [resolved]),
     validateSidecarIdentity: async () => true,
     hubPublicKey: "a".repeat(64),
     requestTimeoutMs: 500,
@@ -98,7 +104,7 @@ function createSenderKeyRouter(
 ) {
   const router = createSidecarRouter({
     withExecutableWorkflowRun: async (_target, send) => send(),
-    authenticateSidecar: async () => identity,
+    ...sidecarAuth(() => [identity]),
     validateSidecarIdentity: async () => true,
     hubPublicKey: "a".repeat(64),
     requestTimeoutMs: 500,
@@ -108,11 +114,12 @@ function createSenderKeyRouter(
   return router;
 }
 
+// Connect the test sidecar, reporting a live incarnation of each address at
+// the test allocation's generation.
 async function connect(
   router: ReturnType<typeof createSidecarRouter>,
   agentAddresses: string[] = [],
   handshake: {
-    frameType?: "register" | "reconnect";
     cachedSenderAddresses?: string[];
   } = {},
 ) {
@@ -121,10 +128,14 @@ async function connect(
   router.handleMessage(
     ws,
     JSON.stringify({
-      type: handshake.frameType ?? "register",
+      type: "hello",
       sidecarId: identity.sidecarId,
       token: "token",
-      agentAddresses,
+      incarnations: agentAddresses.map((address) => ({
+        address,
+        generation: identity.generation,
+        state: "live",
+      })),
       ...(handshake.cachedSenderAddresses !== undefined
         ? { cachedSenderAddresses: handshake.cachedSenderAddresses }
         : {}),
@@ -132,6 +143,15 @@ async function connect(
   );
   await tick();
   return ws;
+}
+
+function framesOf(
+  ws: ReturnType<typeof createMockWs>,
+  type: string,
+): Record<string, unknown>[] {
+  return ws.sent
+    .map((raw): Record<string, unknown> => JSON.parse(raw))
+    .filter((frame) => frame.type === type);
 }
 
 // Carries no attempt bound: a frame that never arrives is a hang for the lane
@@ -153,7 +173,7 @@ describe("SidecarRouter allocation routing", () => {
   test("rejects a worker whose allocation generation is not fenced", async () => {
     const router = createSidecarRouter({
       withExecutableWorkflowRun: async (_target, send) => send(),
-      authenticateSidecar: async () => identity,
+      ...sidecarAuth(() => [identity]),
       validateSidecarIdentity: async () => true,
     });
     const ws = await connect(router);
@@ -162,7 +182,7 @@ describe("SidecarRouter allocation routing", () => {
     expect(router.getConnectedSidecars()).toEqual([]);
   });
 
-  test("registers only the exact allocation address", async () => {
+  test("routes only the allocation's own address", async () => {
     const router = createAllocatedRouter();
     const ws = await connect(router, [identity.workflowRunAddress]);
 
@@ -174,8 +194,18 @@ describe("SidecarRouter allocation routing", () => {
 
     const rogue = createAllocatedRouter();
     const rogueWs = await connect(rogue, ["other@tenant"]);
-    expect(rogueWs.closed).toBe(true);
+    expect(rogueWs.closed).toBe(false);
     expect(rogue.getRoutableAddresses()).toEqual([]);
+    expect(framesOf(rogueWs, "agent.undeploy")).toEqual([
+      {
+        type: "agent.undeploy",
+        requestId: expect.any(String),
+        agentAddress: "other@tenant",
+        generation: identity.generation,
+        reason: "The Hub does not keep this incarnation on this sidecar",
+      },
+    ]);
+    expect(lastFrame(rogueWs)).toEqual({ type: "welcome", routed: [] });
   });
 
   test("reconciles credentials for newly routed run addresses", async () => {
@@ -183,10 +213,7 @@ describe("SidecarRouter allocation routing", () => {
     const runAddress = "run_alloc1@exclusive";
     const router = createSidecarRouter({
       withExecutableWorkflowRun: async (_target, send) => send(),
-      authenticateSidecar: async () => ({
-        ...identity,
-        workflowRunAddress: runAddress,
-      }),
+      ...sidecarAuth(() => [{ ...identity, workflowRunAddress: runAddress }]),
       validateSidecarIdentity: async () => true,
       hubPublicKey: "a".repeat(64),
       requestTimeoutMs: 500,
@@ -199,6 +226,110 @@ describe("SidecarRouter allocation routing", () => {
 
     expect(ws.closed).toBe(false);
     expect(resynced).toEqual([runAddress]);
+  });
+
+  test("welcomes once routes are settled and keeps the socket when the rest of registration fails", async () => {
+    const runAddress = "run_alloc1@exclusive";
+    const router = createSidecarRouter({
+      withExecutableWorkflowRun: async (_target, send) => send(),
+      ...sidecarAuth(() => [{ ...identity, workflowRunAddress: runAddress }]),
+      validateSidecarIdentity: async () => true,
+      hubPublicKey: "a".repeat(64),
+      requestTimeoutMs: 500,
+      lookups: {
+        resyncCredentials: () => {
+          throw new Error("credential store unavailable");
+        },
+      },
+    });
+    router.fenceAllocation(identity.allocationId, identity.generation);
+    const ws = await connect(router, [runAddress]);
+
+    expect(ws.sent.map((raw) => JSON.parse(raw))).toContainEqual({
+      type: "welcome",
+      routed: [{ address: runAddress, generation: identity.generation }],
+    });
+    expect(ws.closed).toBe(false);
+    expect(router.getRoutableAddresses()).toEqual([runAddress]);
+  });
+
+  test("closes the socket when registration fails before its welcome", async () => {
+    const router = createAllocatedRouter();
+    const ws = createMockWs();
+    const send = ws.send.bind(ws);
+    ws.send = (data: string) => {
+      if (data.includes('"welcome"')) throw new Error("socket write failed");
+      send(data);
+    };
+    router.handleOpen(ws);
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "hello",
+        sidecarId: identity.sidecarId,
+        token: "token",
+        incarnations: [],
+      }),
+    );
+    await tick();
+
+    expect(ws.closed).toBe(true);
+  });
+
+  test("closes the socket on a hello it cannot parse", async () => {
+    const router = createAllocatedRouter();
+    const ws = createMockWs();
+    router.handleOpen(ws);
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "hello",
+        sidecarId: identity.sidecarId,
+        token: "token",
+        incarnations: [
+          {
+            address: identity.workflowRunAddress,
+            generation: -1,
+            state: "live",
+          },
+        ],
+      }),
+    );
+    await tick();
+
+    expect(ws.closed).toBe(true);
+    expect(ws.sent).toEqual([]);
+  });
+
+  test("closes the socket on a hello that names an address twice, routing and undeploying nothing", async () => {
+    const router = createAllocatedRouter();
+    const ws = createMockWs();
+    router.handleOpen(ws);
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "hello",
+        sidecarId: identity.sidecarId,
+        token: "token",
+        incarnations: [
+          {
+            address: identity.workflowRunAddress,
+            generation: identity.generation,
+            state: "live",
+          },
+          {
+            address: identity.workflowRunAddress,
+            generation: identity.generation,
+            state: "live",
+          },
+        ],
+      }),
+    );
+    await tick();
+
+    expect(ws.closed).toBe(true);
+    expect(ws.sent).toEqual([]);
+    expect(router.getRoutableAddresses()).toEqual([]);
   });
 
   test("pushes a sender-key refresh for each reported cached sender", async () => {
@@ -224,11 +355,10 @@ describe("SidecarRouter allocation routing", () => {
     expect(resolved).toEqual(["usr_alice@exclusive"]);
   });
 
-  test("pushes the refresh on the reconnect path too", async () => {
+  test("pushes the refresh for a sidecar reporting an incarnation too", async () => {
     const key = "cd".repeat(32);
     const router = createSenderKeyRouter(() => Promise.resolve(key));
-    const ws = await connect(router, [], {
-      frameType: "reconnect",
+    const ws = await connect(router, [identity.workflowRunAddress], {
       cachedSenderAddresses: ["usr_carol@exclusive"],
     });
 
@@ -334,14 +464,7 @@ describe("SidecarRouter allocation routing", () => {
     await tick();
     expect(lastFrame(ws).type).toBe("agent.deploy");
 
-    router.handleMessage(
-      ws,
-      JSON.stringify({
-        type: "agent.deploy.ack",
-        agentAddress: identity.workflowRunAddress,
-        publicKey: "b".repeat(64),
-      }),
-    );
+    router.handleMessage(ws, deployReply(ws, { publicKey: "b".repeat(64) }));
 
     await expect(deployed).resolves.toEqual({ publicKey: "b".repeat(64) });
     await expect(
@@ -403,12 +526,10 @@ describe("SidecarRouter allocation routing", () => {
 
     const second = createMockWs();
     router.handleOpen(second);
-    const reconnect = JSON.stringify({
-      type: "reconnect",
-      sidecarId: identity.sidecarId,
-      token: "token",
-      agentAddresses: [identity.workflowRunAddress],
-    });
+    const reconnect = helloFrame(
+      identity.sidecarId,
+      liveIncarnations([identity.workflowRunAddress]),
+    );
     router.handleMessage(second, reconnect);
     await tick();
 
@@ -434,14 +555,7 @@ describe("SidecarRouter allocation routing", () => {
       config,
     );
     await tick();
-    router.handleMessage(
-      ws,
-      JSON.stringify({
-        type: "agent.deploy.ack",
-        agentAddress: identity.workflowRunAddress,
-        publicKey: "b".repeat(64),
-      }),
-    );
+    router.handleMessage(ws, deployReply(ws, { publicKey: "b".repeat(64) }));
     await deployed;
 
     await router.sendWorkflowRunDispatchToAllocation(
@@ -589,7 +703,7 @@ describe("SidecarRouter sender-key resync cap", () => {
     // `@intx/hub-sessions`), so the invariant that lets this handler degrade
     // gracefully is only enforceable here, where both are visible. If the frame
     // ceiling ever slipped to or below the resync cap, an over-cap report would
-    // fail the frame parse and drop the whole register frame -- turning the
+    // fail the frame parse and drop the whole hello frame -- turning the
     // graceful slice-and-log degrade above into a hard reconnect outage.
     expect(MAX_CACHED_SENDER_ADDRESSES_FRAME).toBeGreaterThan(
       MAX_RESYNC_SENDER_ADDRESSES,
@@ -640,15 +754,17 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
   ) {
     const router = createSidecarRouter({
       withExecutableWorkflowRun: async (_target, send) => send(),
-      authenticateSidecar: async ({ sidecarId }) =>
-        raceIdentities[sidecarId] ?? null,
+      ...sidecarAuth((sidecarId) => {
+        const binding = raceIdentities[sidecarId];
+        return binding === undefined ? [] : [binding];
+      }),
       validateSidecarIdentity: async () => true,
       hubPublicKey: "a".repeat(64),
       requestTimeoutMs: 500,
       mailAckRetryIntervalMs: 10_000,
       // A wide TTL: any delivery the test observes came from a settle, not from
       // the deferred-mail TTL firing.
-      disconnectQueueTTLMs: 60_000,
+      mailHoldTTLMs: 60_000,
       lookups: {
         resolveSenderKey,
         materializeMailTriggeredRunGrants,
@@ -668,12 +784,7 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
     router.handleOpen(ws);
     router.handleMessage(
       ws,
-      JSON.stringify({
-        type: "register",
-        sidecarId,
-        token: sidecarId,
-        agentAddresses: [agentAddress],
-      }),
+      helloFrame(sidecarId, liveIncarnations([agentAddress]), sidecarId),
     );
     await tick();
     return ws;
@@ -689,6 +800,7 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
       JSON.stringify({
         type: "mail.outbound",
         senderAddress: SENDER,
+        generation: 1,
         recipients: [RECIPIENT],
         rawMessage,
         delivered: false,
@@ -910,6 +1022,7 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
           JSON.stringify({
             type: "mail.inbound.ack",
             agentAddress: RECIPIENT,
+            generation: 1,
             messageId: frame.messageId,
           }),
         );
@@ -1075,6 +1188,7 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
       JSON.stringify({
         type: "mail.outbound",
         senderAddress: SENDER,
+        generation: 1,
         recipients: [EXTERNAL_RECIPIENT],
         rawMessage: RAW_MESSAGE,
         delivered: false,

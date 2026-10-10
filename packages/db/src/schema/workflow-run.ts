@@ -115,6 +115,11 @@ export const workflowRun = pgTable(
     // still settle some runs. Set on the anchor instead of failing its live
     // runs; they are failed at this time once that history is reconciled.
     infrastructureFailedAt: timestamp("infrastructure_failed_at"),
+    // Why the Hub failed this run. Set on the anchor when the Hub decides to
+    // fail the deployment, deferred or not, then on every live run it fails,
+    // and kept after the allocation that also records it is released.
+    failureCode: text("failure_code"),
+    failureMessage: text("failure_message"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     // Nullable: a run has no end time until it reaches a terminal state.
     endedAt: timestamp("ended_at"),
@@ -143,6 +148,11 @@ export const workflowRun = pgTable(
     index("workflow_run_infrastructure_failed_idx")
       .on(t.id)
       .where(sql`${t.infrastructureFailedAt} is not null`),
+    // Deleting a sidecar nulls this column in every run that names it, so
+    // without an index each delete walks every run.
+    index("workflow_run_sidecar_idx")
+      .on(t.sidecarId)
+      .where(sql`${t.sidecarId} is not null`),
   ],
 );
 

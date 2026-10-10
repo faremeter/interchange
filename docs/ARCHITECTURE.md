@@ -76,9 +76,9 @@ Each agent on a sidecar has a single git repository that contains both the deplo
 - `deploy/` — hub-managed content (skills, prompt, configuration). The hub assembles this tree from the agent's source repository and any referenced skill libraries via subtree merge, producing a single flat tree with no submodule metadata.
 - `state/` — sidecar-managed content (conversation context, audit records). The sidecar commits here during normal operation.
 
-Path disjointness is enforced: the hub only writes commits that modify `deploy/` paths, the sidecar only writes commits that modify `state/` paths. This guarantees conflict-free merges when the hub pushes new deploy versions to a running agent.
+Path disjointness is enforced: the hub only writes commits that modify `deploy/` paths, the sidecar only writes commits that modify `state/` paths, so the two never conflict.
 
-The git DAG encodes provenance. State commits on the sidecar descend from the initial repository commit, and the `refs/heads/deploy` ref tracks the latest deploy version received from the hub. On redeploy, the sidecar force-checks-out the new deploy tree — path disjointness between `deploy/` and `state/` makes merge unnecessary and the simpler operation is correct.
+The git DAG encodes provenance. State commits on the sidecar descend from the initial repository commit, and the `refs/heads/deploy` ref tracks the deploy version received from the hub. A deployment keeps that deploy tree for its life; a new deploy version means a new deployment.
 
 Repository organization on the hub is flexible — a single repository may contain definitions for multiple agents within a tenant, or agents may have dedicated repositories depending on operational needs. The assembly step normalizes any source layout into the standard `deploy/` tree structure before pushing to sidecars.
 
@@ -105,7 +105,7 @@ The agent is unaware of which model provider is serving a given inference call.
 The harness consumes a single `ToolRunner` interface; the host (e.g. the sidecar) composes that runner from one or more tool packages — `@intx/tools-mail`, `@intx/tools-posix`, `@intx/tools-lsp`, plus any operator-supplied additions — and merges them through a generic name-collision-checked merger before passing the result to the harness. Each tool package receives the host services it needs (e.g. the bound `MessageTransport`) through a typed runtime-capability resolver, so packages are not statically wired to any one host. Local tools run within the agent's runtime — file system access, code execution, network requests, or custom tools the operator composes in. Remote tools are discovered through the control plane and invoke offerings exposed by other agents or services on the Interchange network. From the agent's perspective, local and remote tools share the same interface; the harness handles protocol negotiation, request routing, and wallet-based payment transparently. All tool invocations are subject to authorization policies.
 
 **Local Data**
-The harness manages persistent state on behalf of the agent. Conversation context, pending operations, and audit records are stored in a git repository under `state/` — but this is an implementation detail invisible to the agent. The agent interacts with the outside world exclusively through tools and messages; it has no direct access to the storage layer, the git history, or any harness metadata. Data is isolated per-agent. Credentials and authorization grants are managed by the harness and explicitly hidden from the agent (see Trust Boundary below).
+The harness manages persistent state on behalf of the agent. Conversation context, pending operations, and audit records are stored in a git repository under `state/` — but this is an implementation detail invisible to the agent. The agent interacts with the outside world exclusively through tools and messages; it has no direct access to the storage layer, the git history, or any harness metadata. Data is isolated per-agent, except between agents that share a stock sidecar. Credentials and authorization grants are managed by the harness and explicitly hidden from the agent (see Trust Boundary below).
 
 **Environment Integration**
 Separate harness implementations exist for each execution environment:
@@ -222,15 +222,15 @@ Workflow definitions declare the runtime capabilities they require without namin
 
 Before creating a deployment, the Hub records a `workflow_probe` and matches tenant and Hub probe policy against a separately configured probe-provisioner list. Every match is passed to the probe chooser, which selects the capacity that runs the probe; probing never runs on the Hub or an ambient sidecar. After freezing the result, the Hub folds requirements from the top-level definition and its inline loops, trigger bodies, and child workflows, matches the separately configured deployment-provisioner list, and passes those matches to the deployment chooser. It adopts the probe capacity when both choosers selected the same provisioner binding; otherwise it destroys that capacity and creates a normal pending allocation through the selected deployment provisioner. No match fails closed. The default chooser selects the first match in registration order, while operator compositions may inject another asynchronous policy.
 
-Every deployment is anchored to a durable sidecar allocation and routed through its authenticated generation. Provisioners decide internally whether backing capacity is created, isolated, shared, or reused; the Hub relies only on their declared guarantees. The Hub has no shared or non-provisioner sidecar identity, and every probe, deployment, trigger, signal, and workflow-state write revalidates the allocation generation.
+Every deployment is anchored to a durable sidecar allocation and routed through its authenticated generation. Provisioners decide whether each probe or deployment generation gets new capacity or joins a sidecar they already run, and whether that capacity is isolated or shared; the Hub relies only on their declared guarantees. Every sidecar identity is minted by the Hub for a provisioner, and every probe, deployment, trigger, signal, and workflow-state write revalidates the allocation generation.
 
 A deployment owns one addressable top-level run. Its stable run id is the deployment mail address. The first inbound trigger fires it; later trigger occurrences can resume a live `onTrigger` section through the run's current correlation, but they do not create another top-level run. Terminal event history is immutable and a terminal deployment cannot be fired again. Internal section/body children have distinct synthetic run ids and are not directly addressable from the Hub API. The run's authorization snapshot is reserved once and reused for every trigger occurrence in that run.
 
 Placement can only be strengthened. Each ancestor policy is enforced independently, so a child tenant or workflow cannot override it with a narrower exception. The final provisioner binding is fixed after the workflow probe exposes its capability requirements. If no configured provisioner satisfies the effective policy, deployment fails closed and the probe allocation is released.
 
-When replacement recovery is explicitly enabled, a provisioned deployment keeps the same durable identity across worker loss: the same deployment id, anchor `workflow_run`, mail address, workflow-run Git repository, and sidecar allocation. Replacement advances the allocation generation and rehydrates that deployment on new capacity from Hub-owned state. A replacement worker is therefore a continuation of the existing deployment, not a new workflow run. Replacement recovery is disabled by default because Hub-owned state does not include arbitrary files created in the sidecar or its isolation containers.
+A provisioned deployment never moves to new capacity. When its worker is lost, the Hub fails the deployment's live runs and releases its allocation: Hub-owned state does not include arbitrary files created in the sidecar or its isolation containers, and a worker that is only cut off from the Hub may still be running the deployment. A deployment its reconnected worker no longer holds is failed the same way rather than deployed again.
 
-Tenant and installed-workflow lifecycle policies set deployment lifetime and capacity retention. The Hub saves the effective policy at deployment creation, enforces deadlines, and releases terminal allocations through the provisioner. Provisioners own backing-capacity reuse policy. See [Workflow lifetime and capacity retention](./workflow-lifecycle-policy.md) for inheritance, cancellation, and release semantics.
+Tenant and installed-workflow lifecycle policies set deployment lifetime, capacity retention, and how long a deployment's sidecar may stay disconnected. The Hub saves the effective policy at deployment creation, enforces deadlines, and releases terminal allocations through the provisioner. Provisioners own sidecar reuse policy. See [Workflow lifetime and capacity retention](./workflow-lifecycle-policy.md) for inheritance, cancellation, and release semantics.
 
 ### Trust Boundary
 
@@ -244,6 +244,8 @@ The harness is a security boundary between the agent (untrusted code) and the pl
 
 This separation is fundamental to the security model. The harness enforces policy precisely because the agent cannot observe or influence the enforcement mechanism.
 
+On the stock sidecar every workflow child runs as the sidecar's OS user, so deployments that share a sidecar can read each other's keys and data. A provisioner that declares `isolation:workload` does not share sidecars; see [Sidecar placement](./SIDECAR_PLACEMENT.md).
+
 ### Cryptographic Identity
 
 Every harness and every agent has its own asymmetric key pair. These keys serve as the foundation for identity and content provenance within Interchange.
@@ -252,22 +254,22 @@ Every harness and every agent has its own asymmetric key pair. These keys serve 
 
 **Per-agent keys** identify the agent across its lifecycle, independent of which harness instance is running it. The agent's key pair is generated at launch and persists for the agent's lifetime. When an agent produces content — messages, tool invocations, checkpoints — the harness signs it with the agent's key. Recipients can verify that a specific agent generated specific content, providing a chain of provenance.
 
-Key pairs are generated at agent launch time and managed by the harness. Private keys are stored alongside the agent's persistent data and never exposed to agents or external systems. Public keys are published to the control plane and included in the agent's discovery metadata so signed content and commits remain attributable to the producing agent. Reconnect routing is authorized separately by the allocation-scoped credential.
+Key pairs are generated at agent launch time and managed by the harness. Private keys are stored alongside the agent's persistent data and never exposed to agents or external systems, except to deployments that share a stock sidecar (see Trust Boundary). Public keys are published to the control plane and included in the agent's discovery metadata so signed content and commits remain attributable to the producing agent. Reconnect routing is authorized separately by the sidecar credential and the allocations it hosts.
 
-**Commit signing** extends per-agent keys to the git layer. Every state commit (context checkpoints, audit records) is signed with the agent's Ed25519 key using SSH signature format. This means standard `git verify-commit` works with no custom tooling. The control plane verifies signatures when the sidecar pushes state, rejecting any commit not signed by the registered key. Deploy commits are signed by the hub's own key; sidecars verify deploy signatures before accepting content. See Implementation for the wire protocol details.
+**Commit signing** extends per-agent keys to the git layer. Every state commit (context checkpoints, audit records) is signed with the agent's Ed25519 key using SSH signature format. This means standard `git verify-commit` works with no custom tooling. Deploy commits are signed by the hub's own key; sidecars verify deploy signatures before accepting content. See Implementation for the wire protocol details.
 
 The control plane maintains a key validity history per agent — a list of `(publicKey, validFrom, validUntil)` tuples — so that historical commits remain verifiable after key rotation. When a key is retired (due to compromise, migration, or routine rotation), the old key is retained for signature verification but no longer accepted for new pushes.
 
 ### Agent Continuity
 
-Agents survive harness restarts when their provisioner preserves the required local state. On reconnect, the allocation-scoped credential binds the worker to one deployment and generation; the worker may re-announce only that allocation's run address. Continuity refers to a single deployment surviving its own provisioned worker restart, not portability across unrelated allocations.
+Agents survive harness restarts when their provisioner preserves the required local state. On reconnect, the sidecar credential authenticates the worker for the probe and allocation generations it currently hosts; the Hub restores the route of a run address the worker reports in its `hello` only for one of those allocations, keeps unrouted a stopped one of those allocations and a live one whose run ended on its own, and asks the worker to undeploy any other. Continuity refers to a deployment surviving a restart of the worker that hosts it, not portability across unrelated allocations.
 
 The authority model for agent continuity is:
 
 - **Harness local storage is authoritative** for agent inference context — conversation history, pending operations, and token usage. This is the source of truth for what the agent knows.
-- **Control plane is a delivery queue** for user messages. Messages sent while the harness is disconnected are queued and flushed to the harness on successful reconnect. The harness incorporates delivered messages into the agent's context through the normal message handling path.
+- **Control plane holds undelivered work for a bounded time.** Triggers and signals wait in dispatch rows until the harness takes them. Mail the harness had not acknowledged when it disconnected is held for a limited time and redelivered if it reconnects within it. The harness incorporates delivered messages into the agent's context through the normal message handling path.
 
-The reconnection protocol resolves the provisioner-issued bearer token to one allocation, anchor address, and generation. The Hub accepts only that address while the generation remains current, so a worker cannot claim another deployment's route.
+The reconnection protocol resolves the Hub-minted bearer token to its sidecar and the current generation of every allocation that sidecar hosts. The Hub restores the route of an announced address only when it is one of those allocations' anchor addresses and that deployment's first deploy has completed, so a worker cannot claim another deployment's route or one whose deploy is still uncertain.
 
 Signatures are attached to:
 
@@ -313,6 +315,8 @@ All resources in Interchange are scoped to a tenant:
 - **Message Buses** - Tenant-internal message channels are private by default. Cross-tenant messaging requires federation.
 - **Control Plane** - Each tenant's slice of the control plane manages its agents, harnesses, credentials, and discovery data. The control plane handles federation with other tenants.
 
+A provisioner may place deployments of different tenants on one sidecar. The stock sidecar does not isolate the deployments it hosts from each other, so those deployments can read each other's keys and data (see Trust Boundary). A tenant whose deployments need that isolation requires `isolation:workload` in its sidecar placement policy; the Hub then relies on the declaration of the provisioner it selects.
+
 ### Federation
 
 Tenants are not siloed - they can federate to enable cross-tenant discovery and interaction:
@@ -331,11 +335,11 @@ Tenants can be organized hierarchically:
 - Resource quotas and permissions flow down the hierarchy
 - Federation between sibling tenants still requires explicit trust establishment
 
-The harness enforces tenant boundaries at runtime, ensuring that all resource access, message routing, and tool invocations respect tenant scope and federation policies.
+The harness enforces tenant boundaries at runtime, ensuring that all resource access, message routing, and tool invocations respect tenant scope and federation policies, except between deployments that share a stock sidecar (see Tenant Scope).
 
 ## Control Plane
 
-The control plane is the central orchestration and management layer for Interchange. It is tenant-aware, serving multiple tenants from shared infrastructure while maintaining strict isolation between them.
+The control plane is the central orchestration and management layer for Interchange. It is tenant-aware, serving multiple tenants from shared infrastructure while maintaining strict isolation between them, apart from deployments that share a stock sidecar (see Tenant Scope).
 
 ### Responsibilities
 
@@ -346,7 +350,7 @@ The control plane tracks all available harnesses within a tenant. Harnesses can 
 The control plane manages agent definitions — creating, versioning, and retiring blueprints. Definitions are catalog entries that describe what an agent can do. The control plane tracks version history, supports rollback to previous versions, and enforces update policies that govern how definition changes affect running agents.
 
 **Agent Lifecycle**
-The control plane launches agents from definitions onto harnesses. When an agent is launched, the control plane selects an appropriate harness, resolves the definition's grant, credential, and model requirements, transfers the agent package with materialized grants and resolved model providers, and instructs the harness to initialize the agent. The control plane tracks which agents are running on which harnesses, handles redeployment when harnesses fail, and coordinates graceful shutdown during updates or retirement.
+The control plane launches agents from definitions onto harnesses. When an agent is launched, the control plane selects an appropriate harness, resolves the definition's grant, credential, and model requirements, transfers the agent package with materialized grants and resolved model providers, and instructs the harness to initialize the agent. The control plane tracks which agents are running on which harnesses, fails the deployments of a harness it loses, and coordinates graceful shutdown during updates or retirement.
 
 **Discovery**
 The control plane is the source of truth for discovery. It maintains a two-tier registry within each tenant: agent definitions as catalog entries (potential offerings that can be launched on demand) and running agents as live providers (immediately invocable with run address and health status). The offerings endpoint returns both tiers, tagged with availability. The control plane also handles federation — publishing selected definitions and agents to other tenants and incorporating federated entries from trusted tenants into local discovery results.
@@ -528,7 +532,7 @@ Agent repos grow without bound: every accepted state or deploy pack advances a r
 
 **Cadence is owned by the writers, on the write path.** There is no GC daemon and no external operator job. After a successful write, the writer samples the repo's object counts — two cheap directory reads — and reclaims once it crosses a configured pack-count or loose-object threshold. When a reclaim runs it checks the `.git` byte size against a budget and warns if the repo is still over it, surfacing runaway accumulation that survives a reclaim; the recursive byte walk rides the reclaim rather than every write. Only the hub triggers this — from its repo substrate (state-pack receives and deploy-ref commits), while it holds its higher-level repo lock — so the reclaim always runs under a lock held against concurrent writers.
 
-**Concurrency.** A sidecar agent repo is written by several drivers that share no higher-level lock — the reactor's context commits, the mail-audit commits, and deploy applies, with the state-pack producer reading alongside. The storage layer owns the serialization: a per-directory lock keyed by the resolved working-directory path is acquired by every object-store mutation and by the collector, so GC always observes a quiescent store. It nests harmlessly under the hub's higher-level repo lock.
+**Concurrency.** A sidecar agent repo is written by several drivers that share no higher-level lock — the reactor's context commits, the mail-audit commits, and deploy applies. The storage layer owns the serialization: a per-directory lock keyed by the resolved working-directory path is acquired by every object-store mutation and by the collector, so GC always observes a quiescent store. It nests harmlessly under the hub's higher-level repo lock.
 
 **Retention is fixed per role.** The hub configures GC with `retention: keep-history`: it is the long-term archive of an agent's state graph, so commit ancestry is preserved, and it reclaims once its operator-tunable thresholds (`HUB_AGENT_GC_PACK_THRESHOLD`, `HUB_AGENT_GC_LOOSE_THRESHOLD`, `HUB_AGENT_GC_WARN_BYTES`) are crossed. The sidecar configures no GC at all — it passes no policy at its boot edge, so the substrate never reclaims, never prunes, and never warns on a sidecar repo. A sidecar agent repo therefore grows for the life of the instance; keeping it small relies on the instance being short-lived, not on retention.
 

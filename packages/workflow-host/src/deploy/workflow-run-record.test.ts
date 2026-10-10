@@ -1,4 +1,4 @@
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, spyOn } from "bun:test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -7,10 +7,14 @@ import { type } from "arktype";
 import { createEnvKeyCredentialCipher } from "@intx/crypto";
 import type { CredentialDelivery } from "@intx/types/credential-delivery";
 
+import * as atomicWrite from "./atomic-write";
 import {
   WorkflowRunRecord,
   writeWorkflowRunRecord,
   deleteWorkflowRunRecord,
+  markWorkflowRunRecord,
+  updateWorkflowRunRecordSources,
+  withWorkflowRunRecord,
   scanWorkflowRunRecords,
 } from "./workflow-run-record";
 
@@ -37,6 +41,28 @@ async function fileExists(p: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+function holdRecordWrite(file: string) {
+  const entered = Promise.withResolvers<undefined>();
+  const release = Promise.withResolvers<undefined>();
+  const write = atomicWrite.writeFileAtomicDurable;
+  let held = false;
+  const spy = spyOn(atomicWrite, "writeFileAtomicDurable").mockImplementation(
+    async (path, contents, options) => {
+      if (!held && path === file) {
+        held = true;
+        entered.resolve(undefined);
+        await release.promise;
+      }
+      await write(path, contents, options);
+    },
+  );
+  return {
+    entered: entered.promise,
+    release: () => release.resolve(undefined),
+    spy,
+  };
 }
 
 /** Read the raw on-disk record (still sealed) and validate its schema shape. */
@@ -72,6 +98,7 @@ function deliveryOf(materials: Record<string, string>): CredentialDelivery {
 const SINGLE_STEP: WorkflowRunRecord = {
   version: 2,
   agentAddress: "run_abc123@tenant.example",
+  generation: 1,
   definitionId: "wf_abc123",
   sources: {
     "step-1": [
@@ -106,6 +133,7 @@ const SINGLE_STEP: WorkflowRunRecord = {
 const MULTI_STEP: WorkflowRunRecord = {
   version: 2,
   agentAddress: "run_xyz@tenant.example",
+  generation: 1,
   definitionId: "wf_xyz",
   sources: {
     plan: [
@@ -146,6 +174,7 @@ const MULTI_STEP: WorkflowRunRecord = {
 const SOURCE_REF: WorkflowRunRecord = {
   version: 2,
   agentAddress: "ins_dep_src@tenant.example",
+  generation: 1,
   definitionId: "wf_src",
   sources: {
     "step-1": [
@@ -180,6 +209,7 @@ const SOURCE_REF: WorkflowRunRecord = {
 const WITH_BODIES: WorkflowRunRecord = {
   version: 2,
   agentAddress: "ins_dep_bodies@tenant.example",
+  generation: 1,
   definitionId: "wf_bodies",
   sources: {
     "step-1": [
@@ -372,6 +402,7 @@ describe("workflow run record store", () => {
     const base = {
       version: 2,
       agentAddress: "ins_dep_bad@tenant.example",
+      generation: 1,
       definitionId: "wf_bad",
       sources: SOURCE_REF.sources,
       lineage: "source-ref",
@@ -430,6 +461,196 @@ describe("workflow run record store", () => {
 
     await deleteWorkflowRunRecord(dataDir, anchorRunId);
     expect(await fileExists(recordPath(dataDir, anchorRunId))).toBe(false);
+
+    await fs.rm(dataDir, { recursive: true, force: true });
+  });
+  test("marking keeps the rest of the record, sealed secrets included, and scans back", async () => {
+    const dataDir = await makeDataDir();
+    const anchorRunId = "marked-1";
+    expect(
+      await markWorkflowRunRecord(dataDir, anchorRunId, { state: "stopped" }),
+    ).toBe(false);
+
+    await writeWorkflowRunRecord(dataDir, anchorRunId, SINGLE_STEP, CIPHER);
+    expect(
+      await markWorkflowRunRecord(dataDir, anchorRunId, {
+        state: "stopped",
+        error: "The child ended itself",
+      }),
+    ).toBe(true);
+    expect(await scanWorkflowRunRecords(dataDir, CIPHER)).toEqual([
+      {
+        runId: anchorRunId,
+        record: {
+          ...SINGLE_STEP,
+          state: "stopped",
+          error: "The child ended itself",
+        },
+      },
+    ]);
+
+    // A later mark replaces the state and drops an error it does not carry.
+    await markWorkflowRunRecord(dataDir, anchorRunId, {
+      state: "tearing-down",
+    });
+    expect(await scanWorkflowRunRecords(dataDir, CIPHER)).toEqual([
+      { runId: anchorRunId, record: { ...SINGLE_STEP, state: "tearing-down" } },
+    ]);
+
+    await fs.rm(dataDir, { recursive: true, force: true });
+  });
+
+  test.each(["sources", "stop"])(
+    "concurrent source and stop updates preserve both when %s starts first",
+    async (first) => {
+      const dataDir = await makeDataDir();
+      const runId = "concurrent-record";
+      await writeWorkflowRunRecord(dataDir, runId, SINGLE_STEP, CIPHER);
+      await writeWorkflowRunRecord(dataDir, "independent", SINGLE_STEP, CIPHER);
+      const original = await readRawRecord(dataDir, runId);
+      const held = holdRecordWrite(recordPath(dataDir, runId));
+      const update = () =>
+        updateWorkflowRunRecordSources(
+          dataDir,
+          runId,
+          SINGLE_STEP.generation,
+          MULTI_STEP.sources,
+        );
+      const mark = () =>
+        markWorkflowRunRecord(dataDir, runId, {
+          state: "stopped",
+          error: "The child ended itself",
+        });
+      const leading = first === "sources" ? update() : mark();
+      void leading.catch(() => undefined);
+      let following: Promise<unknown> | undefined;
+      try {
+        await Promise.race([
+          held.entered,
+          leading.then(() => {
+            throw new Error("Record write was not intercepted");
+          }),
+        ]);
+        following = first === "sources" ? mark() : update();
+        void following.catch(() => undefined);
+        // One blocked record must not stall a different deployment.
+        await updateWorkflowRunRecordSources(
+          dataDir,
+          "independent",
+          SINGLE_STEP.generation,
+          MULTI_STEP.sources,
+        );
+        held.release();
+        await Promise.all([leading, following]);
+        expect(await readRawRecord(dataDir, runId)).toEqual({
+          ...original,
+          sources: MULTI_STEP.sources,
+          state: "stopped",
+          error: "The child ended itself",
+        });
+      } finally {
+        held.release();
+        await Promise.allSettled([leading, following]);
+        held.spy.mockRestore();
+        await fs.rm(dataDir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test("repository deletion waits for a marker and rejects later source updates", async () => {
+    const dataDir = await makeDataDir();
+    const runId = "deleting-record";
+    await writeWorkflowRunRecord(dataDir, runId, SINGLE_STEP, CIPHER);
+    const file = recordPath(dataDir, runId);
+    const held = holdRecordWrite(file);
+    const marking = markWorkflowRunRecord(dataDir, runId, { state: "stopped" });
+    void marking.catch(() => undefined);
+    let deleting: Promise<void> | undefined;
+    let updating: Promise<unknown> | undefined;
+    try {
+      await Promise.race([
+        held.entered,
+        marking.then(() => {
+          throw new Error("Record write was not intercepted");
+        }),
+      ]);
+      deleting = withWorkflowRunRecord(dataDir, runId, async () => {
+        expect((await readRawRecord(dataDir, runId)).state).toBe("stopped");
+        await fs.rm(path.dirname(file), { recursive: true, force: true });
+      });
+      void deleting.catch(() => undefined);
+      updating = updateWorkflowRunRecordSources(
+        dataDir,
+        runId,
+        SINGLE_STEP.generation,
+        MULTI_STEP.sources,
+      ).catch((error: unknown) => error);
+      held.release();
+      await Promise.all([marking, deleting]);
+      expect(await updating).toMatchObject({
+        message: expect.stringContaining("record is missing or invalid"),
+      });
+      expect(
+        await markWorkflowRunRecord(dataDir, runId, { state: "stopped" }),
+      ).toBe(false);
+      expect(await fileExists(path.dirname(file))).toBe(false);
+    } finally {
+      held.release();
+      await Promise.allSettled([marking, deleting, updating]);
+      held.spy.mockRestore();
+      await fs.rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  test("a stale source update leaves a newer generation intact without blocking later updates", async () => {
+    const dataDir = await makeDataDir();
+    const runId = "newer-record";
+    try {
+      await writeWorkflowRunRecord(dataDir, runId, SINGLE_STEP, CIPHER);
+      const original = await readRawRecord(dataDir, runId);
+      await expect(
+        updateWorkflowRunRecordSources(
+          dataDir,
+          runId,
+          SINGLE_STEP.generation - 1,
+          MULTI_STEP.sources,
+        ),
+      ).rejects.toThrow("generation changed");
+      expect(await readRawRecord(dataDir, runId)).toEqual(original);
+      await markWorkflowRunRecord(dataDir, runId, { state: "tearing-down" });
+      await updateWorkflowRunRecordSources(
+        dataDir,
+        runId,
+        SINGLE_STEP.generation,
+        MULTI_STEP.sources,
+      );
+      expect(await readRawRecord(dataDir, runId)).toEqual({
+        ...original,
+        sources: MULTI_STEP.sources,
+        state: "tearing-down",
+      });
+    } finally {
+      await fs.rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  test("marking leaves a record the boot scan would skip as it is", async () => {
+    const dataDir = await makeDataDir();
+    const { generation: _dropped, ...withoutGeneration } = SINGLE_STEP;
+    for (const [runId, contents] of [
+      ["torn-1", "{ torn"],
+      ["invalid-1", JSON.stringify(withoutGeneration)],
+    ] as const) {
+      const file = recordPath(dataDir, runId);
+      await fs.mkdir(path.dirname(file), { recursive: true });
+      await fs.writeFile(file, contents);
+
+      expect(
+        await markWorkflowRunRecord(dataDir, runId, { state: "tearing-down" }),
+      ).toBe(false);
+      expect(await fs.readFile(file, "utf8")).toBe(contents);
+    }
+    expect(await scanWorkflowRunRecords(dataDir, CIPHER)).toEqual([]);
 
     await fs.rm(dataDir, { recursive: true, force: true });
   });

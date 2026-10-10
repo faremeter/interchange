@@ -15,6 +15,7 @@ for (const chunk of chunkPack(packBytes)) {
   await ws.send({
     type: "repo.pack.push",
     agentAddress,
+    generation,
     repoId,
     transferId,
     seq: chunk.seq,

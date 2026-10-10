@@ -919,9 +919,14 @@ export async function startHub(
     // resolve to the fixed integration sidecar id, exercising the real
     // token-authenticated handshake rather than accepting any token.
     authenticateSidecar: async ({ token }) => {
-      if (token === TOKEN) return primaryIdentity;
-      if (token === SECOND_TOKEN) return secondaryIdentity;
+      if (token === TOKEN) return { sidecarId: SIDECAR_ID };
+      if (token === SECOND_TOKEN) return { sidecarId: SECOND_SIDECAR_ID };
       return null;
+    },
+    resolveSidecarBindings: async (sidecarId) => {
+      if (sidecarId === SIDECAR_ID) return [primaryIdentity];
+      if (sidecarId === SECOND_SIDECAR_ID) return [secondaryIdentity];
+      return [];
     },
     validateSidecarIdentity: async () => true,
     lookups: {
@@ -2446,8 +2451,7 @@ export type FireMailTriggerOpts = {
 /**
  * `code` marker on the errors `fireMailTrigger` throws when the hub declines
  * to route a frame at the target address -- `sendRunGrants` or `routeMail`
- * returned false, meaning the address had neither a live connection nor a
- * disconnect queue to ride.
+ * returned false, meaning the address had no live connection.
  */
 export const MAIL_TRIGGER_UNROUTABLE_CODE = "mail_trigger_unroutable";
 

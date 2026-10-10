@@ -23,6 +23,7 @@ type MockDBOpts = {
     status: string;
     generation: number;
     ensureAcceptedGeneration: number | null;
+    initializationLeaseId?: string | null;
   } | null;
   probe?: {
     id: string;
@@ -32,8 +33,17 @@ type MockDBOpts = {
     generation: number;
   } | null;
   anchorAddress?: string | null;
+  anchorPublicKey?: string | null;
+  anchorStatus?: string;
+  anchorCancellationRequestedAt?: Date;
+  anchorFailureCode?: string;
   onFindFirst?: (args: { where: unknown }) => void;
 };
+
+// The relational queries below stand in for SQL, so they apply the status
+// filters the resolver's WHERE clauses express.
+const HOSTING_ALLOCATION_STATUSES = ["provisioning", "allocated"];
+const HOSTING_PROBE_STATUSES = ["provisioning", "probing"];
 
 function createMockDB(opts: MockDBOpts): DB["db"] {
   const mock = {
@@ -47,16 +57,53 @@ function createMockDB(opts: MockDBOpts): DB["db"] {
         },
       },
       sidecarAllocation: {
-        findFirst: async () => opts.allocation ?? undefined,
+        findFirst: async () =>
+          opts.allocation === null || opts.allocation === undefined
+            ? undefined
+            : {
+                initializationLeaseId: null,
+                ...opts.allocation,
+              },
+        findMany: async () =>
+          opts.allocation !== null &&
+          opts.allocation !== undefined &&
+          HOSTING_ALLOCATION_STATUSES.includes(opts.allocation.status)
+            ? [opts.allocation]
+            : [],
       },
       workflowProbe: {
         findFirst: async () => opts.probe ?? undefined,
+        findMany: async () =>
+          opts.probe !== null &&
+          opts.probe !== undefined &&
+          HOSTING_PROBE_STATUSES.includes(opts.probe.status)
+            ? [opts.probe]
+            : [],
       },
       workflowRun: {
         findFirst: async () =>
           opts.anchorAddress === undefined
             ? undefined
-            : { address: opts.anchorAddress },
+            : {
+                address: opts.anchorAddress,
+                publicKey: opts.anchorPublicKey ?? null,
+                status: opts.anchorStatus ?? "running",
+                expiresAt: null,
+                cancellationRequestedAt:
+                  opts.anchorCancellationRequestedAt ?? null,
+                failureCode: opts.anchorFailureCode ?? null,
+              },
+        findMany: async () =>
+          opts.allocation === null ||
+          opts.allocation === undefined ||
+          opts.anchorAddress === undefined
+            ? []
+            : [
+                {
+                  id: opts.allocation.anchorRunId,
+                  address: opts.anchorAddress,
+                },
+              ],
       },
     },
   };
@@ -78,7 +125,7 @@ describe("createSidecarTokenAuthenticator", () => {
 
     const identity = await authenticate({ sidecarId: "sc-1", token });
 
-    expect(identity).toBeNull();
+    expect(identity).toEqual({ sidecarId: "sc-1" });
   });
 
   test("rejects an unknown token with null", async () => {
@@ -107,7 +154,7 @@ describe("createSidecarTokenAuthenticator", () => {
 
     const identity = await authenticate({ sidecarId: "sc-claimed", token });
 
-    expect(identity).toBeNull();
+    expect(identity).toEqual({ sidecarId: "sc-real" });
   });
 
   test("looks up by the token's hash, never the raw token", async () => {
@@ -155,9 +202,7 @@ describe("createSidecarTokenAuthenticator", () => {
       }),
     });
 
-    const identity = await resolver.resolve(token);
-
-    expect(identity).toEqual({
+    const binding = {
       kind: "allocated",
       sidecarId: "sc-allocated",
       allocationId: "alloc-1",
@@ -165,12 +210,142 @@ describe("createSidecarTokenAuthenticator", () => {
       anchorRunId: "run-anchor",
       workflowRunAddress: "workflow@exclusive",
       generation: 2,
+    } as const;
+    expect(await resolver.resolve(token)).toEqual({
+      sidecarId: "sc-allocated",
     });
-    if (identity === null) throw new Error("expected allocated identity");
-    expect(await resolver.isCurrent(identity, "routing")).toBe(true);
+    expect(await resolver.resolveBindings("sc-allocated")).toEqual([binding]);
+    expect(await resolver.isCurrent(binding, "routing")).toBe(true);
   });
 
-  test("rejects an allocated credential without a current allocation", async () => {
+  test("reclaims only a deployment whose first deploy completed", async () => {
+    const binding = {
+      kind: "allocated",
+      sidecarId: "sc-allocated",
+      allocationId: "alloc-1",
+      tenantId: "tenant-1",
+      anchorRunId: "run-anchor",
+      workflowRunAddress: "workflow@exclusive",
+      generation: 2,
+    } as const;
+    const resolverWith = (
+      initializationLeaseId: string | null,
+      anchorPublicKey: string | null,
+      anchorStatus = "running",
+    ) =>
+      createSidecarCredentialResolver({
+        db: createMockDB({
+          allocation: {
+            id: "alloc-1",
+            sidecarId: "sc-allocated",
+            tenantId: "tenant-1",
+            anchorRunId: "run-anchor",
+            status: "allocated",
+            generation: 2,
+            ensureAcceptedGeneration: 2,
+            initializationLeaseId,
+          },
+          anchorAddress: "workflow@exclusive",
+          anchorPublicKey,
+          anchorStatus,
+        }),
+      });
+
+    expect(
+      await resolverWith(null, "public-key").isCurrent(binding, "reclaim"),
+    ).toBe(true);
+    expect(
+      await resolverWith("lease-1", "public-key").isCurrent(binding, "reclaim"),
+    ).toBe(false);
+    expect(await resolverWith(null, null).isCurrent(binding, "reclaim")).toBe(
+      false,
+    );
+    expect(await resolverWith(null, null).isCurrent(binding, "routing")).toBe(
+      true,
+    );
+    expect(
+      await resolverWith(null, "public-key", "failed").isCurrent(
+        binding,
+        "reclaim",
+      ),
+    ).toBe(false);
+  });
+
+  test("retains instead of reclaiming only a completed deployment whose run ended on its own", async () => {
+    const binding = {
+      kind: "allocated",
+      sidecarId: "sc-allocated",
+      allocationId: "alloc-1",
+      tenantId: "tenant-1",
+      anchorRunId: "run-anchor",
+      workflowRunAddress: "workflow@exclusive",
+      generation: 2,
+    } as const;
+    const resolverWith = (
+      initializationLeaseId: string | null,
+      anchorPublicKey: string | null,
+      anchorStatus: string,
+      endedByHub: { cancelled?: boolean; failureCode?: string } = {},
+    ) =>
+      createSidecarCredentialResolver({
+        db: createMockDB({
+          allocation: {
+            id: "alloc-1",
+            sidecarId: "sc-allocated",
+            tenantId: "tenant-1",
+            anchorRunId: "run-anchor",
+            status: "allocated",
+            generation: 2,
+            ensureAcceptedGeneration: 2,
+            initializationLeaseId,
+          },
+          anchorAddress: "workflow@exclusive",
+          anchorPublicKey,
+          anchorStatus,
+          ...(endedByHub.cancelled === true
+            ? { anchorCancellationRequestedAt: new Date() }
+            : {}),
+          ...(endedByHub.failureCode !== undefined
+            ? { anchorFailureCode: endedByHub.failureCode }
+            : {}),
+        }),
+      });
+
+    expect(
+      await resolverWith(null, "public-key", "failed").isCurrent(
+        binding,
+        "retention",
+      ),
+    ).toBe(true);
+    // A copy of a run the Hub ended may have been respawned running it.
+    expect(
+      await resolverWith(null, "public-key", "cancelled", {
+        cancelled: true,
+      }).isCurrent(binding, "retention"),
+    ).toBe(false);
+    expect(
+      await resolverWith(null, "public-key", "failed", {
+        failureCode: "sidecar_deployment_stopped",
+      }).isCurrent(binding, "retention"),
+    ).toBe(false);
+    expect(
+      await resolverWith(null, "public-key", "running").isCurrent(
+        binding,
+        "retention",
+      ),
+    ).toBe(false);
+    expect(
+      await resolverWith("lease-1", "public-key", "failed").isCurrent(
+        binding,
+        "retention",
+      ),
+    ).toBe(false);
+    expect(
+      await resolverWith(null, null, "failed").isCurrent(binding, "retention"),
+    ).toBe(false);
+  });
+
+  test("resolves an allocated credential without a current allocation to no bindings", async () => {
     const token = "stale-allocated-secret";
     const resolver = createSidecarCredentialResolver({
       db: createMockDB({
@@ -182,7 +357,8 @@ describe("createSidecarTokenAuthenticator", () => {
       }),
     });
 
-    expect(await resolver.resolve(token)).toBeNull();
+    expect(await resolver.resolve(token)).toEqual({ sidecarId: "sc-replaced" });
+    expect(await resolver.resolveBindings("sc-replaced")).toEqual([]);
   });
 
   test("resolves and revalidates probe-scoped capacity", async () => {
@@ -203,17 +379,67 @@ describe("createSidecarTokenAuthenticator", () => {
       }),
     });
 
-    const identity = await resolver.resolve(token);
-
-    expect(identity).toEqual({
+    const binding = {
       kind: "probe",
       sidecarId: "sc-probe",
       allocationId: "probe-1",
       tenantId: "tenant-1",
       generation: 0,
+    } as const;
+    expect(await resolver.resolve(token)).toEqual({ sidecarId: "sc-probe" });
+    expect(await resolver.resolveBindings("sc-probe")).toEqual([binding]);
+    expect(await resolver.isCurrent(binding, "routing")).toBe(true);
+    expect(await resolver.isCurrent(binding, "reclaim")).toBe(false);
+    expect(await resolver.isCurrent(binding, "retention")).toBe(false);
+  });
+
+  test("resolves every probe and allocation a sidecar hosts", async () => {
+    const token = "shared-secret";
+    const resolver = createSidecarCredentialResolver({
+      db: createMockDB({
+        sidecar: {
+          id: "sc-shared",
+          tokenHashSha256: await sha256(token),
+        },
+        allocation: {
+          id: "alloc-1",
+          sidecarId: "sc-shared",
+          tenantId: "tenant-1",
+          anchorRunId: "run-anchor",
+          status: "allocated",
+          generation: 3,
+          ensureAcceptedGeneration: 3,
+        },
+        probe: {
+          id: "probe-1",
+          sidecarId: "sc-shared",
+          tenantId: "tenant-1",
+          status: "probing",
+          generation: 0,
+        },
+        anchorAddress: "workflow@exclusive",
+      }),
     });
-    if (identity === null) throw new Error("expected probe identity");
-    expect(await resolver.isCurrent(identity, "routing")).toBe(true);
+
+    expect(await resolver.resolve(token)).toEqual({ sidecarId: "sc-shared" });
+    expect(await resolver.resolveBindings("sc-shared")).toEqual([
+      {
+        kind: "allocated",
+        sidecarId: "sc-shared",
+        allocationId: "alloc-1",
+        tenantId: "tenant-1",
+        anchorRunId: "run-anchor",
+        workflowRunAddress: "workflow@exclusive",
+        generation: 3,
+      },
+      {
+        kind: "probe",
+        sidecarId: "sc-shared",
+        allocationId: "probe-1",
+        tenantId: "tenant-1",
+        generation: 0,
+      },
+    ]);
   });
 });
 

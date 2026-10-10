@@ -43,6 +43,11 @@ const target = {
   anchorRunId: "run_admission",
   workflowRunAddress: "run_admission@example.test",
 };
+const binding = { kind: "allocated" as const, ...target };
+const sidecarAuth = {
+  authenticateSidecar: async () => ({ sidecarId: target.sidecarId }),
+  resolveSidecarBindings: async () => [binding],
+};
 
 const deployConfig: HarnessConfig = {
   sessionId: "session_admission",
@@ -97,6 +102,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "test",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "test:1",
+        maxDisconnectedMs: 900_000,
       });
     });
 
@@ -106,7 +112,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const registered = Promise.withResolvers<undefined>();
       const router = createSidecarRouter({
         hubPublicKey: "a".repeat(64),
-        authenticateSidecar: async () => ({ kind: "allocated", ...target }),
+        ...sidecarAuth,
         validateSidecarIdentity: async () => true,
         withExecutableWorkflowRun: (identity, send, signal) =>
           withExecutableWorkflowRun(h.db, identity, send, signal),
@@ -121,10 +127,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       router.handleMessage(
         ws,
         JSON.stringify({
-          type: "register",
+          type: "hello",
           sidecarId: target.sidecarId,
           token: "token",
-          agentAddresses: [],
+          incarnations: [],
         }),
       );
       await registered.promise;
@@ -214,10 +220,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           expect(ws.sent).toEqual(before);
           expect(router.getRoutableAddresses()).toEqual([]);
           expect(
-            await allocations.clearUnsentInitialization({
-              ...initialization,
-              previousPublicKey: null,
-            }),
+            await allocations.clearUnsentInitialization(initialization),
           ).toBe(true);
         } finally {
           release.resolve(undefined);
@@ -367,11 +370,15 @@ describe.skipIf(!harnessDbEnvAvailable())(
     test("cancellation can commit after the deploy send without waiting for its acknowledgement", async () => {
       const { router, ws } = await connectForInitialization();
       const sent = Promise.withResolvers<undefined>();
+      let requestId: string | undefined;
       const send = ws.send.bind(ws);
       ws.send = (raw) => {
         send(raw);
-        if (HubFrame.assert(JSON.parse(raw)).type === "agent.deploy")
+        const frame = HubFrame.assert(JSON.parse(raw));
+        if (frame.type === "agent.deploy") {
+          requestId = frame.requestId;
           sent.resolve(undefined);
+        }
       };
       const deployment = router.sendAgentDeployToAllocation(
         target,
@@ -403,7 +410,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
           ws,
           JSON.stringify({
             type: "agent.deploy.ack",
+            requestId,
             agentAddress: target.workflowRunAddress,
+            generation: target.generation,
             publicKey: "b".repeat(64),
           }),
         );
@@ -474,7 +483,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const preparing = Promise.withResolvers<undefined>();
       const senderKey = Promise.withResolvers<string>();
       const router = createSidecarRouter({
-        authenticateSidecar: async () => ({ kind: "allocated", ...target }),
+        ...sidecarAuth,
         validateSidecarIdentity: async () => true,
         withExecutableWorkflowRun: (identity, send, signal) =>
           withExecutableWorkflowRun(h.db, identity, send, signal),
@@ -494,10 +503,16 @@ describe.skipIf(!harnessDbEnvAvailable())(
       router.handleMessage(
         ws,
         JSON.stringify({
-          type: "register",
+          type: "hello",
           sidecarId: target.sidecarId,
           token: "token",
-          agentAddresses: [target.workflowRunAddress],
+          incarnations: [
+            {
+              address: target.workflowRunAddress,
+              generation: target.generation,
+              state: "live",
+            },
+          ],
         }),
       );
       await registered.promise;

@@ -87,6 +87,7 @@ function deployHostBindings() {
     multistepSubprocessSpawner: (): never => {
       throw new Error("workflow child spawner was not provided");
     },
+    createWorkflowCache: () => ({}),
     applyFrozenWorkflowClosure: (): never => {
       throw new Error("frozen closure apply was not provided");
     },
@@ -224,6 +225,7 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
             );
           },
           initRepo: async () => undefined,
+          deleteAgentDir: async () => undefined,
         } as unknown as Parameters<
           typeof createSidecarDeployRouter
         >[0]["sessions"],
@@ -237,9 +239,6 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
         } as unknown as Parameters<
           typeof createSidecarDeployRouter
         >[0]["keyStore"],
-        senderKeyCache: {
-          put: async () => undefined,
-        },
         transport,
         repoStore,
         signingKeySeed: keyPair.privateKey,
@@ -249,10 +248,12 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
         registerDeployment: () => {
           /* no-op */
         },
+        removeRunRepository: async () => undefined,
+        removeAgentStateRepository: async () => undefined,
         unregisterDeployment: () => {
           /* no-op */
         },
-        reportDeploymentRefTips: async (agentAddress) => {
+        reportDeploymentRefTips: async ({ agentAddress }) => {
           refTipReports.push({
             agentAddress,
             childKilled: spawns.every((entry) => entry.killed),
@@ -302,10 +303,12 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
 
       const frame: AgentDeployFrame = {
         type: "agent.deploy",
+        requestId: "deploy-test",
         // Single-step projection: the deploy router derives the sole
         // step's agent-state repo from `parseAgentId(agentAddress)`, which
         // requires the canonical `run_<id>@<domain>` instance shape.
         agentAddress: "run_undeploy-supervisor@example.com",
+        generation: 1,
         agentId: "undeploy-supervisor-agent",
         hubPublicKey: "hub-pk",
         // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the multi-step branch does not read config
@@ -375,12 +378,12 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
       }
 
       // Pre-seed the on-disk per-step scratch the child roots under
-      // `<dataDir>/workflow-step-state/<anchorRunId>/` and the durable
-      // conversation under `<dataDir>/agent-conversation-state/<anchorRunId>/`.
+      // `<dataDir>/workflow-step-state/<anchorRunId>/` and the local
+      // conversation copy under `<dataDir>/agent-conversation-state/<anchorRunId>/`.
       // The warm subtree is the stable per-agent workspace (one dir, not
       // one-per-message); a stale cold `runs/<runId>/` subtree models a
       // multi-step leftover the per-run cleanup did not drop. An unrelated
-      // deployment's step-state subtree must survive the undeploy sweep.
+      // deployment's step state and conversation copy must survive the sweep.
       const anchorRunId = deriveWorkflowRunRepoId(frame.agentAddress);
       const stepStateRoot = path.join(dataDir, "workflow-step-state");
       const warmWorkspaceFile = path.join(
@@ -410,18 +413,25 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
         "workspace",
         "keep.txt",
       );
-      const durableConversationFile = path.join(
-        dataDir,
-        "agent-conversation-state",
+      const conversationRoot = path.join(dataDir, "agent-conversation-state");
+      const conversationFile = path.join(
+        conversationRoot,
         anchorRunId,
         encodeURIComponent("step-1"),
+        "checkpoint.json",
+      );
+      const otherConversationFile = path.join(
+        conversationRoot,
+        "other-deployment",
+        "step-1",
         "checkpoint.json",
       );
       for (const file of [
         warmWorkspaceFile,
         coldLeftoverFile,
         otherDeploymentFile,
-        durableConversationFile,
+        conversationFile,
+        otherConversationFile,
       ]) {
         await fs.mkdir(path.dirname(file), { recursive: true });
         await fs.writeFile(file, "x");
@@ -436,6 +446,7 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
           action: "stop",
           runId: "run_undeploy-supervisor",
           agentAddress: frame.agentAddress,
+          generation: 1,
           reason: "Lifetime expired",
         } as const;
         const cancelling = router
@@ -476,6 +487,7 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
             action: "cancel",
             runId: "run_undeploy-supervisor",
             agentAddress: frame.agentAddress,
+            generation: 1,
             reason: "Lifetime expired",
           } as const;
           const cancelling = router.control(command);
@@ -500,7 +512,9 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
         }
         await undeploy({
           type: "agent.undeploy",
+          requestId: "undeploy-test",
           agentAddress: frame.agentAddress,
+          generation: 1,
           reason: "test undeploy",
         });
       }
@@ -513,7 +527,9 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
         expect(await fs.readFile(coldLeftoverFile, "utf8")).toBe("x");
         await undeploy({
           type: "agent.undeploy",
+          requestId: "undeploy-after-stop",
           agentAddress: frame.agentAddress,
+          generation: 1,
           reason: "Release retained scratch after stop",
         });
       }
@@ -522,12 +538,15 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
       await expect(
         fs.stat(path.join(stepStateRoot, anchorRunId)),
       ).rejects.toMatchObject({ code: "ENOENT" });
-      // A different deployment's scratch is untouched: the sweep is scoped
-      // to this deployment's `<anchorRunId>` subtree only.
+      // The local conversation copy goes too: only this deployment's
+      // respawns and restarts read it.
+      await expect(
+        fs.stat(path.join(conversationRoot, anchorRunId)),
+      ).rejects.toThrow();
+      // A different deployment's state is untouched: the sweep is scoped to
+      // this deployment's `<anchorRunId>` subtrees only.
       expect(await fs.readFile(otherDeploymentFile, "utf8")).toBe("x");
-      // The durable conversation lives under a DIFFERENT root and must
-      // survive so a re-deploy restores the prior conversation.
-      expect(await fs.readFile(durableConversationFile, "utf8")).toBe("x");
+      expect(await fs.readFile(otherConversationFile, "utf8")).toBe("x");
     },
   );
 });

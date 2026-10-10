@@ -21,6 +21,8 @@ import {
 import {
   connectAllocated,
   createAllocatedRouter,
+  createManualRetries,
+  deployReply,
   parsedFrames,
   TEST_CONFIG,
   TEST_IDENTITY,
@@ -59,6 +61,7 @@ function pushPack(
       JSON.stringify({
         type: "repo.pack.push",
         agentAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: TEST_IDENTITY.generation,
         repoId: workflowRunRepoId,
         transferId,
         seq: chunk.seq,
@@ -71,6 +74,7 @@ function pushPack(
     JSON.stringify({
       type: "repo.pack.done",
       agentAddress: TEST_IDENTITY.workflowRunAddress,
+      generation: TEST_IDENTITY.generation,
       repoId: workflowRunRepoId,
       transferId,
       ref: "refs/heads/main",
@@ -291,15 +295,28 @@ describe("SidecarRouter allocation control protocols", () => {
       router.sendWorkflowControl(TEST_IDENTITY, stopCommand(), 1),
     ).rejects.toBeInstanceOf(WorkflowControlInitializingError);
 
-    router.handleMessage(
-      ws,
-      JSON.stringify({
-        type: "agent.deploy.ack",
-        agentAddress: TEST_IDENTITY.workflowRunAddress,
-        publicKey: "b".repeat(64),
-      }),
-    );
+    router.handleMessage(ws, deployReply(ws, { publicKey: "b".repeat(64) }));
     await tick();
+    await expect(
+      router.sendWorkflowControl(TEST_IDENTITY, stopCommand(), 1),
+    ).rejects.toBeInstanceOf(WorkflowControlTimeoutError);
+  });
+
+  test("a step the worker is still provisioning does not defer the deployment's control", async () => {
+    const router = createAllocatedRouter({ requestTimeoutMs: 5 });
+    await connectAllocated(router);
+    const stepAddress = "run_anchor-step-1@tenant.example";
+    await router.bindAllocatedStepRoute(TEST_TARGET, stepAddress);
+    // The Hub stops waiting for the step before the worker answers it, but the
+    // worker handles the step's frames apart from the deployment's.
+    await expect(
+      router.sendProvisionStepToAllocation(
+        TEST_TARGET,
+        stepAddress,
+        TEST_CONFIG,
+      ),
+    ).rejects.toThrow("timed out");
+
     await expect(
       router.sendWorkflowControl(TEST_IDENTITY, stopCommand(), 1),
     ).rejects.toBeInstanceOf(WorkflowControlTimeoutError);
@@ -314,14 +331,7 @@ describe("SidecarRouter allocation control protocols", () => {
       TEST_CONFIG,
     );
     await tick();
-    router.handleMessage(
-      ws,
-      JSON.stringify({
-        type: "agent.error",
-        agentAddress: TEST_IDENTITY.workflowRunAddress,
-        error: "Deploy failed",
-      }),
-    );
+    router.handleMessage(ws, deployReply(ws, { error: "Deploy failed" }));
     await expect(deployed).rejects.toThrow("Deploy failed");
 
     await expect(
@@ -486,18 +496,12 @@ describe("SidecarRouter allocation control protocols", () => {
         transferId: "transfer-after-ack",
         reason: "path_violation",
       }),
-      expect.objectContaining({
-        transferId: "transfer-after-ack",
-        reason: "path_violation",
-      }),
     ]);
 
     router.handleClose(ws);
-    const reconnected = await connectAllocated(
-      router,
-      [TEST_IDENTITY.workflowRunAddress],
-      "reconnect",
-    );
+    const reconnected = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
     pushPack(router, reconnected, "transfer-after-reconnect");
     await tick();
     expect(framesOfType(reconnected, "repo.pack.reject")).not.toHaveLength(0);
@@ -604,6 +608,7 @@ describe("SidecarRouter allocation control protocols", () => {
       JSON.stringify({
         type: "repo.pack.push",
         agentAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: TEST_IDENTITY.generation,
         repoId: workflowRunRepoId,
         transferId: "transfer-interrupted",
         seq: chunk.seq,
@@ -699,6 +704,167 @@ describe("SidecarRouter allocation control protocols", () => {
     );
   });
 
+  function reportStop(
+    router: ReturnType<typeof createAllocatedRouter>,
+    ws: Awaited<ReturnType<typeof connectAllocated>>,
+    refTips: WorkflowRunRefTips | undefined,
+    generation = TEST_IDENTITY.generation,
+  ) {
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "deployment.stopped",
+        agentAddress: TEST_IDENTITY.workflowRunAddress,
+        generation,
+        error: "Its workflow child ended itself",
+        ...(refTips !== undefined ? { refTips } : {}),
+      }),
+    );
+  }
+
+  test("holds a reported stop until the Hub has the history the stopped copy reported", async () => {
+    let hubRefTips: WorkflowRunRefTips = {
+      ...TEST_REF_TIPS,
+      "refs/heads/main": "b".repeat(40),
+    };
+    const router = createAllocatedRouter({
+      lookups: { readWorkflowRunRefTips: async () => hubRefTips },
+    });
+    const reported: unknown[] = [];
+    router.events.on("deployment.stopped", (event) => {
+      reported.push(event);
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+
+    reportStop(router, ws, TEST_REF_TIPS);
+    await tick();
+
+    expect(reported).toEqual([TEST_TARGET]);
+    expect(router.reportedDeploymentFailure(TEST_TARGET)).toBe(
+      "Its workflow child ended itself",
+    );
+    expect(router.getRoutableAddresses()).not.toContain(
+      TEST_IDENTITY.workflowRunAddress,
+    );
+    const pending = await router.stoppedDeploymentHistory(TEST_TARGET);
+    expect(pending?.unreceived).toContain("refs/heads/main");
+
+    hubRefTips = TEST_REF_TIPS;
+    reportStop(router, ws, TEST_REF_TIPS);
+    await tick();
+    const received = await router.stoppedDeploymentHistory(TEST_TARGET);
+    expect(received?.unreceived).toBeNull();
+    // The wait counts from the first report.
+    expect(received?.reportedAt).toEqual(pending?.reportedAt);
+  });
+
+  test("keeps the tips an earlier report gave when a later one could not read them", async () => {
+    const router = createAllocatedRouter({
+      lookups: { readWorkflowRunRefTips: async () => TEST_REF_TIPS },
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+
+    reportStop(router, ws, undefined);
+    await tick();
+    const unknown = await router.stoppedDeploymentHistory(TEST_TARGET);
+    expect(unknown?.unreceived).toBe("the worker did not report its ref tips");
+
+    reportStop(router, ws, TEST_REF_TIPS);
+    reportStop(router, ws, undefined);
+    await tick();
+    const known = await router.stoppedDeploymentHistory(TEST_TARGET);
+    expect(known?.unreceived).toBeNull();
+  });
+
+  test("treats the history of a stop the Hub confirmed as final", async () => {
+    const router = createAllocatedRouter();
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    await acknowledgeStop(router, ws, TEST_REF_TIPS);
+
+    reportStop(router, ws, {
+      ...TEST_REF_TIPS,
+      "refs/heads/main": "d".repeat(40),
+    });
+    await tick();
+
+    const history = await router.stoppedDeploymentHistory(TEST_TARGET);
+    expect(history?.unreceived).toBeNull();
+  });
+
+  test("undeploys a reported stop of an incarnation it does not keep", async () => {
+    const router = createAllocatedRouter();
+    const reported: unknown[] = [];
+    router.events.on("deployment.stopped", (event) => {
+      reported.push(event);
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+
+    reportStop(router, ws, TEST_REF_TIPS, TEST_IDENTITY.generation + 1);
+    await tick();
+
+    expect(reported).toEqual([]);
+    expect(router.reportedDeploymentFailure(TEST_TARGET)).toBeUndefined();
+    expect(framesOfType(ws, "agent.undeploy")).toMatchObject([
+      {
+        agentAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: TEST_IDENTITY.generation + 1,
+      },
+    ]);
+  });
+
+  test("gives up mail pending for a deployment that stops while its retry waits for admission", async () => {
+    const retries = createManualRetries(20);
+    let holdAdmission = false;
+    const entered = Promise.withResolvers<undefined>();
+    const release = Promise.withResolvers<undefined>();
+    const router = createAllocatedRouter({
+      mailAckRetryIntervalMs: 20,
+      mailHoldTTLMs: 20,
+      scheduleTimeout: retries.scheduleTimeout,
+      withExecutableWorkflowRun: async (_target, send) => {
+        if (holdAdmission) {
+          entered.resolve(undefined);
+          await release.promise;
+        }
+        return send();
+      },
+    });
+    const undelivered = Promise.withResolvers<unknown>();
+    router.events.on("mail.outbound.undelivered", (event) => {
+      undelivered.resolve(event);
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    expect(
+      await router.routeMail(
+        TEST_IDENTITY.workflowRunAddress,
+        "c3RvcHBlZA==",
+        "sender@example.test",
+        "mid-stopped",
+      ),
+    ).toBe(true);
+
+    holdAdmission = true;
+    retries.fireNext();
+    await entered.promise;
+    reportStop(router, ws, TEST_REF_TIPS);
+    await tick();
+    release.resolve(undefined);
+
+    expect(await undelivered.promise).toMatchObject({
+      rawMessage: "c3RvcHBlZA==",
+    });
+  });
+
   test("acknowledges a signal correlation only after its durable co-write", async () => {
     const registered: string[] = [];
     const router = createAllocatedRouter({
@@ -720,6 +886,7 @@ describe("SidecarRouter allocation control protocols", () => {
         runId: "run-1",
         anchorRunId: TEST_IDENTITY.anchorRunId,
         agentAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: TEST_TARGET.generation,
         kind: "approval",
         snapshot: approvalSnapshot,
       }),
@@ -756,6 +923,7 @@ describe("SidecarRouter allocation control protocols", () => {
         runId: "run-1",
         anchorRunId: TEST_IDENTITY.anchorRunId,
         agentAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: TEST_TARGET.generation,
         kind: "approval",
         snapshot: approvalSnapshot,
       }),
@@ -786,6 +954,7 @@ describe("SidecarRouter allocation control protocols", () => {
         runId: "run-1",
         anchorRunId: TEST_IDENTITY.anchorRunId,
         agentAddress: "other@tenant.example",
+        generation: TEST_TARGET.generation,
         kind: "approval",
         snapshot: approvalSnapshot,
       }),
@@ -852,6 +1021,7 @@ describe("SidecarRouter allocation control protocols", () => {
       {
         type: "drain.deliver",
         agentAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: TEST_TARGET.generation,
         deadlineMs: 5_000,
       },
     ]);
@@ -880,6 +1050,7 @@ describe("SidecarRouter allocated outbound mail", () => {
       JSON.stringify({
         type: "mail.outbound",
         senderAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: TEST_TARGET.generation,
         rawMessage: "bWFpbA==",
         recipients: ["external@example.test"],
       }),
@@ -932,6 +1103,7 @@ describe("SidecarRouter allocated outbound mail", () => {
         type: "mail.outbound",
         delivered: true,
         senderAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: TEST_TARGET.generation,
         rawMessage: "cGVyc2lzdGVk",
         recipients: ["user@example.test"],
       }),
@@ -960,6 +1132,32 @@ describe("SidecarRouter allocated outbound mail", () => {
       JSON.stringify({
         type: "mail.outbound",
         senderAddress: "other@tenant.example",
+        generation: TEST_TARGET.generation,
+        rawMessage: "bWFpbA==",
+        recipients: ["external@example.test"],
+      }),
+    );
+    await tick();
+
+    expect(undelivered).toEqual([]);
+  });
+
+  test("drops mail its routed address sends as another generation", async () => {
+    const undelivered: unknown[] = [];
+    const router = createAllocatedRouter();
+    router.events.on("mail.outbound.undelivered", (event) => {
+      undelivered.push(event);
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "mail.outbound",
+        senderAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: TEST_TARGET.generation + 1,
         rawMessage: "bWFpbA==",
         recipients: ["external@example.test"],
       }),
@@ -989,6 +1187,7 @@ describe("SidecarRouter allocated outbound mail", () => {
         type: "mail.outbound",
         delivered: true,
         senderAddress: "other@tenant.example",
+        generation: TEST_TARGET.generation,
         rawMessage: "cGVyc2lzdGVk",
         recipients: ["user@example.test"],
       }),

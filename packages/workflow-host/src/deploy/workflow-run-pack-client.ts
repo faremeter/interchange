@@ -19,7 +19,7 @@ import { getLogger } from "@intx/log";
 import { SourcesUpdatedData } from "../ipc/control-channel";
 import type { InferenceSource } from "@intx/types/runtime";
 import { CredentialDelivery } from "@intx/types/credential-delivery";
-import type { SenderIdentity, WorkflowRunRefTips } from "@intx/types/sidecar";
+import type { WorkflowRunRefTips } from "@intx/types/sidecar";
 import {
   WORKFLOW_RUN_RESTORE_REFS,
   type RepoId,
@@ -44,6 +44,8 @@ export type WorkflowRunPackClient = {
    */
   push(opts: {
     agentAddress: string;
+    /** The generation of the incarnation whose commits the push ships. */
+    generation: number;
     repoId: RepoId;
     ref: string;
   }): Promise<void>;
@@ -53,6 +55,8 @@ export type WorkflowRunPackClient = {
    * the restored tip; the next real local commit remains incremental from it.
    */
   markRestored(repoId: RepoId, ref: string, commitSha: string): void;
+  /** Forget the acknowledged tips of a repository its deployment left. */
+  forget(repoId: RepoId): void;
 };
 
 export type CreateWorkflowRunPackClientOpts = {
@@ -60,6 +64,7 @@ export type CreateWorkflowRunPackClientOpts = {
   hubLink: {
     pushWorkflowRunPack(opts: {
       agentAddress: string;
+      generation: number;
       repoId: RepoId;
       pack: Uint8Array;
       ref: string;
@@ -89,6 +94,17 @@ export function createWorkflowRunPackClient(
   function ackKey(repoId: RepoId, ref: string): string {
     return `${repoId.id}/${ref}`;
   }
+  // A repository's pushes share a token that `forget` retires, so a push whose
+  // ack lands after the repository was forgotten writes nothing back.
+  const pushTokens = new Map<string, symbol>();
+  function pushToken(repoId: RepoId): symbol {
+    let token = pushTokens.get(repoId.id);
+    if (token === undefined) {
+      token = Symbol(repoId.id);
+      pushTokens.set(repoId.id, token);
+    }
+    return token;
+  }
 
   return {
     markRestored(repoId, ref, commitSha) {
@@ -100,12 +116,20 @@ export function createWorkflowRunPackClient(
       substrate.commitPackedTip(repoId, ref, commitSha);
       lastAckedSha.set(ackKey(repoId, ref), commitSha);
     },
-    async push({ agentAddress, repoId, ref }) {
+    forget(repoId) {
+      const prefix = `${repoId.id}/`;
+      for (const key of [...lastAckedSha.keys()]) {
+        if (key.startsWith(prefix)) lastAckedSha.delete(key);
+      }
+      pushTokens.delete(repoId.id);
+    },
+    async push({ agentAddress, generation, repoId, ref }) {
       if (repoId.kind !== "workflow-run") {
         throw new Error(
           `workflow-run pack client: repoId.kind must be "workflow-run", got ${JSON.stringify(repoId.kind)}`,
         );
       }
+      const token = pushToken(repoId);
       const principal: WorkflowRunSupervisorPrincipal = {
         kind: "supervisor",
         anchorRunId: repoId.id,
@@ -125,6 +149,7 @@ export function createWorkflowRunPackClient(
       );
       await hubLink.pushWorkflowRunPack({
         agentAddress,
+        generation,
         repoId,
         pack,
         ref,
@@ -137,30 +162,37 @@ export function createWorkflowRunPackClient(
       // lets a cancelled transfer be re-shipped: a rejected push throws
       // before this line, so the cursor stays put and the next
       // `createPack` re-includes the un-acked commits.
+      if (pushTokens.get(repoId.id) !== token) return;
       substrate.commitPackedTip(repoId, ref, commitSha);
       lastAckedSha.set(ackKey(repoId, ref), commitSha);
     },
   };
 }
 
+/** The incarnation a workflow-run repository's commits belong to. */
+export type DeploymentIncarnation = {
+  agentAddress: string;
+  generation: number;
+};
+
 /**
  * Mapping registry the boot-edge substrate facade consults to resolve
  * `repoId.id` (the workflow-run runId, which the deploy router
  * derives by slugging the agent's mail address) back into the
- * agentAddress carried on every outbound pack frame. Populated by the
- * deploy router as each `agent.deploy` frame lands.
+ * incarnation every outbound pack frame names. Populated by the
+ * deploy router as each deployment is stood up.
  */
 export type DeploymentAddressRegistry = {
-  record(runId: string, agentAddress: string): void;
-  resolve(runId: string): string | null;
+  record(runId: string, incarnation: DeploymentIncarnation): void;
+  resolve(runId: string): DeploymentIncarnation | null;
   unregister(runId: string): void;
 };
 
 export function createDeploymentAddressRegistry(): DeploymentAddressRegistry {
-  const table = new Map<string, string>();
+  const table = new Map<string, DeploymentIncarnation>();
   return {
-    record(runId, agentAddress) {
-      table.set(runId, agentAddress);
+    record(runId, incarnation) {
+      table.set(runId, incarnation);
     },
     resolve(runId) {
       return table.get(runId) ?? null;
@@ -302,15 +334,15 @@ export function createMultistepSignalRouter(): MultistepSignalRouter {
  * completion means the grants are durable on disk before the next frame is
  * processed.
  *
- * `senderIdentities` carries the run's authorized senders' hub-vouched keys,
- * co-delivered on the same `run.grants` frame. The handler caches each one
- * before the grants write, so a grant that lands durably is never missing the
- * key its recipient needs to verify the sender's mail.
+ * The hub-link caches the sender keys co-delivered on the `run.grants` frame
+ * before it hands the grants over. `senderKeysCached` is false when one of
+ * them did not land; the handler then fails the grants, so a run never starts
+ * with a sender its recipient cannot verify.
  */
 export type MultistepGrantsHandler = (args: {
   runId: string;
   stepGrants: readonly unknown[];
-  senderIdentities?: readonly SenderIdentity[];
+  senderKeysCached: boolean;
 }) => Promise<void>;
 
 /**
@@ -331,13 +363,15 @@ export type MultistepGrantsHandler = (args: {
 export type MultistepGrantsRouter = {
   register(address: string, handler: MultistepGrantsHandler): void;
   unregister(address: string): void;
-  tryRoute(frame: {
-    type: "run.grants";
-    agentAddress: string;
-    runId: string;
-    stepGrants: readonly unknown[];
-    senderIdentities?: readonly SenderIdentity[];
-  }): Promise<boolean>;
+  tryRoute(
+    frame: {
+      type: "run.grants";
+      agentAddress: string;
+      runId: string;
+      stepGrants: readonly unknown[];
+    },
+    senderKeysCached: boolean,
+  ): Promise<boolean>;
 };
 
 export function createMultistepGrantsRouter(): MultistepGrantsRouter {
@@ -349,15 +383,13 @@ export function createMultistepGrantsRouter(): MultistepGrantsRouter {
     unregister(address) {
       handlers.delete(address);
     },
-    async tryRoute(frame) {
+    async tryRoute(frame, senderKeysCached) {
       const handler = handlers.get(frame.agentAddress);
       if (handler === undefined) return false;
       await handler({
         runId: frame.runId,
         stepGrants: frame.stepGrants,
-        ...(frame.senderIdentities !== undefined
-          ? { senderIdentities: frame.senderIdentities }
-          : {}),
+        senderKeysCached,
       });
       return true;
     },
@@ -629,8 +661,9 @@ export function createMultistepCredentialsRouter(): MultistepCredentialsRouter {
  */
 export type WorkflowRunPackPushingRepoStoreOpts = {
   underlying: RepoStore;
-  packClient: Pick<WorkflowRunPackClient, "push">;
+  packClient: Pick<WorkflowRunPackClient, "push" | "forget">;
   registry: DeploymentAddressRegistry;
+  isConnectionLost: (error: unknown) => boolean;
   deriveWorkflowRunRepoId: (agentAddress: string) => string;
 };
 
@@ -649,17 +682,18 @@ export type WorkflowRunPackPushingRepoStore = RepoStore & {
    * Resolves once no push is in flight and no follow-up push is
    * pending; rejects if the most recent push failed (the same
    * latched error the next `writeTreePreservingPrefix` call would
-   * surface).
+   * surface), or if the pipeline stopped with a push still due, because
+   * no connection could carry it or the deployment was undeployed first.
    */
   flushWorkflowRunPushes: (repoId: RepoId, ref: string) => Promise<void>;
   /**
    * Re-drive any workflow-run push for `agentAddress` that a disconnect
-   * cancelled. Called when the hub-link observes the deployment address
-   * become routable again after an authenticated reconnect. For each slot bound
-   * to `agentAddress` whose last push attempt failed (its `lastError` is
-   * latched), it re-arms the coalescing loop so a fresh `createPack` re-ships
-   * the un-acked commits -- the liveness path a synchronous single-step run
-   * lacks, because it has no later local write to re-set `dirty`.
+   * cancelled or a block held. Called when a `welcome` routes the deployment
+   * address again. For each slot bound to `agentAddress` with a push still
+   * due or whose last push attempt failed (its `lastError` is latched), it
+   * re-arms the coalescing loop so a fresh `createPack` re-ships the un-acked
+   * commits -- the liveness path a synchronous single-step run lacks, because
+   * it has no later local write to re-set `dirty`.
    *
    * A re-ship that fails again re-latches without self-retrying, so a
    * genuinely unrecoverable failure still surfaces loudly on the next local
@@ -671,9 +705,11 @@ export type WorkflowRunPackPushingRepoStore = RepoStore & {
   /**
    * Block workflow-run pushes for `agentAddress` until the next
    * `notifyAddressRoutable`, or until a stop reports the address's tips.
-   * Called when the hub-link observes its WS drop: a held push waits for the
-   * authenticated reconnect instead of queueing pack frames on a link that
-   * cannot deliver them.
+   * Called when a hub-link connection opens or closes: the Hub does not route
+   * the address on a connection until its `welcome` does, and the link carries
+   * no push until then. Holding the push at the block -- rather than shipping
+   * and failing -- is what lets the reconnect re-ship wait for route
+   * restoration.
    */
   markAddressUnroutable: (agentAddress: string) => void;
   /**
@@ -681,12 +717,18 @@ export type WorkflowRunPackPushingRepoStore = RepoStore & {
    * workflow-run repo, `null` for an absent ref, and schedule a push of every
    * existing ref without waiting for it. The push ships commits the hub has not
    * acknowledged, including ones written outside this facade's write hooks,
-   * such as run grants. It lifts a disconnect's block on the address: a stopped
-   * deployment is never announced again, so no reconnect would lift it.
+   * such as run grants. It lifts a disconnect's block on the address: no
+   * `welcome` routes a stopped deployment, so no reconnect would lift it.
    */
   reportWorkflowRunRefTips: (
-    agentAddress: string,
+    incarnation: DeploymentIncarnation,
   ) => Promise<WorkflowRunRefTips>;
+  /**
+   * Drop the push state of a deployment the sidecar no longer hosts. A
+   * sidecar shared by many deployments runs long, and nothing else removes
+   * it. A push still in flight settles against the dropped state.
+   */
+  forgetDeployment: (deploymentId: string, agentAddress: string) => void;
 };
 
 export function createWorkflowRunPackPushingRepoStore(
@@ -696,6 +738,7 @@ export function createWorkflowRunPackPushingRepoStore(
 
   type Slot = {
     agentAddress: string;
+    generation: number;
     repoId: RepoId;
     ref: string;
     inFlight: Promise<void> | null;
@@ -708,15 +751,15 @@ export function createWorkflowRunPackPushingRepoStore(
     return `${repoId.kind}/${repoId.id}/${ref}`;
   }
 
-  // Addresses whose hub route was dropped and has not been re-established by a
-  // authenticated reconnect. Absent means routable -- the steady state, and the
-  // first-connect state (a deployment routes via its `agent.deploy`, not a
-  // reconnect, so it is never blocked before its first push). An address is
-  // added on `markAddressUnroutable` (WS disconnect) and removed on
-  // `notifyAddressRoutable` (reconnect sent) or when a stop reports its tips.
-  // A push for a blocked address is held: the coalescing loop pauses with
-  // `dirty` still set rather than queueing pack frames on a dropped link, and
-  // the reconnect re-drives it.
+  // Addresses the Hub does not route on the current connection yet. Absent
+  // means routable -- the steady state, and the state of a deployment deployed
+  // on the current connection, which the Hub routes from its `agent.deploy`.
+  // An address the link held when a connection opened or closed is added on
+  // `markAddressUnroutable` and removed on `notifyAddressRoutable`, once a
+  // `welcome` routes it, or when a stop reports its tips: no `welcome` routes
+  // a stopped deployment. A push for a blocked address is held: the coalescing
+  // loop pauses with `dirty` still set rather than shipping before the link can
+  // carry it -- which is what makes the re-ship wait for route restoration.
   const blockedAddresses = new Set<string>();
 
   function notifySettled(slot: Slot): void {
@@ -727,8 +770,8 @@ export function createWorkflowRunPackPushingRepoStore(
 
   function startLoop(slot: Slot, repoId: RepoId, ref: string): void {
     if (slot.inFlight !== null) return;
-    // Hold the push while the address is not routable (dropped, awaiting the
-    // authenticated reconnect). Leave `dirty` set and start no loop: the loop
+    // Hold the push while the address is not routable (no `welcome` has
+    // routed it on the current connection). Leave `dirty` set and start no loop: the loop
     // resumes when `notifyAddressRoutable` clears the block and re-arms it.
     if (blockedAddresses.has(slot.agentAddress)) return;
     slot.inFlight = (async () => {
@@ -737,15 +780,27 @@ export function createWorkflowRunPackPushingRepoStore(
         // pause the loop rather than push into a severed link. Leave `dirty`
         // set so the post-reconnect resume re-ships.
         if (blockedAddresses.has(slot.agentAddress)) break;
+        // A forgotten deployment ships nothing more: the Hub no longer routes
+        // it.
+        if (slots.get(slotKey(repoId, ref)) !== slot) break;
         slot.dirty = false;
         try {
           await packClient.push({
             agentAddress: slot.agentAddress,
+            generation: slot.generation,
             repoId,
             ref,
           });
           slot.lastError = null;
         } catch (cause) {
+          // Nothing carried the push, so nothing about it failed: it stays due
+          // until a `welcome` routes the address again or a stop reports its
+          // tips. Failing the deployment's next write with it would blame the
+          // deployment for the link.
+          if (opts.isConnectionLost(cause)) {
+            slot.dirty = true;
+            break;
+          }
           const msg = cause instanceof Error ? cause.message : String(cause);
           logger.warn`workflow-run pack push failed for deployment ${repoId.id} (${slot.agentAddress}): ${msg}`;
           slot.lastError =
@@ -758,7 +813,7 @@ export function createWorkflowRunPackPushingRepoStore(
   }
 
   function schedulePush(
-    agentAddress: string,
+    incarnation: DeploymentIncarnation,
     repoId: RepoId,
     ref: string,
   ): void {
@@ -766,7 +821,8 @@ export function createWorkflowRunPackPushingRepoStore(
     let slot = slots.get(key);
     if (slot === undefined) {
       slot = {
-        agentAddress,
+        agentAddress: incarnation.agentAddress,
+        generation: incarnation.generation,
         repoId,
         ref,
         inFlight: null,
@@ -775,13 +831,6 @@ export function createWorkflowRunPackPushingRepoStore(
         settled: [],
       };
       slots.set(key, slot);
-    } else {
-      // The agentAddress is derived from a stable per-deployment
-      // mapping; refreshing it on every call keeps the slot in sync
-      // if the registry ever re-resolves the same runId to
-      // a different address (today it does not, but the contract is
-      // "look up at push time", not "cache forever").
-      slot.agentAddress = agentAddress;
     }
     slot.dirty = true;
     startLoop(slot, repoId, ref);
@@ -796,18 +845,17 @@ export function createWorkflowRunPackPushingRepoStore(
   }
 
   function markAddressUnroutable(agentAddress: string): void {
-    // The hub route for this address just dropped (WS disconnect). Block its
-    // pushes until the authenticated reconnect re-routes it. A push already
-    // in-flight when the link dropped rejects through `packSender.cancelAll`
-    // and latches its error; the block stops the coalescing loop from
-    // immediately re-shipping on the fresh (not-yet-registered) connection.
+    // The Hub does not route this address on the current connection (it just
+    // opened or closed). Block its pushes until a `welcome` routes it. A push
+    // already in flight when the link dropped is cancelled and stays due; the
+    // block stops the coalescing loop from re-shipping it before then.
     blockedAddresses.add(agentAddress);
   }
 
   function notifyAddressRoutable(agentAddress: string): void {
-    // The authenticated reconnect re-routed this address on the hub. Clear the
-    // block and re-drive so a push the disconnect cancelled -- or one held
-    // while the block was up -- ships now. This is the liveness path a
+    // A `welcome` routed this address on the Hub. Clear the block and re-drive
+    // so a push the disconnect cancelled -- or one held while the block was
+    // up -- ships now. This is the liveness path a
     // synchronous single-step run lacks: with all its events in one batch it
     // has no later local write to re-arm the coalescing loop, so the drop
     // would otherwise strand it forever.
@@ -815,8 +863,8 @@ export function createWorkflowRunPackPushingRepoStore(
     for (const slot of slots.values()) {
       if (slot.agentAddress !== agentAddress) continue;
       // Re-drive a slot that has pending work (`dirty`, e.g. a push held at
-      // the block) OR whose last attempt failed (`lastError` latched by the
-      // disconnect-cancel). A slot that is clean and already acked
+      // the block or cancelled with its connection) OR whose last attempt
+      // failed (`lastError` latched). A slot that is clean and already acked
       // (`!dirty && lastError === null`) has nothing un-shipped -- the
       // `packClient.push` empty-delta guard would skip it anyway, but not
       // re-arming it avoids a pointless loop spin. Re-arming `dirty` and
@@ -829,33 +877,50 @@ export function createWorkflowRunPackPushingRepoStore(
     }
   }
 
+  function forgetDeployment(deploymentId: string, agentAddress: string): void {
+    for (const [key, slot] of slots) {
+      if (slot.repoId.id === deploymentId) slots.delete(key);
+    }
+    blockedAddresses.delete(agentAddress);
+    packClient.forget({ kind: "workflow-run", id: deploymentId });
+  }
+
   async function flushWorkflowRunPushes(
     repoId: RepoId,
     ref: string,
   ): Promise<void> {
-    const slot = slots.get(slotKey(repoId, ref));
+    const key = slotKey(repoId, ref);
+    const slot = slots.get(key);
     if (slot === undefined) return;
-    if (slot.inFlight === null && !slot.dirty) {
-      if (slot.lastError !== null) {
-        const err = slot.lastError;
-        slot.lastError = null;
-        throw err;
-      }
-      return;
+    if (slot.inFlight !== null) {
+      await new Promise<void>((resolve) => {
+        slot.settled.push(resolve);
+      });
     }
-    await new Promise<void>((resolve) => {
-      slot.settled.push(resolve);
-    });
     if (slot.lastError !== null) {
       const err = slot.lastError;
       slot.lastError = null;
       throw err;
     }
+    if (!slot.dirty) return;
+    if (slots.get(key) !== slot) {
+      throw new Error(
+        `workflow-run pushes for ${repoId.id} ${ref} did not drain: ${slot.agentAddress} generation ${String(slot.generation)} was undeployed first`,
+      );
+    }
+    // The loop stopped, or never started, with a push still due, because the
+    // Hub does not route the address on the current connection or the
+    // connection carrying the push closed. A `welcome` that routes the address,
+    // or a stop report, ships it; until then nothing drains.
+    throw new Error(
+      `workflow-run pushes for ${repoId.id} ${ref} did not drain: the Hub does not route ${slot.agentAddress} on a connection yet`,
+    );
   }
 
   async function reportWorkflowRunRefTips(
-    agentAddress: string,
+    incarnation: DeploymentIncarnation,
   ): Promise<WorkflowRunRefTips> {
+    const { agentAddress } = incarnation;
     const repoId: RepoId = {
       kind: "workflow-run",
       id: deriveWorkflowRunRepoId(agentAddress),
@@ -869,7 +934,7 @@ export function createWorkflowRunPackPushingRepoStore(
     for (const ref of WORKFLOW_RUN_RESTORE_REFS) {
       const tip = await underlying.resolveRef(principal, repoId, ref);
       tips[ref] = tip;
-      if (tip !== null) schedulePush(agentAddress, repoId, ref);
+      if (tip !== null) schedulePush(incarnation, repoId, ref);
     }
     return tips;
   }
@@ -892,6 +957,7 @@ export function createWorkflowRunPackPushingRepoStore(
     notifyAddressRoutable,
     markAddressUnroutable,
     reportWorkflowRunRefTips,
+    forgetDeployment,
     async writeTreePreservingPrefix(principal, repoId, ref, args) {
       if (repoId.kind === "workflow-run") {
         const latched = takeLatchedError(repoId, ref);
@@ -908,13 +974,13 @@ export function createWorkflowRunPackPushingRepoStore(
       if (repoId.kind !== "workflow-run") {
         return result;
       }
-      const agentAddress = registry.resolve(repoId.id);
-      if (agentAddress === null) {
+      const incarnation = registry.resolve(repoId.id);
+      if (incarnation === null) {
         throw new Error(
           `workflow-run pack push: no run address registered for deployment ${repoId.id}; the deploy router must record the mapping before the supervisor commits run events`,
         );
       }
-      schedulePush(agentAddress, repoId, ref);
+      schedulePush(incarnation, repoId, ref);
       return result;
     },
     async writeTreeDelta(principal, repoId, ref, args) {
@@ -933,13 +999,13 @@ export function createWorkflowRunPackPushingRepoStore(
       if (repoId.kind !== "workflow-run") {
         return result;
       }
-      const agentAddress = registry.resolve(repoId.id);
-      if (agentAddress === null) {
+      const incarnation = registry.resolve(repoId.id);
+      if (incarnation === null) {
         throw new Error(
           `workflow-run pack push: no run address registered for deployment ${repoId.id}; the deploy router must record the mapping before the supervisor commits run events`,
         );
       }
-      schedulePush(agentAddress, repoId, ref);
+      schedulePush(incarnation, repoId, ref);
       return result;
     },
   };

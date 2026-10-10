@@ -231,6 +231,10 @@ export async function createHubServer({
       "WORKFLOW_DEFAULT_MAX_LIFETIME",
       "7d",
     ),
+    maxDisconnected: readLifecycleDurationEnv(
+      "WORKFLOW_DEFAULT_MAX_DISCONNECTED",
+      "15m",
+    ),
     capacityRetention: {
       completed: readLifecycleDurationEnv(
         "WORKFLOW_DEFAULT_RETENTION_COMPLETED",
@@ -248,6 +252,11 @@ export async function createHubServer({
   };
   if (lifecycleDurationMs(defaultLifecyclePolicy.maxLifetime) === 0)
     throw new Error("WORKFLOW_DEFAULT_MAX_LIFETIME must be greater than zero");
+  if (lifecycleDurationMs(defaultLifecyclePolicy.maxDisconnected) === 0) {
+    throw new Error(
+      "WORKFLOW_DEFAULT_MAX_DISCONNECTED must be greater than zero",
+    );
+  }
 
   const agentRepoStore = createAgentRepoStore({
     dataDir: hubDataDir,
@@ -337,6 +346,7 @@ export async function createHubServer({
     validateSidecarIdentity: sidecarCredentials.isCurrent,
     withExecutableWorkflowRun: (target, send, signal) =>
       withExecutableWorkflowRun(db, target, send, signal),
+    resolveSidecarBindings: sidecarCredentials.resolveBindings,
     lookups,
     ...(probeTimeoutMs !== undefined ? { probeTimeoutMs } : {}),
   });
@@ -496,11 +506,30 @@ export async function createHubServer({
 
   await workflowAllocationService.initialize?.();
   await sidecarAllocationReconciler.initialize();
-  sidecarRouter.events.on("sidecar.disconnect", ({ allocated }) => {
-    if (allocated === undefined) return;
-    return sidecarAllocationReconciler.handleDisconnect(allocated);
+  sidecarRouter.events.on("sidecar.disconnect", async ({ allocated }) => {
+    await Promise.all(
+      allocated.map((target) =>
+        sidecarAllocationReconciler
+          .handleDisconnect(target)
+          .catch((err: unknown) => {
+            log.error(
+              "Failed to handle the disconnect of allocation {allocationId} generation {generation}: {error}",
+              {
+                allocationId: target.allocationId,
+                generation: target.generation,
+                error: err instanceof Error ? err.message : String(err),
+              },
+            );
+          }),
+      ),
+    );
   });
   sidecarRouter.events.on("sidecar.allocated.connected", (allocated) =>
+    sidecarAllocationReconciler.handleConnected(allocated),
+  );
+  // A stop the sidecar reports is acted on like a reconnect: the next
+  // reconciliation reads what the sidecar reported.
+  sidecarRouter.events.on("deployment.stopped", (allocated) =>
     sidecarAllocationReconciler.handleConnected(allocated),
   );
   sidecarRouter.events.on(

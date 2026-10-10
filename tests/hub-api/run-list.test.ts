@@ -74,7 +74,6 @@ function createMockSidecarRouter(): SidecarRouter {
     sendAgentUndeploy: () => notImpl("sendAgentUndeploy"),
     sendSourcesUpdate: () => notImpl("sendSourcesUpdate"),
     sendCredentialsUpdate: () => notImpl("sendCredentialsUpdate"),
-    sendSyncRequest: () => notImpl("sendSyncRequest"),
     sendSignalDeliver: () => notImpl("sendSignalDeliver"),
     sendDrain: () => notImpl("sendDrain"),
     subscribeAgent: () => notImpl("subscribeAgent"),
@@ -327,6 +326,48 @@ describe.skipIf(!harnessDbEnvAvailable())(
           id: "run_deployed",
           definitionId: definitionIdFor(DEF_A),
           status: "deployed",
+        },
+      ]);
+    });
+
+    test("reports why the Hub failed a run only once that failure no longer waits on history", async () => {
+      const failed = {
+        tenantId: TENANT_ID,
+        definitionId: definitionIdFor(DEF_A),
+        status: "failed" as const,
+        failureCode: "sidecar_connect_failed",
+        failureMessage: "connect timeout",
+      };
+      await h.db.insert(workflowRun).values([
+        {
+          ...failed,
+          id: "run_lost",
+          anchorRunId: "run_lost",
+          address: "run_lost@list.example",
+          createdAt: new Date("2025-03-01T00:00:00.000Z"),
+        },
+        {
+          ...failed,
+          id: "run_self_failed",
+          anchorRunId: "run_self_failed",
+          address: "run_self_failed@list.example",
+          infrastructureFailedAt: new Date("2025-03-02T00:00:01.000Z"),
+          createdAt: new Date("2025-03-02T00:00:00.000Z"),
+        },
+      ]);
+
+      const res = await buildApp().request(
+        `/api/tenants/${TENANT_ID}/workflows/runs`,
+      );
+      expect(res.status).toBe(200);
+      const body: unknown = await res.json();
+      if (!isObject(body)) throw new Error("expected object body");
+      expect(body["data"]).toMatchObject([
+        { id: "run_self_failed", failureCode: null, failureMessage: null },
+        {
+          id: "run_lost",
+          failureCode: "sidecar_connect_failed",
+          failureMessage: "connect timeout",
         },
       ]);
     });

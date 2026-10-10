@@ -78,6 +78,7 @@ export {
 } from "./workflow-pending-projection-store";
 export {
   createSidecarAllocationStore,
+  SIDECAR_DEPLOYMENT_STOPPED_FAILURE_CODE,
   type BeginSidecarReleaseArgs,
   type BeginSidecarReplacementArgs,
   type BindInitialSidecarArgs,
@@ -86,6 +87,7 @@ export {
   type ClaimSidecarAllocationArgs,
   type CreatePendingSidecarAllocationArgs,
   type FailSidecarAllocationArgs,
+  type FailStoppedSidecarDeploymentArgs,
   type MarkSidecarAllocatedArgs,
   type MarkSidecarConnectionLostArgs,
   type MarkSidecarConnectionReadyArgs,
@@ -93,9 +95,11 @@ export {
   type MarkSidecarReleasedArgs,
   type ParkSidecarReconciliationPolicy,
   type ScheduleSidecarAllocationRetryArgs,
+  type ScheduleSidecarReconnectAfterHubStartArgs,
   type SidecarAllocation,
   type SidecarAllocationStore,
 } from "./sidecar-allocation-store";
+export { SidecarReuseRejectedError } from "./sidecar-reuse";
 export {
   createWorkflowProbeStore,
   type BindWorkflowProbeSidecarArgs,

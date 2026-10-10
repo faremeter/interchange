@@ -20,7 +20,12 @@ import { createApprovalSet, deriveRunAddress } from "@intx/workflow-deploy";
 import { createNoopCredentialCipher } from "@intx/crypto";
 import type { AgentRepoStore, DeployContent } from "./agent-repo";
 import type { AssetService } from "./asset-service";
-import type { Principal, RepoId, RepoStore } from "./repo-store";
+import type {
+  LocalRepoStore,
+  Principal,
+  RepoId,
+  RepoStore,
+} from "./repo-store";
 import {
   createSessionService,
   recoverSenderDeploy,
@@ -29,6 +34,7 @@ import {
 import {
   createAllocatedRouter,
   connectAllocated,
+  deployReply,
   TEST_CONFIG,
   TEST_IDENTITY,
   TEST_TARGET,
@@ -179,9 +185,6 @@ function createMockRouter(): TestSidecarRouter & {
     unbindStepRoute(stepAddress: string) {
       calls.push({ method: "unbindStepRoute", args: [stepAddress] });
     },
-    sendSyncRequest: track(
-      "sendSyncRequest",
-    ) as SidecarRouter["sendSyncRequest"],
     sendSignalDeliver: async (
       opts: Parameters<SidecarRouter["sendSignalDeliver"]>[0],
     ) => {
@@ -221,8 +224,12 @@ function createMockAllocationRouter(
     },
     waitForAllocatedSidecar: async () => undefined,
     isAllocatedSidecarReady: async () => true,
+    holdsAllocatedBinding: () => true,
     isAllocatedWorkflowActive: async () => false,
-    disconnectAllocation: () => undefined,
+    reportedDeploymentFailure: () => undefined,
+    stoppedDeploymentHistory: async () => undefined,
+    detachAllocation: () => undefined,
+    syncSidecar: async () => undefined,
     sendProbeToAllocation: async () => {
       throw new Error("mock allocated probe is not configured");
     },
@@ -296,7 +303,7 @@ function createMockRepoStore(): AgentRepoStore & { calls: Call[] } {
   };
 }
 
-function unusedRepoStore(): RepoStore {
+function unusedRepoStore(): LocalRepoStore {
   // SessionService tests never exercise the substrate; the inner
   // store is only present because AgentRepoStore exposes it. A typed
   // throwing stub keeps the surface honest without dragging in a
@@ -324,6 +331,7 @@ function unusedRepoStore(): RepoStore {
     subscribe: () => {
       throw new Error("mock AgentRepoStore.repoStore is not wired");
     },
+    removeRepo: unused,
   };
 }
 
@@ -1587,6 +1595,7 @@ describe("deployCodeSourcedWorkflow", () => {
             JSON.stringify({
               type: "mail.outbound",
               senderAddress: TEST_IDENTITY.workflowRunAddress,
+              generation: TEST_TARGET.generation,
               recipients: [TEST_IDENTITY.workflowRunAddress],
               rawMessage: "aGVsbG8=",
             }),
@@ -1594,11 +1603,7 @@ describe("deployCodeSourcedWorkflow", () => {
           await mailParked.promise;
           router.handleMessage(
             ws,
-            JSON.stringify({
-              type: "agent.deploy.ack",
-              agentAddress: TEST_IDENTITY.workflowRunAddress,
-              publicKey: "a".repeat(64),
-            }),
+            deployReply(ws, { publicKey: "a".repeat(64) }),
           );
           await publicationFinished.promise;
           const committed = scenario !== "rolled back publication";
@@ -1621,6 +1626,7 @@ describe("deployCodeSourcedWorkflow", () => {
               provisionerId: "test",
               provisionerApiVersion: 1,
               provisionerBindingFingerprint: "test:v1",
+              maxDisconnectedMs: 900_000,
               status: "allocated",
               ensureAttempts: 1,
               destroyAttempts: 0,
@@ -1712,6 +1718,7 @@ describe("deployCodeSourcedWorkflow", () => {
         provisionerId: "test",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "test:v1",
+        maxDisconnectedMs: 900_000,
         status: "allocated",
         ensureAttempts: 1,
         destroyAttempts: 0,
@@ -1790,10 +1797,7 @@ describe("deployCodeSourcedWorkflow", () => {
               frameSent: false,
             });
           }
-          expect(writes).toEqual([
-            { publicKey: null },
-            { initializationLeaseId: "lease-test" },
-          ]);
+          expect(writes).toEqual([{ initializationLeaseId: "lease-test" }]);
           return { publicKey: "completed-key" };
         };
         const preparedRepoStore = createMockRepoStore();
@@ -1828,9 +1832,9 @@ describe("deployCodeSourcedWorkflow", () => {
           .catch((error: unknown) => error);
         if (reserve) {
           expect(result).toMatchObject({ publicKey: "completed-key" });
-          expect(selections).toBe(3);
+          expect(selections).toBe(2);
           expect(writes.at(-1)).toEqual({ initializationLeaseId: null });
-          expect(writes[2]).toMatchObject({ publicKey: "completed-key" });
+          expect(writes[1]).toMatchObject({ publicKey: "completed-key" });
         } else {
           expect(result).toMatchObject({ leakedAgent: false });
           expect(writes).toEqual([]);
@@ -1844,30 +1848,20 @@ describe("deployCodeSourcedWorkflow", () => {
       "handles unsent rollback with a lost %s response",
       async (lostResponse) => {
         const writes: Record<string, unknown>[] = [];
-        let publicKey: string | null = "previous-key";
-        let transactions = 0;
         const tx = {
           select: () => ({
             from: () => ({
               where: () => ({
-                for: async () => [{ id: "alloc-test", publicKey }],
+                for: async () => [{ id: "alloc-test" }],
               }),
             }),
           }),
           update: () => ({
             set: (values: Record<string, unknown>) => {
               writes.push(values);
-              if ("publicKey" in values) {
-                if (
-                  values.publicKey !== null &&
-                  typeof values.publicKey !== "string"
-                )
-                  throw new Error("Invalid key write");
-                publicKey = values.publicKey;
-              }
               return {
                 where: () => ({
-                  returning: async () => [{ id: ANCHOR_RUN_ID }],
+                  returning: async () => [{ id: "alloc-test" }],
                 }),
               };
             },
@@ -1878,18 +1872,28 @@ describe("deployCodeSourcedWorkflow", () => {
           ...CAPTURING_DB,
           query: {
             ...CAPTURING_DB.query,
-            workflowRun: { findFirst: async () => ({ publicKey }) },
+            workflowRun: { findFirst: async () => ({ publicKey: null }) },
           },
           transaction: async (run: (handle: typeof tx) => Promise<unknown>) => {
-            transactions += 1;
             const result = await run(tx);
-            if (
-              (transactions === 1 && lostResponse === "reservation") ||
-              (transactions === 2 && lostResponse === "rollback")
-            )
+            if (lostResponse === "reservation")
               throw new Error("Transaction response lost after commit");
             return result;
           },
+          update: () => ({
+            set: (values: Record<string, unknown>) => {
+              writes.push(values);
+              return {
+                where: () => ({
+                  returning: async () => {
+                    if (lostResponse === "rollback")
+                      throw new Error("Rollback response lost after commit");
+                    return [{ id: "alloc-test" }];
+                  },
+                }),
+              };
+            },
+          }),
         } as unknown as DB["db"];
         const controller = new AbortController();
         const allocationRouter = createMockAllocationRouter();
@@ -1951,45 +1955,47 @@ describe("deployCodeSourcedWorkflow", () => {
           .catch((error: unknown) => error);
         expect(result).toMatchObject({ leakedAgent: false });
         if (lostResponse === "reservation") {
-          expect(writes).toEqual([
-            { publicKey: null },
-            { initializationLeaseId: "lease-test" },
-          ]);
+          expect(writes).toEqual([{ initializationLeaseId: "lease-test" }]);
           expect(settlements).toEqual([]);
           return;
         }
         expect(writes).toEqual([
-          { publicKey: null },
           { initializationLeaseId: "lease-test" },
-          { publicKey: "previous-key" },
           { initializationLeaseId: null },
         ]);
-        if (lostResponse === "rollback") {
-          expect(settlements).toEqual([]);
-          await recoverSenderDeploy({
-            db,
-            sidecarRouter: router,
-            allocation: {
-              id: "alloc-test",
-              anchorRunId: ANCHOR_RUN_ID,
-              tenantId: TENANT,
-              generation: 1,
-              status: "allocated",
-              provisionerId: "test",
-              provisionerApiVersion: 1,
-              provisionerBindingFingerprint: "test:v1",
-              ensureAttempts: 0,
-              destroyAttempts: 0,
-              createdAt: new Date(),
-              updatedAt: new Date(),
-            },
-            reconciliation: {
-              leaseId: "recovery",
-              signal: new AbortController().signal,
-            },
-          });
+        if (lostResponse === "none") {
+          expect(settlements).toEqual([
+            { failed: "connection lost before send" },
+          ]);
+          return;
         }
-        expect(settlements).toEqual([{ recorded: "previous-key" }]);
+        expect(settlements).toEqual([]);
+        await recoverSenderDeploy({
+          db,
+          sidecarRouter: router,
+          allocation: {
+            id: "alloc-test",
+            anchorRunId: ANCHOR_RUN_ID,
+            tenantId: TENANT,
+            generation: 1,
+            status: "allocated",
+            provisionerId: "test",
+            provisionerApiVersion: 1,
+            provisionerBindingFingerprint: "test:v1",
+            maxDisconnectedMs: 900_000,
+            ensureAttempts: 0,
+            destroyAttempts: 0,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          },
+          reconciliation: {
+            leaseId: "recovery",
+            signal: new AbortController().signal,
+          },
+        });
+        expect(settlements).toEqual([
+          { failed: "Previous deployment initialization did not complete" },
+        ]);
       },
     );
 

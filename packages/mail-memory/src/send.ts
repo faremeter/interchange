@@ -56,6 +56,9 @@ export type MessageSentHandler = (ctx: MessageSentContext) => Promise<void>;
  * 6. Schedule watch callbacks asynchronously via queueMicrotask
  * 7. Fire onMessageSent callback (fire-and-forget)
  *
+ * With `relayOnly`, every recipient is remote, registered or not, and
+ * nothing is stored locally: steps 4 and 6 are skipped.
+ *
  * If onRemoteSend is not provided and there are remote recipients, send()
  * throws. If onRemoteSend rejects, the error propagates — local delivery
  * that already completed is not rolled back. This is a known limitation:
@@ -66,6 +69,7 @@ export async function executeSend(
   senderAddress: string,
   message: OutboundMessage,
   entries: Map<string, AddressEntry>,
+  relayOnly: boolean,
   onRemoteSend?: RemoteSendHandler,
   onMessageSent?: MessageSentHandler,
 ): Promise<SendReceipt> {
@@ -77,42 +81,62 @@ export async function executeSend(
   }
   const senderCrypto = senderEntry.crypto;
 
+  // Local recipients are classified before signing yields, so one
+  // unregistered meanwhile fails the send instead of being routed as remote.
+  const registeredBeforeSigning = new Set(entries.keys());
   const composed = await composeOutbound(senderAddress, message, senderCrypto);
   const { messageId, rawBytes, envelope } = composed;
   const recipients = composed.to;
   const ccAddressList = composed.cc;
   const allAddressees = composed.recipients;
-  const remoteRecipients = allAddressees.filter((addr) => !entries.has(addr));
+  const localRecipients = relayOnly
+    ? []
+    : allAddressees.filter((addr) => registeredBeforeSigning.has(addr));
+  const remoteRecipients = allAddressees.filter(
+    (addr) => !localRecipients.includes(addr),
+  );
 
   if (remoteRecipients.length > 0 && onRemoteSend === undefined) {
     throw new Error(
-      `Recipient "${remoteRecipients[0]}" is not registered with this transport`,
+      relayOnly
+        ? `Cannot send from "${senderAddress}": this transport relays every recipient and has no remote send handler`
+        : `Recipient "${remoteRecipients[0]}" is not registered with this transport`,
     );
   }
 
-  // Deliver to each local recipient's INBOX.
-  const deliveredUids: { address: string; uid: number }[] = [];
-  for (const recipient of allAddressees) {
+  // Every recipient's INBOX is resolved before any is appended to, so a
+  // recipient unregistered while the message was being signed fails the send
+  // before the others receive it.
+  const inboxes = localRecipients.map((recipient) => {
     const entry = entries.get(recipient);
-    if (entry === undefined) continue;
+    if (entry === undefined) {
+      throw new Error(
+        `Recipient "${recipient}" was unregistered while the message was being signed`,
+      );
+    }
     const inbox = entry.mailboxes.get("INBOX");
     if (inbox === undefined) {
       throw new Error(
         `Mailbox "INBOX" does not exist for recipient "${recipient}"`,
       );
     }
-    const uid = inbox.append(rawBytes, envelope, []);
-    deliveredUids.push({ address: recipient, uid });
-  }
+    return { address: recipient, inbox };
+  });
+  const deliveredUids = inboxes.map(({ address, inbox }) => ({
+    address,
+    uid: inbox.append(rawBytes, envelope, []),
+  }));
 
   // Append copy to sender's Sent mailbox.
-  const sentStore = senderEntry.mailboxes.get("Sent");
-  if (sentStore === undefined) {
-    throw new Error(
-      `Mailbox "Sent" does not exist for sender "${senderAddress}"`,
-    );
+  if (!relayOnly) {
+    const sentStore = senderEntry.mailboxes.get("Sent");
+    if (sentStore === undefined) {
+      throw new Error(
+        `Mailbox "Sent" does not exist for sender "${senderAddress}"`,
+      );
+    }
+    sentStore.append(rawBytes, envelope, ["\\Seen"]);
   }
-  sentStore.append(rawBytes, envelope, ["\\Seen"]);
 
   // Fire local recipient watch callbacks ASYNCHRONOUSLY (per MESSAGE.md
   // requirement). queueMicrotask ensures callbacks never run synchronously

@@ -2,7 +2,7 @@
 // `DeploymentAddressRegistry` populated. The multi-step branch defers
 // `registerDeployment` until every step that can throw (asset
 // materialization, `supervisor.spawn`) has succeeded. The link's
-// `handleAgentDeploy` catches a rejection and sends `agent.error`
+// `handleAgentDeploy` catches a rejection and sends `agent.deploy.error`
 // without invoking `deployRouter.undeploy(frame)`, so a premature
 // registration would retain a `(anchorRunId -> agentAddress)` mapping
 // for a deployment that does not exist. The multi-step test drives that
@@ -80,6 +80,7 @@ function deployHostBindings() {
     multistepSubprocessSpawner: (): never => {
       throw new Error("workflow child spawner was not provided");
     },
+    createWorkflowCache: () => ({}),
     applyFrozenWorkflowClosure: (): never => {
       throw new Error("frozen closure apply was not provided");
     },
@@ -181,9 +182,6 @@ describe("deploy-failure registry leak", () => {
         typeof createSidecarDeployRouter
       >[0]["sessions"],
       keyStore: stubKeyStore(),
-      senderKeyCache: {
-        put: async () => undefined,
-      },
       transport,
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- an unsupported frame throws before any repoStore usage
       repoStore: {} as Parameters<
@@ -193,9 +191,11 @@ describe("deploy-failure registry leak", () => {
       credentialCipher: createNoopCredentialCipher(),
       createAgentCrypto: createEd25519Crypto,
       assertSourceBuildable: () => undefined,
-      registerDeployment: ({ runId, agentAddress }) => {
-        registry.record(runId, agentAddress);
+      registerDeployment: ({ runId, agentAddress, generation }) => {
+        registry.record(runId, { agentAddress, generation });
       },
+      removeRunRepository: async () => undefined,
+      removeAgentStateRepository: async () => undefined,
       unregisterDeployment: ({ runId }) => {
         registry.unregister(runId);
       },
@@ -214,7 +214,9 @@ describe("deploy-failure registry leak", () => {
     // shape before reaching any deploy work.
     const frame: AgentDeployFrame = {
       type: "agent.deploy",
+      requestId: "deploy-test",
       agentAddress: "agent-unsupported@x.example",
+      generation: 1,
       agentId: "agent-unsupported",
       hubPublicKey: "00".repeat(32),
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- config is irrelevant; the frame is rejected on shape before config is read
@@ -269,9 +271,6 @@ describe("deploy-failure registry leak", () => {
       ...deployHostBindings(),
       sessions,
       keyStore,
-      senderKeyCache: {
-        put: async () => undefined,
-      },
       transport,
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub: only getRepoDir + writeTree are exercised before the spawn-time failure
       repoStore: repoStoreStub as RepoStore,
@@ -279,9 +278,11 @@ describe("deploy-failure registry leak", () => {
       credentialCipher: createNoopCredentialCipher(),
       createAgentCrypto: createEd25519Crypto,
       assertSourceBuildable: () => undefined,
-      registerDeployment: ({ runId, agentAddress }) => {
-        registry.record(runId, agentAddress);
+      registerDeployment: ({ runId, agentAddress, generation }) => {
+        registry.record(runId, { agentAddress, generation });
       },
+      removeRunRepository: async () => undefined,
+      removeAgentStateRepository: async () => undefined,
       unregisterDeployment: ({ runId }) => {
         registry.unregister(runId);
       },
@@ -293,9 +294,6 @@ describe("deploy-failure registry leak", () => {
         SIDECAR_DATA_DIR: tmpDir,
         SIDECAR_SIGNING_PUBLIC_KEY: "00".repeat(32),
         SIDECAR_SIGNING_PRIVATE_KEY: "00".repeat(32),
-        HUB_WS_URL: "ws://test",
-        SIDECAR_ID: "sc",
-        SIDECAR_TOKEN: "tok",
         PATH: "/usr/bin",
         // Source-ref materialization reads both byte caps from the substrate env.
         SIDECAR_CACHE_MAX_BYTES: "1000000",
@@ -307,10 +305,12 @@ describe("deploy-failure registry leak", () => {
 
     const frame: AgentDeployFrame = {
       type: "agent.deploy",
+      requestId: "deploy-test",
       // Single-step projection: the deploy router parses the frame
       // address into the legacy agent-state repo id, so it must carry the
       // canonical `run_<id>@<domain>` shape.
       agentAddress: "run_mstep@x.example",
+      generation: 1,
       agentId: "mstep",
       hubPublicKey: "00".repeat(32),
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- multi-step branch does not consult config before failing
@@ -427,9 +427,6 @@ describe("deploy-failure registry leak", () => {
       ...deployHostBindings(),
       sessions,
       keyStore,
-      senderKeyCache: {
-        put: async () => undefined,
-      },
       transport,
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub: only getRepoDir + writeTree are exercised before the spawn-time failure
       repoStore: repoStoreStub as RepoStore,
@@ -437,9 +434,11 @@ describe("deploy-failure registry leak", () => {
       credentialCipher: createNoopCredentialCipher(),
       createAgentCrypto: createEd25519Crypto,
       assertSourceBuildable: () => undefined,
-      registerDeployment: ({ runId, agentAddress }) => {
-        registry.record(runId, agentAddress);
+      registerDeployment: ({ runId, agentAddress, generation }) => {
+        registry.record(runId, { agentAddress, generation });
       },
+      removeRunRepository: async () => undefined,
+      removeAgentStateRepository: async () => undefined,
       unregisterDeployment: ({ runId }) => {
         registry.unregister(runId);
       },
@@ -451,9 +450,6 @@ describe("deploy-failure registry leak", () => {
         SIDECAR_DATA_DIR: tmpDir,
         SIDECAR_SIGNING_PUBLIC_KEY: "00".repeat(32),
         SIDECAR_SIGNING_PRIVATE_KEY: "00".repeat(32),
-        HUB_WS_URL: "ws://test",
-        SIDECAR_ID: "sc",
-        SIDECAR_TOKEN: "tok",
         PATH: "/usr/bin",
         // Source-ref materialization reads both byte caps from the substrate env.
         SIDECAR_CACHE_MAX_BYTES: "1000000",
@@ -465,7 +461,9 @@ describe("deploy-failure registry leak", () => {
 
     const frame: AgentDeployFrame = {
       type: "agent.deploy",
+      requestId: "deploy-test",
       agentAddress: "run_single@x.example",
+      generation: 1,
       agentId: "single",
       hubPublicKey: "00".repeat(32),
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- single-step branch does not consult config before failing at spawn
@@ -515,5 +513,72 @@ describe("deploy-failure registry leak", () => {
     expect(removedRepos).toEqual([]);
     // Registry untouched.
     expect(registry.resolve("run_single-x-example")).toBeNull();
+  });
+
+  test("an undeploy whose teardown fails still gives up the deployment's address", async () => {
+    const { registry, mailRouter, signalRouter, drainRouter, transport } =
+      makeRouterDeps();
+    // A data directory that is a file: removing the run record under it throws.
+    const dataDir = pathJoin(
+      mkdtempSync(pathJoin(tmpdir(), "undeploy-teardown-failure-")),
+      "data",
+    );
+    writeFileSync(dataDir, "");
+    const router = createSidecarDeployRouter({
+      ...deployHostBindings(),
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- undeploy only deletes the agent directory
+      sessions: {
+        deleteAgentDir: async () => undefined,
+      } as unknown as Parameters<
+        typeof createSidecarDeployRouter
+      >[0]["sessions"],
+      keyStore: stubKeyStore(),
+      transport,
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- undeploy never touches the repo store
+      repoStore: {} as Parameters<
+        typeof createSidecarDeployRouter
+      >[0]["repoStore"],
+      signingKeySeed: new Uint8Array(32),
+      credentialCipher: createNoopCredentialCipher(),
+      createAgentCrypto: createEd25519Crypto,
+      assertSourceBuildable: () => undefined,
+      registerDeployment: ({ runId, agentAddress, generation }) => {
+        registry.record(runId, { agentAddress, generation });
+      },
+      removeRunRepository: async () => undefined,
+      removeAgentStateRepository: async () => undefined,
+      unregisterDeployment: ({ runId }) => {
+        registry.unregister(runId);
+      },
+      reportDeploymentRefTips: async () => ({}),
+      multistepMailRouter: mailRouter,
+      multistepSignalRouter: signalRouter,
+      multistepDrainRouter: drainRouter,
+      multistepSubstrateEnv: {
+        SIDECAR_DATA_DIR: dataDir,
+        SIDECAR_CACHE_MAX_BYTES: "1000000",
+        SIDECAR_REGISTRY_MAX_TARBALL_BYTES: "1000000",
+      },
+      multistepSubprocessSpawner: () => {
+        throw new Error("undeploy never spawns");
+      },
+    });
+    const agentAddress = "run_teardown@x.example";
+    const runId = deriveWorkflowRunRepoId(agentAddress);
+    registry.record(runId, { agentAddress: agentAddress, generation: 1 });
+    const undeploy = router.undeploy;
+    if (undeploy === undefined) throw new Error("router.undeploy is undefined");
+
+    await expect(
+      undeploy({
+        type: "agent.undeploy",
+        requestId: "undeploy-test",
+        agentAddress,
+        generation: 1,
+        reason: "Generation 2 superseded it",
+      }),
+    ).rejects.toThrow();
+
+    expect(registry.resolve(runId)).toBeNull();
   });
 });

@@ -12,6 +12,57 @@ export class SidecarOperationTimeoutError extends Error {
   }
 }
 
+/**
+ * The current connection of a deployment's sidecar did not report the
+ * deployment, though its first deploy completed: the sidecar no longer holds
+ * it, and the Hub does not deploy an address twice.
+ */
+export class SidecarDeploymentMissingError extends Error {
+  constructor(allocationId: string, generation: number) {
+    super(
+      `The sidecar of allocation ${allocationId} generation ${String(generation)} no longer holds its deployment`,
+    );
+    this.name = "SidecarDeploymentMissingError";
+  }
+}
+
+/**
+ * The current connection of a deployment's sidecar reported the deployment
+ * stopped though the Hub did not stop it: its workflow child ended itself, or
+ * the sidecar could not restore it. The message is the sidecar's error.
+ */
+export class SidecarDeploymentStoppedError extends Error {
+  constructor(error: string) {
+    super(error);
+    this.name = "SidecarDeploymentStoppedError";
+  }
+}
+
+/**
+ * A first deploy failed before its deploy frame was sent, so nothing ran on
+ * the sidecar and the deploy can be tried again.
+ */
+export class SidecarFirstDeployError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+    this.name = "SidecarFirstDeployError";
+  }
+}
+
+/**
+ * A deployment its sidecar reported stopped committed history the Hub does
+ * not hold yet; the Hub looks again at `retryAt` while it still waits.
+ */
+export class SidecarDeploymentHistoryPendingError extends Error {
+  readonly retryAt: Date;
+
+  constructor(unreceived: string, retryAt: Date) {
+    super(`Waiting for history a stopped deployment committed: ${unreceived}`);
+    this.name = "SidecarDeploymentHistoryPendingError";
+    this.retryAt = retryAt;
+  }
+}
+
 /** Stops waiting on cancellation or an optional deadline, even if work ignores the signal. */
 export async function runSidecarOperation<T>(
   operation: string,

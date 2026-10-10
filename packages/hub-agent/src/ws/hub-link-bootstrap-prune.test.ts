@@ -24,7 +24,7 @@ import { Hono } from "hono";
 import { upgradeWebSocket, websocket } from "hono/bun";
 import {
   createSidecarRouter,
-  type SidecarAuthenticator,
+  type SidecarAuthIdentity,
   type WsHandle,
 } from "@intx/hub-sessions";
 import { createInMemoryTransport } from "@intx/mail-memory";
@@ -88,29 +88,17 @@ type DeliveredMessage = { agentAddress: string; message: InboundMessage };
 
 function createMockSessionManager(): SessionManager & {
   provisioned: HarnessConfig[];
-  addresses: string[];
 } {
   const mock = {
     provisioned: [] as HarnessConfig[],
-    addresses: [] as string[],
 
     initRepo: (_address: string) => Promise.resolve(),
-    getAddresses(): string[] {
-      return [...mock.addresses];
-    },
     applyDeployPack: () => Promise.resolve(),
     applyAssetPack: () => Promise.resolve(),
-    createStatePack: () =>
-      Promise.resolve({
-        pack: new Uint8Array([1, 2, 3]),
-        commitSha: "abc123",
-        ref: "refs/heads/main",
-      }),
     deleteAgentDir: () => Promise.resolve(),
     getSessionId: (_agentAddress: string) => undefined,
   } satisfies SessionManager & {
     provisioned: HarnessConfig[];
-    addresses: string[];
   } & { delivered?: DeliveredMessage[] };
   return mock;
 }
@@ -158,9 +146,9 @@ function startTestServer(): TestEnv {
 
   const identities = new Map<
     string,
-    Exclude<Awaited<ReturnType<SidecarAuthenticator>>, null>
+    Extract<SidecarAuthIdentity, { kind: "allocated" }>
   >();
-  const acceptAnySidecar: SidecarAuthenticator = async ({ sidecarId }) => {
+  function ensureIdentity(sidecarId: string) {
     const existing = identities.get(sidecarId);
     if (existing !== undefined) return existing;
     const identity = {
@@ -174,10 +162,11 @@ function startTestServer(): TestEnv {
     };
     identities.set(sidecarId, identity);
     return identity;
-  };
+  }
   const router = createSidecarRouter({
     withExecutableWorkflowRun: async (_target, send) => send(),
-    authenticateSidecar: acceptAnySidecar,
+    authenticateSidecar: async ({ sidecarId }) => ({ sidecarId }),
+    resolveSidecarBindings: async (sidecarId) => [ensureIdentity(sidecarId)],
     validateSidecarIdentity: async () => true,
     requestTimeoutMs: 5000,
     hubPublicKey: "a".repeat(64),
@@ -221,10 +210,7 @@ function startTestServer(): TestEnv {
               type?: string;
               sidecarId?: string;
             };
-            if (
-              (frame.type === "register" || frame.type === "reconnect") &&
-              frame.sidecarId !== undefined
-            ) {
+            if (frame.type === "hello" && frame.sidecarId !== undefined) {
               router.fenceAllocation(`allocation-${frame.sidecarId}`, 1);
             }
             router.handleMessage(handle, evt.data);
@@ -278,6 +264,7 @@ describe("hub-link workflow-run pack bootstrap prune", () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
     const keyStore = createTestKeyStore();
+    const welcomed = Promise.withResolvers<boolean>();
 
     const client = createHubLink({
       hubURL: `ws://localhost:${env.server.port}/ws`,
@@ -291,13 +278,14 @@ describe("hub-link workflow-run pack bootstrap prune", () => {
       cacheSenderKey: async () => undefined,
       evictSenderKey: async () => undefined,
       deployRouter: createTestDeployRouter(keyStore),
+      onWorkflowAddressesRoutable: () => {
+        welcomed.resolve(true);
+      },
     });
 
     client.connect();
     try {
-      await waitUntil(() =>
-        env.router.getConnectedSidecars().includes("sc-bootstrap-prune"),
-      );
+      await welcomed.promise;
 
       const agentAddress = TEST_CONFIG.agentAddress;
       await env.deployForTest(agentAddress, TEST_CONFIG);
@@ -320,6 +308,7 @@ describe("hub-link workflow-run pack bootstrap prune", () => {
       env.rejectFirstOfEvery.value = 1;
       await client.pushWorkflowRunPack({
         agentAddress,
+        generation: 1,
         repoId,
         pack,
         ref,
@@ -350,6 +339,7 @@ describe("hub-link workflow-run pack bootstrap prune", () => {
       env.rejectFirstOfEvery.value = 2;
       await client.pushWorkflowRunPack({
         agentAddress,
+        generation: 1,
         repoId,
         pack,
         ref,

@@ -6,9 +6,8 @@ import type { StorageRuntime } from "./runtime";
 /**
  * Create a git packfile containing all objects reachable from a ref.
  *
- * Used by the hub to produce deploy packs for transfer to sidecars, and by
- * the sidecar to produce state packs. The caller sends the resulting bytes
- * as chunked repo.pack.push frames.
+ * Used by the hub to produce deploy packs for transfer to sidecars. The
+ * caller sends the resulting bytes as chunked repo.pack.push frames.
  */
 export async function createDeployPack(
   runtime: StorageRuntime,

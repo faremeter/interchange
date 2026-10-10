@@ -73,6 +73,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "ec2-spot",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "ec2-spot:test",
+        maxDisconnectedMs: 900_000,
         sidecarId: "sidecar-ack",
         status: "allocated",
         generation,
@@ -227,23 +228,69 @@ describe.skipIf(!harnessDbEnvAvailable())(
       ).rejects.toThrow(/conflicts with its durable payload/);
     });
 
-    test("requeues sidecar-acknowledged messages for a replacement", async () => {
+    test("requeues a run's unsettled messages and leaves the rest alone", async () => {
       await seedAllocatedSidecar(1);
-      const store = createWorkflowRunDispatchStore(h.db);
-      await store.enqueue({
-        id: "dispatch-requeue",
-        anchorRunId: ANCHOR_RUN_ID,
-        messageId: "dispatch-message-requeue",
-        senderAddress: SENDER_ADDRESS,
-        rawMessage: new Uint8Array([1]),
-        stepGrants: [],
+      await seedWorkflowRun(h.db, {
+        id: "dep-dispatch-other",
+        anchorRunId: "dep-dispatch-other",
+        tenantId: TENANT_ID,
+        definitionId: DEFINITION_ID,
       });
-      await store.acknowledge({
-        allocationId: "allocation-ack",
-        anchorRunId: ANCHOR_RUN_ID,
-        messageId: "dispatch-message-requeue",
+      await h.db.insert(sidecar).values({
+        id: "sidecar-other",
+        tokenHashSha256: new Uint8Array([4, 5, 6]),
+        status: "online",
+      });
+      await h.db.insert(sidecarAllocation).values({
+        id: "allocation-other",
+        anchorRunId: "dep-dispatch-other",
+        tenantId: TENANT_ID,
+        provisionerId: "ec2-spot",
+        provisionerApiVersion: 1,
+        provisionerBindingFingerprint: "ec2-spot:test",
+        maxDisconnectedMs: 900_000,
+        sidecarId: "sidecar-other",
+        status: "allocated",
         generation: 1,
+        ensureAcceptedGeneration: 1,
       });
+      const store = createWorkflowRunDispatchStore(h.db);
+      const enqueueAcknowledged = async (
+        id: string,
+        allocationId: string,
+        anchorRunId: string,
+      ) => {
+        await store.enqueue({
+          id,
+          anchorRunId,
+          messageId: `${id}-message`,
+          senderAddress: SENDER_ADDRESS,
+          rawMessage: new Uint8Array([1]),
+          stepGrants: [],
+        });
+        await store.acknowledge({
+          allocationId,
+          anchorRunId,
+          messageId: `${id}-message`,
+          generation: 1,
+        });
+      };
+      await enqueueAcknowledged(
+        "dispatch-requeue",
+        "allocation-ack",
+        ANCHOR_RUN_ID,
+      );
+      await enqueueAcknowledged(
+        "dispatch-settled",
+        "allocation-ack",
+        ANCHOR_RUN_ID,
+      );
+      await store.settle(ANCHOR_RUN_ID, "dispatch-settled-message");
+      await enqueueAcknowledged(
+        "dispatch-other-run",
+        "allocation-other",
+        "dep-dispatch-other",
+      );
 
       expect(await store.requeueUnsettled(ANCHOR_RUN_ID)).toBe(1);
       const requeued = await store.findById("dispatch-requeue");
@@ -251,6 +298,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(requeued?.acknowledgedGeneration).toBeNull();
       expect(requeued?.acknowledgedAt).toBeNull();
       expect(requeued?.nextAttemptAt).toBeInstanceOf(Date);
+      expect((await store.findById("dispatch-settled"))?.status).toBe(
+        "settled",
+      );
+      const otherRun = await store.findById("dispatch-other-run");
+      expect(otherRun?.status).toBe("acknowledged");
+      expect(otherRun?.acknowledgedGeneration).toBe(1);
     });
 
     test("fences acknowledgement with the current allocation generation", async () => {
@@ -287,7 +340,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await h.db
         .update(sidecarAllocation)
         .set({
-          status: "replacing",
+          status: "releasing",
           generation: 2,
           ensureAcceptedGeneration: null,
         })

@@ -5,9 +5,9 @@
 // retired: every agent now runs as a supervised workflow-process child
 // on the workflow-run substrate. What remains here is the thin
 // serialization layer over the agent repo store that the deploy path
-// and the hub-link still call: deploy/asset-pack applies, state-pack
-// reads, and directory teardown, each run one-at-a-time per agent so a
-// teardown never races an in-flight git op.
+// and the hub-link still call: deploy/asset-pack applies and directory
+// teardown, each run one-at-a-time per agent so a teardown never races an
+// in-flight git op.
 
 import path from "node:path";
 
@@ -50,16 +50,7 @@ export type SessionManager = {
     ref: string,
     commitSha: string,
   ): Promise<void>;
-  createStatePack(
-    agentAddress: string,
-  ): Promise<{ pack: Uint8Array; commitSha: string; ref: string }>;
   deleteAgentDir(agentAddress: string): Promise<void>;
-  /**
-   * Session addresses this manager hosts. The in-process session runtime
-   * is retired, so this is always empty; the hub-link ships it in the
-   * register frame alongside the sidecar's workflow-deployment addresses.
-   */
-  getAddresses(): string[];
   /**
    * Session id for an address' outbound mail forwarding. Always undefined
    * now that no in-process sessions exist; the hub-link tolerates a
@@ -74,16 +65,15 @@ export function createSessionManager(
   const { repoStore } = config;
 
   // Per-agent promise chain that serializes the operations against an agent's
-  // on-disk directory -- state-pack reads and deploy/asset-pack applies all run
-  // one-at-a-time per agent. The chain exists for teardown:
-  // drainRepoOps awaits it before deleting the directory, so an operation that
-  // was valid when it started never runs against a path that has since
-  // vanished underneath it. Serializing additionally avoids corruption for the
-  // members that share the agent's `.git/` object store (state-pack reads and
-  // deploy-pack applies), which isogit, lacking a cross-process lock, would
-  // otherwise let interleave. Asset-pack applies are on the chain only for the
-  // teardown reason -- they materialize into a workspace subtree, not the agent
-  // repo's object store.
+  // on-disk directory -- deploy/asset-pack applies run one-at-a-time per agent.
+  // The chain exists for teardown: drainRepoOps awaits it before deleting the
+  // directory, so an operation that was valid when it started never runs
+  // against a path that has since vanished underneath it. Serializing
+  // additionally keeps two deploy-pack applies from interleaving in the agent's
+  // `.git/` object store, which isogit, lacking a cross-process lock, would
+  // otherwise allow. Asset-pack applies are on the chain only for the teardown
+  // reason -- they materialize into a workspace subtree, not the agent repo's
+  // object store.
   const repoOpQueues = new Map<string, Promise<void>>();
 
   function runRepoOp<T>(
@@ -114,10 +104,11 @@ export function createSessionManager(
   // directory only after in-flight git work finishes. Capturing the tail and
   // clearing the entry means an op enqueued AFTER this point starts a fresh
   // chain this drain does not await. That is safe only because every caller
-  // invokes runRepoOp synchronously, before its first await, inside the
-  // serialized frame dispatch -- so by the time a later agent.undeploy frame
-  // reaches deleteAgentDir, every racing op is already on the chain. A handler
-  // that deferred its runRepoOp call past an await would reopen the
+  // invokes runRepoOp synchronously, before its first await, while handling a
+  // frame for the agent's address, and the link handles one address's frames
+  // one at a time -- so by the time a later agent.undeploy frame for the
+  // address reaches deleteAgentDir, every racing op is already on the chain. A
+  // handler that deferred its runRepoOp call past an await would reopen the
   // delete-under-in-flight-op race.
   async function drainRepoOps(agentAddress: string): Promise<void> {
     const inflight = repoOpQueues.get(agentAddress);
@@ -169,14 +160,6 @@ export function createSessionManager(
     );
   }
 
-  async function createStatePack(
-    agentAddress: string,
-  ): Promise<{ pack: Uint8Array; commitSha: string; ref: string }> {
-    return runRepoOp(agentAddress, () =>
-      repoStore.createStatePack(agentAddress),
-    );
-  }
-
   async function deleteAgentDir(agentAddress: string): Promise<void> {
     await drainRepoOps(agentAddress);
     await repoStore.remove(agentAddress);
@@ -186,9 +169,7 @@ export function createSessionManager(
     initRepo: (address: string) => repoStore.initRepo(address),
     applyDeployPack,
     applyAssetPack,
-    createStatePack,
     deleteAgentDir,
-    getAddresses: () => [],
     getSessionId: () => undefined,
   };
 }

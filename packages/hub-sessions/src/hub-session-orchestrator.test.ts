@@ -5,7 +5,7 @@ import type { DB } from "@intx/db";
 import type { InferenceEvent } from "@intx/types/runtime";
 
 import type { AgentRepoStore, DeployContent } from "./agent-repo";
-import type { RepoStore } from "./repo-store";
+import type { LocalRepoStore } from "./repo-store";
 import type { EventCollectorRegistry } from "./event-collector-registry";
 import { agentSession, workflowRun } from "@intx/db/schema";
 
@@ -230,7 +230,7 @@ function createRepoStoreStub(): {
   };
 }
 
-function unusedRepoStore(): RepoStore {
+function unusedRepoStore(): LocalRepoStore {
   // The orchestrator tests do not touch the substrate; a throwing
   // stub keeps the AgentRepoStore surface fully populated without
   // pulling a real on-disk store into orchestrator-level unit tests.
@@ -257,6 +257,7 @@ function unusedRepoStore(): RepoStore {
     subscribe: () => {
       throw new Error("mock AgentRepoStore.repoStore is not wired");
     },
+    removeRepo: unused,
   };
 }
 
@@ -338,6 +339,7 @@ describe("createHubSessionOrchestrator", () => {
     test("abandons every collector for the closed connection", () => {
       harness.events.emit("sidecar.disconnect", {
         ownedAddresses: ["a@x", "b@x", "c@x"],
+        allocated: [],
       });
       const abandonedAddrs = harness.collectors.calls
         .filter((c) => c.kind === "abandon")
@@ -452,6 +454,7 @@ describe("createHubSessionOrchestrator", () => {
       harness.dispose();
       harness.events.emit("sidecar.disconnect", {
         ownedAddresses: [AGENT_ADDRESS],
+        allocated: [],
       });
       const abandoned = harness.collectors.calls.find(
         (c) => c.kind === "abandon",

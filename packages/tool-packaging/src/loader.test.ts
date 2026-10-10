@@ -1302,6 +1302,7 @@ describe("loader error categories", () => {
     const wrappedCache = {
       get: realCache.get.bind(realCache),
       has: realCache.has.bind(realCache),
+      pin: realCache.pin.bind(realCache),
       put: realCache.put.bind(realCache),
       size: realCache.size.bind(realCache),
       sweepOrphans: realCache.sweepOrphans.bind(realCache),
@@ -1374,6 +1375,7 @@ describe("loader error categories", () => {
     const wrappedCache = {
       get: realCache.get.bind(realCache),
       has: realCache.has.bind(realCache),
+      pin: realCache.pin.bind(realCache),
       put: realCache.put.bind(realCache),
       size: realCache.size.bind(realCache),
       sweepOrphans: realCache.sweepOrphans.bind(realCache),

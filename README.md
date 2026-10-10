@@ -90,10 +90,10 @@ agent a managed principal instead of a loose script:
   the health of every running agent.
 - **Durable by default.** Conversations persist to a git-backed
   mailbox and agent state is committed locally. When provisioned capacity
-  restarts, its allocation credential binds it to one deployment and
-  generation; it restores that deployment from persisted state and resumes
-  durable deliveries. Nothing is lost to a restart when the provisioner
-  preserves the required storage.
+  restarts, its sidecar credential binds it to the deployment generations
+  it hosts; it restores those deployments from persisted state and resumes
+  durable deliveries when the provisioner preserves the required storage.
+  A deployment it cannot restore is failed rather than silently lost.
 - **Model-agnostic inference with failover.** A definition declares the
   models it needs; the hub resolves an ordered provider list at launch.
   Inference fails over per call across providers _and_ protocols
@@ -102,7 +102,11 @@ agent a managed principal instead of a loose script:
   calls.
 - **Multi-tenant isolation.** Agents, data, credentials, and message
   buses are tenant-scoped and isolated by default, and tenants nest
-  into policy-inheriting hierarchies. Cross-tenant _federation_ —
+  into policy-inheriting hierarchies. The stock sidecar does not
+  isolate the deployments a provisioner places on it from each other,
+  whatever their tenants; tenant policy can require
+  [`isolation:workload`](./docs/SIDECAR_PLACEMENT.md) placement
+  instead. Cross-tenant _federation_ —
   discovery and invocation across trust boundaries — is designed and
   partly scaffolded, but not yet wired end-to-end (see
   [Project status](#project-status)).
@@ -265,8 +269,8 @@ not yet in the tree.
       resume, rewind, and audit-log-as-git-history
 - [x] **Workflow execution model** — every agent runs as a supervised
       workflow-process child (the in-process runtime has been retired)
-- [x] **Sidecar orchestration** — hub-managed agents with reconnect
-      and state restoration on redeploy
+- [x] **Sidecar orchestration** — hub-managed agents that keep running
+      across a reconnect, without a redeploy
 - [x] **Inference** — Anthropic and OpenAI-compatible adapters plus
       Google Gemini, streaming, compaction, the director system, and
       per-call provider failover with live source hot-swap, backed by a

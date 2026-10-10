@@ -29,10 +29,12 @@ export async function readWorkflowRunRefTips(
 }
 
 /**
- * Replay every authoritative workflow-run ref the runtime understands onto an
- * exact replacement allocation. Refs are sent sequentially and the function
- * resolves only after the worker acknowledges each one, making it a barrier
- * the deploy path can place before supervisor spawn.
+ * Seed a first deploy on its exact allocation with every workflow-run ref the
+ * Hub holds for the deployment. The Hub holds none unless the deployment was
+ * seeded, since its own copy only grows from the worker's pushes. Refs are
+ * sent sequentially and the function resolves only after the worker
+ * acknowledges each one, making it a barrier the deploy path can place before
+ * supervisor spawn.
  */
 export async function restoreWorkflowRunToAllocation(args: {
   agentRepoStore: AgentRepoStore;

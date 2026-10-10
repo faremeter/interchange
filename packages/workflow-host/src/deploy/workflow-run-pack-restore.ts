@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import {
+  WORKFLOW_RUN_GITIGNORE_PATH,
   WORKFLOW_RUN_RESTORE_REFS,
   type RepoId,
   type RepoStore,
@@ -25,6 +26,21 @@ type MaterializedFile = {
   oid: string;
   read(): Promise<Uint8Array>;
 };
+
+async function holdsOnlyGenesis(
+  substrate: RepoStore,
+  repoId: RepoId,
+  ref: string,
+): Promise<boolean> {
+  const reads = await substrate.openCommittedReads(
+    { kind: "hub" },
+    repoId,
+    ref,
+  );
+  if (reads === null) return true;
+  const entries = await reads.listDir("");
+  return entries.every((entry) => entry.name === WORKFLOW_RUN_GITIGNORE_PATH);
+}
 
 async function materializeRestoredRefs(
   substrate: RepoStore,
@@ -107,10 +123,10 @@ async function materializeRestoredRefs(
 }
 
 /**
- * Build the sidecar boundary that installs Hub-authoritative workflow-run
- * history before a replacement supervisor starts. Packs land on the
- * unwrapped substrate so applying restored history cannot echo it back to the
- * Hub as a new sidecar-authored update.
+ * Build the sidecar boundary that installs the Hub's copy of a deployment's
+ * workflow-run history before its first supervisor starts. Packs land on the
+ * unwrapped substrate so applying that history cannot echo it back to the Hub
+ * as a new sidecar-authored update.
  */
 export function createWorkflowRunPackRestorer(args: {
   substrate: RepoStore;
@@ -135,6 +151,24 @@ export function createWorkflowRunPackRestorer(args: {
     if (!RESTORABLE_REFS.includes(ref)) {
       throw new Error(
         `workflow_run_restore_invalid: unsupported workflow-run ref ${ref}`,
+      );
+    }
+
+    // History seeds only a first deploy. A branch this sidecar already has
+    // holds what an earlier copy of the deployment left here, and moving it
+    // would mix that with the Hub's history, so only a missing branch or one
+    // already at this commit, as a retried first deploy finds it, is taken.
+    // A branch holding nothing but the store's genesis counts as missing: an
+    // attempt that failed after creating the repository left it, and it has
+    // no history to lose.
+    const current = await substrate.resolveRef(hubPrincipal, repoId, ref);
+    if (
+      current !== null &&
+      current !== commitSha &&
+      !(await holdsOnlyGenesis(substrate, repoId, ref))
+    ) {
+      throw new Error(
+        `workflow_run_restore_conflict: ${ref} of ${agentAddress} is already at ${current} here`,
       );
     }
 

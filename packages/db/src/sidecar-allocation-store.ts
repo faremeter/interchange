@@ -5,11 +5,13 @@ import {
   eq,
   gt,
   inArray,
+  isNotNull,
   isNull,
   lte,
   notInArray,
   or,
   sql,
+  type SQL,
 } from "drizzle-orm";
 
 import {
@@ -19,6 +21,11 @@ import {
 
 import type { DB, DBExecutor } from "./client";
 import { createWorkflowPendingProjectionStore } from "./workflow-pending-projection-store";
+import {
+  assertSidecarHasRoom,
+  assertSidecarReusable,
+  lockSidecars,
+} from "./sidecar-reuse";
 import { createWorkflowRunDispatchStore } from "./workflow-run-dispatch-store";
 import { canExecuteWorkflowRun } from "./workflow-lifecycle-policy";
 import {
@@ -48,6 +55,10 @@ const activeStatuses = [
   "releasing",
 ] as const;
 
+// Why the Hub fails a deployment whose sidecar reported it stopped.
+export const SIDECAR_DEPLOYMENT_STOPPED_FAILURE_CODE =
+  "sidecar_deployment_stopped";
+
 export type SidecarAllocation = {
   readonly id: string;
   readonly anchorRunId: string;
@@ -68,6 +79,10 @@ export type SidecarAllocation = {
   readonly ensureAttempts: number;
   readonly destroyAttempts: number;
   readonly connectDeadline?: Date;
+  /** How long the sidecar may stay disconnected before the Hub fails it. */
+  readonly maxDisconnectedMs: number;
+  /** When the first deploy first failed before its deploy frame was sent. */
+  readonly firstDeployFailedAt?: Date;
   readonly failureCode?: string;
   readonly failureMessage?: string;
   readonly createdAt: Date;
@@ -81,6 +96,7 @@ export type CreatePendingSidecarAllocationArgs = {
   readonly provisionerId: string;
   readonly provisionerApiVersion: 1;
   readonly provisionerBindingFingerprint: string;
+  readonly maxDisconnectedMs: number;
   readonly now?: Date;
 };
 
@@ -131,6 +147,11 @@ export type BindReplacementSidecarArgs = {
 export type MarkSidecarAllocatedArgs = {
   readonly allocationId: string;
   readonly generation: number;
+  /**
+   * An existing sidecar the provisioner placed this generation on instead of
+   * starting the one bound to it. The unused bound identity is deleted.
+   */
+  readonly sidecarId?: string;
   readonly externalRef?: string;
   readonly expectedLeaseId?: string;
   readonly now?: Date;
@@ -147,6 +168,7 @@ export type ScheduleSidecarAllocationRetryArgs = {
     readonly code: string;
     readonly message: string;
   };
+  readonly firstDeployFailedAt?: Date;
   readonly now?: Date;
 };
 
@@ -174,6 +196,15 @@ export type BeginSidecarReleaseArgs = {
   readonly failureMessage?: string;
   readonly expectedLeaseId?: string;
   readonly expectedInitializationLeaseId?: string;
+  readonly now?: Date;
+};
+
+export type FailStoppedSidecarDeploymentArgs = {
+  readonly allocationId: string;
+  readonly expectedGeneration: number;
+  readonly expectedLeaseId: string;
+  readonly failureCode: string;
+  readonly failureMessage: string;
   readonly now?: Date;
 };
 
@@ -205,16 +236,16 @@ export type MarkSidecarConnectionReadyArgs = {
 export type MarkSidecarConnectionLostArgs = {
   readonly allocationId: string;
   readonly generation: number;
-  readonly connectDeadline: Date;
   readonly now?: Date;
+  /** `now` plus the window a sidecar gets to connect the first time. */
+  readonly firstConnectDeadline: Date;
 };
 
-export type ScheduleSidecarReconnectIfUnscheduledArgs = {
-  readonly allocationId: string;
-  readonly generation: number;
-  readonly connectDeadline: Date;
-  readonly now?: Date;
-};
+export type ScheduleSidecarReconnectAfterHubStartArgs =
+  MarkSidecarConnectionLostArgs;
+
+export type ScheduleSidecarReconnectIfUnscheduledArgs =
+  MarkSidecarConnectionLostArgs;
 
 export type FailSidecarAllocationArgs = {
   readonly allocationId: string;
@@ -274,6 +305,10 @@ function parseSidecarAllocationRow(
     ...(row.connectDeadline !== null
       ? { connectDeadline: row.connectDeadline }
       : {}),
+    maxDisconnectedMs: row.maxDisconnectedMs,
+    ...(row.firstDeployFailedAt !== null
+      ? { firstDeployFailedAt: row.firstDeployFailedAt }
+      : {}),
     ...(row.failureCode !== null ? { failureCode: row.failureCode } : {}),
     ...(row.failureMessage !== null
       ? { failureMessage: row.failureMessage }
@@ -285,6 +320,29 @@ function parseSidecarAllocationRow(
 
 function databaseTimestamp(override?: Date) {
   return override ?? sql`now()`;
+}
+
+// When a sidecar that lost its connection at `now` has stayed away for as
+// long as its allocation allows.
+function disconnectDeadline(now?: Date) {
+  const start =
+    now === undefined
+      ? sql`now()`
+      : sql`${sql.param(now, sidecarAllocation.connectDeadline)}::timestamp`;
+  return sql`${start} + ${sidecarAllocation.maxDisconnectedMs} * interval '1 millisecond'`;
+}
+
+// The disconnect limit covers a deployment once its first deploy completed;
+// until then a lost sidecar gets only the first-connect window.
+function reconnectDeadline(
+  args: MarkSidecarConnectionLostArgs,
+  beforeFirstDeploy: SQL,
+) {
+  return sql`case when exists (select 1 from ${workflowRun} where ${workflowRun.id} = ${sidecarAllocation.anchorRunId} and ${workflowRun.publicKey} is not null) then ${disconnectDeadline(args.now)} else ${beforeFirstDeploy} end`;
+}
+
+function firstConnectDeadline(args: MarkSidecarConnectionLostArgs) {
+  return sql`${sql.param(args.firstConnectDeadline, sidecarAllocation.connectDeadline)}::timestamp`;
 }
 
 function leaseCondition(expectedLeaseId?: string) {
@@ -302,6 +360,30 @@ function leaseCondition(expectedLeaseId?: string) {
 export function createSidecarAllocationStore(db: DBHandle) {
   const workflowRunDispatchStore = createWorkflowRunDispatchStore(db);
   const pendingProjections = createWorkflowPendingProjectionStore(db);
+
+  async function lockAllocationWithSidecars(
+    tx: DBExecutor,
+    condition: SQL | undefined,
+    destinationSidecarId?: string,
+  ) {
+    const [candidate] = await tx
+      .select({ sidecarId: sidecarAllocation.sidecarId })
+      .from(sidecarAllocation)
+      .where(condition);
+    if (candidate === undefined) return undefined;
+    await lockSidecars(
+      tx,
+      [candidate.sidecarId, destinationSidecarId].filter((id) => id != null),
+    );
+    // A move changes status or generation, so rechecking the condition rejects
+    // work whose binding moved while the sidecar lock was awaited.
+    const [allocation] = await tx
+      .select()
+      .from(sidecarAllocation)
+      .where(condition)
+      .for("update");
+    return allocation;
+  }
 
   function initializationConditions(
     args: InitializationArgs,
@@ -328,7 +410,7 @@ export function createSidecarAllocationStore(db: DBHandle) {
       readonly publicKey: string;
       readonly credentialRefs?: WorkflowRunCredentialRefs;
     },
-  ): Promise<{ previousPublicKey: string | null } | null> {
+  ): Promise<boolean> {
     args.signal.throwIfAborted();
     return db.transaction(async (tx) => {
       const condition = initializationConditions(
@@ -341,12 +423,16 @@ export function createSidecarAllocationStore(db: DBHandle) {
         .where(condition)
         .for("update");
       args.signal.throwIfAborted();
-      if (allocation === undefined) return null;
-      let previousPublicKey: string | null = null;
-      if (completion === undefined) {
-        const [previous] = await tx
-          .select({ publicKey: workflowRun.publicKey })
-          .from(workflowRun)
+      if (allocation === undefined) return false;
+      if (completion !== undefined) {
+        const [anchor] = await tx
+          .update(workflowRun)
+          .set({
+            publicKey: completion.publicKey,
+            ...(completion.credentialRefs !== undefined
+              ? { credentialRefs: completion.credentialRefs }
+              : {}),
+          })
           .where(
             and(
               eq(workflowRun.id, args.anchorRunId),
@@ -354,31 +440,13 @@ export function createSidecarAllocationStore(db: DBHandle) {
               eq(workflowRun.tenantId, args.tenantId),
             ),
           )
-          .for("update");
-        if (previous === undefined)
+          .returning({ id: workflowRun.id });
+        if (anchor === undefined)
           throw new Error("Initialization anchor is missing");
-        previousPublicKey = previous.publicKey;
       }
-      const [anchor] = await tx
-        .update(workflowRun)
-        .set({
-          publicKey: completion?.publicKey ?? null,
-          ...(completion?.credentialRefs !== undefined
-            ? { credentialRefs: completion.credentialRefs }
-            : {}),
-        })
-        .where(
-          and(
-            eq(workflowRun.id, args.anchorRunId),
-            eq(workflowRun.anchorRunId, args.anchorRunId),
-            eq(workflowRun.tenantId, args.tenantId),
-          ),
-        )
-        .returning({ id: workflowRun.id });
-      if (anchor === undefined)
-        throw new Error("Initialization anchor is missing");
-      // Check the lease again after waiting on the anchor row. Both writes roll
-      // back if ownership expired while the transaction held the allocation lock.
+      // Check the lease again: ownership can expire while the transaction holds
+      // the allocation lock, such as while a completion waits on the anchor
+      // row, and the completion's anchor write then rolls back with this one.
       const [updated] = await tx
         .update(sidecarAllocation)
         .set({
@@ -389,7 +457,7 @@ export function createSidecarAllocationStore(db: DBHandle) {
       args.signal.throwIfAborted();
       if (updated === undefined)
         throw new Error("Initialization lease expired");
-      return { previousPublicKey };
+      return true;
     });
   }
 
@@ -444,11 +512,22 @@ export function createSidecarAllocationStore(db: DBHandle) {
     tx: DBExecutor,
     anchorRunId: string,
     now: Date | ReturnType<typeof sql>,
+    failure: { readonly code: string; readonly message: string },
   ): Promise<void> {
+    // The first failure of a live deployment is the one its runs failed for.
+    await tx
+      .update(workflowRun)
+      .set({ failureCode: failure.code, failureMessage: failure.message })
+      .where(
+        and(
+          eq(workflowRun.id, anchorRunId),
+          isNull(workflowRun.failureCode),
+          inArray(workflowRun.status, [...liveWorkflowRunStatuses]),
+        ),
+      );
     // A pending projection means accepted history may already hold some of
-    // these runs' outcomes. Every caller has taken the allocation out of
-    // service, so no further history can land; record when capacity was lost
-    // and fail the runs once that history is reconciled.
+    // these runs' outcomes. Record when the deployment was lost and fail the
+    // runs once that history is reconciled.
     if (await pendingProjections.hasAny(anchorRunId, tx)) {
       await tx
         .update(workflowRun)
@@ -461,26 +540,75 @@ export function createSidecarAllocationStore(db: DBHandle) {
         );
       return;
     }
-    await failLiveRuns(tx, anchorRunId, now);
+    const failed = await failLiveRuns(tx, anchorRunId, now, failure);
+    // A failure deferred earlier has nothing left to fail, and applying it
+    // later would drop the reason these runs failed for.
+    await settleDeferredFailure(tx, anchorRunId, failed);
+  }
+
+  // History reconciled meanwhile may have settled the anchor, and then the
+  // deferred failure is not why it ended.
+  async function settleDeferredFailure(
+    tx: DBExecutor,
+    anchorRunId: string,
+    failed: readonly string[],
+  ): Promise<void> {
+    await tx
+      .update(workflowRun)
+      .set({
+        infrastructureFailedAt: null,
+        ...(failed.includes(anchorRunId)
+          ? {}
+          : { failureCode: null, failureMessage: null }),
+      })
+      .where(
+        and(
+          eq(workflowRun.id, anchorRunId),
+          isNotNull(workflowRun.infrastructureFailedAt),
+        ),
+      );
   }
 
   async function failLiveRuns(
     tx: DBExecutor,
     anchorRunId: string,
     now: Date | ReturnType<typeof sql>,
-  ): Promise<void> {
+    failure?: { readonly code: string; readonly message: string },
+  ): Promise<string[]> {
+    // Every run failed here carries the deployment's reason: the one its anchor
+    // holds, which a deferred failure kept there, or else the one given.
+    const [anchor] = await tx
+      .select({
+        code: workflowRun.failureCode,
+        message: workflowRun.failureMessage,
+      })
+      .from(workflowRun)
+      .where(eq(workflowRun.id, anchorRunId));
+    const reason =
+      anchor?.code != null
+        ? { code: anchor.code, message: anchor.message }
+        : failure;
     // Fail every live run anchored here -- both "running" runs and a "deployed"
     // anchor torn down before its first trigger -- so a release settles them.
     const failedRuns = await tx
       .update(workflowRun)
-      .set({ status: "failed", endedAt: now })
+      .set({
+        status: "failed",
+        endedAt: now,
+        ...(reason !== undefined
+          ? {
+              failureCode: sql`coalesce(${workflowRun.failureCode}, ${reason.code})`,
+              failureMessage: sql`coalesce(${workflowRun.failureMessage}, ${reason.message})`,
+            }
+          : {}),
+      })
       .where(
         and(
           eq(workflowRun.anchorRunId, anchorRunId),
           inArray(workflowRun.status, [...liveWorkflowRunStatuses]),
         ),
       )
-      .returning({ principalId: workflowRun.principalId });
+      .returning({ id: workflowRun.id, principalId: workflowRun.principalId });
     const principalIds = failedRuns.flatMap(({ principalId }) =>
       principalId === null ? [] : [principalId],
     );
@@ -490,6 +618,7 @@ export function createSidecarAllocationStore(db: DBHandle) {
         .set({ status: "deactivated", updatedAt: now })
         .where(inArray(principal.id, principalIds));
     }
+    return failedRuns.map(({ id }) => id);
   }
 
   async function beginRelease(
@@ -547,6 +676,48 @@ export function createSidecarAllocationStore(db: DBHandle) {
     return updated === undefined ? null : parseSidecarAllocationRow(updated);
   }
 
+  async function insertAdopted(
+    tx: DBExecutor,
+    args: CreateAdoptedSidecarAllocationArgs,
+  ): Promise<SidecarAllocation> {
+    // Adopting a probe places a deployment on its sidecar, so it is held to
+    // the same room check as a placement through `markAllocated`.
+    await assertSidecarHasRoom(tx, {
+      sidecarId: args.sidecarId,
+      placing: { allocationId: args.id },
+    });
+    const createdAt = databaseTimestamp(args.now);
+    const [inserted] = await tx
+      .insert(sidecarAllocation)
+      .values({
+        id: args.id,
+        anchorRunId: args.anchorRunId,
+        tenantId: args.tenantId,
+        provisionerId: args.provisionerId,
+        provisionerApiVersion: args.provisionerApiVersion,
+        provisionerBindingFingerprint: args.provisionerBindingFingerprint,
+        sidecarId: args.sidecarId,
+        status: "allocated",
+        generation: args.generation,
+        ensureAcceptedGeneration: args.generation,
+        ...(args.externalRef !== undefined
+          ? { externalRef: args.externalRef }
+          : {}),
+        connectDeadline: args.connectDeadline,
+        maxDisconnectedMs: args.maxDisconnectedMs,
+        nextAttemptAt: createdAt,
+        createdAt,
+        updatedAt: createdAt,
+      })
+      .returning();
+    if (inserted === undefined) {
+      throw new Error(
+        `sidecarAllocationStore.createAdopted: insert returned no row for ${args.id}`,
+      );
+    }
+    return parseSidecarAllocationRow(inserted);
+  }
+
   return {
     beginInitialization(args: InitializationArgs) {
       return writeInitialization(args);
@@ -558,11 +729,11 @@ export function createSidecarAllocationStore(db: DBHandle) {
         readonly credentialRefs?: WorkflowRunCredentialRefs;
       },
     ): Promise<boolean> {
-      return (await writeInitialization(args, args)) !== null;
+      return writeInitialization(args, args);
     },
 
     async clearUnsentInitialization(
-      args: InitializationArgs & { readonly previousPublicKey: string | null },
+      args: InitializationArgs,
     ): Promise<boolean> {
       // No signal gate: the sole caller invokes this only for a proven-unsent
       // frame, which is reachable precisely when the attempt was cancelled.
@@ -570,41 +741,17 @@ export function createSidecarAllocationStore(db: DBHandle) {
       // attempt began, and generation/status equality proves the allocation
       // did not move on. The reconciliation lease is deliberately not
       // required: a disconnect nulls the lease while leaving this attempt's
-      // marker behind, and only this attempt's own clear may remove it. Restore
-      // its previous key in the same transaction so absence of the marker cannot
-      // expose a live workflow as keyless or certify a different attempt.
-      return db.transaction(async (tx) => {
-        const condition = initializationConditions(args, args.leaseId, {
-          requireCurrentLease: false,
-        });
-        const [allocation] = await tx
-          .select({ id: sidecarAllocation.id })
-          .from(sidecarAllocation)
-          .where(condition)
-          .for("update");
-        if (allocation === undefined) return false;
-        const [anchor] = await tx
-          .update(workflowRun)
-          .set({ publicKey: args.previousPublicKey })
-          .where(
-            and(
-              eq(workflowRun.id, args.anchorRunId),
-              eq(workflowRun.anchorRunId, args.anchorRunId),
-              eq(workflowRun.tenantId, args.tenantId),
-            ),
-          )
-          .returning({ id: workflowRun.id });
-        if (anchor === undefined)
-          throw new Error("Initialization anchor is missing");
-        const [updated] = await tx
-          .update(sidecarAllocation)
-          .set({ initializationLeaseId: null })
-          .where(condition)
-          .returning({ id: sidecarAllocation.id });
-        if (updated === undefined)
-          throw new Error("Initialization attempt changed before rollback");
-        return true;
-      });
+      // marker behind, and only this attempt's own clear may remove it.
+      const [updated] = await db
+        .update(sidecarAllocation)
+        .set({ initializationLeaseId: null })
+        .where(
+          initializationConditions(args, args.leaseId, {
+            requireCurrentLease: false,
+          }),
+        )
+        .returning({ id: sidecarAllocation.id });
+      return updated !== undefined;
     },
 
     async createPending(
@@ -665,6 +812,7 @@ export function createSidecarAllocationStore(db: DBHandle) {
           provisionerBindingFingerprint: args.provisionerBindingFingerprint,
           status: "pending",
           generation: 0,
+          maxDisconnectedMs: args.maxDisconnectedMs,
           nextAttemptAt: now,
           createdAt: now,
           updatedAt: now,
@@ -682,35 +830,9 @@ export function createSidecarAllocationStore(db: DBHandle) {
       args: CreateAdoptedSidecarAllocationArgs,
       tx?: DBExecutor,
     ): Promise<SidecarAllocation> {
-      const createdAt = databaseTimestamp(args.now);
-      const [inserted] = await (tx ?? db)
-        .insert(sidecarAllocation)
-        .values({
-          id: args.id,
-          anchorRunId: args.anchorRunId,
-          tenantId: args.tenantId,
-          provisionerId: args.provisionerId,
-          provisionerApiVersion: args.provisionerApiVersion,
-          provisionerBindingFingerprint: args.provisionerBindingFingerprint,
-          sidecarId: args.sidecarId,
-          status: "allocated",
-          generation: args.generation,
-          ensureAcceptedGeneration: args.generation,
-          ...(args.externalRef !== undefined
-            ? { externalRef: args.externalRef }
-            : {}),
-          connectDeadline: args.connectDeadline,
-          nextAttemptAt: createdAt,
-          createdAt,
-          updatedAt: createdAt,
-        })
-        .returning();
-      if (inserted === undefined) {
-        throw new Error(
-          `sidecarAllocationStore.createAdopted: insert returned no row for ${args.id}`,
-        );
-      }
-      return parseSidecarAllocationRow(inserted);
+      return tx === undefined
+        ? db.transaction((inner) => insertAdopted(inner, args))
+        : insertAdopted(tx, args);
     },
 
     async bindInitialSidecar(
@@ -779,26 +901,16 @@ export function createSidecarAllocationStore(db: DBHandle) {
       args: BindReplacementSidecarArgs,
     ): Promise<SidecarAllocation | null> {
       return db.transaction(async (tx) => {
-        const [allocation] = await tx
-          .select()
-          .from(sidecarAllocation)
-          .where(
-            and(
-              eq(sidecarAllocation.id, args.allocationId),
-              ...leaseCondition(args.expectedLeaseId),
-            ),
-          )
-          .limit(1)
-          .for("update");
-        if (
-          allocation === undefined ||
-          allocation.status !== "replacing" ||
-          allocation.generation !== args.generation ||
-          (args.expectedLeaseId !== undefined &&
-            allocation.reconciliationLeaseId !== args.expectedLeaseId)
-        ) {
-          return null;
-        }
+        const allocation = await lockAllocationWithSidecars(
+          tx,
+          and(
+            eq(sidecarAllocation.id, args.allocationId),
+            eq(sidecarAllocation.status, "replacing"),
+            eq(sidecarAllocation.generation, args.generation),
+            ...leaseCondition(args.expectedLeaseId),
+          ),
+        );
+        if (allocation === undefined) return null;
         const now = databaseTimestamp(args.now);
         await insertSidecarIdentity(tx, {
           sidecarId: args.sidecarId,
@@ -837,31 +949,77 @@ export function createSidecarAllocationStore(db: DBHandle) {
       });
     },
 
+    /**
+     * Records the provisioner's acceptance of a generation. Throws
+     * `SidecarReuseRejectedError` when it placed the generation on a sidecar
+     * it cannot reuse, leaving the allocation unchanged.
+     */
     async markAllocated(
       args: MarkSidecarAllocatedArgs,
     ): Promise<SidecarAllocation | null> {
-      const [updated] = await db
-        .update(sidecarAllocation)
-        .set({
-          status: "allocated",
-          ensureAcceptedGeneration: args.generation,
-          externalRef: args.externalRef ?? null,
-          nextAttemptAt: sidecarAllocation.connectDeadline,
-          ensureAttempts: sql`${sidecarAllocation.ensureAttempts} + 1`,
-          failureCode: null,
-          failureMessage: null,
-          updatedAt: databaseTimestamp(args.now),
-        })
-        .where(
-          and(
-            eq(sidecarAllocation.id, args.allocationId),
-            eq(sidecarAllocation.status, "provisioning"),
-            eq(sidecarAllocation.generation, args.generation),
-            ...leaseCondition(args.expectedLeaseId),
-          ),
-        )
-        .returning();
-      return updated === undefined ? null : parseSidecarAllocationRow(updated);
+      return db.transaction(async (tx) => {
+        const condition = and(
+          eq(sidecarAllocation.id, args.allocationId),
+          eq(sidecarAllocation.status, "provisioning"),
+          eq(sidecarAllocation.generation, args.generation),
+          ...leaseCondition(args.expectedLeaseId),
+        );
+        const allocation = await lockAllocationWithSidecars(
+          tx,
+          condition,
+          args.sidecarId,
+        );
+        if (allocation === undefined) return null;
+        const boundSidecarId = allocation.sidecarId;
+        const reusedSidecarId =
+          args.sidecarId !== undefined && args.sidecarId !== boundSidecarId
+            ? args.sidecarId
+            : undefined;
+        if (reusedSidecarId !== undefined) {
+          await assertSidecarReusable(tx, {
+            sidecarId: reusedSidecarId,
+            binding: {
+              provisionerId: allocation.provisionerId,
+              provisionerApiVersion: SidecarProvisionerApiVersion.assert(
+                allocation.provisionerApiVersion,
+              ),
+              provisionerBindingFingerprint:
+                allocation.provisionerBindingFingerprint,
+            },
+            placing: { allocationId: allocation.id },
+          });
+          await assertSidecarHasRoom(tx, {
+            sidecarId: reusedSidecarId,
+            placing: { allocationId: allocation.id },
+          });
+        }
+        const [updated] = await tx
+          .update(sidecarAllocation)
+          .set({
+            status: "allocated",
+            ...(reusedSidecarId !== undefined
+              ? { sidecarId: reusedSidecarId }
+              : {}),
+            ensureAcceptedGeneration: args.generation,
+            externalRef: args.externalRef ?? null,
+            nextAttemptAt: sidecarAllocation.connectDeadline,
+            ensureAttempts: sql`${sidecarAllocation.ensureAttempts} + 1`,
+            failureCode: null,
+            failureMessage: null,
+            updatedAt: databaseTimestamp(args.now),
+          })
+          .where(condition)
+          .returning();
+        if (updated === undefined) {
+          throw new Error(
+            `sidecarAllocationStore.markAllocated: locked allocation ${args.allocationId} changed before update`,
+          );
+        }
+        if (reusedSidecarId !== undefined && boundSidecarId !== null) {
+          await tx.delete(sidecar).where(eq(sidecar.id, boundSidecarId));
+        }
+        return parseSidecarAllocationRow(updated);
+      });
     },
 
     async scheduleRetry(
@@ -885,6 +1043,9 @@ export function createSidecarAllocationStore(db: DBHandle) {
                 failureMessage: args.failure.message,
               }
             : {}),
+          ...(args.firstDeployFailedAt !== undefined
+            ? { firstDeployFailedAt: args.firstDeployFailedAt }
+            : {}),
           updatedAt: databaseTimestamp(args.now),
         })
         .where(
@@ -899,6 +1060,9 @@ export function createSidecarAllocationStore(db: DBHandle) {
       return updated === undefined ? null : parseSidecarAllocationRow(updated);
     },
 
+    // Provisioning is replaced because nothing has run. An allocated
+    // generation is replaced only when the caller names that status: a
+    // parked run, whose committed log is enough to continue.
     async beginReplacement(
       args: BeginSidecarReplacementArgs,
     ): Promise<SidecarAllocation | null> {
@@ -960,6 +1124,75 @@ export function createSidecarAllocationStore(db: DBHandle) {
 
     beginRelease,
 
+    /**
+     * Fail the live runs of a deployment its sidecar reported stopped, and
+     * keep the capacity: the stopped copy's files stay for inspection until
+     * the retention for failed runs releases them. The allocation then rests
+     * on its connection as a ready one does, keeping the reason it failed.
+     */
+    async failStoppedDeployment(
+      args: FailStoppedSidecarDeploymentArgs,
+    ): Promise<boolean> {
+      const now = databaseTimestamp(args.now);
+      return db.transaction(async (tx) => {
+        const [updated] = await tx
+          .update(sidecarAllocation)
+          .set({
+            failureCode: args.failureCode,
+            failureMessage: args.failureMessage,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(sidecarAllocation.id, args.allocationId),
+              eq(sidecarAllocation.status, "allocated"),
+              eq(sidecarAllocation.generation, args.expectedGeneration),
+              ...leaseCondition(args.expectedLeaseId),
+            ),
+          )
+          .returning({ anchorRunId: sidecarAllocation.anchorRunId });
+        if (updated === undefined) return false;
+        await failRunningRuns(tx, updated.anchorRunId, now, {
+          code: args.failureCode,
+          message: args.failureMessage,
+        });
+        await workflowRunDispatchStore.abandonUnsettled(
+          updated.anchorRunId,
+          args.failureCode,
+          args.failureMessage,
+          now,
+          tx,
+        );
+        // Settles it as `markConnectionReady` does, under the same conditions.
+        // An allocation whose ensure is not accepted or whose initialization is
+        // still in flight keeps its schedule and lease, so the work that owns
+        // it settles it.
+        await tx
+          .update(sidecarAllocation)
+          .set({
+            connectDeadline: null,
+            nextAttemptAt: null,
+            reconciliationLeaseId: null,
+            reconciliationLeaseExpiresAt: null,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(sidecarAllocation.id, args.allocationId),
+              eq(sidecarAllocation.status, "allocated"),
+              eq(sidecarAllocation.generation, args.expectedGeneration),
+              eq(
+                sidecarAllocation.ensureAcceptedGeneration,
+                args.expectedGeneration,
+              ),
+              isNull(sidecarAllocation.initializationLeaseId),
+              ...leaseCondition(args.expectedLeaseId),
+            ),
+          );
+        return true;
+      });
+    },
+
     async beginUnrecoverableRelease(
       args: BeginUnrecoverableSidecarReleaseArgs,
     ): Promise<SidecarAllocation | null> {
@@ -979,7 +1212,10 @@ export function createSidecarAllocationStore(db: DBHandle) {
         );
         if (releasing === null) return null;
 
-        await failRunningRuns(tx, releasing.anchorRunId, now);
+        await failRunningRuns(tx, releasing.anchorRunId, now, {
+          code: args.failureCode,
+          message: args.failureMessage,
+        });
         await workflowRunDispatchStore.abandonUnsettled(
           releasing.anchorRunId,
           args.failureCode,
@@ -996,6 +1232,14 @@ export function createSidecarAllocationStore(db: DBHandle) {
     ): Promise<SidecarAllocation | null> {
       const now = databaseTimestamp(args.now);
       return db.transaction(async (tx) => {
+        const condition = and(
+          eq(sidecarAllocation.id, args.allocationId),
+          eq(sidecarAllocation.status, "releasing"),
+          eq(sidecarAllocation.generation, args.generation),
+          ...leaseCondition(args.expectedLeaseId),
+        );
+        if ((await lockAllocationWithSidecars(tx, condition)) === undefined)
+          return null;
         const [updated] = await tx
           .update(sidecarAllocation)
           .set({
@@ -1007,14 +1251,7 @@ export function createSidecarAllocationStore(db: DBHandle) {
             destroyAttempts: sql`${sidecarAllocation.destroyAttempts} + 1`,
             updatedAt: now,
           })
-          .where(
-            and(
-              eq(sidecarAllocation.id, args.allocationId),
-              eq(sidecarAllocation.status, "releasing"),
-              eq(sidecarAllocation.generation, args.generation),
-              ...leaseCondition(args.expectedLeaseId),
-            ),
-          )
+          .where(condition)
           .returning();
         if (updated === undefined) return null;
 
@@ -1034,6 +1271,14 @@ export function createSidecarAllocationStore(db: DBHandle) {
     ): Promise<SidecarAllocation | null> {
       const now = databaseTimestamp(args.now);
       return db.transaction(async (tx) => {
+        const condition = and(
+          eq(sidecarAllocation.id, args.allocationId),
+          inArray(sidecarAllocation.status, ["replacing", "releasing"]),
+          eq(sidecarAllocation.generation, args.expectedGeneration),
+          ...leaseCondition(args.expectedLeaseId),
+        );
+        if ((await lockAllocationWithSidecars(tx, condition)) === undefined)
+          return null;
         const [updated] = await tx
           .update(sidecarAllocation)
           .set({
@@ -1047,18 +1292,14 @@ export function createSidecarAllocationStore(db: DBHandle) {
             destroyAttempts: sql`${sidecarAllocation.destroyAttempts} + 1`,
             updatedAt: now,
           })
-          .where(
-            and(
-              eq(sidecarAllocation.id, args.allocationId),
-              inArray(sidecarAllocation.status, ["replacing", "releasing"]),
-              eq(sidecarAllocation.generation, args.expectedGeneration),
-              ...leaseCondition(args.expectedLeaseId),
-            ),
-          )
+          .where(condition)
           .returning();
         if (updated === undefined) return null;
 
-        await failRunningRuns(tx, updated.anchorRunId, now);
+        await failRunningRuns(tx, updated.anchorRunId, now, {
+          code: args.code,
+          message: args.message,
+        });
         await workflowRunDispatchStore.abandonUnsettled(
           updated.anchorRunId,
           args.code,
@@ -1078,6 +1319,16 @@ export function createSidecarAllocationStore(db: DBHandle) {
       const fail = async (
         executor: DBExecutor,
       ): Promise<SidecarAllocation | null> => {
+        const condition = and(
+          eq(sidecarAllocation.id, args.allocationId),
+          eq(sidecarAllocation.status, args.expectedStatus),
+          eq(sidecarAllocation.generation, args.expectedGeneration),
+          ...leaseCondition(args.expectedLeaseId),
+        );
+        if (
+          (await lockAllocationWithSidecars(executor, condition)) === undefined
+        )
+          return null;
         const [updated] = await executor
           .update(sidecarAllocation)
           .set({
@@ -1090,18 +1341,14 @@ export function createSidecarAllocationStore(db: DBHandle) {
             connectDeadline: null,
             updatedAt: now,
           })
-          .where(
-            and(
-              eq(sidecarAllocation.id, args.allocationId),
-              eq(sidecarAllocation.status, args.expectedStatus),
-              eq(sidecarAllocation.generation, args.expectedGeneration),
-              ...leaseCondition(args.expectedLeaseId),
-            ),
-          )
+          .where(condition)
           .returning();
         if (updated === undefined) return null;
 
-        await failRunningRuns(executor, updated.anchorRunId, now);
+        await failRunningRuns(executor, updated.anchorRunId, now, {
+          code: args.code,
+          message: args.message,
+        });
         await workflowRunDispatchStore.abandonUnsettled(
           updated.anchorRunId,
           args.code,
@@ -1129,11 +1376,8 @@ export function createSidecarAllocationStore(db: DBHandle) {
         .where(eq(workflowRun.id, anchorRunId));
       if (anchor?.failedAt == null) return true;
       if (await pendingProjections.hasAny(anchorRunId, tx)) return false;
-      await failLiveRuns(tx, anchorRunId, anchor.failedAt);
-      await tx
-        .update(workflowRun)
-        .set({ infrastructureFailedAt: null })
-        .where(eq(workflowRun.id, anchorRunId));
+      const failed = await failLiveRuns(tx, anchorRunId, anchor.failedAt);
+      await settleDeferredFailure(tx, anchorRunId, failed);
       return true;
     },
 
@@ -1259,6 +1503,9 @@ export function createSidecarAllocationStore(db: DBHandle) {
     async markConnectionReady(
       args: MarkSidecarConnectionReadyArgs,
     ): Promise<SidecarAllocation | null> {
+      // A stopped deployment the Hub failed stays connected until retention
+      // releases it, and a later ready pass must not erase why it failed.
+      const keepsReason = sql`${sidecarAllocation.failureCode} = ${SIDECAR_DEPLOYMENT_STOPPED_FAILURE_CODE}`;
       const [updated] = await db
         .update(sidecarAllocation)
         .set({
@@ -1266,8 +1513,8 @@ export function createSidecarAllocationStore(db: DBHandle) {
           nextAttemptAt: null,
           reconciliationLeaseId: null,
           reconciliationLeaseExpiresAt: null,
-          failureCode: null,
-          failureMessage: null,
+          failureCode: sql`case when ${keepsReason} then ${sidecarAllocation.failureCode} end`,
+          failureMessage: sql`case when ${keepsReason} then ${sidecarAllocation.failureMessage} end`,
           updatedAt: databaseTimestamp(args.now),
         })
         .where(
@@ -1287,11 +1534,46 @@ export function createSidecarAllocationStore(db: DBHandle) {
     async markConnectionLost(
       args: MarkSidecarConnectionLostArgs,
     ): Promise<SidecarAllocation | null> {
+      const connectDeadline = reconnectDeadline(
+        args,
+        firstConnectDeadline(args),
+      );
       const [updated] = await db
         .update(sidecarAllocation)
         .set({
-          connectDeadline: args.connectDeadline,
-          nextAttemptAt: args.connectDeadline,
+          connectDeadline,
+          nextAttemptAt: connectDeadline,
+          reconciliationLeaseId: null,
+          reconciliationLeaseExpiresAt: null,
+          updatedAt: databaseTimestamp(args.now),
+        })
+        .where(
+          and(
+            eq(sidecarAllocation.id, args.allocationId),
+            eq(sidecarAllocation.status, "allocated"),
+            eq(sidecarAllocation.generation, args.generation),
+            eq(sidecarAllocation.ensureAcceptedGeneration, args.generation),
+          ),
+        )
+        .returning();
+      return updated === undefined ? null : parseSidecarAllocationRow(updated);
+    },
+
+    // No sidecar could connect while the Hub was down, so every generation gets
+    // a fresh window from Hub start, unless the deadline it already has before
+    // its first deploy completed is later.
+    async scheduleReconnectAfterHubStart(
+      args: ScheduleSidecarReconnectAfterHubStartArgs,
+    ): Promise<SidecarAllocation | null> {
+      const connectDeadline = reconnectDeadline(
+        args,
+        sql`greatest(${sidecarAllocation.connectDeadline}, ${firstConnectDeadline(args)})`,
+      );
+      const [updated] = await db
+        .update(sidecarAllocation)
+        .set({
+          connectDeadline,
+          nextAttemptAt: connectDeadline,
           reconciliationLeaseId: null,
           reconciliationLeaseExpiresAt: null,
           updatedAt: databaseTimestamp(args.now),
@@ -1311,9 +1593,9 @@ export function createSidecarAllocationStore(db: DBHandle) {
     async scheduleReconnectIfUnscheduled(
       args: ScheduleSidecarReconnectIfUnscheduledArgs,
     ): Promise<SidecarAllocation | null> {
-      const connectDeadline = sql.param(
-        args.connectDeadline,
-        sidecarAllocation.connectDeadline,
+      const connectDeadline = reconnectDeadline(
+        args,
+        firstConnectDeadline(args),
       );
       const [updated] = await db
         .update(sidecarAllocation)

@@ -82,6 +82,36 @@ type SidecarCapabilityDeclaration = {
 
 An omitted capability is unknown. It does not mean blocked. Provisioners decide
 internally whether to create, isolate, share, or reuse their backing capacity.
+To place a probe or deployment on a sidecar it already runs, a provisioner
+answers `ensure` with that sidecar's id instead of starting capacity for the
+identity the request carries. The Hub accepts that sidecar only while it still
+hosts another probe or allocation of the same provisioner binding, counting
+work being released or replaced, and otherwise rejects the placement with
+`sidecar_reuse_rejected`. It counts its holds on a sidecar, one per
+allocation id it answered with that sidecar, releases one per `destroy`, and
+stops the sidecar once none remain; it keeps them durably, since the Hub never
+re-announces them after a restart. Its declared guarantees, such as
+`isolation:workload`, must still hold for work that shares a sidecar. The
+stock sidecar does not isolate the work it hosts from each other or from
+itself: every workflow child runs as the sidecar's OS user over its data
+directory, so work that shares one can read each other's keys and run state,
+and any child can read the sidecar's own environment, its Hub token and
+credential encryption key included. A provisioner that declares
+`isolation:workload` does not share a sidecar. A sidecar hosts at most
+128 deployments, the most its `hello` can report: the Hub treats placing
+another on a full sidecar like any placement it cannot accept, and the sidecar
+refuses a deploy past it. A sidecar that restarts with more run records than
+that, such as those of self-terminated deployments the Hub has since failed,
+restores only up to the limit and keeps the rest unspawned. It goes through
+the records in a fixed order, so a boot over the same records leaves out the
+same ones. It reports each of them stopped after every `welcome`, outside the
+`hello`: the Hub fails a current deployment left out and undeploys a stale
+one, which deletes its run record.
+
+Work placed on a sidecar a provisioner already runs gets the same 2 minutes to
+connect as a new sidecar, even while that sidecar is restarting: after that a
+probe fails, and a deployment is failed and has to be started again, which
+costs little since it has not run yet.
 
 ## Tenant policy
 

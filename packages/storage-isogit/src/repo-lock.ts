@@ -7,8 +7,8 @@ import type { StorageRuntime } from "./runtime";
  *
  * On the sidecar a single agent repo is written by several independent
  * drivers — the reactor's context commits, the mail-audit commits, deploy
- * pack applies — and read by the state-pack producer, none of which share a
- * higher-level lock. Garbage collection prunes loose objects and packs, so
+ * pack applies — none of which share a higher-level lock. Garbage
+ * collection prunes loose objects and packs, so
  * it cannot run concurrently with any of them without risking the deletion
  * of an object a writer just produced. This lock makes the storage layer
  * the single owner of that constraint: every mutator and the collector

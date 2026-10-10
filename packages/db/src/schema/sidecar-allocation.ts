@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  bigint,
   check,
   index,
   integer,
@@ -49,6 +50,14 @@ export const sidecarAllocation = pgTable(
     ensureAttempts: integer("ensure_attempts").notNull().default(0),
     destroyAttempts: integer("destroy_attempts").notNull().default(0),
     connectDeadline: timestamp("connect_deadline"),
+    // How long the sidecar may stay disconnected before the Hub fails the
+    // deployment, from the deployment's lifecycle policy.
+    maxDisconnectedMs: bigint("max_disconnected_ms", {
+      mode: "number",
+    }).notNull(),
+    // When the deployment's first deploy first failed before its deploy frame
+    // was sent; the Hub stops retrying it a while after.
+    firstDeployFailedAt: timestamp("first_deploy_failed_at"),
     failureCode: text("failure_code"),
     failureMessage: text("failure_message"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -56,11 +65,6 @@ export const sidecarAllocation = pgTable(
   },
   (t) => [
     uniqueIndex("sidecar_allocation_anchor_run_idx").on(t.anchorRunId),
-    uniqueIndex("sidecar_allocation_active_sidecar_idx")
-      .on(t.sidecarId)
-      .where(
-        sql`${t.status} in ('provisioning', 'allocated', 'replacing', 'releasing', 'destroy_failed')`,
-      ),
     index("sidecar_allocation_sidecar_idx").on(t.sidecarId),
     index("sidecar_allocation_reconciliation_idx")
       .on(t.nextAttemptAt, t.createdAt)
@@ -77,6 +81,10 @@ export const sidecarAllocation = pgTable(
       sql`${t.status} in ('pending', 'provisioning', 'allocated', 'replacing', 'releasing', 'destroy_failed', 'released', 'failed')`,
     ),
     check("sidecar_allocation_generation_check", sql`${t.generation} >= 0`),
+    check(
+      "sidecar_allocation_max_disconnected_check",
+      sql`${t.maxDisconnectedMs} > 0`,
+    ),
     check(
       "sidecar_allocation_accepted_generation_check",
       sql`${t.ensureAcceptedGeneration} is null or ${t.ensureAcceptedGeneration} <= ${t.generation}`,

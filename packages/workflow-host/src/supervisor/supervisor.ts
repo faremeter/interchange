@@ -1050,9 +1050,9 @@ export function createWorkflowSupervisor(
    * Cached per-spawn context the recycle path needs to respawn the
    * child against the same deploy tree. Populated on `spawn(opts)`;
    * cleared on `shutdown`. The recycle path never mutates the
-   * `stepOrder` or `definitionHash` -- the orthogonality with redeploy
-   * lives at this field: a deploy-tree change would land via a
-   * different code path that minted a new supervisor.
+   * `stepOrder` or `definitionHash`: a deployment keeps them for its
+   * life, and a different deploy tree means a new deployment with its
+   * own supervisor.
    */
   let spawnContext: SpawnContext | null = null;
   let recyclePolicy: RecyclePolicy | null = null;
@@ -2156,6 +2156,11 @@ export function createWorkflowSupervisor(
    * transport rejection) surfaces back to the child as a structured
    * `{ ok: false, reason }` so the agent's mail-tool call fails loudly
    * rather than silently dropping the send.
+   *
+   * The child sends only as its deployment's mail address. The host
+   * transport can hold signing keys for other deployments on the same
+   * host, so a child naming any other sender is refused here, before the
+   * transport would sign as that deployment.
    */
   async function handleOutboundMessage(
     data: Extract<ControlPayload, { type: "outbound.message" }>["data"],
@@ -2172,6 +2177,12 @@ export function createWorkflowSupervisor(
       return;
     }
     try {
+      if (data.senderAddress !== bindings.deploymentMailAddress) {
+        logger.warn`outbound.message requestId=${data.requestId} named sender ${data.senderAddress}; refused, the child sends only as ${bindings.deploymentMailAddress}`;
+        throw new Error(
+          `the child sends mail only as ${bindings.deploymentMailAddress}, not ${data.senderAddress}`,
+        );
+      }
       const message = outboundMessageFromPayload(data.message);
       // A connector reply arrives with `inReplyTo` and no References, and
       // it is the only send that sets `completeReferences`. `mail_send`
@@ -3181,8 +3192,8 @@ export function createWorkflowSupervisor(
 
       // Cache the spawn context for the recycle path. The recycle path
       // reuses the same stepOrder/definitionHash/onInferenceEvent on
-      // every respawn -- those are the strict-orthogonality anchors
-      // with redeploy, and the supervisor never mutates them.
+      // every respawn -- a deployment keeps them for its life, and the
+      // supervisor never mutates them.
       const now = bindings.recyclePolicyNow ?? defaultNow;
       spawnContext = {
         stepOrder: opts.stepOrder,

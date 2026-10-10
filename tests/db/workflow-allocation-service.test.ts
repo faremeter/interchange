@@ -4,6 +4,7 @@ import {
   beforeEach,
   describe,
   expect,
+  spyOn,
   test,
 } from "bun:test";
 
@@ -24,6 +25,7 @@ import {
   createSidecarPluginRegistry,
   createSidecarRouter,
   createWorkflowAllocationService,
+  SessionLaunchError,
   type InstallAndApproveWorkflowSourceParams,
   type SidecarProvisioner,
 } from "@intx/hub-sessions";
@@ -53,6 +55,7 @@ import {
 
 const TEST_DEFAULT_LIFECYCLE_POLICY: ResolvedWorkflowLifecyclePolicy = {
   maxLifetime: "7d",
+  maxDisconnected: "15m",
   capacityRetention: { completed: "30m", failed: "24h", cancelled: "1h" },
 };
 
@@ -226,10 +229,149 @@ describe.skipIf(!harnessDbEnvAvailable())(
       } as const;
     }
 
+    test.each(["synchronization", "readiness"])(
+      "releases a probe when its connection deadline expires during %s",
+      async (phase) => {
+        const probeId = `sal-connection-${phase}`;
+        const anchorRunId = `run-connection-${phase}`;
+        const entered = Promise.withResolvers<undefined>();
+        const held = Promise.withResolvers<undefined>();
+        const signals: AbortSignal[] = [];
+        const destroyCalls: unknown[] = [];
+        const retireCalls: unknown[] = [];
+        let readinessCalls = 0;
+        let installCalls = 0;
+        const provisioner = makeProvisioner({
+          id: "connection-deadline",
+          ensureCalls: [],
+          destroyCalls,
+        });
+        const connectTimeoutMs = 23_456;
+        const deadlines: (() => void)[] = [];
+        const scheduleTimeout = globalThis.setTimeout;
+        const timerSpy = spyOn(globalThis, "setTimeout").mockImplementation(
+          Object.assign(
+            <TArgs extends unknown[]>(
+              callback: (...args: TArgs) => void,
+              delay?: number,
+              ...args: TArgs
+            ) => {
+              const timer = scheduleTimeout(callback, delay, ...args);
+              if (delay === connectTimeoutMs) {
+                clearTimeout(timer);
+                deadlines.push(() => {
+                  callback(...args);
+                });
+              }
+              return timer;
+            },
+            { __promisify__: scheduleTimeout.__promisify__ },
+          ),
+        );
+        const service = createWorkflowAllocationService({
+          db: h.db,
+          ...sharedPluginPools([provisioner]),
+          preparedDeployer: {
+            installAndApproveWorkflowSource: async () => {
+              installCalls += 1;
+              throw new Error("A timed-out connection must not start probing");
+            },
+            deployPreparedCodeSourcedWorkflow: async (params) => ({
+              anchorRunId: params.anchorRunId,
+              deploymentAddress: params.agentAddress,
+              publicKey: "public-key",
+            }),
+          },
+          credentialCipher: CIPHER,
+          allocationRouter: {
+            ...createSidecarRouter({
+              authenticateSidecar: async () => null,
+              validateSidecarIdentity: async () => false,
+              resolveSidecarBindings: async () => [],
+              withExecutableWorkflowRun: async (_target, send) => send(),
+            }),
+            fenceAllocation: () => undefined,
+            retireAllocation: (target) => retireCalls.push(target),
+            syncSidecar(_sidecarId, signal) {
+              if (signal !== undefined) signals.push(signal);
+              if (phase !== "synchronization") return Promise.resolve();
+              entered.resolve(undefined);
+              return held.promise;
+            },
+            waitForAllocatedSidecar(_target, _timeout, _onValidation, signal) {
+              readinessCalls += 1;
+              if (signal !== undefined) signals.push(signal);
+              entered.resolve(undefined);
+              return held.promise;
+            },
+            sendProbeToAllocation: async () => probeResult(),
+            isAllocatedWorkflowActive: async () => false,
+            detachAllocation: () => undefined,
+          },
+          hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
+          defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
+          createAllocationId: () => probeId,
+          createSidecarId: () => `sc-connection-${phase}`,
+          createToken: () => "probe-token",
+          connectTimeoutMs,
+        });
+        const preparing = service
+          .prepareProvisionedDeployment(prepareArgs(anchorRunId))
+          .catch((error: unknown) => error);
+        try {
+          await Promise.race([entered.promise, preparing]);
+          // The same timer covers both phases; readiness gets no fresh budget.
+          expect(deadlines).toHaveLength(1);
+          expect(signals).toHaveLength(phase === "synchronization" ? 1 : 2);
+          expect(new Set(signals).size).toBe(1);
+          const expire = deadlines[0];
+          if (expire === undefined) throw new Error("No connection deadline");
+          expire();
+          expect(await preparing).toMatchObject({
+            name: "SidecarOperationTimeoutError",
+            message: `Probe connection timed out after ${String(connectTimeoutMs)}ms`,
+          });
+          expect(signals.every((signal) => signal.aborted)).toBe(true);
+          expect(destroyCalls).toHaveLength(1);
+          expect(retireCalls).toEqual([
+            { allocationId: probeId, generation: 0 },
+          ]);
+          expect(
+            await createWorkflowProbeStore(h.db).get(probeId),
+          ).toMatchObject({
+            status: "failed",
+            failureCode: "probe_failed",
+          });
+          expect(
+            await createSidecarAllocationStore(h.db).findByAnchorRunId(
+              anchorRunId,
+            ),
+          ).toBeNull();
+
+          held.resolve(undefined);
+          await held.promise;
+          expect(readinessCalls).toBe(phase === "synchronization" ? 0 : 1);
+          expect(installCalls).toBe(0);
+        } finally {
+          held.resolve(undefined);
+          await preparing;
+          timerSpy.mockRestore();
+        }
+      },
+    );
+
     test("persists a probe result and adopts matching provisioned capacity", async () => {
+      // A disconnect limit other than the default, so the allocation is seen
+      // to carry the deployment's own.
+      await h.db.insert(workflowDefinition).values({
+        id: DEFINITION_ID,
+        tenantId: TENANT_ID,
+        name: "workflow-probe-definition",
+        lifecyclePolicy: { maxDisconnected: "40m" },
+      });
       const ensureCalls: unknown[] = [];
       const destroyCalls: unknown[] = [];
-      const disconnectCalls: unknown[] = [];
+      const detachCalls: unknown[] = [];
       const provisioner = makeProvisioner({
         id: "sandbox",
         ensureCalls,
@@ -258,7 +400,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
           waitForAllocatedSidecar: async () => undefined,
           sendProbeToAllocation: async () => probeResult(),
           isAllocatedWorkflowActive: async () => false,
-          disconnectAllocation: (target) => disconnectCalls.push(target),
+          reportedDeploymentFailure: () => undefined,
+          stoppedDeploymentHistory: async () => undefined,
+          detachAllocation: (target) => detachCalls.push(target),
+          syncSidecar: async () => undefined,
         },
         hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
         defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
@@ -275,9 +420,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(prepared.allocationId).toBe("sal-probe-adopted");
       expect(ensureCalls).toHaveLength(1);
       expect(destroyCalls).toHaveLength(0);
-      expect(disconnectCalls).toEqual([
-        { allocationId: "sal-probe-adopted", generation: 0 },
-      ]);
+      expect(detachCalls).toEqual([]);
       const probe = await h.db.query.workflowProbe.findFirst({
         where: eq(workflowProbe.id, "sal-probe-adopted"),
       });
@@ -292,17 +435,23 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const allocation = await createSidecarAllocationStore(
         h.db,
       ).findByAnchorRunId("run-probe-adopted");
+      // The allocation carries the deployment's disconnect limit.
       expect(allocation).toMatchObject({
         id: "sal-probe-adopted",
         status: "allocated",
         ensureAcceptedGeneration: 0,
         sidecarId: "sc-probe-adopted",
+        maxDisconnectedMs: 2_400_000,
       });
       expect(
         await h.db.query.workflowRun.findFirst({
           where: eq(workflowRun.id, "run-probe-adopted"),
         }),
-      ).toMatchObject({ status: "deployed", definitionId: DEFINITION_ID });
+      ).toMatchObject({
+        status: "deployed",
+        definitionId: DEFINITION_ID,
+        lifecyclePolicy: { maxDisconnected: "40m" },
+      });
       expect(
         await createWorkflowRunLaunchSpecStore(h.db).get("run-probe-adopted"),
       ).toMatchObject({
@@ -342,7 +491,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
           waitForAllocatedSidecar: async () => undefined,
           sendProbeToAllocation: async () => probeResult(),
           isAllocatedWorkflowActive: async () => false,
-          disconnectAllocation: () => undefined,
+          reportedDeploymentFailure: () => undefined,
+          stoppedDeploymentHistory: async () => undefined,
+          detachAllocation: () => undefined,
+          syncSidecar: async () => undefined,
         },
         hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
         defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
@@ -366,13 +518,182 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(anchorVisibleDuringDeploy).toBe(true);
     });
 
-    test("reauthenticates adopted probe capacity as its allocation", async () => {
+    test("tells a first deploy that failed before its frame was sent from an uncertain one", async () => {
+      const provisioner = makeProvisioner({
+        id: "first-deploy-failure",
+        ensureCalls: [],
+        destroyCalls: [],
+      });
+      let failure: Error = new Error("catalog temporarily unavailable");
+      const service = createWorkflowAllocationService({
+        db: h.db,
+        ...sharedPluginPools([provisioner]),
+        preparedDeployer: {
+          installAndApproveWorkflowSource: (params) => freeze(params),
+          deployPreparedCodeSourcedWorkflow: async () => {
+            throw failure;
+          },
+        },
+        credentialCipher: CIPHER,
+        allocationRouter: {
+          fenceAllocation: () => undefined,
+          retireAllocation: () => undefined,
+          waitForAllocatedSidecar: async () => undefined,
+          sendProbeToAllocation: async () => probeResult(),
+          isAllocatedWorkflowActive: async () => false,
+          reportedDeploymentFailure: () => undefined,
+          stoppedDeploymentHistory: async () => undefined,
+          detachAllocation: () => undefined,
+          syncSidecar: async () => undefined,
+        },
+        hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
+        defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
+        createAllocationId: () => "sal-first-deploy-failure",
+        createSidecarId: () => "sc-first-deploy-failure",
+        createToken: () => "first-deploy-failure-token",
+      });
+      const prepared = await service.prepareProvisionedDeployment(
+        prepareArgs("run-first-deploy-failure"),
+      );
+      const allocation = await createSidecarAllocationStore(
+        h.db,
+      ).findByAnchorRunId(prepared.anchorRunId);
+      if (allocation === null) throw new Error("expected adopted allocation");
+      const reconciliation = {
+        signal: new AbortController().signal,
+        leaseId: "initialization-test",
+      };
+
+      await expect(
+        service.deployReadyAllocation(allocation, reconciliation),
+      ).rejects.toMatchObject({
+        name: "SidecarFirstDeployError",
+        message: "catalog temporarily unavailable",
+      });
+      failure = new SessionLaunchError(
+        "start",
+        new Error("deploy acknowledgement timed out"),
+        true,
+      );
+      await expect(
+        service.deployReadyAllocation(allocation, reconciliation),
+      ).rejects.toBe(failure);
+    });
+
+    test("reports a deployed workflow its connected sidecar no longer holds as missing", async () => {
+      const provisioner = makeProvisioner({
+        id: "deployment-missing",
+        ensureCalls: [],
+        destroyCalls: [],
+      });
+      let deploys = 0;
+      let connected = false;
+      let clock = new Date();
+      const reported: {
+        error?: string;
+        history?: { unreceived: string | null; reportedAt: Date };
+      } = {};
+      const service = createWorkflowAllocationService({
+        db: h.db,
+        ...sharedPluginPools([provisioner]),
+        preparedDeployer: {
+          installAndApproveWorkflowSource: (params) => freeze(params),
+          deployPreparedCodeSourcedWorkflow: async (params) => {
+            deploys += 1;
+            return {
+              anchorRunId: params.anchorRunId,
+              deploymentAddress: params.agentAddress,
+              publicKey: "public-key",
+            };
+          },
+        },
+        credentialCipher: CIPHER,
+        allocationRouter: {
+          fenceAllocation: () => undefined,
+          retireAllocation: () => undefined,
+          waitForAllocatedSidecar: async () => undefined,
+          sendProbeToAllocation: async () => probeResult(),
+          isAllocatedWorkflowActive: async () => {
+            if (!connected)
+              throw new Error("Allocated sidecar is not connected");
+            return false;
+          },
+          reportedDeploymentFailure: () => reported.error,
+          stoppedDeploymentHistory: async () => reported.history,
+          detachAllocation: () => undefined,
+          syncSidecar: async () => undefined,
+        },
+        hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
+        defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
+        now: () => clock,
+        createAllocationId: () => "sal-deployment-missing",
+        createSidecarId: () => "sc-deployment-missing",
+        createToken: () => "deployment-missing-token",
+      });
+      const prepared = await service.prepareProvisionedDeployment(
+        prepareArgs("run-deployment-missing"),
+      );
+      const allocation = await createSidecarAllocationStore(
+        h.db,
+      ).findByAnchorRunId(prepared.anchorRunId);
+      if (allocation === null) throw new Error("expected adopted allocation");
+      await h.db
+        .update(workflowRun)
+        .set({ publicKey: "committed-key" })
+        .where(eq(workflowRun.id, prepared.anchorRunId));
+      const reconciliation = {
+        signal: new AbortController().signal,
+        leaseId: "initialization-test",
+      };
+
+      // A sidecar that is only cut off may still hold the deployment.
+      await expect(
+        service.deployReadyAllocation(allocation, reconciliation),
+      ).rejects.toThrow("not connected");
+      connected = true;
+      await expect(
+        service.deployReadyAllocation(allocation, reconciliation),
+      ).rejects.toMatchObject({ name: "SidecarDeploymentMissingError" });
+      // A sidecar that still holds the deployment, stopped on its own, says why.
+      const reportedAt = clock;
+      reported.error = "The child ended itself";
+      reported.history = { unreceived: null, reportedAt };
+      await expect(
+        service.deployReadyAllocation(allocation, reconciliation),
+      ).rejects.toMatchObject({
+        name: "SidecarDeploymentStoppedError",
+        message: "The child ended itself",
+      });
+      // History the stopped copy committed is waited for, for a while.
+      reported.history = {
+        unreceived: "refs/heads/main is at b on the Hub and c on the worker",
+        reportedAt,
+      };
+      await expect(
+        service.deployReadyAllocation(allocation, reconciliation),
+      ).rejects.toMatchObject({
+        name: "SidecarDeploymentHistoryPendingError",
+        retryAt: new Date(reportedAt.getTime() + 1_000),
+      });
+      clock = new Date(reportedAt.getTime() + 60_000);
+      await expect(
+        service.deployReadyAllocation(allocation, reconciliation),
+      ).rejects.toMatchObject({
+        name: "SidecarDeploymentStoppedError",
+        message:
+          "The child ended itself; history it committed that the Hub never received is lost: refs/heads/main is at b on the Hub and c on the worker",
+      });
+      expect(deploys).toBe(0);
+    });
+
+    test("turns adopted probe capacity into its allocation without reconnecting", async () => {
       const credentialResolver = createSidecarCredentialResolver({ db: h.db });
       const router = createSidecarRouter({
         withExecutableWorkflowRun: async (_target, send) => send(),
         authenticateSidecar: async ({ token }) =>
           credentialResolver.resolve(token),
         validateSidecarIdentity: credentialResolver.isCurrent,
+        resolveSidecarBindings: credentialResolver.resolveBindings,
         requestTimeoutMs: 500,
       });
       let probeWs:
@@ -405,10 +726,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
           router.handleMessage(
             probeWs,
             JSON.stringify({
-              type: "register",
+              type: "hello",
               sidecarId: request.sidecarId,
               token: request.token,
-              agentAddresses: [],
+              incarnations: [],
             }),
           );
           return { kind: "accepted" };
@@ -442,44 +763,30 @@ describe.skipIf(!harnessDbEnvAvailable())(
         prepareArgs("run-adoption-auth"),
       );
 
-      expect(probeWs?.closed).toBe(true);
       if (issuedToken === undefined) throw new Error("expected issued token");
-      const reconnected = {
-        sent: [] as string[],
-        closed: false,
-        send(data: string) {
-          this.sent.push(data);
-        },
-        close() {
-          this.closed = true;
-        },
-      };
-      router.handleOpen(reconnected);
-      router.handleMessage(
-        reconnected,
-        JSON.stringify({
-          type: "reconnect",
-          sidecarId: "sc-adoption-auth",
-          token: issuedToken,
-          agentAddresses: [prepared.deploymentAddress],
-        }),
-      );
+      await router.syncSidecar("sc-adoption-auth");
       await router.waitForAllocatedSidecar(
         { allocationId: prepared.allocationId, generation: 0 },
         500,
       );
 
-      expect(reconnected.closed).toBe(false);
-      expect(router.getRoutableAddresses()).toContain(
-        prepared.deploymentAddress,
-      );
-      expect(await credentialResolver.resolve(issuedToken)).toMatchObject({
-        kind: "allocated",
-        allocationId: prepared.allocationId,
-        anchorRunId: prepared.anchorRunId,
-        workflowRunAddress: prepared.deploymentAddress,
-        generation: 0,
+      expect(probeWs?.closed).toBe(false);
+      expect(await credentialResolver.resolve(issuedToken)).toEqual({
+        sidecarId: "sc-adoption-auth",
       });
+      expect(
+        await credentialResolver.resolveBindings("sc-adoption-auth"),
+      ).toEqual([
+        {
+          kind: "allocated",
+          sidecarId: "sc-adoption-auth",
+          allocationId: prepared.allocationId,
+          tenantId: TENANT_ID,
+          anchorRunId: prepared.anchorRunId,
+          workflowRunAddress: prepared.deploymentAddress,
+          generation: 0,
+        },
+      ]);
     });
 
     test("releases adopted probe capacity when deployment persistence fails", async () => {
@@ -487,7 +794,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await seedWorkflowRun(h.db, { id: anchorRunId, tenantId: TENANT_ID });
       const ensureCalls: unknown[] = [];
       const destroyCalls: unknown[] = [];
-      const disconnectCalls: unknown[] = [];
+      const detachCalls: unknown[] = [];
       const provisioner = makeProvisioner({
         id: "sandbox",
         ensureCalls,
@@ -511,7 +818,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
           waitForAllocatedSidecar: async () => undefined,
           sendProbeToAllocation: async () => probeResult(),
           isAllocatedWorkflowActive: async () => false,
-          disconnectAllocation: (target) => disconnectCalls.push(target),
+          reportedDeploymentFailure: () => undefined,
+          stoppedDeploymentHistory: async () => undefined,
+          detachAllocation: (target) => detachCalls.push(target),
+          syncSidecar: async () => undefined,
         },
         hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
         defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
@@ -526,7 +836,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       expect(ensureCalls).toHaveLength(1);
       expect(destroyCalls).toHaveLength(1);
-      expect(disconnectCalls).toEqual([
+      expect(detachCalls).toEqual([
         { allocationId: "sal-probe-persistence-failure", generation: 0 },
       ]);
       expect(
@@ -588,7 +898,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
           waitForAllocatedSidecar: async () => undefined,
           sendProbeToAllocation: async () => probeResult(),
           isAllocatedWorkflowActive: async () => false,
-          disconnectAllocation: () => undefined,
+          reportedDeploymentFailure: () => undefined,
+          stoppedDeploymentHistory: async () => undefined,
+          detachAllocation: () => undefined,
+          syncSidecar: async () => undefined,
         },
         hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
         defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
@@ -684,7 +997,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
           waitForAllocatedSidecar: async () => undefined,
           sendProbeToAllocation: async () => probeResult(),
           isAllocatedWorkflowActive: async () => false,
-          disconnectAllocation: () => undefined,
+          reportedDeploymentFailure: () => undefined,
+          stoppedDeploymentHistory: async () => undefined,
+          detachAllocation: () => undefined,
+          syncSidecar: async () => undefined,
         },
         hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
         defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
@@ -765,7 +1081,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
           waitForAllocatedSidecar: async () => undefined,
           sendProbeToAllocation: async () => probeResult(),
           isAllocatedWorkflowActive: async () => false,
-          disconnectAllocation: () => undefined,
+          reportedDeploymentFailure: () => undefined,
+          stoppedDeploymentHistory: async () => undefined,
+          detachAllocation: () => undefined,
+          syncSidecar: async () => undefined,
         },
         hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
         defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
@@ -841,7 +1160,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
           waitForAllocatedSidecar: async () => undefined,
           sendProbeToAllocation: async () => probeResult(),
           isAllocatedWorkflowActive: async () => false,
-          disconnectAllocation: () => undefined,
+          reportedDeploymentFailure: () => undefined,
+          stoppedDeploymentHistory: async () => undefined,
+          detachAllocation: () => undefined,
+          syncSidecar: async () => undefined,
         },
         hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
         defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
@@ -900,7 +1222,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
             waitForAllocatedSidecar: async () => undefined,
             sendProbeToAllocation: async () => probeResult(),
             isAllocatedWorkflowActive: async () => false,
-            disconnectAllocation: () => undefined,
+            reportedDeploymentFailure: () => undefined,
+            stoppedDeploymentHistory: async () => undefined,
+            detachAllocation: () => undefined,
+            syncSidecar: async () => undefined,
           },
           hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
           defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,

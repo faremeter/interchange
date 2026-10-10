@@ -13,7 +13,7 @@ import {
   createEventCollectorRegistry,
   createSidecarRouter,
   type SessionService,
-  type SidecarAuthenticator,
+  type SidecarAuthIdentity,
 } from "@intx/hub-sessions";
 import {
   createTestDb,
@@ -51,15 +51,17 @@ function mockGetSession(userId: string): GetSession {
   });
 }
 
-const acceptAnySidecar: SidecarAuthenticator = async ({ sidecarId }) => ({
-  kind: "allocated",
-  sidecarId,
-  allocationId: "allocation-test",
-  tenantId: "tenant-test",
-  anchorRunId: "run-test",
-  workflowRunAddress: "workflow-test@example.test",
-  generation: 1,
-});
+function bindingFor(sidecarId: string): SidecarAuthIdentity {
+  return {
+    kind: "allocated",
+    sidecarId,
+    allocationId: "allocation-test",
+    tenantId: "tenant-test",
+    anchorRunId: "run-test",
+    workflowRunAddress: "workflow-test@example.test",
+    generation: 1,
+  };
+}
 
 function mockSessionService(): SessionService {
   const notImpl = (name: string) => (): never => {
@@ -95,7 +97,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         db: h.db,
         sidecarRouter: createSidecarRouter({
           withExecutableWorkflowRun: async (_target, send) => send(),
-          authenticateSidecar: acceptAnySidecar,
+          authenticateSidecar: async ({ sidecarId }) => ({ sidecarId }),
+          resolveSidecarBindings: async (sidecarId) => [bindingFor(sidecarId)],
           validateSidecarIdentity: async () => true,
         }),
         sessionService: mockSessionService(),

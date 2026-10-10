@@ -1,11 +1,9 @@
 // Pack-send protocol owner.
 //
-// Mints transferIds, chunks the pack, emits the
-// `repo.pack.push` / `repo.pack.done` frame sequence, and resolves a
-// Promise when the matching `repo.pack.ack` arrives (or rejects on
-// `repo.pack.reject`). Both the existing hub-link agent-state push
-// path and the sidecar-side workflow-run push hook consume this
-// shape; the protocol logic lives once.
+// Chunks the pack, emits the `repo.pack.push` / `repo.pack.done` frame
+// sequence, and resolves a Promise when the matching `repo.pack.ack`
+// arrives (or rejects on `repo.pack.reject`). The sidecar's workflow-run
+// push path consumes this shape; the protocol logic lives once.
 
 import type {
   PackAckFrame,
@@ -21,12 +19,12 @@ export type PackSendFrame = PackPushFrame | PackDoneFrame;
 
 export type PackSendOpts = {
   agentAddress: string;
+  /** The generation of the incarnation the pushed repository belongs to. */
+  generation: number;
   repoId: RepoId;
   /**
-   * Caller-supplied transfer id. Must be unique across the lifetime of
-   * this sender; the sender does not re-mint on collision. Hub-link
-   * uses an incoming `sync.request.transferId` for state-pack pushes;
-   * the workflow-run client mints fresh ids per push.
+   * Caller-supplied transfer id. Must never be reused; the sender does not
+   * re-mint on collision.
    */
   transferId: string;
   pack: Uint8Array;
@@ -60,8 +58,7 @@ export type PackSender = {
   handleReject(frame: PackRejectFrame): boolean;
   /**
    * Reject every in-flight transfer with the supplied reason. Used by
-   * hub-link's `open` handler to fail any transfers that did not
-   * complete before the connection cycle.
+   * hub-link when a connection closes, failing the transfers it carried.
    */
   cancelAll(reason: string): void;
 };
@@ -74,6 +71,19 @@ export type PackSenderDeps = {
   sendFrame: (frame: PackSendFrame) => void;
 };
 
+/** A transfer the receiver answered with `repo.pack.reject`. */
+export class PackRejectedError extends Error {
+  readonly reason: string;
+
+  constructor(transferId: string, reason: string) {
+    super(
+      `pack rejected by receiver (transferId=${transferId} reason=${reason})`,
+    );
+    this.name = "PackRejectedError";
+    this.reason = reason;
+  }
+}
+
 type PendingTransfer = {
   resolve: () => void;
   reject: (err: Error) => void;
@@ -83,7 +93,15 @@ export function createPackSender(deps: PackSenderDeps): PackSender {
   const pending = new Map<string, PendingTransfer>();
 
   function send(opts: PackSendOpts): Promise<void> {
-    const { agentAddress, repoId, transferId, pack, ref, commitSha } = opts;
+    const {
+      agentAddress,
+      generation,
+      repoId,
+      transferId,
+      pack,
+      ref,
+      commitSha,
+    } = opts;
     if (pending.has(transferId)) {
       return Promise.reject(
         new Error(`pack sender: transferId ${transferId} is already in flight`),
@@ -96,6 +114,7 @@ export function createPackSender(deps: PackSenderDeps): PackSender {
           deps.sendFrame({
             type: "repo.pack.push",
             agentAddress,
+            generation,
             repoId,
             transferId,
             seq: chunk.seq,
@@ -105,6 +124,7 @@ export function createPackSender(deps: PackSenderDeps): PackSender {
         deps.sendFrame({
           type: "repo.pack.done",
           agentAddress,
+          generation,
           repoId,
           transferId,
           ref,
@@ -138,11 +158,7 @@ export function createPackSender(deps: PackSenderDeps): PackSender {
     const entry = pending.get(frame.transferId);
     if (entry === undefined) return false;
     pending.delete(frame.transferId);
-    entry.reject(
-      new Error(
-        `pack rejected by receiver (transferId=${frame.transferId} reason=${frame.reason})`,
-      ),
-    );
+    entry.reject(new PackRejectedError(frame.transferId, frame.reason));
     return true;
   }
 

@@ -11,6 +11,7 @@ import {
 } from "@intx/mime";
 import { createInMemoryTransport } from "./index";
 import type {
+  CryptoProvider,
   MailboxEvent,
   MessageRef,
   MessageAttachment,
@@ -162,6 +163,80 @@ describe("send and watch", () => {
         recipients: ["remote@example.test"],
       },
     ]);
+  });
+});
+
+describe("relay-only transport", () => {
+  async function createRelayTransport() {
+    const transport = createInMemoryTransport({ relayOnly: true });
+    transport.register(
+      "alpha@test.interchange",
+      createEd25519Crypto(await generateKeyPair()),
+    );
+    transport.register(
+      "beta@test.interchange",
+      createEd25519Crypto(await generateKeyPair()),
+    );
+    return transport;
+  }
+
+  test("relays registered recipients and the sender itself, keeping no copy", async () => {
+    const transport = await createRelayTransport();
+    const relayed: { senderAddress: string; recipients: string[] }[] = [];
+    transport.setRemoteSendHandler(
+      async (_rawMessage, recipients, senderAddress) => {
+        relayed.push({ senderAddress, recipients });
+      },
+    );
+    const alphaTransport = transport.getTransportFor("alpha@test.interchange");
+    const betaTransport = transport.getTransportFor("beta@test.interchange");
+
+    const receipt = await alphaTransport.send({
+      to: ["beta@test.interchange", "alpha@test.interchange"],
+      cc: "remote@example.test",
+      type: "conversation.message",
+      content: "hello",
+    });
+
+    expect(receipt.status).toBe("queued");
+    expect(relayed).toEqual([
+      {
+        senderAddress: "alpha@test.interchange",
+        recipients: [
+          "beta@test.interchange",
+          "alpha@test.interchange",
+          "remote@example.test",
+        ],
+      },
+    ]);
+    expect(await betaTransport.search("INBOX", {})).toEqual([]);
+    expect(await alphaTransport.search("INBOX", {})).toEqual([]);
+    expect(await alphaTransport.search("Sent", {})).toEqual([]);
+  });
+
+  test("a send with no remote send handler throws", async () => {
+    const transport = await createRelayTransport();
+    const alphaTransport = transport.getTransportFor("alpha@test.interchange");
+
+    await expect(
+      alphaTransport.send({
+        to: "beta@test.interchange",
+        type: "conversation.message",
+        content: "hello",
+      }),
+    ).rejects.toThrow(
+      'Cannot send from "alpha@test.interchange": this transport relays every recipient and has no remote send handler',
+    );
+  });
+
+  test("deliver throws instead of storing the message", async () => {
+    const transport = await createRelayTransport();
+
+    expect(() =>
+      transport.deliver("alpha@test.interchange", new Uint8Array()),
+    ).toThrow(
+      'Cannot deliver mail to "alpha@test.interchange": this transport relays all mail and keeps no mailboxes',
+    );
   });
 });
 
@@ -802,6 +877,51 @@ describe("registration lifecycle", () => {
       }
       expect(cause.condition).toBe("CANNOT");
     }
+  });
+
+  test("a recipient unregistered while the message is signed fails the send before any recipient receives it", async () => {
+    const transport = createInMemoryTransport();
+    const real = createEd25519Crypto(await generateKeyPair());
+    const signing = Promise.withResolvers<undefined>();
+    const release = Promise.withResolvers<undefined>();
+    const slow: CryptoProvider = {
+      async sign(content) {
+        signing.resolve(undefined);
+        await release.promise;
+        return real.sign(content);
+      },
+      signSSH: (payload) => real.signSSH(payload),
+      verify: (content, signature, publicKey) =>
+        real.verify(content, signature, publicKey),
+      getPublicKey: () => real.getPublicKey(),
+    };
+    transport.register("alpha@test.interchange", slow);
+    transport.register(
+      "beta@test.interchange",
+      createEd25519Crypto(await generateKeyPair()),
+    );
+    transport.register(
+      "gamma@test.interchange",
+      createEd25519Crypto(await generateKeyPair()),
+    );
+
+    const sent = transport.getTransportFor("alpha@test.interchange").send({
+      to: ["beta@test.interchange", "gamma@test.interchange"],
+      type: "conversation.message",
+      content: "hello",
+    });
+    await signing.promise;
+    transport.unregister("gamma@test.interchange");
+    release.resolve(undefined);
+
+    await expect(sent).rejects.toThrow(
+      /was unregistered while the message was being signed/,
+    );
+    expect(
+      await transport
+        .getTransportFor("beta@test.interchange")
+        .search("INBOX", {}),
+    ).toHaveLength(0);
   });
 
   test("fetchFull returns signatureStatus 'unknown' after sender is unregistered", async () => {

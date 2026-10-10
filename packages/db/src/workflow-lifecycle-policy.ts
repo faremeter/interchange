@@ -68,7 +68,9 @@ export function canExecuteWorkflowRun(
  * through the anchor run's row lock. Pack ingestion holds only the allocation
  * row, so a long receive does not delay delivery. This relies on every path
  * that retires the allocation of a run that can still execute also writing the
- * anchor row, as replacement and unrecoverable release do.
+ * anchor row, as unrecoverable release does. Failing a stopped deployment
+ * writes the anchor row but keeps the allocation, so while that failure is
+ * deferred, the deployment's dropped route is what refuses its delivery.
  */
 export async function withExecutableWorkflowRun(
   db: DB["db"],
@@ -188,6 +190,7 @@ export async function resolveDeploymentLifecyclePolicy(
   const policy = clampWorkflowLifecyclePolicy(policies);
   return {
     maxLifetime: policy.maxLifetime ?? defaults.maxLifetime,
+    maxDisconnected: policy.maxDisconnected ?? defaults.maxDisconnected,
     capacityRetention: {
       ...defaults.capacityRetention,
       ...policy.capacityRetention,

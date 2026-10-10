@@ -4,8 +4,8 @@
 // `restoreWorkflowRuns()` driver takes to bring a batch of persisted
 // deployments back to ready -- as a function of the number of restored
 // deployments. Restore runs once at boot, before `hubLink.connect()`, and
-// spawns each deployment's supervisor SERIALLY; this bench quantifies the
-// per-deployment restore cost that serial spawn imposes.
+// spawns up to 8 deployments' supervisors at once; this bench quantifies the
+// per-deployment restore cost that remains.
 //
 // The measured operation is `SidecarDeployRouter.restoreWorkflowRuns()`
 // on the workflow host's deploy program. For each batch size N the
@@ -19,11 +19,11 @@
 //      empty registration table -- the sidecar-restart model) over the SAME
 //      data dir, then brackets `restoreWorkflowRuns()` with
 //      `performance.now()`. The child handshakes are driven concurrently (the
-//      driver blocks on each `supervisor.spawn` until its child signals
-//      `ready`), so the measured interval is the real serial restore-to-ready
-//      path: scan -> per-record re-validate -> spawn -> ready, N times.
+//      driver waits on each `supervisor.spawn` until its child signals
+//      `ready`), so the measured interval is the real restore-to-ready path:
+//      scan -> per-record re-validate -> spawn -> ready, for N records.
 //   3. READINESS: confirms all N restored addresses are live via
-//      `activeAddresses()` before recording the sample.
+//      `incarnations()` before recording the sample.
 //
 // The subprocess spawner is a deterministic in-memory ready-driver (no real
 // `Bun.spawn`), so the sample isolates the restore driver's own per-deployment
@@ -38,7 +38,7 @@
 // methods the deploy/restore-to-ready path exercises), so its
 // `replayProcessingToInbox` / dispatch iteration logs a WRN/ERR for the
 // unimplemented `writeTreeDelta`. Those lines are post-measurement background
-// noise, not a restore failure: readiness is asserted via `activeAddresses()`
+// noise, not a restore failure: readiness is asserted via `incarnations()`
 // before the sample is recorded.
 //
 // Run:
@@ -339,9 +339,6 @@ async function buildRouter(args: {
       }),
       forgetAgent: () => undefined,
     } as unknown as Parameters<typeof createSidecarDeployRouter>[0]["keyStore"],
-    senderKeyCache: {
-      put: async () => undefined,
-    },
     transport: args.transport,
     repoStore,
     signingKeySeed: signingKeyPair.privateKey,
@@ -349,6 +346,8 @@ async function buildRouter(args: {
     createAgentCrypto: createEd25519Crypto,
     assertSourceBuildable: () => undefined,
     registerDeployment: () => undefined,
+    removeRunRepository: async () => undefined,
+    removeAgentStateRepository: async () => undefined,
     unregisterDeployment: () => undefined,
     reportDeploymentRefTips: async () => ({}),
     multistepSubprocessSpawner: args.spawner,
@@ -365,6 +364,7 @@ async function buildRouter(args: {
     // agent so it survives `projectLiveToInert`) whose id is keyed to the
     // deployment id, so each of the N deployments materializes a distinct,
     // deterministic definition on both deploy and restore.
+    createWorkflowCache: () => ({}),
     applyFrozenWorkflowClosure: stubApplyFrozenWorkflowClosure,
   });
 }
@@ -375,7 +375,9 @@ function singleStepFrame(
 ): AgentDeployFrame {
   return {
     type: "agent.deploy",
+    requestId: `deploy-${agentAddress}`,
     agentAddress,
+    generation: 1,
     agentId: "boot-restore-agent",
     hubPublicKey: "hub-pk",
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the workflow path reads only config.sessionId/config.grants, which tolerate undefined
@@ -442,8 +444,8 @@ async function measureRestore(n: number): Promise<number> {
 
   // RESTORE: a fresh transport (empty registration table -- the restart model)
   // and fresh router state over the SAME data dir. Drive all N child
-  // handshakes concurrently with the serial restore driver, which blocks on
-  // each spawn until ready.
+  // handshakes concurrently with the restore driver, which waits on each
+  // spawn until ready.
   const restoreTransport = createInMemoryTransport();
   const restore = makeReadyDrivingSpawner(30000);
   const routerB = await buildRouter({
@@ -463,11 +465,17 @@ async function measureRestore(n: number): Promise<number> {
 
   await Promise.all(readyDrivers);
 
-  const active = new Set(routerB.activeAddresses());
+  const live = new Set(
+    routerB
+      .incarnations()
+      .flatMap((incarnation) =>
+        incarnation.state === "live" ? [incarnation.address] : [],
+      ),
+  );
   for (const address of addresses) {
-    if (!active.has(address)) {
+    if (!live.has(address)) {
       throw new Error(
-        `restore left ${address} inactive: activeAddresses did not include it after restoreWorkflowRuns resolved`,
+        `restore left ${address} inactive: incarnations did not report it live after restoreWorkflowRuns resolved`,
       );
     }
   }

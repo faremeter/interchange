@@ -29,7 +29,7 @@ import {
   createHubSessionLookups,
   createSidecarRouter,
   type AgentRepoStore,
-  type SidecarAuthenticator,
+  type SidecarAuthIdentity,
 } from "@intx/hub-sessions";
 import {
   createTestDb,
@@ -71,15 +71,17 @@ const stubRepoStore = new Proxy(
 
 let authenticatedAddress = "";
 let authenticatedAnchorRunId = "";
-const acceptAnySidecar: SidecarAuthenticator = async ({ sidecarId }) => ({
-  kind: "allocated",
-  sidecarId,
-  allocationId: "allocation-test",
-  tenantId: TENANT,
-  anchorRunId: authenticatedAnchorRunId,
-  workflowRunAddress: authenticatedAddress,
-  generation: 1,
-});
+function bindingFor(sidecarId: string): SidecarAuthIdentity {
+  return {
+    kind: "allocated",
+    sidecarId,
+    allocationId: "allocation-test",
+    tenantId: TENANT,
+    anchorRunId: authenticatedAnchorRunId,
+    workflowRunAddress: authenticatedAddress,
+    generation: 1,
+  };
+}
 
 // The backend pid of a handle's single connection. Only meaningful for a
 // `max: 1` handle, where every query reuses the one physical connection, so the
@@ -173,7 +175,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
     }
 
     // Bring WF_ADDR up as an owned workflow address on `ws` through the real
-    // allocation-authenticated reconnect path, so the register handler's
+    // hello/welcome reconnect path, so the register handler's
     // ownership gate lets the frame through.
     async function reconnectAndVerify(
       router: ReturnType<typeof createSidecarRouter>,
@@ -187,17 +189,17 @@ describe.skipIf(!harnessDbEnvAvailable())(
       router.handleMessage(
         ws,
         JSON.stringify({
-          type: "reconnect",
+          type: "hello",
           sidecarId: "sc-1",
           token: "tok",
-          agentAddresses: [WF_ADDR],
+          incarnations: [{ address: WF_ADDR, generation: 1, state: "live" }],
         }),
       );
       await waitUntil(() => router.getRoutableAddresses().includes(WF_ADDR));
     }
 
     // Bring an arbitrary workflow address up as an owned route on `ws` through
-    // the same allocation-authenticated reconnect path `reconnectAndVerify`
+    // the same hello/welcome reconnect path `reconnectAndVerify`
     // uses, so a negative-path case can own a DIFFERENT address than the frame
     // it delivers.
     async function reconnectAddress(
@@ -214,10 +216,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       router.handleMessage(
         ws,
         JSON.stringify({
-          type: "reconnect",
+          type: "hello",
           sidecarId: "sc-1",
           token: "tok",
-          agentAddresses: [address],
+          incarnations: [{ address: address, generation: 1, state: "live" }],
         }),
       );
       await waitUntil(() => router.getRoutableAddresses().includes(address));
@@ -231,7 +233,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
       return createSidecarRouter({
         withExecutableWorkflowRun: async (_target, send) => send(),
-        authenticateSidecar: acceptAnySidecar,
+        authenticateSidecar: async ({ sidecarId }) => ({ sidecarId }),
+        resolveSidecarBindings: async (sidecarId) => [bindingFor(sidecarId)],
         validateSidecarIdentity: async () => true,
         lookups,
       });
@@ -246,6 +249,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         // deployment id, onto the frame.
         anchorRunId: DEPLOYMENT_SLUG,
         agentAddress: WF_ADDR,
+        generation: 1,
         kind: "approval",
         snapshot: SNAPSHOT,
       });
@@ -255,14 +259,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
     // frame is dispatched asynchronously through it.
     //
     // The chain serializes every non-bypass frame in arrival order, and both
-    // `reconnect` and `signal.correlation.register` are non-bypass frames. So
-    // queueing a reconnect that claims a fresh address and waiting for that
+    // `hello` and `signal.correlation.register` are non-bypass frames. So
+    // queueing a hello that reports a fresh address and waiting for that
     // address to appear in the routing index proves the register frame queued
     // ahead of it has already run to completion. That is the only evidence
     // available for a register whose handler REJECTED the frame: it writes no
     // row, so no database state can report that it finished.
     //
-    // Each barrier claims a distinct address, because a reconnect re-claiming
+    // Each barrier claims a distinct address, because a hello re-reporting
     // an already-routed one leaves the index unchanged and the wait would see
     // its own precondition and return without the chain having advanced. The
     // address is deliberately not a run address, so the handler's credential
@@ -278,10 +282,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
       router.handleMessage(
         ws,
         JSON.stringify({
-          type: "reconnect",
+          type: "hello",
           sidecarId: "sc-1",
           token: "tok",
-          agentAddresses: [barrierAddress],
+          incarnations: [
+            { address: barrierAddress, generation: 1, state: "live" },
+          ],
         }),
       );
       await waitUntil(() =>
@@ -557,6 +563,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           runId: "run-1",
           anchorRunId: DEPLOYMENT_2_SLUG,
           agentAddress: WF_ADDR,
+          generation: 1,
           kind: "approval",
           // Carry a snapshot so this frame passes the parse and the test
           // exercises tenancy rejection, not accidental parse-drop.
