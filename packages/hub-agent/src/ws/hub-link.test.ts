@@ -378,7 +378,7 @@ function startTestServer(): TestEnv {
 // every frame the sidecar sends. `send` delivers a frame to the sidecar that
 // connected last. `silence` stops answering that connection's pings, so the
 // sidecar drops it the way it drops a Hub it can no longer reach.
-function startWelcomingHub(): {
+function startWelcomingHub(onFrame?: (raw: string) => void): {
   server: ReturnType<typeof Bun.serve>;
   frames: string[];
   send(frame: object): void;
@@ -406,6 +406,7 @@ function startWelcomingHub(): {
         onMessage(evt, ws) {
           if (typeof evt.data !== "string") return;
           frames.push(evt.data);
+          onFrame?.(evt.data);
           const frame: { type: string } = JSON.parse(evt.data);
           if (frame.type === "hello") {
             ws.send(JSON.stringify({ type: "welcome", routed: [] }));
@@ -473,6 +474,57 @@ async function provisionDeploymentKey(
 }
 
 describe("sidecar↔hub integration", () => {
+  test.each(["kept", "refused"] as const)(
+    "forwards a %s retention decision in its control acknowledgement",
+    async (retention) => {
+      const hello = Promise.withResolvers<undefined>();
+      const acknowledged = Promise.withResolvers<SidecarFrame>();
+      const hub = startWelcomingHub((raw) => {
+        const frame = SidecarFrame.assert(JSON.parse(raw));
+        if (frame.type === "hello") hello.resolve(undefined);
+        if (
+          frame.type === "workflow.control.ack" &&
+          frame.requestId === "retain-copy"
+        )
+          acknowledged.resolve(frame);
+      });
+      const bindings = withTestDeployBindings();
+      const client = createHubLink({
+        hubURL: `ws://localhost:${hub.server.port}/ws`,
+        sidecarId: "retention-ack",
+        token: "test-token",
+        transport: createInMemoryTransport(),
+        sessions: createMockSessionManager(),
+        ...bindings,
+        deployRouter: {
+          ...bindings.deployRouter,
+          control: async () => ({ retention }),
+        },
+      });
+      try {
+        client.connect();
+        await hello.promise;
+        hub.send({
+          type: "workflow.control",
+          requestId: "retain-copy",
+          action: "retain",
+          runId: "run_retained",
+          agentAddress: "run_retained@example.test",
+          generation: 1,
+          reason: "The workflow has ended",
+        });
+        expect(await acknowledged.promise).toEqual({
+          type: "workflow.control.ack",
+          requestId: "retain-copy",
+          retention,
+        });
+      } finally {
+        client.close();
+        await hub.server.stop(true);
+      }
+    },
+  );
+
   test("a cancellation finishing after reconnect does not reply on the new connection", async () => {
     const sockets: TestSocket[] = [];
     const stopped = Promise.withResolvers<undefined>();

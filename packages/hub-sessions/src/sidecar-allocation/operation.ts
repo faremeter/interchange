@@ -6,8 +6,8 @@ export type SidecarReconciliationContext = {
 };
 
 export class SidecarOperationTimeoutError extends Error {
-  constructor(operation: string, timeoutMs: number) {
-    super(`${operation} timed out after ${String(timeoutMs)}ms`);
+  constructor(operation: string, timeoutMs: number, options?: ErrorOptions) {
+    super(`${operation} timed out after ${String(timeoutMs)}ms`, options);
     this.name = "SidecarOperationTimeoutError";
   }
 }

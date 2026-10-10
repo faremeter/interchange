@@ -2,6 +2,7 @@ import { and, eq, inArray } from "drizzle-orm";
 
 import {
   WorkflowLifecyclePolicy,
+  lifecycleDeadline,
   clampWorkflowLifecyclePolicy,
   resolveWorkflowLifecyclePolicy,
   type ResolvedWorkflowLifecyclePolicy,
@@ -61,6 +62,28 @@ export function canExecuteWorkflowRun(
   now = new Date(),
 ): boolean {
   return workflowRunExecutability(run, now) === "executable";
+}
+
+/** The saved capacity deadline, or the terminal run's frozen policy deadline. */
+export function workflowCapacityReleaseAt(
+  run: Pick<
+    typeof workflowRun.$inferSelect,
+    "status" | "endedAt" | "capacityReleaseAt" | "lifecyclePolicy"
+  >,
+): Date | null {
+  if (run.capacityReleaseAt !== null) return run.capacityReleaseAt;
+  if (
+    run.status === "deployed" ||
+    run.status === "running" ||
+    run.endedAt === null ||
+    run.lifecyclePolicy == null
+  )
+    return null;
+  const retention = WorkflowLifecyclePolicy.assert(run.lifecyclePolicy)
+    .capacityRetention?.[run.status];
+  return retention === undefined
+    ? null
+    : lifecycleDeadline(run.endedAt, retention);
 }
 
 /**
