@@ -153,6 +153,19 @@ nothing. Reconciliation that cannot read Git backs off and retries; an explicit
 release retries the read and answers 503 while accepted history remains
 unreconciled.
 
+A missed sidecar connect deadline is a different decision from that capacity-loss
+record. When the committed run log is one the workflow runtime would continue,
+and it contains a park the runtime would re-attach, the Hub replaces the worker
+and restores the run onto it. Otherwise it releases the allocation and logs the
+anchor, the allocation, and the reason. Sleep with no signal park, a park that
+was not pushed to the committed ref, and an approval that was never flushed to
+the log stay on the release path: the first has no re-attachable park, and the
+other two are not visible on the committed ref. A replacement that dies while
+its initialization lease is still set is released on the next boot without
+another park classification. A destroy that cannot be retried still fails the
+run through the existing destroy-failed path. Replacing a worker does not by
+itself record that capacity was lost.
+
 Lifecycle reconciliation uses the shared reconciliation scheduler with eight
 independent slots per Hub. Each slot selects one run at a time, and active runs
 are excluded from further selection until their work finishes. Selection

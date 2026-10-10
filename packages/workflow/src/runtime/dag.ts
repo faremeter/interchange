@@ -15,6 +15,54 @@ import {
 import { baseStepId } from "./step-scope";
 
 /**
+ * The only fact the resume predicates read off a definition: each step's
+ * `kind`. `WorkflowDefinition` satisfies it. A frozen projection does too,
+ * once its steps have been narrowed to `{ kind: string }`, so the same
+ * question covers a live definition and an approved projection.
+ */
+export type StepKindLookup = {
+  readonly steps: Readonly<Record<string, { readonly kind: string }>>;
+};
+
+/**
+ * How `executeRunBody` treats one reduced step. `continue` is a residual
+ * the runtime re-offers. `crashed-invocation` is an in-flight agent step
+ * or action, which the runtime settles as `StepFailed` rather than
+ * re-invoking. `unsupported` is what throws `RuntimeResumeUnsupportedError`.
+ * A terminal phase is `continue` because it is not a residual. This is the
+ * resume guard's if-chain; `executeRunBody` is the other caller and must
+ * not grow a second copy.
+ */
+export type ResumeResidual = "continue" | "crashed-invocation" | "unsupported";
+
+export function resumeResidualOf(
+  def: StepKindLookup,
+  stepId: string,
+  phase: StepPhase,
+): ResumeResidual {
+  if (
+    isResumableLoopStep(def, stepId, phase) ||
+    isResumableAwaitingSignalStep(def, stepId, phase) ||
+    isResumableReceivedAwaitSignalStep(def, stepId, phase) ||
+    isResumableOnTriggerStep(def, stepId, phase) ||
+    isResumableSleepStep(def, stepId, phase)
+  ) {
+    return "continue";
+  }
+  if (isCrashedInvocationStep(def, stepId, phase)) {
+    return "crashed-invocation";
+  }
+  if (
+    phase === "in-flight" ||
+    phase === "awaiting-signal" ||
+    phase === "awaiting-timer"
+  ) {
+    return "unsupported";
+  }
+  return "continue";
+}
+
+/**
  * A loop container `<loopId>` (or its synthetic iteration step
  * `<loopId>[i]`) left non-terminal in a seed log is resumable in both of
  * its live phases: `in-flight` while an iteration body is mid-flight
@@ -30,7 +78,7 @@ import { baseStepId } from "./step-scope";
  * resolve the kind.
  */
 export function isResumableLoopStep(
-  def: WorkflowDefinition,
+  def: StepKindLookup,
   stepId: string,
   phase: StepPhase,
 ): boolean {
@@ -64,7 +112,7 @@ export function isResumableLoopStep(
  * in exactly one place, mirroring `isResumableLoopStep`.
  */
 export function isResumableAwaitingSignalStep(
-  def: WorkflowDefinition,
+  def: StepKindLookup,
   stepId: string,
   phase: StepPhase,
 ): boolean {
@@ -95,7 +143,7 @@ export function isResumableAwaitingSignalStep(
  * signal payload it never received.
  */
 export function isResumableReceivedAwaitSignalStep(
-  def: WorkflowDefinition,
+  def: StepKindLookup,
   stepId: string,
   phase: StepPhase,
 ): boolean {
@@ -115,7 +163,7 @@ export function isResumableReceivedAwaitSignalStep(
  * its container to resolve the kind, mirroring the loop carve-out.
  */
 export function isResumableOnTriggerStep(
-  def: WorkflowDefinition,
+  def: StepKindLookup,
   stepId: string,
   phase: StepPhase,
 ): boolean {
@@ -151,7 +199,7 @@ export function isResumableOnTriggerStep(
  * unsupported with its container.
  */
 export function isCrashedInvocationStep(
-  def: WorkflowDefinition,
+  def: StepKindLookup,
   stepId: string,
   phase: StepPhase,
 ): boolean {
@@ -179,7 +227,7 @@ export function isCrashedInvocationStep(
  * carve-out lives in exactly one place, mirroring the other predicates.
  */
 export function isResumableSleepStep(
-  def: WorkflowDefinition,
+  def: StepKindLookup,
   stepId: string,
   phase: StepPhase,
 ): boolean {
