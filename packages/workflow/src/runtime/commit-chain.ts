@@ -72,6 +72,24 @@ function getBuffer(runId: string): WorkflowEvent[] {
   return buf;
 }
 
+const bufferWaiters = new Map<string, (() => void)[]>();
+
+function wake(waiters: Map<string, (() => void)[]>, runId: string): void {
+  const list = waiters.get(runId);
+  if (list === undefined) return;
+  waiters.delete(runId);
+  for (const resolve of list) resolve();
+}
+
+/** Resolves when the next event is pushed into this run's buffer. */
+export function whenRunNextBuffers(runId: string): Promise<void> {
+  return new Promise((resolve) => {
+    const list = bufferWaiters.get(runId) ?? [];
+    list.push(resolve);
+    bufferWaiters.set(runId, list);
+  });
+}
+
 /**
  * Reconstruct the run's current state from the durable log folded
  * with any pending (buffered-but-unflushed) events. Used inside the
@@ -124,6 +142,37 @@ export function isRepoWriteFailure(cause: unknown): boolean {
 // would otherwise see an empty buffer and succeed. Later links rethrow
 // the first cause. `dropChain` forgets it when the run settles.
 const failedFlushes = new Map<string, unknown>();
+const flushWaiters = new Map<string, (() => void)[]>();
+
+/**
+ * The cause is the failed flush recorded for this run. The marker on
+ * the error is not enough: a nested run stamps the same marker, and
+ * that error rejects into the parent with the marker still set.
+ */
+export function isRunFlushFailure(runId: string, cause: unknown): boolean {
+  const recorded = failedFlushes.get(runId);
+  return recorded !== undefined && recorded === cause;
+}
+
+/** The failed flush recorded for this run, if this process has seen one. */
+export function flushFailureCause(runId: string): unknown {
+  return failedFlushes.get(runId);
+}
+
+/**
+ * Resolves when this run's buffer flush throws. Already resolved when
+ * the failure was recorded before the caller started waiting. A parked
+ * step never rejects, so the drive loop races this with its step
+ * promises.
+ */
+export function whenRunFlushFails(runId: string): Promise<void> {
+  if (failedFlushes.has(runId)) return Promise.resolve();
+  return new Promise((resolve) => {
+    const list = flushWaiters.get(runId) ?? [];
+    list.push(resolve);
+    flushWaiters.set(runId, list);
+  });
+}
 
 function throwIfFlushFailed(runId: string): void {
   const cause = failedFlushes.get(runId);
@@ -150,7 +199,10 @@ async function flushBuffer(env: CommitEnv, runId: string): Promise<void> {
     await env.repoStore.appendBatch(runId, events);
   } catch (cause) {
     markRepoWriteFailure(cause);
-    if (!failedFlushes.has(runId)) failedFlushes.set(runId, cause);
+    if (!failedFlushes.has(runId)) {
+      failedFlushes.set(runId, cause);
+      wake(flushWaiters, runId);
+    }
     throw cause;
   }
 }
@@ -182,6 +234,7 @@ export async function commitBuffered(
     const adjustedEvent: WorkflowEvent = { ...event, seq: fresh.lastSeq + 1 };
     const nextState = applyEvent(fresh, adjustedEvent);
     getBuffer(runId).push(adjustedEvent);
+    wake(bufferWaiters, runId);
     return nextState;
   });
 }
@@ -286,4 +339,6 @@ export function dropChain(runId: string): void {
   commitChains.delete(runId);
   pendingBuffers.delete(runId);
   failedFlushes.delete(runId);
+  flushWaiters.delete(runId);
+  bufferWaiters.delete(runId);
 }
