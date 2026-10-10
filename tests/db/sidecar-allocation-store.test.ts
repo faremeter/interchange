@@ -7,7 +7,7 @@ import {
   test,
 } from "bun:test";
 import { eq, sql } from "drizzle-orm";
-import { MAX_SIDECAR_INCARNATIONS } from "@intx/types/sidecar";
+import { MAX_SIDECAR_ACTIVE_DEPLOYMENTS } from "@intx/types/sidecar";
 import {
   createSidecarAllocationReconciler,
   createSidecarPluginRegistry,
@@ -23,6 +23,7 @@ import {
   SIDECAR_CLEANUP_RETRY_EXHAUSTED_FAILURE_CODE,
   SIDECAR_CLEANUP_DISCONNECT_TIMEOUT_FAILURE_CODE,
   SidecarReuseRejectedError,
+  type RetainedSidecarIncarnation,
 } from "@intx/db";
 import {
   sidecar,
@@ -133,7 +134,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
       anchorRunId: string,
       provisionerId = "ec2-spot",
     ) {
-      const store = createSidecarAllocationStore(h.db);
+      const store = createSidecarAllocationStore(h.db, {
+        getRetainedIncarnations: () => [],
+      });
       await store.createPending({
         id: allocationId,
         anchorRunId,
@@ -205,6 +208,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           isAllocatedSidecarReady: async () => false,
           reportedDeploymentFailure: () => undefined,
           waitForAllocatedSidecar: async () => undefined,
+          waitForSidecarInventory: async () => undefined,
         },
         hubWebSocketUrl: "ws://localhost",
       };
@@ -218,7 +222,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
         destroyAttempts: 1,
       });
       connected = false;
-      const restartedStore = createSidecarAllocationStore(h.db);
+      const restartedStore = createSidecarAllocationStore(h.db, {
+        getRetainedIncarnations: () => [],
+      });
       const restarted = createSidecarAllocationReconciler({
         ...dependencies,
         allocationStore: restartedStore,
@@ -823,218 +829,237 @@ describe.skipIf(!harnessDbEnvAvailable())(
     );
 
     describe("placing an allocation on an existing sidecar", () => {
-      test("cleanup confirmation belongs to a current lease and cleanup generation, and replacement work resets it", async () => {
-        const { store, allocation, initialization } =
-          await createClaimedAllocation("alloc-cleanup-guards");
-        expect(
-          await store.confirmDeploymentCleanup({
-            allocationId: allocation.id,
-            generation: 1,
-            expectedLeaseId: initialization.leaseId,
-          }),
-        ).toBe(false);
-        // Model replacement before any deployment was accepted.
-        await h.db
-          .update(sidecarAllocation)
-          .set({ status: "provisioning", ensureAcceptedGeneration: null })
-          .where(eq(sidecarAllocation.id, allocation.id));
-        await store.beginReplacement({
-          allocationId: allocation.id,
-          expectedGeneration: 1,
-          expectedLeaseId: initialization.leaseId,
-          nextAttemptAt: new Date(0),
-          failureCode: "ensure_outcome_unknown",
-          failureMessage: "Ensure interrupted",
-        });
-        expect(
-          (await store.findById(allocation.id))?.deploymentCleanupConfirmed,
-        ).toBe(false);
-        await store.claimNextReconcilable({
-          leaseId: "cleanup-1",
-          leaseDurationMs: 60_000,
-        });
-        const confirmation = {
-          allocationId: allocation.id,
-          generation: 2,
-          expectedLeaseId: "cleanup-1",
-        };
-        expect(
-          await store.confirmDeploymentCleanup({
-            ...confirmation,
-            generation: 1,
-          }),
-        ).toBe(false);
-        expect(
-          await store.confirmDeploymentCleanup({
-            ...confirmation,
-            expectedLeaseId: "old-owner",
-          }),
-        ).toBe(false);
-        await h.db
-          .update(sidecarAllocation)
-          .set({ reconciliationLeaseExpiresAt: new Date(0) })
-          .where(eq(sidecarAllocation.id, allocation.id));
-        expect(await store.confirmDeploymentCleanup(confirmation)).toBe(false);
-        await store.claimNextReconcilable({
-          leaseId: "cleanup-2",
-          leaseDurationMs: 60_000,
-        });
-        expect(await store.confirmDeploymentCleanup(confirmation)).toBe(false);
-        const current = { ...confirmation, expectedLeaseId: "cleanup-2" };
-        expect(await store.confirmDeploymentCleanup(current)).toBe(true);
-        expect(await store.confirmDeploymentCleanup(current)).toBe(true);
-        expect(
-          (await createSidecarAllocationStore(h.db).findById(allocation.id))
-            ?.deploymentCleanupConfirmed,
-        ).toBe(true);
-
-        expect(
-          (
-            await store.bindReplacementSidecar({
-              allocationId: allocation.id,
-              generation: 2,
-              sidecarId: "replacement-worker",
-              tokenHashSha256: new Uint8Array([8, 9, 10]),
-              connectDeadline: new Date(Date.now() + 60_000),
-              expectedLeaseId: "cleanup-2",
-            })
-          )?.deploymentCleanupConfirmed,
-        ).toBe(false);
-        expect(await store.confirmDeploymentCleanup(current)).toBe(false);
+      async function fillActiveSlots() {
+        const store = await bindFirstGeneration("alloc-first", ANCHOR_RUN_ID);
         await store.markAllocated({
-          allocationId: allocation.id,
+          allocationId: "alloc-first",
+          generation: 1,
+        });
+        const others = Array.from(
+          { length: MAX_SIDECAR_ACTIVE_DEPLOYMENTS - 1 },
+          (_, index) => `alloc-active-${String(index)}`,
+        );
+        for (const id of others) {
+          await seedWorkflowRun(h.db, {
+            id: `anchor-${id}`,
+            anchorRunId: `anchor-${id}`,
+            tenantId: TENANT_ID,
+            definitionId: DEFINITION_ID,
+          });
+        }
+        await h.db.insert(sidecarAllocation).values(
+          others.map((id) => ({
+            id,
+            anchorRunId: `anchor-${id}`,
+            tenantId: TENANT_ID,
+            provisionerId: "ec2-spot",
+            provisionerApiVersion: 1 as const,
+            provisionerBindingFingerprint: "ec2-spot:test",
+            maxDisconnectedMs: 900_000,
+            sidecarId: "alloc-first-minted",
+            status: "allocated" as const,
+            generation: 1,
+            ensureAcceptedGeneration: 1,
+          })),
+        );
+      }
+
+      test("retained copies free active slots after the release fence advances", async () => {
+        await fillActiveSlots();
+        await seedAnchor("anchor-last");
+        await bindFirstGeneration("alloc-last", "anchor-last");
+        let retained: readonly RetainedSidecarIncarnation[] = [];
+        const store = createSidecarAllocationStore(h.db, {
+          getRetainedIncarnations: (sidecarId) => {
+            expect(sidecarId).toBe("alloc-first-minted");
+            return retained;
+          },
+        });
+        const placing = {
+          allocationId: "alloc-last",
+          generation: 1,
+          sidecarId: "alloc-first-minted",
+        };
+        await expect(store.markAllocated(placing)).rejects.toBeInstanceOf(
+          SidecarReuseRejectedError,
+        );
+        const releasing = await store.beginRelease({
+          allocationId: "alloc-first",
+          expectedStatus: "allocated",
+          expectedGeneration: 1,
+        });
+        expect(releasing).toMatchObject({
           generation: 2,
-          expectedLeaseId: "cleanup-2",
+          ensureAcceptedGeneration: 1,
         });
-        // A new release must never inherit a previous cleanup's confirmation.
-        await h.db
-          .update(sidecarAllocation)
-          .set({ deploymentCleanupConfirmed: true })
-          .where(eq(sidecarAllocation.id, allocation.id));
-        expect(
-          (
-            await store.beginRelease({
-              allocationId: allocation.id,
-              expectedGeneration: 2,
-              expectedStatus: "allocated",
-              expectedLeaseId: "cleanup-2",
-            })
-          )?.deploymentCleanupConfirmed,
-        ).toBe(false);
-        await store.claimNextReconcilable({
-          leaseId: "cleanup-3",
-          leaseDurationMs: 60_000,
+        retained = [{ allocationId: "alloc-first", generation: 1 }];
+        expect(await store.markAllocated(placing)).toMatchObject({
+          status: "allocated",
+          sidecarId: "alloc-first-minted",
         });
-        expect(
-          await store.confirmDeploymentCleanup({
-            ...current,
-            expectedLeaseId: "cleanup-3",
-          }),
-        ).toBe(false);
-        expect(
-          await store.confirmDeploymentCleanup({
-            ...current,
-            generation: 3,
-            expectedLeaseId: "cleanup-3",
-          }),
-        ).toBe(true);
-        await store.markReleased({
-          allocationId: allocation.id,
-          generation: 3,
-          expectedLeaseId: "cleanup-3",
+        expect(await store.findById("alloc-first")).toMatchObject({
+          status: "releasing",
+          generation: 2,
         });
-        expect(
-          await store.confirmDeploymentCleanup({
-            ...current,
-            generation: 3,
-            expectedLeaseId: "cleanup-3",
-          }),
-        ).toBe(false);
       });
 
-      test("an undeploy acknowledgement survives provider failure and a Hub restart while the sidecar is offline", async () => {
-        const id = "alloc-durable-cleanup";
-        const store = await bindFirstGeneration(id, ANCHOR_RUN_ID);
-        await store.markAllocated({ allocationId: id, generation: 1 });
-        expect(
-          (
-            await store.beginRelease({
-              allocationId: id,
-              expectedStatus: "allocated",
-              expectedGeneration: 1,
+      for (const ensureAcceptedGeneration of [null, 2]) {
+        test(`retained proofs cannot free a reservation whose accepted generation is ${String(ensureAcceptedGeneration)}`, async () => {
+          await fillActiveSlots();
+          await h.db
+            .update(sidecarAllocation)
+            .set({
+              ensureAcceptedGeneration,
+              generation: ensureAcceptedGeneration ?? 1,
             })
-          )?.deploymentCleanupConfirmed,
-        ).toBe(false);
-        let connected = true;
-        const connection = {};
-        let undeploys = 0;
-        let destroys = 0;
-        const dependencies = {
-          plugins: createSidecarPluginRegistry({
-            provisioners: [
-              {
-                id: "ec2-spot",
-                apiVersion: 1,
-                bindingFingerprint: "ec2-spot:test",
-                capabilities: [],
-                ensure: async () => ({ kind: "accepted" }),
-                destroy: async () => {
-                  destroys++;
-                  // The acknowledgement must be durable before provider work can
-                  // fail or disappear with the Hub process.
-                  expect(
-                    (await store.findById(id))?.deploymentCleanupConfirmed,
-                  ).toBe(true);
-                  if (destroys === 1) throw new Error("Provider unavailable");
-                  return { kind: "destroyed", cleanup: "required" };
-                },
-              },
+            .where(eq(sidecarAllocation.id, "alloc-first"));
+          await seedAnchor("anchor-last");
+          await bindFirstGeneration("alloc-last", "anchor-last");
+          const store = createSidecarAllocationStore(h.db, {
+            getRetainedIncarnations: () => [
+              { allocationId: "alloc-first", generation: 1 },
+              { allocationId: "unknown-allocation", generation: 1 },
             ],
-          }),
-          router: {
-            getCleanupConnection: () => (connected ? connection : undefined),
-            undeployAllocation: async () => {
-              expect(connected).toBe(true);
-              undeploys++;
-            },
-            fenceAllocation: () => undefined,
-            retireAllocation: () => undefined,
-            syncSidecar: async () => undefined,
-            holdsAllocatedBinding: () => false,
-            isAllocatedSidecarReady: async () => false,
-            reportedDeploymentFailure: () => undefined,
-            waitForAllocatedSidecar: async () => undefined,
-          },
-          hubWebSocketUrl: "ws://localhost",
-        };
-        await createSidecarAllocationReconciler({
-          ...dependencies,
-          allocationStore: store,
-        }).reconcileNext();
-        expect(await store.findById(id)).toMatchObject({
-          status: "releasing",
-          deploymentCleanupConfirmed: true,
-          destroyAttempts: 1,
+          });
+          await expect(
+            store.markAllocated({
+              allocationId: "alloc-last",
+              generation: 1,
+              sidecarId: "alloc-first-minted",
+            }),
+          ).rejects.toBeInstanceOf(SidecarReuseRejectedError);
+          expect(await store.findById("alloc-last")).toMatchObject({
+            status: "provisioning",
+            sidecarId: "alloc-last-minted",
+          });
         });
-        connected = false;
-        const restartedStore = createSidecarAllocationStore(h.db);
-        const restarted = createSidecarAllocationReconciler({
-          ...dependencies,
-          allocationStore: restartedStore,
-        });
-        await restarted.initialize();
-        // Make the existing backoff due without a wall-clock wait.
-        await restartedStore.wakeReconciliation(id, 2);
-        expect(await restarted.reconcileNext()).toBe(true);
-        expect(await restartedStore.findById(id)).toMatchObject({
-          status: "released",
-          deploymentCleanupConfirmed: true,
+      }
+
+      test.each([
+        "releasing",
+        "retry exhausted",
+        "permanent rejection",
+      ] as const)(
+        "confirmed removal frees an active slot while provider cleanup remains %s",
+        async (outcome) => {
+          await fillActiveSlots();
+          await seedAnchor("anchor-last");
+          await bindFirstGeneration("alloc-last", "anchor-last");
+          let inventoryKnown = true;
+          const store = createSidecarAllocationStore(h.db, {
+            getRetainedIncarnations: () => (inventoryKnown ? [] : undefined),
+          });
+          const placing = {
+            allocationId: "alloc-last",
+            generation: 1,
+            sidecarId: "alloc-first-minted",
+          };
+          await store.beginRelease({
+            allocationId: "alloc-first",
+            expectedGeneration: 1,
+            expectedStatus: "allocated",
+          });
+          await expect(store.markAllocated(placing)).rejects.toBeInstanceOf(
+            SidecarReuseRejectedError,
+          );
+          const leaseId = "confirmed-removal";
+          expect(
+            (
+              await store.claimNextReconcilable({
+                excludedAllocationIds: ["alloc-last"],
+                leaseId,
+                leaseDurationMs: 60_000,
+              })
+            )?.id,
+          ).toBe("alloc-first");
+          expect(
+            await store.confirmDeploymentCleanup({
+              allocationId: "alloc-first",
+              generation: 1,
+              expectedLeaseId: leaseId,
+            }),
+          ).toBe(false);
+          await expect(store.markAllocated(placing)).rejects.toBeInstanceOf(
+            SidecarReuseRejectedError,
+          );
+          expect(
+            await store.confirmDeploymentCleanup({
+              allocationId: "alloc-first",
+              generation: 2,
+              expectedLeaseId: leaseId,
+            }),
+          ).toBe(true);
+          if (outcome !== "releasing") {
+            await store.markDestroyFailed({
+              allocationId: "alloc-first",
+              expectedGeneration: 2,
+              expectedLeaseId: leaseId,
+              code:
+                outcome === "retry exhausted"
+                  ? SIDECAR_CLEANUP_RETRY_EXHAUSTED_FAILURE_CODE
+                  : "provider_permission_denied",
+              message: "Provider hold remains unreleased",
+            });
+          }
+          inventoryKnown = false;
+          await expect(store.markAllocated(placing)).rejects.toThrow(
+            "no current inventory",
+          );
+          inventoryKnown = true;
+          expect(await store.markAllocated(placing)).toMatchObject({
+            status: "allocated",
+            sidecarId: placing.sidecarId,
+          });
+          expect(await store.findById("alloc-first")).toMatchObject({
+            status: outcome === "releasing" ? "releasing" : "destroy_failed",
+            deploymentCleanupConfirmed: true,
+          });
+          // Adopting a probe uses the same accounting and cannot consume the
+          // freed slot again after the placement above took it.
+          await seedAnchor("anchor-adopted-after-cleanup");
+          await expect(
+            store.createAdopted({
+              id: "adopted-after-cleanup",
+              anchorRunId: "anchor-adopted-after-cleanup",
+              tenantId: TENANT_ID,
+              provisionerId: "ec2-spot",
+              provisionerApiVersion: 1,
+              provisionerBindingFingerprint: "ec2-spot:test",
+              maxDisconnectedMs: 900_000,
+              sidecarId: placing.sidecarId,
+              generation: 1,
+              connectDeadline: new Date(Date.now() + 60_000),
+            }),
+          ).rejects.toBeInstanceOf(SidecarReuseRejectedError);
+        },
+      );
+
+      test("probe adoption uses the active slot freed by a retained copy", async () => {
+        await fillActiveSlots();
+        await seedAnchor("anchor-adopted");
+        const store = createSidecarAllocationStore(h.db, {
+          getRetainedIncarnations: (sidecarId) =>
+            sidecarId === "alloc-first-minted"
+              ? [{ allocationId: "alloc-first", generation: 1 }]
+              : [],
         });
         expect(
-          (await restartedStore.findById(id))?.connectDeadline,
-        ).toBeUndefined();
-        expect(undeploys).toBe(1);
-        expect(destroys).toBe(2);
+          await store.createAdopted({
+            id: "probe-adopted",
+            anchorRunId: "anchor-adopted",
+            tenantId: TENANT_ID,
+            provisionerId: "ec2-spot",
+            provisionerApiVersion: 1,
+            provisionerBindingFingerprint: "ec2-spot:test",
+            maxDisconnectedMs: 900_000,
+            sidecarId: "alloc-first-minted",
+            generation: 1,
+            connectDeadline: new Date(Date.now() + 60_000),
+          }),
+        ).toMatchObject({
+          status: "allocated",
+          sidecarId: "alloc-first-minted",
+        });
       });
 
       test("records the reused sidecar and deletes the unused identity", async () => {
@@ -1103,7 +1128,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             generation: 1,
           });
           const others = Array.from(
-            { length: MAX_SIDECAR_INCARNATIONS - 1 },
+            { length: MAX_SIDECAR_ACTIVE_DEPLOYMENTS - 1 },
             (_, index) => `alloc-full-${String(index)}`,
           );
           for (const id of others) {
@@ -1138,7 +1163,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
               sidecarId: "alloc-first-minted",
             }),
           ).rejects.toThrow(
-            `it already hosts ${String(MAX_SIDECAR_INCARNATIONS)} deployments`,
+            `it already hosts ${String(MAX_SIDECAR_ACTIVE_DEPLOYMENTS)} deployments`,
           );
 
           if (status === "releasing") {
@@ -1160,14 +1185,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
         },
       );
 
-      test("refuses to adopt a probe onto a sidecar that already hosts as many deployments as its hello can report", async () => {
+      test("refuses to adopt a probe onto a sidecar whose active slots are full", async () => {
         const store = await bindFirstGeneration("alloc-first", ANCHOR_RUN_ID);
         await store.markAllocated({
           allocationId: "alloc-first",
           generation: 1,
         });
         const others = Array.from(
-          { length: MAX_SIDECAR_INCARNATIONS - 1 },
+          { length: MAX_SIDECAR_ACTIVE_DEPLOYMENTS - 1 },
           (_, index) => `alloc-full-${String(index)}`,
         );
         for (const id of others) {
@@ -1208,7 +1233,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             connectDeadline: new Date(Date.now() + 60_000),
           }),
         ).rejects.toThrow(
-          `it already hosts ${String(MAX_SIDECAR_INCARNATIONS)} deployments`,
+          `it already hosts ${String(MAX_SIDECAR_ACTIVE_DEPLOYMENTS)} deployments`,
         );
         expect(await store.findById("probe-adopted")).toBeNull();
       });
@@ -1237,7 +1262,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     async function createClaimedAllocation(id: string) {
-      const store = createSidecarAllocationStore(h.db);
+      const store = createSidecarAllocationStore(h.db, {
+        getRetainedIncarnations: () => [],
+      });
       await store.createPending({
         id,
         anchorRunId: ANCHOR_RUN_ID,
@@ -1353,6 +1380,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(await store.clearUnsentInitialization(rollback)).toBe(false);
       expect(
         await store.beginUnrecoverableRelease({
+          expectedStatus: "allocated",
           allocationId: allocation.id,
           expectedGeneration: allocation.generation,
           expectedLeaseId: nextLeaseId,
@@ -1471,6 +1499,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         }),
       ).toBe(true);
       const releasing = await store.beginUnrecoverableRelease({
+        expectedStatus: "allocated",
         allocationId: allocation.id,
         expectedGeneration: allocation.generation,
         expectedLeaseId: "next-owner",
@@ -1618,6 +1647,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       try {
         const publishingPid = await waitUntilBlocked(blockerPid);
         cleanup = store.beginUnrecoverableRelease({
+          expectedStatus: "allocated",
           allocationId: allocation.id,
           expectedGeneration: allocation.generation,
           expectedLeaseId: initialization.leaseId,
@@ -1727,7 +1757,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
     }
 
     test("fences replacement before binding a new physical sidecar", async () => {
-      const store = createSidecarAllocationStore(h.db);
+      const store = createSidecarAllocationStore(h.db, {
+        getRetainedIncarnations: () => [],
+      });
       const pending = await store.createPending({
         id: "alloc-1",
         anchorRunId: ANCHOR_RUN_ID,
@@ -1822,7 +1854,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     test("never replaces an allocated worker", async () => {
-      const store = createSidecarAllocationStore(h.db);
+      const store = createSidecarAllocationStore(h.db, {
+        getRetainedIncarnations: () => [],
+      });
       const pending = await store.createPending({
         id: "alloc-allocated",
         anchorRunId: ANCHOR_RUN_ID,
@@ -1910,7 +1944,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     test("timed-out claims leave database capacity for unrelated queries", async () => {
-      const store = createSidecarAllocationStore(h.db);
+      const store = createSidecarAllocationStore(h.db, {
+        getRetainedIncarnations: () => [],
+      });
       const locked = Promise.withResolvers<boolean>();
       const unlock = Promise.withResolvers<boolean>();
       const claims: ReturnType<typeof store.claimNextReconcilable>[] = [];
@@ -1964,7 +2000,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     test("abandoned recovery reads leave database capacity for unrelated queries", async () => {
-      const store = createSidecarAllocationStore(h.db);
+      const store = createSidecarAllocationStore(h.db, {
+        getRetainedIncarnations: () => [],
+      });
       for (let index = 0; index < 10; index += 1) {
         const id = `recovery-capacity-${String(index)}`;
         await seedWorkflowRun(h.db, {
@@ -2156,7 +2194,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     test("parking preserves a reconnect wake that races an accepted worker", async () => {
-      const store = createSidecarAllocationStore(h.db);
+      const store = createSidecarAllocationStore(h.db, {
+        getRetainedIncarnations: () => [],
+      });
       await store.createPending({
         id: "alloc-park-wake",
         anchorRunId: ANCHOR_RUN_ID,
@@ -2201,7 +2241,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     test("parking after an error floors an allocated retry at the backoff", async () => {
-      const store = createSidecarAllocationStore(h.db);
+      const store = createSidecarAllocationStore(h.db, {
+        getRetainedIncarnations: () => [],
+      });
       await store.createPending({
         id: "alloc-park-backoff",
         anchorRunId: ANCHOR_RUN_ID,
@@ -2256,7 +2298,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     test("holds the reconciliation lease until the accepted worker connects", async () => {
-      const store = createSidecarAllocationStore(h.db);
+      const store = createSidecarAllocationStore(h.db, {
+        getRetainedIncarnations: () => [],
+      });
       await store.createPending({
         id: "alloc-ready",
         anchorRunId: ANCHOR_RUN_ID,
@@ -2345,6 +2389,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         }),
         router: {
           getCleanupConnection: () => undefined,
+          waitForSidecarInventory: async () => undefined,
           async undeployAllocation() {
             throw new Error("This test must not request sidecar cleanup");
           },
@@ -2439,6 +2484,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       ).toBe(false);
       expect(
         await store.beginUnrecoverableRelease({
+          expectedStatus: "allocated",
           allocationId: allocation.id,
           expectedGeneration: allocation.generation,
           expectedLeaseId: leaseId,
@@ -2706,7 +2752,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     test("gives the accepted generation its allocation's disconnect limit", async () => {
-      const store = createSidecarAllocationStore(h.db);
+      const store = createSidecarAllocationStore(h.db, {
+        getRetainedIncarnations: () => [],
+      });
       await store.createPending({
         id: "alloc-reconnect",
         anchorRunId: ANCHOR_RUN_ID,
@@ -2783,7 +2831,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     test("at Hub start gives the first-connect window until the first deploy completes, then the disconnect limit", async () => {
-      const store = createSidecarAllocationStore(h.db);
+      const store = createSidecarAllocationStore(h.db, {
+        getRetainedIncarnations: () => [],
+      });
       await store.createPending({
         id: "alloc-hub-start",
         anchorRunId: ANCHOR_RUN_ID,
@@ -2843,7 +2893,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     test("repairs a disconnect deadline only while an allocation remains unscheduled and unleased", async () => {
-      const store = createSidecarAllocationStore(h.db);
+      const store = createSidecarAllocationStore(h.db, {
+        getRetainedIncarnations: () => [],
+      });
       await store.createPending({
         id: "alloc-repair",
         anchorRunId: ANCHOR_RUN_ID,
@@ -3195,7 +3247,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     for (const status of ["replacing", "releasing"] as const) {
       test(`preserves capacity and stops reconciliation after ${status} fails permanently`, async () => {
-        const store = createSidecarAllocationStore(h.db);
+        const store = createSidecarAllocationStore(h.db, {
+          getRetainedIncarnations: () => [],
+        });
         const dispatchStore = createWorkflowRunDispatchStore(h.db);
         await store.createPending({
           id: "alloc-destroy",
@@ -3458,7 +3512,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
         definitionId: DEFINITION_ID,
         principalId: "prn-unrecoverable-run",
       });
-      const store = createSidecarAllocationStore(h.db);
+      const store = createSidecarAllocationStore(h.db, {
+        getRetainedIncarnations: () => [],
+      });
       const dispatchStore = createWorkflowRunDispatchStore(h.db);
       await store.createPending({
         id: "alloc-unrecoverable",
@@ -3513,6 +3569,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const endedAt = new Date("2026-08-04T12:00:00.000Z");
       expect(
         await store.beginUnrecoverableRelease({
+          expectedStatus: "allocated",
           allocationId: "alloc-unrecoverable",
           expectedGeneration: 1,
           expectedLeaseId: "lease-stale",
@@ -3528,6 +3585,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         await dispatchStore.findById("dispatch-unrecoverable-acknowledged"),
       ).toMatchObject({ status: "acknowledged" });
       const releasing = await store.beginUnrecoverableRelease({
+        expectedStatus: "allocated",
         allocationId: "alloc-unrecoverable",
         expectedGeneration: 1,
         expectedLeaseId: "lease-unrecoverable",
@@ -3586,7 +3644,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
         tenantId: TENANT_ID,
         definitionId: DEFINITION_ID,
       });
-      const store = createSidecarAllocationStore(h.db);
+      const store = createSidecarAllocationStore(h.db, {
+        getRetainedIncarnations: () => [],
+      });
       const dispatchStore = createWorkflowRunDispatchStore(h.db);
       await store.createPending({
         id: "alloc-stopped",

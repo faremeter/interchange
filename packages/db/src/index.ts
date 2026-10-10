@@ -24,6 +24,7 @@ export {
   loadTenantLifecyclePolicies,
   canExecuteWorkflowRun,
   workflowRunExecutability,
+  workflowCapacityReleaseAt,
   withExecutableWorkflowRun,
   WorkflowRunNotExecutableError,
   type WorkflowRunExecutionTarget,
@@ -102,7 +103,12 @@ export {
   type SidecarAllocation,
   type SidecarAllocationStore,
 } from "./sidecar-allocation-store";
-export { SidecarReuseRejectedError } from "./sidecar-reuse";
+export {
+  SidecarReuseRejectedError,
+  SidecarInventoryUnavailableError,
+  type RetainedSidecarIncarnation,
+  type SidecarAllocationStoreOptions,
+} from "./sidecar-reuse";
 export {
   createWorkflowProbeStore,
   type BindWorkflowProbeSidecarArgs,

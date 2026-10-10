@@ -37,6 +37,7 @@ type MockDBOpts = {
   anchorStatus?: string;
   anchorCancellationRequestedAt?: Date;
   anchorFailureCode?: string;
+  anchorCapacityReleaseAt?: Date;
   onFindFirst?: (args: { where: unknown }) => void;
 };
 
@@ -89,6 +90,9 @@ function createMockDB(opts: MockDBOpts): DB["db"] {
                 publicKey: opts.anchorPublicKey ?? null,
                 status: opts.anchorStatus ?? "running",
                 expiresAt: null,
+                endedAt: null,
+                capacityReleaseAt: opts.anchorCapacityReleaseAt ?? null,
+                lifecyclePolicy: null,
                 cancellationRequestedAt:
                   opts.anchorCancellationRequestedAt ?? null,
                 failureCode: opts.anchorFailureCode ?? null,
@@ -271,7 +275,7 @@ describe("createSidecarTokenAuthenticator", () => {
     ).toBe(false);
   });
 
-  test("retains instead of reclaiming only a completed deployment whose run ended on its own", async () => {
+  test("retains initialized terminal copies until their release is due", async () => {
     const binding = {
       kind: "allocated",
       sidecarId: "sc-allocated",
@@ -285,7 +289,11 @@ describe("createSidecarTokenAuthenticator", () => {
       initializationLeaseId: string | null,
       anchorPublicKey: string | null,
       anchorStatus: string,
-      endedByHub: { cancelled?: boolean; failureCode?: string } = {},
+      outcome: {
+        cancelled?: boolean;
+        failureCode?: string;
+        releaseAt?: Date;
+      } = {},
     ) =>
       createSidecarCredentialResolver({
         db: createMockDB({
@@ -302,11 +310,14 @@ describe("createSidecarTokenAuthenticator", () => {
           anchorAddress: "workflow@exclusive",
           anchorPublicKey,
           anchorStatus,
-          ...(endedByHub.cancelled === true
+          ...(outcome.releaseAt !== undefined
+            ? { anchorCapacityReleaseAt: outcome.releaseAt }
+            : {}),
+          ...(outcome.cancelled === true
             ? { anchorCancellationRequestedAt: new Date() }
             : {}),
-          ...(endedByHub.failureCode !== undefined
-            ? { anchorFailureCode: endedByHub.failureCode }
+          ...(outcome.failureCode !== undefined
+            ? { anchorFailureCode: outcome.failureCode }
             : {}),
         }),
       });
@@ -317,15 +328,20 @@ describe("createSidecarTokenAuthenticator", () => {
         "retention",
       ),
     ).toBe(true);
-    // A copy of a run the Hub ended may have been respawned running it.
+    // Hub-ended copies are stopped and retained rather than reclaimed.
     expect(
       await resolverWith(null, "public-key", "cancelled", {
         cancelled: true,
       }).isCurrent(binding, "retention"),
-    ).toBe(false);
+    ).toBe(true);
     expect(
       await resolverWith(null, "public-key", "failed", {
         failureCode: "sidecar_deployment_stopped",
+      }).isCurrent(binding, "retention"),
+    ).toBe(true);
+    expect(
+      await resolverWith(null, "public-key", "failed", {
+        releaseAt: new Date(0),
       }).isCurrent(binding, "retention"),
     ).toBe(false);
     expect(

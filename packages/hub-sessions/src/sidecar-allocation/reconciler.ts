@@ -7,6 +7,7 @@ import {
   SIDECAR_CLEANUP_RETRY_EXHAUSTED_FAILURE_CODE,
   SIDECAR_CLEANUP_DISCONNECT_TIMEOUT_FAILURE_CODE,
   SidecarReuseRejectedError,
+  SidecarInventoryUnavailableError,
   type SidecarAllocation,
   type SidecarAllocationStore,
 } from "@intx/db";
@@ -82,6 +83,7 @@ export type SidecarAllocationReconcilerDeps = {
     | "syncSidecar"
     | "undeployAllocation"
     | "waitForAllocatedSidecar"
+    | "waitForSidecarInventory"
   >;
   readonly hubWebSocketUrl: string;
   /**
@@ -124,7 +126,7 @@ export type SidecarAllocationReconciler = {
   handleDisconnect(target: AllocatedSidecarTarget): Promise<void>;
   /** Wakes recovery as soon as the exact generation reconnects. */
   handleConnected(target: AllocatedSidecarTarget): Promise<void>;
-  /** Repairs missed readiness and cleanup wakes. */
+  /** Repairs missed readiness and cleanup wakes, and discards obsolete waits. */
   repairUnscheduledConnections(): Promise<void>;
   /** Reconcile at most one due allocation. Returns false when none are due. */
   reconcileNext(): Promise<boolean>;
@@ -213,6 +215,7 @@ export function createSidecarAllocationReconciler({
   }
 
   function fence(allocation: SidecarAllocation): void {
+    discardChangedPlacement(allocation);
     router.fenceAllocation(allocation.id, allocation.generation, {
       ...(allocation.sidecarId !== undefined &&
       (allocation.status === "releasing" ||
@@ -232,7 +235,85 @@ export function createSidecarAllocationReconciler({
     }
   >();
 
+  type PendingPlacement = {
+    readonly generation: number;
+    readonly result: Extract<EnsureSidecarResult, { kind: "accepted" }>;
+    readonly deadline: Date;
+    waiter: { controller: AbortController; ready: boolean } | undefined;
+  };
+  const pendingPlacements = new Map<string, PendingPlacement>();
+  function discardPlacement(allocationId: string): void {
+    const pending = pendingPlacements.get(allocationId);
+    pendingPlacements.delete(allocationId);
+    pending?.waiter?.controller.abort();
+  }
+
+  function discardChangedPlacement(allocation: SidecarAllocation): void {
+    const pending = pendingPlacements.get(allocation.id);
+    if (
+      pending !== undefined &&
+      (allocation.status !== "provisioning" ||
+        pending.generation !== allocation.generation)
+    )
+      discardPlacement(allocation.id);
+  }
+
+  function wakePendingPlacement(
+    allocationId: string,
+    pending: PendingPlacement,
+  ): Promise<void> {
+    const waiter = pending.waiter;
+    return queueConnectionEvent(
+      { allocationId, generation: pending.generation },
+      async () => {
+        if (
+          pendingPlacements.get(allocationId) !== pending ||
+          pending.waiter !== waiter
+        )
+          return;
+        if (
+          !(await allocationStore.wakeReconciliation(
+            allocationId,
+            pending.generation,
+          )) &&
+          pendingPlacements.get(allocationId) === pending
+        )
+          discardPlacement(allocationId);
+      },
+    );
+  }
+
+  function watchPlacementInventory(
+    allocationId: string,
+    pending: PendingPlacement,
+    sidecarId: string,
+  ): void {
+    pending.waiter?.controller.abort();
+    const waiter = { controller: new AbortController(), ready: false };
+    pending.waiter = waiter;
+    // This subscription owns no claim or lease. The durable schedule enforces
+    // its deadline; cancellation and the repair sweep discard obsolete waits.
+    void router
+      .waitForSidecarInventory(sidecarId, waiter.controller.signal)
+      .then(async () => {
+        if (
+          pendingPlacements.get(allocationId) !== pending ||
+          pending.waiter !== waiter
+        )
+          return;
+        // Preserve timely inventory across a delayed claim, without letting a
+        // late hello extend the original connection deadline.
+        waiter.ready = now() <= pending.deadline;
+        await wakePendingPlacement(allocationId, pending);
+      })
+      .catch((cause: unknown) => {
+        if (!waiter.controller.signal.aborted)
+          logger.warn`Could not wake inventory placement ${allocationId}: ${cause instanceof Error ? cause.message : String(cause)}`;
+      });
+  }
+
   function trackAllocation(allocation: SidecarAllocation): void {
+    discardChangedPlacement(allocation);
     const active = activeAllocations.get(allocation.id);
     if (active === undefined) return;
     if (active.allocation.generation !== allocation.generation)
@@ -415,6 +496,7 @@ export function createSidecarAllocationReconciler({
             ? await allocationStore.beginUnrecoverableRelease({
                 ...initializationCheck,
                 allocationId: allocation.id,
+                expectedStatus: "allocated",
                 expectedGeneration: allocation.generation,
                 expectedLeaseId: leaseId,
                 failureCode: code,
@@ -738,6 +820,49 @@ export function createSidecarAllocationReconciler({
       return;
     }
 
+    await acceptPlacement(allocation, leaseId, result);
+  }
+
+  async function failInventoryPlacement(
+    allocation: SidecarAllocation,
+    leaseId: string,
+  ): Promise<void> {
+    await queueReconciliationStep(
+      { allocationId: allocation.id, generation: allocation.generation },
+      async () => {
+        const releasing = await allocationStore.beginUnrecoverableRelease({
+          allocationId: allocation.id,
+          expectedStatus: "provisioning",
+          expectedGeneration: allocation.generation,
+          expectedLeaseId: leaseId,
+          failureCode: "sidecar_inventory_unavailable",
+          failureMessage:
+            "Sidecar inventory did not become available before the connection deadline",
+          now: now(),
+        });
+        if (releasing !== null) {
+          trackAllocation(releasing);
+          fence(releasing);
+        }
+      },
+    );
+  }
+
+  async function acceptPlacement(
+    allocation: SidecarAllocation,
+    leaseId: string,
+    result: Extract<EnsureSidecarResult, { kind: "accepted" }>,
+  ): Promise<void> {
+    const pending = pendingPlacements.get(allocation.id);
+    if (
+      pending !== undefined &&
+      pending.deadline <= now() &&
+      pending.waiter?.ready !== true
+    ) {
+      await failInventoryPlacement(allocation, leaseId);
+      return;
+    }
+
     let allocated: SidecarAllocation | null;
     try {
       allocated = await allocationStore.markAllocated({
@@ -753,6 +878,43 @@ export function createSidecarAllocationReconciler({
         now: now(),
       });
     } catch (error) {
+      if (error instanceof SidecarInventoryUnavailableError) {
+        if (allocation.connectDeadline === undefined)
+          throw new Error(
+            `Provisioning allocation ${allocation.id} has no connection deadline`,
+          );
+        const placement = pending ?? {
+          generation: allocation.generation,
+          result,
+          deadline: allocation.connectDeadline,
+          waiter: undefined,
+        };
+        pendingPlacements.set(allocation.id, placement);
+        if (placement.deadline <= now()) {
+          await failInventoryPlacement(allocation, leaseId);
+          return;
+        }
+        watchPlacementInventory(allocation.id, placement, error.sidecarId);
+        await finishReconciliation(allocation.id, () =>
+          allocationStore.scheduleRetry({
+            allocationId: allocation.id,
+            expectedStatus: "provisioning",
+            expectedGeneration: allocation.generation,
+            expectedLeaseId: leaseId,
+            // A hello before this write must not be overwritten by the deadline.
+            // A hello during it queues its wake behind this same event lane.
+            nextAttemptAt:
+              placement.waiter?.ready === true ? now() : placement.deadline,
+            // Postgres may consider the deadline due before the Hub does.
+            // Keep those early claims at least a second apart on its clock.
+            ...(placement.waiter?.ready === true
+              ? {}
+              : { minimumDelayMs: 1_000 }),
+            now: now(),
+          }),
+        );
+        return;
+      }
       if (!(error instanceof SidecarReuseRejectedError)) throw error;
       await replaceAfterFailure(
         allocation,
@@ -769,7 +931,7 @@ export function createSidecarAllocationReconciler({
         return;
       }
       // Provisioning acceptance and websocket readiness are separate durable
-      // transitions. Do not hold the single reconciliation loop for the full
+      // transitions. Do not hold a reconciliation slot for the full
       // connection timeout: park this lease at its persisted deadline and let
       // sidecar.allocated.connected wake it immediately when the worker arrives.
       await finishReconciliation(allocated.id, (pendingConnect) =>
@@ -1259,6 +1421,14 @@ export function createSidecarAllocationReconciler({
         operationTimeoutMs,
       );
     }
+    const pendingPlacement = pendingPlacements.get(allocation.id);
+    if (
+      allocation.status === "provisioning" &&
+      pendingPlacement !== undefined
+    ) {
+      await acceptPlacement(allocation, leaseId, pendingPlacement.result);
+      return;
+    }
     const selected = provisionerFor(allocation);
     if ("error" in selected) {
       if (allocation.status === "pending") {
@@ -1472,7 +1642,29 @@ export function createSidecarAllocationReconciler({
   }
 
   async function repairUnscheduledConnections(): Promise<void> {
+    const parked = [...pendingPlacements];
     const allocations = await allocationStore.listActive();
+    const current = new Map(
+      allocations.map((allocation) => [allocation.id, allocation]),
+    );
+    for (const [allocationId, pending] of parked) {
+      if (pendingPlacements.get(allocationId) !== pending) continue;
+      const allocation = current.get(allocationId);
+      if (allocation === undefined) discardPlacement(allocationId);
+      else {
+        discardChangedPlacement(allocation);
+        if (
+          pendingPlacements.get(allocationId) === pending &&
+          pending.waiter?.ready === true
+        ) {
+          try {
+            await wakePendingPlacement(allocationId, pending);
+          } catch (error) {
+            logger.warn`Failed to repair inventory placement ${allocationId}: ${error instanceof Error ? error.message : String(error)}`;
+          }
+        }
+      }
+    }
     for (const allocation of allocations) {
       const parkedCleanup =
         allocation.status === "releasing" &&

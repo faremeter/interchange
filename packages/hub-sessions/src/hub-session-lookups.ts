@@ -17,6 +17,7 @@ import {
 import {
   agentSession,
   liveWorkflowRunStatuses,
+  isLiveWorkflowRunStatus,
   sessionMail,
   sidecarAllocation,
   workflowRun,
@@ -73,6 +74,41 @@ export function createHubSessionLookups(
 
     readWorkflowRunRefTips(agentAddress) {
       return readWorkflowRunRefTips(agentRepoStore.repoStore, agentAddress);
+    },
+
+    async isWorkflowRunHistoryFinal(source) {
+      return db.transaction(async (tx) => {
+        // Match receive admission: the allocation lock waits for any writer
+        // already advancing Git; a terminal anchor rejects every later receive.
+        const [allocation] = await tx
+          .select()
+          .from(sidecarAllocation)
+          .where(
+            and(
+              eq(sidecarAllocation.id, source.allocationId),
+              eq(sidecarAllocation.anchorRunId, source.anchorRunId),
+              eq(sidecarAllocation.status, "allocated"),
+              eq(sidecarAllocation.generation, source.generation),
+              eq(sidecarAllocation.ensureAcceptedGeneration, source.generation),
+            ),
+          )
+          .for("update");
+        if (allocation === undefined) return false;
+        const [anchor] = await tx
+          .select({ status: workflowRun.status })
+          .from(workflowRun)
+          .where(
+            and(
+              eq(workflowRun.id, source.anchorRunId),
+              eq(workflowRun.anchorRunId, source.anchorRunId),
+              eq(workflowRun.address, source.agentAddress),
+            ),
+          );
+        if (anchor === undefined || isLiveWorkflowRunStatus(anchor.status))
+          return false;
+        const pending = await pendingProjections.list(source.anchorRunId, tx);
+        return !pending.some(({ id }) => historyReceives.isInFlight(id));
+      });
     },
 
     async persistMail({ senderAddress, recipients, raw }) {

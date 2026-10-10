@@ -13,6 +13,8 @@ import {
   MAX_REF_TIP_ENTRY_LENGTH,
   MAX_REF_TIPS_FRAME,
   MAX_SIDECAR_INCARNATIONS,
+  MAX_SIDECAR_ACTIVE_DEPLOYMENTS,
+  MAX_SIDECAR_RETAINED_DEPLOYMENTS,
   MAX_CACHED_SENDER_ADDRESSES_FRAME,
   MAX_CREDENTIAL_REVOCATIONS_FRAME,
   MAX_MAIL_ADDRESSES_FRAME,
@@ -521,7 +523,12 @@ describe("frame array-length ceilings", () => {
     test("accepts a frame at the ceiling", () => {
       const frame = {
         ...base,
-        incarnations: incarnations(MAX_SIDECAR_INCARNATIONS),
+        incarnations: incarnations(MAX_SIDECAR_INCARNATIONS).map(
+          (entry, index) =>
+            index < MAX_SIDECAR_ACTIVE_DEPLOYMENTS
+              ? entry
+              : { ...entry, state: "stopped", retention: "kept" },
+        ),
       };
       expect(HelloFrame(frame) instanceof type.errors).toBe(false);
       expect(SidecarFrame(frame) instanceof type.errors).toBe(false);
@@ -534,6 +541,36 @@ describe("frame array-length ceilings", () => {
       };
       expect(HelloFrame(frame) instanceof type.errors).toBe(true);
       expect(SidecarFrame(frame) instanceof type.errors).toBe(true);
+    });
+
+    test("enforces the active and kept limits independently", () => {
+      expect(
+        HelloFrame({
+          ...base,
+          incarnations: incarnations(MAX_SIDECAR_ACTIVE_DEPLOYMENTS + 1),
+        }) instanceof type.errors,
+      ).toBe(true);
+      expect(
+        HelloFrame({
+          ...base,
+          incarnations: incarnations(MAX_SIDECAR_RETAINED_DEPLOYMENTS + 1).map(
+            (entry) => ({ ...entry, state: "stopped", retention: "kept" }),
+          ),
+        }) instanceof type.errors,
+      ).toBe(true);
+      expect(
+        HelloFrame({
+          ...base,
+          incarnations: [
+            {
+              address: "wf@example.test",
+              generation: 1,
+              state: "live",
+              retention: "kept",
+            },
+          ],
+        }) instanceof type.errors,
+      ).toBe(true);
     });
 
     test("rejects an incarnation without a whole, non-negative generation", () => {

@@ -20,6 +20,7 @@ import {
 } from "./sidecar-handler.test-helpers";
 import {
   createSidecarRouter,
+  WorkflowControlHistoryPendingError,
   type AllocatedSidecarTarget,
   type SidecarAuthIdentity,
   type SidecarRouterConfig,
@@ -76,6 +77,11 @@ function createSharedRouter(
     hubPublicKey: "a".repeat(64),
     requestTimeoutMs: 500,
     ...config,
+    lookups: {
+      readWorkflowRunRefTips: async () => ({}),
+      isWorkflowRunHistoryFinal: async () => true,
+      ...config.lookups,
+    },
   });
   for (const binding of bindings) {
     router.fenceAllocation(binding.allocationId, binding.generation);
@@ -184,6 +190,799 @@ function framesOfType(ws: TestWs, type: string): Record<string, unknown>[] {
   });
 }
 
+describe("SidecarRouter placement inventory", () => {
+  test("inventory waits through hello validation and closes again on disconnect", async () => {
+    const reading = Promise.withResolvers<undefined>();
+    const finish = Promise.withResolvers<undefined>();
+    const { router } = createSharedRouter([first], {
+      resolveSidecarBindings: async () => {
+        reading.resolve(undefined);
+        await finish.promise;
+        return [first];
+      },
+    });
+    const cancelled = new AbortController();
+    const cancellation = new Error("placement cancelled");
+    const abandoned = router
+      .waitForSidecarInventory(SIDECAR, cancelled.signal)
+      .catch((error: unknown) => error);
+    cancelled.abort(cancellation);
+    expect(await abandoned).toBe(cancellation);
+    let ready = false;
+    const controller = new AbortController();
+    const waiting = router
+      .waitForSidecarInventory(SIDECAR, controller.signal)
+      .then(() => {
+        ready = true;
+      });
+    const ws = openSocket(router);
+    try {
+      await reading.promise;
+      expect(router.getRetainedIncarnations(SIDECAR)).toBeUndefined();
+      expect(ready).toBe(false);
+      finish.resolve(undefined);
+      await waiting;
+      expect(router.getRetainedIncarnations(SIDECAR)).toEqual([]);
+      router.handleClose(ws);
+      expect(router.getRetainedIncarnations(SIDECAR)).toBeUndefined();
+    } finally {
+      finish.resolve(undefined);
+      controller.abort();
+      router.handleClose(ws);
+    }
+  });
+
+  test.each([false, true])(
+    "a takeover blocks inventory until it settles, failed = %s",
+    async (failed) => {
+      const reading = Promise.withResolvers<undefined>();
+      const finish = Promise.withResolvers<undefined>();
+      let hold = false;
+      const { router } = createSharedRouter([first], {
+        resolveSidecarBindings: async () => {
+          if (hold) {
+            reading.resolve(undefined);
+            await finish.promise;
+            if (failed) throw new Error("binding lookup failed");
+          }
+          return [first];
+        },
+      });
+      const original = await reconnect(router);
+      hold = true;
+      const replacement = openSocket(router);
+      const controller = new AbortController();
+      try {
+        await reading.promise;
+        expect(router.getRetainedIncarnations(SIDECAR)).toBeUndefined();
+        const waiting = router.waitForSidecarInventory(
+          SIDECAR,
+          controller.signal,
+        );
+        finish.resolve(undefined);
+        await waiting;
+        expect(router.getRetainedIncarnations(SIDECAR)).toEqual([]);
+        expect(original.closed).toBe(!failed);
+        expect(replacement.closed).toBe(failed);
+      } finally {
+        finish.resolve(undefined);
+        controller.abort();
+        router.handleClose(original);
+        router.handleClose(replacement);
+      }
+    },
+  );
+});
+
+describe("SidecarRouter retention accounting", () => {
+  const kept = {
+    address: first.workflowRunAddress,
+    generation: first.generation,
+    state: "stopped",
+    retention: "kept",
+  } as const;
+
+  async function retain(router: TestRouter, ws: TestWs) {
+    const before = ws.sent.length;
+    const pending = router
+      .retainAllocation(target(first), 500)
+      .catch((error: unknown) => error);
+    await ws.awaitSent((sent) =>
+      sent.slice(before).some((raw) => raw.includes('"workflow.control"')),
+    );
+    const raw = ws.sent
+      .slice(before)
+      .find((sent) => sent.includes('"workflow.control"'));
+    if (raw === undefined) throw new Error("Retain request was not sent");
+    const frame = WorkflowControlFrame.assert(JSON.parse(raw));
+    expect(frame.action).toBe("retain");
+    return { pending, frame };
+  }
+
+  test("a kept hello still needs a history finality check after reconnect", async () => {
+    const { router } = createSharedRouter([first, second]);
+    const ws = await reconnect(router, [
+      kept,
+      {
+        address: second.workflowRunAddress,
+        generation: second.generation,
+        state: "stopped",
+        retention: "refused",
+      },
+    ]);
+    expect(router.getRetentionCandidates()).toEqual([
+      { ...target(first), sidecarId: SIDECAR },
+      { ...target(second), sidecarId: SIDECAR },
+    ]);
+    router.handleClose(ws);
+    expect(router.getRetentionCandidates()).toEqual([]);
+    const next = await reconnect(router, [kept, second.workflowRunAddress]);
+    expect(router.getRetentionCandidates()).toEqual([
+      { ...target(first), sidecarId: SIDECAR },
+      { ...target(second), sidecarId: SIDECAR },
+    ]);
+    router.handleClose(next);
+  });
+
+  test("a kept hello frees capacity while earlier history receives settle", async () => {
+    let final = false;
+    const { router } = createSharedRouter([first], {
+      lookups: {
+        isWorkflowRunHistoryFinal: async () => final,
+      },
+    });
+    const ws = await reconnect(router, [kept]);
+    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([target(first)]);
+    expect(router.getRetentionCandidates()).toEqual([
+      { ...target(first), sidecarId: SIDECAR },
+    ]);
+    const request = await retain(router, ws);
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "workflow.control.ack",
+        requestId: request.frame.requestId,
+        retention: "kept",
+        refTips: { "refs/heads/main": "final-tip" },
+      }),
+    );
+    expect(await request.pending).toBeInstanceOf(
+      WorkflowControlHistoryPendingError,
+    );
+    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([target(first)]);
+    expect(router.getRetentionCandidates()).toEqual([
+      { ...target(first), sidecarId: SIDECAR },
+    ]);
+    final = true;
+    const retry = await retain(router, ws);
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "workflow.control.ack",
+        requestId: retry.frame.requestId,
+        retention: "kept",
+        refTips: { "refs/heads/main": "unaccepted-local-tip" },
+      }),
+    );
+    expect(await retry.pending).toBe("kept");
+    expect(router.getRetentionCandidates()).toEqual([]);
+    const sent = ws.sent.length;
+    expect(await router.retainAllocation(target(first), 500)).toBe("kept");
+    expect(ws.sent.length).toBe(sent);
+    router.handleClose(ws);
+  });
+
+  test("retain stays pending while earlier history receives have not settled", async () => {
+    const { router } = createSharedRouter([first], {
+      lookups: { isWorkflowRunHistoryFinal: async () => false },
+    });
+    const ws = await reconnect(router, [first.workflowRunAddress]);
+    const { pending, frame } = await retain(router, ws);
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "workflow.control.ack",
+        requestId: frame.requestId,
+        retention: "kept",
+      }),
+    );
+    expect(await pending).toBeInstanceOf(WorkflowControlHistoryPendingError);
+    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([target(first)]);
+    expect(router.getRetentionCandidates()).toEqual([
+      { ...target(first), sidecarId: SIDECAR },
+    ]);
+    router.handleClose(ws);
+  });
+
+  test("a finality lookup that outlives retain cannot close its history", async () => {
+    const reading = Promise.withResolvers<undefined>();
+    const finish = Promise.withResolvers<undefined>();
+    const timeouts = new Set<() => void>();
+    const { router } = createSharedRouter([first], {
+      scheduleTimeout(handler, ms) {
+        if (ms === 500) timeouts.add(handler);
+        return () => {
+          timeouts.delete(handler);
+        };
+      },
+      lookups: {
+        isWorkflowRunHistoryFinal: async () => {
+          reading.resolve(undefined);
+          await finish.promise;
+          return true;
+        },
+      },
+    });
+    const ws = await reconnect(router, [first.workflowRunAddress]);
+    const { pending, frame } = await retain(router, ws);
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "workflow.control.ack",
+        requestId: frame.requestId,
+        retention: "kept",
+        refTips: {},
+      }),
+    );
+    try {
+      await reading.promise;
+      for (const timeout of [...timeouts]) timeout();
+      expect(await pending).toBeInstanceOf(Error);
+      finish.resolve(undefined);
+      await tick();
+      expect(router.getRetainedIncarnations(SIDECAR)).toEqual([target(first)]);
+      expect(router.getRetentionCandidates()).toEqual([
+        { ...target(first), sidecarId: SIDECAR },
+      ]);
+    } finally {
+      finish.resolve(undefined);
+      router.handleClose(ws);
+    }
+  });
+
+  test("only a correlated retain acknowledgement frees active capacity", async () => {
+    const { router } = createSharedRouter([first]);
+    const ws = await reconnect(router, [first.workflowRunAddress]);
+    const { pending, frame } = await retain(router, ws);
+    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([]);
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "workflow.control.ack",
+        requestId: `${frame.requestId}-unknown`,
+        refTips: {},
+        retention: "kept",
+      }),
+    );
+    await tick();
+    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([]);
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "workflow.control.ack",
+        requestId: frame.requestId,
+        refTips: {},
+        retention: "kept",
+      }),
+    );
+    expect(await pending).toBe("kept");
+    expect(router.getAllocationRetention(target(first))).toBe("kept");
+    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([target(first)]);
+    expect(router.getRoutableAddresses()).toEqual([]);
+    router.handleClose(ws);
+    expect(router.getAllocationRetention(target(first))).toBeUndefined();
+    expect(router.getRetainedIncarnations(SIDECAR)).toBeUndefined();
+    await reconnect(router, [kept]);
+    expect(router.getAllocationRetention(target(first))).toBe("kept");
+    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([target(first)]);
+  });
+
+  test("refused retention remains an active reservation and replays on reconnect", async () => {
+    const { router } = createSharedRouter([first]);
+    const ws = await reconnect(router, [first.workflowRunAddress]);
+    const { pending, frame } = await retain(router, ws);
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "workflow.control.ack",
+        requestId: frame.requestId,
+        refTips: {},
+        retention: "refused",
+      }),
+    );
+    expect(await pending).toBe("refused");
+    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([]);
+    expect(router.getAllocationRetention(target(first))).toBe("refused");
+    await reconnect(router, [{ ...kept, retention: "refused" }]);
+    expect(router.getAllocationRetention(target(first))).toBe("refused");
+    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([]);
+  });
+
+  test("a stopped copy or terminal run without a retention decision still occupies active capacity", async () => {
+    const { router } = createSharedRouter([first], {
+      validateSidecarIdentity: async (_binding, use) => use !== "reclaim",
+    });
+    await reconnect(router, [first.workflowRunAddress]);
+    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([]);
+    await reconnect(router, [
+      { address: first.workflowRunAddress, generation: 1, state: "stopped" },
+    ]);
+    expect(router.getAllocationRetention(target(first))).toBeUndefined();
+    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([]);
+  });
+
+  test("a cleanup fence preserves the physical generation of a kept copy", async () => {
+    const { router, hosted } = createSharedRouter([first]);
+    await reconnect(router, [kept]);
+    const cleanup = { ...first, kind: "cleanup", generation: 2 } as const;
+    hosted.bindings = [cleanup];
+    router.fenceAllocation(first.allocationId, 2, {
+      cleanup: { sidecarId: SIDECAR },
+    });
+    expect(router.getAllocationRetention(target(cleanup))).toBeUndefined();
+    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([target(first)]);
+    await reconnect(router, [{ ...kept, state: "tearing-down" }]);
+    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([target(first)]);
+    router.retireAllocation(target(cleanup));
+    expect(router.getRetainedIncarnations(SIDECAR)).toBeUndefined();
+  });
+
+  test("a stale retention acknowledgement cannot free a replacement's reservation", async () => {
+    const { router, hosted } = createSharedRouter([first]);
+    const ws = await reconnect(router, [first.workflowRunAddress]);
+    const { pending, frame } = await retain(router, ws);
+    const replacement = { ...first, generation: 2 };
+    hosted.bindings = [replacement];
+    router.fenceAllocation(first.allocationId, 2);
+    expect(await pending).toBeInstanceOf(Error);
+    await reconnect(router, [{ ...kept, generation: 1 }]);
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "workflow.control.ack",
+        requestId: frame.requestId,
+        refTips: {},
+        retention: "kept",
+      }),
+    );
+    await tick();
+    expect(router.getAllocationRetention(target(replacement))).toBeUndefined();
+    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([]);
+  });
+
+  test("an ineligible retain request leaves a live copy routed", async () => {
+    const { router } = createSharedRouter([first], {
+      validateSidecarIdentity: async (_binding, use) => use !== "retention",
+    });
+    const ws = await reconnect(router, [first.workflowRunAddress]);
+    await expect(router.retainAllocation(target(first), 500)).rejects.toThrow(
+      "no longer current",
+    );
+    expect(router.getRoutableAddresses()).toEqual([first.workflowRunAddress]);
+    expect(framesOfType(ws, "workflow.control")).toEqual([]);
+    expect(framesOfType(ws, "agent.undeploy")).toEqual([]);
+  });
+
+  test("retention eligibility is revalidated when the acknowledgement arrives", async () => {
+    let allowed = true;
+    const { router } = createSharedRouter([first], {
+      validateSidecarIdentity: async (_binding, use) =>
+        use !== "retention-transition" || allowed,
+    });
+    const ws = await reconnect(router, [first.workflowRunAddress]);
+    const { pending, frame } = await retain(router, ws);
+    allowed = false;
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "workflow.control.ack",
+        requestId: frame.requestId,
+        refTips: {},
+        retention: "kept",
+      }),
+    );
+    expect(await pending).toBeInstanceOf(Error);
+    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([]);
+  });
+
+  test("an acknowledgement whose validation outlives its request publishes no retention proof", async () => {
+    const validation = Promise.withResolvers<boolean>();
+    const started = Promise.withResolvers<undefined>();
+    const timers = new Set<() => void>();
+    let holding = false;
+    const { router } = createSharedRouter([first], {
+      scheduleTimeout(handler, ms) {
+        if (ms === 500) timers.add(handler);
+        return () => {
+          timers.delete(handler);
+        };
+      },
+      async validateSidecarIdentity(_binding, use) {
+        if (use !== "retention-transition" || !holding) return true;
+        started.resolve(undefined);
+        return validation.promise;
+      },
+    });
+    const ws = await reconnect(router, [first.workflowRunAddress]);
+    const { pending, frame } = await retain(router, ws);
+    holding = true;
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "workflow.control.ack",
+        requestId: frame.requestId,
+        refTips: {},
+        retention: "kept",
+      }),
+    );
+    await started.promise;
+    for (const timeout of [...timers]) timeout();
+    expect(await pending).toBeInstanceOf(Error);
+    validation.resolve(true);
+    await tick();
+    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([]);
+    expect(router.getAllocationRetention(target(first))).toBeUndefined();
+    router.handleClose(ws);
+  });
+
+  test("registration immediately retains an ended run and shares the request with the lifecycle sweep", async () => {
+    const timeouts: number[] = [];
+    const { router } = createSharedRouter([first, second], {
+      requestTimeoutMs: 4321,
+      scheduleTimeout(_handler, ms) {
+        timeouts.push(ms);
+        return () => undefined;
+      },
+      validateSidecarIdentity: async (binding, use) =>
+        binding.allocationId !== first.allocationId || use !== "reclaim",
+    });
+    const ws = await reconnect(router, [
+      first.workflowRunAddress,
+      second.workflowRunAddress,
+    ]);
+    expect(router.getRoutableAddresses()).toEqual([second.workflowRunAddress]);
+    expect(framesOfType(ws, "agent.undeploy")).toEqual([]);
+    await ws.awaitSent((sent) =>
+      sent.some((raw) => raw.includes('"workflow.control"')),
+    );
+    const frame = WorkflowControlFrame.assert(
+      framesOfType(ws, "workflow.control")[0],
+    );
+    expect(frame.action).toBe("retain");
+    expect(frame.agentAddress).toBe(first.workflowRunAddress);
+    expect(timeouts.filter((ms) => ms === 4321)).toHaveLength(1);
+    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([]);
+    const pending = router.retainAllocation(target(first), 500);
+    // Registration and a following sync must finish without waiting for the ack.
+    await router.syncSidecar(SIDECAR);
+    expect(framesOfType(ws, "workflow.control")).toHaveLength(1);
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "workflow.control.ack",
+        requestId: frame.requestId,
+        refTips: {},
+        retention: "kept",
+      }),
+    );
+    expect(await pending).toBe("kept");
+    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([target(first)]);
+    expect(framesOfType(ws, "workflow.control")).toHaveLength(1);
+    router.handleClose(ws);
+  });
+
+  test("welcome stops an expired live copy without requesting retention", async () => {
+    const { router } = createSharedRouter([first, second], {
+      validateSidecarIdentity: async (binding, use) =>
+        binding.allocationId !== first.allocationId ||
+        (use !== "reclaim" && use !== "retention"),
+    });
+    const ws = await reconnect(router, [
+      first.workflowRunAddress,
+      second.workflowRunAddress,
+    ]);
+    try {
+      await ws.awaitSent((sent) =>
+        sent.some((raw) => raw.includes('"workflow.control"')),
+      );
+      expect(framesOfType(ws, "workflow.control")).toHaveLength(1);
+      expect(
+        WorkflowControlFrame.assert(framesOfType(ws, "workflow.control")[0]),
+      ).toMatchObject({
+        action: "stop",
+        agentAddress: first.workflowRunAddress,
+      });
+      expect(framesOfType(ws, "agent.undeploy")).toEqual([]);
+      expect(router.getRoutableAddresses()).toEqual([
+        second.workflowRunAddress,
+      ]);
+      expect(router.getRetainedIncarnations(SIDECAR)).toEqual([]);
+    } finally {
+      router.handleClose(ws);
+    }
+  });
+
+  test("a retain acknowledgement remains valid when its policy expires in flight", async () => {
+    let due = false;
+    const { router } = createSharedRouter([first], {
+      validateSidecarIdentity: async (_binding, use) =>
+        use !== "retention" || !due,
+    });
+    const ws = await reconnect(router, [first.workflowRunAddress]);
+    const { pending, frame } = await retain(router, ws);
+    due = true;
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "workflow.control.ack",
+        requestId: frame.requestId,
+        refTips: {},
+        retention: "kept",
+      }),
+    );
+    expect(await pending).toBe("kept");
+    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([target(first)]);
+    router.handleClose(ws);
+  });
+
+  test("welcome stops every terminal live copy using the bounded inventory validation", async () => {
+    const bindings = Array.from({ length: 16 }, (_, i) =>
+      allocation(`terminal-${String(i)}`),
+    );
+    let validating = 0;
+    let peak = 0;
+    let transitions = 0;
+    const { router } = createSharedRouter(bindings, {
+      async validateSidecarIdentity(_binding, use) {
+        if (use === "reclaim" || use === "retention") return false;
+        if (use !== "retention-transition") return true;
+        transitions++;
+        validating++;
+        peak = Math.max(peak, validating);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        validating--;
+        return true;
+      },
+    });
+    const ws = openSocket(
+      router,
+      bindings.map((binding) => binding.workflowRunAddress),
+    );
+    try {
+      // No acknowledgement is sent. Every copy must still receive its stop.
+      await ws.awaitSent(
+        (sent) =>
+          sent.filter((raw) => raw.includes('"workflow.control"')).length ===
+          bindings.length,
+      );
+      expect(peak).toBeLessThanOrEqual(8);
+      expect(transitions).toBe(bindings.length);
+      expect(router.getRoutableAddresses()).toEqual([]);
+    } finally {
+      router.handleClose(ws);
+    }
+  });
+
+  test("a repeated hello retries an unconfirmed retain while preserving its binding", async () => {
+    const { router } = createSharedRouter([first], {
+      resolveSidecarBindings: async () => [{ ...first }],
+      validateSidecarIdentity: async (_binding, use) => use !== "reclaim",
+    });
+    const ws = await reconnect(router, [first.workflowRunAddress]);
+    try {
+      const frame = WorkflowControlFrame.assert(
+        framesOfType(ws, "workflow.control")[0],
+      );
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "workflow.control.ack",
+          requestId: frame.requestId,
+          error: "disk unavailable",
+        }),
+      );
+      await router.syncSidecar(SIDECAR);
+      sendHandshake(router, ws, [first.workflowRunAddress]);
+      await router.syncSidecar(SIDECAR);
+      expect(framesOfType(ws, "workflow.control")).toHaveLength(2);
+    } finally {
+      router.handleClose(ws);
+    }
+  });
+
+  test("a new connection starts its own retention request after the previous one disconnects", async () => {
+    const { router } = createSharedRouter([first], {
+      validateSidecarIdentity: async (_binding, use) => use !== "reclaim",
+    });
+    const original = await reconnect(router, [first.workflowRunAddress]);
+    await original.awaitSent((sent) =>
+      sent.some((raw) => raw.includes('"workflow.control"')),
+    );
+    const oldFrame = WorkflowControlFrame.assert(
+      framesOfType(original, "workflow.control")[0],
+    );
+    const oldRequest = router
+      .retainAllocation(target(first), 500)
+      .catch((cause: unknown) => cause);
+    await router.syncSidecar(SIDECAR);
+    router.handleClose(original);
+    expect(await oldRequest).toBeInstanceOf(Error);
+
+    const replacement = await reconnect(router, [first.workflowRunAddress]);
+    await replacement.awaitSent((sent) =>
+      sent.some((raw) => raw.includes('"workflow.control"')),
+    );
+    const newFrame = WorkflowControlFrame.assert(
+      framesOfType(replacement, "workflow.control")[0],
+    );
+    expect(newFrame.requestId).not.toBe(oldFrame.requestId);
+    const newRequest = router.retainAllocation(target(first), 500);
+    await router.syncSidecar(SIDECAR);
+    router.handleMessage(
+      original,
+      JSON.stringify({
+        type: "workflow.control.ack",
+        requestId: oldFrame.requestId,
+        refTips: {},
+        retention: "kept",
+      }),
+    );
+    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([]);
+    router.handleMessage(
+      replacement,
+      JSON.stringify({
+        type: "workflow.control.ack",
+        requestId: newFrame.requestId,
+        refTips: {},
+        retention: "kept",
+      }),
+    );
+    expect(await newRequest).toBe("kept");
+    expect(framesOfType(replacement, "workflow.control")).toHaveLength(1);
+    router.handleClose(replacement);
+  });
+
+  test("registration does not retain a copy already durably kept or a healthy live sibling", async () => {
+    const { router } = createSharedRouter([first, second]);
+    const ws = await reconnect(router, [kept, second.workflowRunAddress]);
+    await router.syncSidecar(SIDECAR);
+    expect(framesOfType(ws, "workflow.control")).toEqual([]);
+    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([target(first)]);
+    expect(router.getRoutableAddresses()).toEqual([second.workflowRunAddress]);
+    router.handleClose(ws);
+  });
+
+  test("a terminal failed run's respawned copy keeps its files until retention decides", async () => {
+    const { router } = createSharedRouter([first], {
+      validateSidecarIdentity: async (_binding, use) => use !== "reclaim",
+    });
+    await reconnect(router, [
+      {
+        address: first.workflowRunAddress,
+        generation: 1,
+        state: "stopped",
+        error: "The child stopped",
+      },
+    ]);
+    const ws = await reconnect(router, [first.workflowRunAddress]);
+    expect(router.getRoutableAddresses()).toEqual([]);
+    expect(framesOfType(ws, "agent.undeploy")).toEqual([]);
+    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([]);
+    await ws.awaitSent((sent) =>
+      sent.some((raw) => raw.includes('"workflow.control"')),
+    );
+    expect(
+      WorkflowControlFrame.assert(framesOfType(ws, "workflow.control")[0])
+        .action,
+    ).toBe("retain");
+    router.handleClose(ws);
+  });
+  test("sync observes committed release before its caller fences and keeps the proof", async () => {
+    const { router, hosted } = createSharedRouter([first, second]);
+    const ws = await reconnect(router, [kept, second.workflowRunAddress]);
+    const cleanup = { ...first, kind: "cleanup", generation: 2 } as const;
+    hosted.bindings = [cleanup, second];
+    await router.syncSidecar(SIDECAR);
+    expect(router.getCleanupConnection(target(cleanup))).toBe(ws);
+    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([target(first)]);
+    expect(framesOfType(ws, "agent.undeploy")).toEqual([]);
+    router.handleClose(ws);
+  });
+
+  test.each(["transfer", "retire"] as const)(
+    "a stale sync cannot undo a cleanup %s",
+    async (change) => {
+      const cleanup = { ...first, kind: "cleanup", generation: 2 } as const;
+      let bindings: readonly SidecarAuthIdentity[] =
+        change === "retire" ? [cleanup, second] : [first, second];
+      let blocking = false;
+      const reading = Promise.withResolvers<undefined>();
+      const finish = Promise.withResolvers<undefined>();
+      const { router } = createSharedRouter(bindings, {
+        resolveSidecarBindings: async () => {
+          const snapshot = bindings;
+          if (blocking) {
+            reading.resolve(undefined);
+            await finish.promise;
+          }
+          return snapshot;
+        },
+      });
+      const ws = await reconnect(router, [kept, second.workflowRunAddress]);
+      blocking = true;
+      const syncing = router.syncSidecar(SIDECAR);
+      try {
+        await reading.promise;
+        if (change === "transfer") {
+          bindings = [cleanup, second];
+          router.fenceAllocation(first.allocationId, 2, {
+            cleanup: { sidecarId: SIDECAR },
+          });
+        } else {
+          bindings = [second];
+          router.retireAllocation(target(cleanup));
+        }
+        finish.resolve(undefined);
+        await syncing;
+        expect(router.getCleanupConnection(target(cleanup))).toBe(
+          change === "transfer" ? ws : undefined,
+        );
+        expect(router.getRetainedIncarnations(SIDECAR)).toEqual(
+          change === "transfer" ? [target(first)] : [],
+        );
+        expect(framesOfType(ws, "agent.undeploy")).toEqual([]);
+      } finally {
+        finish.resolve(undefined);
+        router.handleClose(ws);
+      }
+    },
+  );
+
+  test("a stop acknowledgement that observes release cannot undeploy the cleanup binding", async () => {
+    let released = false;
+    const { router, hosted } = createSharedRouter([first], {
+      validateSidecarIdentity: async (binding) =>
+        !released || binding.kind === "cleanup",
+    });
+    const ws = await reconnect(router, [kept]);
+    const pending = router
+      .sendWorkflowControl(
+        target(first),
+        {
+          runId: first.anchorRunId,
+          agentAddress: first.workflowRunAddress,
+          action: "stop",
+          reason: "Policy expired",
+        },
+        500,
+      )
+      .catch((cause: unknown) => cause);
+    await ws.awaitSent((sent) =>
+      sent.some((frame) => frame.includes('"workflow.control"')),
+    );
+    const frame = WorkflowControlFrame.assert(
+      framesOfType(ws, "workflow.control")[0],
+    );
+    const cleanup = { ...first, kind: "cleanup", generation: 2 } as const;
+    hosted.bindings = [cleanup];
+    released = true;
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "workflow.control.ack",
+        requestId: frame.requestId,
+        refTips: {},
+      }),
+    );
+    expect(await pending).toBeInstanceOf(Error);
+    expect(router.getCleanupConnection(target(cleanup))).toBe(ws);
+    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([target(first)]);
+    expect(framesOfType(ws, "agent.undeploy")).toEqual([]);
+    expect(ws.closed).toBe(false);
+    router.handleClose(ws);
+  });
+});
+
 describe("SidecarRouter allocation cleanup", () => {
   test("sync transfers a committed release before its caller publishes the fence", async () => {
     const { router, hosted } = createSharedRouter([first, second]);
@@ -290,6 +1089,7 @@ describe("SidecarRouter allocation cleanup", () => {
     expect(ws.closed).toBe(false);
     router.handleClose(ws);
   });
+
   const cleanup = { ...first, kind: "cleanup", generation: 2 } as const;
 
   async function connectForCleanup(
@@ -395,6 +1195,7 @@ describe("SidecarRouter allocation cleanup", () => {
     expect(connections).toEqual([target(cleanup), target(cleanup)]);
     router.handleClose(reconnected);
   });
+
   test("a cleanup connection guard refuses to send on a replacement socket", async () => {
     const { router } = createSharedRouter([cleanup]);
     const original = await connectForCleanup(router);
@@ -934,7 +1735,9 @@ describe("SidecarRouter shared sidecars", () => {
   test("reconnect undeploys a deployment whose first deploy never completed", async () => {
     const { router } = createSharedRouter([first, second], {
       validateSidecarIdentity: async (identity, use) =>
-        (use !== "reclaim" && use !== "retention") ||
+        (use !== "reclaim" &&
+          use !== "retention" &&
+          use !== "retention-transition") ||
         identity.allocationId !== second.allocationId,
     });
 
@@ -2281,8 +3084,12 @@ describe("SidecarRouter replacing a generation on the same sidecar", () => {
     );
   });
 
-  test("undeploys a live copy of a generation the sidecar reported stopped", async () => {
-    const { router } = createSharedRouter([first, second]);
+  test("undeploys a reported-stopped copy whose infrastructure failure is still deferred", async () => {
+    const { router } = createSharedRouter([first, second], {
+      validateSidecarIdentity: async (identity, use) =>
+        identity.allocationId !== first.allocationId ||
+        use !== "retention-transition",
+    });
     const ws = await reconnect(router, [
       {
         address: first.workflowRunAddress,
@@ -2319,7 +3126,9 @@ describe("SidecarRouter replacing a generation on the same sidecar", () => {
   test("keeps a connection open for a current binding whose reported incarnation it undeploys", async () => {
     const { router } = createSharedRouter([second], {
       validateSidecarIdentity: async (_identity, use) =>
-        use !== "reclaim" && use !== "retention",
+        use !== "reclaim" &&
+        use !== "retention" &&
+        use !== "retention-transition",
     });
 
     const ws = await reconnect(router, [second.workflowRunAddress]);

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { sha256 } from "@intx/crypto";
 import {
   SidecarReuseRejectedError,
+  SidecarInventoryUnavailableError,
   SIDECAR_CLEANUP_RETRY_EXHAUSTED_FAILURE_CODE,
   SIDECAR_CLEANUP_DISCONNECT_TIMEOUT_FAILURE_CODE,
   type SidecarAllocation,
@@ -142,6 +143,7 @@ function deps(args: {
       selectProvisioner: async () => ({ ok: true, provisioner }),
     },
     router: {
+      waitForSidecarInventory: async () => undefined,
       getCleanupConnection: () =>
         args.ready === false ? undefined : cleanupConnection,
       undeployAllocation: async () => undefined,
@@ -2134,6 +2136,435 @@ describe("createSidecarAllocationReconciler", () => {
     expect(synced).toContain("sc-shared");
   });
 
+  describe("parked inventory placements", () => {
+    function fixture(count = 1) {
+      const state = {
+        now: NOW,
+        databaseClockOffsetMs: 0,
+        known: false,
+        full: false,
+        ensures: 0,
+        wakes: 0,
+      };
+      const rows = new Map(
+        Array.from({ length: count }, (_, index) => {
+          const id = `inventory-${String(index)}`;
+          return [id, allocation({ id, anchorRunId: `run-${id}` })] as const;
+        }),
+      );
+      const parks: Parameters<AllocationStore["scheduleRetry"]>[0][] = [];
+      const waiters: { signal: AbortSignal; resolve(): void }[] = [];
+      const row = (id = "inventory-0") => {
+        const found = rows.get(id);
+        if (found === undefined) throw new Error(`missing allocation ${id}`);
+        return found;
+      };
+      const update = (
+        id: string,
+        changes: Partial<SidecarAllocation>,
+        finish = false,
+      ) => {
+        const previous = row(id);
+        const {
+          reconciliationLeaseId: _lease,
+          reconciliationLeaseExpiresAt: _expires,
+          ...unleased
+        } = previous;
+        const updated = { ...(finish ? unleased : previous), ...changes };
+        rows.set(id, updated);
+        return updated;
+      };
+      const store = fakeStore({
+        listActive: async () =>
+          [...rows.values()].filter((entry) => entry.status !== "released"),
+        claimNextReconcilable: async ({
+          leaseId,
+          leaseDurationMs,
+          excludedAllocationIds = [],
+        }) => {
+          const next = [...rows.values()].find(
+            (entry) =>
+              entry.status !== "released" &&
+              entry.nextAttemptAt !== undefined &&
+              entry.nextAttemptAt.getTime() <=
+                state.now.getTime() + state.databaseClockOffsetMs &&
+              entry.reconciliationLeaseId === undefined &&
+              !excludedAllocationIds.includes(entry.id),
+          );
+          return next === undefined
+            ? null
+            : update(next.id, {
+                reconciliationLeaseId: leaseId,
+                reconciliationLeaseExpiresAt: new Date(
+                  state.now.getTime() + leaseDurationMs,
+                ),
+              });
+        },
+        bindInitialSidecar: async (args) =>
+          update(args.allocationId, {
+            status: "provisioning",
+            generation: 1,
+            sidecarId: args.sidecarId,
+            connectDeadline: args.connectDeadline,
+          }),
+        markAllocated: async (args) => {
+          expect(args.expectedLeaseId).toBe(
+            row(args.allocationId).reconciliationLeaseId,
+          );
+          if (!state.known)
+            throw new SidecarInventoryUnavailableError("sc-shared");
+          if (state.full)
+            throw new SidecarReuseRejectedError("sc-shared", "full");
+          expect(args.externalRef).toBe(`hold-${args.allocationId}`);
+          return update(args.allocationId, {
+            status: "allocated",
+            sidecarId: args.sidecarId ?? "sc-new",
+            ensureAcceptedGeneration: args.generation,
+          });
+        },
+        markConnectionReady: async (args) => {
+          const { nextAttemptAt: _next, ...ready } = update(
+            args.allocationId,
+            {},
+            true,
+          );
+          rows.set(args.allocationId, ready);
+          return ready;
+        },
+        scheduleRetry: async (args) => {
+          parks.push(args);
+          return update(
+            args.allocationId,
+            {
+              nextAttemptAt:
+                args.minimumDelayMs === undefined
+                  ? args.nextAttemptAt
+                  : new Date(
+                      Math.max(
+                        args.nextAttemptAt.getTime(),
+                        state.now.getTime() +
+                          state.databaseClockOffsetMs +
+                          args.minimumDelayMs,
+                      ),
+                    ),
+            },
+            true,
+          );
+        },
+        wakeReconciliation: async (id, generation) => {
+          state.wakes++;
+          const found = rows.get(id);
+          if (
+            found?.generation !== generation ||
+            found.status !== "provisioning"
+          )
+            return false;
+          update(id, {
+            nextAttemptAt: new Date(
+              state.now.getTime() + state.databaseClockOffsetMs,
+            ),
+          });
+          return true;
+        },
+        beginReplacement: async (args) =>
+          update(
+            args.allocationId,
+            {
+              status: "replacing",
+              generation: args.expectedGeneration + 1,
+              failureCode: args.failureCode,
+              nextAttemptAt: args.nextAttemptAt,
+            },
+            true,
+          ),
+        beginUnrecoverableRelease: async (args) =>
+          update(
+            args.allocationId,
+            {
+              status: "releasing",
+              generation: args.expectedGeneration + 1,
+              failureCode: args.failureCode,
+              failureMessage: args.failureMessage,
+              nextAttemptAt: state.now,
+            },
+            true,
+          ),
+        markReleased: async (args) =>
+          update(args.allocationId, { status: "released" }, true),
+      });
+      let leaseNumber = 0;
+      const options = {
+        ...deps({
+          store,
+          provisioner: testProvisioner({
+            ensure: async ({ allocationId }) => {
+              state.ensures++;
+              return {
+                kind: "accepted",
+                sidecarId: "sc-shared",
+                externalRef: `hold-${allocationId}`,
+              };
+            },
+          }),
+        }),
+        now: () => state.now,
+        createLeaseId: () => `inventory-lease-${String(++leaseNumber)}`,
+      };
+      options.router.waitForSidecarInventory = async (_sidecarId, signal) => {
+        if (state.known) return;
+        const waiting = Promise.withResolvers<undefined>();
+        const cancel = () => waiting.reject(signal.reason);
+        waiters.push({ signal, resolve: () => waiting.resolve(undefined) });
+        signal.addEventListener("abort", cancel, { once: true });
+        try {
+          await waiting.promise;
+        } finally {
+          signal.removeEventListener("abort", cancel);
+        }
+      };
+      const reconciler = createSidecarAllocationReconciler(options);
+      const announce = async (known = true) => {
+        state.known = known;
+        for (const waiting of waiters) waiting.resolve();
+        // The repair pass also orders its wake behind notifications in flight.
+        await tick();
+      };
+      return {
+        state,
+        rows,
+        row,
+        update,
+        store,
+        options,
+        parks,
+        waiters,
+        reconciler,
+        announce,
+      };
+    }
+
+    test("eight inventory waits release their leases and leave capacity for unrelated cleanup", async () => {
+      const h = fixture(8);
+      await Promise.all(
+        Array.from({ length: 8 }, () => h.reconciler.reconcileNext()),
+      );
+      expect(h.waiters).toHaveLength(8);
+      expect(h.state.ensures).toBe(8);
+      for (const parked of h.rows.values()) {
+        expect(parked.status).toBe("provisioning");
+        expect(parked.reconciliationLeaseId).toBeUndefined();
+        expect(parked.nextAttemptAt).toEqual(parked.connectDeadline);
+      }
+      for (const parked of h.parks) {
+        expect(parked.attempt).toBeUndefined();
+        expect(parked.failure).toBeUndefined();
+      }
+      h.rows.set(
+        "unrelated",
+        allocation({ id: "unrelated", status: "releasing", generation: 1 }),
+      );
+      expect(await h.reconciler.reconcileNext()).toBe(true);
+      expect(h.row("unrelated").status).toBe("released");
+      expect(await h.reconciler.reconcileNext()).toBe(false);
+      await h.announce();
+      await Promise.all(
+        Array.from({ length: 8 }, () => h.reconciler.reconcileNext()),
+      );
+      expect(
+        [...h.rows.values()].filter((entry) => entry.status === "allocated"),
+      ).toHaveLength(8);
+      expect(h.state.ensures).toBe(8);
+    });
+
+    test.each(["ready", "full", "timeout"])(
+      "reclaims the accepted result with its original deadline, outcome = %s",
+      async (outcome) => {
+        const h = fixture();
+        await h.reconciler.reconcileNext();
+        const deadline = h.row().connectDeadline;
+        h.state.now = new Date(NOW.getTime() + 5_000);
+        await h.announce(false);
+        await h.reconciler.reconcileNext();
+        expect(h.row().nextAttemptAt).toEqual(deadline);
+        expect(h.waiters).toHaveLength(2);
+        expect(h.waiters[0]?.signal.aborted).toBe(true);
+        if (outcome === "timeout")
+          h.state.now = new Date(NOW.getTime() + 120_000);
+        else {
+          h.state.full = outcome === "full";
+          await h.announce();
+        }
+        await h.reconciler.reconcileNext();
+        expect(h.state.ensures).toBe(1);
+        expect(h.row().status).toBe(
+          outcome === "ready"
+            ? "allocated"
+            : outcome === "timeout"
+              ? "releasing"
+              : "replacing",
+        );
+        expect(h.row().failureCode).toBe(
+          outcome === "ready"
+            ? undefined
+            : outcome === "full"
+              ? "sidecar_reuse_rejected"
+              : "sidecar_inventory_unavailable",
+        );
+        expect(h.waiters.every((waiting) => waiting.signal.aborted)).toBe(true);
+      },
+    );
+
+    test.each(["deadline", "hello"])(
+      "an early database claim parks without spinning until %s",
+      async (outcome) => {
+        const h = fixture();
+        await h.reconciler.reconcileNext();
+        h.state.databaseClockOffsetMs = 2_000;
+        h.state.now = new Date(NOW.getTime() + 119_000);
+        expect(await h.reconciler.reconcileUntilIdle()).toBe(1);
+        expect(h.parks).toHaveLength(2);
+        expect(h.row().status).toBe("provisioning");
+        if (outcome === "hello") await h.announce();
+        else h.state.now = new Date(NOW.getTime() + 120_000);
+        expect(await h.reconciler.reconcileNext()).toBe(true);
+        expect(h.row().status).toBe(
+          outcome === "hello" ? "allocated" : "releasing",
+        );
+        expect(h.state.ensures).toBe(1);
+      },
+    );
+
+    test("inventory arriving after the deadline cannot restart placement", async () => {
+      const h = fixture();
+      await h.reconciler.reconcileNext();
+      h.state.now = new Date(NOW.getTime() + 121_000);
+      await h.announce();
+      await h.reconciler.reconcileNext();
+      expect(h.row()).toMatchObject({
+        status: "releasing",
+        failureCode: "sidecar_inventory_unavailable",
+      });
+      expect(h.state.ensures).toBe(1);
+    });
+
+    test("inventory that arrived before the deadline survives a delayed claim", async () => {
+      const h = fixture();
+      await h.reconciler.reconcileNext();
+      h.state.now = new Date(NOW.getTime() + 119_000);
+      await h.announce();
+      h.state.now = new Date(NOW.getTime() + 121_000);
+      await h.reconciler.reconcileNext();
+      expect(h.row().status).toBe("allocated");
+      expect(h.row().generation).toBe(1);
+      expect(h.state.ensures).toBe(1);
+    });
+
+    test.each(["before", "during"])(
+      "inventory arriving %s the park write does not lose its wake",
+      async (when) => {
+        const h = fixture();
+        const writing = Promise.withResolvers<undefined>();
+        const finish = Promise.withResolvers<undefined>();
+        const park = h.store.scheduleRetry;
+        h.store.scheduleRetry = async (args) => {
+          writing.resolve(undefined);
+          if (when === "during") await finish.promise;
+          return park(args);
+        };
+        if (when === "before")
+          h.options.router.waitForSidecarInventory = async () => {
+            h.state.known = true;
+          };
+        const reconciling = h.reconciler.reconcileNext();
+        try {
+          await writing.promise;
+          await h.announce();
+          finish.resolve(undefined);
+          await reconciling;
+          await tick();
+          expect(h.row().nextAttemptAt).toEqual(h.state.now);
+          await h.reconciler.reconcileNext();
+          expect(h.row().status).toBe("allocated");
+          expect(h.state.ensures).toBe(1);
+        } finally {
+          finish.resolve(undefined);
+          await reconciling;
+        }
+      },
+    );
+
+    test("repairs a failed inventory wake without repeating ensure", async () => {
+      const h = fixture();
+      const wake = h.store.wakeReconciliation;
+      let failed = false;
+      h.store.wakeReconciliation = async (...args) => {
+        if (!failed) {
+          failed = true;
+          throw new Error("wake write failed");
+        }
+        return wake(...args);
+      };
+      await h.reconciler.reconcileNext();
+      await h.announce();
+      expect(h.row().nextAttemptAt).toEqual(h.row().connectDeadline);
+      await h.reconciler.repairUnscheduledConnections();
+      await h.reconciler.reconcileNext();
+      expect(h.row().status).toBe("allocated");
+      expect(h.state.ensures).toBe(1);
+    });
+
+    test("an expired lease during parking preserves acceptance for the next claim", async () => {
+      const h = fixture();
+      const park = h.store.scheduleRetry;
+      let expiredLease: string | undefined;
+      h.store.scheduleRetry = async (args) => {
+        expiredLease = args.expectedLeaseId;
+        h.update(args.allocationId, {}, true);
+        h.store.scheduleRetry = park;
+        return null;
+      };
+      await h.reconciler.reconcileNext();
+      expect(h.waiters[0]?.signal.aborted).toBe(false);
+      await h.announce();
+      let resumedLease: string | undefined;
+      const accept = h.store.markAllocated;
+      h.store.markAllocated = async (args) => {
+        resumedLease = args.expectedLeaseId;
+        return accept(args);
+      };
+      await h.reconciler.reconcileNext();
+      expect(resumedLease).not.toBe(expiredLease);
+      expect(h.row().status).toBe("allocated");
+      expect(h.state.ensures).toBe(1);
+    });
+
+    test.each(["release", "removed"])(
+      "repair discards an externally %s parked placement",
+      async (change) => {
+        const h = fixture();
+        await h.reconciler.reconcileNext();
+        if (change === "release")
+          h.update("inventory-0", { status: "releasing", generation: 2 });
+        else h.rows.delete("inventory-0");
+        await h.reconciler.repairUnscheduledConnections();
+        expect(h.waiters[0]?.signal.aborted).toBe(true);
+        await h.announce();
+        expect(h.state.wakes).toBe(0);
+      },
+    );
+
+    test("a restart without the cached acceptance keeps uncertain-ensure recovery", async () => {
+      const h = fixture();
+      await h.reconciler.reconcileNext();
+      h.state.now = new Date(NOW.getTime() + 120_000);
+      await createSidecarAllocationReconciler(h.options).reconcileNext();
+      expect(h.row().failureCode).toBe("ensure_outcome_unknown");
+      expect(h.state.ensures).toBe(1);
+      await h.reconciler.repairUnscheduledConnections();
+      expect(h.waiters[0]?.signal.aborted).toBe(true);
+    });
+  });
+
   test("replaces a generation placed on a sidecar the Hub cannot reuse", async () => {
     const pending = allocation();
     const provisioning = allocation({
@@ -3084,6 +3515,7 @@ describe("createSidecarAllocationReconciler", () => {
     // A completed initialization is no reason to keep it: the sidecar's own
     // report says the deployment is gone.
     expect(released).toEqual({
+      expectedStatus: "allocated",
       allocationId: "alloc-1",
       expectedGeneration: 1,
       expectedLeaseId: "lease-1",

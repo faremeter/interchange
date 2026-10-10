@@ -212,6 +212,13 @@ function createMockAllocationRouter(
   return {
     calls,
     getCleanupConnection: () => undefined,
+    getAllocationRetention: () => undefined,
+    getRetainedIncarnations: () => [],
+    waitForSidecarInventory: async () => undefined,
+    getRetentionCandidates: () => [],
+    async retainAllocation() {
+      throw new Error("session tests do not retain allocation capacity");
+    },
     async undeployAllocation() {
       throw new Error("session tests do not release allocation capacity");
     },

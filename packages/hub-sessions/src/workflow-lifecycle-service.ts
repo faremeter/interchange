@@ -21,6 +21,7 @@ import {
   createWorkflowRunStore,
   createWorkflowRunDispatchStore,
   parseWorkflowRunRow,
+  workflowCapacityReleaseAt,
   SIDECAR_CLEANUP_RETRY_EXHAUSTED_FAILURE_CODE,
   SIDECAR_CLEANUP_DISCONNECT_TIMEOUT_FAILURE_CODE,
   type DB,
@@ -37,10 +38,7 @@ import {
   workflowRun,
 } from "@intx/db/schema";
 import { getLogger } from "@intx/log";
-import {
-  isSidecarAllocationDispatchable,
-  lifecycleDeadline,
-} from "@intx/types";
+import { isSidecarAllocationDispatchable } from "@intx/types";
 
 import type { WorkflowHistoryReceiveTracker } from "./workflow-history-receives";
 import type { WorkflowRunReader } from "./workflow-run-reader";
@@ -73,6 +71,7 @@ const RECOVERY_BACKOFF_MIN_MS = 5_000;
 const RECOVERY_BACKOFF_MAX_MS = 5 * 60_000;
 const CANCEL_CONTROL_TIMEOUT_MS = 5_000;
 const STOP_CONTROL_TIMEOUT_MS = 10_000;
+const MAX_CONCURRENT_RETAINS_PER_SIDECAR = 8;
 
 type Run = ReturnType<typeof parseWorkflowRunRow>;
 type Allocation = typeof sidecarAllocation.$inferSelect;
@@ -92,7 +91,14 @@ type RecoveryTrigger = "request" | "stop" | "sweep";
 
 export type WorkflowLifecycleServiceDeps = {
   db: DB["db"];
-  retentionRouter: Pick<SidecarAllocationRouter, "fenceAllocation">;
+  retentionRouter: Pick<
+    SidecarAllocationRouter,
+    | "retainAllocation"
+    | "getAllocationRetention"
+    | "getRetentionCandidates"
+    | "holdsAllocatedBinding"
+    | "fenceAllocation"
+  >;
   runReader: WorkflowRunReader;
   historyReceives: WorkflowHistoryReceiveTracker;
   now?: () => Date;
@@ -126,6 +132,23 @@ export function createWorkflowLifecycleService({
     string,
     { failures: number; nextAt: number; pendingIds: readonly string[] }
   >();
+  const retentionBackoff = new Map<
+    string,
+    {
+      generation: number;
+      failures: number;
+      nextAt: number;
+    }
+  >();
+  const retentionsInFlight = new Set<string>();
+  const retentionsPerSidecar = new Map<string, number>();
+
+  function hasRetentionRoom(sidecarId: string): boolean {
+    return (
+      (retentionsPerSidecar.get(sidecarId) ?? 0) <
+      MAX_CONCURRENT_RETAINS_PER_SIDECAR
+    );
+  }
 
   async function withRun<T>(
     tenantId: string,
@@ -398,8 +421,6 @@ export function createWorkflowLifecycleService({
       tenantId,
       runId,
       async (tx, run, allocation): Promise<ReleaseResult> => {
-        // Permanent cleanup failure needs an operator whatever history is
-        // pending, so it must not be reported as retryable.
         if (allocation?.status === "destroy_failed") {
           if (
             allocation.failureCode ===
@@ -581,8 +602,8 @@ export function createWorkflowLifecycleService({
   }
 
   // Pack ingestion holds a live run's allocation lock for a whole receive, so
-  // a live run with nothing due skips the locked pass. Terminal runs take it:
-  // ingestion refuses their packs without receiving under the lock.
+  // a live run with nothing due skips the locked pass. Retention confirmation
+  // also needs no write; terminal runs lock only to derive or begin release.
   async function needsLockedPass(
     tenantId: string,
     runId: string,
@@ -598,23 +619,140 @@ export function createWorkflowLifecycleService({
         expiresAt: true,
         cancellationRequestedAt: true,
         infrastructureFailedAt: true,
+        capacityReleaseAt: true,
+        endedAt: true,
+        lifecyclePolicy: true,
       },
     });
     if (run === undefined) return false;
-    if (
-      run.infrastructureFailedAt !== null ||
-      !isLiveWorkflowRunStatus(run.status)
-    )
-      return true;
+    if (run.infrastructureFailedAt !== null) return true;
+    if (!isLiveWorkflowRunStatus(run.status)) {
+      return run.capacityReleaseAt === null
+        ? workflowCapacityReleaseAt(run) !== null
+        : run.capacityReleaseAt <= now();
+    }
     return (
       run.cancellationRequestedAt !== null ||
       (run.expiresAt !== null && run.expiresAt <= now())
     );
   }
 
+  async function retainTerminalAllocation(tenantId: string, runId: string) {
+    const [allocation] = await db
+      .select({
+        id: sidecarAllocation.id,
+        sidecarId: sidecarAllocation.sidecarId,
+        generation: sidecarAllocation.generation,
+        status: workflowRun.status,
+        endedAt: workflowRun.endedAt,
+        capacityReleaseAt: workflowRun.capacityReleaseAt,
+        lifecyclePolicy: workflowRun.lifecyclePolicy,
+      })
+      .from(sidecarAllocation)
+      .innerJoin(workflowRun, eq(workflowRun.id, sidecarAllocation.anchorRunId))
+      .where(
+        and(
+          eq(workflowRun.id, runId),
+          eq(workflowRun.tenantId, tenantId),
+          notInArray(workflowRun.status, [...liveWorkflowRunStatuses]),
+          isNotNull(workflowRun.publicKey),
+          eq(sidecarAllocation.status, "allocated"),
+          eq(
+            sidecarAllocation.ensureAcceptedGeneration,
+            sidecarAllocation.generation,
+          ),
+          isNull(sidecarAllocation.initializationLeaseId),
+        ),
+      );
+    if (allocation === undefined || allocation.sidecarId === null)
+      return undefined;
+    const target = {
+      allocationId: allocation.id,
+      generation: allocation.generation,
+    };
+    if (!retentionRouter.holdsAllocatedBinding(target)) return undefined;
+    const retention = retentionRouter.getAllocationRetention(target);
+    const releaseAt = workflowCapacityReleaseAt(allocation);
+    // Overflow and policy expiry retain the existing accepted-history release
+    // policy. A kept decision alone does not prove the Hub received final history.
+    if (retention === "refused" || (releaseAt !== null && releaseAt <= now()))
+      return retention === undefined ? undefined : { ...target, retention };
+    const previous = retentionBackoff.get(target.allocationId);
+    const backoff =
+      previous?.generation === target.generation ? previous : undefined;
+    if (backoff !== undefined && now().getTime() < backoff.nextAt)
+      return undefined;
+    if (
+      !retentionsInFlight.has(target.allocationId) &&
+      hasRetentionRoom(allocation.sidecarId)
+    ) {
+      retentionsInFlight.add(target.allocationId);
+      retentionsPerSidecar.set(
+        allocation.sidecarId,
+        (retentionsPerSidecar.get(allocation.sidecarId) ?? 0) + 1,
+      );
+      void requestRetention(
+        target,
+        allocation.sidecarId,
+        runId,
+        backoff?.failures ?? 0,
+      );
+    }
+    return retention === undefined ? undefined : { ...target, retention };
+  }
+
+  async function requestRetention(
+    target: AllocatedSidecarTarget,
+    sidecarId: string,
+    runId: string,
+    previousFailures: number,
+  ): Promise<void> {
+    try {
+      await retentionRouter.retainAllocation(target, STOP_CONTROL_TIMEOUT_MS);
+      retentionBackoff.delete(target.allocationId);
+    } catch (cause) {
+      const failures = previousFailures + 1;
+      retentionBackoff.set(target.allocationId, {
+        generation: target.generation,
+        failures,
+        nextAt:
+          now().getTime() +
+          Math.min(
+            RECOVERY_BACKOFF_MAX_MS,
+            RECOVERY_BACKOFF_MIN_MS * 2 ** Math.min(failures - 1, 6),
+          ),
+      });
+      logger.warn`Retention remains unconfirmed for ${runId}: ${cause instanceof Error ? cause.message : String(cause)}`;
+    } finally {
+      retentionsInFlight.delete(target.allocationId);
+      const count = retentionsPerSidecar.get(sidecarId);
+      if (count === undefined || count < 1) {
+        logger.error`Missing in-flight retention count for sidecar ${sidecarId} after retaining ${runId}`;
+      } else if (count === 1) {
+        retentionsPerSidecar.delete(sidecarId);
+      } else {
+        retentionsPerSidecar.set(sidecarId, count - 1);
+      }
+    }
+  }
+
   async function reconcileRun(tenantId: string, runId: string): Promise<void> {
+    // Request retention before recovering history, but keep network waits out
+    // of the lifecycle workers so a silent sidecar cannot delay other runs'
+    // cancellation or expiry. The next sweep observes the router's confirmed
+    // retention, including refusals requiring release.
+    let retained: Awaited<ReturnType<typeof retainTerminalAllocation>>;
+    try {
+      retained = await retainTerminalAllocation(tenantId, runId);
+    } catch (cause) {
+      logger.warn`Retention remains unconfirmed for ${runId}: ${cause instanceof Error ? cause.message : String(cause)}`;
+    }
     await recoverHistory(tenantId, runId, "sweep");
-    if (!(await needsLockedPass(tenantId, runId))) return;
+    if (
+      retained?.retention !== "refused" &&
+      !(await needsLockedPass(tenantId, runId))
+    )
+      return;
     const command = await withRun(
       tenantId,
       runId,
@@ -691,12 +829,30 @@ export function createWorkflowLifecycleService({
         )
           return null;
         if (run.status === "deployed" || run.status === "running") return null;
-        const retention = run.lifecyclePolicy?.capacityRetention?.[run.status];
-        const releaseAt =
-          run.capacityReleaseAt ??
-          (retention === undefined || run.endedAt === null
-            ? null
-            : lifecycleDeadline(run.endedAt, retention));
+        const refusal =
+          retained?.retention === "refused" &&
+          retained.allocationId === allocation.id &&
+          retained.generation === allocation.generation
+            ? {
+                failureCode: "sidecar_retention_limit_exceeded",
+                failureMessage:
+                  "The sidecar could not retain this copy because its kept-record limit was reached",
+              }
+            : undefined;
+        if (
+          refusal !== undefined &&
+          !(await pendingProjections.hasAny(runId, tx))
+        ) {
+          await release({
+            allocationId: allocation.id,
+            expectedStatus: allocation.status,
+            expectedGeneration: allocation.generation,
+            ...refusal,
+            now: now(),
+          });
+          return null;
+        }
+        const releaseAt = workflowCapacityReleaseAt(run);
         if (releaseAt === null) return null;
         if (run.capacityReleaseAt === null)
           await tx
@@ -708,6 +864,7 @@ export function createWorkflowLifecycleService({
           allocationId: allocation.id,
           expectedStatus: allocation.status,
           expectedGeneration: allocation.generation,
+          ...refusal,
           now: now(),
         });
         return null;
@@ -759,10 +916,34 @@ export function createWorkflowLifecycleService({
   // A run whose work stays due, such as a cancellation waiting on its worker
   // or history under backoff, remains eligible. Pause at the end of each pass
   // so the scheduler's immediate refill cannot repeatedly scan it in a loop.
-  const sweep = createAnchorRunSweep(createLifecycleSweepQueries(db, now), {
-    intervalMs: SWEEP_INTERVAL_MS,
-    now,
-  });
+  const sweep = createAnchorRunSweep(
+    createLifecycleSweepQueries(db, now, () => {
+      const candidates = retentionRouter.getRetentionCandidates();
+      const current = new Map(
+        candidates.map((target) => [target.allocationId, target.generation]),
+      );
+      for (const [id, backoff] of retentionBackoff)
+        if (current.get(id) !== backoff.generation) retentionBackoff.delete(id);
+      return candidates.filter((target) => {
+        // A confirmed refusal needs release, not a retention request. Other
+        // lifecycle branches still select expiry, cancellation and history work
+        // even when this retention branch has no request capacity.
+        if (retentionRouter.getAllocationRetention(target) === "refused")
+          return true;
+        if (
+          retentionsInFlight.has(target.allocationId) ||
+          !hasRetentionRoom(target.sidecarId)
+        )
+          return false;
+        const backoff = retentionBackoff.get(target.allocationId);
+        return backoff === undefined || backoff.nextAt <= now().getTime();
+      });
+    }),
+    {
+      intervalMs: SWEEP_INTERVAL_MS,
+      now,
+    },
+  );
 
   async function reconcileNext(): Promise<boolean> {
     const run = await sweep.select();
@@ -786,8 +967,8 @@ export type WorkflowLifecycleService = ReturnType<
 
 /**
  * Selects the deployments `reconcileRun` can act on: a live run that is
- * cancelling or past its expiry, retained capacity whose release time has
- * passed or is not yet recorded, a deferred infrastructure failure, and
+ * cancelling or past its expiry, terminal copies needing retention or
+ * release, a deferred infrastructure failure, and
  * accepted history left unprojected past its grace. A new action there needs a
  * branch here. Deployments are never deleted, so each branch starts from an
  * index over rows still active in its own sense and reaches an anchor only by
@@ -804,6 +985,7 @@ export type WorkflowLifecycleService = ReturnType<
 export function createLifecycleSweepQueries(
   db: DB["db"],
   now: () => Date,
+  getRetentionCandidates: SidecarAllocationRouter["getRetentionCandidates"],
 ): AnchorRunSweepQueries<{ id: string; tenantId: string }> {
   // Selection runs once per candidate of every pass, so it is built once.
   function prepareBranches(afterCursor: boolean) {
@@ -829,9 +1011,50 @@ export function createLifecycleSweepQueries(
         )
         .limit(1)
         .as("anchor");
-    // Retained capacity is due once its release time passes. The first visit
-    // after the run ends derives that time from the saved policy; a run
-    // without a policy has none until an explicit release sets it.
+    // Retention work uses a connection snapshot; generation checks discard a
+    // candidate that changed while the pass ran. Release and history work do
+    // not depend on a connection or an outstanding retention decision.
+    const retentionDue = db
+      .select({ id: sidecarAllocation.anchorRunId })
+      .from(sidecarAllocation)
+      .crossJoinLateral(
+        anchorOf(
+          sidecarAllocation.anchorRunId,
+          and(
+            notInArray(workflowRun.status, [...liveWorkflowRunStatuses]),
+            isNotNull(workflowRun.publicKey),
+            // Undated policies go through releaseDue, which derives the deadline.
+            or(
+              gt(
+                workflowRun.capacityReleaseAt,
+                sql.param(
+                  sql.placeholder("now"),
+                  workflowRun.capacityReleaseAt,
+                ),
+              ),
+              and(
+                isNull(workflowRun.capacityReleaseAt),
+                sql`${workflowRun.lifecyclePolicy} -> 'capacityRetention' ->> ${workflowRun.status} is null`,
+              ),
+            ),
+          ),
+        ),
+      )
+      .where(
+        and(
+          eq(sidecarAllocation.status, "allocated"),
+          sql`${sidecarAllocation.id} = any(${sql.placeholder("retentionIds")}::text[])`,
+          sql`${sidecarAllocation.generation} = (${sql.placeholder("retentionGenerations")}::jsonb ->> ${sidecarAllocation.id})::integer`,
+          eq(
+            sidecarAllocation.ensureAcceptedGeneration,
+            sidecarAllocation.generation,
+          ),
+          isNull(sidecarAllocation.initializationLeaseId),
+          inPass(sidecarAllocation.anchorRunId),
+        ),
+      )
+      .orderBy(asc(sidecarAllocation.anchorRunId))
+      .limit(1);
     const releaseDue = db
       .select({ id: sidecarAllocation.anchorRunId })
       .from(sidecarAllocation)
@@ -850,7 +1073,7 @@ export function createLifecycleSweepQueries(
               ),
               and(
                 isNull(workflowRun.capacityReleaseAt),
-                isNotNull(workflowRun.lifecyclePolicy),
+                sql`${workflowRun.lifecyclePolicy} -> 'capacityRetention' ->> ${workflowRun.status} is not null`,
               ),
             ),
           ),
@@ -916,6 +1139,7 @@ export function createLifecycleSweepQueries(
       .limit(1);
     const position = afterCursor ? "next" : "first";
     return {
+      retention: retentionDue.prepare(`lifecycle_sweep_retention_${position}`),
       release: releaseDue.prepare(`lifecycle_sweep_release_${position}`),
       live: liveDue.prepare(`lifecycle_sweep_live_${position}`),
       infrastructure: infrastructureFailed.prepare(
@@ -929,8 +1153,8 @@ export function createLifecycleSweepQueries(
   const first = prepareBranches(false);
   const next = prepareBranches(true);
   const branches = (
-    ["release", "live", "infrastructure", "history"] as const
-  ).map((name) => ({ first: first[name], next: next[name] }));
+    ["retention", "release", "live", "infrastructure", "history"] as const
+  ).map((name) => ({ name, first: first[name], next: next[name] }));
   // Postgres picks the lowest candidate, so the choice follows the same
   // collation as the cursor comparisons.
   const lowest = db
@@ -950,6 +1174,8 @@ export function createLifecycleSweepQueries(
     .prepare("lifecycle_sweep_lowest");
   // Undefined until the branch is read this pass, null once it has nothing left.
   let candidates: (string | null | undefined)[] = [];
+  let retentionIds: string[] = [];
+  let retentionGenerations = "{}";
   return {
     async findPassEnd() {
       const [last] = await db
@@ -961,15 +1187,30 @@ export function createLifecycleSweepQueries(
       return last?.id;
     },
     async findNext({ afterRunId, passEnd, activeRunIds }) {
-      if (afterRunId === undefined) candidates = branches.map(() => undefined);
+      if (afterRunId === undefined) {
+        candidates = branches.map(() => undefined);
+        const retention = getRetentionCandidates();
+        retentionIds = retention.map((target) => target.allocationId);
+        retentionGenerations = JSON.stringify(
+          Object.fromEntries(
+            retention.map((target) => [target.allocationId, target.generation]),
+          ),
+        );
+      }
       const at = now();
       const values = {
         passEnd,
         activeRunIds,
+        retentionIds,
+        retentionGenerations,
         now: at,
         pendingCutoff: new Date(at.getTime() - PENDING_PROJECTION_GRACE_MS),
       };
       for (const [index, branch] of branches.entries()) {
+        if (branch.name === "retention" && retentionIds.length === 0) {
+          candidates[index] = null;
+          continue;
+        }
         const candidate = candidates[index];
         if (
           candidate === null ||

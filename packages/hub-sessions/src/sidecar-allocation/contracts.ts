@@ -62,9 +62,11 @@ export type SidecarOperationFailure = typeof SidecarOperationFailure.infer;
  * used. The Hub accepts only a sidecar that still hosts another probe or
  * allocation of the same provisioner binding, including one whose release or
  * replacement has not yet destroyed it. A deployment also needs the sidecar to
- * host fewer than `MAX_SIDECAR_INCARNATIONS` deployments, which is checked
+ * host fewer than `MAX_SIDECAR_ACTIVE_DEPLOYMENTS` deployments, which is checked
  * when an allocation is placed and when a deployment adopts its probe's
  * sidecar, not when the probe is placed.
+ * Unknown inventory waits for the sidecar's hello within the connection deadline
+ * before the Hub can accept the placement; it is not a full-capacity rejection.
  * Rejection means no infrastructure exists for this generation (ensure-only;
  * destroy rejections below carry no such guarantee); a provisioner must throw
  * when it cannot determine whether the request took effect.
@@ -86,8 +88,8 @@ export type EnsureSidecarResult = typeof EnsureSidecarResult.infer;
  * and confirm cleanup. A result requiring sidecar cleanup must leave that
  * cleanup path available; absence from a provider's in-memory map is not proof.
  * A non-retryable rejection stops automatic cleanup and leaves the provider
- * obligation and cleanup binding for operator recovery. A copy holds a slot
- * until removal is confirmed.
+ * obligation and cleanup binding for operator recovery. A copy holds an active
+ * slot until removal or its transfer to retained storage is confirmed.
  */
 export const DestroySidecarResult = type({
   kind: "'destroyed'",
@@ -150,13 +152,11 @@ export type SidecarCredentials = {
  * the anchor run not to be terminal: a copy of a run that has ended is not
  * routed, even when its own history never recorded the end.
  *
- * `retention` holds for such a copy instead when the run ended through its own
- * history: it requires what `reclaim` does, except that the anchor run has
- * ended without the Hub cancelling or failing it. The copy then stays
- * unrouted, its local state kept until the Hub releases the deployment, so a
- * reconnect does not cut short the retention the deployment's policy sets. A
- * copy of a run the Hub ended is undeployed, since a restart that lost its
- * stopped mark may be running that run again. `cleanup` accepts releasing allocations and releases
+ * `retention` permits retaining an initialized terminal copy while its capacity
+ * retention period remains open. `retention-transition` validates terminal
+ * copies independently of that deadline, including acknowledgements for retains
+ * issued before expiry. Copies already due for release are stopped without
+ * consuming kept capacity. `cleanup` accepts releasing allocations and releases
  * whose retry budget or cleanup disconnect deadline expired. Their connection
  * grants no workflow routes and preserves inventory. A reconnect can resume a
  * disconnect timeout's cleanup, preserving its attempts and terminal workflow outcome. Permanent
@@ -168,7 +168,8 @@ export type SidecarIdentityUse =
   | "readiness"
   | "routing"
   | "reclaim"
-  | "retention";
+  | "retention"
+  | "retention-transition";
 
 export interface SidecarCredentialResolver {
   /**

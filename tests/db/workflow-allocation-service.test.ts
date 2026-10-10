@@ -360,6 +360,183 @@ describe.skipIf(!harnessDbEnvAvailable())(
       },
     );
 
+    test.each(["reconnect", "timeout", "release"])(
+      "adoption rolls back before waiting for inventory, outcome = %s",
+      async (outcome) => {
+        const anchorRunId = "run-inventory-adoption";
+        const probeId = "sal-inventory-adoption";
+        const ensureCalls: unknown[] = [];
+        const destroyCalls: unknown[] = [];
+        const entered = Promise.withResolvers<undefined>();
+        const inventory = Promise.withResolvers<undefined>();
+        let known = false;
+        let current = new Date("2026-10-08T12:00:00Z");
+        let installs = 0;
+        const deadlines: (() => void)[] = [];
+        const schedule = globalThis.setTimeout;
+        const timerSpy = spyOn(globalThis, "setTimeout").mockImplementation(
+          Object.assign(
+            <TArgs extends unknown[]>(
+              callback: (...args: TArgs) => void,
+              delay?: number,
+              ...args: TArgs
+            ) => {
+              const timer = schedule(callback, delay, ...args);
+              if (delay !== undefined && delay > 20_000 && delay <= 23_456) {
+                clearTimeout(timer);
+                deadlines.push(() => callback(...args));
+              }
+              return timer;
+            },
+            { __promisify__: schedule.__promisify__ },
+          ),
+        );
+        const provisioner = makeProvisioner({
+          id: "adoption-inventory",
+          ensureCalls,
+          destroyCalls,
+        });
+        const service = createWorkflowAllocationService({
+          db: h.db,
+          ...sharedPluginPools([provisioner]),
+          preparedDeployer: {
+            installAndApproveWorkflowSource: (params) => {
+              installs++;
+              return freeze(params);
+            },
+            deployPreparedCodeSourcedWorkflow: async () => {
+              throw new Error("adoption must not deploy yet");
+            },
+          },
+          credentialCipher: CIPHER,
+          allocationRouter: {
+            getRetainedIncarnations: () => (known ? [] : undefined),
+            async waitForSidecarInventory(sidecarId, signal) {
+              expect(sidecarId).toBe("sc-inventory-adoption");
+              entered.resolve(undefined);
+              const cancel = () => inventory.reject(signal.reason);
+              signal.addEventListener("abort", cancel, { once: true });
+              try {
+                await inventory.promise;
+              } finally {
+                signal.removeEventListener("abort", cancel);
+              }
+            },
+            fenceAllocation: () => undefined,
+            retireAllocation: () => undefined,
+            waitForAllocatedSidecar: async () => undefined,
+            sendProbeToAllocation: async () => probeResult(),
+            isAllocatedWorkflowActive: async () => false,
+            reportedDeploymentFailure: () => undefined,
+            stoppedDeploymentHistory: async () => undefined,
+            detachAllocation: () => undefined,
+            syncSidecar: async () => undefined,
+          },
+          hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
+          defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
+          createAllocationId: () => probeId,
+          createSidecarId: () => "sc-inventory-adoption",
+          createToken: () => "probe-token",
+          connectTimeoutMs: 23_456,
+          now: () => current,
+        });
+        const preparing = service
+          .prepareProvisionedDeployment(prepareArgs(anchorRunId))
+          .catch((error: unknown) => error);
+        try {
+          await Promise.race([entered.promise, preparing]);
+          expect(installs).toBe(1);
+          expect(ensureCalls).toHaveLength(1);
+          expect(destroyCalls).toHaveLength(0);
+          expect(
+            await createWorkflowRunLaunchSpecStore(h.db).get(anchorRunId),
+          ).toBeNull();
+          expect(
+            await h.db.query.workflowRun.findFirst({
+              where: eq(workflowRun.id, anchorRunId),
+            }),
+          ).toBeUndefined();
+          expect(
+            await createSidecarAllocationStore(h.db).findByAnchorRunId(
+              anchorRunId,
+            ),
+          ).toBeNull();
+          const probes = createWorkflowProbeStore(h.db);
+          expect((await probes.get(probeId))?.status).toBe("probing");
+          if (outcome === "timeout") {
+            const expire = deadlines.at(-1);
+            if (expire === undefined) throw new Error("no inventory deadline");
+            expire();
+          } else {
+            if (outcome === "release")
+              await probes.transition(probeId, ["probing"], "releasing", {
+                failureCode: "probe_cancelled",
+              });
+            current = new Date(current.getTime() + 20_000);
+            known = true;
+            inventory.resolve(undefined);
+          }
+          const result = await preparing;
+          if (outcome === "reconnect") {
+            expect(result).toMatchObject({
+              allocationId: probeId,
+              anchorRunId,
+            });
+            expect((await probes.get(probeId))?.status).toBe("succeeded");
+            expect(
+              (
+                await createSidecarAllocationStore(h.db).findByAnchorRunId(
+                  anchorRunId,
+                )
+              )?.status,
+            ).toBe("allocated");
+            const saved = await h.db.query.workflowRun.findFirst({
+              where: eq(workflowRun.id, anchorRunId),
+            });
+            expect(saved?.createdAt).toEqual(current);
+            expect(saved?.expiresAt).toEqual(
+              new Date(current.getTime() + 7 * 24 * 60 * 60_000),
+            );
+            const adopted = await createSidecarAllocationStore(
+              h.db,
+            ).findByAnchorRunId(anchorRunId);
+            expect(adopted?.createdAt).toEqual(current);
+            expect(adopted?.connectDeadline).toEqual(
+              new Date(current.getTime() + 23_456),
+            );
+            expect(destroyCalls).toHaveLength(0);
+          } else {
+            expect(result).toBeInstanceOf(Error);
+            if (outcome === "timeout")
+              expect(result).toMatchObject({
+                name: "SidecarOperationTimeoutError",
+              });
+            if (outcome === "release") {
+              expect((await probes.get(probeId))?.status).toBe("releasing");
+              await service.reconcileReleasingProbes?.();
+            }
+            expect((await probes.get(probeId))?.status).toBe("failed");
+            expect(
+              await createSidecarAllocationStore(h.db).findByAnchorRunId(
+                anchorRunId,
+              ),
+            ).toBeNull();
+            expect(
+              await createWorkflowRunLaunchSpecStore(h.db).get(anchorRunId),
+            ).toBeNull();
+            expect(destroyCalls).toHaveLength(1);
+          }
+          expect(installs).toBe(1);
+          expect(ensureCalls).toHaveLength(1);
+        } finally {
+          known = true;
+          inventory.resolve(undefined);
+          await preparing;
+          timerSpy.mockRestore();
+        }
+      },
+    );
+
     test("persists a probe result and adopts matching provisioned capacity", async () => {
       // A disconnect limit other than the default, so the allocation is seen
       // to carry the deployment's own.
@@ -395,6 +572,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         },
         credentialCipher: CIPHER,
         allocationRouter: {
+          getRetainedIncarnations: () => [],
+          waitForSidecarInventory: async () => undefined,
           fenceAllocation: () => undefined,
           retireAllocation: () => undefined,
           waitForAllocatedSidecar: async () => undefined,
@@ -486,6 +665,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         },
         credentialCipher: CIPHER,
         allocationRouter: {
+          getRetainedIncarnations: () => [],
+          waitForSidecarInventory: async () => undefined,
           fenceAllocation: () => undefined,
           retireAllocation: () => undefined,
           waitForAllocatedSidecar: async () => undefined,
@@ -536,6 +717,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         },
         credentialCipher: CIPHER,
         allocationRouter: {
+          getRetainedIncarnations: () => [],
+          waitForSidecarInventory: async () => undefined,
           fenceAllocation: () => undefined,
           retireAllocation: () => undefined,
           waitForAllocatedSidecar: async () => undefined,
@@ -609,6 +792,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         },
         credentialCipher: CIPHER,
         allocationRouter: {
+          getRetainedIncarnations: () => [],
+          waitForSidecarInventory: async () => undefined,
           fenceAllocation: () => undefined,
           retireAllocation: () => undefined,
           waitForAllocatedSidecar: async () => undefined,
@@ -813,6 +998,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         },
         credentialCipher: CIPHER,
         allocationRouter: {
+          getRetainedIncarnations: () => [],
+          waitForSidecarInventory: async () => undefined,
           fenceAllocation: () => undefined,
           retireAllocation: () => undefined,
           waitForAllocatedSidecar: async () => undefined,
@@ -893,6 +1080,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         },
         credentialCipher: CIPHER,
         allocationRouter: {
+          getRetainedIncarnations: () => [],
+          waitForSidecarInventory: async () => undefined,
           fenceAllocation: () => undefined,
           retireAllocation: (target) => retireCalls.push(target),
           waitForAllocatedSidecar: async () => undefined,
@@ -992,6 +1181,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         },
         credentialCipher: CIPHER,
         allocationRouter: {
+          getRetainedIncarnations: () => [],
+          waitForSidecarInventory: async () => undefined,
           fenceAllocation: () => undefined,
           retireAllocation: () => undefined,
           waitForAllocatedSidecar: async () => undefined,
@@ -1076,6 +1267,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         },
         credentialCipher: CIPHER,
         allocationRouter: {
+          getRetainedIncarnations: () => [],
+          waitForSidecarInventory: async () => undefined,
           fenceAllocation: () => undefined,
           retireAllocation: () => undefined,
           waitForAllocatedSidecar: async () => undefined,
@@ -1155,6 +1348,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
           { capability: "isolation:workload", effect: "require" },
         ],
         allocationRouter: {
+          getRetainedIncarnations: () => [],
+          waitForSidecarInventory: async () => undefined,
           fenceAllocation: () => undefined,
           retireAllocation: () => undefined,
           waitForAllocatedSidecar: async () => undefined,
@@ -1217,6 +1412,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
             { capability: "isolation:*:invalid", effect: "require" },
           ],
           allocationRouter: {
+            getRetainedIncarnations: () => [],
+            waitForSidecarInventory: async () => undefined,
             fenceAllocation: () => undefined,
             retireAllocation: () => undefined,
             waitForAllocatedSidecar: async () => undefined,

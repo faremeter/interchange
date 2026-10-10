@@ -29,7 +29,11 @@ import { syncDirectoryDurable } from "@intx/storage-isogit/node";
 import { credentialAad, type CredentialCipher } from "@intx/types";
 import { InferenceSource } from "@intx/types/runtime";
 import { CredentialDelivery } from "@intx/types/credential-delivery";
-import { Generation, SourceRefPin } from "@intx/types/sidecar";
+import {
+  DeploymentRetention,
+  Generation,
+  SourceRefPin,
+} from "@intx/types/sidecar";
 
 import {
   removeFileAtomicDurable,
@@ -94,6 +98,7 @@ const workflowRunRecordBase = {
   // the error that ended it unless the Hub stopped it, or `tearing-down` when
   // its undeploy did not finish.
   "state?": "'stopped' | 'tearing-down'",
+  "retention?": DeploymentRetention,
   "error?": "string > 0",
 } as const;
 
@@ -125,7 +130,12 @@ export const WorkflowRunRecord = type({
   // versions + integrity SRIs) -- plain strings, no secrets. Both rode the
   // signed frame and co-travel (see `SourceRefPin`).
   sourceRef: SourceRefPin,
-});
+}).narrow(
+  (record, ctx) =>
+    record.retention === undefined ||
+    record.state !== undefined ||
+    ctx.mustBe("stopped before deciding retention"),
+);
 export type WorkflowRunRecord = typeof WorkflowRunRecord.infer;
 
 function recordPath(dataDir: string, runId: string): string {
@@ -314,6 +324,7 @@ export async function markWorkflowRunRecord(
   mark: {
     readonly state: "stopped" | "tearing-down";
     readonly error?: string;
+    readonly retention?: DeploymentRetention;
   },
 ): Promise<boolean> {
   return withWorkflowRunRecord(dataDir, runId, async (path) => {
@@ -326,6 +337,9 @@ export async function markWorkflowRunRecord(
         {
           ...record,
           state: mark.state,
+          ...(mark.retention !== undefined
+            ? { retention: mark.retention }
+            : {}),
           ...(mark.error !== undefined ? { error: mark.error } : {}),
         },
         null,

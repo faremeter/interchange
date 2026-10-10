@@ -438,7 +438,9 @@ export async function createHubServer({
       ? { operationTimeoutMs: sidecarOperationTimeoutMs }
       : {}),
   });
-  const sidecarAllocationStore = createSidecarAllocationStore(db);
+  const sidecarAllocationStore = createSidecarAllocationStore(db, {
+    getRetainedIncarnations: sidecarRouter.getRetainedIncarnations,
+  });
   const workflowLifecycleService = createWorkflowLifecycleService({
     db,
     retentionRouter: sidecarRouter,

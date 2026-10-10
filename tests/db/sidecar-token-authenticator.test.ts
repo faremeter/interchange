@@ -1,8 +1,4 @@
 import {
-  SIDECAR_CLEANUP_RETRY_EXHAUSTED_FAILURE_CODE,
-  SIDECAR_CLEANUP_DISCONNECT_TIMEOUT_FAILURE_CODE,
-} from "@intx/db";
-import {
   afterAll,
   beforeAll,
   beforeEach,
@@ -12,6 +8,10 @@ import {
 } from "bun:test";
 
 import { sha256 } from "@intx/crypto";
+import {
+  SIDECAR_CLEANUP_RETRY_EXHAUSTED_FAILURE_CODE,
+  SIDECAR_CLEANUP_DISCONNECT_TIMEOUT_FAILURE_CODE,
+} from "@intx/db";
 import {
   sidecar,
   sidecarAllocation,
@@ -150,6 +150,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           "routing",
           "reclaim",
           "retention",
+          "retention-transition",
         ] as const) {
           expect(await resolver.isCurrent(cleanup, use)).toBe(false);
         }
@@ -201,6 +202,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           "routing",
           "reclaim",
           "retention",
+          "retention-transition",
         ] as const) {
           expect(await resolver.isCurrent(cleanup, use)).toBe(false);
         }
@@ -362,6 +364,58 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(await resolver.isCurrent(binding, "reclaim")).toBe(false);
     });
 
+    test("retention transitions require a terminal initialized current allocation", async () => {
+      const binding = await seedSidecar({ id: "sc-retain", token: "t" });
+      const resolver = createSidecarCredentialResolver({ db: h.db });
+      const allowed = () => resolver.isCurrent(binding, "retention-transition");
+      expect(await allowed()).toBe(false);
+      await h.db
+        .update(workflowRun)
+        .set({ publicKey: "public-key" })
+        .where(eq(workflowRun.id, binding.anchorRunId));
+      expect(await allowed()).toBe(false);
+      await h.db
+        .update(workflowRun)
+        .set({ cancellationRequestedAt: new Date() })
+        .where(eq(workflowRun.id, binding.anchorRunId));
+      expect(await allowed()).toBe(false);
+      for (const status of ["completed", "failed", "cancelled"] as const) {
+        await h.db
+          .update(workflowRun)
+          .set({ status, endedAt: new Date(), failureCode: "ended-by-hub" })
+          .where(eq(workflowRun.id, binding.anchorRunId));
+        expect(await allowed()).toBe(true);
+      }
+      expect(
+        await resolver.isCurrent(
+          { ...binding, generation: 2 },
+          "retention-transition",
+        ),
+      ).toBe(false);
+      await h.db
+        .update(sidecarAllocation)
+        .set({ ensureAcceptedGeneration: null })
+        .where(eq(sidecarAllocation.id, binding.allocationId));
+      expect(await allowed()).toBe(false);
+      await h.db
+        .update(sidecarAllocation)
+        .set({
+          ensureAcceptedGeneration: 1,
+          initializationLeaseId: "initializing",
+        })
+        .where(eq(sidecarAllocation.id, binding.allocationId));
+      expect(await allowed()).toBe(false);
+      await h.db
+        .update(sidecarAllocation)
+        .set({ initializationLeaseId: null })
+        .where(eq(sidecarAllocation.id, binding.allocationId));
+      await h.db
+        .update(workflowRun)
+        .set({ publicKey: null })
+        .where(eq(workflowRun.id, binding.anchorRunId));
+      expect(await allowed()).toBe(false);
+    });
+
     test("retains instead of reclaiming a copy of a run that ended on its own", async () => {
       const binding = await seedSidecar({ id: "sc-ended", token: "t" });
       const resolver = createSidecarCredentialResolver({ db: h.db });
@@ -376,7 +430,40 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(await resolver.isCurrent(binding, "routing")).toBe(true);
     });
 
-    test("neither reclaims nor retains a copy of a run the Hub ended", async () => {
+    test.each(["saved", "derived"] as const)(
+      "retention requests stop at the %s deadline without rejecting their acknowledgements",
+      async (deadline) => {
+        const binding = await seedSidecar({ id: "sc-expired", token: "t" });
+        const endedAt = new Date("2020-01-01T00:00:00Z");
+        let now = new Date(endedAt.getTime() + 59_999);
+        const resolver = createSidecarCredentialResolver({
+          db: h.db,
+          now: () => now,
+        });
+        await h.db
+          .update(workflowRun)
+          .set({
+            publicKey: "public-key",
+            status: "completed",
+            endedAt,
+            lifecyclePolicy: { capacityRetention: { completed: "1m" } },
+            capacityReleaseAt:
+              deadline === "saved"
+                ? new Date(endedAt.getTime() + 60_000)
+                : null,
+          })
+          .where(eq(workflowRun.id, binding.anchorRunId));
+        expect(await resolver.isCurrent(binding, "retention")).toBe(true);
+        now = new Date(endedAt.getTime() + 60_000);
+        expect(await resolver.isCurrent(binding, "retention")).toBe(false);
+        expect(await resolver.isCurrent(binding, "retention-transition")).toBe(
+          true,
+        );
+        expect(await resolver.isCurrent(binding, "registration")).toBe(true);
+      },
+    );
+
+    test("retains a Hub-ended copy only once its run is terminal", async () => {
       const binding = await seedSidecar({ id: "sc-cancelled", token: "t" });
       const resolver = createSidecarCredentialResolver({ db: h.db });
       await h.db
@@ -392,7 +479,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         .set({ status: "cancelled", endedAt: new Date() })
         .where(eq(workflowRun.id, binding.anchorRunId));
       expect(await resolver.isCurrent(binding, "reclaim")).toBe(false);
-      expect(await resolver.isCurrent(binding, "retention")).toBe(false);
+      expect(await resolver.isCurrent(binding, "retention")).toBe(true);
 
       const failed = await seedSidecar({ id: "sc-failed", token: "t2" });
       await h.db
@@ -412,7 +499,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         .set({ status: "failed", endedAt: new Date() })
         .where(eq(workflowRun.id, failed.anchorRunId));
       expect(await resolver.isCurrent(failed, "reclaim")).toBe(false);
-      expect(await resolver.isCurrent(failed, "retention")).toBe(false);
+      expect(await resolver.isCurrent(failed, "retention")).toBe(true);
     });
   },
 );

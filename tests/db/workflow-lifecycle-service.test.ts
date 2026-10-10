@@ -1,8 +1,4 @@
 import {
-  SIDECAR_CLEANUP_RETRY_EXHAUSTED_FAILURE_CODE,
-  SIDECAR_CLEANUP_DISCONNECT_TIMEOUT_FAILURE_CODE,
-} from "@intx/db";
-import {
   afterAll,
   beforeAll,
   beforeEach,
@@ -21,6 +17,9 @@ import {
 import { seedPrincipal, seedTenants } from "@intx/test-harness/seed";
 import {
   createSidecarAllocationStore,
+  SidecarReuseRejectedError,
+  SIDECAR_CLEANUP_RETRY_EXHAUSTED_FAILURE_CODE,
+  SIDECAR_CLEANUP_DISCONNECT_TIMEOUT_FAILURE_CODE,
   withExecutableWorkflowRun,
 } from "@intx/db";
 import * as dbSchema from "@intx/db/schema";
@@ -70,6 +69,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
         >
       > & {
         runReader?: Partial<WorkflowRunReader>;
+        retentionRouter?: Partial<
+          WorkflowLifecycleServiceDeps["retentionRouter"]
+        >;
       } = {},
     ) {
       const configuredReader = {
@@ -79,9 +81,16 @@ describe.skipIf(!harnessDbEnvAvailable())(
         ...options.runReader,
       };
       return createWorkflowLifecycleService({
-        retentionRouter: { fenceAllocation: () => undefined },
         ...options,
         db: options.db ?? h.db,
+        retentionRouter: {
+          fenceAllocation: () => undefined,
+          getRetentionCandidates: () => [],
+          holdsAllocatedBinding: () => true,
+          getAllocationRetention: () => "kept",
+          retainAllocation: async () => "kept",
+          ...options.retentionRouter,
+        },
         historyReceives:
           options.historyReceives ?? createWorkflowHistoryReceiveTracker(),
         runReader: {
@@ -263,38 +272,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         ensureAcceptedGeneration: 1,
       });
     }
-
-    test.each([
-      [SIDECAR_CLEANUP_RETRY_EXHAUSTED_FAILURE_CODE, "cleanup_exhausted"],
-      [SIDECAR_CLEANUP_DISCONNECT_TIMEOUT_FAILURE_CODE, "cleanup_disconnected"],
-    ] as const)(
-      "reports cleanup failure %s without resetting its budget",
-      async (failureCode, result) => {
-        await h.db
-          .update(workflowRun)
-          .set({ status: "failed", endedAt: current })
-          .where(eq(workflowRun.id, runId));
-        await h.db
-          .update(sidecarAllocation)
-          .set({
-            status: "destroy_failed",
-            failureCode,
-            destroyAttempts: 10,
-            nextAttemptAt: null,
-          })
-          .where(eq(sidecarAllocation.id, allocationId));
-        expect(await service().releaseCapacity(tenantId, runId)).toBe(result);
-        expect(
-          await h.db.query.sidecarAllocation.findFirst({
-            where: eq(sidecarAllocation.id, allocationId),
-          }),
-        ).toMatchObject({
-          status: "destroy_failed",
-          destroyAttempts: 10,
-          nextAttemptAt: null,
-        });
-      },
-    );
 
     test("the shared scheduler bounds expired runs to eight and refills a free slot independently", async () => {
       await expire();
@@ -521,6 +498,644 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(
         (await lifecycle.getStatus(tenantId, runId))?.allocation?.status,
       ).toBe("releasing");
+    });
+
+    test("a terminal copy without a retention deadline transfers once and keeps its allocation", async () => {
+      await h.db
+        .update(workflowRun)
+        .set({
+          status: "completed",
+          endedAt: current,
+          lifecyclePolicy: null,
+          publicKey: "ab".repeat(32),
+        })
+        .where(eq(workflowRun.id, runId));
+      let kept = false;
+      let requests = 0;
+      const lifecycle = service({
+        retentionRouter: {
+          getRetentionCandidates: () =>
+            kept ? [] : [{ allocationId, generation: 1, sidecarId: "sidecar" }],
+          holdsAllocatedBinding: () => true,
+          getAllocationRetention: () => (kept ? "kept" : undefined),
+          retainAllocation: async (target, timeoutMs) => {
+            expect(timeoutMs).toBe(10_000);
+            expect(target).toEqual({ allocationId, generation: 1 });
+            requests += 1;
+            kept = true;
+            return "kept";
+          },
+        },
+      });
+      expect(await lifecycle.reconcileNext()).toBe(true);
+      expect(requests).toBe(1);
+      current = new Date(current.getTime() + 1000);
+      expect(await lifecycle.reconcileNext()).toBe(false);
+      expect(requests).toBe(1);
+      expect(
+        (await lifecycle.getStatus(tenantId, runId))?.allocation?.status,
+      ).toBe("allocated");
+    });
+
+    test("slow retains stop being selected and do not block another sidecar or cancellation", async () => {
+      const template = await h.db.query.sidecarAllocation.findFirst({
+        where: eq(sidecarAllocation.id, allocationId),
+      });
+      if (template === undefined) throw new Error("Expected allocation");
+      await h.db.insert(sidecar).values({
+        id: "healthy-sidecar",
+        tokenHashSha256: new Uint8Array(32).fill(1),
+      });
+      const candidates: {
+        allocationId: string;
+        generation: number;
+        sidecarId: string;
+      }[] = [];
+      for (let index = 0; index < 10; index++) {
+        const id = `run_0_retaining_${String(index)}`;
+        const retainedAllocationId = `allocation_retaining_${String(index)}`;
+        await h.db.insert(workflowRun).values({
+          id,
+          anchorRunId: id,
+          tenantId,
+          definitionId: "definition",
+          status: "completed",
+          endedAt: current,
+          publicKey: "ab".repeat(32),
+          address: `${id}@example.test`,
+          createdAt,
+        });
+        await h.db.insert(sidecarAllocation).values({
+          ...template,
+          id: retainedAllocationId,
+          anchorRunId: id,
+          sidecarId: index === 9 ? "healthy-sidecar" : "sidecar",
+        });
+        candidates.push({
+          allocationId: retainedAllocationId,
+          generation: 1,
+          sidecarId: index === 9 ? "healthy-sidecar" : "sidecar",
+        });
+      }
+      await h.db
+        .update(workflowRun)
+        .set({ expiresAt: current })
+        .where(eq(workflowRun.id, runId));
+      const acknowledge = Promise.withResolvers<undefined>();
+      const retained = new Set<string>();
+      const refused = new Set<string>();
+      const requests: string[] = [];
+      const pending: Promise<"kept" | "refused">[] = [];
+      const controls: string[] = [];
+      const lifecycle = service({
+        retentionRouter: {
+          getRetentionCandidates: () =>
+            candidates.filter((target) => !retained.has(target.allocationId)),
+          getAllocationRetention: (target) =>
+            refused.has(target.allocationId)
+              ? "refused"
+              : retained.has(target.allocationId)
+                ? "kept"
+                : undefined,
+          retainAllocation: (target) => {
+            requests.push(target.allocationId);
+            const ready =
+              target.allocationId === "allocation_retaining_9"
+                ? Promise.resolve()
+                : acknowledge.promise;
+            const response = ready.then(() => {
+              if (refused.has(target.allocationId)) return "refused" as const;
+              retained.add(target.allocationId);
+              return "kept" as const;
+            });
+            pending.push(response);
+            return response;
+          },
+        },
+        sendControl: async (_target, command) => {
+          controls.push(command.runId);
+        },
+      });
+      try {
+        for (let pass = 0; pass < 2; pass++) {
+          // The first snapshot visits all ten copies. On the next pass only
+          // cancellation remains due; neither the eight requests in flight nor
+          // the ninth waiting on their sidecar consumes lifecycle work again.
+          for (let index = 0; index < (pass === 0 ? 11 : 1); index++) {
+            expect(await lifecycle.reconcileNext()).toBe(true);
+          }
+          expect(await lifecycle.reconcileNext()).toBe(false);
+          expect(requests).toHaveLength(9);
+          expect(new Set(requests).size).toBe(9);
+          expect(retained.has("allocation_retaining_9")).toBe(true);
+          expect(retained.has("allocation_retaining_0")).toBe(false);
+          expect(controls).toHaveLength(pass + 1);
+          expect(controls[pass]).toBe(runId);
+          current = new Date(current.getTime() + 1000);
+        }
+        // Saturated retention must not hide newly due expiry, accepted history,
+        // or a refusal already learned from an acknowledgement or hello.
+        await h.db
+          .update(workflowRun)
+          .set({ capacityReleaseAt: current })
+          .where(eq(workflowRun.id, "run_0_retaining_0"));
+        await leavePending("run_0_retaining_1");
+        refused.add("allocation_retaining_2");
+        for (let index = 0; index < 3; index++) {
+          expect(await lifecycle.reconcileNext()).toBe(true);
+        }
+        expect(await lifecycle.reconcileNext()).toBe(false);
+        expect(await pendingIds()).toEqual([]);
+        for (const index of [0, 2]) {
+          expect(
+            (
+              await lifecycle.getStatus(
+                tenantId,
+                `run_0_retaining_${String(index)}`,
+              )
+            )?.allocation?.status,
+          ).toBe("releasing");
+        }
+        expect(requests).toHaveLength(9);
+        current = new Date(current.getTime() + 1000);
+      } finally {
+        acknowledge.resolve(undefined);
+        await Promise.all(pending);
+      }
+      // The skipped copy remains due once a slot opens; no unbounded queue is
+      // needed to remember it, and completed retains leave the candidate list.
+      expect(await lifecycle.reconcileNext()).toBe(true);
+      expect(requests).toHaveLength(10);
+      await Promise.all(pending);
+    });
+
+    test("a kept copy remains sweep work until its history handoff completes", async () => {
+      await h.db
+        .update(workflowRun)
+        .set({
+          status: "completed",
+          endedAt: current,
+          lifecyclePolicy: null,
+          publicKey: "ab".repeat(32),
+        })
+        .where(eq(workflowRun.id, runId));
+      let recovered = false;
+      let requests = 0;
+      const lifecycle = service({
+        retentionRouter: {
+          getRetentionCandidates: () =>
+            recovered
+              ? []
+              : [{ allocationId, generation: 1, sidecarId: "sidecar" }],
+          holdsAllocatedBinding: () => true,
+          getAllocationRetention: () => "kept",
+          retainAllocation: async () => {
+            requests++;
+            if (requests === 1)
+              throw new Error("Final history is still arriving");
+            recovered = true;
+            return "kept";
+          },
+        },
+      });
+      expect(await lifecycle.reconcileNext()).toBe(true);
+      expect(requests).toBe(1);
+      current = new Date(current.getTime() + 6000);
+      expect(await lifecycle.reconcileNext()).toBe(true);
+      expect(requests).toBe(2);
+      current = new Date(current.getTime() + 6000);
+      expect(await lifecycle.reconcileNext()).toBe(false);
+      expect(
+        (await lifecycle.getStatus(tenantId, runId))?.allocation?.status,
+      ).toBe("allocated");
+    });
+
+    test("unreceived retained history does not extend the release deadline", async () => {
+      await h.db
+        .update(workflowRun)
+        .set({
+          status: "failed",
+          endedAt: current,
+          lifecyclePolicy: { capacityRetention: { failed: "1m" } },
+          publicKey: "ab".repeat(32),
+        })
+        .where(eq(workflowRun.id, runId));
+      let requests = 0;
+      const lifecycle = service({
+        retentionRouter: {
+          getRetentionCandidates: () => [
+            { allocationId, generation: 1, sidecarId: "sidecar" },
+          ],
+          holdsAllocatedBinding: () => true,
+          getAllocationRetention: () => "kept",
+          retainAllocation: async () => {
+            requests++;
+            throw new Error("Final history is still missing");
+          },
+        },
+      });
+      await lifecycle.reconcileNext();
+      expect(requests).toBe(1);
+      current = new Date(current.getTime() + 60_000);
+      await lifecycle.reconcileNext();
+      expect(requests).toBe(1);
+      expect(
+        (await lifecycle.getStatus(tenantId, runId))?.allocation?.status,
+      ).toBe("releasing");
+    });
+
+    test.each(["completed", "failed", "cancelled"] as const)(
+      "retention overflow releases a %s copy without changing its outcome",
+      async (status) => {
+        await h.db
+          .update(workflowRun)
+          .set({
+            status,
+            endedAt: current,
+            publicKey: "ab".repeat(32),
+            failureCode: status === "failed" ? "original_failure" : null,
+            lifecyclePolicy: { capacityRetention: { [status]: "1d" } },
+          })
+          .where(eq(workflowRun.id, runId));
+        const lifecycle = service({
+          retentionRouter: {
+            getRetentionCandidates: () => [
+              { allocationId, generation: 1, sidecarId: "sidecar" },
+            ],
+            holdsAllocatedBinding: () => true,
+            getAllocationRetention: () => "refused",
+            retainAllocation: async () => {
+              throw new Error("Hello already confirmed refusal");
+            },
+          },
+        });
+        expect(await lifecycle.reconcileNext()).toBe(true);
+        const run = await h.db.query.workflowRun.findFirst({
+          where: eq(workflowRun.id, runId),
+        });
+        expect(run?.status).toBe(status);
+        expect(run?.failureCode).toBe(
+          status === "failed" ? "original_failure" : null,
+        );
+        expect(
+          (await lifecycle.getStatus(tenantId, runId))?.allocation,
+        ).toMatchObject({
+          status: "releasing",
+          failureCode: "sidecar_retention_limit_exceeded",
+        });
+      },
+    );
+
+    test.each(["saved", "derived"] as const)(
+      "a %s release deadline that is already due never reserves a kept slot",
+      async (deadline) => {
+        await h.db
+          .update(workflowRun)
+          .set({
+            status: "completed",
+            endedAt: new Date(current.getTime() - 60_000),
+            publicKey: "ab".repeat(32),
+            lifecyclePolicy: { capacityRetention: { completed: "1m" } },
+            capacityReleaseAt: deadline === "saved" ? current : null,
+          })
+          .where(eq(workflowRun.id, runId));
+        let requests = 0;
+        const lifecycle = service({
+          retentionRouter: {
+            getRetentionCandidates: () => [
+              { allocationId, generation: 1, sidecarId: "sidecar" },
+            ],
+            holdsAllocatedBinding: () => true,
+            getAllocationRetention: () => undefined,
+            retainAllocation: async () => {
+              requests++;
+              return "refused";
+            },
+          },
+        });
+        expect(await lifecycle.reconcileNext()).toBe(true);
+        expect(requests).toBe(0);
+        expect(
+          (await lifecycle.getStatus(tenantId, runId))?.allocation,
+        ).toMatchObject({
+          status: "releasing",
+          failureCode: null,
+        });
+      },
+    );
+
+    test("retention stops a terminal copy before history recovery but overflow cleanup waits for accepted history", async () => {
+      await h.db
+        .update(workflowRun)
+        .set({ status: "failed", endedAt: current, publicKey: "ab".repeat(32) })
+        .where(eq(workflowRun.id, runId));
+      await leavePending();
+      let refused = false;
+      let historyAvailable = false;
+      const calls: string[] = [];
+      const lifecycle = service({
+        retentionRouter: {
+          getRetentionCandidates: () => [
+            { allocationId, generation: 1, sidecarId: "sidecar" },
+          ],
+          holdsAllocatedBinding: () => true,
+          getAllocationRetention: () => (refused ? "refused" : undefined),
+          retainAllocation: async () => {
+            calls.push("retain");
+            refused = true;
+            return "refused";
+          },
+        },
+        runReader: {
+          readLatestRunEvents: async () => {
+            calls.push("history");
+            if (!historyAvailable)
+              throw new Error("history temporarily unavailable");
+            return { tip: "test-tip", events: new Map() };
+          },
+        },
+      });
+      await lifecycle.reconcileNext();
+      expect(calls).toEqual(["retain", "history"]);
+      expect(
+        (await lifecycle.getStatus(tenantId, runId))?.allocation?.status,
+      ).toBe("allocated");
+      expect(await pendingIds()).toHaveLength(1);
+      historyAvailable = true;
+      current = new Date(current.getTime() + 6000);
+      await lifecycle.reconcileNext();
+      expect(await pendingIds()).toEqual([]);
+      expect(
+        (await lifecycle.getStatus(tenantId, runId))?.allocation?.status,
+      ).toBe("releasing");
+    });
+
+    test("refused retention still expires at its policy deadline when accepted history cannot be recovered", async () => {
+      await h.db
+        .update(workflowRun)
+        .set({
+          status: "failed",
+          endedAt: current,
+          publicKey: "ab".repeat(32),
+          lifecyclePolicy: { capacityRetention: { failed: "1m" } },
+        })
+        .where(eq(workflowRun.id, runId));
+      await leavePending();
+      const lifecycle = service({
+        retentionRouter: {
+          getRetentionCandidates: () => [
+            { allocationId, generation: 1, sidecarId: "sidecar" },
+          ],
+          holdsAllocatedBinding: () => true,
+          getAllocationRetention: () => "refused",
+          retainAllocation: async () => {
+            throw new Error("already refused");
+          },
+        },
+        runReader: {
+          readLatestRunEvents: async () => {
+            throw new Error("history unavailable");
+          },
+        },
+      });
+      await lifecycle.reconcileNext();
+      expect(
+        (await lifecycle.getStatus(tenantId, runId))?.allocation?.status,
+      ).toBe("allocated");
+      current = new Date(current.getTime() + 60_000);
+      await lifecycle.reconcileNext();
+      expect(await pendingIds()).toHaveLength(1);
+      expect(
+        (await lifecycle.getStatus(tenantId, runId))?.allocation,
+      ).toMatchObject({
+        status: "releasing",
+        failureCode: "sidecar_retention_limit_exceeded",
+      });
+    });
+
+    test("an unconfirmed retain keeps its reservation and a reconnect can confirm it without another request", async () => {
+      await h.db
+        .update(workflowRun)
+        .set({
+          status: "completed",
+          endedAt: current,
+          lifecyclePolicy: null,
+          publicKey: "ab".repeat(32),
+        })
+        .where(eq(workflowRun.id, runId));
+      // This copy occupies the last active slot until its retained proof arrives.
+      const otherRuns = Array.from(
+        { length: 128 },
+        (_, index) => `capacity-run-${String(index)}`,
+      );
+      await h.db.insert(workflowRun).values(
+        otherRuns.map((id) => ({
+          id,
+          tenantId,
+          definitionId: "definition",
+          anchorRunId: id,
+          status: "running" as const,
+          address: `${id}@example.test`,
+        })),
+      );
+      await h.db.insert(sidecar).values({
+        id: "candidate-sidecar",
+        tokenHashSha256: new Uint8Array(32).fill(1),
+      });
+      await h.db.insert(sidecarAllocation).values(
+        otherRuns.map((anchorRunId, index) => ({
+          id: `capacity-allocation-${String(index)}`,
+          anchorRunId,
+          tenantId,
+          provisionerId: "test",
+          provisionerApiVersion: 1 as const,
+          provisionerBindingFingerprint: "test:1",
+          maxDisconnectedMs: 900_000,
+          sidecarId: index === 127 ? "candidate-sidecar" : "sidecar",
+          status:
+            index === 127 ? ("provisioning" as const) : ("allocated" as const),
+          generation: 1,
+          ensureAcceptedGeneration: index === 127 ? null : 1,
+        })),
+      );
+      let confirmed = false;
+      const allocations = createSidecarAllocationStore(h.db, {
+        getRetainedIncarnations: () =>
+          confirmed ? [{ allocationId, generation: 1 }] : [],
+      });
+      const placement = {
+        allocationId: "capacity-allocation-127",
+        generation: 1,
+        sidecarId: "sidecar",
+      };
+      let requests = 0;
+      const lifecycle = service({
+        retentionRouter: {
+          getRetentionCandidates: () =>
+            confirmed
+              ? []
+              : [{ allocationId, generation: 1, sidecarId: "sidecar" }],
+          holdsAllocatedBinding: () => true,
+          getAllocationRetention: () => (confirmed ? "kept" : undefined),
+          retainAllocation: async () => {
+            requests += 1;
+            throw new Error("acknowledgement lost");
+          },
+        },
+      });
+      await lifecycle.reconcileNext();
+      expect(
+        (await lifecycle.getStatus(tenantId, runId))?.allocation?.status,
+      ).toBe("allocated");
+      await expect(allocations.markAllocated(placement)).rejects.toBeInstanceOf(
+        SidecarReuseRejectedError,
+      );
+      confirmed = true;
+      current = new Date(current.getTime() + 1000);
+      await lifecycle.reconcileNext();
+      expect(requests).toBe(1);
+      expect(await allocations.markAllocated(placement)).toMatchObject({
+        status: "allocated",
+        sidecarId: "sidecar",
+      });
+      expect(
+        (await lifecycle.getStatus(tenantId, runId))?.allocation?.status,
+      ).toBe("allocated");
+    });
+
+    test.each(["none", "other status", "future"] as const)(
+      "a confirmed kept copy with %s retention work is not revisited",
+      async (policy) => {
+        await h.db
+          .update(workflowRun)
+          .set({
+            status: "completed",
+            endedAt: current,
+            publicKey: "ab".repeat(32),
+            lifecyclePolicy:
+              policy === "none"
+                ? null
+                : policy === "other status"
+                  ? { capacityRetention: { failed: "1h" } }
+                  : { capacityRetention: { completed: "1h" } },
+            capacityReleaseAt:
+              policy === "future" ? new Date(current.getTime() + 60_000) : null,
+          })
+          .where(eq(workflowRun.id, runId));
+        const lifecycle = service();
+        expect(await lifecycle.reconcileNext()).toBe(false);
+        current = new Date(current.getTime() + 1000);
+        expect(await lifecycle.reconcileNext()).toBe(false);
+        expect(
+          (await lifecycle.getStatus(tenantId, runId))?.allocation?.status,
+        ).toBe("allocated");
+      },
+    );
+
+    test("kept copies still recover accepted history and release when their deadline arrives", async () => {
+      const deadline = new Date(current.getTime() + 60_000);
+      await h.db
+        .update(workflowRun)
+        .set({
+          status: "completed",
+          endedAt: current,
+          publicKey: "ab".repeat(32),
+          lifecyclePolicy: null,
+          capacityReleaseAt: deadline,
+        })
+        .where(eq(workflowRun.id, runId));
+      await leavePending();
+      const lifecycle = service();
+      expect(await lifecycle.reconcileNext()).toBe(true);
+      expect(await pendingIds()).toEqual([]);
+      expect(
+        (await lifecycle.getStatus(tenantId, runId))?.allocation?.status,
+      ).toBe("allocated");
+      current = new Date(current.getTime() + 1000);
+      expect(await lifecycle.reconcileNext()).toBe(false);
+      current = deadline;
+      expect(await lifecycle.reconcileNext()).toBe(true);
+      expect(
+        (await lifecycle.getStatus(tenantId, runId))?.allocation?.status,
+      ).toBe("releasing");
+    });
+
+    test("retention waits quietly while disconnected and resumes on a current connection", async () => {
+      await h.db
+        .update(workflowRun)
+        .set({
+          status: "completed",
+          endedAt: current,
+          publicKey: "ab".repeat(32),
+          lifecyclePolicy: null,
+        })
+        .where(eq(workflowRun.id, runId));
+      let connected = false;
+      let kept = false;
+      let requests = 0;
+      const lifecycle = service({
+        retentionRouter: {
+          getRetentionCandidates: () =>
+            connected && !kept
+              ? [{ allocationId, generation: 1, sidecarId: "sidecar" }]
+              : [],
+          holdsAllocatedBinding: () => connected,
+          getAllocationRetention: () => (kept ? "kept" : undefined),
+          retainAllocation: async () => {
+            expect(connected).toBe(true);
+            requests += 1;
+            kept = true;
+            return "kept";
+          },
+        },
+      });
+      expect(await lifecycle.reconcileNext()).toBe(false);
+      expect(requests).toBe(0);
+      connected = true;
+      current = new Date(current.getTime() + 1000);
+      expect(await lifecycle.reconcileNext()).toBe(true);
+      expect(requests).toBe(1);
+      connected = false;
+      kept = false;
+      await leavePending();
+      current = new Date(current.getTime() + 1000);
+      expect(await lifecycle.reconcileNext()).toBe(true);
+      expect(await pendingIds()).toEqual([]);
+      expect(requests).toBe(1);
+    });
+
+    test("retention scheduling ignores a candidate for an older generation", async () => {
+      await h.db
+        .update(workflowRun)
+        .set({
+          status: "completed",
+          endedAt: current,
+          publicKey: "ab".repeat(32),
+          lifecyclePolicy: null,
+        })
+        .where(eq(workflowRun.id, runId));
+      let generation = 0;
+      let requests = 0;
+      const lifecycle = service({
+        retentionRouter: {
+          getRetentionCandidates: () => [
+            { allocationId, generation, sidecarId: "sidecar" },
+          ],
+          holdsAllocatedBinding: () => true,
+          getAllocationRetention: () => undefined,
+          retainAllocation: async (target) => {
+            expect(target.generation).toBe(1);
+            requests += 1;
+            return "kept";
+          },
+        },
+      });
+      expect(await lifecycle.reconcileNext()).toBe(false);
+      expect(requests).toBe(0);
+      generation = 1;
+      current = new Date(current.getTime() + 1000);
+      expect(await lifecycle.reconcileNext()).toBe(true);
+      expect(requests).toBe(1);
     });
 
     test("a finished deployment without a lifecycle policy keeps its capacity until an explicit release", async () => {
@@ -934,7 +1549,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const destroyed: string[] = [];
       const reconciler = createSidecarAllocationReconciler({
-        allocationStore: createSidecarAllocationStore(h.db),
+        allocationStore: createSidecarAllocationStore(h.db, {
+          getRetainedIncarnations: () => [],
+        }),
         plugins: createSidecarPluginRegistry({
           provisioners: [
             {
@@ -956,6 +1573,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         }),
         router: {
           getCleanupConnection: () => undefined,
+          waitForSidecarInventory: async () => undefined,
           async undeployAllocation() {
             throw new Error("This test must not request sidecar cleanup");
           },
@@ -1030,6 +1648,38 @@ describe.skipIf(!harnessDbEnvAvailable())(
           ?.generation,
       ).toBe(1);
     });
+
+    test.each([
+      [SIDECAR_CLEANUP_RETRY_EXHAUSTED_FAILURE_CODE, "cleanup_exhausted"],
+      [SIDECAR_CLEANUP_DISCONNECT_TIMEOUT_FAILURE_CODE, "cleanup_disconnected"],
+    ] as const)(
+      "reports cleanup failure %s without resetting its budget",
+      async (failureCode, result) => {
+        await h.db
+          .update(workflowRun)
+          .set({ status: "failed", endedAt: current })
+          .where(eq(workflowRun.id, runId));
+        await h.db
+          .update(sidecarAllocation)
+          .set({
+            status: "destroy_failed",
+            failureCode,
+            destroyAttempts: 10,
+            nextAttemptAt: null,
+          })
+          .where(eq(sidecarAllocation.id, allocationId));
+        expect(await service().releaseCapacity(tenantId, runId)).toBe(result);
+        expect(
+          await h.db.query.sidecarAllocation.findFirst({
+            where: eq(sidecarAllocation.id, allocationId),
+          }),
+        ).toMatchObject({
+          status: "destroy_failed",
+          destroyAttempts: 10,
+          nextAttemptAt: null,
+        });
+      },
+    );
 
     test("surfaces permanent cleanup failure without pretending it was requeued", async () => {
       await h.db
@@ -1554,7 +2204,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
         externalRef: string;
       }>();
       let destroyed = false;
-      const allocationStore = createSidecarAllocationStore(h.db);
+      const allocationStore = createSidecarAllocationStore(h.db, {
+        getRetainedIncarnations: () => [],
+      });
       const reconciler = createSidecarAllocationReconciler({
         allocationStore,
         plugins: createSidecarPluginRegistry({
@@ -1578,6 +2230,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         }),
         router: {
           getCleanupConnection: () => undefined,
+          waitForSidecarInventory: async () => undefined,
           async undeployAllocation() {
             throw new Error("This test must not request sidecar cleanup");
           },
@@ -1843,6 +2496,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         .where(eq(sidecarAllocation.id, allocationId));
       expect(
         await createSidecarAllocationStore(h.db).beginUnrecoverableRelease({
+          expectedStatus: "allocated",
           allocationId,
           expectedGeneration: 1,
           expectedLeaseId: "lease",

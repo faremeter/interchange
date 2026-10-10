@@ -101,16 +101,76 @@ itself: every workflow child runs as the sidecar's OS user over its data
 directory, so work that shares one can read each other's keys and run state,
 and any child can read the sidecar's own environment, its Hub token and
 credential encryption key included. A provisioner that declares
-`isolation:workload` does not share a sidecar. A sidecar hosts at most
-128 deployments, the most its `hello` can report: the Hub treats placing
-another on a full sidecar like any placement it cannot accept, and the sidecar
-refuses a deploy past it. A sidecar that restarts with more run records than
-that, such as those of self-terminated deployments the Hub has since failed,
-restores only up to the limit and keeps the rest unspawned. It goes through
-the records in a fixed order, so a boot over the same records leaves out the
-same ones. It reports each of them stopped after every `welcome`, outside the
-`hello`: the Hub fails a current deployment left out and undeploys a stale
-one, which deletes its run record.
+`isolation:workload` does not share a sidecar.
+
+### Active and retained capacity
+
+A sidecar reserves at most 128 active deployments and keeps at most 256
+retained records. Starting, running, stopped-but-unconfirmed, and cleanup copies
+whose removal is unconfirmed keep their reservation. Confirmed removal frees the
+active slot even when releasing the provider's hold is still pending or failed.
+The complete `hello` reports both pools,
+up to 384 records; `welcome` routes at most 128. Restart resumes active records without stopped or teardown marks and leaves
+retained records unspawned.
+
+For a terminal run, the Hub requests `workflow.control` with `action: retain`.
+A reconnect reporting a terminal copy live triggers this request immediately
+after welcome; the lifecycle sweep shares an in-flight request and retries failures.
+The sidecar stops execution and durably records `retention: kept` before
+acknowledging the freed active slot. Reconnect replays that decision in hello.
+The lifecycle sweep requests retention in the background, with at most eight
+requests in flight per sidecar and one per allocation. Copies already awaiting
+a request or waiting for room on their sidecar are excluded from later retention
+scans. A slow sidecar does not consume another sidecar's request slots. Expiry,
+accepted-history recovery, and confirmed retention refusals remain eligible.
+Waiting for a retention acknowledgement does not hold a lifecycle worker; a
+later sweep acts on a refusal.
+The Hub matches confirmation to the allocation's accepted generation and counts
+unconfirmed copies conservatively. Admission and probe adoption share the same
+sidecar lock, so simultaneous placements cannot reserve the same last slot.
+Provisioner holds continue to own both active and retained copies until release.
+
+New placements and probe adoption are blocked while the sidecar's inventory is
+unknown, including during reconnect. They wait for a complete hello outside any
+database transaction, then repeat the locked capacity check. The connection
+deadline is shared across retries; probe adoption expiry follows probe cleanup.
+Existing workflows and cleanup continue during the wait.
+Reused placements release their reconciliation slot while waiting and resume
+the accepted provisioner result on the same Hub without repeating `ensure`.
+Inventory must arrive within the original connection deadline. While that Hub
+still holds the accepted result, expiry fails the deployment and releases its
+provider hold instead of starting another placement. A timely hello can still be
+used by a delayed reconciliation claim. A Hub restart loses that in-memory result
+and uses the existing interrupted-provisioning recovery, which may replace the
+placement.
+
+When the kept pool is full, the sidecar durably records `retention: refused`
+for the newly stopped copy and logs an error. Existing retained copies stay.
+The Hub finishes recovering accepted history, records
+`sidecar_retention_limit_exceeded` on the allocation, and releases the copy
+without changing its workflow outcome. A cleanup failure can replace the
+allocation reason, logging the prior reason before doing so. Successful cleanup
+after a disconnect timeout clears that timeout; the prior allocation reason
+remains in the logs. History still only on that sidecar can
+be lost with the copy, as under ordinary release. The sidecar's refusal survives
+retry and restart even if a kept slot becomes available later.
+
+An uncertain marker write keeps its reservations; failed deletion keeps the
+copy counted until removal is durable. Unconfirmed retention writes do not free
+active capacity. Recovery of history already accepted by the Hub is retried
+under the existing release policy; retention does not import later sidecar commits.
+
+Retain confirms the durable copy after the run is terminal. The Hub's existing
+terminal-history cutoff still applies: it waits for earlier receives to settle,
+then treats the history already accepted as final. Later sidecar commits remain
+local and are not imported into an ended run. A live workflow stop still waits
+for the worker's reported history before recording the terminal outcome.
+
+Kept copies with confirmed finality are skipped until release or accepted-history
+recovery is due. Failed retain requests back off from five seconds to five
+minutes, without extending the release deadline. Disconnected copies wait for
+reconnect; their existing release and disconnect policies still apply.
+Deployment-record durability requires the [sidecar storage guarantees](../apps/sidecar/README.md).
 
 Work placed on a sidecar a provisioner already runs gets the same 2 minutes to
 connect as a new sidecar, even while that sidecar is restarting: after that a
@@ -182,8 +242,10 @@ sidecar cleanup failure still spends an attempt while the provider is missing.
 Provider and sidecar failures share `maxCleanupAttempts` (10 by default).
 Exhaustion records `destroy_failed` with `sidecar_cleanup_retry_exhausted` and
 stops polling. Exhaustion and permanent provider rejections both keep a cleanup
-binding and generation fence for inventory reconciliation. Neither reconnect nor Hub restart reopens them, and their reported copies
-are not removed through the hello orphan-cleanup path. A copy whose removal is confirmed does not occupy an active slot; the failed provider
+binding and generation fence for inventory reconciliation, including retained-copy
+proofs. Neither reconnect nor Hub restart reopens them, and their reported copies
+are not removed through the hello orphan-cleanup path. A copy whose removal or
+retained storage is confirmed does not occupy an active slot; the failed provider
 obligation remains recorded independently. Unconfirmed copies keep their active
 reservation. Both failures require operator recovery; there is no in-product
 action to retry cleanup or clear an unconfirmed reservation. Reconnects can
