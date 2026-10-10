@@ -233,7 +233,7 @@ export function deployReply(
           requestId,
           agentAddress: address,
           generation,
-          error: answer.error,
+          error: { code: "deployment_failed", message: answer.error },
         },
   );
 }

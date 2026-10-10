@@ -10,6 +10,7 @@ import { getLogger } from "@intx/log";
 import type { HubTransport } from "@intx/mail-memory";
 import { type } from "arktype";
 import {
+  DeploymentRejectedError,
   fitDeploymentError,
   Generation,
   HubFrame,
@@ -234,13 +235,23 @@ export function answerMalformedRequestFrame(
   ) {
     const generation = Generation(envelope.generation);
     if (generation instanceof type.errors) return false;
-    send({
-      type: lifecycleError,
+    const correlation = {
       requestId: envelope.requestId,
       agentAddress: envelope.agentAddress,
       generation,
-      error: fitDeploymentError(`malformed ${frameType} frame: ${summary}`),
-    });
+    };
+    const message = fitDeploymentError(
+      `malformed ${frameType} frame: ${summary}`,
+    );
+    send(
+      lifecycleError === "agent.deploy.error"
+        ? {
+            type: lifecycleError,
+            ...correlation,
+            error: { code: "deployment_failed", message },
+          }
+        : { type: lifecycleError, ...correlation, error: message },
+    );
     return true;
   }
   if (
@@ -1270,7 +1281,13 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       reply({
         type: "agent.deploy.error",
         ...answering,
-        error: fitDeploymentError(message),
+        error: {
+          code:
+            err instanceof DeploymentRejectedError
+              ? err.code
+              : "deployment_failed",
+          message: fitDeploymentError(message),
+        },
       });
     }
   }

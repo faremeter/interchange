@@ -10,11 +10,15 @@ import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import { projectLiveToInert } from "@intx/workflow";
 import {
   DEFAULT_SIDECAR_CAPACITY,
+  DeploymentRejectedError,
   type AgentDeployFrame,
   WorkflowProjectionDefinition,
 } from "@intx/types/sidecar";
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
-import { sessionAsset as sessionAssetTable } from "@intx/db/schema";
+import {
+  sessionAsset as sessionAssetTable,
+  sidecarAllocation,
+} from "@intx/db/schema";
 import type { DB, SidecarAllocation } from "@intx/db";
 import { generateId } from "@intx/hub-common";
 import { createApprovalSet, deriveRunAddress } from "@intx/workflow-deploy";
@@ -1410,25 +1414,131 @@ describe("deployCodeSourcedWorkflow", () => {
     }),
   } as unknown as DB["db"];
 
-  async function capturePreparedDeployError(failure: Error): Promise<unknown> {
+  async function capturePreparedDeployError(
+    failure: Error,
+    cancelled = false,
+    reserve = false,
+    rejection: "recorded" | "missing" | "throws" = "recorded",
+  ) {
+    const controller = new AbortController();
+    const sidecarRouter = createMockRouter();
     const allocationRouter = createMockAllocationRouter();
-    allocationRouter.sendAgentDeployToAllocation = async () => {
+    const events: string[] = [];
+    const writes: Record<string, unknown>[] = [];
+    const row: typeof sidecarAllocation.$inferSelect = {
+      id: "alloc-test",
+      anchorRunId: ANCHOR_RUN_ID,
+      tenantId: TENANT,
+      provisionerId: "test",
+      provisionerApiVersion: 2,
+      provisionerBindingFingerprint: "test:v1",
+      adapterManifestDigest: "1".repeat(64),
+      sidecarId: "sc-test",
+      status: "allocated",
+      generation: 1,
+      ensureAcceptedGeneration: 1,
+      externalRef: null,
+      nextAttemptAt: null,
+      reconciliationLeaseId: "lease-test",
+      reconciliationLeaseExpiresAt: null,
+      initializationLeaseId: null,
+      ensureAttempts: 1,
+      destroyAttempts: 0,
+      deploymentCleanupConfirmed: false,
+      providerHoldReleased: false,
+      connectDeadline: null,
+      maxDisconnectedMs: 900_000,
+      firstDeployFailedAt: null,
+      failureCode: null,
+      failureMessage: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const tx = {
+      select: () => ({
+        from: () => ({
+          where: () =>
+            Object.assign(Promise.resolve([]), {
+              for: async () => [{ id: row.id }],
+              limit: async () => [],
+            }),
+        }),
+      }),
+      update: (table: unknown) => ({
+        set: (values: Record<string, unknown>) => ({
+          where: () => ({
+            returning: async () => {
+              if (table !== sidecarAllocation) return [];
+              if (values.status === "releasing" && rejection === "throws")
+                throw new Error("Database unavailable");
+              if (values.status === "releasing" && rejection === "missing")
+                return [];
+              writes.push(values);
+              return [
+                values.status === "releasing"
+                  ? {
+                      ...row,
+                      status: "releasing",
+                      generation: 2,
+                      initializationLeaseId: null,
+                      failureCode: "sidecar_deployment_rejected",
+                      failureMessage: failure.message,
+                    }
+                  : row,
+              ];
+            },
+          }),
+        }),
+      }),
+    };
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- transaction double checks session hand-off ordering; DB tests cover the store's SQL and atomicity
+    const db = {
+      ...CAPTURING_DB,
+      transaction: async (run: (handle: typeof tx) => Promise<unknown>) => {
+        const result = await run(tx);
+        if (writes.some(({ status }) => status === "releasing"))
+          events.push("rejection committed");
+        return result;
+      },
+    } as unknown as DB["db"];
+    const settle = sidecarRouter.noteSenderDeploySettled;
+    sidecarRouter.noteSenderDeploySettled = (...args) => {
+      events.push("sender settled");
+      settle(...args);
+    };
+    allocationRouter.fenceAllocation = () => {
+      events.push("allocation fenced");
+    };
+    allocationRouter.sendAgentDeployToAllocation = async (
+      _target,
+      _address,
+      _config,
+      _workflow,
+      _signal,
+      beforeSend,
+    ) => {
+      if (reserve) {
+        if (beforeSend === undefined)
+          throw new Error("Expected initialization gate");
+        await beforeSend();
+      }
+      if (cancelled) controller.abort(new Error("Initialization cancelled"));
       throw failure;
     };
     const preparedRepoStore = createMockRepoStore();
     preparedRepoStore.repoStore.resolveRef = async () => null;
     const service = createSessionService({
-      sidecarRouter: createMockRouter(),
+      sidecarRouter,
       sidecarAllocationRouter: allocationRouter,
       agentRepoStore: preparedRepoStore,
-      db: CAPTURING_DB,
+      db,
     });
     const { approval, projection, closure } = await makeApproveOutput([
       "inference.source:anthropic:mock-model",
     ]);
     if (!approval.ok) throw new Error("expected approval");
 
-    return service
+    const error = await service
       .deployPreparedCodeSourcedWorkflow({
         tenantId: TENANT,
         anchorRunId: ANCHOR_RUN_ID,
@@ -1440,11 +1550,19 @@ describe("deployCodeSourcedWorkflow", () => {
         allocationTarget: { allocationId: "alloc-test", generation: 1 },
         reconciliation: {
           leaseId: "lease-test",
-          signal: new AbortController().signal,
+          signal: controller.signal,
         },
         credentialCipher: createNoopCredentialCipher(),
       })
       .catch((error: unknown) => error);
+    return {
+      error,
+      events,
+      writes,
+      settlements: sidecarRouter.calls.filter(
+        (call) => call.method === "noteSenderDeploySettled",
+      ),
+    };
   }
 
   describe("deployPreparedCodeSourcedWorkflow", () => {
@@ -2149,7 +2267,7 @@ describe("deployCodeSourcedWorkflow", () => {
         const failure = Object.assign(new Error("deploy failed"), {
           frameSent,
         });
-        const error = await capturePreparedDeployError(failure);
+        const { error } = await capturePreparedDeployError(failure);
 
         expect(error).toBeInstanceOf(SessionLaunchError);
         if (!(error instanceof SessionLaunchError)) {
@@ -2164,8 +2282,63 @@ describe("deployCodeSourcedWorkflow", () => {
     test("does not classify an untagged pre-send failure as possibly live", async () => {
       const failure = new Error("allocation route unavailable");
 
-      expect(await capturePreparedDeployError(failure)).toBe(failure);
+      expect((await capturePreparedDeployError(failure)).error).toBe(failure);
     });
+
+    test.each([
+      { cancelled: false, reserve: false },
+      { cancelled: true, reserve: false },
+      { cancelled: false, reserve: true },
+      { cancelled: true, reserve: true },
+    ])(
+      "settles a proven rejection once when reserved=$reserve and cancelled=$cancelled",
+      async ({ cancelled, reserve }) => {
+        const failure = new DeploymentRejectedError(
+          "capacity_full",
+          "No active slot",
+        );
+        const { error, settlements, writes, events } =
+          await capturePreparedDeployError(failure, cancelled, reserve);
+        expect(error).toBe(failure);
+        expect(settlements).toHaveLength(cancelled && !reserve ? 0 : 1);
+        if (reserve) {
+          expect(writes).toHaveLength(2);
+          expect(writes[0]).toEqual({ initializationLeaseId: "lease-test" });
+          expect(writes[1]).toMatchObject({
+            status: "releasing",
+            initializationLeaseId: null,
+            failureCode: "sidecar_deployment_rejected",
+            failureMessage: failure.message,
+          });
+          expect(events).toEqual([
+            "rejection committed",
+            "allocation fenced",
+            "sender settled",
+          ]);
+          expect(settlements[0]?.args[1]).toEqual({ failed: failure.message });
+        }
+      },
+    );
+
+    test.each(["missing", "throws"] as const)(
+      "keeps a proven rejection when its record is %s",
+      async (rejection) => {
+        const failure = new DeploymentRejectedError(
+          "capacity_full",
+          "No active slot",
+        );
+        const { error, writes, events } = await capturePreparedDeployError(
+          failure,
+          false,
+          true,
+          rejection,
+        );
+        expect(error).toBe(failure);
+        expect(writes).toEqual([{ initializationLeaseId: "lease-test" }]);
+        expect(events).not.toContain("allocation fenced");
+        expect(events).not.toContain("rejection committed");
+      },
+    );
   });
 
   test("builds a self-consistent source-ref frame that binds to the gate's frozen hash and inert projection", async () => {

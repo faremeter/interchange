@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import { chunkPack } from "@intx/pack-transport";
 import type { RepoId } from "@intx/types/repo";
+import { DeploymentRejectedError } from "@intx/types/sidecar";
 import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 
 import {
@@ -438,6 +439,60 @@ describe("SidecarRouter allocation deploy transport", () => {
     expect(sent.requestId.length).toBeGreaterThan(0);
     router.handleClose(ws);
   });
+
+  test.each(["requestId", "generation", "socket"] as const)(
+    "only a correlated capacity rejection is definitive after a wrong %s reply",
+    async (mismatch) => {
+      const router = createAllocatedRouter();
+      const ws = await connectAllocated(router);
+      const deploy = router.sendAgentDeployToAllocation(
+        TEST_TARGET,
+        TEST_IDENTITY.workflowRunAddress,
+        TEST_CONFIG,
+      );
+      let settled = false;
+      const result = deploy.catch((error: unknown) => {
+        settled = true;
+        return error;
+      });
+      await tick();
+      const request = lastRequest(ws, "agent.deploy");
+      const reply = {
+        type: "agent.deploy.error",
+        agentAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: TEST_TARGET.generation,
+        requestId: request.requestId,
+        error: { code: "capacity_full", message: "No active slot" },
+      };
+      const wrongSocket = createMockWs();
+      router.handleOpen(wrongSocket);
+      try {
+        router.handleMessage(
+          mismatch === "socket" ? wrongSocket : ws,
+          JSON.stringify({
+            ...reply,
+            ...(mismatch === "requestId"
+              ? { requestId: "previous-request" }
+              : {}),
+            ...(mismatch === "generation"
+              ? { generation: TEST_TARGET.generation + 1 }
+              : {}),
+          }),
+        );
+        await tick();
+        expect(settled).toBe(false);
+        router.handleMessage(ws, JSON.stringify(reply));
+        const error = await result;
+        expect(error).toBeInstanceOf(DeploymentRejectedError);
+        expect(error).toMatchObject({ code: "capacity_full" });
+        expect(isDeployFrameFailure(error)).toBe(false);
+        expect(router.getRoutableAddresses()).toEqual([]);
+      } finally {
+        router.handleClose(wrongSocket);
+        router.handleClose(ws);
+      }
+    },
+  );
 
   for (const mismatch of ["requestId", "generation"] as const) {
     test(`ignores a deploy reply naming another ${mismatch}`, async () => {

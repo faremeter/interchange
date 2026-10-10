@@ -27,7 +27,10 @@ import {
   type CredentialCipher,
   type ResolvedWorkflowLifecyclePolicy,
 } from "@intx/types";
-import type { FrozenApprovalBundle } from "@intx/types/sidecar";
+import {
+  DeploymentRejectedError,
+  type FrozenApprovalBundle,
+} from "@intx/types/sidecar";
 import type { HarnessConfig } from "@intx/types/runtime";
 import type { ToolPackagePin } from "@intx/types/tool-packages";
 import type { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
@@ -943,10 +946,10 @@ export function createWorkflowAllocationService({
         credentialCipher,
       });
     } catch (error) {
-      // A deploy frame the sidecar may have received leaves the deploy
-      // uncertain, and a lost lease ends this attempt; the reconciler handles
-      // both. Anything else failed before the sidecar ran the deployment.
+      // Keep capacity refusals terminal and leave uncertain deploys and lost
+      // leases to reconciliation. Only other pre-deploy failures may retry.
       if (
+        error instanceof DeploymentRejectedError ||
         (error instanceof SessionLaunchError && error.leakedAgent) ||
         reconciliation.signal.aborted
       )
