@@ -337,9 +337,9 @@ function commitDurable(
 // Called at a suspension boundary AFTER buffering the suspension
 // marker (`SignalAwaited`/`TimerSet`) so the marker -- and everything
 // before it in the segment -- is durable BEFORE the run parks. The
-// out-of-process scheduler tails the durable `TimerSet`; resume after
-// a crash-while-suspended reconstructs the awaiting state from the
-// durable log. A buffered suspension marker that never flushed would
+// host scheduler tails the durable `TimerSet` and still numbers
+// `TimerFired` from that tip; resume after a crash-while-suspended
+// reconstructs the awaiting state from the durable log. A buffered suspension marker that never flushed would
 // be lost on a park, so this flush is load-bearing, not an
 // optimisation knob.
 async function flush(env: WorkflowRuntimeEnv, runId: string): Promise<void> {
@@ -4049,9 +4049,10 @@ async function waitForTimer(
   // the scheduler-committed `TimerFired`. Flush the buffered segment
   // (the `TimerSet` -- and, on the retry path, the preceding
   // `StepFailed`/`AttemptScheduled`) to durable storage BEFORE
-  // computing `subscribeFromSeq` and subscribing, so the out-of-process
-  // scheduler can tail the durable `TimerSet` and a crash-while-waiting
-  // leaves a resumable pre-suspension log.
+  // computing `subscribeFromSeq` and subscribing, so the scheduler can
+  // tail the durable `TimerSet` and a crash-while-waiting leaves a
+  // resumable pre-suspension log. The scheduler still numbers
+  // `TimerFired` from that durable tip.
   await flush(env, runId);
   const subscribeFromSeq = (await reloadState(env, runId)).lastSeq + 1;
   const ac = new AbortController();
@@ -4799,10 +4800,11 @@ async function parkOnSignalResult(
   // (and, when a timeout is set, tail the durable log for the
   // scheduler-committed `TimerFired`). Flush the buffered
   // `SignalAwaited` (+ `TimerSet`) to durable storage BEFORE parking so
-  // (a) the out-of-process scheduler can tail the durable `TimerSet`
-  // and arm the timeout, (b) a crash-while-suspended leaves a
-  // complete pre-suspension log that resume reconstructs the
-  // awaiting-signal state from, and (c) the control-plane suspension is
+  // (a) the scheduler can tail the durable `TimerSet` and arm the
+  // timeout (it still numbers `TimerFired` from that tip), (b) a
+  // crash-while-suspended leaves a complete pre-suspension log that
+  // resume reconstructs the awaiting-signal state from, and (c) the
+  // control-plane suspension is
   // durable in the log before the host is notified below, so the hub is
   // never told about a correlation the log cannot reconstruct on resume.
   // `subscribeFromSeq` above was computed from the in-memory tip; the

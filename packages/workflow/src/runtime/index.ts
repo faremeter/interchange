@@ -41,7 +41,12 @@ export {
   type LoopIterationCursor,
   type OccurrenceReattach,
 } from "./run";
-export { withRunCommitBarrier } from "./commit-chain";
+export {
+  commitBuffered,
+  dropChain,
+  reloadState,
+  withRunCommitBarrier,
+} from "./commit-chain";
 
 export { createSuspendableChildHandle } from "./suspendable-child-handle";
 

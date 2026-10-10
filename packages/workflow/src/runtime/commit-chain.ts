@@ -29,14 +29,15 @@
 // Because the seq the chain assigns and every `reloadState` caller's
 // next-seq computation must account for buffered-but-unflushed
 // events, `reloadState` folds the durable log together with the
-// pending buffer. The buffer is only ever non-empty for events the
-// current runtime process committed synchronously since the last
-// flush; the run body flushes before it parks (so an external writer
-// -- a separate-process scheduler committing `TimerFired`, or a
-// control-plane `cancel`) only ever advances the durable log while
-// the buffer is empty. `commit` (immediate) flushes any pending
-// buffer before its own event so a buffered run body and an external
-// immediate writer never compute a colliding seq.
+// pending buffer. The buffer holds events this process validated
+// since the last flush. A sibling primitive can buffer another event
+// after a park flush, so the buffer is not empty just because one
+// step has parked. Signal delivery and a control-plane cancel take
+// `withRunCommitBarrier`, which flushes that buffer before their own
+// write. The host scheduler still numbers `TimerFired` from the
+// durable tip and tails the durable `TimerSet`. `commit` (immediate)
+// flushes any pending buffer before its own event so a buffered run
+// body and an immediate writer never compute a colliding seq.
 
 import {
   applyEvent,
