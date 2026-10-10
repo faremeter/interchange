@@ -46,7 +46,10 @@ import {
   dropChain,
   flushChain,
   isRepoWriteFailure,
+  flushFailureCause,
+  isRunFlushFailure,
   markRepoWriteFailure,
+  whenRunFlushFails,
   reloadState as reloadStateInChain,
   runAfterDiscardingBuffer,
 } from "./commit-chain";
@@ -396,6 +399,7 @@ async function appendEvents(
   events: readonly WorkflowEvent[],
   next: RunState,
   cause: unknown,
+  settleCancelling = true,
 ): Promise<RunResult> {
   try {
     await env.repoStore.appendBatch(runId, events);
@@ -403,6 +407,15 @@ async function appendEvents(
     const again = await durableState(env, runId);
     if (isTerminalRunPhase(again.phase)) {
       return resultFromDurableTerminal(env, runId, again);
+    }
+    // A cancel written on the supervisor store can land while this
+    // append is in flight. The phase is then `cancelling` and nothing
+    // in the body is left to record `RunCancelled`. One attempt does.
+    // That attempt appends with `settleCancelling` false, so a second
+    // failure rejects instead of recursing for as long as the store
+    // keeps failing.
+    if (settleCancelling && again.phase === "cancelling") {
+      return appendCancellingTerminal(env, runId, again, cause);
     }
     rethrowOriginal(cause, failure);
   }
@@ -455,7 +468,7 @@ async function appendCancellingTerminal(
     }
     rethrowOriginal(cause, failure);
   }
-  return appendEvents(env, runId, built.events, built.next, cause);
+  return appendEvents(env, runId, built.events, built.next, cause, false);
 }
 
 async function settleThrownBody(
@@ -977,12 +990,34 @@ async function executeRunBody(
   // this map to abort in-flight cancel-mode steps when drain fires
   // after the step was already scheduled.
   const stepAborts = new Map<string, AbortController>();
+  // A failed flush drops its batch and the step runner rejects with
+  // that same error. The loop below would otherwise treat the
+  // rejection as a settled step and schedule the step again, or wait
+  // forever on a sibling that is already parked. Remember the first
+  // error and rethrow it once every in-flight step has stopped.
+  let repoWriteFailure: unknown;
+  // One waiter for the whole loop. A flush that already failed resolves
+  // it immediately, so the next race observes it without a new registration.
+  const flushFailed = whenRunFlushFails(runId);
+  async function throwRememberedWriteFailure(): Promise<void> {
+    if (repoWriteFailure === undefined) {
+      repoWriteFailure = flushFailureCause(runId);
+    }
+    const cause = repoWriteFailure;
+    if (cause === undefined) return;
+    for (const controller of stepAborts.values()) {
+      if (!controller.signal.aborted) controller.abort();
+    }
+    await Promise.allSettled(stepPromises.values());
+    throw cause;
+  }
 
   // Tick loop: schedule everything ready, await any in-flight to
   // settle, repeat until done. Cancellation aborts every in-flight
   // executor; we still loop to commit `CancelPropagated` and the
   // terminal `RunCancelled`.
   while (!isRunDone(definition, state)) {
+    await throwRememberedWriteFailure();
     if (cancelController.signal.aborted && state.phase !== "cancelling") {
       state = await reloadState(env, runId);
     }
@@ -1030,7 +1065,11 @@ async function executeRunBody(
         .then((output) => {
           stepOutputs[primitive.id] = output;
         })
-        .catch(() => {
+        .catch((cause: unknown) => {
+          if (isRunFlushFailure(runId, cause)) {
+            if (repoWriteFailure === undefined) repoWriteFailure = cause;
+            return;
+          }
           // Errors are committed as StepFailed inside the primitive
           // runner; the main loop notices the failed phase on the
           // next state reload.
@@ -1073,6 +1112,7 @@ async function executeRunBody(
     }
 
     if (stepPromises.size === 0) {
+      await throwRememberedWriteFailure();
       if (ready.length === 0) {
         throw new Error(
           `workflow ${definition.id} run ${runId} stalled with no schedulable primitives`,
@@ -1081,16 +1121,21 @@ async function executeRunBody(
       // Promises were scheduled this tick but already completed
       // synchronously; reload state and continue.
       state = await reloadState(env, runId);
+      await throwRememberedWriteFailure();
       continue;
     }
 
-    // Wait for at least one in-flight primitive to settle. Each
-    // primitive's runner already swallows its own errors into
-    // StepFailed events so the race resolves cleanly.
-    await Promise.race(
-      Array.from(stepPromises.values()).map((p) => p.catch(() => undefined)),
-    );
+    // Wait for at least one in-flight primitive to settle. Step
+    // failures are already `StepFailed`. A parked step never settles,
+    // so the flush waiter is what wakes the loop when an external
+    // writer drops the buffer.
+    await Promise.race([
+      ...Array.from(stepPromises.values()).map((p) => p.catch(() => undefined)),
+      flushFailed,
+    ]);
+    await throwRememberedWriteFailure();
     state = await reloadState(env, runId);
+    await throwRememberedWriteFailure();
     for (const stepId of justSettled) {
       stepPromises.delete(stepId);
     }
@@ -1404,6 +1449,12 @@ async function runPrimitiveSafe(
       maxChildSpawnDepth,
     );
   } catch (cause) {
+    // Only this run's failed flush. A nested run stamps the same
+    // marker on its own append error, and that error rejects the
+    // child. The parent still records this step's failure; rethrowing
+    // the marker here would drop the buffered ChildCompleted and
+    // leave the parent without a terminal event.
+    if (isRunFlushFailure(runId, cause)) throw cause;
     let state = await reloadState(env, runId);
     const stepState = state.steps.get(primitive.id);
     if (!stepState) {

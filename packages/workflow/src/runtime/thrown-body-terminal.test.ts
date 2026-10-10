@@ -26,6 +26,7 @@ import {
   defineWorkflow,
   runtimeRun,
   type ActionInvoker,
+  type Primitive,
   type RepoStore,
   type WorkflowDefinition,
   type WorkflowEvent,
@@ -293,6 +294,171 @@ describe("a thrown run body", () => {
 
     expect(result.terminalStatus).toBe("failed");
     const durable = await inner.read(runId);
+    expect(durable.at(-1)?.kind).toBe("RunFailed");
+  });
+
+  test("rejects with the flush error when the park append fails", async () => {
+    const inner = createInMemoryRepoStore();
+    const boom = new Error("append failed");
+    // The sibling's first flush records RunStarted. The gate's park
+    // append then fails, and the gate is absent from the durable log,
+    // so the drive loop would schedule it again.
+    const siblingParked = Promise.withResolvers<undefined>();
+    const repoStore: RepoStore = {
+      ...inner,
+      async appendBatch(runId, events) {
+        if (events.some((event) => event.kind === "SignalAwaited")) {
+          siblingParked.resolve(undefined);
+          throw boom;
+        }
+        await inner.appendBatch(runId, events);
+      },
+    };
+    const invokeAction: ActionInvoker = async ({ handler }) => {
+      if (handler === "sibling") {
+        await siblingParked.promise;
+        return { output: { done: true } };
+      }
+      return { output: null };
+    };
+    const runId = "run-failed-park-flush";
+    const complete = runtimeRun(
+      collided,
+      buildEnv(
+        collided,
+        repoStore,
+        createInMemorySignalChannel(),
+        invokeAction,
+      ),
+      { runId },
+    ).complete;
+
+    await expect(complete).rejects.toBe(boom);
+    const durable = await inner.read(runId);
+    expect(durable.some((event) => event.kind === "RunFailed")).toBe(false);
+    expect(durable.some((event) => event.kind === "SignalAwaited")).toBe(false);
+  });
+
+  test("records RunCancelled when a cancel lands on the RunFailed append", async () => {
+    const inner = createInMemoryRepoStore();
+    const parked = whenKindAppended(inner, "SignalAwaited");
+    let awaitedReads = 0;
+    const repoStore: RepoStore = {
+      ...parked.repoStore,
+      async read(runId) {
+        const events = [...(await inner.read(runId))];
+        const last = events.at(-1);
+        if (last?.kind !== "SignalAwaited") return events;
+        awaitedReads += 1;
+        if (awaitedReads !== 3) return events;
+        const injected: WorkflowEvent = {
+          kind: "SignalReceived",
+          seq: last.seq + 1,
+          at: new Date(0).toISOString(),
+          signalName: "approve",
+          signalId: "sig-cancel-race",
+          payload: { ok: true },
+        };
+        await inner.append(runId, injected);
+        return [...events, injected];
+      },
+      async appendBatch(runId, events) {
+        const failed = events.find((event) => event.kind === "RunFailed");
+        if (failed !== undefined) {
+          await inner.append(runId, {
+            kind: "CancelRequested",
+            seq: failed.seq,
+            at: failed.at,
+            origin: "supervisor-drain",
+            reason: "drain timeout",
+          });
+          throw new Error("RunFailed append lost to cancel");
+        }
+        await parked.repoStore.appendBatch(runId, events);
+      },
+    };
+    const invokeAction: ActionInvoker = async ({ handler }) => {
+      if (handler === "sibling") {
+        await parked.happened;
+        return { output: { done: true } };
+      }
+      return { output: null };
+    };
+    const runId = "run-cancel-during-run-failed";
+    const result = await runtimeRun(
+      collided,
+      buildEnv(
+        collided,
+        repoStore,
+        createInMemorySignalChannel(),
+        invokeAction,
+      ),
+      { runId },
+    ).complete;
+
+    expect(result.terminalStatus).toBe("cancelled");
+    const durable = await inner.read(runId);
+    expect(durable.at(-1)?.kind).toBe("RunCancelled");
+    expect(durable.some((event) => event.kind === "RunFailed")).toBe(false);
+  });
+
+  test("a child flush failure still records the parent's terminal event", async () => {
+    const inner = createInMemoryRepoStore();
+    const boom = new Error("child append failed");
+    const parentRunId = "run-parent-of-failed-child";
+    const repoStore: RepoStore = {
+      ...inner,
+      async appendBatch(runId, events) {
+        if (runId !== parentRunId) throw boom;
+        await inner.appendBatch(runId, events);
+      },
+    };
+    const childBody = defineWorkflow({
+      id: "child-body",
+      trigger: { type: "manual" },
+      steps: { work: action({ handler: "work" }) },
+    });
+    const spawn: Primitive = {
+      kind: "childWorkflow",
+      id: "",
+      definition: { ref: "child-ref" },
+      drainBehavior: "cancel",
+    };
+    const parent = defineWorkflow({
+      id: "parent-of-failed-child",
+      trigger: { type: "manual" },
+      steps: { spawn },
+    });
+    const invokeAction: ActionInvoker = async () => ({ output: null });
+    const env = buildEnv(
+      parent,
+      repoStore,
+      createInMemorySignalChannel(),
+      invokeAction,
+    );
+    env.newId = (prefix) => `${prefix}-nested-flush`;
+    env.spawnChild = async (args) => {
+      const childEnv = buildEnv(
+        childBody,
+        repoStore,
+        createInMemorySignalChannel(),
+        invokeAction,
+      );
+      const result = await runtimeRun(childBody, childEnv, {
+        runId: args.childRunId,
+        triggerPayload: args.input,
+        depth: args.depth,
+        maxChildSpawnDepth: args.maxChildSpawnDepth,
+      }).complete;
+      return { terminalStatus: result.terminalStatus };
+    };
+
+    const result = await runtimeRun(parent, env, { runId: parentRunId })
+      .complete;
+
+    expect(result.terminalStatus).toBe("failed");
+    const durable = await inner.read(parentRunId);
+    expect(durable.some((event) => event.kind === "ChildCompleted")).toBe(true);
     expect(durable.at(-1)?.kind).toBe("RunFailed");
   });
 });
