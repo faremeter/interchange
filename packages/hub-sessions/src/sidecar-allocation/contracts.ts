@@ -156,9 +156,11 @@ export type SidecarCredentials = {
  * unrouted, its local state kept until the Hub releases the deployment, so a
  * reconnect does not cut short the retention the deployment's policy sets. A
  * copy of a run the Hub ended is undeployed, since a restart that lost its
- * stopped mark may be running that run again. `cleanup` only accepts releasing
- * allocations. Their registration keeps the cleanup connection alive but
- * grants none of the running or retained copy's rights.
+ * stopped mark may be running that run again. `cleanup` accepts releasing allocations and releases
+ * whose retry budget or cleanup disconnect deadline expired. Their connection
+ * grants no workflow routes and preserves inventory. A reconnect can resume a
+ * disconnect timeout's cleanup, preserving its attempts and terminal workflow outcome. Permanent
+ * provider refusals do not reopen, and replacing allocations need no copy cleanup.
  */
 export type SidecarIdentityUse =
   | "registration"

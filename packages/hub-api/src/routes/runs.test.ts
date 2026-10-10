@@ -1209,6 +1209,22 @@ describe("workflow lifecycle endpoints", () => {
     expect(calls).toEqual([[TENANT_ID, RUN_ID]]);
   });
 
+  test("exhausted cleanup reports the required intervention", async () => {
+    const app = createTestApp({
+      grants: [makeGrant({ action: "manage" })],
+      lifecycleService: lifecycleService({
+        releaseCapacity: async () => "cleanup_exhausted",
+      }),
+    });
+    const response = await app.request(`${runURL()}/capacity/release`, {
+      method: "POST",
+    });
+    expect(response.status).toBe(409);
+    const body = await response.text();
+    expect(body).toContain("Automatic cleanup retries are exhausted");
+    expect(body).toContain("operator intervention is required");
+  });
+
   test("permanent cleanup failure is visible rather than accepted as a retry", async () => {
     const app = createTestApp({
       grants: [makeGrant({ action: "manage" })],
@@ -1220,6 +1236,20 @@ describe("workflow lifecycle endpoints", () => {
       (await app.request(`${runURL()}/capacity/release`, { method: "POST" }))
         .status,
     ).toBe(409);
+  });
+
+  test("a cleanup disconnect timeout reports that reconnect can resume cleanup", async () => {
+    const app = createTestApp({
+      grants: [makeGrant({ action: "manage" })],
+      lifecycleService: lifecycleService({
+        releaseCapacity: async () => "cleanup_disconnected",
+      }),
+    });
+    const response = await app.request(`${runURL()}/capacity/release`, {
+      method: "POST",
+    });
+    expect(response.status).toBe(409);
+    expect(await response.text()).toContain("reconnect will resume cleanup");
   });
 
   test("read access can observe policy and deadlines without management access", async () => {

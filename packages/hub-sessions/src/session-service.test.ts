@@ -1839,7 +1839,10 @@ describe("deployCodeSourcedWorkflow", () => {
         if (reserve) {
           expect(result).toMatchObject({ publicKey: "completed-key" });
           expect(selections).toBe(2);
-          expect(writes.at(-1)).toEqual({ initializationLeaseId: null });
+          expect(writes.at(-1)).toEqual({
+            initializationLeaseId: null,
+            connectDeadline: null,
+          });
           expect(writes[1]).toMatchObject({ publicKey: "completed-key" });
         } else {
           expect(result).toMatchObject({ leakedAgent: false });

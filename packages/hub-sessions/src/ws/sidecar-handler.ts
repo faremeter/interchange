@@ -2593,7 +2593,7 @@ export function createSidecarRouter(
         { waitable: deployable.has(incarnation.address) },
       );
     }
-    const { attached } = attachBindings(ws, conn, bindings);
+    const { attached, added } = attachBindings(ws, conn, bindings);
     for (const { binding, error } of failed) {
       if (
         conn.bindings.get(binding.allocationId)?.generation ===
@@ -2659,7 +2659,14 @@ export function createSidecarRouter(
     welcomedSockets.add(ws);
     logger.info`Provisioned sidecar ${sidecarId} registered for ${attached.map((binding) => `${binding.kind} ${binding.allocationId} generation ${String(binding.generation)}`).join(", ")}`;
     // Replay can wait on database admission without delaying connection readiness.
-    await announceAttached(ws, attached);
+    // Newly attached cleanup bindings can wake pending attempts. Repeated
+    // hellos on this socket must not bypass the normal retry backoff.
+    await announceAttached(
+      ws,
+      attached.filter(
+        (binding) => binding.kind !== "cleanup" || added.includes(binding),
+      ),
+    );
     if (connections.get(ws) !== conn) return;
     for (const address of newlyRoutedAddresses) {
       await redeliverPendingMail(address, conn);

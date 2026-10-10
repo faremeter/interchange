@@ -1,4 +1,8 @@
 import {
+  SIDECAR_CLEANUP_RETRY_EXHAUSTED_FAILURE_CODE,
+  SIDECAR_CLEANUP_DISCONNECT_TIMEOUT_FAILURE_CODE,
+} from "@intx/db";
+import {
   afterAll,
   beforeAll,
   beforeEach,
@@ -259,6 +263,38 @@ describe.skipIf(!harnessDbEnvAvailable())(
         ensureAcceptedGeneration: 1,
       });
     }
+
+    test.each([
+      [SIDECAR_CLEANUP_RETRY_EXHAUSTED_FAILURE_CODE, "cleanup_exhausted"],
+      [SIDECAR_CLEANUP_DISCONNECT_TIMEOUT_FAILURE_CODE, "cleanup_disconnected"],
+    ] as const)(
+      "reports cleanup failure %s without resetting its budget",
+      async (failureCode, result) => {
+        await h.db
+          .update(workflowRun)
+          .set({ status: "failed", endedAt: current })
+          .where(eq(workflowRun.id, runId));
+        await h.db
+          .update(sidecarAllocation)
+          .set({
+            status: "destroy_failed",
+            failureCode,
+            destroyAttempts: 10,
+            nextAttemptAt: null,
+          })
+          .where(eq(sidecarAllocation.id, allocationId));
+        expect(await service().releaseCapacity(tenantId, runId)).toBe(result);
+        expect(
+          await h.db.query.sidecarAllocation.findFirst({
+            where: eq(sidecarAllocation.id, allocationId),
+          }),
+        ).toMatchObject({
+          status: "destroy_failed",
+          destroyAttempts: 10,
+          nextAttemptAt: null,
+        });
+      },
+    );
 
     test("the shared scheduler bounds expired runs to eight and refills a free slot independently", async () => {
       await expire();

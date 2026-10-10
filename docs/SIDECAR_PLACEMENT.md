@@ -147,10 +147,29 @@ replacement, or binding replacement capacity, resets the flag. Existing rows
 default to unconfirmed; a failed write never counts as confirmation, while a
 lost commit response can be recovered by reading the row on the next attempt.
 
-A permanent provider rejection records `destroy_failed`, stops reconciliation,
-and keeps a cleanup-only binding for inventory and operator recovery. Reconnect
-does not issue an untracked undeploy for such a copy. The active reservation
-remains only while removal is unconfirmed.
+When the provider has released its hold but cleanup still needs a disconnected
+sidecar, the allocation stays `releasing` without spending cleanup attempts.
+It waits until reconnect or a durable deadline based on `maxDisconnected`.
+An existing disconnect deadline for an initialized deployment survives release;
+otherwise the first observed cleanup wait starts the window. Repeated checks and
+Hub restarts do not extend it. A current reconnect clears the disconnect
+deadline with its reconciliation wake, so a later disconnection gets a new
+window even if the readiness or cleanup pass has not run yet. The initial
+deployment's first-connect deadline stays until initialization completes.
+
+Expiry records `sidecar_cleanup_disconnect_timeout`, logs an error, and keeps
+the reservation and cleanup binding. A returned cleanup connection moves only
+this failure back to `releasing`, preserving its attempt count. The workflow's
+terminal outcome stays unchanged and it regains no routes; the reconciler owns
+the acknowledged undeploy.
+The existing repair sweep retries a missed reconnect write for a parked release
+or a disconnect-timeout failure while the cleanup connection is present. A parked
+release is woken only while its deadline schedule and attempt count are unchanged
+and no active reconciliation lease owns it. Repeated notifications cannot reset the attempt budget
+or reopen exhaustion or permanent provider rejection. Failed provider
+calls and attempted undeploys still spend the retry budget, including a request
+whose connection disappears before its acknowledgement. Provider confirmation
+of removal completes cleanup even while the sidecar is disconnected.
 
 If the provisioner is missing from the Hub's plugin registry, or its version or
 binding differs from the allocation's recorded provider, the Hub logs that exact
@@ -160,7 +179,25 @@ matching provisioner returns and releases its hold. Connected-sidecar cleanup
 still runs independently, and its confirmation survives this wait; an actual
 sidecar cleanup failure still spends an attempt while the provider is missing.
 
+Provider and sidecar failures share `maxCleanupAttempts` (10 by default).
+Exhaustion records `destroy_failed` with `sidecar_cleanup_retry_exhausted` and
+stops polling. Exhaustion and permanent provider rejections both keep a cleanup
+binding and generation fence for inventory reconciliation. Neither reconnect nor Hub restart reopens them, and their reported copies
+are not removed through the hello orphan-cleanup path. A copy whose removal is confirmed does not occupy an active slot; the failed provider
+obligation remains recorded independently. Unconfirmed copies keep their active
+reservation. Both failures require operator recovery; there is no in-product
+action to retry cleanup or clear an unconfirmed reservation. Reconnects can
+accelerate pending attempts only while the retry budget remains.
+If neither undeploy nor provider destruction stopped the copy, it may remain
+running without Hub routes until cleanup resumes after a disconnect timeout
+or an operator stops it after another cleanup failure.
 Cleanup retries log warnings without replacing the allocation's release reason.
+Exhaustion and permanent rejection log errors and record the cleanup outcome on
+the allocation. When cleanup fails a live deployment, its original workflow or
+allocation reason takes precedence for the workflow failure. Dispatch abandonment
+caused by that failure records the cleanup error separately.
+Successful release after a reconnect clears the disconnect-timeout marker.
+Detailed cleanup history is kept in logs.
 
 ## Tenant policy
 

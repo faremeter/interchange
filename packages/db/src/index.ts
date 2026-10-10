@@ -80,6 +80,8 @@ export {
   createSidecarAllocationStore,
   SIDECAR_DEPLOYMENT_STOPPED_FAILURE_CODE,
   SIDECAR_CLEANUP_UNCONFIRMED_FAILURE_CODE,
+  SIDECAR_CLEANUP_RETRY_EXHAUSTED_FAILURE_CODE,
+  SIDECAR_CLEANUP_DISCONNECT_TIMEOUT_FAILURE_CODE,
   type BeginSidecarReleaseArgs,
   type BeginSidecarReplacementArgs,
   type BindInitialSidecarArgs,

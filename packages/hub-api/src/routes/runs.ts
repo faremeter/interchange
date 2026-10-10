@@ -673,13 +673,13 @@ export function createRunRoutes({
       tags: ["Runs"],
       summary: "Release workflow capacity",
       description:
-        "Durably requests release of a terminal top-level run's allocation. Poll the Location header for cleanup status. Permanent cleanup failures require operator intervention and return 409. Returns 503 while accepted run history cannot yet be reconciled; retry later.",
+        "Durably requests release of a terminal top-level run's allocation. Poll the Location header for cleanup status. Stopped cleanup returns 409: cleanup disconnect timeouts resume on reconnect; exhausted retries and permanent provider rejections require operator recovery. Reconnects and this request do not restart exhausted cleanup. Returns 503 while accepted run history cannot yet be reconciled; retry later.",
       responses: {
         202: { description: "Release requested" },
         204: { description: "Capacity already released or absent" },
         404: jsonResponse("Run not found", ErrorResponse),
         409: jsonResponse(
-          "Run is live or cleanup requires operator intervention",
+          "Run is live or automatic cleanup has stopped",
           ErrorResponse,
         ),
         503: jsonResponse(
@@ -713,11 +713,23 @@ export function createRunRoutes({
             "unavailable",
             "The run's accepted history is not reconciled yet; retry later",
           );
+        case "cleanup_exhausted":
+          return errorResponse(
+            c,
+            "conflict",
+            "Automatic cleanup retries are exhausted; operator intervention is required",
+          );
         case "cleanup_failed":
           return errorResponse(
             c,
             "conflict",
             "Capacity cleanup failed permanently; operator intervention is required",
+          );
+        case "cleanup_disconnected":
+          return errorResponse(
+            c,
+            "conflict",
+            "Cleanup timed out waiting for the sidecar; capacity remains reserved and reconnect will resume cleanup",
           );
         case "released":
           return c.body(null, 204);

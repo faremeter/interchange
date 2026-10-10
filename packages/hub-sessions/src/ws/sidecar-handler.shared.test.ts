@@ -377,6 +377,24 @@ describe("SidecarRouter allocation cleanup", () => {
     },
   );
 
+  test("a cleanup obligation announces one recovery opportunity per connection", async () => {
+    const { router } = createSharedRouter([cleanup]);
+    const connections: AllocatedSidecarTarget[] = [];
+    router.events.on("sidecar.allocated.connected", (event) => {
+      connections.push(event);
+    });
+    const ws = await connectForCleanup(router);
+    await router.syncSidecar(SIDECAR);
+    expect(connections).toEqual([target(cleanup)]);
+    sendHandshake(router, ws);
+    await router.syncSidecar(SIDECAR);
+    expect(connections).toHaveLength(1);
+    router.handleClose(ws);
+    const reconnected = await connectForCleanup(router);
+    await router.syncSidecar(SIDECAR);
+    expect(connections).toEqual([target(cleanup), target(cleanup)]);
+    router.handleClose(reconnected);
+  });
   test("a cleanup connection guard refuses to send on a replacement socket", async () => {
     const { router } = createSharedRouter([cleanup]);
     const original = await connectForCleanup(router);
