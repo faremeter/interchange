@@ -1,12 +1,13 @@
 // Resume contract: mid-map seed logs are unsupported and must surface
-// the limitation as `RuntimeResumeUnsupportedError` rather than
-// stalling with an opaque "no schedulable primitives" message.
+// the limitation as `RunFailed` carrying `RuntimeResumeUnsupportedError`'s
+// message, rather than stalling with an opaque "no schedulable
+// primitives" message or leaving the run live.
 //
 // The runtime's v1 resume path supports complete-or-cancelled seed
 // logs and seed logs aligned on step boundaries. A seed log that
 // stops mid-map (one inner item completed, the outer `map` step still
 // in-flight) has no way to re-arm without rebuilding the runMap inner
-// state; the runtime body declines and the host decides how to recover.
+// state. The runtime records that refusal as the run's terminal failure.
 
 import { describe, test, expect } from "bun:test";
 
@@ -21,7 +22,6 @@ import {
   defineWorkflow,
   map,
   runtimeRun,
-  RuntimeResumeUnsupportedError,
   step,
   type StepInvoker,
   type WorkflowEvent,
@@ -39,7 +39,7 @@ function makeAgent(id: string) {
 }
 
 describe("resume mid-map", () => {
-  test("a seed log that stops after one inner item rejects with RuntimeResumeUnsupportedError", async () => {
+  test("a seed log that stops after one inner item fails the run", async () => {
     const def = defineWorkflow({
       id: "midmap-resume",
       trigger: { type: "manual" },
@@ -92,11 +92,15 @@ describe("resume mid-map", () => {
       scheduler: createInMemoryScheduler({ repoStore: repoStore2, clock }),
       signalChannel: createInMemorySignalChannel(),
     };
-    await expect(
-      runtimeRun(def, env2, {
-        runId: result1.runId,
-        resumeFromEvents: trimmed,
-      }).complete,
-    ).rejects.toBeInstanceOf(RuntimeResumeUnsupportedError);
+    const resumed = await runtimeRun(def, env2, {
+      runId: result1.runId,
+      resumeFromEvents: trimmed,
+    }).complete;
+    expect(resumed.terminalStatus).toBe("failed");
+    const last = resumed.events.at(-1);
+    if (last?.kind !== "RunFailed") throw new Error("expected RunFailed");
+    expect(last.error.message).toContain(
+      "not supported by the in-process runtime",
+    );
   });
 });

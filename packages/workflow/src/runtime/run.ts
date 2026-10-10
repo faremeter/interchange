@@ -45,7 +45,10 @@ import {
   commitBuffered as commitBufferedToChain,
   dropChain,
   flushChain,
+  isRepoWriteFailure,
+  markRepoWriteFailure,
   reloadState as reloadStateInChain,
+  runAfterDiscardingBuffer,
 } from "./commit-chain";
 import type {
   RunResult,
@@ -61,10 +64,14 @@ import {
   assertSpawnDepthWithinLimit,
   resolveMaxChildSpawnDepth,
 } from "./child-depth";
-import { RuntimeResumeUnsupportedError } from "./errors";
+import {
+  EphemeralResumeSeedError,
+  RuntimeResumeUnsupportedError,
+} from "./errors";
 import { loopBodyRunId, scopedStepId, sectionBodyRunId } from "./step-scope";
 import { inlineBodyRef } from "../ontrigger-bodies";
 import {
+  applyEvent,
   controlParkKindOf,
   decideTerminalRunFlip,
   isTerminalRunPhase,
@@ -166,8 +173,8 @@ export interface RuntimeRunOptions {
  *      otherwise `in-flight` (a `childWorkflow`) is unsupported: the
  *      runtime body has no surface for re-arming the timer scheduler
  *      entry or the inner-map iteration state from the log alone, so it
- *      surfaces as `RuntimeResumeUnsupportedError` and the host
- *      (supervisor) owns the recovery decision.
+ *      throws `RuntimeResumeUnsupportedError`. That throw is recorded as
+ *      `RunFailed`, and the run is terminal.
  */
 export function runtimeRun(
   definition: WorkflowDefinition,
@@ -288,6 +295,12 @@ async function executeRun(
       cancelController,
       options,
     );
+  } catch (cause) {
+    // The body escaped. A nested `commitDurable` would wait on this
+    // settlement forever, so the terminal event is appended directly
+    // once the chain's current link finishes and the pending buffer
+    // is discarded. The buffer is what a folding read just rejected.
+    return await settleThrownBody(env, runId, cause);
   } finally {
     // Always drop the per-runId commit chain entry, even on a thrown
     // body, so long-running processes accumulating many workflows do
@@ -295,6 +308,187 @@ async function executeRun(
     // resume seeding or a stall guard.
     dropChain(runId);
   }
+}
+
+function thrownMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
+}
+
+async function durableState(
+  env: WorkflowRuntimeEnv,
+  runId: string,
+): Promise<RunState> {
+  return resumeFromLog(runId, await env.repoStore.read(runId));
+}
+
+function rethrowOriginal(cause: unknown, failure: unknown): never {
+  throw new Error(thrownMessage(cause), { cause: failure });
+}
+
+/**
+ * Child-cancel cascade plus `RunCancelled`, applied in memory. The
+ * caller appends the batch itself. `commit` from inside the settlement
+ * link waits on that link.
+ */
+function cancellingTerminalEvents(
+  state: RunState,
+  at: string,
+): { events: WorkflowEvent[]; next: RunState } {
+  const events: WorkflowEvent[] = [];
+  let current = state;
+  for (const [childRunId, childState] of state.children) {
+    if (childState.cancelRequested) continue;
+    if (childState.terminalStatus !== undefined) continue;
+    const event: WorkflowEvent = {
+      kind: "ChildCancelRequested",
+      seq: current.lastSeq + 1,
+      at,
+      childRunId,
+    };
+    current = applyEvent(current, event);
+    events.push(event);
+  }
+  const cancelled: WorkflowEvent = {
+    kind: "RunCancelled",
+    seq: current.lastSeq + 1,
+    at,
+  };
+  current = applyEvent(current, cancelled);
+  events.push(cancelled);
+  return { events, next: current };
+}
+
+/**
+ * The log is already terminal. Strict output resolution can still
+ * throw. Discovery skips a terminal log, so that throw would leave
+ * the host without the event. Unreadable outputs are omitted.
+ */
+async function resultFromDurableTerminal(
+  env: WorkflowRuntimeEnv,
+  runId: string,
+  state: RunState,
+): Promise<RunResult> {
+  try {
+    return await buildResultFromLog(env, runId, state);
+  } catch {
+    const events = await env.repoStore.read(runId);
+    const outputs: Record<string, unknown> = {};
+    for (const event of events) {
+      if (event.kind !== "StepCompleted") continue;
+      try {
+        outputs[event.stepId] = await env.blobs.resolveRef(event.output.ref);
+      } catch {
+        // This output is unreadable. Omit it.
+      }
+    }
+    return {
+      runId,
+      terminalStatus: decideTerminalRunFlip(state.phase),
+      outputs,
+      events,
+    };
+  }
+}
+
+async function appendEvents(
+  env: WorkflowRuntimeEnv,
+  runId: string,
+  events: readonly WorkflowEvent[],
+  next: RunState,
+  cause: unknown,
+): Promise<RunResult> {
+  try {
+    await env.repoStore.appendBatch(runId, events);
+  } catch (failure) {
+    const again = await durableState(env, runId);
+    if (isTerminalRunPhase(again.phase)) {
+      return resultFromDurableTerminal(env, runId, again);
+    }
+    rethrowOriginal(cause, failure);
+  }
+  return resultFromDurableTerminal(env, runId, next);
+}
+
+async function appendRunFailed(
+  env: WorkflowRuntimeEnv,
+  runId: string,
+  state: RunState,
+  cause: unknown,
+): Promise<RunResult> {
+  const at = env.clock().toISOString();
+  const failed: WorkflowEvent = {
+    kind: "RunFailed",
+    seq: state.lastSeq + 1,
+    at,
+    error: { message: thrownMessage(cause) },
+  };
+  let next: RunState;
+  try {
+    next = applyEvent(state, failed);
+  } catch (failure) {
+    const again = await durableState(env, runId);
+    if (isTerminalRunPhase(again.phase)) {
+      return resultFromDurableTerminal(env, runId, again);
+    }
+    if (again.phase === "cancelling") {
+      return appendCancellingTerminal(env, runId, again, cause);
+    }
+    rethrowOriginal(cause, failure);
+  }
+  return appendEvents(env, runId, [failed], next, cause);
+}
+
+async function appendCancellingTerminal(
+  env: WorkflowRuntimeEnv,
+  runId: string,
+  state: RunState,
+  cause: unknown,
+): Promise<RunResult> {
+  const at = env.clock().toISOString();
+  let built: { events: WorkflowEvent[]; next: RunState };
+  try {
+    built = cancellingTerminalEvents(state, at);
+  } catch (failure) {
+    const again = await durableState(env, runId);
+    if (isTerminalRunPhase(again.phase)) {
+      return resultFromDurableTerminal(env, runId, again);
+    }
+    rethrowOriginal(cause, failure);
+  }
+  return appendEvents(env, runId, built.events, built.next, cause);
+}
+
+async function settleThrownBody(
+  env: WorkflowRuntimeEnv,
+  runId: string,
+  cause: unknown,
+): Promise<RunResult> {
+  // The store rejected the write. The durable prefix is what recovery
+  // adopts; appending RunFailed here would hide that crash. A seeded
+  // resume that names blob refs on an ephemeral substrate is the same
+  // kind of refusal: the seed is still runnable once those blobs are
+  // present.
+  if (isRepoWriteFailure(cause) || cause instanceof EphemeralResumeSeedError) {
+    throw cause;
+  }
+  return runAfterDiscardingBuffer(runId, async () => {
+    const state = await durableState(env, runId);
+    if (isTerminalRunPhase(state.phase)) {
+      try {
+        return await buildResultFromLog(env, runId, state);
+      } catch (failure) {
+        // The seed is already terminal, and rebuilding its result failed
+        // (a fresh ephemeral substrate cannot resolve the seed's blob
+        // refs). Surface the error the body threw.
+        rethrowOriginal(cause, failure);
+      }
+    }
+    if (state.phase === "pending") throw cause;
+    if (state.phase === "cancelling") {
+      return appendCancellingTerminal(env, runId, state, cause);
+    }
+    return appendRunFailed(env, runId, state, cause);
+  });
 }
 
 // Intra-segment commit: validates the transition and assigns the seq
@@ -399,7 +593,14 @@ async function executeRunBody(
       }
       continue;
     }
-    await env.repoStore.append(runId, event);
+    try {
+      await env.repoStore.append(runId, event);
+    } catch (cause) {
+      // Same as a failed flush: settlement must not hide a write the
+      // store rejected.
+      markRepoWriteFailure(cause);
+      throw cause;
+    }
   }
 
   // Seed-contract guard, before any blob resolution. A resume that
@@ -419,9 +620,7 @@ async function executeRunBody(
       e.kind === "StepCompleted" && e.output.ref.startsWith("blob:"),
   );
   if (seedBlobRefs.length > 0 && env.blobs.ephemeral) {
-    throw new Error(
-      `resume requires the BlobSubstrate that recorded the seed log's blob refs (${String(seedBlobRefs.length)} blob output(s) present); the runLocal in-memory substrate is ephemeral and starts empty. Pass the originating env, or use a durable substrate.`,
-    );
+    throw new EphemeralResumeSeedError(seedBlobRefs.length);
   }
 
   // Establish canonical state from the durable log itself, not from the
@@ -467,9 +666,8 @@ async function executeRunBody(
   // it as a terminal `StepFailed`. Every OTHER non-terminal residual --
   // an `in-flight` coordination container (mid-`map`, `childWorkflow`),
   // or an `awaiting-signal`/`awaiting-timer` step -- still surfaces
-  // `RuntimeResumeUnsupportedError`: those have a live re-arming surface
-  // the host owns (rebuild the map state, re-park on a later signal), so
-  // declining honestly is correct there.
+  // `RuntimeResumeUnsupportedError`. The log alone cannot re-arm that
+  // step, so the throw is recorded as `RunFailed`.
   //
   // The pass runs whenever canonical state is `running`, whether the
   // residual arrived via a `resumeFromEvents` seed OR was adopted from a
@@ -558,12 +756,12 @@ async function executeRunBody(
         }
         continue;
       }
-      // Every other non-terminal residual keeps declining: the host owns
-      // the recovery decision (crash, alert, or redeploy).
+      // Every other non-terminal residual still throws. The throw is
+      // recorded as `RunFailed`.
       if (residual === "unsupported") {
         // `resumeResidualOf` returns this only for a non-terminal phase.
         // The constructor's phase is that same set, so a terminal phase
-        // here is a broken guard rather than a resume the host can own.
+        // here is a broken guard.
         if (
           stepState.phase !== "in-flight" &&
           stepState.phase !== "awaiting-signal" &&

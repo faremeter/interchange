@@ -233,8 +233,12 @@ describe("resume classifier recovers a crash-mid-park approval step", () => {
 
     await seedCrashedPark(repoStore, runId);
 
-    await expect(runtimeRun(oneStep, env, { runId }).complete).rejects.toThrow(
-      /parks on at most one control-plane suspension/,
+    const result = await runtimeRun(oneStep, env, { runId }).complete;
+    expect(result.terminalStatus).toBe("failed");
+    const last = result.events.at(-1);
+    if (last?.kind !== "RunFailed") throw new Error("expected RunFailed");
+    expect(last.error.message).toContain(
+      "parks on at most one control-plane suspension",
     );
   });
 });

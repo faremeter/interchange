@@ -14,8 +14,9 @@
 //      without re-parking and with no outcome to reconstruct.
 //
 // A retrying `step`/`action` also parks in `awaiting-timer` during backoff,
-// but its residual is NOT a sleep and stays `RuntimeResumeUnsupportedError`;
-// the kind-exact predicate keeps the two apart.
+// but its residual is NOT a sleep. The runtime records
+// `RuntimeResumeUnsupportedError` as `RunFailed`. The kind-exact predicate
+// keeps the two apart.
 
 import { describe, test, expect } from "bun:test";
 
@@ -29,7 +30,6 @@ import {
   createNoopDrainController,
   defineWorkflow,
   runtimeRun,
-  RuntimeResumeUnsupportedError,
   sleep,
   step,
   type StepInvoker,
@@ -300,9 +300,16 @@ describe("resume awaiting timer", () => {
       },
     ];
 
-    await expect(
-      runtimeRun(retryStep, env, { runId, resumeFromEvents: seed }).complete,
-    ).rejects.toBeInstanceOf(RuntimeResumeUnsupportedError);
+    const refused = await runtimeRun(retryStep, env, {
+      runId,
+      resumeFromEvents: seed,
+    }).complete;
+    expect(refused.terminalStatus).toBe("failed");
+    const last = refused.events.at(-1);
+    if (last?.kind !== "RunFailed") throw new Error("expected RunFailed");
+    expect(last.error.message).toContain(
+      "not supported by the in-process runtime",
+    );
   });
 
   test("resumes an in-flight window captured from the runtime's OWN emitted log, not a hand-authored seed", async () => {

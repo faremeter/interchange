@@ -99,12 +99,36 @@ async function readStateWithPending(
  * the per-runId chain lock so the flushed seqs are contiguous on the
  * durable tip. No-op when the buffer is empty.
  */
+const repoWriteFailure = Symbol("repoWriteFailure");
+
+/**
+ * The durable append threw, so this batch is not on disk. Settlement
+ * must rethrow it: a substitute terminal event would replace the
+ * prefix a re-fire adopts after a crash mid-flush.
+ */
+export function markRepoWriteFailure(cause: unknown): void {
+  if (typeof cause === "object" && cause !== null) {
+    Object.defineProperty(cause, repoWriteFailure, { value: true });
+  }
+}
+
+export function isRepoWriteFailure(cause: unknown): boolean {
+  return (
+    typeof cause === "object" && cause !== null && repoWriteFailure in cause
+  );
+}
+
 async function flushBuffer(env: CommitEnv, runId: string): Promise<void> {
   const buf = pendingBuffers.get(runId);
   if (buf === undefined || buf.length === 0) return;
   const events = buf.slice();
   buf.length = 0;
-  await env.repoStore.appendBatch(runId, events);
+  try {
+    await env.repoStore.appendBatch(runId, events);
+  } catch (cause) {
+    markRepoWriteFailure(cause);
+    throw cause;
+  }
 }
 
 /**
@@ -193,6 +217,27 @@ export async function flushChain(env: CommitEnv, runId: string): Promise<void> {
   })();
   commitChains.set(runId, next);
   await next;
+}
+
+/**
+ * Queue `body` behind this run's commit chain, then discard the pending
+ * buffer before `body` runs. Links already on the chain finish first,
+ * including a barrier `write()` that has started. `body` appends through
+ * the repo store. `commit`, `commitBuffered`, `flushChain`, and
+ * `withRunCommitBarrier` queue another link that waits on this one.
+ */
+export function runAfterDiscardingBuffer<T>(
+  runId: string,
+  body: () => Promise<T>,
+): Promise<T> {
+  const prev = commitChains.get(runId) ?? Promise.resolve();
+  const next = (async () => {
+    await prev.catch(() => undefined);
+    pendingBuffers.delete(runId);
+    return body();
+  })();
+  commitChains.set(runId, next);
+  return next;
 }
 
 /** Flush and exclude runtime commits while an external writer advances the log. */

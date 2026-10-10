@@ -189,8 +189,8 @@ export function isResumableOnTriggerStep(
  * Container/coordination primitives left `in-flight` -- a `map` outer
  * step, a `childWorkflow`, etc. -- are deliberately excluded: they have a
  * re-arm surface the in-process runtime body lacks (rebuilding the map
- * iteration state), so they stay `RuntimeResumeUnsupportedError` and the host
- * owns recovery. (An `awaitSignal` gate left `in-flight`, timed or not, is
+ * iteration state), so they throw `RuntimeResumeUnsupportedError`, which the
+ * run records as `RunFailed`. (An `awaitSignal` gate left `in-flight`, timed or not, is
  * instead admitted by `isResumableReceivedAwaitSignalStep`, which reconstructs
  * its outcome from the log.) A synthetic map/loop inner id (`<id>[i]`) is not a
  * definition key, so it resolves to `undefined` and is excluded here;
@@ -221,8 +221,8 @@ export function isCrashedInvocationStep(
  *
  * The kind guard is exact for a reason: a retrying `step`/`action` also parks
  * in `awaiting-timer` during backoff (`handleAttemptScheduled`), and that
- * residual has no sleep-resume path -- it must stay `RuntimeResumeUnsupportedError`
- * and let the host own recovery. Only a `sleep` primitive is admitted here. The
+ * residual has no sleep-resume path -- it throws `RuntimeResumeUnsupportedError`,
+ * which the run records as `RunFailed`. Only a `sleep` primitive is admitted here. The
  * resume guard and `nextSchedulable` both key on this single predicate so the
  * carve-out lives in exactly one place, mirroring the other predicates.
  */
