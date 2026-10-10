@@ -64,7 +64,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         source: { kind: "registry", registry: "npmjs" },
         entry: "./workflow.js",
         provisionerId: "sandbox",
-        provisionerApiVersion: 1,
+        provisionerApiVersion: 2,
         provisionerBindingFingerprint: "sandbox:test",
         adapterManifestDigest,
       });
@@ -101,7 +101,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         generation: 1,
         maxDisconnectedMs: 900_000,
         provisionerId: "sandbox",
-        provisionerApiVersion: 1,
+        provisionerApiVersion: 2,
         provisionerBindingFingerprint: "sandbox:test",
         adapterManifestDigest,
       });

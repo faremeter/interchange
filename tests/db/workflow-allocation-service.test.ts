@@ -176,7 +176,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
     }): SidecarProvisioner {
       return {
         id: args.id,
-        apiVersion: 1,
+        apiVersion: 2,
         bindingFingerprint: `${args.id}:v1`,
         capabilities: args.capabilities ?? [],
         async ensure(request) {
@@ -185,7 +185,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         },
         async destroy(request) {
           args.destroyCalls.push(request);
-          return { kind: "destroyed" };
+          return { kind: "destroyed", cleanup: "confirmed" };
         },
       };
     }
@@ -722,7 +722,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       let issuedToken: string | undefined;
       const provisioner: SidecarProvisioner = {
         id: "adoption-auth",
-        apiVersion: 1,
+        apiVersion: 2,
         bindingFingerprint: "adoption-auth:v1",
         capabilities: [],
         async ensure(request) {
@@ -750,7 +750,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           return { kind: "accepted" };
         },
         async destroy() {
-          return { kind: "destroyed" };
+          return { kind: "destroyed", cleanup: "confirmed" };
         },
       };
       const service = createWorkflowAllocationService({
@@ -872,7 +872,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       let destroyAttempts = 0;
       const probeProvisioner: SidecarProvisioner = {
         id: "retry-cleanup-probe",
-        apiVersion: 1,
+        apiVersion: 2,
         bindingFingerprint: "retry-cleanup-probe:v1",
         capabilities: [{ capability: "platform:ios", state: "blocked" }],
         async ensure(request) {
@@ -885,7 +885,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           if (destroyAttempts === 1) {
             throw new Error("transient probe cleanup failure");
           }
-          return { kind: "destroyed" };
+          return { kind: "destroyed", cleanup: "confirmed" };
         },
       };
       const deploymentProvisioner = makeProvisioner({
@@ -962,7 +962,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       let destroyAttempts = 0;
       const provisioner: SidecarProvisioner = {
         id: "startup-cleanup",
-        apiVersion: 1,
+        apiVersion: 2,
         bindingFingerprint: "startup-cleanup:v1",
         capabilities: [],
         async ensure() {
@@ -974,7 +974,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           if (destroyAttempts === 1) {
             throw new Error("startup cleanup unavailable");
           }
-          return { kind: "destroyed" };
+          return { kind: "destroyed", cleanup: "confirmed" };
         },
       };
       const probeStore = createWorkflowProbeStore(h.db);

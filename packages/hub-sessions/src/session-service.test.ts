@@ -221,6 +221,10 @@ function createMockAllocationRouter(
   const calls: Call[] = [];
   return {
     calls,
+    getCleanupConnection: () => undefined,
+    async undeployAllocation() {
+      throw new Error("session tests do not release allocation capacity");
+    },
     fenceAllocation() {
       throw new Error("mock allocation fence is not used by session service");
     },
@@ -1635,13 +1639,14 @@ describe("deployCodeSourcedWorkflow", () => {
               anchorRunId: TEST_IDENTITY.anchorRunId,
               tenantId: TEST_IDENTITY.tenantId,
               provisionerId: "test",
-              provisionerApiVersion: 1,
+              provisionerApiVersion: 2,
               provisionerBindingFingerprint: "test:v1",
               adapterManifestDigest: "1".repeat(64),
               maxDisconnectedMs: 900_000,
               status: "allocated",
               ensureAttempts: 1,
               destroyAttempts: 0,
+              deploymentCleanupConfirmed: false,
               createdAt: new Date(),
               updatedAt: new Date(),
               ...(initializationLeaseId !== null
@@ -1728,13 +1733,14 @@ describe("deployCodeSourcedWorkflow", () => {
         anchorRunId: TEST_IDENTITY.anchorRunId,
         tenantId: TEST_IDENTITY.tenantId,
         provisionerId: "test",
-        provisionerApiVersion: 1,
+        provisionerApiVersion: 2,
         provisionerBindingFingerprint: "test:v1",
         adapterManifestDigest: "1".repeat(64),
         maxDisconnectedMs: 900_000,
         status: "allocated",
         ensureAttempts: 1,
         destroyAttempts: 0,
+        deploymentCleanupConfirmed: false,
         createdAt: new Date(),
         updatedAt: new Date(),
       };
@@ -1993,12 +1999,13 @@ describe("deployCodeSourcedWorkflow", () => {
             generation: 1,
             status: "allocated",
             provisionerId: "test",
-            provisionerApiVersion: 1,
+            provisionerApiVersion: 2,
             provisionerBindingFingerprint: "test:v1",
             adapterManifestDigest: "1".repeat(64),
             maxDisconnectedMs: 900_000,
             ensureAttempts: 0,
             destroyAttempts: 0,
+            deploymentCleanupConfirmed: false,
             createdAt: new Date(),
             updatedAt: new Date(),
           },

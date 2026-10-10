@@ -10,14 +10,14 @@ function provisioner(
 ): SidecarProvisioner {
   return {
     id,
-    apiVersion: 1,
+    apiVersion: 2,
     bindingFingerprint,
     capabilities,
     async ensure() {
       return { kind: "accepted" };
     },
     async destroy() {
-      return { kind: "destroyed" };
+      return { kind: "destroyed", cleanup: "confirmed" };
     },
   };
 }
@@ -56,19 +56,23 @@ describe("createSidecarPluginRegistry", () => {
     ).toThrow(/requires a binding fingerprint/);
   });
 
-  test("rejects unsupported provisioner API versions at runtime", () => {
-    expect(() =>
-      createSidecarPluginRegistry({
-        provisioners: [
-          {
-            ...provisioner("containers"),
-            // @ts-expect-error Exercises validation for JavaScript plugins.
-            apiVersion: 2,
-          },
-        ],
-      }),
-    ).toThrow(/Unsupported sidecar provisioner API version/);
-  });
+  // Version 1 provisioners do not report whether destroy confirmed cleanup.
+  test.each([1, 3])(
+    "rejects provisioner API version %d at runtime",
+    (apiVersion) => {
+      expect(() =>
+        createSidecarPluginRegistry({
+          provisioners: [
+            {
+              ...provisioner("containers"),
+              // @ts-expect-error Exercises validation for JavaScript plugins.
+              apiVersion,
+            },
+          ],
+        }),
+      ).toThrow(/Unsupported sidecar provisioner API version/);
+    },
+  );
 
   test("rejects invalid capability declarations at runtime", () => {
     expect(() =>

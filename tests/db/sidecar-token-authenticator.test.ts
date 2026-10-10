@@ -96,7 +96,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           anchorRunId,
           tenantId: TENANT_ID,
           provisionerId: "test",
-          provisionerApiVersion: 1,
+          provisionerApiVersion: 2,
           provisionerBindingFingerprint: "test:v1",
           adapterManifestDigest: MANIFEST_DIGEST,
           maxDisconnectedMs: 900_000,
@@ -116,6 +116,92 @@ describe.skipIf(!harnessDbEnvAvailable())(
         generation: 1,
       };
     }
+
+    test.each(["releasing", "replacing"] as const)(
+      "cleanup authentication grants no workflow access, status = %s",
+      async (status) => {
+        const original = await seedSidecar({
+          id: "sc-cleanup",
+          token: "cleanup-token",
+        });
+        await h.db
+          .update(sidecarAllocation)
+          .set({ status, generation: 2, ensureAcceptedGeneration: null })
+          .where(eq(sidecarAllocation.id, original.allocationId));
+        const resolver = createSidecarCredentialResolver({ db: h.db });
+        const cleanup = {
+          ...original,
+          kind: "cleanup",
+          generation: 2,
+        } as const;
+        expect(await resolver.resolveBindings(original.sidecarId)).toEqual([
+          cleanup,
+        ]);
+        expect(await resolver.isCurrent(cleanup, "registration")).toBe(true);
+        expect(await resolver.isCurrent(cleanup, "cleanup")).toBe(true);
+        for (const use of [
+          "readiness",
+          "routing",
+          "reclaim",
+          "retention",
+        ] as const) {
+          expect(await resolver.isCurrent(cleanup, use)).toBe(false);
+        }
+        expect(await resolver.isCurrent(original, "cleanup")).toBe(false);
+        expect(
+          await resolver.isCurrent({ ...cleanup, generation: 1 }, "cleanup"),
+        ).toBe(false);
+        await h.db
+          .update(sidecarAllocation)
+          .set({ status: "released" })
+          .where(eq(sidecarAllocation.id, original.allocationId));
+        expect(await resolver.resolveBindings(original.sidecarId)).toEqual([]);
+        expect(await resolver.isCurrent(cleanup, "cleanup")).toBe(false);
+      },
+    );
+
+    test.each(["provider_permission_denied"])(
+      "failed cleanup %s can report inventory without granting work",
+      async (failureCode) => {
+        const original = await seedSidecar({
+          id: "sc-exhausted",
+          token: "exhausted-token",
+        });
+        await h.db
+          .update(sidecarAllocation)
+          .set({
+            status: "destroy_failed",
+            generation: 2,
+            failureCode,
+          })
+          .where(eq(sidecarAllocation.id, original.allocationId));
+        const resolver = createSidecarCredentialResolver({ db: h.db });
+        const cleanup = {
+          ...original,
+          kind: "cleanup",
+          generation: 2,
+        } as const;
+        expect(await resolver.resolveBindings(original.sidecarId)).toEqual([
+          cleanup,
+        ]);
+        expect(await resolver.isCurrent(cleanup, "registration")).toBe(true);
+        expect(await resolver.isCurrent(cleanup, "cleanup")).toBe(true);
+        for (const use of [
+          "readiness",
+          "routing",
+          "reclaim",
+          "retention",
+        ] as const) {
+          expect(await resolver.isCurrent(cleanup, use)).toBe(false);
+        }
+        await h.db
+          .update(sidecarAllocation)
+          .set({ status: "released" })
+          .where(eq(sidecarAllocation.id, original.allocationId));
+        expect(await resolver.resolveBindings(original.sidecarId)).toEqual([]);
+        expect(await resolver.isCurrent(cleanup, "cleanup")).toBe(false);
+      },
+    );
 
     test("resolves a valid token to the seeded sidecar's identity", async () => {
       const token = "sidecar-secret";
@@ -212,7 +298,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         entry: "./workflow.js",
         status: "probing",
         provisionerId: "test",
-        provisionerApiVersion: 1,
+        provisionerApiVersion: 2,
         provisionerBindingFingerprint: "test:v1",
         adapterManifestDigest: MANIFEST_DIGEST,
         sidecarId: "sc-shared",

@@ -1,4 +1,4 @@
-import { and, count, eq, inArray, ne } from "drizzle-orm";
+import { and, count, eq, inArray, ne, or } from "drizzle-orm";
 
 import { MAX_SIDECAR_INCARNATIONS } from "@intx/types/sidecar";
 
@@ -18,7 +18,7 @@ export class SidecarReuseRejectedError extends Error {
 
 export type SidecarProvisionerBinding = {
   readonly provisionerId: string;
-  readonly provisionerApiVersion: 1;
+  readonly provisionerApiVersion: 2;
   readonly provisionerBindingFingerprint: string;
 };
 
@@ -40,8 +40,8 @@ export async function lockSidecars(
  * Asserts that a provisioner may place a probe or allocation on `sidecarId`.
  * The sidecar must still host other work of the same provisioner binding, so
  * a provisioner cannot claim another backend's sidecar. Work that is being
- * replaced or released counts: the provisioner keeps its hold on the sidecar
- * until `destroy` returns, so from its side the sidecar is still in use.
+ * replaced or released counts while its hosting binding remains. Releasing
+ * the provider's hold alone does not settle an unconfirmed deployment removal.
  * The sidecar must also have booted with the adapter manifest the placing
  * work's ensure carried, which the Hub knows only from a hosting row whose
  * digest equals `adapterManifestDigest`; a sidecar reads its manifest only at
@@ -141,12 +141,17 @@ export async function assertSidecarHasRoom(
       and(
         eq(sidecarAllocation.sidecarId, args.sidecarId),
         ne(sidecarAllocation.id, args.placing.allocationId),
-        inArray(sidecarAllocation.status, [
-          "provisioning",
-          "allocated",
-          "replacing",
-          "releasing",
-        ]),
+        or(
+          inArray(sidecarAllocation.status, ["provisioning", "allocated"]),
+          and(
+            inArray(sidecarAllocation.status, [
+              "replacing",
+              "releasing",
+              "destroy_failed",
+            ]),
+            eq(sidecarAllocation.deploymentCleanupConfirmed, false),
+          ),
+        ),
       ),
     );
   if (row === undefined) {

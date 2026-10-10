@@ -73,7 +73,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         anchorRunId: ANCHOR_RUN_ID,
         tenantId: TENANT_ID,
         provisionerId: "test-provisioner",
-        provisionerApiVersion: 1,
+        provisionerApiVersion: 2,
         provisionerBindingFingerprint: "test-provisioner:pack-fence",
         adapterManifestDigest: MANIFEST_DIGEST,
         maxDisconnectedMs: 900_000,

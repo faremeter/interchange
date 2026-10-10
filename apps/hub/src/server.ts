@@ -478,6 +478,7 @@ export async function createHubServer({
   });
   const workflowLifecycleService = createWorkflowLifecycleService({
     db,
+    retentionRouter: sidecarRouter,
     runReader: workflowRunReader,
     historyReceives: workflowHistoryReceives,
     sendControl: (target, command, timeoutMs) =>

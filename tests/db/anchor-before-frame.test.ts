@@ -239,7 +239,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         anchorRunId: ANCHOR_RUN_ID,
         tenantId: TENANT_ID,
         provisionerId: "provisioner-anchor-test",
-        provisionerApiVersion: 1,
+        provisionerApiVersion: 2,
         provisionerBindingFingerprint: "fp-anchor-test",
         adapterManifestDigest: MANIFEST_DIGEST,
         maxDisconnectedMs: 900_000,
