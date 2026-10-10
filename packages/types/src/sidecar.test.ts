@@ -673,6 +673,9 @@ describe("frame array-length ceilings", () => {
     );
 
     test("fits a long error to the bound without splitting a surrogate pair", () => {
+      expect(fitDeploymentError("")).toBe(
+        "Deployment failed without an error message",
+      );
       expect(fitDeploymentError("short")).toBe("short");
       const fitted = fitDeploymentError(
         "x".repeat(MAX_DEPLOYMENT_ERROR_LENGTH + 100),

@@ -58,10 +58,10 @@ export const MAX_REF_TIPS_FRAME = 16;
 export const MAX_REF_TIP_ENTRY_LENGTH = 255;
 
 /**
- * Cuts an error a sidecar reports to `MAX_DEPLOYMENT_ERROR_LENGTH`, so a long
- * error never makes the frame carrying it invalid.
+ * Fits an error to the non-empty, bounded string accepted in sidecar reports.
  */
 export function fitDeploymentError(error: string): string {
+  if (error.length === 0) return "Deployment failed without an error message";
   if (error.length <= MAX_DEPLOYMENT_ERROR_LENGTH) return error;
   // A cut between the two halves of a surrogate pair would leave a code
   // unit the Hub stores as a replacement character.

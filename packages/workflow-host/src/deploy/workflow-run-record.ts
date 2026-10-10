@@ -19,12 +19,13 @@
 // re-materialized from that `sourceRef` closure on restore, and each step's
 // grants live in its agent-state repo, so neither is duplicated here.
 
-import { mkdir, readdir, readFile, rm } from "node:fs/promises";
+import { mkdir, readdir, readFile } from "node:fs/promises";
 import { dirname, join as pathJoin, resolve } from "node:path";
 
 import { type } from "arktype";
 
 import { getLogger } from "@intx/log";
+import { syncDirectoryDurable } from "@intx/storage-isogit/node";
 import {
   credentialAad,
   type CredentialCipher,
@@ -33,7 +34,10 @@ import { InferenceSource } from "@intx/types/runtime";
 import { CredentialDelivery } from "@intx/types/credential-delivery";
 import { Generation, SourceRefPin } from "@intx/types/sidecar";
 
-import { writeFileAtomicDurable } from "./atomic-write";
+import {
+  removeFileAtomicDurable,
+  writeFileAtomicDurable,
+} from "./atomic-write";
 
 const logger = getLogger(["interchange", "sidecar", "workflow-run-record"]);
 
@@ -237,7 +241,12 @@ export async function writeWorkflowRunRecord(
     // set, matching the private-key writes elsewhere on the sidecar.
     await writeFileAtomicDurable(path, JSON.stringify(sealed, null, 2), {
       mode: 0o600,
+      requireDirectorySync: true,
     });
+    // Sync the containing links too: syncing the run directory alone does
+    // not persist its creation inside workflow-runs or that directory's link.
+    await syncDirectoryDurable(pathJoin(dataDir, "workflow-runs"));
+    await syncDirectoryDurable(dataDir);
   });
 }
 
@@ -322,7 +331,7 @@ export async function markWorkflowRunRecord(
         null,
         2,
       ),
-      { mode: 0o600 },
+      { mode: 0o600, requireDirectorySync: true },
     );
     return true;
   });
@@ -331,14 +340,15 @@ export async function markWorkflowRunRecord(
 /**
  * Remove a run record. Called on a soft-failed deploy so a never-completed
  * run is not restored on the next boot; undeploy removes the record together
- * with the run repository. A missing record is not an error (`force`).
+ * with the run repository. A missing record is not an error, but its removal
+ * must be durable before the caller releases the deployment's reservation.
  */
 export async function deleteWorkflowRunRecord(
   dataDir: string,
   runId: string,
 ): Promise<void> {
   return withWorkflowRunRecord(dataDir, runId, async (path) => {
-    await rm(path, { force: true });
+    await removeFileAtomicDurable(path, { requireDirectorySync: true });
   });
 }
 
@@ -353,10 +363,13 @@ export interface ScannedWorkflowRun {
  * Enumerate the persisted run records under `workflow-runs/` so a boot-time
  * restore can re-establish each run. Soft-fails per record: a missing
  * `deployment.json`, unparseable JSON, or a record that fails schema
- * validation is logged and skipped rather than wedging the whole boot -- one
- * corrupt record must not strand every other run. An absent `workflow-runs/`
- * directory is the legitimate first-boot case and yields an empty list, not
- * an error.
+ * validation is logged and skipped rather than wedging the whole boot. I/O
+ * and directory-sync failures abort the inventory: skipping an unconfirmed
+ * record write or deletion would make its capacity unsafe to reuse.
+ * An absent `workflow-runs/` directory is legitimate on first boot and yields
+ * an empty list. Before returning, sync the observed inventory: a previous process
+ * may have changed a record or removed a directory without completing its
+ * directory sync, and the new process must not reuse that capacity yet.
  *
  * The returned `runId` is the directory name; the caller cross-checks it
  * against the record's own address before trusting it.
@@ -370,7 +383,10 @@ export async function scanWorkflowRunRecords(
   try {
     entries = await readdir(runsDir, { withFileTypes: true });
   } catch (cause) {
-    if (isENOENT(cause)) return [];
+    if (isENOENT(cause)) {
+      await syncDirectoryDurable(dataDir);
+      return [];
+    }
     throw cause;
   }
 
@@ -381,6 +397,8 @@ export async function scanWorkflowRunRecords(
     if (!entry.isDirectory()) continue;
     const runId = entry.name;
     const path = recordPath(dataDir, runId);
+    // This also commits an absent record's unlink before the scan skips it.
+    await syncDirectoryDurable(dirname(path));
 
     let raw: string;
     try {
@@ -437,5 +455,7 @@ export async function scanWorkflowRunRecords(
     }
     scanned.push({ runId, record: restored });
   }
+  await syncDirectoryDurable(runsDir);
+  await syncDirectoryDurable(dataDir);
   return scanned;
 }
