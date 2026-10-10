@@ -6,10 +6,14 @@
 // must survive both a process kill and a power loss without ever
 // exposing a torn record.
 
-import { open, rename, unlink } from "node:fs/promises";
+import fs from "node:fs/promises";
 import { dirname } from "node:path";
 
 import { getLogger } from "@intx/log";
+import {
+  syncDirectoryDurable,
+  syncRemovedPathDurable,
+} from "@intx/storage-isogit/node";
 import { hasCode, hexEncode } from "@intx/types";
 
 const logger = getLogger(["interchange", "sidecar", "atomic-write"]);
@@ -17,6 +21,8 @@ const logger = getLogger(["interchange", "sidecar", "atomic-write"]);
 export interface AtomicWriteOptions {
   /** Permission mode applied when the temp file is created. */
   mode: number;
+  /** Reject rather than degrade when the directory entry cannot be synced. */
+  requireDirectorySync?: boolean;
 }
 
 /**
@@ -30,10 +36,9 @@ export interface AtomicWriteOptions {
  * zero-length file after a power loss.
  *
  * The parent directory is fsynced after the rename so the new link is
- * itself durable, but a filesystem that rejects directory fsync
- * (FAT/exFAT, some network mounts) only degrades durability -- the file
- * is already renamed and fsynced -- so that failure is logged, not
- * thrown.
+ * itself durable. By default, a failed directory sync is logged. Set
+ * `requireDirectorySync` when acknowledging this write permits a caller to
+ * release an obligation that the previous file still records.
  *
  * `mode` is applied on the temp file's creation, so it takes effect on
  * every write. A plain in-place overwrite of an existing file would
@@ -49,31 +54,27 @@ export async function writeFileAtomicDurable(
 ): Promise<void> {
   const tmp = `${path}.tmp.${String(process.pid)}.${hexEncode(crypto.getRandomValues(new Uint8Array(8)))}`;
   try {
-    const handle = await open(tmp, "w", options.mode);
+    const handle = await fs.open(tmp, "w", options.mode);
     try {
       await handle.writeFile(contents);
       await handle.sync();
     } finally {
       await handle.close();
     }
-    await rename(tmp, path);
+    await fs.rename(tmp, path);
   } catch (cause) {
     // The write failed and is about to rethrow; unlink the temp so a
     // failed write leaves no orphan. Best-effort: the temp may never
     // have been created, and a second failure here must not mask the
     // original cause.
-    await unlink(tmp).catch(() => undefined);
+    await fs.unlink(tmp).catch(() => undefined);
     throw cause;
   }
 
   try {
-    const dirHandle = await open(dirname(path), "r");
-    try {
-      await dirHandle.sync();
-    } finally {
-      await dirHandle.close();
-    }
+    await syncDirectoryDurable(dirname(path));
   } catch (err) {
+    if (options.requireDirectorySync === true) throw err;
     logger.warn`parent-dir fsync failed for ${path}; durability is degraded but the file is renamed and fsynced — ${err instanceof Error ? err.message : String(err)}`;
   }
 }
@@ -86,27 +87,26 @@ export async function writeFileAtomicDurable(
  * resurrected entry re-stales the cache. Idempotent: a file already absent is a
  * completed removal, so ENOENT on the unlink is success.
  *
- * The parent-directory fsync mirrors `writeFileAtomicDurable`, including its
- * degrade: a filesystem that rejects directory fsync (FAT/exFAT, some network
- * mounts) only weakens durability -- the file is already unlinked -- so that
- * failure is logged, not thrown. It runs unconditionally so a prior removal
- * that unlinked but died before the fsync is made durable on the next attempt.
+ * Directory sync runs even when the file is absent, committing a prior
+ * removal whose sync failed. By default, sync failures are logged. Strict
+ * mode propagates failures and, if the parent was also removed, syncs the
+ * nearest remaining ancestor so that directory removal is durable too.
  */
-export async function removeFileAtomicDurable(path: string): Promise<void> {
+export async function removeFileAtomicDurable(
+  path: string,
+  { requireDirectorySync = false }: { requireDirectorySync?: boolean } = {},
+): Promise<void> {
   try {
-    await unlink(path);
+    await fs.unlink(path);
   } catch (err) {
     if (!(hasCode(err) && err.code === "ENOENT")) throw err;
   }
 
   try {
-    const dirHandle = await open(dirname(path), "r");
-    try {
-      await dirHandle.sync();
-    } finally {
-      await dirHandle.close();
-    }
+    if (requireDirectorySync) await syncRemovedPathDurable(path);
+    else await syncDirectoryDurable(dirname(path));
   } catch (err) {
+    if (requireDirectorySync) throw err;
     logger.warn`parent-dir fsync failed for ${path}; durability is degraded but the file is unlinked — ${err instanceof Error ? err.message : String(err)}`;
   }
 }

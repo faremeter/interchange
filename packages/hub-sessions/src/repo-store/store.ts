@@ -8,6 +8,8 @@ import {
   receivePackObjects,
   collectReachableObjects,
   maybeGC,
+  syncDirectoryDurable,
+  syncRemovedPathDurable,
   type CommitSigner,
   type GCPolicy,
 } from "@intx/storage-isogit/node";
@@ -135,9 +137,13 @@ export type LocalRepoStore = RepoStore & {
    * it, under its lock, so a repository created again at the same id starts
    * from nothing. A missing repository is not an error. `last` names an entry
    * of the repository's directory removed only after every other one, so a
-   * crash partway through leaves it in place.
+   * crash partway through leaves it in place. `requireDirectorySync` makes
+   * removal durable before returning, and propagates sync failures.
    */
-  removeRepo(repoId: RepoId, opts?: { readonly last?: string }): Promise<void>;
+  removeRepo(
+    repoId: RepoId,
+    opts?: { readonly last?: string; readonly requireDirectorySync?: boolean },
+  ): Promise<void>;
 };
 
 export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
@@ -2191,7 +2197,10 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
 
   async function removeRepo(
     repoId: RepoId,
-    { last }: { readonly last?: string } = {},
+    {
+      last,
+      requireDirectorySync = false,
+    }: { readonly last?: string; readonly requireDirectorySync?: boolean } = {},
   ): Promise<void> {
     const dir = repoDir(repoId);
     await withRepoLock(repoId, async () => {
@@ -2214,12 +2223,16 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
             force: true,
           });
         }
+        // Keep the recovery record until the other entries are durably gone.
+        if (requireDirectorySync && entries.length > 0)
+          await syncDirectoryDurable(dir);
         await fs.promises.rm(path.join(dir, last), {
           recursive: true,
           force: true,
         });
       }
       await fs.promises.rm(dir, { recursive: true, force: true });
+      if (requireDirectorySync) await syncRemovedPathDurable(dir);
       invalidateGitCache(dir);
       existingCommitsCache.delete(indexCacheKey(repoId));
       const refPrefix = `${indexCacheKey(repoId)}/`;

@@ -640,10 +640,13 @@ const orchestrator = createSidecarOrchestrator({
       removeRunRepository: (runId) =>
         agentRepoStore.repoStore.removeRepo(
           { kind: "workflow-run", id: runId },
-          { last: WORKFLOW_RUN_RECORD_FILENAME },
+          { last: WORKFLOW_RUN_RECORD_FILENAME, requireDirectorySync: true },
         ),
       removeAgentStateRepository: (id) =>
-        agentRepoStore.repoStore.removeRepo({ kind: "agent-state", id }),
+        agentRepoStore.repoStore.removeRepo(
+          { kind: "agent-state", id },
+          { requireDirectorySync: true },
+        ),
       multistepMailRouter,
       inboundMailPolicyRegistry,
       multistepSignalRouter,

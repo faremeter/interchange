@@ -1,4 +1,4 @@
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, spyOn } from "bun:test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -17,6 +17,36 @@ async function listNames(dir: string): Promise<string[]> {
 }
 
 describe("writeFileAtomicDurable", () => {
+  for (const requireDirectorySync of [false, true]) {
+    test(`directory sync failures reject only in strict mode (${String(requireDirectorySync)})`, async () => {
+      const dir = await makeDir();
+      const file = path.join(dir, "record.json");
+      const failure = new Error("directory sync failed");
+      const open = fs.open;
+      const spy = spyOn(fs, "open").mockImplementation(
+        async (target, flags, mode) => {
+          const handle = await open(target, flags, mode);
+          if (target === dir) {
+            spyOn(handle, "sync").mockRejectedValue(failure);
+          }
+          return handle;
+        },
+      );
+      try {
+        const write = writeFileAtomicDurable(file, "new", {
+          mode: 0o600,
+          requireDirectorySync,
+        });
+        if (requireDirectorySync) await expect(write).rejects.toBe(failure);
+        else await write;
+        expect(await fs.readFile(file, "utf8")).toBe("new");
+      } finally {
+        spy.mockRestore();
+        await fs.rm(dir, { recursive: true, force: true });
+      }
+    });
+  }
+
   test("round-trips contents to the target path", async () => {
     const dir = await makeDir();
     const file = path.join(dir, "record.json");
@@ -105,6 +135,87 @@ describe("writeFileAtomicDurable", () => {
 });
 
 describe("removeFileAtomicDurable", () => {
+  test("retries an unlinked file's failed directory sync before confirming removal", async () => {
+    const dir = await makeDir();
+    const file = path.join(dir, "record.json");
+    await fs.writeFile(file, "record");
+    const failure = new Error("directory sync failed");
+    let syncAttempts = 0;
+    const open = fs.open;
+    const spy = spyOn(fs, "open").mockImplementation(
+      async (target, flags, mode) => {
+        const handle = await open(target, flags, mode);
+        if (target === dir) {
+          const sync = handle.sync.bind(handle);
+          spyOn(handle, "sync").mockImplementation(async () => {
+            syncAttempts++;
+            if (syncAttempts === 1) throw failure;
+            await sync();
+          });
+        }
+        return handle;
+      },
+    );
+    try {
+      await expect(
+        removeFileAtomicDurable(file, { requireDirectorySync: true }),
+      ).rejects.toBe(failure);
+      expect(await listNames(dir)).toEqual([]);
+      await removeFileAtomicDurable(file, { requireDirectorySync: true });
+      expect(syncAttempts).toBe(2);
+    } finally {
+      spy.mockRestore();
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("strict removal syncs the surviving ancestor of an already-removed directory", async () => {
+    const dir = await makeDir();
+    const parent = path.join(dir, "workflow-runs");
+    const removed = path.join(parent, "gone");
+    const file = path.join(removed, "record.json");
+    const opened: string[] = [];
+    const open = fs.open;
+    const spy = spyOn(fs, "open").mockImplementation(
+      async (target, flags, mode) => {
+        opened.push(String(target));
+        return open(target, flags, mode);
+      },
+    );
+    try {
+      await removeFileAtomicDurable(file, { requireDirectorySync: true });
+      expect(opened).toEqual([removed, parent, dir]);
+    } finally {
+      spy.mockRestore();
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("strict removal does not bypass an unreadable parent directory", async () => {
+    const dir = await makeDir();
+    const failure = Object.assign(new Error("directory unavailable"), {
+      code: "EACCES",
+    });
+    const open = fs.open;
+    const spy = spyOn(fs, "open").mockImplementation(
+      async (target, flags, mode) => {
+        if (target === dir) throw failure;
+        return open(target, flags, mode);
+      },
+    );
+    try {
+      await expect(
+        removeFileAtomicDurable(path.join(dir, "record.json"), {
+          requireDirectorySync: true,
+        }),
+      ).rejects.toBe(failure);
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test("removes an existing file", async () => {
     const dir = await makeDir();
     const file = path.join(dir, "record.json");

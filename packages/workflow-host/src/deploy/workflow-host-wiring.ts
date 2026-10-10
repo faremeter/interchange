@@ -14,6 +14,7 @@ import { type } from "arktype";
 
 import { derivePublicKeyBytes, signEd25519 } from "@intx/crypto";
 import { getLogger } from "@intx/log";
+import { syncRemovedPathDurable } from "@intx/storage-isogit/node";
 import type { HubTransport } from "@intx/mail-memory";
 import type {
   Principal,
@@ -96,6 +97,7 @@ import type {
   MultistepSourcesRouter,
   MultistepCredentialsRouter,
 } from "./workflow-run-pack-client";
+import { removeFileAtomicDurable } from "./atomic-write";
 import {
   deleteWorkflowRunRecord,
   markWorkflowRunRecord,
@@ -222,6 +224,7 @@ async function removeTree(dir: string): Promise<void> {
     if ((await lstat(dir)).isDirectory()) await makeDirectoriesWritable(dir);
     await rm(dir, { recursive: true, force: true });
   }
+  await syncRemovedPathDurable(dir);
 }
 
 async function makeDirectoriesWritable(dir: string): Promise<void> {
@@ -909,6 +912,7 @@ export function createSidecarDeployRouter<
 >(deps: {
   sessions: {
     initRepo(address: string): Promise<void>;
+    /** Remove the directory durably before resolving; reject sync failures. */
     deleteAgentDir(address: string): Promise<void>;
   };
   keyStore: {
@@ -1283,12 +1287,14 @@ export function createSidecarDeployRouter<
   /**
    * Remove a deployment's workflow-run repository from the substrate, and with
    * it the run record the repository's directory holds. Undeploy calls it
-   * last.
+   * last. Sync removed entries before deleting the record and confirm durable
+   * tree removal before resolving.
    */
   removeRunRepository: (runId: string) => Promise<void>;
   /**
    * Remove an agent-state repository from the substrate. Undeploy removes the
-   * one a single-step deployment keeps its grants in.
+   * one a single-step deployment keeps its grants in. Resolve only after the
+   * directory removal is durable; propagate sync failures.
    */
   removeAgentStateRepository: (id: string) => Promise<void>;
   /**
@@ -2542,26 +2548,24 @@ export function createSidecarDeployRouter<
       hosted.state = "live";
       return result;
     } catch (cause) {
-      // Soft failure (this process survived, the deploy threw): drop the
-      // record, the hold, and the slug so the failed deploy is neither
-      // restored nor reported, nor leaks its slug. The record delete must not
-      // mask the real deploy error or skip releasing the slug: a rejecting
-      // delete is logged (the orphaned record is a durable-state leak the next
-      // boot scan re-drives) but `cause` is still what propagates and the slug
-      // is still released.
-      if (deployments.get(frame.agentAddress) === hosted) {
-        deployments.delete(frame.agentAddress);
-      }
+      hosted.state = "stopped";
+      hosted.error = cause instanceof Error ? cause.message : String(cause);
       try {
+        await markWorkflowRunRecord(dataDir, runId, {
+          state: "stopped",
+          error: hosted.error,
+        });
         await deleteWorkflowRunRecord(dataDir, runId);
+        if (deployments.get(frame.agentAddress) === hosted)
+          deployments.delete(frame.agentAddress);
+        releaseSlug(runId, frame.agentAddress);
       } catch (cleanupError) {
         const message =
           cleanupError instanceof Error
             ? cleanupError.message
             : String(cleanupError);
-        logger.error`deploy cleanup: deleteWorkflowRunRecord failed for ${runId}: ${message}`;
+        logger.error`Failed deployment ${frame.agentAddress} still occupies capacity: ${message}`;
       }
-      releaseSlug(runId, frame.agentAddress);
       throw cause;
     }
   }
@@ -2608,6 +2612,8 @@ export function createSidecarDeployRouter<
         );
       }
       const stopping = workflowStopTasks.get(frame.agentAddress);
+      if (hosted?.state === "tearing-down")
+        throw new Error("The deployment is being removed");
       if (stopping !== undefined) {
         await stopping;
         return reportControlOutcome(frame);
@@ -2691,8 +2697,6 @@ export function createSidecarDeployRouter<
       return reportControlOutcome(frame);
     },
     async undeploy(frame): Promise<void> {
-      const stopping = workflowStopTasks.get(frame.agentAddress);
-      if (stopping !== undefined) await stopping;
       // A newer incarnation of the address is not this frame's to remove.
       const hosted = deployments.get(frame.agentAddress);
       if (hosted !== undefined && hosted.generation > frame.generation) return;
@@ -2704,6 +2708,20 @@ export function createSidecarDeployRouter<
         unrestoredRecord.generation > frame.generation
       )
         return;
+      // Own teardown before waiting, so a control waiting on the same stop
+      // cannot start another stop task and overwrite the teardown record.
+      if (hosted !== undefined) hosted.state = "tearing-down";
+      for (
+        let stopping = workflowStopTasks.get(frame.agentAddress);
+        stopping !== undefined;
+        stopping = workflowStopTasks.get(frame.agentAddress)
+      ) {
+        try {
+          await stopping;
+        } catch (cause) {
+          logger.warn`Continuing undeploy of ${frame.agentAddress} after a failed stop: ${cause instanceof Error ? cause.message : String(cause)}`;
+        }
+      }
       // Symmetric teardown for `deploy`: release the per-deployment
       // routing state both branches install so a stale `signal.deliver`
       // / `drain.deliver` / `mail.inbound` aimed at the dead deployment
@@ -2725,14 +2743,13 @@ export function createSidecarDeployRouter<
       // kill + `exited` await internally. The incarnation stays held, as
       // tearing down, until the teardown settles: the link keeps reporting it
       // and stamps what it still sends with its generation.
-      if (hosted !== undefined) hosted.state = "tearing-down";
       const wired = hosted?.wired;
       const dataDir = stepStateDataDir;
       // Every step runs even when an earlier one fails, and the failures are
       // thrown together, so the answer names each step that failed. The record
       // is marked tearing down first and goes last, with the run repository:
       // after a crash mid-teardown the next boot reports the incarnation as
-      // tearing down, and the Hub undeploys it again. Without the record
+      // tearing down for the Hub's cleanup policy. Without the record
       // nothing would report what the crash left behind. A teardown that fails
       // stays reported for the same reason: as tearing down, or outside the
       // hello for a record the boot left unrestored.
@@ -2816,9 +2833,12 @@ export function createSidecarDeployRouter<
           // reports the incarnation and the next undeploy finishes it.
           if (failures.length === 0) {
             await attempt("removing its run repository and record", () =>
-              withWorkflowRunRecord(dataDir, runId, () =>
-                deps.removeRunRepository(runId),
-              ),
+              withWorkflowRunRecord(dataDir, runId, async (recordPath) => {
+                await deps.removeRunRepository(runId);
+                await removeFileAtomicDurable(recordPath, {
+                  requireDirectorySync: true,
+                });
+              }),
             );
           }
         }
@@ -2838,7 +2858,7 @@ export function createSidecarDeployRouter<
         const held = deployments.get(frame.agentAddress);
         if (failures.length > 0) {
           // A held incarnation stays held without its supervisor, so the hello
-          // keeps reporting it as tearing down and the Hub undeploys it again.
+          // keeps reporting it as tearing down until cleanup succeeds.
           // A record the boot left unrestored is not held here: it stays
           // reported outside the hello, which holding it could push past its
           // limit.
