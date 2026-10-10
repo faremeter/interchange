@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
   bigint,
+  boolean,
   check,
   index,
   integer,
@@ -28,7 +29,7 @@ export const sidecarAllocation = pgTable(
       .references(() => tenant.id, { onDelete: "restrict" }),
     provisionerId: text("provisioner_id").notNull(),
     provisionerApiVersion: integer("provisioner_api_version")
-      .$type<1>()
+      .$type<2>()
       .notNull(),
     provisionerBindingFingerprint: text(
       "provisioner_binding_fingerprint",
@@ -54,6 +55,9 @@ export const sidecarAllocation = pgTable(
     initializationLeaseId: text("initialization_lease_id"),
     ensureAttempts: integer("ensure_attempts").notNull().default(0),
     destroyAttempts: integer("destroy_attempts").notNull().default(0),
+    deploymentCleanupConfirmed: boolean("deployment_cleanup_confirmed")
+      .notNull()
+      .default(false),
     connectDeadline: timestamp("connect_deadline"),
     // How long the sidecar may stay disconnected before the Hub fails the
     // deployment, from the deployment's lifecycle policy.

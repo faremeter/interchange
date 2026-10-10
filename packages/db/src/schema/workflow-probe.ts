@@ -52,7 +52,7 @@ export const workflowProbe = pgTable(
       .default("pending"),
     provisionerId: text("provisioner_id").notNull(),
     provisionerApiVersion: integer("provisioner_api_version")
-      .$type<1>()
+      .$type<2>()
       .notNull(),
     provisionerBindingFingerprint: text(
       "provisioner_binding_fingerprint",

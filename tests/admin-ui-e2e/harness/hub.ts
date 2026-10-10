@@ -9,7 +9,7 @@ if (hubDataDir === undefined || hubDataDir.trim() === "") {
 }
 
 const logger = getLogger(["admin-ui-e2e", "hub"]);
-const localProcessProvisioner = createLocalProcessSidecarProvisioner({
+const localProcessProvisioner = await createLocalProcessSidecarProvisioner({
   dataRoot: `${hubDataDir}/local-sidecars`,
   // E2E_SHARE_SIDECARS=tenant runs each tenant's probes and deployments on one
   // sidecar process instead of a process per allocation.

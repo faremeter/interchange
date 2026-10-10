@@ -117,8 +117,13 @@ past Hub startup if that is later.
 Cancellation also marks the restart record stopped before acknowledgement when
 no supervisor remains, preventing a later sidecar restart from reviving the run.
 If the worker cannot confirm its stop, the Hub releases its allocation and waits
-for confirmed destruction before recording cancellation. History the Hub never
-received is destroyed with the worker, so the recorded outcome then reflects only
+for confirmed deployment removal before recording cancellation. For a run still live
+after accepted-history recovery, confirmed deployment removal is sufficient even
+if the provider's hold remains unreleased. Lifecycle records cancellation and
+abandons its unfinished dispatches with `workflow_cancelled` after recovering
+accepted history. A later provider cleanup failure stays on the allocation and
+does not fail that cancelled run or replace its dispatch reason. History the Hub
+never received is destroyed with the worker, so the recorded outcome then reflects only
 accepted history, even if the worker had committed a different one. Enforcement resumes
 after a Hub outage; the deadline does not promise an exact destruction time.
 
@@ -161,10 +166,14 @@ the run's end time is not changed by retries.
 The Hub persists deadlines and reconciles due actions independently of provisioner
 calls. Expired or cancelling runs cannot start, restore, or accept new work.
 An accepted terminal event must remain discoverable for cleanup after a restart
-or a failed status projection. Cancellation and release must tolerate retries,
-and a release is complete only when the provisioner confirms it. Forced termination can leave a partial event log; the Hub records the confirmed
-outcome in the run row without fabricating workflow events. A failed
-cleanup remains visible and must not make the capacity available for reuse.
+or a failed status projection. Cancellation and release must tolerate retries.
+Release completes only when the provider's hold is released and deployment
+cleanup is confirmed. Forced termination can leave a partial event log; the Hub
+records the confirmed outcome in the run row without fabricating workflow events.
+A failed cleanup remains visible. It reserves an active slot until removal
+has been confirmed. The separate
+provider obligation can remain failed after the copy has freed its active slot.
+See [Release cleanup](SIDECAR_PLACEMENT.md#release-cleanup).
 
 Before a workflow-run pack can advance Git, the Hub records a pending projection
 for its deployment, and removes it once every run in the pack has its status
@@ -264,9 +273,11 @@ failure returns `409` on a new release request and requires operator interventio
 `DELETE /api/tenants/:tenantId/workflows/runs/:runId` requests cancellation of a
 live run and returns `202`; its cancellation retention policy then applies.
 
-Releasing the allocation gives up the deployment's claim on capacity. The
-provisioner decides whether to destroy the backing resources or prepare them for
-reuse. This fits the work on provisioning pre-existing capacity: another
+Beginning release removes workflow routes. The allocation reaches `released`
+only after the provider's hold is released and deployment cleanup is confirmed.
+Confirmed removal frees the active sidecar slot even if the provider's hold
+remains pending or failed. The provisioner decides whether to destroy the backing
+resources or prepare them for reuse. This fits the work on provisioning pre-existing capacity: another
 deployment could claim it when the provisioner binding, capabilities, and
 placement requirements match. The previous assignment, credentials, and local
 state must be retired or reset before dedicated capacity becomes available
@@ -276,8 +287,10 @@ Retention is a cleanup deadline, not a minimum preservation guarantee: manual
 release or infrastructure failure can end it earlier.
 
 The provisioner owns how long unused backing capacity stays available before
-being destroyed. The Hub's allocation reconciler performs cleanup by calling
-`SidecarProvisioner.destroy()` on the plugin bound to the allocation.
+being destroyed. The Hub's allocation reconciler requests acknowledged undeploy
+from connected sidecars independently of provider availability and releases the
+provider hold through `SidecarProvisioner.destroy()`. Either an undeploy
+acknowledgement or confirmed provider destruction proves removal.
 These duration rules do not need a separate
 workflow-aware reaping plugin. Hibernating and resuming a live run remains
 separate work, especially when it depends on files held only on the sidecar.

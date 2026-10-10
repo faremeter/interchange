@@ -21,7 +21,7 @@ export type CreateWorkflowProbeArgs = {
   readonly entry: string;
   readonly pin?: string;
   readonly provisionerId: string;
-  readonly provisionerApiVersion: 1;
+  readonly provisionerApiVersion: 2;
   readonly provisionerBindingFingerprint: string;
   /** The adapter manifest the probe's ensure carries. */
   readonly adapterManifestDigest: string;

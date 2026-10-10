@@ -755,6 +755,144 @@ describe("a sidecar link hosting several deployments", () => {
 });
 
 describe("an undeploy the sidecar cannot finish", () => {
+  test.each([false, true])(
+    "retries share the pending cleanup outcome, failure = %s",
+    async (fails) => {
+      const started = Promise.withResolvers<undefined>();
+      const finish = Promise.withResolvers<undefined>();
+      let calls = 0;
+      const { link, hub: conn } = await connectLink(
+        `sc-cleanup-retries-${String(fails)}`,
+        {
+          deployRouter: {
+            deploy: async () => ({ publicKey: "ab".repeat(32) }),
+            async undeploy() {
+              calls += 1;
+              started.resolve(undefined);
+              await finish.promise;
+              if (fails && calls === 1) throw new Error("removal failed");
+            },
+          },
+        },
+      );
+      const request = (requestId: string) =>
+        conn.send({
+          type: "agent.undeploy",
+          requestId,
+          agentAddress: SLOW,
+          generation: 1,
+          reason: "release",
+        });
+      try {
+        request("first");
+        await started.promise;
+        request("retry-1");
+        request("retry-2");
+        conn.send(deploy(OTHER));
+        await conn.frame(isAck(OTHER));
+        expect(
+          conn.received().filter((frame) => frame.agentAddress === SLOW),
+        ).toEqual([]);
+        expect(calls).toBe(1);
+        finish.resolve(undefined);
+        await conn.frame((frame) => frame.requestId === "retry-2");
+        const replies = conn
+          .received()
+          .filter((frame) => frame.agentAddress === SLOW);
+        expect(replies.map((frame) => frame.requestId)).toEqual([
+          "first",
+          "retry-1",
+          "retry-2",
+        ]);
+        for (const reply of replies) {
+          expect(reply.type).toBe(
+            fails ? "agent.undeploy.error" : "agent.undeploy.ack",
+          );
+          if (fails) expect(reply.error).toContain("removal failed");
+        }
+        expect(calls).toBe(1);
+        request("confirm-again");
+        expect(
+          (await conn.frame((frame) => frame.requestId === "confirm-again"))
+            .type,
+        ).toBe("agent.undeploy.ack");
+        expect(calls).toBe(2);
+      } finally {
+        finish.resolve(undefined);
+        link.close();
+      }
+    },
+  );
+
+  test.each([1, 2])(
+    "an intervening deploy at generation %s gets its own removal",
+    async (generation) => {
+      const finish = hold();
+      const started = Promise.withResolvers<undefined>();
+      const events: string[] = [];
+      let held: number | undefined = 1;
+      const { link, hub: conn } = await connectLink(
+        `sc-undeploy-intervening-${String(generation)}`,
+        {
+          getIncarnations: () =>
+            held === undefined
+              ? []
+              : [{ address: SLOW, generation: held, state: "live" }],
+          deployRouter: {
+            async deploy(frame) {
+              if (frame.agentAddress === SLOW) {
+                held = frame.generation;
+                events.push(`deploy ${String(held)}`);
+              }
+              return { publicKey: "ab".repeat(32) };
+            },
+            async undeploy(frame) {
+              events.push(`undeploy ${String(frame.generation)}`);
+              started.resolve(undefined);
+              await finish.released;
+              held = undefined;
+            },
+          },
+        },
+      );
+      const request = (requestId: string, generation: number) =>
+        conn.send({
+          type: "agent.undeploy",
+          requestId,
+          agentAddress: SLOW,
+          generation,
+          reason: "release",
+        });
+      try {
+        request("first", 1);
+        await started.promise;
+        const nextDeploy = { ...deploy(SLOW), generation };
+        conn.send(nextDeploy);
+        request("second", generation);
+        conn.send(deploy(OTHER));
+        await conn.frame(isAck(OTHER));
+        expect(events).toEqual(["undeploy 1"]);
+        finish.release();
+        await conn.frame((frame) => frame.requestId === "second");
+        expect(events).toEqual([
+          "undeploy 1",
+          `deploy ${String(generation)}`,
+          `undeploy ${String(generation)}`,
+        ]);
+        expect(held).toBeUndefined();
+        expect(
+          conn
+            .received()
+            .filter((frame) => frame.agentAddress === SLOW)
+            .map((frame) => frame.requestId),
+        ).toEqual(["first", nextDeploy.requestId, "second"]);
+      } finally {
+        finish.release();
+        link.close();
+      }
+    },
+  );
+
   test("does not repeat directory cleanup after the deployment owner finishes", async () => {
     let deletions = 0;
     const manager = {

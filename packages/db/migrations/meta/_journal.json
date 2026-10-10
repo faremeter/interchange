@@ -750,6 +750,13 @@
       "when": 1791907231430,
       "tag": "0107_sidecar_adapter_manifest_digest",
       "breakpoints": true
+    },
+    {
+      "idx": 108,
+      "version": "7",
+      "when": 1791968464970,
+      "tag": "0108_sidecar_deployment_cleanup_confirmation",
+      "breakpoints": true
     }
   ]
 }

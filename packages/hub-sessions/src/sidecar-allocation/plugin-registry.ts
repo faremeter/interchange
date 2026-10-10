@@ -55,7 +55,7 @@ export function createSidecarPluginRegistry({
   const provisionersById = new Map<string, SidecarProvisioner>();
   for (const provisioner of provisioners) {
     validateId(provisioner.id);
-    if (provisioner.apiVersion !== 1) {
+    if (provisioner.apiVersion !== 2) {
       throw new Error(
         `Unsupported sidecar provisioner API version for ${provisioner.id}: ${String(provisioner.apiVersion)}`,
       );

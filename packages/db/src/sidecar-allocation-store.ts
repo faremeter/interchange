@@ -45,7 +45,7 @@ type SidecarAllocationRow = typeof sidecarAllocation.$inferSelect;
 const SidecarAllocationStatusValidator = type.enumerated(
   ...sidecarAllocationStatuses,
 );
-const SidecarProvisionerApiVersion = type("1");
+const SidecarProvisionerApiVersion = type("2");
 
 const activeStatuses = [
   "pending",
@@ -58,13 +58,17 @@ const activeStatuses = [
 // Why the Hub fails a deployment whose sidecar reported it stopped.
 export const SIDECAR_DEPLOYMENT_STOPPED_FAILURE_CODE =
   "sidecar_deployment_stopped";
+export const SIDECAR_CLEANUP_UNCONFIRMED_FAILURE_CODE =
+  "sidecar_cleanup_unconfirmed";
+export const SIDECAR_PROVISIONER_RELEASE_FAILURE_CODE =
+  "sidecar_provisioner_release_failed";
 
 export type SidecarAllocation = {
   readonly id: string;
   readonly anchorRunId: string;
   readonly tenantId: string;
   readonly provisionerId: string;
-  readonly provisionerApiVersion: 1;
+  readonly provisionerApiVersion: 2;
   readonly provisionerBindingFingerprint: string;
   readonly sidecarId?: string;
   /**
@@ -84,6 +88,8 @@ export type SidecarAllocation = {
   readonly initializationLeaseId?: string;
   readonly ensureAttempts: number;
   readonly destroyAttempts: number;
+  /** Confirmed removal for this cleanup generation, retained across retries. */
+  readonly deploymentCleanupConfirmed: boolean;
   readonly connectDeadline?: Date;
   /** How long the sidecar may stay disconnected before the Hub fails it. */
   readonly maxDisconnectedMs: number;
@@ -100,7 +106,7 @@ export type CreatePendingSidecarAllocationArgs = {
   readonly anchorRunId: string;
   readonly tenantId: string;
   readonly provisionerId: string;
-  readonly provisionerApiVersion: 1;
+  readonly provisionerApiVersion: 2;
   readonly provisionerBindingFingerprint: string;
   readonly adapterManifestDigest: string;
   readonly maxDisconnectedMs: number;
@@ -173,15 +179,24 @@ export type ScheduleSidecarAllocationRetryArgs = {
   readonly expectedStatus: (typeof activeStatuses)[number];
   readonly expectedGeneration: number;
   readonly nextAttemptAt: Date;
+  /** Minimum wait measured on the database clock, despite Hub clock skew. */
+  readonly minimumDelayMs?: number;
   readonly expectedLeaseId?: string;
-  readonly attempt?: "ensure" | "destroy";
-  readonly failure?: {
-    readonly code: string;
-    readonly message: string;
-  };
   readonly firstDeployFailedAt?: Date;
   readonly now?: Date;
-};
+} & (
+  | {
+      readonly attempt: "destroy";
+      readonly failure?: never;
+    }
+  | {
+      readonly attempt?: "ensure";
+      readonly failure?: {
+        readonly code: string;
+        readonly message: string;
+      };
+    }
+);
 
 export type BeginSidecarReplacementArgs = {
   readonly allocationId: string;
@@ -314,6 +329,7 @@ function parseSidecarAllocationRow(
       : {}),
     ensureAttempts: row.ensureAttempts,
     destroyAttempts: row.destroyAttempts,
+    deploymentCleanupConfirmed: row.deploymentCleanupConfirmed,
     ...(row.connectDeadline !== null
       ? { connectDeadline: row.connectDeadline }
       : {}),
@@ -520,6 +536,21 @@ export function createSidecarAllocationStore(db: DBHandle) {
     });
   }
 
+  async function hasPendingCancellation(
+    tx: DBExecutor,
+    anchorRunId: string,
+  ): Promise<boolean> {
+    const cancellation = await tx.query.workflowRun.findFirst({
+      columns: { id: true },
+      where: and(
+        eq(workflowRun.id, anchorRunId),
+        inArray(workflowRun.status, [...liveWorkflowRunStatuses]),
+        isNotNull(workflowRun.cancellationRequestedAt),
+      ),
+    });
+    return cancellation !== undefined;
+  }
+
   async function failRunningRuns(
     tx: DBExecutor,
     anchorRunId: string,
@@ -643,6 +674,9 @@ export function createSidecarAllocationStore(db: DBHandle) {
       .set({
         status: "releasing",
         generation: args.expectedGeneration + 1,
+        // Replacement clears ensure acceptance before removing the old copy.
+        // Preserve that cleanup obligation when release interrupts replacement.
+        deploymentCleanupConfirmed: sql`case when ${sidecarAllocation.status} = 'replacing' then ${sidecarAllocation.deploymentCleanupConfirmed} else ${sidecarAllocation.ensureAcceptedGeneration} is null end`,
         initializationLeaseId: null,
         nextAttemptAt: now,
         reconciliationLeaseId: null,
@@ -808,7 +842,7 @@ export function createSidecarAllocationStore(db: DBHandle) {
           `sidecarAllocationStore.createPending: anchor run ${args.anchorRunId} has no launch specification`,
         );
       }
-      if (args.provisionerApiVersion !== 1) {
+      if (args.provisionerApiVersion !== 2) {
         throw new Error(
           "sidecarAllocationStore.createPending: unsupported API version",
         );
@@ -886,6 +920,7 @@ export function createSidecarAllocationStore(db: DBHandle) {
             adapterManifestDigest: args.adapterManifestDigest,
             status: "provisioning",
             generation: args.expectedGeneration + 1,
+            deploymentCleanupConfirmed: false,
             ensureAcceptedGeneration: null,
             externalRef: null,
             connectDeadline: args.connectDeadline,
@@ -938,6 +973,9 @@ export function createSidecarAllocationStore(db: DBHandle) {
             sidecarId: args.sidecarId,
             adapterManifestDigest: args.adapterManifestDigest,
             status: "provisioning",
+            // A delayed cleanup hello must not match the replacement binding.
+            generation: args.generation + 1,
+            deploymentCleanupConfirmed: false,
             ensureAcceptedGeneration: null,
             externalRef: null,
             connectDeadline: args.connectDeadline,
@@ -1045,7 +1083,10 @@ export function createSidecarAllocationStore(db: DBHandle) {
       const [updated] = await db
         .update(sidecarAllocation)
         .set({
-          nextAttemptAt: args.nextAttemptAt,
+          nextAttemptAt:
+            args.minimumDelayMs === undefined
+              ? args.nextAttemptAt
+              : sql`greatest(${sql.param(args.nextAttemptAt, sidecarAllocation.nextAttemptAt)}, clock_timestamp() + (${args.minimumDelayMs} * interval '1 millisecond'))`,
           reconciliationLeaseId: null,
           reconciliationLeaseExpiresAt: null,
           ...(args.attempt === "ensure"
@@ -1077,6 +1118,31 @@ export function createSidecarAllocationStore(db: DBHandle) {
       return updated === undefined ? null : parseSidecarAllocationRow(updated);
     },
 
+    async confirmDeploymentCleanup(args: {
+      readonly allocationId: string;
+      readonly generation: number;
+      readonly expectedLeaseId: string;
+      readonly now?: Date;
+    }): Promise<boolean> {
+      const [updated] = await db
+        .update(sidecarAllocation)
+        .set({
+          deploymentCleanupConfirmed: true,
+          connectDeadline: null,
+          updatedAt: databaseTimestamp(args.now),
+        })
+        .where(
+          and(
+            eq(sidecarAllocation.id, args.allocationId),
+            eq(sidecarAllocation.generation, args.generation),
+            inArray(sidecarAllocation.status, ["releasing", "replacing"]),
+            ...leaseCondition(args.expectedLeaseId),
+          ),
+        )
+        .returning({ id: sidecarAllocation.id });
+      return updated !== undefined;
+    },
+
     // Provisioning is replaced because nothing has run. An allocated
     // generation is replaced only when the caller names that status: a
     // parked run, whose committed log is enough to continue.
@@ -1098,6 +1164,7 @@ export function createSidecarAllocationStore(db: DBHandle) {
           .set({
             status: "replacing",
             generation: args.expectedGeneration + 1,
+            deploymentCleanupConfirmed: sql`${sidecarAllocation.ensureAcceptedGeneration} is null`,
             initializationLeaseId: null,
             ensureAcceptedGeneration: null,
             nextAttemptAt: args.nextAttemptAt,
@@ -1232,6 +1299,13 @@ export function createSidecarAllocationStore(db: DBHandle) {
         );
         if (releasing === null) return null;
 
+        // Confirmed removal leaves the requested cancellation and its dispatches
+        // to lifecycle after accepted-history recovery.
+        if (
+          releasing.deploymentCleanupConfirmed &&
+          (await hasPendingCancellation(tx, releasing.anchorRunId))
+        )
+          return releasing;
         await failRunningRuns(tx, releasing.anchorRunId, now, {
           code: args.failureCode,
           message: args.failureMessage,
@@ -1264,6 +1338,7 @@ export function createSidecarAllocationStore(db: DBHandle) {
           .update(sidecarAllocation)
           .set({
             status: "released",
+            deploymentCleanupConfirmed: true,
             nextAttemptAt: null,
             reconciliationLeaseId: null,
             reconciliationLeaseExpiresAt: null,
@@ -1275,13 +1350,16 @@ export function createSidecarAllocationStore(db: DBHandle) {
           .returning();
         if (updated === undefined) return null;
 
-        await workflowRunDispatchStore.abandonUnsettled(
-          updated.anchorRunId,
-          "workflow_capacity_released",
-          "Workflow capacity was released before delivery could be confirmed",
-          now,
-          tx,
-        );
+        // Lifecycle settles a pending cancellation and its dispatches together
+        // after accepted history is recovered. The release already fences delivery.
+        if (!(await hasPendingCancellation(tx, updated.anchorRunId)))
+          await workflowRunDispatchStore.abandonUnsettled(
+            updated.anchorRunId,
+            "workflow_capacity_released",
+            "Workflow capacity was released before delivery could be confirmed",
+            now,
+            tx,
+          );
         return parseSidecarAllocationRow(updated);
       });
     },
@@ -1316,17 +1394,25 @@ export function createSidecarAllocationStore(db: DBHandle) {
           .returning();
         if (updated === undefined) return null;
 
-        await failRunningRuns(tx, updated.anchorRunId, now, {
-          code: args.code,
-          message: args.message,
-        });
-        await workflowRunDispatchStore.abandonUnsettled(
-          updated.anchorRunId,
-          args.code,
-          args.message,
-          now,
-          tx,
-        );
+        // Once removal is proven, lifecycle owns the requested cancellation
+        // and its dispatches after accepted-history recovery. Provider cleanup
+        // can still fail.
+        if (
+          !updated.deploymentCleanupConfirmed ||
+          !(await hasPendingCancellation(tx, updated.anchorRunId))
+        ) {
+          await failRunningRuns(tx, updated.anchorRunId, now, {
+            code: args.code,
+            message: args.message,
+          });
+          await workflowRunDispatchStore.abandonUnsettled(
+            updated.anchorRunId,
+            args.code,
+            args.message,
+            now,
+            tx,
+          );
+        }
         return parseSidecarAllocationRow(updated);
       });
     },
@@ -1365,6 +1451,9 @@ export function createSidecarAllocationStore(db: DBHandle) {
           .returning();
         if (updated === undefined) return null;
 
+        // No infrastructure remains to stop; lifecycle can finish cancellation.
+        if (await hasPendingCancellation(executor, updated.anchorRunId))
+          return parseSidecarAllocationRow(updated);
         await failRunningRuns(executor, updated.anchorRunId, now, {
           code: args.code,
           message: args.message,
@@ -1693,11 +1782,17 @@ export function createSidecarAllocationStore(db: DBHandle) {
       return updated !== undefined;
     },
 
+    /** Includes failed cleanup obligations whose fences must survive a restart. */
     async listActive(): Promise<SidecarAllocation[]> {
       const rows = await db
         .select()
         .from(sidecarAllocation)
-        .where(inArray(sidecarAllocation.status, activeStatuses));
+        .where(
+          or(
+            inArray(sidecarAllocation.status, activeStatuses),
+            eq(sidecarAllocation.status, "destroy_failed"),
+          ),
+        );
       return rows.map(parseSidecarAllocationRow);
     },
   };

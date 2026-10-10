@@ -102,7 +102,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         ensureAcceptedGeneration: 1,
         status: "allocated",
         provisionerId: "test",
-        provisionerApiVersion: 1,
+        provisionerApiVersion: 2,
         provisionerBindingFingerprint: "test:1",
         adapterManifestDigest: MANIFEST_DIGEST,
         maxDisconnectedMs: 900_000,
@@ -180,6 +180,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         try {
           await Promise.race([prepared.promise, deployment]);
           const lifecycle = createWorkflowLifecycleService({
+            retentionRouter: { fenceAllocation: () => undefined },
             db: h.db,
             historyReceives: createWorkflowHistoryReceiveTracker(),
             runReader: {
@@ -392,6 +393,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       try {
         await Promise.race([sent.promise, result]);
         const lifecycle = createWorkflowLifecycleService({
+          retentionRouter: { fenceAllocation: () => undefined },
           db: h.db,
           historyReceives: createWorkflowHistoryReceiveTracker(),
           runReader: {
@@ -534,6 +536,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       try {
         await preparing.promise;
         const lifecycle = createWorkflowLifecycleService({
+          retentionRouter: { fenceAllocation: () => undefined },
           db: h.db,
           historyReceives: createWorkflowHistoryReceiveTracker(),
           runReader: {

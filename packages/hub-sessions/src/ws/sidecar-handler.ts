@@ -489,13 +489,35 @@ export type AllocatedSidecarTarget = {
 };
 
 export type SidecarAllocationRouter = {
+  /** Opaque identity of the currently attached cleanup connection. */
+  getCleanupConnection(target: AllocatedSidecarTarget): object | undefined;
+  /**
+   * Confirm cleanup of a releasing allocation. An expected connection token
+   * prevents sending on a different socket after asynchronous validation.
+   * Notify the owner when sent so its own timeout can distinguish preparation
+   * failures from attempted undeploys.
+   */
+  undeployAllocation(
+    target: AllocatedSidecarTarget,
+    timeoutMs: number,
+    signal: AbortSignal,
+    expectedConnection: object,
+    onSent: () => void,
+  ): Promise<void>;
   sendWorkflowControl(
     target: AllocatedSidecarTarget,
     command: Omit<WorkflowControlFrame, "type" | "requestId" | "generation">,
     timeoutMs: number,
   ): Promise<void>;
-  /** Advance the in-memory trust boundary before provisioning a generation. */
-  fenceAllocation(allocationId: string, generation: number): void;
+  /**
+   * Advance the trust boundary after persisting a generation. `cleanup` keeps
+   * its control binding while the reconciler owns the acknowledged teardown.
+   */
+  fenceAllocation(
+    allocationId: string,
+    generation: number,
+    options?: { cleanup?: { sidecarId: string } },
+  ): void;
   /**
    * Remove an exact generation's fence after its durable owner becomes
    * terminal. Durable identity validation rejects later stale reconnects.
@@ -803,7 +825,8 @@ export function createSidecarRouter(
       () => {
         signal?.throwIfAborted();
         if (
-          allocationFences.get(binding.allocationId) !== binding.generation ||
+          allocationFences.get(binding.allocationId)?.generation !==
+            binding.generation ||
           allocatedConnections.get(binding.allocationId)?.ws !== ws ||
           !connections.has(ws)
         )
@@ -864,7 +887,10 @@ export function createSidecarRouter(
       identity: SidecarAuthIdentity;
     }
   >();
-  const allocationFences = new Map<string, number>();
+  const allocationFences = new Map<
+    string,
+    { generation: number; cleanup: { sidecarId: string } | undefined }
+  >();
   // allocationId -> generation whose worker acknowledged a workflow stop. Its
   // later workflow-run packs are refused, including after a reconnect.
   const stoppedAllocations = new Map<string, number>();
@@ -1054,7 +1080,11 @@ export function createSidecarRouter(
 
   // agentAddress → the undeploy a caller awaits for it, answered by the
   // agent.undeploy.ack or agent.undeploy.error carrying its request id.
-  const pendingUndeploys = new PendingTracker<string, void, string>();
+  const pendingUndeploys = new PendingTracker<
+    string,
+    void,
+    { requestId: string; generation: number; target?: AllocatedSidecarTarget }
+  >(scheduleTimeout);
   const pendingWorkflowControls = new PendingTracker<
     string,
     void,
@@ -1964,7 +1994,43 @@ export function createSidecarRouter(
   }
 
   function isFencedAsCurrent(binding: SidecarAuthIdentity): boolean {
-    return allocationFences.get(binding.allocationId) === binding.generation;
+    return (
+      allocationFences.get(binding.allocationId)?.generation ===
+      binding.generation
+    );
+  }
+
+  function getCleanupFence(
+    target: AllocatedSidecarTarget & { sidecarId: string },
+  ) {
+    const fence = allocationFences.get(target.allocationId);
+    if (
+      fence === undefined ||
+      fence.cleanup?.sidecarId !== target.sidecarId ||
+      fence.generation < target.generation
+    )
+      return undefined;
+    return fence;
+  }
+
+  // A committed cleanup binding can be observed before its releasing caller
+  // publishes the fence. Transfer the binding without issuing an untracked undeploy.
+  function fenceCleanupBindings(
+    bindings: readonly SidecarAuthIdentity[],
+  ): void {
+    for (const binding of bindings) {
+      if (binding.kind !== "cleanup") continue;
+      const fence = allocationFences.get(binding.allocationId);
+      if (
+        fence !== undefined &&
+        (fence.generation < binding.generation ||
+          (fence.generation === binding.generation &&
+            fence.cleanup?.sidecarId !== binding.sidecarId))
+      )
+        fenceAllocation(binding.allocationId, binding.generation, {
+          cleanup: { sidecarId: binding.sidecarId },
+        });
+    }
   }
 
   // Make `bindings` the connection's current set. A binding the in-memory
@@ -1983,20 +2049,35 @@ export function createSidecarRouter(
     ws: WsHandle,
     conn: SidecarConnection,
     bindings: readonly SidecarAuthIdentity[],
+    beforeRead?: ReadonlyMap<string, SidecarAuthIdentity>,
   ): { attached: SidecarAuthIdentity[]; added: SidecarAuthIdentity[] } {
-    const current = bindings.filter(isFencedAsCurrent);
-    for (const binding of bindings) {
+    const beforeTransfer = new Map(conn.bindings);
+    const unchangedDuringRead = (id: string) =>
+      beforeRead === undefined || beforeRead.get(id) === conn.bindings.get(id);
+    const observed = bindings.filter((binding) =>
+      unchangedDuringRead(binding.allocationId),
+    );
+    fenceCleanupBindings(observed);
+    const current = observed.filter(isFencedAsCurrent);
+    for (const binding of observed) {
       if (!current.includes(binding)) {
         logger.warn`Sidecar ${conn.sidecarId} skipped ${binding.kind} ${binding.allocationId} generation ${String(binding.generation)}: it is not fenced as current`;
       }
     }
     for (const [allocationId, held] of [...conn.bindings]) {
+      if (!unchangedDuringRead(allocationId)) continue;
+      const observed = bindings.find(
+        (binding) => binding.allocationId === allocationId,
+      );
+      if (observed !== undefined && observed.generation < held.generation)
+        continue;
       const next = current.find(
         (binding) => binding.allocationId === allocationId,
       );
       if (next === undefined || next.generation !== held.generation) {
         detachBinding(ws, allocationId, "Its binding is no longer current", {
           keepOpen: true,
+          undeploy: next?.kind !== "cleanup",
         });
       }
     }
@@ -2008,32 +2089,44 @@ export function createSidecarRouter(
           elsewhere.ws,
           binding.allocationId,
           `It moved to sidecar ${conn.sidecarId}`,
+          { undeploy: true },
         );
       }
       const held = conn.bindings.get(binding.allocationId);
       const unchanged =
         held?.generation === binding.generation && held.kind === binding.kind;
+      const previous = beforeTransfer.get(binding.allocationId);
+      if (
+        previous?.generation !== binding.generation ||
+        previous.kind !== binding.kind
+      )
+        added.push(binding);
       if (
         unchanged &&
         allocatedConnections.get(binding.allocationId)?.ws === ws
       )
         continue;
-      if (!unchanged) added.push(binding);
       conn.bindings.set(binding.allocationId, binding);
       allocatedConnections.set(binding.allocationId, { ws, identity: binding });
     }
-    return { attached: current, added };
+    return { attached: [...conn.bindings.values()], added };
   }
 
   // Remove one binding from its connection: drop its routes and in-flight
-  // work, tell the sidecar to undeploy the deployment it no longer hosts, and
-  // report the lost routes. The socket closes once it hosts nothing current,
-  // unless the caller is about to attach replacements.
+  // work and report the lost routes. Unless cleanup owns removal, also tell the
+  // sidecar to undeploy it. The socket closes once it hosts nothing current,
+  // unless the caller is preserving it to attach another binding.
   function detachBinding(
     ws: WsHandle,
     allocationId: string,
     reason: string,
-    { keepOpen = false }: { keepOpen?: boolean } = {},
+    {
+      keepOpen = false,
+      undeploy,
+    }: {
+      keepOpen?: boolean;
+      undeploy: boolean;
+    },
   ): void {
     const conn = connections.get(ws);
     const binding = conn?.bindings.get(allocationId);
@@ -2060,7 +2153,7 @@ export function createSidecarRouter(
       workflowRunPackReceiver.cancelByAgent(address);
     }
     const deploymentAddress =
-      binding.kind === "allocated" ? binding.workflowRunAddress : undefined;
+      binding.kind !== "probe" ? binding.workflowRunAddress : undefined;
     // An own-repository transfer needs no route, so the loop above can miss
     // it.
     if (deploymentAddress !== undefined)
@@ -2091,7 +2184,11 @@ export function createSidecarRouter(
     // pending entry, yet the sidecar may have installed it. The undeploy
     // names this generation, so it never removes a newer one, and a sidecar
     // that does not hold it acknowledges it anyway.
-    if (deploymentAddress !== undefined) {
+    if (
+      undeploy &&
+      deploymentAddress !== undefined &&
+      binding.kind === "allocated"
+    ) {
       sendUndeploy(
         conn,
         { address: deploymentAddress, generation: binding.generation },
@@ -2115,7 +2212,8 @@ export function createSidecarRouter(
   // answer, bounded by the request timeout. What the sidecar still sends for
   // the incarnation names its generation and is dropped, and an incarnation
   // still held after an undeploy lost with its connection is in the sidecar's
-  // next `hello`, which undeploys it again. An undeploy no deploy can wait on,
+  // next `hello`. Orphans are undeployed again; cleanup bindings leave removal
+  // to the reconciler's retry policy. An undeploy no deploy can wait on,
   // such as one of an address the sidecar reports but no binding of it
   // deploys, is not kept, so a sidecar cannot make the Hub keep any number of
   // them.
@@ -2235,7 +2333,7 @@ export function createSidecarRouter(
         attached.identity.generation !== binding.generation
       )
         continue;
-      if (binding.kind === "allocated") {
+      if (binding.kind !== "probe") {
         events.emit("sidecar.allocated.connected", {
           allocationId: binding.allocationId,
           generation: binding.generation,
@@ -2273,6 +2371,7 @@ export function createSidecarRouter(
         ),
       );
       bindings = resolved.filter((_, index) => current[index]);
+      fenceCleanupBindings(bindings);
     } catch (err) {
       logger.error`Rejected registration from sidecar ${sidecarId}: cannot resolve what it hosts: ${err instanceof Error ? err.message : String(err)}`;
       handleClose(ws);
@@ -2310,7 +2409,8 @@ export function createSidecarRouter(
     // a current binding, and a live one whose run ended on its own, stay
     // unrouted, their local state kept for inspection until the Hub releases
     // the deployment; one that stopped on its own is noted, and the reconciler
-    // fails its deployment. Every other one is undeployed: an earlier
+    // fails its deployment. A cleanup binding leaves removal to allocation
+    // reconciliation. Every other one is undeployed: an earlier
     // generation, a live one of a generation the sidecar already reported
     // stopped, a live one of a run the Hub cancelled or failed, a deployment
     // that left this sidecar while it was disconnected, one still deploying or
@@ -2474,7 +2574,21 @@ export function createSidecarRouter(
       }
       return;
     }
-    const { bindings, reclaimed, retained, unkept, failed } = hosted;
+    const { reclaimed, retained, unkept, failed } = hosted;
+    // A release can commit while the hello reads other deployments. Carry its
+    // cleanup binding into welcome so later stop reports still have an owner.
+    const bindings = hosted.bindings.map((binding) => {
+      if (binding.kind === "probe") return binding;
+      const fence = getCleanupFence(binding);
+      if (fence !== undefined) {
+        return {
+          ...binding,
+          kind: "cleanup" as const,
+          generation: fence.generation,
+        };
+      }
+      return binding;
+    });
 
     // A sidecar reconnecting on a new socket takes its bindings along. Move
     // them off the previous socket first so its close reports only the
@@ -2508,6 +2622,20 @@ export function createSidecarRouter(
       ),
     );
     for (const incarnation of unkept) {
+      // The reconciler owns the acknowledged teardown for this release fence.
+      if (
+        bindings.some(
+          (binding) =>
+            binding.kind !== "probe" &&
+            binding.workflowRunAddress === incarnation.address &&
+            getCleanupFence({
+              allocationId: binding.allocationId,
+              generation: incarnation.generation,
+              sidecarId,
+            }) !== undefined,
+        )
+      )
+        continue;
       logger.warn`Sidecar ${sidecarId} reported ${incarnation.address} generation ${String(incarnation.generation)} ${incarnation.state}, which the Hub does not keep there; asking it to undeploy`;
       sendUndeploy(
         conn,
@@ -2527,6 +2655,7 @@ export function createSidecarRouter(
     if (!hostsWork(conn)) {
       logger.warn`Rejected sidecar ${sidecarId}: none of its bindings is fenced as current`;
       for (const [address, binding] of [...reclaimed, ...retained]) {
+        if (getCleanupFence(binding) !== undefined) continue;
         sendUndeploy(
           conn,
           { address, generation: binding.generation },
@@ -2542,6 +2671,7 @@ export function createSidecarRouter(
     const newlyRoutedAddresses = new Set<string>();
     const routed: { address: string; generation: number }[] = [];
     for (const [address, binding] of reclaimed) {
+      if (getCleanupFence(binding) !== undefined) continue;
       if (
         conn.bindings.get(binding.allocationId)?.generation !==
         binding.generation
@@ -2559,9 +2689,9 @@ export function createSidecarRouter(
       addressIndex.set(address, ws);
       routed.push({ address, generation: binding.generation });
     }
-    // A copy kept unrouted whose binding did not attach was released
-    // while this hello was read, and no later release reaches it.
+    // Remove stale retained copies unless the current cleanup fence owns them.
     for (const [address, binding] of retained) {
+      if (getCleanupFence(binding) !== undefined) continue;
       if (
         conn.bindings.get(binding.allocationId)?.generation !==
         binding.generation
@@ -2689,6 +2819,7 @@ export function createSidecarRouter(
       }
       const conn = connections.get(ws);
       if (conn === undefined) return;
+      const before = new Map(conn.bindings);
       const bindings = await resolveSidecarBindings(sidecarId);
       signal?.throwIfAborted();
       if (syncTarget(sidecarId) !== ws) {
@@ -2696,7 +2827,8 @@ export function createSidecarRouter(
         return;
       }
       if (connections.get(ws) !== conn) return;
-      const { added } = attachBindings(ws, conn, bindings);
+      // A snapshot must not undo a fence or retirement published during its read.
+      const { added } = attachBindings(ws, conn, bindings, before);
       if (!hostsWork(conn)) {
         logger.info`Sidecar ${sidecarId} hosts nothing current; closing its connection`;
         handleClose(ws);
@@ -3618,9 +3750,27 @@ export function createSidecarRouter(
     frame: AgentUndeployAckFrame,
   ): void {
     const req = pendingUndeploys.get(frame.agentAddress);
-    if (req?.ws !== ws || req.meta !== frame.requestId) {
+    if (
+      req?.ws !== ws ||
+      req.meta.requestId !== frame.requestId ||
+      req.meta.generation !== frame.generation
+    ) {
       logger.debug`agent.undeploy.ack for ${frame.agentAddress} generation ${String(frame.generation)} answers an undeploy no request waits on`;
       return;
+    }
+    const target = req.meta.target;
+    if (target !== undefined) {
+      const current = allocatedConnections.get(target.allocationId);
+      if (
+        allocationFences.get(target.allocationId)?.generation !==
+          target.generation ||
+        current?.ws !== ws ||
+        current.identity.kind !== "cleanup" ||
+        current.identity.generation !== target.generation
+      ) {
+        pendingUndeploys.reject(frame.agentAddress, "Cleanup identity changed");
+        return;
+      }
     }
     pendingUndeploys.resolve(frame.agentAddress);
   }
@@ -3630,7 +3780,11 @@ export function createSidecarRouter(
     frame: AgentUndeployErrorFrame,
   ): void {
     const req = pendingUndeploys.get(frame.agentAddress);
-    if (req?.ws === ws && req.meta === frame.requestId) {
+    if (
+      req?.ws === ws &&
+      req.meta.requestId === frame.requestId &&
+      req.meta.generation === frame.generation
+    ) {
       pendingUndeploys.reject(frame.agentAddress, frame.error);
       return;
     }
@@ -3884,14 +4038,18 @@ export function createSidecarRouter(
    * drains use the deployment address), so the binding is transient: no
    * `hello` reports it and no reconnect restores it.
    */
-  function fenceAllocation(allocationId: string, generation: number): void {
+  function fenceAllocation(
+    allocationId: string,
+    generation: number,
+    { cleanup }: { cleanup?: { sidecarId: string } } = {},
+  ): void {
     const existing = allocationFences.get(allocationId);
-    if (existing !== undefined && generation < existing) {
+    if (existing !== undefined && generation < existing.generation) {
       throw new Error(
-        `Cannot move allocation ${allocationId} fence backward from ${String(existing)} to ${String(generation)}`,
+        `Cannot move allocation ${allocationId} fence backward from ${String(existing.generation)} to ${String(generation)}`,
       );
     }
-    allocationFences.set(allocationId, generation);
+    allocationFences.set(allocationId, { generation, cleanup });
     const stopped = stoppedAllocations.get(allocationId);
     if (stopped !== undefined && stopped < generation)
       stoppedAllocations.delete(allocationId);
@@ -3915,11 +4073,31 @@ export function createSidecarRouter(
 
     const current = allocatedConnections.get(allocationId);
     if (current !== undefined && current.identity.generation !== generation) {
+      const cleanupCurrent = cleanup?.sidecarId === current.identity.sidecarId;
+      const conn = connections.get(current.ws);
       detachBinding(
         current.ws,
         allocationId,
         `Generation ${String(generation)} superseded it`,
+        {
+          keepOpen: cleanupCurrent && current.identity.kind !== "probe",
+          undeploy: !cleanupCurrent,
+        },
       );
+      if (
+        cleanupCurrent &&
+        conn !== undefined &&
+        current.identity.kind !== "probe"
+      ) {
+        // Keep the control binding while the reconciler releases the provider
+        // hold. It carries no workflow routes, and cleanup still revalidates
+        // the durable generation before sending. Retirement can now close
+        // this connection even if provider failure prevents a later sync.
+        attachBindings(current.ws, conn, [
+          ...conn.bindings.values(),
+          { ...current.identity, kind: "cleanup", generation },
+        ]);
+      }
     }
 
     const waiters = allocationWaiters.get(allocationId);
@@ -3938,7 +4116,11 @@ export function createSidecarRouter(
   }
 
   function retireAllocation(target: AllocatedSidecarTarget): void {
-    if (allocationFences.get(target.allocationId) !== target.generation) return;
+    if (
+      allocationFences.get(target.allocationId)?.generation !==
+      target.generation
+    )
+      return;
 
     detachAllocation(target);
     allocationFences.delete(target.allocationId);
@@ -3973,13 +4155,16 @@ export function createSidecarRouter(
 
   async function getProvisionedConnection(
     target: AllocatedSidecarTarget,
-    use: "readiness" | "routing",
+    use: "readiness" | "routing" | "cleanup",
   ): Promise<{
     ws: WsHandle;
     conn: SidecarConnection;
     binding: SidecarAuthIdentity;
   }> {
-    if (allocationFences.get(target.allocationId) !== target.generation) {
+    if (
+      allocationFences.get(target.allocationId)?.generation !==
+      target.generation
+    ) {
       throw new Error(
         `Allocation ${target.allocationId} generation ${String(target.generation)} is not current`,
       );
@@ -3991,6 +4176,14 @@ export function createSidecarRouter(
     ) {
       throw new Error(
         `Allocated sidecar is not connected for allocation ${target.allocationId} generation ${String(target.generation)}`,
+      );
+    }
+    if (
+      (current.identity.kind === "cleanup" && use !== "cleanup") ||
+      (current.identity.kind !== "cleanup" && use === "cleanup")
+    ) {
+      throw new Error(
+        `Allocation ${target.allocationId} does not permit ${use}`,
       );
     }
     let identityCurrent: boolean;
@@ -4005,11 +4198,32 @@ export function createSidecarRouter(
     }
     if (!identityCurrent) {
       if (allocatedConnections.get(target.allocationId) === current) {
-        detachBinding(
-          current.ws,
-          target.allocationId,
-          "Its identity is no longer current",
-        );
+        // The database may have committed release before its caller published
+        // the fence. Do not let an old acknowledgement undeploy that copy.
+        let bindings: readonly SidecarAuthIdentity[];
+        try {
+          bindings = await resolveSidecarBindings(current.identity.sidecarId);
+        } catch (cause) {
+          throw new SidecarIdentityValidationError(
+            target.allocationId,
+            target.generation,
+            cause,
+          );
+        }
+        if (allocatedConnections.get(target.allocationId) === current) {
+          fenceCleanupBindings(
+            bindings.filter(
+              (binding) => binding.allocationId === target.allocationId,
+            ),
+          );
+          if (allocatedConnections.get(target.allocationId) === current)
+            detachBinding(
+              current.ws,
+              target.allocationId,
+              "Its identity is no longer current",
+              { undeploy: true },
+            );
+        }
       }
       throw new Error(
         `Allocated sidecar identity is no longer current for allocation ${target.allocationId}`,
@@ -4132,7 +4346,10 @@ export function createSidecarRouter(
     }
     signal?.throwIfAborted();
     if (ready) return;
-    if (allocationFences.get(target.allocationId) !== target.generation) {
+    if (
+      allocationFences.get(target.allocationId)?.generation !==
+      target.generation
+    ) {
       throw new Error(
         `Allocation ${target.allocationId} generation ${String(target.generation)} is not current`,
       );
@@ -4976,7 +5193,9 @@ export function createSidecarRouter(
     ) {
       return;
     }
-    detachBinding(current.ws, target.allocationId, "It was released");
+    detachBinding(current.ws, target.allocationId, "It was released", {
+      undeploy: true,
+    });
   }
 
   async function handleWorkflowControlAck(
@@ -5059,14 +5278,25 @@ export function createSidecarRouter(
   // A deployment stopped though the Hub did not stop it. A current
   // generation's stays unrouted, as a stopped one a hello reports does, and
   // the reconciler fails it once the Hub holds the history the stopped copy
-  // reported, or once it stops waiting for it. Any other stopped incarnation
-  // is not the Hub's to keep, so it is undeployed.
+  // reported, or once it stops waiting for it. Cleanup bindings leave removal
+  // to the reconciler; any other stopped incarnation is undeployed.
   function handleDeploymentStopped(
     ws: WsHandle,
     frame: DeploymentStoppedFrame,
   ): void {
     const conn = connections.get(ws);
     if (conn === undefined) return;
+    // Cleanup bindings retain access for the reconciler's acknowledged removal.
+    if (
+      [...conn.bindings.values()].some(
+        (binding) =>
+          binding.kind === "cleanup" &&
+          binding.workflowRunAddress === frame.agentAddress &&
+          binding.generation >= frame.generation &&
+          isFencedAsCurrent(binding),
+      )
+    )
+      return;
     const binding = deploymentBinding(conn, frame.agentAddress);
     if (
       binding?.generation !== frame.generation ||
@@ -5216,37 +5446,139 @@ export function createSidecarRouter(
       );
     }
     const { ws, conn, binding } = routed;
-    const requestId = nextRequestId();
+    return requestUndeploy({
+      ws,
+      conn,
+      agentAddress,
+      generation: binding.generation,
+      reason,
+      timeoutMs: requestTimeoutMs,
+    });
+  }
 
+  function getCleanupConnection(
+    target: AllocatedSidecarTarget,
+  ): object | undefined {
+    const current = allocatedConnections.get(target.allocationId);
+    return allocationFences.get(target.allocationId)?.generation ===
+      target.generation &&
+      current?.identity.kind === "cleanup" &&
+      current.identity.generation === target.generation
+      ? current.ws
+      : undefined;
+  }
+
+  async function undeployAllocation(
+    target: AllocatedSidecarTarget,
+    timeoutMs: number,
+    signal: AbortSignal,
+    expectedConnection: object,
+    onSent: () => void,
+  ): Promise<void> {
+    signal.throwIfAborted();
+    const { ws, conn, binding } = await getProvisionedConnection(
+      target,
+      "cleanup",
+    );
+    if (binding.kind !== "cleanup") {
+      throw new Error(
+        `Allocation ${target.allocationId} is not being cleaned up`,
+      );
+    }
+    if (ws !== expectedConnection) {
+      throw new Error("Cleanup connection changed before the request was sent");
+    }
+    await requestUndeploy({
+      ws,
+      conn,
+      agentAddress: binding.workflowRunAddress,
+      generation: binding.generation,
+      reason: "The allocation is being released",
+      timeoutMs,
+      target,
+      signal,
+      onSent,
+    });
+  }
+
+  function requestUndeploy(args: {
+    ws: WsHandle;
+    conn: SidecarConnection;
+    agentAddress: string;
+    generation: number;
+    reason: string;
+    timeoutMs: number;
+    signal?: AbortSignal;
+    target?: AllocatedSidecarTarget;
+    onSent?: () => void;
+  }): Promise<void> {
+    const {
+      ws,
+      conn,
+      agentAddress,
+      generation,
+      reason,
+      timeoutMs,
+      signal,
+      target,
+    } = args;
+    signal?.throwIfAborted();
+    if (pendingUndeploys.has(agentAddress)) {
+      return Promise.reject(
+        new Error(`Undeploy of ${agentAddress} is already pending`),
+      );
+    }
+    const requestId = nextRequestId();
     return new Promise<void>((resolve, reject) => {
-      // Timeout, ack, and error rejection share one closure so the routing
-      // teardown runs exactly once no matter how the round-trip settles.
+      const finish = () => {
+        signal?.removeEventListener("abort", onAbort);
+        if (target === undefined) removeRoute(ws, agentAddress);
+      };
+      const onAbort = () => {
+        if (pendingUndeploys.get(agentAddress)?.meta.requestId !== requestId)
+          return;
+        pendingUndeploys.delete(agentAddress);
+        finish();
+        reject(
+          signal?.reason instanceof Error
+            ? signal.reason
+            : new Error("Cleanup aborted"),
+        );
+      };
       pendingUndeploys.register(
         agentAddress,
         ws,
         {
-          timeoutMs: requestTimeoutMs,
-          timeoutMessage: `Undeploy of "${agentAddress}" timed out after ${requestTimeoutMs}ms`,
+          timeoutMs,
+          timeoutMessage: `Undeploy of "${agentAddress}" timed out after ${timeoutMs}ms`,
           resolve() {
-            removeRoute(ws, agentAddress);
+            finish();
             resolve();
           },
           reject(error: string) {
-            removeRoute(ws, agentAddress);
+            finish();
             reject(new Error(error));
           },
         },
-        requestId,
+        { requestId, generation, ...(target !== undefined ? { target } : {}) },
       );
-
-      conn.send({
-        type: "agent.undeploy",
-        requestId,
-        agentAddress,
-        generation: binding.generation,
-        reason,
-      });
-      noteUndeploying(conn, agentAddress, requestId);
+      signal?.addEventListener("abort", onAbort, { once: true });
+      try {
+        conn.send({
+          type: "agent.undeploy",
+          requestId,
+          agentAddress,
+          generation,
+          reason,
+        });
+        args.onSent?.();
+        noteUndeploying(conn, agentAddress, requestId);
+      } catch (error) {
+        pendingUndeploys.reject(
+          agentAddress,
+          error instanceof Error ? error.message : String(error),
+        );
+      }
     });
   }
 
@@ -5432,6 +5764,8 @@ export function createSidecarRouter(
     detachAllocation,
     syncSidecar,
     sendAgentUndeploy,
+    undeployAllocation,
+    getCleanupConnection,
     sendWorkflowControl,
     sendSourcesUpdate,
     sendCredentialsUpdate,
