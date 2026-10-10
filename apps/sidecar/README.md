@@ -37,3 +37,14 @@ Run it under Bun. Startup requires `SIDECAR_DATA_DIR`, `HUB_WS_URL`,
 relocates the tarball cache (defaults to a subdirectory of the data
 dir), and the cache and registry size caps are read through
 `src/config.ts`.
+
+`SIDECAR_DATA_DIR` must be durably established on a filesystem that supports
+file and directory synchronization (`fsync`). Deployment creation, state
+markers, and removal require both; filesystems that reject directory
+synchronization are unsupported. A failed state-marker write or durable
+removal keeps capacity reserved. If undeploy cannot persist its teardown marker,
+it still stops the child but preserves local state until a retry can persist
+the marker and delete the state. A directory-sync failure during the startup
+inventory aborts boot, because the sidecar cannot safely
+reuse capacity based on an unconfirmed record write or deletion. Invalid
+record contents are skipped individually.

@@ -1,4 +1,4 @@
-import { describe, test, expect, afterEach } from "bun:test";
+import { describe, test, expect, afterEach, spyOn } from "bun:test";
 import { readFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -13,7 +13,9 @@ import {
 } from "@intx/crypto";
 import { hexEncode } from "@intx/types";
 import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
+import { deriveWorkflowRunId } from "@intx/types/workflow-run-id";
 import { createInMemoryTransport } from "@intx/mail-memory";
+import { syncRemovedPathDurable } from "@intx/storage-isogit/node";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 import {
   createControlChannelSender,
@@ -59,7 +61,7 @@ import {
   markWorkflowRunRecord,
   writeWorkflowRunRecord,
   updateWorkflowRunRecordSources,
-  type WorkflowRunRecord,
+  WorkflowRunRecord,
 } from "./workflow-run-record";
 
 function deriveWorkflowRunRepoId(agentAddress: string): string {
@@ -130,11 +132,14 @@ function createMinimalStubRepoStore(): RepoStore {
 
 // The production hook removes the run repository, and the run record inside it.
 function removeRunDirectory(dataDir: string) {
-  return (runId: string) =>
-    fs.rm(path.join(dataDir, "workflow-runs", runId), {
+  return async (runId: string) => {
+    const dir = path.join(dataDir, "workflow-runs", runId);
+    await fs.rm(dir, {
       recursive: true,
       force: true,
     });
+    await syncRemovedPathDurable(dir);
+  };
 }
 
 describe("createSidecarWorkflowSupervisor", () => {
@@ -1743,6 +1748,74 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     ).toBe(false);
   });
 
+  test.each([false, true])(
+    "a failed stopped mark still attempts deletion and holds capacity only if deletion fails (%s)",
+    async (deletionFails) => {
+      const spawnError = new Error("ENOSPC: spawn failed");
+      let spawned = false;
+      const { router, substrateEnv } = await buildMultistepFixture({
+        spawner: () => {
+          spawned = true;
+          throw spawnError;
+        },
+      });
+      const agentAddress = "run_failed-mark@example.com";
+      const frame = makeMultistepFrame({
+        agentAddress,
+        definition: {
+          id: "wf-failed-mark",
+          triggers: [{ type: "manual" }],
+          stepOrder: ["step-1"],
+          steps: { "step-1": { kind: "step" } },
+        },
+        sources: { "step-1": [makeInferenceSource("step-1")] },
+      });
+      const dataDir = substrateEnv.SIDECAR_DATA_DIR;
+      if (dataDir === undefined)
+        throw new Error("fixture data directory unset");
+      const recordFile = path.join(
+        dataDir,
+        "workflow-runs",
+        deriveWorkflowRunRepoId(agentAddress),
+        "deployment.json",
+      );
+      const open = fs.open;
+      const unlink = fs.unlink;
+      let markAttempts = 0;
+      let deleteAttempts = 0;
+      const openSpy = spyOn(fs, "open").mockImplementation(
+        async (target, flags, mode) => {
+          if (spawned && String(target).startsWith(`${recordFile}.tmp.`)) {
+            markAttempts++;
+            throw new Error("ENOSPC: cannot write stopped mark");
+          }
+          return open(target, flags, mode);
+        },
+      );
+      const unlinkSpy = spyOn(fs, "unlink").mockImplementation(
+        async (target) => {
+          if (target === recordFile) {
+            deleteAttempts++;
+            if (deletionFails) throw new Error("EIO: cannot remove record");
+          }
+          return unlink(target);
+        },
+      );
+      try {
+        await expect(router.deploy(frame)).rejects.toBe(spawnError);
+        expect(markAttempts).toBe(1);
+        expect(deleteAttempts).toBe(1);
+        expect(router.incarnations()).toHaveLength(deletionFails ? 1 : 0);
+        expect(
+          await scanWorkflowRunRecords(dataDir, createNoopCredentialCipher()),
+        ).toHaveLength(deletionFails ? 1 : 0);
+      } finally {
+        openSpy.mockRestore();
+        unlinkSpy.mockRestore();
+      }
+    },
+  );
+
   test("rejects a deploy whose step pins an unbuildable provider before spawning", async () => {
     // The source-admission gate runs before any state is claimed or the
     // child is spawned. A step whose pinned source names a provider the
@@ -3214,6 +3287,340 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       "this sidecar already holds as many deployments as its hello can report",
     );
     expect(heldAddresses(router)).toEqual([held]);
+  });
+
+  test.each(["write", "directory sync"] as const)(
+    "a failed teardown mark %s stops the child and preserves local state until retry",
+    async (failure) => {
+      const dataDir = await createTempBaseDir("sidecar-teardown-mark-");
+      const head = "run_teardown_mark@example.com";
+      const runId = deriveWorkflowRunRepoId(head);
+      const recordDir = path.join(dataDir, "workflow-runs", runId);
+      const recordFile = path.join(recordDir, "deployment.json");
+      const agentDir = path.join(dataDir, "agent-directory");
+      const spawner = makeReadyDrivingSpawner(15410);
+      let stopped = false;
+      const { router, tempBase, transport } = await buildMultistepFixture({
+        spawner: (args) => {
+          const child = spawner.spawner(args);
+          return {
+            ...child,
+            kill: () => {
+              stopped = true;
+              child.kill();
+            },
+          };
+        },
+        multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+        maxIncarnations: 1,
+        deleteAgentDir: async () => {
+          expect(stopped).toBe(true);
+          await fs.rm(agentDir, { recursive: true, force: true });
+        },
+      });
+      const deploying = router.deploy(singleStepFrame(head, "wf-mark"));
+      await spawner.driveReadyFor(0);
+      await deploying;
+      const stateDirs = [
+        agentDir,
+        path.join(dataDir, "workflow-step-state", runId),
+        path.join(dataDir, "workflow-definition-closures", runId),
+        path.join(dataDir, "workflow-definition-sources", runId),
+        path.join(dataDir, "workflow-definition-source-gits", runId),
+        conversationStateRoot(dataDir, runId),
+        path.join(tempBase, "agent-state", deriveWorkflowRunId(head)),
+        recordDir,
+      ];
+      for (const dir of stateDirs) {
+        await fs.mkdir(dir, { recursive: true });
+        await fs.writeFile(path.join(dir, "preserved"), "deployment state");
+      }
+      const open = fs.open;
+      const error = new Error(`teardown mark ${failure} failed`);
+      const spy = spyOn(fs, "open").mockImplementation(
+        async (target, flags, mode) => {
+          if (
+            failure === "write" &&
+            String(target).startsWith(`${recordFile}.tmp.`)
+          )
+            throw error;
+          const handle = await open(target, flags, mode);
+          if (failure === "directory sync" && target === recordDir)
+            spyOn(handle, "sync").mockRejectedValue(error);
+          return handle;
+        },
+      );
+      const frame = {
+        type: "agent.undeploy",
+        requestId: "failed-teardown-mark",
+        agentAddress: head,
+        generation: 1,
+        reason: "test",
+      } as const;
+      if (router.undeploy === undefined) throw new Error("Expected undeploy");
+      try {
+        await expect(router.undeploy(frame)).rejects.toThrow(
+          `marking its record failed: ${error.message}`,
+        );
+        expect(stopped).toBe(true);
+        expect(isRegistered(transport, head)).toBe(false);
+        expect(router.incarnations()).toEqual([
+          { address: head, generation: 1, state: "tearing-down" },
+        ]);
+        for (const dir of stateDirs) {
+          expect(await fs.readFile(path.join(dir, "preserved"), "utf8")).toBe(
+            "deployment state",
+          );
+        }
+        const record = WorkflowRunRecord.assert(
+          JSON.parse(await fs.readFile(recordFile, "utf8")),
+        );
+        expect(record.state).toBe(
+          failure === "directory sync" ? "tearing-down" : undefined,
+        );
+        await expect(
+          router.deploy(singleStepFrame("run_next@example.com", "wf-mark")),
+        ).rejects.toThrow(
+          "already holds as many deployments as its hello can report",
+        );
+      } finally {
+        spy.mockRestore();
+      }
+      await router.undeploy(frame);
+      for (const dir of stateDirs) {
+        await expect(fs.stat(dir)).rejects.toMatchObject({ code: "ENOENT" });
+      }
+      expect(router.incarnations()).toEqual([]);
+    },
+  );
+
+  test("a failed state-tree sync preserves the teardown record across restart", async () => {
+    const dataDir = await createTempBaseDir("sidecar-state-tree-sync-");
+    const head = "run_state_sync@example.com";
+    const runId = deriveWorkflowRunRepoId(head);
+    const spawner = makeReadyDrivingSpawner(15420);
+    const { router } = await buildMultistepFixture({
+      spawner: spawner.spawner,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+      maxIncarnations: 1,
+    });
+    const deploying = router.deploy(singleStepFrame(head, "wf-sync"));
+    await spawner.driveReadyFor(0);
+    await deploying;
+    const parent = path.join(dataDir, "workflow-step-state");
+    const scratch = path.join(parent, runId);
+    await fs.mkdir(scratch, { recursive: true });
+    await fs.writeFile(path.join(scratch, "leftover"), "state");
+    const open = fs.open;
+    const spy = spyOn(fs, "open").mockImplementation(
+      async (target, flags, mode) => {
+        const handle = await open(target, flags, mode);
+        if (target === parent)
+          spyOn(handle, "sync").mockRejectedValue(
+            new Error("state-tree sync failed"),
+          );
+        return handle;
+      },
+    );
+    const frame = {
+      type: "agent.undeploy",
+      requestId: "durable-state-remove",
+      agentAddress: head,
+      generation: 1,
+      reason: "test",
+    } as const;
+    if (router.undeploy === undefined) throw new Error("Expected undeploy");
+    try {
+      await expect(router.undeploy(frame)).rejects.toThrow(
+        "state-tree sync failed",
+      );
+      await expect(fs.stat(scratch)).rejects.toThrow();
+      expect(router.incarnations()).toEqual([
+        { address: head, generation: 1, state: "tearing-down" },
+      ]);
+      expect(
+        await scanWorkflowRunRecords(dataDir, createNoopCredentialCipher()),
+      ).toHaveLength(1);
+      await expect(
+        router.deploy(singleStepFrame("run_next@example.com", "wf-sync")),
+      ).rejects.toThrow(
+        "already holds as many deployments as its hello can report",
+      );
+    } finally {
+      spy.mockRestore();
+    }
+    const next = makeReadyDrivingSpawner(15430);
+    const { router: restarted } = await buildMultistepFixture({
+      spawner: next.spawner,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+      maxIncarnations: 1,
+    });
+    await restarted.restoreWorkflowRuns();
+    expect(next.spawnCount()).toBe(0);
+    expect(restarted.incarnations()).toEqual([
+      { address: head, generation: 1, state: "tearing-down" },
+    ]);
+    if (restarted.undeploy === undefined) throw new Error("Expected undeploy");
+    await restarted.undeploy(frame);
+    expect(restarted.incarnations()).toEqual([]);
+    expect(
+      await scanWorkflowRunRecords(dataDir, createNoopCredentialCipher()),
+    ).toEqual([]);
+  });
+
+  test.each([
+    new Error("injected spawn failure"),
+    new Error(""),
+    new AggregateError([]),
+  ])(
+    "failed initialization (%s) keeps a valid stopped record and its slot until removal",
+    async (cause) => {
+      const dataDir = await createTempBaseDir("sidecar-failed-record-cleanup-");
+      const head = "run_failed_record@example.com";
+      const recordFile = path.join(
+        dataDir,
+        "workflow-runs",
+        deriveWorkflowRunRepoId(head),
+        "deployment.json",
+      );
+      const { router } = await buildMultistepFixture({
+        spawner: () => {
+          throw cause;
+        },
+        multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+        maxIncarnations: 1,
+      });
+      const unlink = fs.unlink;
+      const spy = spyOn(fs, "unlink").mockImplementation(async (target) => {
+        if (target === recordFile) throw new Error("record cleanup failed");
+        return unlink(target);
+      });
+      try {
+        await expect(
+          router.deploy(singleStepFrame(head, "wf-failure")),
+        ).rejects.toBe(cause);
+        const incarnations = router.incarnations();
+        expect(incarnations).toEqual([
+          {
+            address: head,
+            generation: 1,
+            state: "stopped",
+            error:
+              cause.message || "Deployment failed without an error message",
+          },
+        ]);
+        expect(HostedIncarnation(incarnations[0]) instanceof type.errors).toBe(
+          false,
+        );
+        await expect(
+          router.deploy(
+            singleStepFrame("run_another@example.com", "wf-failure"),
+          ),
+        ).rejects.toThrow(
+          "already holds as many deployments as its hello can report",
+        );
+        expect(await recordExists(dataDir, deriveWorkflowRunRepoId(head))).toBe(
+          true,
+        );
+        const records = await scanWorkflowRunRecords(
+          dataDir,
+          createNoopCredentialCipher(),
+        );
+        expect(records).toHaveLength(1);
+        expect(records[0]?.record).toMatchObject({
+          state: "stopped",
+          error: incarnations[0]?.error,
+        });
+        const restartedSpawner = makeReadyDrivingSpawner(15600);
+        const { router: restarted } = await buildMultistepFixture({
+          spawner: restartedSpawner.spawner,
+          transport: createInMemoryTransport(),
+          multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+        });
+        await restarted.restoreWorkflowRuns();
+        expect(restartedSpawner.spawnCount()).toBe(0);
+        expect(restarted.incarnations()).toEqual(incarnations);
+      } finally {
+        spy.mockRestore();
+      }
+      if (router.undeploy === undefined) throw new Error("Expected undeploy");
+      await router.undeploy({
+        type: "agent.undeploy",
+        requestId: "cleanup-failed-record",
+        agentAddress: head,
+        generation: 1,
+        reason: "test",
+      });
+      expect(router.incarnations()).toEqual([]);
+    },
+  );
+
+  test("undeploy completes even when the stop it waited for fails to persist", async () => {
+    const dataDir = await createTempBaseDir("sidecar-stop-cleanup-");
+    const spawner = makeReadyDrivingSpawner(16110);
+    const { router } = await buildMultistepFixture({
+      spawner: spawner.spawner,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+    });
+    const head = "run_stop_cleanup@example.com";
+    const deployed = router.deploy(singleStepFrame(head, "wf-cleanup"));
+    await spawner.driveReadyFor(0);
+    await deployed;
+    const recordDir = path.join(
+      dataDir,
+      "workflow-runs",
+      deriveWorkflowRunRepoId(head),
+    );
+    const syncing = Promise.withResolvers<undefined>();
+    const failSync = Promise.withResolvers<undefined>();
+    const open = fs.open;
+    let intercepted = false;
+    const spy = spyOn(fs, "open").mockImplementation(
+      async (target, flags, mode) => {
+        const handle = await open(target, flags, mode);
+        if (target === recordDir && !intercepted) {
+          intercepted = true;
+          spyOn(handle, "sync").mockImplementation(async () => {
+            syncing.resolve(undefined);
+            await failSync.promise;
+            throw new Error("stop marker sync failed");
+          });
+        }
+        return handle;
+      },
+    );
+    try {
+      const stopping = router
+        .control({
+          type: "workflow.control",
+          requestId: "stop-before-remove",
+          action: "stop",
+          agentAddress: head,
+          runId: deriveWorkflowRunId(head),
+          generation: 1,
+          reason: "Stop the deployment",
+        })
+        .catch((error: unknown) => error);
+      await syncing.promise;
+      if (router.undeploy === undefined) throw new Error("Expected undeploy");
+      const removing = router.undeploy({
+        type: "agent.undeploy",
+        requestId: "remove",
+        agentAddress: head,
+        generation: 2,
+        reason: "release",
+      });
+      failSync.resolve(undefined);
+      expect(await stopping).toBeInstanceOf(Error);
+      await removing;
+      expect(router.incarnations()).toEqual([]);
+      expect(
+        await scanWorkflowRunRecords(dataDir, createNoopCredentialCipher()),
+      ).toEqual([]);
+    } finally {
+      failSync.resolve(undefined);
+      spy.mockRestore();
+    }
   });
 
   test("restore holds a deployment its record marks stopped or tearing down without spawning it", async () => {

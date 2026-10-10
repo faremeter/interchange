@@ -9,6 +9,7 @@ import { getLogger } from "@intx/log";
 import {
   initAgentRepo,
   applyPack,
+  syncRemovedPathDurable,
   type CommitVerifier,
 } from "@intx/storage-isogit/node";
 
@@ -65,6 +66,7 @@ export function createAgentRepoStore(config: {
 
   async function remove(address: string): Promise<void> {
     await fsp.rm(getAgentDir(address), { recursive: true, force: true });
+    await syncRemovedPathDurable(getAgentDir(address));
     logger.info`Deleted agent directory for ${address}`;
   }
 

@@ -264,6 +264,79 @@ const WITH_BODIES: WorkflowRunRecord = {
 };
 
 describe("workflow run record store", () => {
+  test("initial persistence waits for the directory links and retries their failed sync", async () => {
+    const dataDir = await makeDataDir();
+    const runId = "directory-links";
+    const runDirectory = path.dirname(recordPath(dataDir, runId));
+    const runsDirectory = path.dirname(runDirectory);
+    const directories: string[] = [];
+    const failure = new Error("workflow-runs directory sync failed");
+    let fail = true;
+    const open = fs.open;
+    const spy = spyOn(fs, "open").mockImplementation(
+      async (target, flags, mode) => {
+        const handle = await open(target, flags, mode);
+        if (flags === "r") {
+          directories.push(String(target));
+          if (target === runsDirectory && fail) {
+            spyOn(handle, "sync").mockRejectedValue(failure);
+          }
+        }
+        return handle;
+      },
+    );
+    try {
+      await expect(
+        writeWorkflowRunRecord(dataDir, runId, SINGLE_STEP, CIPHER),
+      ).rejects.toBe(failure);
+      expect(directories).toEqual([runDirectory, runsDirectory]);
+      fail = false;
+      directories.length = 0;
+      await writeWorkflowRunRecord(dataDir, runId, SINGLE_STEP, CIPHER);
+      expect(directories).toEqual([runDirectory, runsDirectory, dataDir]);
+    } finally {
+      spy.mockRestore();
+      await fs.rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  for (const mutation of ["stopped", "deletion"] as const) {
+    test(`${mutation} does not complete when its directory sync fails`, async () => {
+      const dataDir = await makeDataDir();
+      const runId = `durable-${mutation}`;
+      await writeWorkflowRunRecord(dataDir, runId, SINGLE_STEP, CIPHER);
+      const directory = path.dirname(recordPath(dataDir, runId));
+      const failure = new Error("directory sync failed");
+      const open = fs.open;
+      const spy = spyOn(fs, "open").mockImplementation(
+        async (target, flags, mode) => {
+          const handle = await open(target, flags, mode);
+          if (target === directory) {
+            spyOn(handle, "sync").mockRejectedValue(failure);
+          }
+          return handle;
+        },
+      );
+      try {
+        switch (mutation) {
+          case "stopped":
+            await expect(
+              markWorkflowRunRecord(dataDir, runId, { state: "stopped" }),
+            ).rejects.toBe(failure);
+            break;
+          case "deletion":
+            await expect(deleteWorkflowRunRecord(dataDir, runId)).rejects.toBe(
+              failure,
+            );
+            break;
+        }
+      } finally {
+        spy.mockRestore();
+        await fs.rm(dataDir, { recursive: true, force: true });
+      }
+    });
+  }
+
   test("seal/unseal round-trips a source-ref record through disk", async () => {
     const dataDir = await makeDataDir();
     const anchorRunId = "src-tenant-example";
@@ -602,6 +675,41 @@ describe("workflow run record store", () => {
     }
   });
 
+  test("a renamed source update succeeds when directory sync fails", async () => {
+    const dataDir = await makeDataDir();
+    const runId = "source-directory-sync";
+    await writeWorkflowRunRecord(dataDir, runId, SINGLE_STEP, CIPHER);
+    const directory = path.dirname(recordPath(dataDir, runId));
+    const open = fs.open;
+    let syncs = 0;
+    const spy = spyOn(fs, "open").mockImplementation(
+      async (target, flags, mode) => {
+        const handle = await open(target, flags, mode);
+        if (target === directory)
+          spyOn(handle, "sync").mockImplementation(async () => {
+            syncs++;
+            throw new Error("directory sync failed");
+          });
+        return handle;
+      },
+    );
+    try {
+      await updateWorkflowRunRecordSources(
+        dataDir,
+        runId,
+        SINGLE_STEP.generation,
+        MULTI_STEP.sources,
+      );
+      expect(syncs).toBe(1);
+      expect((await readRawRecord(dataDir, runId)).sources).toEqual(
+        MULTI_STEP.sources,
+      );
+    } finally {
+      spy.mockRestore();
+      await fs.rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   test("a stale source update leaves a newer generation intact without blocking later updates", async () => {
     const dataDir = await makeDataDir();
     const runId = "newer-record";
@@ -657,6 +765,81 @@ describe("workflow run record store", () => {
 });
 
 describe("scanWorkflowRunRecords", () => {
+  for (const mutation of [
+    "stopped",
+    "record removal",
+    "run removal",
+  ] as const) {
+    test(`a restart commits a visible ${mutation} whose previous directory sync failed`, async () => {
+      const dataDir = await makeDataDir();
+      const runId = "restart-durability";
+      const file = recordPath(dataDir, runId);
+      const runDirectory = path.dirname(file);
+      const directory =
+        mutation === "run removal" ? path.dirname(runDirectory) : runDirectory;
+      await writeWorkflowRunRecord(dataDir, runId, SINGLE_STEP, CIPHER);
+      const failure = new Error("directory sync failed");
+      let fail = true;
+      let syncAttempts = 0;
+      const open = fs.open;
+      const spy = spyOn(fs, "open").mockImplementation(
+        async (target, flags, mode) => {
+          const handle = await open(target, flags, mode);
+          if (target === directory) {
+            const sync = handle.sync.bind(handle);
+            spyOn(handle, "sync").mockImplementation(async () => {
+              syncAttempts++;
+              if (fail) throw failure;
+              await sync();
+            });
+          }
+          return handle;
+        },
+      );
+      try {
+        switch (mutation) {
+          case "stopped":
+            await expect(
+              markWorkflowRunRecord(dataDir, runId, { state: "stopped" }),
+            ).rejects.toBe(failure);
+            break;
+          case "record removal":
+            await expect(deleteWorkflowRunRecord(dataDir, runId)).rejects.toBe(
+              failure,
+            );
+            expect(await fileExists(file)).toBe(false);
+            break;
+          case "run removal":
+            await fs.rm(runDirectory, { recursive: true, force: true });
+            await expect(
+              atomicWrite.removeFileAtomicDurable(file, {
+                requireDirectorySync: true,
+              }),
+            ).rejects.toBe(failure);
+            break;
+        }
+        // Startup reads visible disk state without the old process's held
+        // reservations, so it must complete the failed sync before returning.
+        await expect(scanWorkflowRunRecords(dataDir, CIPHER)).rejects.toBe(
+          failure,
+        );
+        fail = false;
+        const scanned = await scanWorkflowRunRecords(dataDir, CIPHER);
+        expect(syncAttempts).toBe(3);
+        if (mutation === "stopped") {
+          expect(scanned).toMatchObject([
+            { runId, record: { state: "stopped" } },
+          ]);
+        } else {
+          expect(scanned).toEqual([]);
+        }
+      } finally {
+        spy.mockRestore();
+        await fs.rm(dataDir, { recursive: true, force: true });
+      }
+    });
+  }
+
   test("returns an empty list when the workflow-runs directory is absent", async () => {
     const dataDir = await makeDataDir();
     // First boot: nothing has been deployed, so `workflow-runs/` does not

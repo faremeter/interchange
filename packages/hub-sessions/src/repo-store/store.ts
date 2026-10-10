@@ -8,6 +8,8 @@ import {
   receivePackObjects,
   collectReachableObjects,
   maybeGC,
+  syncDirectoryDurable,
+  syncRemovedPathDurable,
   type CommitSigner,
   type GCPolicy,
 } from "@intx/storage-isogit/node";
@@ -135,7 +137,8 @@ export type LocalRepoStore = RepoStore & {
    * it, under its lock, so a repository created again at the same id starts
    * from nothing. A missing repository is not an error. `last` names an entry
    * of the repository's directory removed only after every other one, so a
-   * crash partway through leaves it in place.
+   * crash partway through leaves it in place. Removal is durable before
+   * returning; sync failures propagate.
    */
   removeRepo(repoId: RepoId, opts?: { readonly last?: string }): Promise<void>;
 };
@@ -2195,42 +2198,49 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   ): Promise<void> {
     const dir = repoDir(repoId);
     await withRepoLock(repoId, async () => {
-      if (last !== undefined) {
-        let entries: string[];
-        try {
-          entries = await fs.promises.readdir(dir);
-        } catch (cause) {
-          if (
-            !(cause instanceof Error && "code" in cause) ||
-            cause.code !== "ENOENT"
-          )
-            throw cause;
-          entries = [];
-        }
-        for (const entry of entries) {
-          if (entry === last) continue;
-          await fs.promises.rm(path.join(dir, entry), {
+      try {
+        if (last !== undefined) {
+          let entries: string[];
+          try {
+            entries = await fs.promises.readdir(dir);
+          } catch (cause) {
+            if (
+              !(cause instanceof Error && "code" in cause) ||
+              cause.code !== "ENOENT"
+            )
+              throw cause;
+            entries = [];
+          }
+          for (const entry of entries) {
+            if (entry === last) continue;
+            await fs.promises.rm(path.join(dir, entry), {
+              recursive: true,
+              force: true,
+            });
+          }
+          // Keep the recovery record until the other entries are durably gone.
+          if (entries.length > 0) await syncDirectoryDurable(dir);
+          await fs.promises.rm(path.join(dir, last), {
             recursive: true,
             force: true,
           });
         }
-        await fs.promises.rm(path.join(dir, last), {
-          recursive: true,
-          force: true,
-        });
-      }
-      await fs.promises.rm(dir, { recursive: true, force: true });
-      invalidateGitCache(dir);
-      existingCommitsCache.delete(indexCacheKey(repoId));
-      const refPrefix = `${indexCacheKey(repoId)}/`;
-      for (const key of [...seqCache.keys()]) {
-        if (key.startsWith(refPrefix)) seqCache.delete(key);
-      }
-      for (const key of [...lastPackedTip.keys()]) {
-        if (key.startsWith(refPrefix)) lastPackedTip.delete(key);
-      }
-      for (const key of [...chainReachabilityCache.keys()]) {
-        if (key.startsWith(refPrefix)) chainReachabilityCache.delete(key);
+        await fs.promises.rm(dir, { recursive: true, force: true });
+        await syncRemovedPathDurable(dir);
+      } finally {
+        // Failed deletion or sync may still have changed the repository on disk.
+        invalidateGitCache(dir);
+        existingCommitsCache.delete(indexCacheKey(repoId));
+        const refPrefix = `${indexCacheKey(repoId)}/`;
+        for (const key of [...seqCache.keys()]) {
+          if (key.startsWith(refPrefix)) seqCache.delete(key);
+        }
+        for (const key of [...lastPackedTip.keys()]) {
+          if (key.startsWith(refPrefix)) lastPackedTip.delete(key);
+        }
+        for (const key of [...chainReachabilityCache.keys()]) {
+          if (key.startsWith(refPrefix)) chainReachabilityCache.delete(key);
+        }
       }
     });
   }

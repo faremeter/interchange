@@ -247,6 +247,122 @@ describe("RepoStore", () => {
     }
   });
 
+  test.each(["before record removal", "after tree removal"] as const)(
+    "removeRepo retries a sync failure %s",
+    async (stage) => {
+      const dataDir = await makeTempDir("repo-store-remove-sync-");
+      const handler = createTestHandler();
+      const store = createRepoStore({
+        dataDir,
+        signingKey,
+        handlers: { "agent-state": handler },
+        authorize: allowAll,
+      });
+      await store.writeTree(principal, repoId, REF, {
+        files: { "deploy/prompt.md": "first" },
+        message: "first",
+      });
+      const dir = path.join(dataDir, handler.directoryPrefix, repoId.id);
+      const record = path.join(dir, "record.json");
+      await fs.promises.writeFile(record, "{}");
+      const syncDir =
+        stage === "before record removal" ? dir : path.dirname(dir);
+      const open = fs.promises.open;
+      let syncAttempts = 0;
+      const spy = spyOn(fs.promises, "open").mockImplementation(
+        async (target, flags, mode) => {
+          const handle = await open(target, flags, mode);
+          if (target === syncDir) {
+            const sync = handle.sync.bind(handle);
+            spyOn(handle, "sync").mockImplementation(async () => {
+              syncAttempts++;
+              if (syncAttempts === 1) throw new Error("repository sync failed");
+              await sync();
+            });
+          }
+          return handle;
+        },
+      );
+      try {
+        const options = { last: "record.json" };
+        await expect(store.removeRepo(repoId, options)).rejects.toThrow(
+          "repository sync failed",
+        );
+        expect(fs.existsSync(record)).toBe(stage === "before record removal");
+        await store.removeRepo(repoId, options);
+        expect(syncAttempts).toBe(2);
+        expect(fs.existsSync(dir)).toBe(false);
+      } finally {
+        spy.mockRestore();
+      }
+    },
+  );
+
+  test.each(["before record removal", "after tree removal"] as const)(
+    "removeRepo invalidates cached history when sync fails %s",
+    async (stage) => {
+      const dataDir = await makeTempDir("repo-store-remove-cache-");
+      const handler = createTestHandler();
+      const store = createRepoStore({
+        dataDir,
+        signingKey,
+        handlers: { "agent-state": handler },
+        authorize: allowAll,
+      });
+      for (const message of ["first", "second"])
+        await store.writeTree(principal, repoId, REF, {
+          files: { "deploy/prompt.md": message },
+          message,
+        });
+      const dir = store.getRepoDir(repoId);
+      const record = path.join(dir, "record.json");
+      await fs.promises.writeFile(record, "{}");
+      const syncDir =
+        stage === "before record removal" ? dir : path.dirname(dir);
+      const failure = new Error("repository sync failed");
+      const open = fs.promises.open;
+      const spy = spyOn(fs.promises, "open").mockImplementation(
+        async (target, flags, mode) => {
+          const handle = await open(target, flags, mode);
+          if (target === syncDir)
+            spyOn(handle, "sync").mockRejectedValue(failure);
+          return handle;
+        },
+      );
+      try {
+        await expect(
+          store.removeRepo(repoId, { last: "record.json" }),
+        ).rejects.toBe(failure);
+      } finally {
+        spy.mockRestore();
+      }
+      expect(fs.existsSync(record)).toBe(stage === "before record removal");
+      await store.initRepo(repoId);
+      const controller = new AbortController();
+      const stream = store.subscribe(principal, repoId, REF, {
+        from: "head",
+        signal: controller.signal,
+      });
+      const next = stream.next();
+      try {
+        await store.writeTree(principal, repoId, REF, {
+          files: { "deploy/prompt.md": "fresh" },
+          message: "fresh",
+        });
+        const entry = await next;
+        if (entry.done)
+          throw new Error("Missing update for the recreated repository");
+        const history = await git.log({ fs, dir, ref: REF });
+        expect(entry.value.seq).toBe(history.length - 1);
+        expect(entry.value.seq).toBe(1);
+      } finally {
+        controller.abort();
+        await next;
+        await stream.return?.();
+      }
+    },
+  );
+
   test("writeTree on an existing ref advances from that ref", async () => {
     const dataDir = await makeTempDir("repo-store-advance-");
     const handler = createTestHandler();
