@@ -508,15 +508,178 @@ describe("SidecarRouter allocation control protocols", () => {
     expect(received).toBe(0);
   });
 
+  test("a failed history finality read keeps its cause", async () => {
+    const lookupFailure = new Error("Database unavailable");
+    const router = createAllocatedRouter({
+      lookups: {
+        isWorkflowRunHistoryFinal: async () => {
+          throw lookupFailure;
+        },
+      },
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    try {
+      const pending = router
+        .retainAllocation(TEST_TARGET, CONTROL_TIMEOUT_MS)
+        .catch((cause: unknown) => cause);
+      await ws.awaitSent(() => framesOfType(ws, "workflow.control").length > 0);
+      const frame = WorkflowControlFrame.assert(
+        framesOfType(ws, "workflow.control").at(-1),
+      );
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "workflow.control.ack",
+          requestId: frame.requestId,
+          retention: "kept",
+          refTips: TEST_REF_TIPS,
+        }),
+      );
+      const failure = await pending;
+      expect(failure).toBeInstanceOf(WorkflowControlHistoryPendingError);
+      expect(failure).toMatchObject({ cause: lookupFailure });
+    } finally {
+      router.handleClose(ws);
+    }
+  });
+
+  test("retention waits for earlier history receives before closing further uploads", async () => {
+    let receiving = true;
+    let received = 0;
+    const router = createAllocatedRouter({
+      lookups: {
+        isWorkflowRunHistoryFinal: async () => !receiving,
+        receiveWorkflowRunPack: async () => {
+          received++;
+          return { accepted: true };
+        },
+      },
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    async function acknowledgeRetain() {
+      const sentBefore = framesOfType(ws, "workflow.control").length;
+      const pending = router
+        .retainAllocation(TEST_TARGET, CONTROL_TIMEOUT_MS)
+        .catch((cause: unknown) => cause);
+      await ws.awaitSent(
+        () => framesOfType(ws, "workflow.control").length > sentBefore,
+      );
+      const frame = WorkflowControlFrame.assert(
+        framesOfType(ws, "workflow.control").at(-1),
+      );
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "workflow.control.ack",
+          requestId: frame.requestId,
+          retention: "kept",
+          refTips: TEST_REF_TIPS,
+        }),
+      );
+      return pending;
+    }
+    expect(await acknowledgeRetain()).toBeInstanceOf(
+      WorkflowControlHistoryPendingError,
+    );
+    expect(router.getRetainedIncarnations(TEST_IDENTITY.sidecarId)).toEqual([
+      TEST_TARGET,
+    ]);
+    pushPack(router, ws, "retained-while-history-pending");
+    await ws.awaitSent(() => framesOfType(ws, "repo.pack.ack").length === 1);
+    expect(received).toBe(1);
+    receiving = false;
+    expect(await acknowledgeRetain()).toBe("kept");
+    pushPack(router, ws, "retained-after-confirmation");
+    await ws.awaitSent(() => framesOfType(ws, "repo.pack.reject").length === 1);
+    expect(received).toBe(1);
+    expect(framesOfType(ws, "repo.pack.reject")).toHaveLength(1);
+    router.handleClose(ws);
+  });
+
+  test.each([false, true])(
+    "an expired copy's reconnect stop uses terminal history finality: %s",
+    async (final) => {
+      let received = 0;
+      let finalityReads = 0;
+      let tipReads = 0;
+      const router = createAllocatedRouter({
+        requestTimeoutMs: CONTROL_TIMEOUT_MS,
+        validateSidecarIdentity: async (_identity, use) =>
+          use !== "reclaim" && use !== "retention",
+        lookups: {
+          isWorkflowRunHistoryFinal: async () => {
+            finalityReads++;
+            return final;
+          },
+          readWorkflowRunRefTips: async () => {
+            tipReads++;
+            return TEST_REF_TIPS;
+          },
+          receiveWorkflowRunPack: async () => {
+            received++;
+            return { accepted: true };
+          },
+        },
+      });
+      const ws = await connectAllocated(router, [
+        TEST_IDENTITY.workflowRunAddress,
+      ]);
+      try {
+        await ws.awaitSent(
+          () => framesOfType(ws, "workflow.control").length > 0,
+        );
+        const frame = WorkflowControlFrame.assert(
+          framesOfType(ws, "workflow.control")[0],
+        );
+        expect(frame.action).toBe("stop");
+        router.handleMessage(
+          ws,
+          JSON.stringify({
+            type: "workflow.control.ack",
+            requestId: frame.requestId,
+            // Matching tips cannot skip pending accepted history; divergent
+            // post-terminal tips cannot prevent confirmation once it settles.
+            refTips: final
+              ? { ...TEST_REF_TIPS, "refs/heads/main": "b".repeat(40) }
+              : TEST_REF_TIPS,
+          }),
+        );
+        await router.syncSidecar(TEST_IDENTITY.sidecarId);
+        pushPack(router, ws, "after-terminal-stop");
+        await router.syncSidecar(TEST_IDENTITY.sidecarId);
+        expect(received).toBe(final ? 0 : 1);
+        expect(finalityReads).toBe(1);
+        expect(tipReads).toBe(0);
+        expect(
+          framesOfType(ws, final ? "repo.pack.reject" : "repo.pack.ack"),
+        ).not.toHaveLength(0);
+        expect(router.getRetainedIncarnations(TEST_IDENTITY.sidecarId)).toEqual(
+          [],
+        );
+      } finally {
+        router.handleClose(ws);
+      }
+    },
+  );
+
   test("confirms a stop only once the Hub holds the history the worker reported", async () => {
     let hubRefTips: WorkflowRunRefTips = {
       ...TEST_REF_TIPS,
       "refs/heads/main": "b".repeat(40),
     };
     let received = 0;
+    let finalityReads = 0;
     const router = createAllocatedRouter({
       lookups: {
         readWorkflowRunRefTips: async () => hubRefTips,
+        isWorkflowRunHistoryFinal: async () => {
+          finalityReads++;
+          return true;
+        },
         async receiveWorkflowRunPack() {
           received += 1;
           return { accepted: true };
@@ -547,6 +710,7 @@ describe("SidecarRouter allocation control protocols", () => {
     pushPack(router, ws, "transfer-after-confirmed-stop");
     await tick();
     expect(received).toBe(1);
+    expect(finalityReads).toBe(0);
   });
 
   test("a stopped worker that reconnects without its address still delivers its history", async () => {

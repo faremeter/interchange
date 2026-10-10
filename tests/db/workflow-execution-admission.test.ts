@@ -180,7 +180,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
         try {
           await Promise.race([prepared.promise, deployment]);
           const lifecycle = createWorkflowLifecycleService({
-            retentionRouter: { fenceAllocation: () => undefined },
+            retentionRouter: {
+              fenceAllocation: () => undefined,
+              getRetentionCandidates: () => [],
+              holdsAllocatedBinding: () => true,
+              getAllocationRetention: () => "kept",
+              retainAllocation: async () => "kept",
+            },
             db: h.db,
             historyReceives: createWorkflowHistoryReceiveTracker(),
             runReader: {
@@ -393,7 +399,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
       try {
         await Promise.race([sent.promise, result]);
         const lifecycle = createWorkflowLifecycleService({
-          retentionRouter: { fenceAllocation: () => undefined },
+          retentionRouter: {
+            fenceAllocation: () => undefined,
+            getRetentionCandidates: () => [],
+            holdsAllocatedBinding: () => true,
+            getAllocationRetention: () => "kept",
+            retainAllocation: async () => "kept",
+          },
           db: h.db,
           historyReceives: createWorkflowHistoryReceiveTracker(),
           runReader: {
@@ -536,7 +548,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
       try {
         await preparing.promise;
         const lifecycle = createWorkflowLifecycleService({
-          retentionRouter: { fenceAllocation: () => undefined },
+          retentionRouter: {
+            fenceAllocation: () => undefined,
+            getRetentionCandidates: () => [],
+            holdsAllocatedBinding: () => true,
+            getAllocationRetention: () => "kept",
+            retainAllocation: async () => "kept",
+          },
           db: h.db,
           historyReceives: createWorkflowHistoryReceiveTracker(),
           runReader: {

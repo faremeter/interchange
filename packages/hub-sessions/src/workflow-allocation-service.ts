@@ -9,7 +9,9 @@ import {
   resolveDeploymentLifecyclePolicy,
   canExecuteWorkflowRun,
   resolveSourcesByOfferingIds,
+  SidecarInventoryUnavailableError,
   type DB,
+  type DBExecutor,
   type SidecarAllocation,
   type WorkflowProbe,
 } from "@intx/db";
@@ -65,6 +67,7 @@ import {
   SidecarDeploymentStoppedError,
   SidecarFirstDeployError,
   runSidecarOperation,
+  SidecarOperationTimeoutError,
   type SidecarReconciliationContext,
 } from "./sidecar-allocation/operation";
 
@@ -136,6 +139,7 @@ export type WorkflowAllocationServiceDeps = {
     SidecarAllocationRouter,
     | "detachAllocation"
     | "fenceAllocation"
+    | "getRetainedIncarnations"
     | "isAllocatedWorkflowActive"
     | "reportedDeploymentFailure"
     | "stoppedDeploymentHistory"
@@ -143,6 +147,7 @@ export type WorkflowAllocationServiceDeps = {
     | "sendProbeToAllocation"
     | "syncSidecar"
     | "waitForAllocatedSidecar"
+    | "waitForSidecarInventory"
   >;
   readonly hubWebSocketUrl: string;
   /** Fills lifecycle fields no tenant or installed workflow sets. */
@@ -249,7 +254,9 @@ export function createWorkflowAllocationService({
   operationTimeoutMs = DEFAULT_SIDECAR_OPERATION_TIMEOUT_MS,
   now = () => new Date(),
 }: WorkflowAllocationServiceDeps): WorkflowAllocationService {
-  const allocationStore = createSidecarAllocationStore(db);
+  const allocationStore = createSidecarAllocationStore(db, {
+    getRetainedIncarnations: allocationRouter.getRetainedIncarnations,
+  });
   const probeStore = createWorkflowProbeStore(db);
   const launchSpecStore = createWorkflowRunLaunchSpecStore(db);
   const currentAdapterManifestDigest = adapterManifestDigest(adapterManifest);
@@ -409,7 +416,6 @@ export function createWorkflowAllocationService({
       throw new Error(`Workflow probe ${probe.id} has no sidecar to adopt`);
     }
     const allocationId = adoptProbe ? probe.id : createAllocationId();
-    const createdAt = now();
     const deploymentAddress = deriveRunAddress({
       runId: request.anchorRunId,
       domain: request.deploymentDomain,
@@ -425,7 +431,8 @@ export function createWorkflowAllocationService({
       ],
     };
 
-    await db.transaction(async (tx) => {
+    const persistDeployment = async (tx: DBExecutor) => {
+      const createdAt = now();
       const lifecycle = await resolveDeploymentLifecyclePolicy(
         tx,
         request.tenantId,
@@ -521,7 +528,38 @@ export function createWorkflowAllocationService({
           tx,
         );
       }
-    });
+    };
+
+    const inventoryDeadline = performance.now() + connectTimeoutMs;
+    for (;;) {
+      try {
+        await db.transaction(persistDeployment);
+        break;
+      } catch (error) {
+        if (!adoptProbe || !(error instanceof SidecarInventoryUnavailableError))
+          throw error;
+        // The creation transaction has rolled back before we wait. A timeout
+        // must never release the probe while an adoption can still commit.
+        const remaining = Math.ceil(inventoryDeadline - performance.now());
+        const timeout = new SidecarOperationTimeoutError(
+          "Probe adoption inventory",
+          connectTimeoutMs,
+          { cause: error },
+        );
+        if (remaining <= 0) throw timeout;
+        try {
+          await runSidecarOperation(
+            "Probe adoption inventory",
+            remaining,
+            (signal) =>
+              allocationRouter.waitForSidecarInventory(error.sidecarId, signal),
+          );
+        } catch (cause) {
+          if (cause instanceof SidecarOperationTimeoutError) throw timeout;
+          throw cause;
+        }
+      }
+    }
 
     return {
       anchorRunId: request.anchorRunId,

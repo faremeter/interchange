@@ -25,6 +25,7 @@ import {
   assertSidecarHasRoom,
   assertSidecarReusable,
   lockSidecars,
+  type SidecarAllocationStoreOptions,
 } from "./sidecar-reuse";
 import { createWorkflowRunDispatchStore } from "./workflow-run-dispatch-store";
 import { canExecuteWorkflowRun } from "./workflow-lifecycle-policy";
@@ -253,6 +254,7 @@ export type FailStoppedSidecarDeploymentArgs = {
 
 export type BeginUnrecoverableSidecarReleaseArgs = {
   readonly allocationId: string;
+  readonly expectedStatus: "allocated" | "provisioning";
   readonly expectedGeneration: number;
   readonly expectedLeaseId: string;
   readonly onlyIfInitializationIncomplete?: boolean;
@@ -406,7 +408,26 @@ function leaseCondition(expectedLeaseId?: string) {
       ];
 }
 
-export function createSidecarAllocationStore(db: DBHandle) {
+// Stores used only for lifecycle updates cannot accidentally place work without
+// the connection's current retained-inventory proof.
+export function createSidecarAllocationStore(
+  db: DBHandle,
+): Omit<SidecarAllocationStore, "markAllocated" | "createAdopted">;
+export function createSidecarAllocationStore(
+  db: DBHandle,
+  options: Required<SidecarAllocationStoreOptions>,
+): SidecarAllocationStore;
+export function createSidecarAllocationStore(
+  db: DBHandle,
+  options?: Required<SidecarAllocationStoreOptions>,
+) {
+  return buildSidecarAllocationStore(db, options);
+}
+
+function buildSidecarAllocationStore(
+  db: DBHandle,
+  options: SidecarAllocationStoreOptions = {},
+) {
   const workflowRunDispatchStore = createWorkflowRunDispatchStore(db);
   const pendingProjections = createWorkflowPendingProjectionStore(db);
 
@@ -762,6 +783,7 @@ export function createSidecarAllocationStore(db: DBHandle) {
     // Adopting a probe places a deployment on its sidecar, so it is held to
     // the same room check as a placement through `markAllocated`.
     await assertSidecarHasRoom(tx, {
+      ...options,
       sidecarId: args.sidecarId,
       placing: { allocationId: args.id },
     });
@@ -1034,7 +1056,8 @@ export function createSidecarAllocationStore(db: DBHandle) {
     /**
      * Records the provisioner's acceptance of a generation. Throws
      * `SidecarReuseRejectedError` when it placed the generation on a sidecar
-     * it cannot reuse, leaving the allocation unchanged.
+     * it cannot reuse, or `SidecarInventoryUnavailableError` while inventory is
+     * unknown. Either failure leaves the allocation unchanged.
      */
     async markAllocated(
       args: MarkSidecarAllocatedArgs,
@@ -1072,6 +1095,7 @@ export function createSidecarAllocationStore(db: DBHandle) {
             placing: { allocationId: allocation.id },
           });
           await assertSidecarHasRoom(tx, {
+            ...options,
             sidecarId: reusedSidecarId,
             placing: { allocationId: allocation.id },
           });
@@ -1371,13 +1395,7 @@ export function createSidecarAllocationStore(db: DBHandle) {
           (await initializationCompleted(tx, args))
         )
           return null;
-        const releasing = await beginRelease(
-          {
-            ...args,
-            expectedStatus: "allocated",
-          },
-          tx,
-        );
+        const releasing = await beginRelease(args, tx);
         if (releasing === null) return null;
 
         // Confirmed removal leaves the requested cancellation and its dispatches
@@ -2004,5 +2022,5 @@ export function createSidecarAllocationStore(db: DBHandle) {
 }
 
 export type SidecarAllocationStore = ReturnType<
-  typeof createSidecarAllocationStore
+  typeof buildSidecarAllocationStore
 >;

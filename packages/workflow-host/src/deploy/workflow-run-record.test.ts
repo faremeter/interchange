@@ -300,7 +300,7 @@ describe("workflow run record store", () => {
     }
   });
 
-  for (const mutation of ["stopped", "deletion"] as const) {
+  for (const mutation of ["stopped", "retention", "deletion"] as const) {
     test(`${mutation} does not complete when its directory sync fails`, async () => {
       const dataDir = await makeDataDir();
       const runId = `durable-${mutation}`;
@@ -322,6 +322,14 @@ describe("workflow run record store", () => {
           case "stopped":
             await expect(
               markWorkflowRunRecord(dataDir, runId, { state: "stopped" }),
+            ).rejects.toBe(failure);
+            break;
+          case "retention":
+            await expect(
+              markWorkflowRunRecord(dataDir, runId, {
+                state: "stopped",
+                retention: "kept",
+              }),
             ).rejects.toBe(failure);
             break;
           case "deletion":
@@ -767,6 +775,7 @@ describe("workflow run record store", () => {
 describe("scanWorkflowRunRecords", () => {
   for (const mutation of [
     "stopped",
+    "retention",
     "record removal",
     "run removal",
   ] as const) {
@@ -803,6 +812,17 @@ describe("scanWorkflowRunRecords", () => {
               markWorkflowRunRecord(dataDir, runId, { state: "stopped" }),
             ).rejects.toBe(failure);
             break;
+          case "retention":
+            await expect(
+              markWorkflowRunRecord(dataDir, runId, {
+                state: "stopped",
+                retention: "kept",
+              }),
+            ).rejects.toBe(failure);
+            expect((await readRawRecord(dataDir, runId)).retention).toBe(
+              "kept",
+            );
+            break;
           case "record removal":
             await expect(deleteWorkflowRunRecord(dataDir, runId)).rejects.toBe(
               failure,
@@ -829,6 +849,10 @@ describe("scanWorkflowRunRecords", () => {
         if (mutation === "stopped") {
           expect(scanned).toMatchObject([
             { runId, record: { state: "stopped" } },
+          ]);
+        } else if (mutation === "retention") {
+          expect(scanned).toMatchObject([
+            { runId, record: { state: "stopped", retention: "kept" } },
           ]);
         } else {
           expect(scanned).toEqual([]);

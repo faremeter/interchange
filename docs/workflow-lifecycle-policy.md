@@ -132,13 +132,13 @@ with the Hub. The clock starts when its connection drops and starts again when
 the Hub starts, since no sidecar can reconnect while the Hub is down; at a Hub
 start, a deployment whose first deploy has not completed gets at least the
 Hub's first-connect window, the 2 minutes a newly placed sidecar has to
-connect. A sidecar that reconnects in time keeps its
-deployment. Past the limit the Hub fails the deployment's live runs as an
-infrastructure loss and releases its capacity at once. A sidecar that comes
-back after that has its copy undeployed, and the history it pushes is refused
-because its allocation was released, so whatever it did while away is
-discarded. A restarting sidecar connects only after it has
-restored its deployments, 8 at a time; when every workflow child takes its
+connect. A sidecar that reconnects in time keeps its deployment. Past the
+limit the Hub fails the deployment's live runs as an infrastructure loss and
+begins releasing its allocation at once. A returning sidecar regains no
+workflow routes; a cleanup disconnect timeout allows cleanup to resume on
+reconnect. Its later history is refused under the release fence, so whatever
+it did while away is discarded. A restarting sidecar connects only after it
+has restored its deployments, 8 at a time; when every workflow child takes its
 whole 30-second ready timeout, a full one spends about 8 minutes on those
 timeouts alone, so a shorter limit can fail the deployments of a sidecar that
 is only restarting.
@@ -176,10 +176,11 @@ or a failed status projection. Cancellation and release must tolerate retries.
 Release completes only when the provider's hold is released and deployment
 cleanup is confirmed. Forced termination can leave a partial event log; the Hub
 records the confirmed outcome in the run row without fabricating workflow events.
-A failed cleanup remains visible. It reserves an active slot until removal
-has been confirmed. The separate
+A failed cleanup remains visible. It reserves an active slot only while neither
+removal nor transfer to retained storage has been confirmed. The separate
 provider obligation can remain failed after the copy has freed its active slot.
-See [Release cleanup](SIDECAR_PLACEMENT.md#release-cleanup).
+See [Release cleanup](SIDECAR_PLACEMENT.md#release-cleanup) and
+[Active and retained capacity](SIDECAR_PLACEMENT.md#active-and-retained-capacity).
 
 Before a workflow-run pack can advance Git, the Hub records a pending projection
 for its deployment, and removes it once every run in the pack has its status
@@ -213,19 +214,26 @@ run through the existing destroy-failed path. Replacing a worker does not by
 itself record that capacity was lost.
 
 Lifecycle reconciliation uses the shared reconciliation scheduler with eight
-independent slots per Hub. Each slot selects one run at a time, and active runs
-are excluded from further selection until their work finishes. Selection
-considers only deployments with work due: a live run that is cancelling or past
-its expiry, retained capacity whose release time has passed or is not yet
-recorded, a capacity loss waiting on reconciliation, and accepted history left
-unprojected past its grace. A deployment that ended without a saved policy is
-released only on request. Selection walks run IDs up to a captured upper bound,
-then waits one second before another scan. Work that becomes due during a scan
-can wait for the next one, and work that stays due, such as a cancellation
-waiting on its worker, does not cause continuous retries. A
-stalled run occupies one slot while the other slots continue processing
-candidates. A live run with no cancellation, expiry, or capacity loss to act on
-is not locked, so a pack receive in progress does not hold a slot.
+independent slots per Hub. Each slot selects one run at a time, and active
+runs are excluded from further selection until their work finishes. Selection
+considers only deployments with work due: a live run that is cancelling or
+past its expiry, terminal copies awaiting retention, retained capacity whose
+release time has passed or is not yet recorded, a capacity loss waiting on
+reconciliation, and accepted history left unprojected past its grace. A
+deployment that ended without a saved policy is released only on request.
+Selection walks run IDs up to a captured upper bound, then waits one second
+before another scan. Work that becomes due during a scan can wait for the next
+one, and work that stays due, such as a cancellation waiting on its worker,
+does not cause continuous retries. A stalled run occupies one slot while the
+other slots continue processing candidates. A live run with no cancellation,
+expiry, or capacity loss to act on is not locked, so a pack receive in
+progress does not hold a slot.
+
+The lifecycle sweep sends retention requests in the background, with at most
+eight in flight per sidecar and one per allocation. Later retention scans skip
+requests already in flight and copies waiting for room on their sidecar.
+Expiry, accepted-history recovery, and confirmed retention refusals remain
+independently eligible.
 
 Dispatch outcomes are projected from Hub-owned Git after pack acceptance and
 retried independently for unresolved deliveries, even when the database has not
@@ -284,17 +292,19 @@ cancellation of a live run and returns `202`; its cancellation retention
 policy then applies.
 
 Beginning release removes workflow routes. The allocation reaches `released`
-only after the provider's hold is released and deployment cleanup is confirmed.
-Confirmed removal frees the active sidecar slot even if the provider's hold
-remains pending or failed. The provisioner decides whether to destroy the backing
-resources or prepare them for reuse. This fits the work on provisioning pre-existing capacity: another
-deployment could claim it when the provisioner binding, capabilities, and
-placement requirements match. The previous assignment, credentials, and local
-state must be retired or reset before dedicated capacity becomes available
-again; a shared sidecar drops a released deployment when the Hub undeploys it.
-Capacity retained for inspecting a failed run is still reserved to that run.
-Retention is a cleanup deadline, not a minimum preservation guarantee: manual
-release or infrastructure failure can end it earlier.
+only after the provider's hold is released and deployment cleanup is
+confirmed. Confirmed removal frees the active sidecar slot even if the
+provider's hold remains pending or failed. The provisioner decides whether to
+destroy the backing resources or prepare them for reuse. This fits the work on
+provisioning pre-existing capacity: another deployment could claim it when the
+provisioner binding, capabilities, and placement requirements match. The
+previous assignment, credentials, and local state must be retired or reset
+before dedicated capacity becomes available again; a shared sidecar drops a
+released deployment when the Hub undeploys it. Copies confirmed kept for
+inspection use the retained pool and free their active slot. Unconfirmed
+copies continue to reserve active capacity. Retention is a cleanup deadline,
+not a minimum preservation guarantee: manual release or infrastructure failure
+can end it earlier.
 
 The provisioner owns how long unused backing capacity stays available before
 being destroyed. The Hub's allocation reconciler requests acknowledged undeploy
