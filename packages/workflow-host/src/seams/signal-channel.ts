@@ -19,7 +19,9 @@
 // buffer through `runtimeStore`, then commits the `SignalReceived`
 // blob, then returns. The flush runs under the run's commit barrier
 // so a sibling event already validated into the buffer keeps its
-// sequence and the signal takes the next durable sequence. Resolution
+// sequence and the signal takes the next durable sequence. A log that
+// already holds a terminal event is left unchanged, so a delivery that
+// loses the race does not append after it. Resolution
 // of an awaiter happens from the `subscribeKind` loop only after the
 // substrate has surfaced the commit. The awaiter is never resolved
 // from inside `deliver`'s call site, so resume-after-crash sees a
@@ -288,6 +290,7 @@ export function createWorkflowHostSignalChannel(
               merge: async (existing) => {
                 let maxSeq = -1;
                 let duplicate = false;
+                let terminal = false;
                 for (const [filepath, contents] of existing) {
                   const fname = filepath.slice(prefix.length);
                   const match = /^(0|[1-9][0-9]*)\.json$/.exec(fname);
@@ -303,6 +306,9 @@ export function createWorkflowHostSignalChannel(
                     if (isMatchingSignalId(parsed, id)) {
                       duplicate = true;
                     }
+                    if (isTerminalOnDiskEvent(parsed)) {
+                      terminal = true;
+                    }
                   } catch {
                     // A corrupt blob is rejected by validatePush at write
                     // time. Treat as non-matching here.
@@ -312,7 +318,12 @@ export function createWorkflowHostSignalChannel(
                 for (const [filepath, contents] of existing) {
                   out[filepath] = new TextDecoder().decode(contents);
                 }
-                if (duplicate) return out;
+                // A repeated signalId and a log that already reached a
+                // terminal event both leave the tree unchanged. Appending
+                // past RunFailed/RunCompleted/RunCancelled would make the
+                // next resume disagree with the terminal result already
+                // reported.
+                if (duplicate || terminal) return out;
                 const nextSeq = maxSeq + 1;
                 // The workflow-run kind handler's `EventEnvelope`
                 // validator requires `seq: number` on every event blob;
@@ -399,6 +410,14 @@ export function createWorkflowHostSignalChannel(
       }
     },
   };
+}
+
+function isTerminalOnDiskEvent(parsed: unknown): boolean {
+  if (typeof parsed !== "object" || parsed === null) return false;
+  const type = (parsed as { type?: unknown }).type;
+  return (
+    type === "RunCompleted" || type === "RunFailed" || type === "RunCancelled"
+  );
 }
 
 function isMatchingSignalId(parsed: unknown, signalId: string): boolean {

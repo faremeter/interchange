@@ -162,4 +162,61 @@ describe("resume-from-log seam", () => {
       }).complete,
     ).rejects.toThrow(/resume requires the BlobSubstrate/);
   });
+
+  test("a non-terminal seed with blob refs rejects without appending a terminal event", async () => {
+    const a = makeAgent("a");
+    const def = defineWorkflow({
+      id: "spill-resume-open",
+      trigger: { type: "manual" },
+      steps: { big: step({ agent: a }) },
+    });
+    const originating = createInMemoryBlobSubstrate({ inlineMaxBytes: 4 });
+    const clock = () => new Date();
+    const repoStore = createInMemoryRepoStore();
+    const env: WorkflowRuntimeEnv = {
+      repoStore,
+      scheduler: createInMemoryScheduler({ repoStore, clock }),
+      signalChannel: createInMemorySignalChannel(),
+      blobs: originating,
+      directors: createDefaultDirectorRegistry(),
+      authorize: allowAll,
+      invokeStep: async () => ({
+        output: { large: "x".repeat(64) },
+      }),
+      spawnChild: async () => ({ terminalStatus: "completed" }),
+      clock,
+      newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
+      drain: createNoopDrainController(def),
+      hasUpstreamSignalResolver: true,
+    };
+    const result1 = await runtimeRun(def, env).complete;
+    expect(result1.terminalStatus).toBe("completed");
+    const open = result1.events.filter(
+      (event) =>
+        event.kind !== "RunCompleted" &&
+        event.kind !== "RunFailed" &&
+        event.kind !== "RunCancelled",
+    );
+    expect(open.some((event) => event.kind === "StepCompleted")).toBe(true);
+
+    const freshStore = createInMemoryRepoStore();
+    const freshEnv: WorkflowRuntimeEnv = {
+      ...env,
+      repoStore: freshStore,
+      blobs: createInMemoryBlobSubstrate({ inlineMaxBytes: 4 }),
+      scheduler: createInMemoryScheduler({ repoStore: freshStore, clock }),
+      signalChannel: createInMemorySignalChannel(),
+    };
+    const resume = () =>
+      runtimeRun(def, freshEnv, {
+        runId: result1.runId,
+        resumeFromEvents: open,
+      }).complete;
+    await expect(resume()).rejects.toThrow(/resume requires the BlobSubstrate/);
+    const kinds = (events: readonly { kind: string }[]) =>
+      events.map((event) => event.kind);
+    expect(kinds(await freshStore.read(result1.runId))).toEqual(kinds(open));
+    await expect(resume()).rejects.toThrow(/resume requires the BlobSubstrate/);
+    expect(kinds(await freshStore.read(result1.runId))).toEqual(kinds(open));
+  });
 });

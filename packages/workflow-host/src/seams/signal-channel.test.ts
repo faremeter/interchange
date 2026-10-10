@@ -563,4 +563,46 @@ describe("workflow-host signal channel", () => {
       dropChain(runId);
     }
   });
+
+  test("a delivery after a terminal event leaves the log unchanged", async () => {
+    const dataDir = await makeTempDir("sigchan-terminal-");
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": permissiveHandler("workflow-runs-terminal") },
+      authorize: allowAll,
+    });
+    const repoId: RepoId = { kind: "agent-state", id: "deployment-terminal" };
+    const runId = "r-terminal";
+    const box = makeStateBox(runId);
+    const runtimeStore = runtimeStoreFor(store, repoId);
+    const at = "2026-01-01T00:00:00.000Z";
+    await runtimeStore.append(runId, {
+      kind: "RunFailed",
+      seq: 1,
+      at,
+      error: { message: "already failed" },
+    });
+    const channel = createWorkflowHostSignalChannel({
+      repoStore: store,
+      runtimeStore,
+      principal,
+      repoId,
+      ref: REF,
+      runId,
+      readState: () => box.state,
+      newId: makeIdGen("sig"),
+      clock: () => new Date(at),
+    });
+    try {
+      await channel.deliver("approve", { ok: true }, "sig-after-terminal");
+      const events = await runtimeStore.read(runId);
+      expect(
+        events.map((event) => ({ kind: event.kind, seq: event.seq })),
+      ).toEqual([{ kind: "RunFailed", seq: 1 }]);
+    } finally {
+      await channel.stop();
+      dropChain(runId);
+    }
+  });
 });
