@@ -37,6 +37,12 @@
 // matches the filename's seq, so the scheduler mints the next seq
 // inside the `writeTreePreservingPrefix` merge step and writes both
 // into the envelope and the filename.
+//
+// The commit flushes that run's pending buffer before the merge
+// numbers `TimerFired`. An already-fired timer, or a log that already
+// holds a terminal event, returns the tree unchanged. This is not the
+// runtime `commit()`: `handleTimerFired` advances `lastSeq` even when
+// the timer is already gone, so a duplicate would move the tip.
 
 import { type } from "arktype";
 
@@ -51,6 +57,10 @@ import {
   WORKFLOW_RUN_EVENTS_DIR,
   WORKFLOW_RUN_RUNS_PREFIX,
 } from "@intx/hub-sessions/substrate";
+import {
+  withRunCommitBarrier,
+  type RepoStore as RuntimeRepoStore,
+} from "@intx/workflow/runtime";
 
 /**
  * Substrate-shape envelope for the workflow-event blob committed to
@@ -86,6 +96,13 @@ export type SchedulerOpts = {
    * the `runs/<runId>/events/<seq>.json` writes the scheduler emits.
    */
   repoStore: RepoStore;
+  /**
+   * Runtime store that owns the commit chain. A timer flushes that
+   * run's pending buffer before the substrate merge numbers
+   * `TimerFired`. One store serves every run in this process; the
+   * barrier selects the buffer by run id.
+   */
+  runtimeStore: RuntimeRepoStore;
   /**
    * Principal the scheduler presents to the substrate. The substrate
    * gates every operation behind `authorize`; the scheduler's
@@ -494,47 +511,65 @@ async function commitTimerFired(
     );
   }
   const prefix = `${WORKFLOW_RUN_RUNS_PREFIX}/${runId}/${WORKFLOW_RUN_EVENTS_DIR}/`;
-  await opts.repoStore.writeTreePreservingPrefix(
-    opts.principal,
-    owningRepoId,
-    opts.ref,
-    {
-      preservePrefix: prefix,
-      merge: async (existing) => {
-        let maxSeq = -1;
-        let alreadyFired = false;
-        for (const [filepath, contents] of existing) {
-          const name = filepath.slice(prefix.length);
-          const seq = requireEventSeq(name, `${prefix}${name}`);
-          if (seq > maxSeq) maxSeq = seq;
-          try {
-            const parsed: unknown = JSON.parse(
-              new TextDecoder().decode(contents),
-            );
-            if (isMatchingTimerFired(parsed, timerId)) {
-              alreadyFired = true;
+  await withRunCommitBarrier({ repoStore: opts.runtimeStore }, runId, () =>
+    opts.repoStore.writeTreePreservingPrefix(
+      opts.principal,
+      owningRepoId,
+      opts.ref,
+      {
+        preservePrefix: prefix,
+        merge: async (existing) => {
+          let maxSeq = -1;
+          let alreadyFired = false;
+          let terminal = false;
+          for (const [filepath, contents] of existing) {
+            const name = filepath.slice(prefix.length);
+            const seq = requireEventSeq(name, `${prefix}${name}`);
+            if (seq > maxSeq) maxSeq = seq;
+            try {
+              const parsed: unknown = JSON.parse(
+                new TextDecoder().decode(contents),
+              );
+              if (isMatchingTimerFired(parsed, timerId)) {
+                alreadyFired = true;
+              }
+              if (isTerminalOnDiskEvent(parsed)) {
+                terminal = true;
+              }
+            } catch {
+              // Skip on parse failure -- a corrupt blob would have
+              // been rejected by validatePush at write time; treat as
+              // a non-matching entry.
             }
-          } catch {
-            // Skip on parse failure -- a corrupt blob would have
-            // been rejected by validatePush at write time; treat as
-            // a non-matching entry.
           }
-        }
-        const out: Record<string, string> = {};
-        for (const [filepath, contents] of existing) {
-          out[filepath] = new TextDecoder().decode(contents);
-        }
-        if (alreadyFired) return out;
-        const nextSeq = maxSeq + 1;
-        out[`${prefix}${String(nextSeq)}.json`] = JSON.stringify({
-          seq: nextSeq,
-          type: "TimerFired",
-          timerId,
-        });
-        return out;
+          const out: Record<string, string> = {};
+          for (const [filepath, contents] of existing) {
+            out[filepath] = new TextDecoder().decode(contents);
+          }
+          // An already-fired timer and a log that already reached a
+          // terminal event both leave the tree unchanged. Appending
+          // past RunFailed, RunCompleted, or RunCancelled would make
+          // the next resume disagree with the terminal result.
+          if (alreadyFired || terminal) return out;
+          const nextSeq = maxSeq + 1;
+          out[`${prefix}${String(nextSeq)}.json`] = JSON.stringify({
+            seq: nextSeq,
+            type: "TimerFired",
+            timerId,
+          });
+          return out;
+        },
+        message: `TimerFired ${timerId} for run ${runId}`,
       },
-      message: `TimerFired ${timerId} for run ${runId}`,
-    },
+    ),
+  );
+}
+
+function isTerminalOnDiskEvent(parsed: unknown): boolean {
+  if (typeof parsed !== "object" || parsed === null) return false;
+  const type = (parsed as { type?: unknown }).type;
+  return (
+    type === "RunCompleted" || type === "RunFailed" || type === "RunCancelled"
   );
 }
 

@@ -14,7 +14,9 @@ import type {
   RepoStore,
   ValidatePushResult,
 } from "@intx/hub-sessions";
+import { commitBuffered, dropChain, reloadState } from "@intx/workflow/runtime";
 
+import { createWorkflowRunRepoStore } from "../adapters/repo-store";
 import { createWorkflowHostScheduler } from "./scheduler";
 
 const tempDirs: string[] = [];
@@ -59,6 +61,18 @@ function permissiveHandler(directoryPrefix: string): KindHandler {
 const allowAll: AuthorizeFn = () => ({ allowed: true });
 const principal: Principal = { kind: "test" };
 const REF = "refs/heads/main";
+
+function runtimeStoreFor(
+  substrate: Parameters<typeof createWorkflowRunRepoStore>[0]["substrate"],
+  repoId: RepoId,
+) {
+  return createWorkflowRunRepoStore({
+    substrate,
+    repoId,
+    principal,
+    ref: REF,
+  });
+}
 
 /**
  * A timer the test arms and fires. The scheduler decides WHEN from its clock;
@@ -227,6 +241,7 @@ describe("workflow-host scheduler", () => {
       const commits = observeSchedulerCommits(store);
       const scheduler = createWorkflowHostScheduler({
         repoStore: commits.repoStore,
+        runtimeStore: runtimeStoreFor(store, repoId),
         principal,
         listActiveDeployments: () => [repoId],
         ref: REF,
@@ -298,6 +313,7 @@ describe("workflow-host scheduler", () => {
 
       const scheduler = createWorkflowHostScheduler({
         repoStore: store,
+        runtimeStore: runtimeStoreFor(store, repoId),
         principal,
         listActiveDeployments: () => [repoId],
         ref: REF,
@@ -361,6 +377,7 @@ describe("workflow-host scheduler", () => {
 
       const scheduler = createWorkflowHostScheduler({
         repoStore: store,
+        runtimeStore: runtimeStoreFor(store, repoId),
         principal,
         listActiveDeployments: () => [repoId],
         ref: REF,
@@ -416,6 +433,7 @@ describe("workflow-host scheduler", () => {
 
       const scheduler = createWorkflowHostScheduler({
         repoStore: store,
+        runtimeStore: runtimeStoreFor(store, repoId),
         principal,
         listActiveDeployments: () => [repoId],
         ref: REF,
@@ -453,6 +471,7 @@ describe("workflow-host scheduler", () => {
 
       const scheduler = createWorkflowHostScheduler({
         repoStore: store,
+        runtimeStore: runtimeStoreFor(store, repoId),
         principal,
         listActiveDeployments: () => [repoId],
         ref: REF,
@@ -496,6 +515,7 @@ describe("workflow-host scheduler", () => {
 
       const scheduler = createWorkflowHostScheduler({
         repoStore: store,
+        runtimeStore: runtimeStoreFor(store, repoId),
         principal,
         listActiveDeployments: () => [repoId],
         ref: REF,
@@ -545,6 +565,7 @@ describe("workflow-host scheduler", () => {
 
       const scheduler = createWorkflowHostScheduler({
         repoStore: store,
+        runtimeStore: runtimeStoreFor(store, repoId),
         principal,
         listActiveDeployments: () => [repoId],
         ref: REF,
@@ -584,6 +605,7 @@ describe("workflow-host scheduler", () => {
       const timeouts = createManualTimeouts();
       const scheduler = createWorkflowHostScheduler({
         repoStore: store,
+        runtimeStore: runtimeStoreFor(store, repoId),
         principal,
         listActiveDeployments: () => [repoId],
         ref: REF,
@@ -650,6 +672,7 @@ describe("workflow-host scheduler", () => {
       const commits = observeSchedulerCommits(store);
       const scheduler = createWorkflowHostScheduler({
         repoStore: commits.repoStore,
+        runtimeStore: runtimeStoreFor(store, repoId),
         principal,
         listActiveDeployments: () => [repoId],
         ref: REF,
@@ -744,6 +767,7 @@ describe("workflow-host scheduler against workflowRunKindHandler", () => {
       const commits = observeSchedulerCommits(store);
       const scheduler = createWorkflowHostScheduler({
         repoStore: commits.repoStore,
+        runtimeStore: runtimeStoreFor(store, repoId),
         principal: hubPrincipal,
         listActiveDeployments: () => [repoId],
         ref: REF,
@@ -794,4 +818,236 @@ describe("workflow-host scheduler against workflowRunKindHandler", () => {
     },
     { timeout: 5000 },
   );
+});
+
+describe("workflow-host scheduler", () => {
+  test("a buffered event is flushed before TimerFired takes the next sequence", async () => {
+    const dataDir = await makeTempDir("scheduler-buffered-");
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: {
+        "agent-state": permissiveHandler("workflow-runs-buffered"),
+      },
+      authorize: allowAll,
+    });
+    const repoId: RepoId = { kind: "agent-state", id: "deployment-buffered" };
+    const runId = "r-timer-buffered";
+    const runtimeStore = runtimeStoreFor(store, repoId);
+    const at = "2026-01-01T00:00:00.000Z";
+    const fireAtMs = Date.now() + 60_000;
+    await runtimeStore.append(runId, {
+      kind: "TimerSet",
+      seq: 1,
+      at,
+      timerId: "t-buffered",
+      fireAt: new Date(fireAtMs).toISOString(),
+    });
+
+    const timeouts = createManualTimeouts();
+    const commits = observeSchedulerCommits(store);
+    const scheduler = createWorkflowHostScheduler({
+      repoStore: commits.repoStore,
+      runtimeStore,
+      principal,
+      listActiveDeployments: () => [repoId],
+      ref: REF,
+      clock: () => new Date(),
+      scheduleTimeout: timeouts.scheduleTimeout,
+    });
+    try {
+      await scheduler.start();
+      await commitBuffered({ repoStore: runtimeStore }, runId, {
+        kind: "RunStarted",
+        seq: 0,
+        at,
+        runId,
+        definitionHash: "definition",
+        trigger: { type: "manual", payload: null },
+      });
+      timeouts.fireAll();
+      await commits.whenCommitted();
+
+      const events = await runtimeStore.read(runId);
+      expect(
+        events.map((event) => ({ kind: event.kind, seq: event.seq })),
+      ).toEqual([
+        { kind: "TimerSet", seq: 1 },
+        { kind: "RunStarted", seq: 2 },
+        { kind: "TimerFired", seq: 3 },
+      ]);
+      expect(
+        (await reloadState({ repoStore: runtimeStore }, runId)).lastSeq,
+      ).toBe(3);
+    } finally {
+      await scheduler.stop();
+      dropChain(runId);
+    }
+  });
+
+  test("an empty buffer appends TimerFired at the next durable sequence", async () => {
+    const dataDir = await makeTempDir("scheduler-empty-");
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: {
+        "agent-state": permissiveHandler("workflow-runs-empty"),
+      },
+      authorize: allowAll,
+    });
+    const repoId: RepoId = { kind: "agent-state", id: "deployment-empty" };
+    const runId = "r-timer-empty";
+    const runtimeStore = runtimeStoreFor(store, repoId);
+    const at = "2026-01-01T00:00:00.000Z";
+    await runtimeStore.append(runId, {
+      kind: "TimerSet",
+      seq: 1,
+      at,
+      timerId: "t-empty",
+      fireAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+
+    const timeouts = createManualTimeouts();
+    const commits = observeSchedulerCommits(store);
+    const scheduler = createWorkflowHostScheduler({
+      repoStore: commits.repoStore,
+      runtimeStore,
+      principal,
+      listActiveDeployments: () => [repoId],
+      ref: REF,
+      clock: () => new Date(),
+      scheduleTimeout: timeouts.scheduleTimeout,
+    });
+    try {
+      await scheduler.start();
+      timeouts.fireAll();
+      await commits.whenCommitted();
+
+      const events = await runtimeStore.read(runId);
+      expect(
+        events.map((event) => ({ kind: event.kind, seq: event.seq })),
+      ).toEqual([
+        { kind: "TimerSet", seq: 1 },
+        { kind: "TimerFired", seq: 2 },
+      ]);
+      expect(
+        (await reloadState({ repoStore: runtimeStore }, runId)).lastSeq,
+      ).toBe(2);
+    } finally {
+      await scheduler.stop();
+      dropChain(runId);
+    }
+  });
+
+  test("a timer that already fired does not append a second TimerFired", async () => {
+    const dataDir = await makeTempDir("scheduler-fired-");
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: {
+        "agent-state": permissiveHandler("workflow-runs-fired"),
+      },
+      authorize: allowAll,
+    });
+    const repoId: RepoId = { kind: "agent-state", id: "deployment-fired" };
+    const runId = "r-timer-fired";
+    const runtimeStore = runtimeStoreFor(store, repoId);
+    const at = "2026-01-01T00:00:00.000Z";
+    await runtimeStore.append(runId, {
+      kind: "TimerSet",
+      seq: 1,
+      at,
+      timerId: "t-fired",
+      fireAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+
+    const timeouts = createManualTimeouts();
+    const commits = observeSchedulerCommits(store);
+    const scheduler = createWorkflowHostScheduler({
+      repoStore: commits.repoStore,
+      runtimeStore,
+      principal,
+      listActiveDeployments: () => [repoId],
+      ref: REF,
+      clock: () => new Date(),
+      scheduleTimeout: timeouts.scheduleTimeout,
+    });
+    try {
+      await scheduler.start();
+      expect(scheduler.queuedTimers()).toHaveLength(1);
+      await runtimeStore.append(runId, {
+        kind: "TimerFired",
+        seq: 2,
+        at,
+        timerId: "t-fired",
+      });
+      timeouts.fireAll();
+      await commits.whenCommitted();
+
+      const fired = await readTimerFiredBlobs(store.getRepoDir(repoId), runId);
+      expect(fired).toHaveLength(1);
+      expect(fired[0]?.seq).toBe(2);
+    } finally {
+      await scheduler.stop();
+      dropChain(runId);
+    }
+  });
+
+  test("a terminal log is left unchanged when a queued timer fires", async () => {
+    const dataDir = await makeTempDir("scheduler-terminal-");
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: {
+        "agent-state": permissiveHandler("workflow-runs-terminal"),
+      },
+      authorize: allowAll,
+    });
+    const repoId: RepoId = { kind: "agent-state", id: "deployment-terminal" };
+    const runId = "r-timer-terminal";
+    const runtimeStore = runtimeStoreFor(store, repoId);
+    const at = "2026-01-01T00:00:00.000Z";
+    await runtimeStore.append(runId, {
+      kind: "TimerSet",
+      seq: 1,
+      at,
+      timerId: "t-terminal",
+      fireAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+    await runtimeStore.append(runId, {
+      kind: "RunFailed",
+      seq: 2,
+      at,
+      error: { message: "already terminal" },
+    });
+
+    const timeouts = createManualTimeouts();
+    const commits = observeSchedulerCommits(store);
+    const scheduler = createWorkflowHostScheduler({
+      repoStore: commits.repoStore,
+      runtimeStore,
+      principal,
+      listActiveDeployments: () => [repoId],
+      ref: REF,
+      clock: () => new Date(),
+      scheduleTimeout: timeouts.scheduleTimeout,
+    });
+    try {
+      await scheduler.start();
+      expect(scheduler.queuedTimers()).toHaveLength(1);
+      timeouts.fireAll();
+      await commits.whenCommitted();
+
+      const fired = await readTimerFiredBlobs(store.getRepoDir(repoId), runId);
+      expect(fired).toHaveLength(0);
+      const events = await runtimeStore.read(runId);
+      expect(events.map((event) => event.kind)).toEqual([
+        "TimerSet",
+        "RunFailed",
+      ]);
+    } finally {
+      await scheduler.stop();
+      dropChain(runId);
+    }
+  });
 });

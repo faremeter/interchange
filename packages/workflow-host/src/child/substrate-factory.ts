@@ -2304,6 +2304,12 @@ export function createSidecarSubstrateFactory(
 
     const hostScheduler = createWorkflowHostScheduler({
       repoStore: substrate,
+      runtimeStore: createWorkflowRunRepoStore({
+        substrate,
+        principal,
+        repoId: workflowRunRepoId,
+        ref: validated.WORKFLOW_RUN_REF,
+      }),
       principal,
       listActiveDeployments: () => [workflowRunRepoId],
       ref: validated.WORKFLOW_RUN_REF,
