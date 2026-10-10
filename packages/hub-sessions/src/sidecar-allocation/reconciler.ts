@@ -82,6 +82,15 @@ export type SidecarAllocationReconcilerDeps = {
    * without state the previous worker produced.
    */
   readonly enableAutomaticReplacementRecovery?: boolean;
+  /**
+   * Asked only after an allocated worker misses its connect deadline.
+   * A parked verdict replaces that worker. Anything else releases it.
+   * Initialization-lease and leaked-launch releases do not ask.
+   */
+  readonly classifyParkedRun?: (allocation: SidecarAllocation) => Promise<{
+    readonly verdict: "parked" | "not-parked" | "unknown";
+    readonly reason: string;
+  }>;
   readonly leaseDurationMs?: number;
   readonly connectTimeoutMs?: number;
   readonly operationTimeoutMs?: number;
@@ -164,6 +173,7 @@ export function createSidecarAllocationReconciler({
   onInitializationRecovery,
   onReady,
   enableAutomaticReplacementRecovery = false,
+  classifyParkedRun,
   leaseDurationMs = DEFAULT_LEASE_DURATION_MS,
   connectTimeoutMs = DEFAULT_CONNECT_TIMEOUT_MS,
   operationTimeoutMs = DEFAULT_SIDECAR_OPERATION_TIMEOUT_MS,
@@ -338,7 +348,11 @@ export function createSidecarAllocationReconciler({
     message: string,
     {
       onlyIfInitializationIncomplete = false,
-    }: { onlyIfInitializationIncomplete?: boolean } = {},
+      replaceParked = false,
+    }: {
+      onlyIfInitializationIncomplete?: boolean;
+      replaceParked?: boolean;
+    } = {},
   ): Promise<void> {
     const initializationCheck = onlyIfInitializationIncomplete
       ? {
@@ -356,7 +370,8 @@ export function createSidecarAllocationReconciler({
       async () => {
         const updated =
           allocation.status === "allocated" &&
-          !enableAutomaticReplacementRecovery
+          !enableAutomaticReplacementRecovery &&
+          !replaceParked
             ? await allocationStore.beginUnrecoverableRelease({
                 ...initializationCheck,
                 allocationId: allocation.id,
@@ -465,11 +480,30 @@ export function createSidecarAllocationReconciler({
         error instanceof SidecarIdentityValidationError
       )
         throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      let replaceParked = false;
+      if (classifyParkedRun !== undefined) {
+        let classification: {
+          verdict: "parked" | "not-parked" | "unknown";
+          reason: string;
+        };
+        try {
+          classification = await classifyParkedRun(allocation);
+        } catch (cause) {
+          classification = {
+            verdict: "unknown",
+            reason: cause instanceof Error ? cause.message : String(cause),
+          };
+        }
+        logger.warn`Allocation ${allocation.id} anchor ${allocation.anchorRunId} connect loss classified ${classification.verdict}: ${classification.reason}`;
+        replaceParked = classification.verdict === "parked";
+      }
       await replaceAfterFailure(
         allocation,
         leaseId,
         "sidecar_connect_failed",
-        error instanceof Error ? error.message : String(error),
+        message,
+        { replaceParked },
       );
       return;
     }

@@ -4,6 +4,7 @@ import {
   createPrincipalKeyStore,
   createSidecarAllocationStore,
   createWorkflowRunDispatchStore,
+  createWorkflowRunLaunchSpecStore,
   resolveFrameSenderKey,
   resolveSenderKey,
   withExecutableWorkflowRun,
@@ -39,6 +40,7 @@ import {
   createWorkflowDispatchProjection,
   DEFAULT_WORKFLOW_PROJECTION_CONCURRENCY,
   createWorkflowRunReader,
+  createParkedRunClassifier,
   createWorkflowHistoryReceiveTracker,
   recoverSenderDeploy,
   DEFAULT_SIDECAR_ALLOCATION_CONCURRENCY,
@@ -429,9 +431,25 @@ export async function createHubServer({
       : {}),
   });
   const sidecarAllocationStore = createSidecarAllocationStore(db);
+  const workflowRunReader = createWorkflowRunReader(agentRepoStore.repoStore);
+  const launchSpecs = createWorkflowRunLaunchSpecStore(db);
+  const classifyParkedRun = createParkedRunClassifier({
+    runReader: workflowRunReader,
+    addressForAnchor: async (anchorRunId) => {
+      const row = await db.query.workflowRun.findFirst({
+        where: (run, { eq }) => eq(run.id, anchorRunId),
+        columns: { address: true },
+      });
+      return row?.address ?? null;
+    },
+    projectionForAnchor: async (anchorRunId) => {
+      const spec = await launchSpecs.get(anchorRunId);
+      return spec?.frozenApprovalBundle.projection ?? null;
+    },
+  });
   const workflowLifecycleService = createWorkflowLifecycleService({
     db,
-    runReader: createWorkflowRunReader(agentRepoStore.repoStore),
+    runReader: workflowRunReader,
     historyReceives: workflowHistoryReceives,
     sendControl: (target, command, timeoutMs) =>
       sidecarRouter.sendWorkflowControl(target, command, timeoutMs),
@@ -463,6 +481,7 @@ export async function createHubServer({
       : {}),
     onInitializationRecovery: (allocation, reconciliation) =>
       recoverSenderDeploy({ db, sidecarRouter, allocation, reconciliation }),
+    classifyParkedRun,
     onReady: async (allocation, reconciliation) => {
       await workflowAllocationService.deployReadyAllocation(
         allocation,

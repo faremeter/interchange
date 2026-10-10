@@ -103,6 +103,7 @@ function deps(args: {
   readyError?: Error;
   waitError?: Error;
   onReady?: (row: SidecarAllocation) => Promise<void>;
+  classifyParkedRun?: SidecarAllocationReconcilerDeps["classifyParkedRun"];
 }): SidecarAllocationReconcilerDeps {
   const provisioner = args.provisioner ?? testProvisioner();
   return {
@@ -128,6 +129,9 @@ function deps(args: {
     },
     hubWebSocketUrl: "wss://hub.example/ws/sidecar",
     ...(args.onReady !== undefined ? { onReady: args.onReady } : {}),
+    ...(args.classifyParkedRun !== undefined
+      ? { classifyParkedRun: args.classifyParkedRun }
+      : {}),
     now: () => NOW,
     createSidecarId: () => "sc-new",
     createToken: () => "token-new",
@@ -1176,6 +1180,149 @@ describe("createSidecarAllocationReconciler", () => {
       ["alloc-1", 1],
       ["alloc-1", 2],
     ]);
+  });
+
+  test("replaces a lost allocated worker when the run is parked", async () => {
+    const allocated = allocation({
+      status: "allocated",
+      generation: 1,
+      sidecarId: "sc-old",
+      ensureAcceptedGeneration: 1,
+      connectDeadline: NOW,
+    });
+    let replacement:
+      | Parameters<AllocationStore["beginReplacement"]>[0]
+      | undefined;
+    const fences: [string, number][] = [];
+    const store = fakeStore({
+      claimNextReconcilable: async () => allocated,
+      beginReplacement: async (args) => {
+        replacement = args;
+        return allocation({
+          status: "replacing",
+          generation: 2,
+          sidecarId: "sc-old",
+        });
+      },
+    });
+    const reconciler = createSidecarAllocationReconciler(
+      deps({
+        store,
+        fences,
+        ready: false,
+        waitError: new Error("connect timeout"),
+        classifyParkedRun: async () => ({
+          verdict: "parked",
+          reason: "resume guard would re-attach a park",
+        }),
+      }),
+    );
+
+    await reconciler.reconcileNext();
+
+    expect(replacement).toMatchObject({
+      allocationId: "alloc-1",
+      expectedStatus: "allocated",
+      expectedGeneration: 1,
+      expectedLeaseId: "lease-1",
+      failureCode: "sidecar_connect_failed",
+      failureMessage: "connect timeout",
+    });
+    expect(replacement?.onlyIfInitializationIncomplete).toBeUndefined();
+    expect(fences).toEqual([
+      ["alloc-1", 1],
+      ["alloc-1", 2],
+    ]);
+  });
+
+  test.each(["not-parked", "unknown"] as const)(
+    "releases a lost allocated worker when classification is %s",
+    async (verdict) => {
+      const allocated = allocation({
+        status: "allocated",
+        generation: 1,
+        sidecarId: "sc-old",
+        ensureAcceptedGeneration: 1,
+        connectDeadline: NOW,
+      });
+      let failure:
+        | {
+            failureCode: string;
+            failureMessage: string;
+            expectedLeaseId: string;
+          }
+        | undefined;
+      const store = fakeStore({
+        claimNextReconcilable: async () => allocated,
+        beginUnrecoverableRelease: async (args) => {
+          failure = {
+            failureCode: args.failureCode,
+            failureMessage: args.failureMessage,
+            expectedLeaseId: args.expectedLeaseId,
+          };
+          return allocation({ status: "releasing", generation: 2 });
+        },
+      });
+      const reconciler = createSidecarAllocationReconciler(
+        deps({
+          store,
+          ready: false,
+          waitError: new Error("connect timeout"),
+          classifyParkedRun: async () => ({
+            verdict,
+            reason: "resume guard found no re-attachable park",
+          }),
+        }),
+      );
+
+      await reconciler.reconcileNext();
+
+      expect(failure).toEqual({
+        failureCode: "sidecar_connect_failed",
+        failureMessage: "Automatic recovery is disabled: connect timeout",
+        expectedLeaseId: "lease-1",
+      });
+    },
+  );
+
+  test("an initialization lease does not ask whether the run is parked", async () => {
+    const current = allocation({
+      status: "allocated",
+      generation: 1,
+      ensureAcceptedGeneration: 1,
+      initializationLeaseId: "old-owner",
+    });
+    let asked = false;
+    let released:
+      | Parameters<AllocationStore["beginUnrecoverableRelease"]>[0]
+      | undefined;
+    const store = fakeStore({
+      claimNextReconcilable: async () => current,
+      beginUnrecoverableRelease: async (args) => {
+        released = args;
+        return { ...current, status: "releasing", generation: 2 };
+      },
+    });
+    const reconciler = createSidecarAllocationReconciler(
+      deps({
+        store,
+        ready: false,
+        waitError: new Error("must not wait"),
+        classifyParkedRun: async () => {
+          asked = true;
+          return { verdict: "parked", reason: "would have replaced" };
+        },
+      }),
+    );
+
+    await reconciler.reconcileNext();
+
+    expect(asked).toBe(false);
+    expect(released).toMatchObject({
+      onlyIfInitializationIncomplete: true,
+      expectedInitializationLeaseId: "old-owner",
+      failureCode: "sidecar_initialization_uncertain",
+    });
   });
 
   test("rebuilds fences without erasing durable retry schedules", async () => {

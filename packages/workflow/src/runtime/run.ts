@@ -36,14 +36,9 @@ import {
 import { evaluate, type SelectorContext } from "./selectors";
 import {
   hasFailedStep,
-  isCrashedInvocationStep,
-  isResumableAwaitingSignalStep,
-  isResumableLoopStep,
-  isResumableOnTriggerStep,
-  isResumableReceivedAwaitSignalStep,
-  isResumableSleepStep,
   isRunDone,
   nextSchedulable,
+  resumeResidualOf,
 } from "./dag";
 import {
   commit as commitDurableToChain,
@@ -507,17 +502,8 @@ async function executeRunBody(
       //     unfired durable timer and re-parks) or left `in-flight` by its
       //     fired timer (runSleep completes it without re-parking -- the
       //     crash-after-TimerFired-before-StepCompleted window).
-      if (
-        isResumableLoopStep(definition, stepId, stepState.phase) ||
-        isResumableAwaitingSignalStep(definition, stepId, stepState.phase) ||
-        isResumableReceivedAwaitSignalStep(
-          definition,
-          stepId,
-          stepState.phase,
-        ) ||
-        isResumableOnTriggerStep(definition, stepId, stepState.phase) ||
-        isResumableSleepStep(definition, stepId, stepState.phase)
-      ) {
+      const residual = resumeResidualOf(definition, stepId, stepState.phase);
+      if (residual === "continue") {
         // The onTrigger container carries no crash-mid-invocation risk (it never
         // self-completes); `runOnTrigger` re-derives its cursor from the log and
         // re-links a body parked mid-approval. Leave it for `nextSchedulable` to
@@ -538,7 +524,7 @@ async function executeRunBody(
       // pre-recovery behavior. Both settlings happen AFTER this loop --
       // committing inline would leave `state` stale and merely relocate the
       // stall to the main loop.
-      if (isCrashedInvocationStep(definition, stepId, stepState.phase)) {
+      if (residual === "crashed-invocation") {
         const parkedOps =
           env.readParkedApprovalOps !== undefined
             ? await env.readParkedApprovalOps({
@@ -574,11 +560,19 @@ async function executeRunBody(
       }
       // Every other non-terminal residual keeps declining: the host owns
       // the recovery decision (crash, alert, or redeploy).
-      if (
-        stepState.phase === "in-flight" ||
-        stepState.phase === "awaiting-signal" ||
-        stepState.phase === "awaiting-timer"
-      ) {
+      if (residual === "unsupported") {
+        // `resumeResidualOf` returns this only for a non-terminal phase.
+        // The constructor's phase is that same set, so a terminal phase
+        // here is a broken guard rather than a resume the host can own.
+        if (
+          stepState.phase !== "in-flight" &&
+          stepState.phase !== "awaiting-signal" &&
+          stepState.phase !== "awaiting-timer"
+        ) {
+          throw new Error(
+            `resume residual for step ${stepId} is unsupported in phase ${stepState.phase}`,
+          );
+        }
         throw new RuntimeResumeUnsupportedError(
           stepId,
           stepState.phase,
@@ -2058,11 +2052,14 @@ async function runLoop(
   const policy = iterationFailurePolicyOf(primitive);
   while (true) {
     const doneStepId = scopedStepId(primitive.id, iteration);
-    const child = state.children.get(
-      loopBodyRunId(runId, primitive.id, iteration),
+    const cursor = loopIterationCursor(
+      state,
+      runId,
+      primitive.id,
+      iteration,
+      policy,
     );
-    const step = state.steps.get(doneStepId);
-    if (isIterationDone(state, runId, primitive.id, iteration)) {
+    if (cursor.kind === "completed") {
       const doneInput = await resolveIterationInput(env, log, doneStepId);
       const doneOutput = await resolveIterationOutput(env, log, doneStepId);
       lastIteration = { output: doneOutput };
@@ -2080,12 +2077,7 @@ async function runLoop(
       currentInput = carryFn(doneOutput, doneInput);
       continue;
     }
-    if (
-      child?.terminalStatus === "failed" &&
-      child.abortedTeardown !== true &&
-      policy === "tolerate" &&
-      step?.phase !== "completed"
-    ) {
+    if (cursor.kind === "tolerated") {
       iteration += 1;
       if (iteration >= primitive.maxIterations) {
         outcome = "exhausted";
@@ -2094,16 +2086,11 @@ async function runLoop(
       }
       continue;
     }
-    const terminalStatus = child?.terminalStatus;
-    if (
-      terminalStatus === "cancelled" ||
-      (terminalStatus === "failed" &&
-        (child?.abortedTeardown === true || policy !== "tolerate"))
-    ) {
+    if (cursor.kind === "terminal") {
       // Durable half only. The recovering process's abort signal is not a
       // reason to reclassify a recorded genuine failure as teardown.
       throw new Error(
-        `loop ${primitive.id} iteration ${String(iteration)} ended ${terminalStatus}`,
+        `loop ${primitive.id} iteration ${String(iteration)} ended ${cursor.terminalStatus}`,
       );
     }
     break;
@@ -3024,7 +3011,9 @@ type OnTriggerResumePlan =
  * (terminal-is-final). Single source for the default so the steady-state drive
  * loop and the resume planner cannot drift.
  */
-function bodyFailurePolicyOf(primitive: OnTriggerPrimitive): BodyFailurePolicy {
+function bodyFailurePolicyOf(primitive: {
+  readonly onBodyFailure?: BodyFailurePolicy;
+}): BodyFailurePolicy {
   return primitive.onBodyFailure ?? "end";
 }
 
@@ -3038,7 +3027,7 @@ function bodyFailurePolicyOf(primitive: OnTriggerPrimitive): BodyFailurePolicy {
  * drive-fresh on `author`; the onTrigger planner refuses on either, since it has
  * no fresh-relay drive for a body still awaiting a signal.
  */
-function bodyParkedSignals(childState: RunState): {
+export function bodyParkedSignals(childState: RunState): {
   author: string[];
   controlPlane: string[];
 } {
@@ -3145,6 +3134,20 @@ async function planOnTriggerResume(
   primitive: OnTriggerPrimitive,
   state: RunState,
   log: readonly WorkflowEvent[],
+): Promise<OnTriggerResumePlan> {
+  return finishOnTriggerResume(primitive, state, log, (childRunId) =>
+    reloadState(env, childRunId),
+  );
+}
+
+async function finishOnTriggerResume(
+  primitive: {
+    readonly id: string;
+    readonly onBodyFailure?: BodyFailurePolicy;
+  },
+  state: RunState,
+  log: readonly WorkflowEvent[],
+  loadChild: (childRunId: string) => Promise<RunState>,
 ): Promise<OnTriggerResumePlan> {
   const eventIndex = highestSectionEventIndex(
     state.runId,
@@ -3328,7 +3331,7 @@ async function planOnTriggerResume(
   // last case is the one genuine behavior change here, and it is the intended
   // reading of `tolerate` -- a real body failure it is meant to swallow, not a
   // hang or a lost run.
-  const childState = await reloadState(env, childRunId);
+  const childState = await loadChild(childRunId);
   const { author, controlPlane } = bodyParkedSignals(childState);
   const parkedSignals = [...author, ...controlPlane];
   if (parkedSignals.length > 0) {
@@ -3366,6 +3369,24 @@ async function planLoopResume(
   state: RunState,
   log: readonly WorkflowEvent[],
   iteration: number,
+): Promise<SuspendableOccurrenceResume | undefined> {
+  return finishLoopResume(
+    primitive,
+    runId,
+    state,
+    log,
+    iteration,
+    (childRunId) => reloadState(env, childRunId),
+  );
+}
+
+async function finishLoopResume(
+  primitive: { readonly id: string },
+  runId: string,
+  state: RunState,
+  log: readonly WorkflowEvent[],
+  iteration: number,
+  loadChild: (childRunId: string) => Promise<RunState>,
 ): Promise<SuspendableOccurrenceResume | undefined> {
   const childRunId = loopBodyRunId(runId, primitive.id, iteration);
   const child = state.children.get(childRunId);
@@ -3446,7 +3467,7 @@ async function planLoopResume(
   // and drive the container relay FRESH. (On an inconsistent store the child
   // log is gone, so no gate is found and the forward drive re-runs the
   // iteration -- the existing inconsistent-store behavior.)
-  const childState = await reloadState(env, childRunId);
+  const childState = await loadChild(childRunId);
   const { author: authorAwaits } = bodyParkedSignals(childState);
   if (authorAwaits.length > 1) {
     throw new Error(
@@ -3460,6 +3481,113 @@ async function planLoopResume(
     return { kind: "signal-relay-drive-fresh", name: parkedName };
   }
   return undefined;
+}
+
+/**
+ * Whether a crash-recovered container can be re-attached, judged by the same
+ * planners the runtime drives. `rejected` is a planner throw (caught here so
+ * a caller can release instead of letting it escape). `reenter` is a child
+ * the forward drive re-adopts that is not itself a park. A drive-fresh loop
+ * park with a control-plane signal beside the author signal is `rejected`
+ * even though the runtime planner would return the author name: more than
+ * the author gate is waiting, and that is not re-attached.
+ */
+export type OccurrenceReattach =
+  | { readonly kind: "parked"; readonly childRunId?: string }
+  | { readonly kind: "reenter"; readonly childRunId: string }
+  | { readonly kind: "open" }
+  | { readonly kind: "rejected" };
+
+export async function loopOccurrenceReattach(args: {
+  readonly loopId: string;
+  readonly runId: string;
+  readonly iteration: number;
+  readonly state: RunState;
+  readonly log: readonly WorkflowEvent[];
+  readonly childState: RunState;
+}): Promise<OccurrenceReattach> {
+  const childRunId = loopBodyRunId(args.runId, args.loopId, args.iteration);
+  try {
+    const plan = await finishLoopResume(
+      { id: args.loopId },
+      args.runId,
+      args.state,
+      args.log,
+      args.iteration,
+      async () => args.childState,
+    );
+    if (plan === undefined) {
+      const child = args.state.children.get(childRunId);
+      if (child === undefined || child.terminalStatus !== undefined) {
+        return { kind: "open" };
+      }
+      return { kind: "reenter", childRunId };
+    }
+    if (plan.kind === "signal-relay-drive-fresh") {
+      const { author, controlPlane } = bodyParkedSignals(args.childState);
+      if (author.length !== 1 || controlPlane.length > 0) {
+        return { kind: "rejected" };
+      }
+    }
+    return { kind: "parked", childRunId };
+  } catch {
+    return { kind: "rejected" };
+  }
+}
+
+export async function onTriggerOccurrenceReattach(args: {
+  readonly sectionId: string;
+  readonly onBodyFailure?: BodyFailurePolicy;
+  readonly state: RunState;
+  readonly log: readonly WorkflowEvent[];
+  readonly childState: RunState;
+}): Promise<OccurrenceReattach> {
+  try {
+    const plan = await finishOnTriggerResume(
+      {
+        id: args.sectionId,
+        ...(args.onBodyFailure !== undefined
+          ? { onBodyFailure: args.onBodyFailure }
+          : {}),
+      },
+      args.state,
+      args.log,
+      async () => args.childState,
+    );
+    // A recorded body keeps the id the log stored. `sectionBodyRunId`
+    // mints the parent-prefixed form, which is an empty log when the
+    // child was committed as `<sectionId>__<index>`.
+    const recordedChild = (eventIndex: number): string =>
+      recordedSectionBodyRunId(
+        args.state.runId,
+        args.sectionId,
+        eventIndex,
+        args.state.children,
+      );
+    switch (plan.kind) {
+      case "reawait-input":
+        return { kind: "parked" };
+      case "reestablish-approval":
+      case "reestablish-signal-relay":
+      case "relay-grant":
+      case "relay-signal-grant":
+        return {
+          kind: "parked",
+          childRunId: recordedChild(plan.eventIndex),
+        };
+      case "readopt-in-flight-body":
+        return {
+          kind: "reenter",
+          childRunId: recordedChild(plan.eventIndex),
+        };
+      case "fresh":
+      case "advance-with-input":
+      case "terminal-is-final":
+        return { kind: "open" };
+    }
+  } catch {
+    return { kind: "rejected" };
+  }
 }
 
 /**
@@ -3701,6 +3829,51 @@ export function boundSignalForContainerAwait(
  */
 function iterationFailurePolicyOf(primitive: LoopPrimitive): BodyFailurePolicy {
   return primitive.onIterationFailure ?? "end";
+}
+
+/**
+ * One iteration of the replay walk, without `while` or `carry`. `runLoop`
+ * still threads input on `completed`. A classifier uses the same cursor to
+ * name the frontier child, including a tolerated failure it must skip.
+ */
+export type LoopIterationCursor =
+  | { readonly kind: "completed" }
+  | { readonly kind: "tolerated" }
+  | {
+      readonly kind: "terminal";
+      readonly terminalStatus: "failed" | "cancelled";
+    }
+  | { readonly kind: "frontier" };
+
+export function loopIterationCursor(
+  state: RunState,
+  runId: string,
+  loopId: string,
+  iteration: number,
+  policy: BodyFailurePolicy,
+): LoopIterationCursor {
+  if (isIterationDone(state, runId, loopId, iteration)) {
+    return { kind: "completed" };
+  }
+  const child = state.children.get(loopBodyRunId(runId, loopId, iteration));
+  const step = state.steps.get(scopedStepId(loopId, iteration));
+  if (
+    child?.terminalStatus === "failed" &&
+    child.abortedTeardown !== true &&
+    policy === "tolerate" &&
+    step?.phase !== "completed"
+  ) {
+    return { kind: "tolerated" };
+  }
+  const terminalStatus = child?.terminalStatus;
+  if (
+    terminalStatus === "cancelled" ||
+    (terminalStatus === "failed" &&
+      (child?.abortedTeardown === true || policy !== "tolerate"))
+  ) {
+    return { kind: "terminal", terminalStatus };
+  }
+  return { kind: "frontier" };
 }
 
 function isIterationDone(

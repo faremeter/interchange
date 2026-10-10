@@ -120,6 +120,12 @@ export {
   type SidecarAllocationReconcilerDeps,
   type SidecarReconciliationContext,
 } from "./sidecar-allocation";
+export {
+  createParkedRunClassifier,
+  type ParkedRunClassification,
+  type ParkedRunClassifier,
+  type ParkedRunVerdict,
+} from "./parked-run";
 export { ensureWorkflowDefinitionForAsset } from "./workflow-definition-ensure";
 export { workflowSourceAssetMountPath } from "./workflow-closure-resolution";
 export {
