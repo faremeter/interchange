@@ -118,6 +118,29 @@ export function isRepoWriteFailure(cause: unknown): boolean {
   );
 }
 
+// A flush that threw dropped its batch: the events are neither durable
+// nor still buffered. The writer that flushed them rejects on its own
+// promise, and a barrier's finally drops the chain, so a later link
+// would otherwise see an empty buffer and succeed. Later links rethrow
+// the first cause. `dropChain` forgets it when the run settles.
+const failedFlushes = new Map<string, unknown>();
+
+function throwIfFlushFailed(runId: string): void {
+  const cause = failedFlushes.get(runId);
+  if (cause !== undefined) throw cause;
+}
+
+function followChain<T>(runId: string, body: () => Promise<T>): Promise<T> {
+  const prev = commitChains.get(runId) ?? Promise.resolve();
+  const next = (async () => {
+    await prev.catch(() => undefined);
+    throwIfFlushFailed(runId);
+    return body();
+  })();
+  commitChains.set(runId, next);
+  return next;
+}
+
 async function flushBuffer(env: CommitEnv, runId: string): Promise<void> {
   const buf = pendingBuffers.get(runId);
   if (buf === undefined || buf.length === 0) return;
@@ -127,6 +150,7 @@ async function flushBuffer(env: CommitEnv, runId: string): Promise<void> {
     await env.repoStore.appendBatch(runId, events);
   } catch (cause) {
     markRepoWriteFailure(cause);
+    if (!failedFlushes.has(runId)) failedFlushes.set(runId, cause);
     throw cause;
   }
 }
@@ -153,17 +177,13 @@ export async function commitBuffered(
   runId: string,
   event: WorkflowEvent,
 ): Promise<RunState> {
-  const prev = commitChains.get(runId) ?? Promise.resolve();
-  const next = (async (): Promise<RunState> => {
-    await prev.catch(() => undefined);
+  return followChain(runId, async () => {
     const fresh = await readStateWithPending(env, runId);
     const adjustedEvent: WorkflowEvent = { ...event, seq: fresh.lastSeq + 1 };
     const nextState = applyEvent(fresh, adjustedEvent);
     getBuffer(runId).push(adjustedEvent);
     return nextState;
-  })();
-  commitChains.set(runId, next);
-  return next;
+  });
 }
 
 /**
@@ -183,9 +203,7 @@ export async function commit(
   runId: string,
   event: WorkflowEvent,
 ): Promise<RunState> {
-  const prev = commitChains.get(runId) ?? Promise.resolve();
-  const next = (async (): Promise<RunState> => {
-    await prev.catch(() => undefined);
+  return followChain(runId, async () => {
     const fresh = await readStateWithPending(env, runId);
     const adjustedEvent: WorkflowEvent = { ...event, seq: fresh.lastSeq + 1 };
     // Validate the transition before appending so a state-machine
@@ -196,9 +214,7 @@ export async function commit(
     getBuffer(runId).push(adjustedEvent);
     await flushBuffer(env, runId);
     return nextState;
-  })();
-  commitChains.set(runId, next);
-  return next;
+  });
 }
 
 /**
@@ -210,13 +226,9 @@ export async function commit(
  * No-op when the buffer is empty.
  */
 export async function flushChain(env: CommitEnv, runId: string): Promise<void> {
-  const prev = commitChains.get(runId) ?? Promise.resolve();
-  const next = (async (): Promise<void> => {
-    await prev.catch(() => undefined);
+  await followChain(runId, async () => {
     await flushBuffer(env, runId);
-  })();
-  commitChains.set(runId, next);
-  await next;
+  });
 }
 
 /**
@@ -230,14 +242,10 @@ export function runAfterDiscardingBuffer<T>(
   runId: string,
   body: () => Promise<T>,
 ): Promise<T> {
-  const prev = commitChains.get(runId) ?? Promise.resolve();
-  const next = (async () => {
-    await prev.catch(() => undefined);
+  return followChain(runId, async () => {
     pendingBuffers.delete(runId);
     return body();
-  })();
-  commitChains.set(runId, next);
-  return next;
+  });
 }
 
 /** Flush and exclude runtime commits while an external writer advances the log. */
@@ -246,13 +254,10 @@ export function withRunCommitBarrier<T>(
   runId: string,
   write: () => Promise<T>,
 ): Promise<T> {
-  const prev = commitChains.get(runId) ?? Promise.resolve();
-  const next = (async () => {
-    await prev.catch(() => undefined);
+  const next = followChain(runId, async () => {
     await flushBuffer(env, runId);
     return write();
-  })();
-  commitChains.set(runId, next);
+  });
   return next.finally(() => {
     if (commitChains.get(runId) !== next) return;
     commitChains.delete(runId);
@@ -280,4 +285,5 @@ export async function reloadState(
 export function dropChain(runId: string): void {
   commitChains.delete(runId);
   pendingBuffers.delete(runId);
+  failedFlushes.delete(runId);
 }
