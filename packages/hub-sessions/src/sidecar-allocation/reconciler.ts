@@ -1219,28 +1219,40 @@ export function createSidecarAllocationReconciler({
       }
     };
     checkLeaseExpiry();
+    // The durable schedule survives the claim. Stop renewing and let the
+    // lease expire; handling a lease failure must not require another write.
+    const stopForLeaseLoss = (error: ReconciliationLeaseLostError): void => {
+      const cause = error.cause;
+      if (cause === undefined) {
+        logger.info`Allocation ${allocation.id} reconciliation stopped: lease ${leaseId} is no longer current`;
+      } else {
+        logger.warn`Allocation ${allocation.id} reconciliation stopped because lease ${leaseId} could not be confirmed: ${cause instanceof Error ? cause.message : String(cause)}`;
+      }
+    };
     try {
       active.controller.signal.throwIfAborted();
       await reconcile(allocation, leaseId);
     } catch (error) {
       if (error instanceof ReconciliationLeaseLostError) {
-        const cause = error.cause;
-        if (cause === undefined) {
-          logger.info`Allocation ${allocation.id} reconciliation stopped: lease ${leaseId} is no longer current`;
-        } else {
-          logger.warn`Allocation ${allocation.id} reconciliation stopped because lease ${leaseId} could not be confirmed: ${cause instanceof Error ? cause.message : String(cause)}`;
-        }
-        // The durable schedule survives the claim. Stop renewing and let the
-        // lease expire; handling a lease failure must not require another write.
+        stopForLeaseLoss(error);
         return true;
       }
       logger.error`Allocation ${allocation.id} reconciliation failed: ${error instanceof Error ? error.message : String(error)}`;
-      await finishReconciliation(allocation.id, () =>
-        allocationStore.parkReconciliation(allocation.id, leaseId, {
-          kind: "retry-after-error",
-          notBefore: retryAt(MAX_RETRY_BACKOFF_ATTEMPT),
-        }),
-      );
+      try {
+        await finishReconciliation(allocation.id, () =>
+          allocationStore.parkReconciliation(allocation.id, leaseId, {
+            kind: "retry-after-error",
+            notBefore: retryAt(MAX_RETRY_BACKOFF_ATTEMPT),
+          }),
+        );
+      } catch (parkError) {
+        // The park waits behind the same stalled query. Losing the lease
+        // here is the same stop as above: another write cannot clear it.
+        if (!(parkError instanceof ReconciliationLeaseLostError)) {
+          throw parkError;
+        }
+        stopForLeaseLoss(parkError);
+      }
     } finally {
       finished = true;
       clearInterval(heartbeat);
