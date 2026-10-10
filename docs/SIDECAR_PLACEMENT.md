@@ -124,6 +124,13 @@ connection and uses the advertised active limit for placement and probe adoption
 Restart resumes active records without stopped or teardown marks and leaves
 retained records unspawned.
 
+A full sidecar rejects a new deployment before accepting or starting it. Its
+`agent.deploy.error` carries `error: { code: "capacity_full", message }`, which the Hub records
+as `sidecar_deployment_rejected` and releases through ordinary cleanup. An error
+with code `deployment_failed` or a missing reply still leaves initialization uncertain.
+Refusal still requires cleanup of history the Hub may have restored before sending
+the deploy frame; it does not confirm removal.
+
 For a terminal run, the Hub requests `workflow.control` with `action: retain`.
 A reconnect reporting a terminal copy live triggers this request immediately
 after welcome; the lifecycle sweep shares an in-flight request and retries failures.

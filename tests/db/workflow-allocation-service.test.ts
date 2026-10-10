@@ -37,7 +37,10 @@ import {
   type SidecarCapabilityRule,
 } from "@intx/types";
 import type { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
-import { DEFAULT_SIDECAR_CAPACITY } from "@intx/types/sidecar";
+import {
+  DEFAULT_SIDECAR_CAPACITY,
+  DeploymentRejectedError,
+} from "@intx/types/sidecar";
 import { createApprovalSet } from "@intx/workflow-deploy";
 import {
   createTestDb,
@@ -811,6 +814,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         new Error("deploy acknowledgement timed out"),
         true,
       );
+      await expect(
+        service.deployReadyAllocation(allocation, reconciliation),
+      ).rejects.toBe(failure);
+      failure = new DeploymentRejectedError("capacity_full", "No active slot");
       await expect(
         service.deployReadyAllocation(allocation, reconciliation),
       ).rejects.toBe(failure);
