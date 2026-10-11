@@ -375,3 +375,15 @@ Where it lives today: `driveContainerSignalRelay`,
 `packages/workflow/src/runtime/run.ts`; `handleSignalReceived`,
 `packages/workflow/src/state-machine/transition.ts`; `DeliverSignal`,
 `packages/hub-api/src/routes/workflows.ts`
+
+**29.** Two `onTrigger` sections may await the same author signal name.
+A section may also share that name with a top-level `awaitSignal` or
+with a `loop` that relays the name. The section park is correlated, so
+a name-only delivery still binds the gate or the loop and does not
+complete the section. Two same-name gates inside one section body, two
+top-level gates, and a gate beside a loop stay rejected.
+
+Where it lives today: `validateConcurrentAwaitSignalNames` and
+`collectRelayedAwaitSignalNames`,
+`packages/workflow/src/definition/workflow.ts`; the name-mode guard in
+`driveContainerSignalRelay`, `packages/workflow/src/runtime/run.ts`
