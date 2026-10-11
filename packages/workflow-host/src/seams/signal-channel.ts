@@ -4,16 +4,19 @@
 // wiring. Its `deliver` commits a `SignalReceived` blob to the run's
 // event log; commit-success is the dedup gate (the state machine's
 // `observedSignalIds` rejects a duplicate `signalId` on the next
-// transition). `awaitNext` consults the state-machine `RunState` for
-// signals that were committed and reduced into `unconsumedSignals`
-// before the awaiter subscribed, then falls back to a per-name
-// `subscribeKind` tail of the run's events ref.
+// transition). `awaitNext` consults the state-machine `RunState`
+// before subscribing. A name awaiter reads the head of
+// `unconsumedSignals`. A correlated awaiter reads
+// `unconsumedByCorrelation` for an item whose signalName matches.
+// Otherwise it waits on a per-slot `subscribeKind` tail.
 //
-// Per-name FIFO across concurrent awaiters: the channel maintains an
-// awaiter queue per signal name. A single `subscribeKind` loop per
-// name pulls events from the substrate; each matching event resolves
-// the head of that queue. The loop starts on first `awaitNext` for a
-// name and tears down when the queue empties or `stop()` is called.
+// Slots do not share a tail. The name slot key is `name\0${name}`
+// and a correlated slot key is `corr\0${correlationId}\0${name}`.
+// Each slot has its own awaiter queue and its own `subscribeKind`
+// loop, started on the first `awaitNext` for that slot and torn
+// down when that queue empties or `stop()` is called. A delivery
+// resolves only the slot whose correlationId equals the event's;
+// both absent selects the name slot.
 //
 // Commit-ordering invariant: `deliver` flushes the run's pending
 // buffer through `runtimeStore`, then commits the `SignalReceived`
@@ -140,7 +143,7 @@ type NameSubscription = {
 
 export type SignalChannelHandle = SignalChannel & {
   /**
-   * Tear down every per-name subscription and reject every pending
+   * Tear down every slot subscription and reject every pending
    * awaiter. Idempotent. After `stop()` the channel holds no
    * substrate watcher handles.
    */
