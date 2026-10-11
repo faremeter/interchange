@@ -1402,6 +1402,35 @@ describe("POST /workflows/:anchorRunId/signals", () => {
     // The signalId is the caller-supplied stable id, never server-minted.
     expect(call.signalId).toBe("sig-caller-1");
     expect(call.payload).toEqual({ ok: true });
+    expect(call.correlationId).toBeUndefined();
+  });
+
+  test("forwards correlationId on a direct signal delivery", async () => {
+    const signalCalls: SignalCall[] = [];
+    const app = createTestApp({
+      grants: [manageGrant()],
+      signalCalls,
+      db: { deploymentRow },
+    });
+
+    const res = await app.fetch(
+      authedPost(`${base()}/${DEPLOYMENT_ID}/signals`, {
+        runId: RUN_ID,
+        signalName: "go",
+        signalId: "sig-caller-corr",
+        payload: { ok: true },
+        correlationId: "corr-1",
+      }),
+    );
+
+    expect(res.status).toBe(202);
+    expect(signalCalls).toEqual([
+      expect.objectContaining({
+        signalName: "go",
+        signalId: "sig-caller-corr",
+        correlationId: "corr-1",
+      }),
+    ]);
   });
 
   test("durably queues a signal for a provisioned deployment", async () => {
@@ -1435,6 +1464,41 @@ describe("POST /workflows/:anchorRunId/signals", () => {
           signalName: "go",
           signalId: "sig-durable-1",
           payload: { ok: true },
+        },
+      },
+    ]);
+  });
+
+  test("forwards correlationId on a durable signal enqueue", async () => {
+    const signalEnqueues: WorkflowSignalDispatchEnqueue[] = [];
+    const app = createTestApp({
+      grants: [manageGrant()],
+      workflowSignalDispatchEnqueues: signalEnqueues,
+      db: { deploymentRow, allocationId: "allocation-1" },
+    });
+
+    const res = await app.fetch(
+      authedPost(`${base()}/${DEPLOYMENT_ID}/signals`, {
+        runId: RUN_ID,
+        signalName: "go",
+        signalId: "sig-durable-corr",
+        payload: { ok: true },
+        correlationId: "corr-1",
+      }),
+    );
+
+    expect(res.status).toBe(202);
+    expect(signalEnqueues).toEqual([
+      {
+        id: `dispatch:${DEPLOYMENT_ID}:sig-durable-corr`,
+        anchorRunId: DEPLOYMENT_ID,
+        signal: {
+          agentAddress: RUN_ADDRESS,
+          runId: RUN_ID,
+          signalName: "go",
+          signalId: "sig-durable-corr",
+          payload: { ok: true },
+          correlationId: "corr-1",
         },
       },
     ]);

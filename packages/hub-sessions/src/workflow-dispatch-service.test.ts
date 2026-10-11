@@ -315,6 +315,63 @@ describe("createWorkflowDispatchService", () => {
     ]);
   });
 
+  test("replays a correlated signal without dropping correlationId", async () => {
+    const signal = {
+      type: "signal.deliver" as const,
+      agentAddress: "workflow@tenant.example",
+      runId: "workflow@tenant.example",
+      signalName: "continue",
+      signalId: "signal-1",
+      payload: { approved: true },
+      correlationId: "corr-1",
+    };
+    let didClaim = false;
+    const deliveries: unknown[][] = [];
+    const service = createWorkflowDispatchService({
+      dispatchStore: fakeDispatchStore({
+        claimNextPending: async () => {
+          if (didClaim) return null;
+          didClaim = true;
+          return dispatch({
+            kind: "signal",
+            messageId: signal.signalId,
+            rawMessage: new TextEncoder().encode(JSON.stringify(signal)),
+          });
+        },
+      }),
+      allocationStore: fakeAllocationStore({
+        findByAnchorRunId: async () => allocation(),
+      }),
+      router: {
+        sendSignalDeliverToAllocation: async (...args) => {
+          deliveries.push(args);
+        },
+        sendWorkflowRunDispatchToAllocation: async () => {
+          throw new Error("must not route signal as mail");
+        },
+      },
+      resolveAnchorAddress: async () => signal.agentAddress,
+      createLeaseId: () => "lease-1",
+      now: () => NOW,
+    });
+
+    expect(await service.reconcileUntilIdle()).toBe(1);
+    expect(deliveries).toEqual([
+      [
+        { allocationId: "allocation-1", generation: 2 },
+        {
+          agentAddress: signal.agentAddress,
+          runId: signal.runId,
+          signalName: signal.signalName,
+          signalId: signal.signalId,
+          payload: signal.payload,
+          correlationId: "corr-1",
+        },
+        expect.any(AbortSignal),
+      ],
+    ]);
+  });
+
   test("an expired delivery remains excluded across drains until its database read settles", async () => {
     const stuck = dispatch({
       id: "dispatch-stuck",

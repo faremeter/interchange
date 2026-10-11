@@ -2608,6 +2608,7 @@ export async function injectSignal(
   runId: string,
   signalName: string,
   payload: unknown,
+  correlationId?: string,
 ): Promise<{ signalId: string }> {
   const handle = requireDeployment(env, anchorRunId);
   const signalId = `sig_${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -2617,6 +2618,7 @@ export async function injectSignal(
     signalName,
     signalId,
     payload,
+    ...(correlationId !== undefined ? { correlationId } : {}),
   });
   return { signalId };
 }

@@ -273,6 +273,7 @@ export type MultistepSignalHandler = (args: {
   signalName: string;
   signalId: string;
   payload: unknown;
+  correlationId?: string;
 }) => Promise<void>;
 
 /**
@@ -299,6 +300,7 @@ export type MultistepSignalRouter = {
     signalName: string;
     signalId: string;
     payload: unknown;
+    correlationId?: string;
   }): Promise<boolean>;
 };
 
@@ -319,6 +321,9 @@ export function createMultistepSignalRouter(): MultistepSignalRouter {
         signalName: frame.signalName,
         signalId: frame.signalId,
         payload: frame.payload,
+        ...(frame.correlationId !== undefined
+          ? { correlationId: frame.correlationId }
+          : {}),
       });
       return true;
     },

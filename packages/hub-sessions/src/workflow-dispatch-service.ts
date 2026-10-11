@@ -268,6 +268,9 @@ export function createWorkflowDispatchService({
             signalName: frame.signalName,
             signalId: frame.signalId,
             payload: frame.payload,
+            ...(frame.correlationId !== undefined
+              ? { correlationId: frame.correlationId }
+              : {}),
           },
           signal,
         );

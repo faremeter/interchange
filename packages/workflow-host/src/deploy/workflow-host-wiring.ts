@@ -2095,6 +2095,9 @@ export function createSidecarDeployRouter<
           signalName: args.signalName,
           signalId: args.signalId,
           payload: args.payload,
+          ...(args.correlationId !== undefined
+            ? { correlationId: args.correlationId }
+            : {}),
         });
       });
       // Register the drain handler so a hub `drain.deliver` frame dispatches

@@ -545,6 +545,9 @@ const controlPayloadFactories = defineControlPayloadFactories({
         runId: "string",
         signalName: "string",
         signalId: "string",
+        // Addresses one onTrigger relay park. Omitted, the child commits
+        // a name-FIFO delivery.
+        "correlationId?": "string > 0",
         // The resume decision in FINAL form -- the child commits it as the
         // SignalReceived payload verbatim. Each sender owns any
         // provenance-specific preparation BEFORE this frame: the dispatch loop

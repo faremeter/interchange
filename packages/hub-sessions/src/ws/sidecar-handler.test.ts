@@ -578,11 +578,51 @@ describe("SidecarRouter allocation routing", () => {
       signalName: "continue",
       signalId: "signal-1",
       payload: { approved: true },
+      correlationId: "corr-1",
     });
     expect(lastFrame(ws)).toMatchObject({
       type: "signal.deliver",
       signalId: "signal-1",
+      correlationId: "corr-1",
     });
+  });
+
+  test("a direct signal delivery keeps correlationId on the wire", async () => {
+    const router = createAllocatedRouter();
+    const ws = await connect(router, [identity.workflowRunAddress]);
+    await router.sendSignalDeliver({
+      agentAddress: identity.workflowRunAddress,
+      runId: identity.workflowRunAddress,
+      signalName: "go",
+      signalId: "signal-name",
+      payload: { ok: true },
+    });
+    await router.sendSignalDeliver({
+      agentAddress: identity.workflowRunAddress,
+      runId: identity.workflowRunAddress,
+      signalName: "go",
+      signalId: "signal-corr",
+      payload: { ok: true },
+      correlationId: "corr-1",
+    });
+    const signals = ws.sent.flatMap((raw) => {
+      const parsed: unknown = JSON.parse(raw);
+      if (typeof parsed !== "object" || parsed === null) return [];
+      if (!("type" in parsed) || parsed.type !== "signal.deliver") return [];
+      return [parsed];
+    });
+    expect(signals).toEqual([
+      expect.objectContaining({
+        type: "signal.deliver",
+        signalId: "signal-name",
+      }),
+      expect.objectContaining({
+        type: "signal.deliver",
+        signalId: "signal-corr",
+        correlationId: "corr-1",
+      }),
+    ]);
+    expect(signals[0]).not.toHaveProperty("correlationId");
   });
 
   test("advancing the fence disconnects and rejects the old generation", async () => {

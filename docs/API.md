@@ -652,7 +652,7 @@ Lists the workflow deployments for the tenant, most recent first.
 ### POST /api/tenants/:tenantId/workflows/:runId/signals
 Deliver a signal to a workflow run
 
-Delivers a caller-supplied, stable signal to the named run of a workflow deployment. The signalId must be supplied by the caller; the run state machine dedups on it.
+Delivers a caller-supplied, stable signal to the named run of a workflow deployment. The signalId must be supplied by the caller; the run state machine dedups on it. An onTrigger body await is addressed by correlationId from that relay's SignalAwaited together with the author signalName. Omit correlationId to address a name-FIFO await, such as a loop or a top-level gate.
 
 Body: unknown
 

@@ -61,6 +61,7 @@ export const SignalReceivedEnvelope = type({
   signalName: "string",
   signalId: "string",
   payload: "unknown",
+  "correlationId?": "string > 0",
 });
 export type SignalReceivedEnvelope = typeof SignalReceivedEnvelope.infer;
 
@@ -116,11 +117,21 @@ export type SignalChannelOpts = {
 };
 
 type Awaiter = {
-  resolve: (value: { payload: unknown; signalId: string }) => void;
+  resolve: (value: {
+    payload: unknown;
+    signalId: string;
+    correlationId?: string;
+  }) => void;
   reject: (cause: unknown) => void;
   signal?: AbortSignal;
   onAbort?: () => void;
 };
+
+function slotOf(name: string, correlationId: string | undefined): string {
+  return correlationId === undefined
+    ? `name\0${name}`
+    : `corr\0${correlationId}\0${name}`;
+}
 
 type NameSubscription = {
   abort: AbortController;
@@ -145,17 +156,27 @@ export function createWorkflowHostSignalChannel(
 
   function peekState(
     name: string,
-  ): { payload: unknown; signalId: string } | null {
+    correlationId: string | undefined,
+  ): { payload: unknown; signalId: string; correlationId?: string } | null {
     const state = opts.readState();
+    if (correlationId !== undefined) {
+      const queued = state.unconsumedByCorrelation.get(correlationId);
+      const head = queued?.find((item) => item.signalName === name);
+      if (head === undefined) return null;
+      return {
+        payload: head.payload,
+        signalId: head.id,
+        correlationId,
+      };
+    }
     const queue = state.unconsumedSignals.get(name);
     if (queue === undefined || queue.length === 0) return null;
     const head = queue[0];
     if (head === undefined) return null;
-    // The state-machine `unconsumedSignals` is drained by the
-    // runtime body's next `SignalAwaited` reduction, not by the
-    // channel. The channel reads the head; the caller commits the
-    // SignalAwaited that consumes it. This separation keeps the
-    // channel free of state-machine mutation responsibilities.
+    // The state-machine name queue is drained by the runtime body's
+    // next name-addressed `SignalAwaited`, not by the channel. The
+    // channel reads the head; the caller commits the SignalAwaited
+    // that consumes it.
     return { payload: head.payload, signalId: head.id };
   }
 
@@ -186,8 +207,12 @@ export function createWorkflowHostSignalChannel(
     return queue.length;
   }
 
-  function startNameSubscription(name: string): void {
-    if (subscriptions.has(name)) return;
+  function startNameSubscription(
+    name: string,
+    correlationId: string | undefined,
+  ): void {
+    const slot = slotOf(name, correlationId);
+    if (subscriptions.has(slot)) return;
     const abort = new AbortController();
     // The teardown must run synchronously *before* the awaiter wakes
     // when this loop drains, otherwise the awaiter's continuation
@@ -198,8 +223,8 @@ export function createWorkflowHostSignalChannel(
     // aborting *before* resolving the awaiter keeps the per-name
     // invariant intact across multi-round resolution cycles.
     const teardown = (): void => {
-      if (subscriptions.get(name)?.abort === abort) {
-        subscriptions.delete(name);
+      if (subscriptions.get(slot)?.abort === abort) {
+        subscriptions.delete(slot);
       }
       abort.abort();
     };
@@ -220,18 +245,18 @@ export function createWorkflowHostSignalChannel(
         for await (const entry of iter) {
           if (stopped) break;
           if (!matchesAwaiter(entry, name)) continue;
+          if (entry.event.correlationId !== correlationId) continue;
           const observed = opts.readState().observedSignalIds;
           if (observed.has(entry.event.signalId)) continue;
-          const next = shiftAwaiter(name);
+          const next = shiftAwaiter(slot);
           if (next === null) {
             // No awaiter left -- the queue was drained between the
             // event landing and this loop reaching it. The reduced
-            // state machine queues the event into
-            // `unconsumedSignals`; the next `awaitNext` for the same
-            // name picks it up via the state-reader path.
+            // state machine keeps the event; the next `awaitNext` for
+            // the same slot picks it up via the state-reader path.
             break;
           }
-          if (awaiterCount(name) === 0) {
+          if (awaiterCount(slot) === 0) {
             // Resolving the last awaiter on this subscription. Tear
             // down before the resolve so any awaitNext call inside
             // the awaiter's continuation installs a fresh
@@ -240,12 +265,18 @@ export function createWorkflowHostSignalChannel(
             next.resolve({
               payload: entry.event.payload,
               signalId: entry.event.signalId,
+              ...(entry.event.correlationId !== undefined
+                ? { correlationId: entry.event.correlationId }
+                : {}),
             });
             return;
           }
           next.resolve({
             payload: entry.event.payload,
             signalId: entry.event.signalId,
+            ...(entry.event.correlationId !== undefined
+              ? { correlationId: entry.event.correlationId }
+              : {}),
           });
         }
       } finally {
@@ -256,7 +287,7 @@ export function createWorkflowHostSignalChannel(
         teardown();
       }
     })();
-    subscriptions.set(name, { abort, done });
+    subscriptions.set(slot, { abort, done });
   }
 
   async function stopSubscription(name: string): Promise<void> {
@@ -270,7 +301,7 @@ export function createWorkflowHostSignalChannel(
   }
 
   return {
-    async deliver(name, payload, signalId) {
+    async deliver(name, payload, signalId, correlationId) {
       if (stopped) {
         throw new Error("signal channel: deliver after stop");
       }
@@ -338,6 +369,7 @@ export function createWorkflowHostSignalChannel(
                   signalId: id,
                   payload,
                   at,
+                  ...(correlationId !== undefined ? { correlationId } : {}),
                 });
                 return out;
               },
@@ -346,7 +378,7 @@ export function createWorkflowHostSignalChannel(
           ),
       );
     },
-    async awaitNext(name, signal) {
+    async awaitNext(name, signal, correlationId) {
       if (stopped) {
         throw new Error("signal channel: awaitNext after stop");
       }
@@ -354,43 +386,46 @@ export function createWorkflowHostSignalChannel(
         throw new Error("aborted");
       }
       // Drain the state-machine queue first. A signal that was
-      // committed before the awaiter subscribed lives in
-      // `unconsumedSignals` after log replay.
-      const queued = peekState(name);
+      // committed before the awaiter subscribed lives in the name
+      // queue, or under its correlation, after log replay.
+      const queued = peekState(name, correlationId);
       if (queued !== null) return queued;
 
-      return new Promise<{ payload: unknown; signalId: string }>(
-        (resolve, reject) => {
-          const awaiter: Awaiter = {
-            resolve,
-            reject,
-            ...(signal !== undefined ? { signal } : {}),
-          };
-          if (signal !== undefined) {
-            const onAbort = (): void => {
-              const list = awaiters.get(name);
-              if (list !== undefined) {
-                const idx = list.indexOf(awaiter);
-                if (idx >= 0) list.splice(idx, 1);
-                if (list.length === 0) {
-                  awaiters.delete(name);
-                  void stopSubscription(name);
-                }
+      const slot = slotOf(name, correlationId);
+      return new Promise<{
+        payload: unknown;
+        signalId: string;
+        correlationId?: string;
+      }>((resolve, reject) => {
+        const awaiter: Awaiter = {
+          resolve,
+          reject,
+          ...(signal !== undefined ? { signal } : {}),
+        };
+        if (signal !== undefined) {
+          const onAbort = (): void => {
+            const list = awaiters.get(slot);
+            if (list !== undefined) {
+              const idx = list.indexOf(awaiter);
+              if (idx >= 0) list.splice(idx, 1);
+              if (list.length === 0) {
+                awaiters.delete(slot);
+                void stopSubscription(slot);
               }
-              reject(new Error("aborted"));
-            };
-            awaiter.onAbort = onAbort;
-            signal.addEventListener("abort", onAbort, { once: true });
-          }
-          let list = awaiters.get(name);
-          if (list === undefined) {
-            list = [];
-            awaiters.set(name, list);
-          }
-          list.push(awaiter);
-          startNameSubscription(name);
-        },
-      );
+            }
+            reject(new Error("aborted"));
+          };
+          awaiter.onAbort = onAbort;
+          signal.addEventListener("abort", onAbort, { once: true });
+        }
+        let list = awaiters.get(slot);
+        if (list === undefined) {
+          list = [];
+          awaiters.set(slot, list);
+        }
+        list.push(awaiter);
+        startNameSubscription(name, correlationId);
+      });
     },
     async stop() {
       if (stopped) return;
