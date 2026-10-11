@@ -1,45 +1,46 @@
-// Deployed behaviour of a gate inside a `childWorkflow` that nothing can
-// answer.
+// Deployed behaviour of a park inside a `childWorkflow`.
 //
-// A terminal child has no address of its own and no container relaying
-// decisions down to it, so an untimed gate there waits on a signal that can
-// never arrive. Before this was refused, the deployment went quiet: the child
-// held the gate, the spawn step held the child, the run never terminated, and
-// because the suspension was never registered with the hub, no approval
-// appeared for the tenant. An operator had nothing to act on and no error to
-// read.
-//
-// What this asserts against a real hub and sidecar is the half that can
-// regress: the run reaches a terminal naming the gate, where before it went
-// quiet and stayed that way.
-//
-// Both park shapes are covered: an author-named gate, and the approval-shaped
-// park the issue actually reports, where the child's tool call suspends on the
-// control plane.
-//
-// Neither case asserts that no approval reached an operator, and the reason is
-// worth recording. A terminal child's env carries no notify sink at all, so no
-// park there registers a correlation whether it is refused or not. An
-// assertion to that effect could not fail, and would read as a guarantee this
-// suite does not provide. What it does assert is that no durable suspension is
-// recorded and the run ends -- which is what separates the fixed behaviour
-// from the reported one.
-//
-// A timed gate is the boundary case and must still work: its own timer
-// resolves it with no upstream involvement.
+// The child stays unaddressable. The parent relays each park onto the
+// deployment run, which is the run an operator addresses. An author-named
+// gate is delivered there. An approval-marked tool call registers a hub
+// approval on that same run, carrying the body's snapshot, and approving it
+// through the real HTTP route resumes the child. A timed gate still settles
+// on its own timer.
 //
 // Harness justification: SPAWN-REAL. Real hub + sidecar subprocess + mock
-// inference.
+// inference. The approval case wires the fixture hub's register lookup to
+// the real DB co-write and approves through the real route.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { and, eq, inArray } from "drizzle-orm";
 
-import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
+import { createInMemoryGrantStore } from "@intx/authz";
 import {
-  createApprovalSet,
-  deriveRunAddress,
-  type ApprovalSet,
-} from "@intx/workflow-deploy";
-import { tenant as tenantTable } from "@intx/db/schema";
+  createApprovalStore,
+  createSignalCorrelationStore,
+  createWorkflowRunStore,
+} from "@intx/db";
+import {
+  approval,
+  tenant as tenantTable,
+  workflowDefinition,
+  workflowRun,
+} from "@intx/db/schema";
+import { createApp, type GetSession } from "@intx/hub-api";
+import { generateId } from "@intx/hub-common";
+import type {
+  EventCollectorRegistry,
+  RepoId,
+  SessionService,
+} from "@intx/hub-sessions";
+import { signalName } from "@intx/types";
+import type { GrantRule } from "@intx/types/authz";
+import { WireGrantRule } from "@intx/types/grant-wire";
+import type {
+  ApprovalSnapshot,
+  HarnessConfig,
+  InferenceSource,
+} from "@intx/types/runtime";
 import {
   createTestDb,
   harnessDbEnvAvailable,
@@ -50,14 +51,18 @@ import {
   seedPrincipal,
   tenantSlugFromId,
 } from "@intx/test-harness/seed";
-import { WireGrantRule } from "@intx/types/grant-wire";
-import { MAIL_TOOL_NAME } from "./fixtures/mail-tool";
-import type { RepoId } from "@intx/hub-sessions";
+import {
+  createApprovalSet,
+  deriveRunAddress,
+  deriveWorkflowRunRepoId,
+  type ApprovalSet,
+} from "@intx/workflow-deploy";
 
 import {
   SESSION_ID,
   deployWorkflowSourceForTest,
   fireMailTrigger,
+  injectSignal,
   listRunIds,
   readWorkflowRunEvents,
   startDeployFlowEnv,
@@ -66,12 +71,16 @@ import {
   type DeployFlowEnv,
 } from "../hub-agent/lib/deploy-flow-env";
 import { childWorkflowUnanswerableGateEntry } from "./fixtures/childworkflow-unanswerable-gate";
+import { MAIL_TOOL_NAME } from "./fixtures/mail-tool";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const SIGNAL_NAME = "approve-the-child";
 
 const TENANT_ID = "tnt_cw_unanswerable_gate";
 const CALLER_PRINCIPAL_ID = "prn_cw_unanswerable_gate";
+const APPROVER_USER_ID = "usr_cw_approver";
+const APPROVER_PRINCIPAL_ID = "prn_cw_approver";
+const DEFINITION_ID = "wfd_cw_unanswerable_gate";
 const UNANSWERABLE_ANCHOR = "run_cw-unanswerable-gate-1";
 const TIMED_ANCHOR = "run_cw-timed-gate-1";
 const ASK_ANCHOR = "run_cw-ask-tool-1";
@@ -89,6 +98,20 @@ const ASK_GRANT: WireGrantRule = {
   roleId: null,
   principalId: null,
 };
+// The approve route authorizes `approval:<anchorRunId>` / `resolve`. The
+// anchor here is the deployment the ask-tool run is deployed as.
+const approverGrant: GrantRule = {
+  id: "grant-approver-resolve",
+  resource: `approval:${ASK_ANCHOR}`,
+  action: "resolve",
+  effect: "allow",
+  origin: "system",
+  conditions: null,
+  expiresAt: null,
+  roleId: null,
+  principalId: APPROVER_PRINCIPAL_ID,
+};
+
 const DEFINITION_ASSET_IDS: Record<string, string> = {
   [UNANSWERABLE_ANCHOR]: "ast_cw_unanswerable_gate_wf",
   [TIMED_ANCHOR]: "ast_cw_timed_gate_wf",
@@ -124,6 +147,23 @@ beforeAll(async () => {
       creatorPrincipalId: CALLER_PRINCIPAL_ID,
     });
   }
+  const askAssetId = DEFINITION_ASSET_IDS[ASK_ANCHOR];
+  if (askAssetId === undefined) {
+    throw new Error("ask definition asset was not seeded");
+  }
+  await h.db.insert(workflowDefinition).values({
+    id: DEFINITION_ID,
+    tenantId: TENANT_ID,
+    name: "cw-unanswerable-gate",
+    assetId: askAssetId,
+  });
+  await seedPrincipal(h.db, {
+    id: APPROVER_PRINCIPAL_ID,
+    tenantId: TENANT_ID,
+    kind: "user",
+    refId: APPROVER_USER_ID,
+    status: "active",
+  });
 
   env = await startDeployFlowEnv({
     inferenceApprovalToolCall: {
@@ -131,6 +171,7 @@ beforeAll(async () => {
       input: { to: "someone@example.com", body: "hello" },
       resultPrefix: "sent: ",
     },
+    registerSignalCorrelation: createRegisterSignalCorrelation(h.db),
   });
 });
 
@@ -258,39 +299,191 @@ async function deployGateWorkflow(opts: {
   return { workflowRunRepoId: handle.workflowRunRepoId, childWorkflowId };
 }
 
+function notImpl(name: string): never {
+  throw new Error(`childWorkflow relay mock: ${name} not implemented`);
+}
+
+function createMockGetSession(userId: string): GetSession {
+  const now = new Date("2025-01-01");
+  return async () => ({
+    user: {
+      id: userId,
+      email: "approver@example.com",
+      emailVerified: true,
+      name: "Approver",
+      createdAt: now,
+      updatedAt: now,
+    },
+    session: {
+      id: "session_cw_gate",
+      userId,
+      token: "tok_cw_gate",
+      expiresAt: new Date("2999-01-01"),
+      createdAt: now,
+      updatedAt: now,
+    },
+  });
+}
+
+function createMockSessionService(): SessionService {
+  return {
+    stageWorkflowStep: () => notImpl("stageWorkflowStep"),
+    endSession: () => notImpl("endSession"),
+  };
+}
+
+function createMockEventCollectors(): EventCollectorRegistry {
+  return {
+    create: () => notImpl("create"),
+    dispatch: () => notImpl("dispatch"),
+    abandon: () => notImpl("abandon"),
+    has: () => false,
+    getStatus: () => undefined,
+    getAccumulatedText: () => undefined,
+    getCurrentTurnId: () => undefined,
+    getLastTurnId: () => undefined,
+  };
+}
+
+// The real hub co-write. The parked run's register frame lands the
+// correlation and the approval on the deployment's anchor, keyed by the
+// run id the frame names. Only the approval park emits that frame, so one
+// definition row satisfies the run-row foreign key.
+function createRegisterSignalCorrelation(db: TestDb["db"]) {
+  const signalCorrelationStore = createSignalCorrelationStore(db);
+  const approvalStore = createApprovalStore(db);
+  const workflowRunStore = createWorkflowRunStore(db);
+  return async ({
+    correlationId,
+    runId,
+    anchorRunId,
+    agentAddress,
+    kind,
+    approvalSnapshot,
+  }: {
+    correlationId: string;
+    runId: string;
+    anchorRunId: string;
+    agentAddress: string;
+    kind: "approval";
+    approvalSnapshot: ApprovalSnapshot;
+  }): Promise<void> => {
+    const anchor = await db
+      .select({
+        id: workflowRun.id,
+        tenantId: workflowRun.tenantId,
+      })
+      .from(workflowRun)
+      .where(
+        and(
+          eq(workflowRun.address, agentAddress),
+          inArray(workflowRun.status, ["deployed", "running"]),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0]);
+    if (anchor === undefined) {
+      throw new Error(
+        `No live workflow run for address "${agentAddress}"; cannot register signal correlation ${correlationId}`,
+      );
+    }
+    const addressSlug = deriveWorkflowRunRepoId(agentAddress);
+    if (addressSlug !== anchorRunId) {
+      throw new Error(
+        `Anchor run id mismatch registering signal correlation ${correlationId}: frame claims "${anchorRunId}" but address "${agentAddress}" derives the workflow-run repo slug "${addressSlug}"`,
+      );
+    }
+    const tenantId = anchor.tenantId;
+    const anchorDbId = anchor.id;
+    await db.transaction(async (tx) => {
+      await workflowRunStore.createIfAbsent(
+        {
+          id: runId,
+          anchorRunId: anchorDbId,
+          tenantId,
+          definitionId: DEFINITION_ID,
+          principalId: null,
+          status: "running",
+        },
+        tx,
+      );
+      await signalCorrelationStore.registerIfAbsent(
+        {
+          correlationId,
+          tenantId,
+          anchorRunId: anchorDbId,
+          agentAddress,
+          runId,
+          signalName: signalName(correlationId),
+          kind,
+        },
+        tx,
+      );
+      await approvalStore.createIfAbsent(
+        {
+          id: generateId("approval"),
+          tenantId,
+          anchorRunId: anchorDbId,
+          runId,
+          agentAddress,
+          correlationId,
+          status: "pending",
+          toolDefinition: {
+            name: approvalSnapshot.name,
+            description: approvalSnapshot.description,
+            inputSchema: approvalSnapshot.inputSchema,
+          },
+          toolArguments: approvalSnapshot.arguments,
+          scope: null,
+          timeoutAt: null,
+        },
+        tx,
+      );
+    });
+  };
+}
+
 describe.skipIf(!harnessDbEnvAvailable())(
-  "a childWorkflow gate with nothing upstream to answer it",
+  "a childWorkflow park relayed onto the deployment run",
   () => {
-    test("fails the run at the gate instead of going quiet", async () => {
+    test("delivers an author signal on the deployment run into the child", async () => {
       const { workflowRunRepoId, childWorkflowId } = await deployGateWorkflow({
         anchorRunId: UNANSWERABLE_ANCHOR,
         timedGate: false,
       });
 
       const runId = await topLevelRunId(workflowRunRepoId, childWorkflowId);
+      await waitFor(
+        async () => {
+          const events = await readWorkflowRunEvents(
+            env,
+            UNANSWERABLE_ANCHOR,
+            runId,
+          );
+          return events.some(
+            (event) =>
+              event.type === "SignalAwaited" &&
+              event.body["parkKind"] === "signal-relay" &&
+              event.body["signalName"] === SIGNAL_NAME,
+          );
+        },
+        { timeoutMs: 60_000, diagnostics: env.sidecarDiagnostics },
+      );
 
-      // Before the refusal this never arrived: the run simply sat there.
+      await injectSignal(env, UNANSWERABLE_ANCHOR, runId, SIGNAL_NAME, {
+        ok: true,
+      });
+
       const terminal = await waitForWorkflowRunComplete(
         env,
         UNANSWERABLE_ANCHOR,
         runId,
         { timeoutMs: 60_000, diagnostics: env.sidecarDiagnostics },
       );
-      expect(terminal.type).toBe("RunFailed");
-
-      // The child failed at its own gate, naming the signal, so an author
-      // reading the child's log learns which gate could not be held.
-      const childRunId = await spawnedChildRunId(UNANSWERABLE_ANCHOR, runId);
-      const childEvents = await readWorkflowRunEvents(
-        env,
-        UNANSWERABLE_ANCHOR,
-        childRunId,
-      );
-      const childFailure = childEvents.find((e) => e.type === "StepFailed");
-      expect(JSON.stringify(childFailure?.body ?? {})).toContain(SIGNAL_NAME);
+      expect(terminal.type).toBe("RunCompleted");
     }, 120_000);
 
-    test("refuses an approval park, so no approval reaches the tenant", async () => {
+    test("registers the child's approval on the deployment run", async () => {
       const { workflowRunRepoId, childWorkflowId } = await deployGateWorkflow({
         anchorRunId: ASK_ANCHOR,
         timedGate: false,
@@ -298,6 +491,63 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
 
       const runId = await topLevelRunId(workflowRunRepoId, childWorkflowId);
+      await waitFor(
+        async () => {
+          const rows = await h.db
+            .select()
+            .from(approval)
+            .where(eq(approval.anchorRunId, ASK_ANCHOR));
+          return rows.length === 1;
+        },
+        { timeoutMs: 60_000, diagnostics: env.sidecarDiagnostics },
+      );
+
+      const pending = await h.db
+        .select()
+        .from(approval)
+        .where(eq(approval.anchorRunId, ASK_ANCHOR));
+      expect(pending).toHaveLength(1);
+      const approvalRow = pending[0];
+      if (approvalRow === undefined) throw new Error("unreachable");
+      const childRunId = await spawnedChildRunId(ASK_ANCHOR, runId);
+      expect(approvalRow.status).toBe("pending");
+      expect(approvalRow.runId).toBe(runId);
+      expect(approvalRow.runId).not.toBe(childRunId);
+      expect(approvalRow.toolDefinition).toEqual({
+        name: MAIL_TOOL_NAME,
+        description: "Send a mail message",
+        inputSchema: {
+          type: "object",
+          properties: { to: { type: "string" }, body: { type: "string" } },
+          required: ["to", "body"],
+        },
+      });
+      expect(approvalRow.toolArguments).toEqual({
+        to: "someone@example.com",
+        body: "hello",
+      });
+
+      const approveApp = createApp({
+        getSession: createMockGetSession(APPROVER_USER_ID),
+        authHandler: () => new Response("", { status: 404 }),
+        db: h.db,
+        grantStore: createInMemoryGrantStore([approverGrant]),
+        sidecarRouter: env.hub.router,
+        sessionService: createMockSessionService(),
+        eventCollectors: createMockEventCollectors(),
+        assetService: null,
+        repoStore: null,
+        maxTarballBytes: 10_000_000,
+      });
+      const approveRes = await approveApp.request(
+        `/api/tenants/${TENANT_ID}/approvals/${approvalRow.id}/approve`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ scope: "once" }),
+        },
+      );
+      expect(approveRes.status).toBe(200);
 
       const terminal = await waitForWorkflowRunComplete(
         env,
@@ -308,19 +558,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
           diagnostics: env.sidecarDiagnostics,
         },
       );
-      expect(terminal.type).toBe("RunFailed");
-
-      // Nothing durable was left claiming the child is still waiting. This is
-      // the assertion that distinguishes the two outcomes: without the refusal
-      // the child commits this and waits on it forever.
-      const childRunId = await spawnedChildRunId(ASK_ANCHOR, runId);
-      const childTypes = (
-        await readWorkflowRunEvents(env, ASK_ANCHOR, childRunId)
-      ).map((e) => e.type);
-      expect(childTypes).not.toContain("SignalAwaited");
+      expect(terminal.type).toBe("RunCompleted");
     }, 120_000);
 
-    test("still runs a timed gate, which resolves without anything upstream", async () => {
+    test("still runs a timed gate, which resolves on its own timer", async () => {
       const { workflowRunRepoId, childWorkflowId } = await deployGateWorkflow({
         anchorRunId: TIMED_ANCHOR,
         timedGate: true,
@@ -336,8 +577,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
       expect(terminal.type).toBe("RunCompleted");
 
-      // It genuinely parked and was released by its own timer, rather than
-      // being refused at the gate.
+      // The child parked, and its own timer released the gate.
       const childRunId = await spawnedChildRunId(TIMED_ANCHOR, runId);
       const childTypes = (
         await readWorkflowRunEvents(env, TIMED_ANCHOR, childRunId)

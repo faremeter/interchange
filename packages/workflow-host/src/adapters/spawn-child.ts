@@ -3,8 +3,9 @@
 // The runtime body sees the spawn callback shape: given a `definitionRef`
 // (the internal ref the deploy step assigned when it lifted the authored
 // inline child), a parent-allocated `childRunId`, the materialized child
-// input, and parent attribution, settle once the child run reaches a terminal
-// phase. The adapter itself does not execute the child workflow -- it resolves
+// input, and parent attribution, return a live handle. The parent drives that
+// handle across the child's parks. The adapter itself does not execute the
+// child workflow -- it resolves
 // the `definitionRef` into a concrete `WorkflowDefinition` and delegates the
 // spawn to a runtime-supplied `runChild` callback. The supervisor wires the
 // callback against a child `WorkflowRuntimeEnv` and `runtimeRun`.
@@ -20,16 +21,16 @@
 //     covered by the parent's re-verify -- no separate on-disk read and no
 //     separate per-body re-verify.
 //
-//   - childWorkflow (the settled adapter): an owned import embedded inline in
-//     the parent's definition. It is lifted to an internal `{ ref }` at child
-//     boot and resolved in-memory from the parent's closure map
+//   - childWorkflow: an owned import embedded inline in the parent's
+//     definition. It is lifted to an internal `{ ref }` at child boot and
+//     resolved in-memory from the parent's closure map
 //     (`createInMemorySpawnChild`) -- exactly like a source-ref onTrigger
 //     body, with NO on-disk asset and NO separate per-child re-verify (the
 //     parent's re-verify already covers it, since the inline child rides the
-//     parent's hashed projection). The drive is what distinguishes it from
-//     the suspendable body adapter: this adapter returns a handle already
-//     settled to the child's terminal, and the parent reads that one event
-//     and does not proxy parks.
+//     parent's hashed projection). The callback returns a live handle. The
+//     parent drives it across parks and relays each one onto the parent run.
+//     The child stays unaddressable. A parked child does not survive a
+//     restart.
 //
 // Drain coordination is handled by the supervisor's drain primitive
 // (`packages/workflow-host/src/supervisor`), not by this adapter. The
@@ -112,18 +113,18 @@ export type RunChildWorkflow = (
 ) => Promise<SuspendableChildHandle>;
 
 /**
- * Construct the settled `WorkflowRuntimeEnv.spawnChild` adapter for an
- * owned childWorkflow import. The child re-evaluated the whole pinned closure
+ * Construct the `WorkflowRuntimeEnv.spawnChild` adapter for an owned
+ * childWorkflow import. The child re-evaluated the whole pinned closure
  * and lifted every inline child to an internal `{ ref }`, so the child
  * definitions are in hand and already covered by the parent's re-verify.
- * Resolve each `definitionRef`
- * from the in-memory `bodies` map and delegate to the runtime-supplied
- * `runChild`, with NO on-disk round-trip and NO separate per-child re-verify:
- * materializing the child back out and re-fingerprinting it would round-trip
- * trusted-in-hand data for no gain, and the closure re-eval on restart
- * re-derives the same bodies durably. Mirrors
- * {@link createInMemorySpawnSuspendableChild}, and passes the settled handle
- * `runChild` returns through without unwrapping it.
+ * Resolve each `definitionRef` from the in-memory `bodies` map and
+ * delegate to the runtime-supplied `runChild`, with NO on-disk round-trip
+ * and NO separate per-child re-verify: materializing the child back out
+ * and re-fingerprinting it would round-trip trusted-in-hand data for no
+ * gain, and the closure re-eval on restart re-derives the same bodies
+ * durably. Mirrors {@link createInMemorySpawnSuspendableChild}. `runChild`
+ * returns the live handle the parent drives across the child's parks;
+ * this adapter passes that handle through without unwrapping it.
  */
 /**
  * Host-side widening of the runtime {@link SpawnChildWorkflow} contract: the

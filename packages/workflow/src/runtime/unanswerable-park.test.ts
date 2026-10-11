@@ -1,12 +1,11 @@
-// A park in a run tree with nothing upstream to answer it must fail at the
-// park, not wait.
+// A park in a run whose env says nothing upstream can answer it must fail at
+// the park, not wait.
 //
-// An untimed park waits for a signal that has to come from outside the run. In
-// a terminal child there is no such outside: the child carries no address of
-// its own, and the seam that spawned it awaits its terminal rather than
-// driving it across parks. Left alone the child waits forever, the parent
-// waits on a terminal that never comes, and no operator ever learns an
-// approval was wanted.
+// An untimed park waits for a signal that has to come from outside the run.
+// `hasUpstreamSignalResolver: false` is that fact, and the refusal happens
+// before any `SignalAwaited` is written. A child whose parent relays sets the
+// flag true instead, so this file is the run that declared itself
+// unanswerable, not a child workflow.
 //
 // A timed gate is a different case and must still work: its own timer resolves
 // it in process, so it needs nothing from upstream.
@@ -134,10 +133,8 @@ describe("a run tree with no upstream resolver", () => {
     // Names the gate, so an author can find it, and points at the boundary
     // rather than at the gate being wrong.
     expect(message).toContain("approve");
-    expect(message).toContain("childWorkflow");
-    // Must not send the author to a loop or onTrigger body: at depth, that is
-    // already where they are.
-    expect(message).not.toContain("hold the gate in a loop");
+    expect(message).toContain("no upstream resolver");
+    expect(message).toContain("cannot be answered");
   });
 
   test("fails an approval park at the park, so no approval is left pending", async () => {

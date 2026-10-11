@@ -6,8 +6,9 @@
 // own controller directly, its parked step fails, and the run settles `failed`
 // under its own principal with no `CancelRequested` in the log.
 //
-// Both in-process spawners are covered: the terminal-only `createSidecarRunChild`
-// and the suspendable `createSidecarSpawnSuspendableChild`. Each abort is driven
+// Both in-process spawners are covered: `createSidecarRunChild`, which returns
+// a live handle the parent drives, and the suspendable
+// `createSidecarSpawnSuspendableChild`. Each abort is driven
 // while the child is live and parked on an approval -- the reachable drain-window
 // path -- so the test exercises the real teardown, not a child that already
 // settled.

@@ -21,14 +21,9 @@
 // with it.
 //
 // Consolidated here so the next bridge is a call rather than a fresh chance to
-// get it wrong. Four sites stay hand-written and are not this shape:
+// get it wrong. Three sites stay hand-written and are not this shape:
 // `createStepAbort` also consults drain and returns early on it, and
-// `waitForTimer`, `createInMemorySpawnChild` and `createDefaultActionInvoker`
-// throw rather than react. The spawner's listener is the one outer-abort
-// bridge here still built from the edge alone; it is safe because nothing
-// awaits between its entry throw and the registration, so the window a level
-// check closes elsewhere never opens there. Its exclusion above names that
-// entry throw, not the listener.
+// `waitForTimer` and `createDefaultActionInvoker` throw rather than react.
 
 /**
  * Run `onAbort` when `outer` aborts, including when it already has.

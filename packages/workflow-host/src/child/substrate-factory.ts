@@ -82,12 +82,10 @@ import {
   createLoopIterationHandle,
   createNoopDrainController,
   createSuspendableChildHandle,
-  createTerminalChildHandle,
   eagerlyResolveLoopFns,
   emptyState,
   enumerateInlineLoopBodies,
   rewriteInlineChildWorkflowBodies,
-  runtimeRun,
   walkWorkflowSteps,
   LOOP_BODY_DESCENT,
   type ActionHandler,
@@ -1407,21 +1405,20 @@ async function writeChildRunGrants(args: {
  * delegates to. The returned callback, when invoked with the parent
  * runtime's attribution + the parent-allocated `childRunId` + the
  * resolved `WorkflowDefinition`, builds a fresh `WorkflowRuntimeEnv`
- * scoped to `childRunId`, invokes `runtimeRun`, and returns a handle
- * already settled to the child's terminal.
+ * scoped to `childRunId` and returns a live handle. The parent drives
+ * the child across its parks. The child run stays unaddressable.
  *
- * Abort propagation: the parent-supplied `signal` is wired to the child
- * run's local-abort seam (`RuntimeRunOptions.localAbort`). If it aborts --
- * mid-flight or pre-aborted -- the child's own cancel controller aborts, an
- * in-flight step fails, and the returned handle's terminal is `"failed"`.
- * There is no durable `CancelRequested`: an
- * in-process child writes through the proxy substrate and cannot sign the
- * supervisor cancel one would require.
+ * Abort propagation: the parent-supplied `signal` is the handle's
+ * local-abort seam. If it aborts -- mid-flight or pre-aborted -- the
+ * child's own cancel controller aborts, an in-flight step fails, and the
+ * handle's terminal is `"failed"`. There is no durable `CancelRequested`:
+ * an in-process child writes through the proxy substrate and cannot sign
+ * the supervisor cancel one would require.
  *
- * Resource lifecycle: the child's per-run signal channel handle is
- * `stop()`ped in a finally block so any background `subscribeKind`
- * loop tied to the child's runId tears down before the callback
- * returns. The blob substrate, repo store, and scheduler entries are
+ * Resource lifecycle: the child's per-run signal channel is stopped when
+ * the child settles, from the handle's cleanup, so `resume` and
+ * `deliverSignal` can still write while a park is open. The blob
+ * substrate, repo store, and scheduler entries are
  * either per-call (no handle to dispose) or shared with the parent
  * (the scheduler).
  */
@@ -1432,7 +1429,7 @@ export function createSidecarRunChild(
   const clock = deps.clock ?? defaultClock;
   const newId = deps.newId ?? defaultNewId;
   // No `controlPlanePrincipal`: an in-process child tears down through the
-  // runtime's local-abort seam (see the `runtimeRun` call below), not a durable
+  // runtime's local-abort seam (the handle aborts the child controller), not a durable
   // `CancelRequested`, so it never writes a control-plane cancel this repo store
   // would have to sign. Run-body events use the workflow-process `principal`.
   // Created once and shared across every child this factory spawns (the
@@ -1452,7 +1449,7 @@ export function createSidecarRunChild(
   // out when a rung's `WorkflowDefinition` has no `childWorkflow`
   // primitive. Sub-namespace scoping continues to hold at every depth
   // because `childRunId` flows verbatim into the per-rung
-  // `blobs`/`signalChannel`/`runtimeRun` calls, keeping every rung's
+  // `blobs`/`signalChannel` and the handle's run, keeping every rung's
   // events under `runs/<runId>/...` of the parent's workflow-run repo.
   const runChild: RunChildWorkflow = async (
     {
@@ -1482,53 +1479,45 @@ export function createSidecarRunChild(
       childRunId,
       parentRunId,
       onEvent,
-      // Settled: the caller reads one terminal event rather than driving this
-      // child across parks, and no signal can be addressed to a child run, so
-      // a park inside it has nothing that could answer it.
-      hasUpstreamSignalResolver: false,
+      // The parent drives this child across its parks and relays each one
+      // down onto this channel. The child run itself stays unaddressable.
+      hasUpstreamSignalResolver: true,
       ...(credentialMaterial !== undefined
         ? { materialCell: credentialMaterial }
         : {}),
     });
-    try {
-      // Thread this rung's depth/ceiling into the child run so its own
-      // childWorkflow spawns keep counting against the tree-wide bound (the
-      // guard lives in the runtime's runChildWorkflow). Without this the
-      // in-process sidecar recursion would reset to depth 0 each rung.
-      // A parent abort tears the child down through `runtimeRun`'s local-abort
-      // seam, not a control-plane cancel: the in-process child writes through
-      // the workflow-run PROXY substrate, which cannot sign the supervisor
-      // `CancelRequested` a cancel needs (the kind handler refuses a
-      // workflow-process-signed cancel). Local teardown aborts the child's own
-      // controller directly, so an in-flight step fails and the child settles
-      // `failed` under its own principal -- no durable cancel, no wedge while the
-      // parent awaits the terminal below.
-      const handle = runtimeRun(rewrittenDefinition, env, {
-        runId: childRunId,
-        triggerPayload: input,
-        depth,
-        maxChildSpawnDepth,
-        localAbort: signal,
-      });
-      const result = await handle.complete;
-      // The handle handed back does not deliver. The child has already
-      // settled, so stopping the channel in the finally below, before the
-      // caller observes the handle, is valid. A handle that still accepted
-      // resume or deliverSignal could not be returned from here.
-      return createTerminalChildHandle(result.terminalStatus);
-    } finally {
-      await signalChannel.stop();
-    }
+    // Thread this rung's depth/ceiling into the child run so its own
+    // childWorkflow spawns keep counting against the tree-wide bound (the
+    // guard lives in the runtime's runChildWorkflow). Without this the
+    // in-process sidecar recursion would reset to depth 0 each rung.
+    // A parent abort tears the child down through the handle's local-abort
+    // seam, not a control-plane cancel: the in-process child writes through
+    // the workflow-run PROXY substrate, which cannot sign the supervisor
+    // `CancelRequested` a cancel needs (the kind handler refuses a
+    // workflow-process-signed cancel). Local teardown aborts the child's own
+    // controller directly, so an in-flight step fails and the child settles
+    // `failed` under its own principal, with no durable cancel.
+    // The channel stays up until the child settles. `resume` and
+    // `deliverSignal` still write to it while a park is open.
+    return createSuspendableChildHandle(env, {
+      definition: rewrittenDefinition,
+      childRunId,
+      input,
+      depth,
+      maxChildSpawnDepth,
+      signal,
+      surfaceInputPark: true,
+      cleanup: () => signalChannel.stop(),
+    });
   };
   return runChild;
 }
 
 /**
  * Construct the `RunSuspendableChild` callback the suspendable-spawn
- * adapter delegates to. The park-aware analog of
- * {@link createSidecarRunChild}: instead of awaiting the child's terminal,
- * it returns a live {@link SuspendableChildHandle} the caller (`runOnTrigger`)
- * drives across the body's approval parks.
+ * adapter delegates to. Like {@link createSidecarRunChild}, it returns a
+ * live {@link SuspendableChildHandle}. The caller (`runOnTrigger`) drives
+ * that handle across the body's approval parks.
  *
  * Park surfacing: the built env's `onPark` sink translates the child body's
  * control-plane parks into the handle's `next()` stream. An `"approval"`
@@ -1542,14 +1531,13 @@ export function createSidecarRunChild(
  * hard error on `next()` and tears the child down locally so the section run
  * ends loudly (failed).
  *
- * Signal-channel lifecycle: unlike `createSidecarRunChild`, which stops the
- * channel in a `finally` around a single awaited terminal, this keeps the
- * channel alive across every park (so `resume` can deliver) and ties its
- * teardown to the run's terminal -- the one lifecycle moment every path
- * funnels through (normal completion, a parent-abort local teardown, an
- * illegal-input-park local teardown, or a runtime failure). Tearing down
- * per-`next()` would leak the channel when a parent abort makes `runOnTrigger`
- * stop calling `next()` mid-park.
+ * Signal-channel lifecycle: the channel stays up until the child settles,
+ * so `resume` can deliver on an open park. Teardown is the handle's
+ * cleanup, the same place {@link createSidecarRunChild} stops its channel.
+ * That runs when the run reaches a terminal: normal completion, a
+ * parent-abort local teardown, an illegal-input-park local teardown, or a
+ * runtime failure. Stopping the channel on each `next()` would drop it
+ * when a parent abort makes `runOnTrigger` stop calling `next()` mid-park.
  *
  * Abort propagation: the parent-supplied `signal` tears the body down through
  * `createSuspendableChildHandle`'s local-teardown seam -- the in-process body
@@ -1574,11 +1562,11 @@ export function createSidecarSpawnSuspendableChild(
     principal: deps.principal,
     ref: deps.workflowRunRef,
   });
-  // A body's own `childWorkflow` grandchildren spawn terminal-only: the
-  // suspendable seam is exercised only by onTrigger sections, and
-  // `buildChildRunEnv` wires the body env's `spawnChild` (not
-  // `spawnSuspendableChild`), so a nested onTrigger inside a body fails loud
-  // rather than silently spawning.
+  // A body's own `childWorkflow` grandchildren use this same live handle:
+  // `buildChildRunEnv` wires the body env's `spawnChild` to
+  // `createSidecarRunChild`, so a park inside the grandchild relays through
+  // the body. A nested onTrigger inside a body still fails loud.
+  // `spawnSuspendableChild` is not wired on a body env.
   const runChild = createSidecarRunChild(deps);
 
   return async (
@@ -1637,6 +1625,7 @@ export function createSidecarSpawnSuspendableChild(
       ...(resumeFromEvents !== undefined ? { resumeFromEvents } : {}),
       signal,
       cleanup: () => signalChannel.stop(),
+      surfaceInputPark: false,
     });
   };
 }
@@ -1767,7 +1756,7 @@ async function buildChildRunEnv(args: {
    * seams that share this builder differ precisely here, so neither gets a
    * default: a suspendable body is driven across its parks by a container
    * that relays a decision back down, while a childWorkflow child is
-   * returned already settled and has no relay above it.
+   * driven by its parent, which relays each park down onto this channel.
    */
   hasUpstreamSignalResolver: boolean;
 }): Promise<{
@@ -1793,7 +1782,7 @@ async function buildChildRunEnv(args: {
   // definition whose children are refs -- the shape the runtime dispatches --
   // and keep the lifted definitions in an in-memory map the rung's own
   // terminal resolver serves from, so a grandchild spawns with no on-disk read
-  // at any depth. Returned to the caller so `runtimeRun` drives the rewritten
+  // at any depth. Returned to the caller so the handle drives the rewritten
   // form.
   const { workflow: rewrittenDefinition, bodies: grandchildBodies } =
     rewriteInlineChildWorkflowBodies(definition);

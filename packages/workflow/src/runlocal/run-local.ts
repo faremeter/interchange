@@ -26,7 +26,7 @@ import { runtimeRun, type RuntimeRunOptions } from "../runtime/run";
 import { createNoopDrainController } from "../runtime/drain";
 import { createEffectContext } from "../runtime/effect-context";
 import { createLoopIterationHandle } from "../runtime/loop-iteration-handle";
-import { createTerminalChildHandle } from "../runtime/suspendable-child-handle";
+import { createSuspendableChildHandle } from "../runtime/suspendable-child-handle";
 import type {
   ActionInvoker,
   EffectLedger,
@@ -86,9 +86,9 @@ export interface RunLocalOptions extends RuntimeRunOptions {
    * rather than defaulted, because an absent value would have to mean
    * permissive and a call site that forgot it would silently inherit a park
    * nothing can answer. Pass true for a run the control plane can address: a
-   * top-level local run, whose caller holds the handle that delivers. The
-   * terminal-child spawner passes false, since nothing can address a child
-   * run.
+   * top-level local run, whose caller holds the handle that delivers. A
+   * spawned child forces true for itself: its parent relays each park down,
+   * and inheriting a parent false would refuse a gate the parent can answer.
    */
   hasUpstreamSignalResolver: boolean;
 }
@@ -103,6 +103,20 @@ export function runLocal(
   definition: WorkflowDefinition,
   options: RunLocalOptions,
 ): WorkflowRun {
+  const { rewritten, env } = assembleRunLocalEnv(definition, options);
+  return runtimeRun(rewritten, env, extractRuntimeOptions(options));
+}
+
+/**
+ * The per-run env `runLocal` and the child spawner share. Every call builds
+ * a fresh repo, channel, blob store, effect ledger, and drain. The top-level
+ * run drives this env with `runtimeRun`. The spawner hands the same shape to
+ * `createSuspendableChildHandle` and does not also drive it.
+ */
+function assembleRunLocalEnv(
+  definition: WorkflowDefinition,
+  options: RunLocalOptions,
+): { rewritten: WorkflowDefinition; env: WorkflowRuntimeEnv } {
   const directors = options.directors ?? createDefaultDirectorRegistry();
   const authorize = options.authorize;
   const invokeStep: StepInvoker =
@@ -169,7 +183,7 @@ export function runLocal(
     env.loopFns = options.loopFns;
   }
 
-  return runtimeRun(rewritten, env, extractRuntimeOptions(options));
+  return { rewritten, env };
 }
 
 function extractRuntimeOptions(options: RunLocalOptions): RuntimeRunOptions {
@@ -376,13 +390,12 @@ export function createInMemorySpawnChild(
     maxChildSpawnDepth,
   }) => {
     // Four awaits separate the child run id allocation from this call, one of
-    // them a durable flush, so a cancel can land before the spawner runs. The
-    // abort bridge below subscribes to an edge and would miss one already
-    // past, leaving the child uncancelled and this function awaiting a
-    // terminal that never comes. Refusing outright also avoids writing a whole
-    // child log subtree for a run already known to be cancelled, and matches
-    // what the deployed spawn adapter does, so a local rehearsal does not
-    // diverge from production.
+    // them a durable flush, so a cancel can land before the spawner runs.
+    // The signal handed in is already aborted in that case: the parent drive
+    // bridges the step abort onto it before the call, including an abort that
+    // has already fired. Refusing outright avoids writing a child log for a
+    // run already known to be cancelled, and matches what the deployed spawn
+    // adapter does, so a local rehearsal does not diverge from production.
     if (signal.aborted) {
       throw abortReason(signal);
     }
@@ -397,36 +410,26 @@ export function createInMemorySpawnChild(
         `childWorkflow ${definitionRef} has no lifted definition; the inline child should have been extracted before the run started`,
       );
     }
-    // Recursively invoke runLocal for the resolved child against the
-    // parent-allocated childRunId so the parent's audit log and the
-    // child's own log agree on identity. Carry the depth (already checked
-    // one rung up) and the tree-wide ceiling so the child's own spawns keep
-    // counting against the same bound, and the inherited env overrides so
-    // the child runs under the same authorize and invokers as its parent.
-    const child = runLocal(resolved, {
+    // Build the child's own env and hand it to the shared handle. The parent
+    // drives the handle. Carry the depth (already checked one rung up) and
+    // the tree-wide ceiling so the child's own spawns keep counting against
+    // the same bound, and the inherited authorize and invokers so a strict
+    // parent env is the env the child runs under. The resolver flag is forced
+    // true: the parent relays, and a parent false must not refuse a gate the
+    // relay can answer. The in-memory channel has no stop.
+    const { rewritten, env } = assembleRunLocalEnv(resolved, {
       ...inherited,
-      triggerPayload: input,
-      runId: childRunId,
+      hasUpstreamSignalResolver: true,
+    });
+    return createSuspendableChildHandle(env, {
+      definition: rewritten,
+      childRunId,
+      input,
       depth,
       maxChildSpawnDepth,
-      // Settled: the parent reads one terminal event rather than driving
-      // this child across parks, and nothing upstream can address the child
-      // run, so a park inside it could never be answered.
-      hasUpstreamSignalResolver: false,
+      signal,
+      surfaceInputPark: true,
     });
-    const onParentAbort = (): void => {
-      void child.cancel("supervisor-operator", "parent cancelled");
-    };
-    signal.addEventListener("abort", onParentAbort);
-    try {
-      const result = await child.complete;
-      return createTerminalChildHandle(result.terminalStatus);
-    } finally {
-      // Drop the listener when the child has settled so the parent's
-      // per-step abort signal does not retain a reference to a child
-      // that no longer needs cancellation.
-      signal.removeEventListener("abort", onParentAbort);
-    }
   };
 }
 

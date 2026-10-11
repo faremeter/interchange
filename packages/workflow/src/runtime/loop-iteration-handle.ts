@@ -86,5 +86,6 @@ export function createLoopIterationHandle(
       : {}),
     signal: args.signal,
     ...(args.cleanup !== undefined ? { cleanup: args.cleanup } : {}),
+    surfaceInputPark: false,
   });
 }

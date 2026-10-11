@@ -147,11 +147,11 @@ export interface GatePrimitive extends PrimitiveBase {
  * run and is valid anywhere.
  *
  * An untimed gate has the one exit, so it can only end where something outside
- * the run can deliver -- a run the control plane can address, or a container
- * relaying a decision down. In a run tree with neither, the runtime refuses the
- * gate at the park, before any suspension is recorded, rather than waiting on a
- * signal that can never arrive. A `childWorkflow` child is the boundary that
- * produces such a tree; see {@link ChildWorkflowPrimitive}.
+ * the run can deliver. A run the control plane can address delivers directly.
+ * A loop body, an `onTrigger` section, and a `childWorkflow` child relay the
+ * park onto that run. The runtime refuses the gate at the park, before any
+ * suspension is recorded, only when this run's env says nothing upstream can
+ * answer it. A timed gate is exempt: its own timer resolves it.
  *
  * The same refusal covers the parks the runtime takes on a step's behalf, so
  * this rule is not confined to a gate an author writes here.
@@ -178,21 +178,33 @@ export interface SleepPrimitive extends PrimitiveBase {
  * approved surface and no separately-deployed asset is read. `input`
  * selects the child run's launch payload.
  *
- * The child is driven to its terminal, not across parks, and carries no
- * address of its own, so nothing upstream can answer a park inside it. Every
- * untimed park beneath this boundary -- at any depth, including inside a
- * `loop` body in the child -- is refused at the park and fails the child. That
- * is an untimed {@link AwaitSignalPrimitive}, and also the parks the runtime
- * takes on a step's behalf without the author writing one: an agent step
- * suspending on a tool declared `approval: "ask"`, and the input park a step
- * with a trigger budget takes between deliveries. A child containing no
- * `awaitSignal` is not thereby safe. Give such a gate a `timeout`, or hold it
- * in a run the control plane can address.
+ * The child carries no address of its own. The spawning step drives it
+ * across parks and relays each one onto the parent run: an approval, with
+ * the body's snapshot, an author {@link AwaitSignalPrimitive}, and the input
+ * park a trigger budget takes between turns. A gate inside a `loop` in the
+ * child climbs the same way, one layer at a time, until it reaches the
+ * deployment's addressable run. The hub approval is registered on that run.
+ * The spawn step awaits one signal at a time. A second park that is already
+ * live in the child stays queued until the decision for the first is relayed
+ * down. A queued park whose gate has already moved on is not given a signal
+ * that arrived while it waited.
  *
- * The refusal surfaces to the parent as an ordinary child failure. Routing it
- * with `onFailure` is available only where `onFailure` is honored at all: on a
- * direct entry of a workflow root. A spawn inside a `loop` body may not carry
- * `onFailure`, so there the failure surfaces unrouted.
+ * A parked child does not survive a restart. The spawn step is left
+ * `awaiting-signal`, and resume rejects that step, so the run fails instead
+ * of spawning the child again. On drain the relay sits on this step. The
+ * step defaults to `"cancel"`, so a parked child is torn down with it. The
+ * child's own `drainBehavior` is not what drain consults.
+ *
+ * A run whose env says nothing upstream can answer refuses an untimed
+ * relay before that run writes a suspension. The child may already have
+ * recorded its own await, because its spawner forces the flag true; the
+ * refusal then tears the child down. A gate carrying a `timeout` is
+ * exempt: its own timer resolves it.
+ *
+ * A child that ends `failed` or `cancelled` fails the spawn step.
+ * `onFailure` routes a failed child and does not route a cancelled one, and
+ * only where `onFailure` is honored at all: a direct entry of a workflow
+ * root. A spawn inside a `loop` body may not carry `onFailure`.
  */
 export interface ChildWorkflowPrimitive extends PrimitiveBase {
   kind: "childWorkflow";
