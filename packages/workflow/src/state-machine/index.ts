@@ -34,6 +34,7 @@ export {
   isTerminalRunPhase,
   isTerminalStepPhase,
   type ChildState,
+  type CorrelatedQueuedSignal,
   type PendingTimer,
   type QueuedSignal,
   type RunPhase,

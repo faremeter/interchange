@@ -16,12 +16,14 @@
 // phases intact (a step that completed before cancellation cascaded
 // stays completed).
 //
-// Signal delivery is FIFO single-consumer with run-lifetime dedup by
-// `signalId`. A `SignalReceived` whose name has no awaiter is queued
-// under that name and consumed by the next `SignalAwaited` for the
-// same name.
-
-import type { ControlParkKind } from "@intx/types/runtime";
+// Signal delivery is single-consumer with run-lifetime dedup by
+// `signalId`. A delivery with `correlationId` pairs only with the park
+// whose id and author name both match, and queues under that id when
+// no such park is waiting. A name mismatch against a park that holds
+// the id dedups and does not queue. A delivery without `correlationId`
+// is name FIFO: it skips parks that carry an id, and a signal with no
+// name awaiter queues under that name for the next name-addressed
+// `SignalAwaited`.
 
 import { CANCEL_ORIGINS } from "./events";
 import type {
@@ -328,9 +330,12 @@ function handleAttemptScheduled(
 
 function handleSignalAwaited(state: RunState, e: SignalAwaited): RunState {
   const step = requireStep(state, e, e.stepId);
+  if (e.correlationId !== undefined) {
+    return awaitCorrelated(state, step, e, e.correlationId);
+  }
   // Pre-await queued signal: consume the first unconsumed signal for
   // this name and keep the step in-flight. Otherwise transition to
-  // awaiting-signal.
+  // awaiting-signal. The name queue never holds a correlated delivery.
   const queue = state.unconsumedSignals.get(e.signalName);
   if (queue && queue.length > 0) {
     const remaining = queue.slice(1);
@@ -353,6 +358,55 @@ function handleSignalAwaited(state: RunState, e: SignalAwaited): RunState {
     };
   }
   const steps = new Map(state.steps);
+  steps.set(e.stepId, {
+    ...step,
+    phase: "awaiting-signal",
+    awaitingSignal: awaitingSignalFrom(e),
+  });
+  return { ...state, steps, lastSeq: e.seq };
+}
+
+function awaitCorrelated(
+  state: RunState,
+  step: StepState,
+  e: SignalAwaited,
+  correlationId: string,
+): RunState {
+  const queue = state.unconsumedByCorrelation.get(correlationId) ?? [];
+  const index = queue.findIndex((item) => item.signalName === e.signalName);
+  const matched = index >= 0 ? queue[index] : undefined;
+  if (matched !== undefined) {
+    const remaining = queue.filter((_, itemIndex) => itemIndex !== index);
+    const unconsumedByCorrelation = new Map(state.unconsumedByCorrelation);
+    if (remaining.length === 0) {
+      unconsumedByCorrelation.delete(correlationId);
+    } else {
+      unconsumedByCorrelation.set(correlationId, remaining);
+    }
+    const steps = new Map(state.steps);
+    steps.set(e.stepId, {
+      ...withoutAwaiters(step),
+      phase: "in-flight",
+    });
+    return {
+      ...state,
+      steps,
+      unconsumedByCorrelation,
+      lastSeq: e.seq,
+    };
+  }
+  const steps = new Map(state.steps);
+  steps.set(e.stepId, {
+    ...step,
+    phase: "awaiting-signal",
+    awaitingSignal: awaitingSignalFrom(e),
+  });
+  return { ...state, steps, lastSeq: e.seq };
+}
+
+function awaitingSignalFrom(
+  e: SignalAwaited,
+): NonNullable<StepState["awaitingSignal"]> {
   // Carry the control-plane park kind through to the reduced state VERBATIM so
   // recovery can tell an `"input"` park from an `"approval"` one. It is absent
   // for a plain `awaitSignal` gate and for a legacy park committed before the
@@ -360,33 +414,27 @@ function handleSignalAwaited(state: RunState, e: SignalAwaited): RunState {
   // single point that interprets a reserved-channel absence as a legacy
   // approval. The reducer does not itself default -- it must not stamp
   // `"approval"` onto a plain gate that is not one.
-  const awaitingSignal: {
-    name: string;
-    timeoutAt?: string;
-    parkKind?: ControlParkKind;
-  } = {
+  return {
     name: e.signalName,
     ...(e.timeoutAt !== undefined ? { timeoutAt: e.timeoutAt } : {}),
     ...(e.parkKind !== undefined ? { parkKind: e.parkKind } : {}),
+    ...(e.correlationId !== undefined
+      ? { correlationId: e.correlationId }
+      : {}),
   };
-  steps.set(e.stepId, {
-    ...step,
-    phase: "awaiting-signal",
-    awaitingSignal,
-  });
-  return { ...state, steps, lastSeq: e.seq };
 }
 
 /**
- * Owner of the single-consumer signal FIFO: the Map-insertion-order scan for
- * the first awaiting step, the `observedSignalIds` dedup, and the queue-on-no-
- * awaiter rule live here and nowhere else authoritative. Two out-of-band read-
- * side replayers in `runtime/run.ts` reproduce these exact semantics off the
- * durable log -- `reconstructGateOutcome` (per-gate) and
- * `boundSignalForContainerAwait` (container-relay binder) -- so any change to
- * the FIFO, dedup, or queue behavior here must be mirrored in both. The
- * `reconstruct-gate-outcome` reducer-fidelity oracle cross-checks the replay
- * against this reducer and fails on drift.
+ * Owner of single-consumer signal pairing: the awaiter scan, the
+ * `observedSignalIds` dedup, and the queue-on-no-awaiter rule live here and
+ * nowhere else authoritative. A correlated delivery matches id and author
+ * name and queues on `unconsumedByCorrelation`; a name delivery skips parks
+ * that carry an id. Two out-of-band read-side replayers in `runtime/run.ts`
+ * reproduce these semantics off the durable log -- `reconstructGateOutcome`
+ * (per-gate name replay) and `boundSignalForContainerAwait` (container-relay
+ * binder) -- so any change to pairing, dedup, or queue behavior here must be
+ * mirrored in both. The reducer-fidelity oracles cross-check the replays
+ * against this reducer and fail on drift.
  */
 function handleSignalReceived(state: RunState, e: SignalReceived): RunState {
   // At-least-once delivery: duplicate signalIds are no-ops.
@@ -396,36 +444,64 @@ function handleSignalReceived(state: RunState, e: SignalReceived): RunState {
   const observed = new Set(state.observedSignalIds);
   observed.add(e.signalId);
 
-  // FIFO single-consumer: find the first step awaiting this signal name.
-  let awaiterId: StepId | undefined;
+  if (e.correlationId !== undefined) {
+    return receiveCorrelated(state, e, observed, e.correlationId);
+  }
+  return receiveByName(state, e, observed);
+}
+
+function receiveCorrelated(
+  state: RunState,
+  e: SignalReceived,
+  observed: Set<string>,
+  correlationId: string,
+): RunState {
+  let heldByOtherName = false;
+  for (const [id, step] of state.steps) {
+    if (step.phase !== "awaiting-signal") continue;
+    const awaiting = step.awaitingSignal;
+    if (awaiting?.correlationId !== correlationId) continue;
+    if (awaiting.name !== e.signalName) {
+      heldByOtherName = true;
+      continue;
+    }
+    return consumeAwaiter(state, e, observed, id);
+  }
+  // The id is live on a different author name. Dedup stands; do not
+  // enqueue and do not clear that park.
+  if (heldByOtherName) {
+    return { ...state, observedSignalIds: observed, lastSeq: e.seq };
+  }
+  const unconsumedByCorrelation = new Map(state.unconsumedByCorrelation);
+  const queue = unconsumedByCorrelation.get(correlationId) ?? [];
+  unconsumedByCorrelation.set(correlationId, [
+    ...queue,
+    { id: e.signalId, payload: e.payload, signalName: e.signalName },
+  ]);
+  return {
+    ...state,
+    unconsumedByCorrelation,
+    observedSignalIds: observed,
+    lastSeq: e.seq,
+  };
+}
+
+function receiveByName(
+  state: RunState,
+  e: SignalReceived,
+  observed: Set<string>,
+): RunState {
+  // Name FIFO skips parks addressed by correlation. Those are not on
+  // this queue, and a name delivery must not complete them.
   for (const [id, step] of state.steps) {
     if (
       step.phase === "awaiting-signal" &&
-      step.awaitingSignal?.name === e.signalName
+      step.awaitingSignal?.name === e.signalName &&
+      step.awaitingSignal.correlationId === undefined
     ) {
-      awaiterId = id;
-      break;
+      return consumeAwaiter(state, e, observed, id);
     }
   }
-
-  if (awaiterId !== undefined) {
-    const steps = new Map(state.steps);
-    const awaiter = state.steps.get(awaiterId);
-    if (!awaiter) {
-      throw new TransitionError(
-        "unknown-step",
-        `internal: awaiter ${awaiterId} disappeared between scan and set`,
-        e,
-      );
-    }
-    steps.set(awaiterId, {
-      ...withoutAwaiters(awaiter),
-      phase: "in-flight",
-    });
-    return { ...state, steps, observedSignalIds: observed, lastSeq: e.seq };
-  }
-
-  // No awaiter present -- queue the signal for a future SignalAwaited.
   const unconsumed = new Map(state.unconsumedSignals);
   const queue = unconsumed.get(e.signalName) ?? [];
   unconsumed.set(e.signalName, [
@@ -440,6 +516,28 @@ function handleSignalReceived(state: RunState, e: SignalReceived): RunState {
   };
 }
 
+function consumeAwaiter(
+  state: RunState,
+  e: SignalReceived,
+  observed: Set<string>,
+  awaiterId: StepId,
+): RunState {
+  const steps = new Map(state.steps);
+  const awaiter = state.steps.get(awaiterId);
+  if (!awaiter) {
+    throw new TransitionError(
+      "unknown-step",
+      `internal: awaiter ${awaiterId} disappeared between scan and set`,
+      e,
+    );
+  }
+  steps.set(awaiterId, {
+    ...withoutAwaiters(awaiter),
+    phase: "in-flight",
+  });
+  return { ...state, steps, observedSignalIds: observed, lastSeq: e.seq };
+}
+
 /**
  * Retire a step's `signal-relay` await without delivering a payload. Emitted by
  * the onTrigger driver when the proxied body progressed by another exit before
@@ -452,11 +550,13 @@ function handleSignalReceived(state: RunState, e: SignalReceived): RunState {
  * awaiter and drop the step to `in-flight`.
  *
  * Scope is strict. It touches ONLY a matching `signal-relay` park: an approval
- * or input park, or a name mismatch, is a producer bug or a mis-target and is
- * rejected, never silently cleared. It never touches `unconsumedSignals`,
- * `observedSignalIds`, or `consumedMessageIds` -- a torn-down await does not
- * consume or dedup a signal, and a late delivery on the same name still queues
- * for the next await, matching a timed-out `awaitSignal`.
+ * or input park, a name mismatch, or a correlation-id mismatch is a producer
+ * bug or a mis-target and is rejected, never silently cleared. It never
+ * touches either unconsumed queue, `observedSignalIds`, or
+ * `consumedMessageIds`. A torn-down await does not consume or dedup a signal.
+ * A late name-only delivery still queues for the next name await. A late
+ * correlated delivery queues under its own id and does not satisfy a
+ * different correlation.
  */
 function handleSignalAwaitAbandoned(
   state: RunState,
@@ -469,10 +569,14 @@ function handleSignalAwaitAbandoned(
     return { ...state, lastSeq: e.seq };
   }
   const awaiting = step.awaitingSignal;
+  const correlationMismatch =
+    e.correlationId !== undefined &&
+    awaiting?.correlationId !== e.correlationId;
   if (
     awaiting === undefined ||
     controlParkKindOf(awaiting) !== "signal-relay" ||
-    awaiting.name !== e.signalName
+    awaiting.name !== e.signalName ||
+    correlationMismatch
   ) {
     throw new TransitionError(
       "step-phase",

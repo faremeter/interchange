@@ -4012,13 +4012,14 @@ function recoverDeliveredSignalRelay(
  * reconstructs the reducer's queue/waiters from `emptyState`, so a windowed
  * suffix would start mid-stream and mis-pair; a non-full log fails loud below.
  *
- * ASSUMPTION: a UNIQUE container awaiter per name in the parent run. The
- * pairing is container-scoped (it filters `SignalAwaited`/`SignalAwaitAbandoned`
- * to `containerStepId`), which matches the reducer ONLY while this container is
- * the sole step awaiting the name. Two sections concurrently awaiting the same
- * name would let the reducer consume by `state.steps` Map-insertion order
- * across all steps; `driveContainerSignalRelay` refuses that topology loudly at
- * the proxy-park, so this helper never sees it.
+ * ASSUMPTION for a name-addressed await: a UNIQUE container awaiter per name
+ * in the parent run. The name replay filters `SignalAwaited` /
+ * `SignalAwaitAbandoned` to `containerStepId` and ignores events that carry
+ * `correlationId`, which matches the reducer only while this container is the
+ * sole name-addressed step awaiting the name. A correlated park is not on
+ * that queue. An await that itself carries `correlationId` binds by that id
+ * instead, and a name mismatch against the park holding the id dedups without
+ * queueing, matching `handleSignalReceived`.
  */
 // Exported for direct unit tests: the reducer-FIFO-replay binding is the
 // correctness crux of the signal-relay pass, and its correction cases (dedup,
@@ -4038,14 +4039,27 @@ export function boundSignalForContainerAwait(
         `mis-pair the reducer's FIFO)`,
     );
   }
+  const correlationId = correlationIdAt(log, awaitSeq);
+  if (correlationId !== undefined) {
+    return bindCorrelatedContainerAwait(
+      log,
+      name,
+      containerStepId,
+      awaitSeq,
+      correlationId,
+    );
+  }
   const queue: { payload: unknown; signalId: string }[] = [];
   const waiters: number[] = [];
   const pairing = new Map<number, { payload: unknown; signalId: string }>();
   const observed = new Set<string>();
   for (const event of log) {
-    if (event.kind === "SignalReceived" && event.signalName === name) {
+    if (event.kind === "SignalReceived") {
       if (observed.has(event.signalId)) continue;
       observed.add(event.signalId);
+      if (event.correlationId !== undefined || event.signalName !== name) {
+        continue;
+      }
       const waiter = waiters.shift();
       if (waiter !== undefined) {
         pairing.set(waiter, {
@@ -4057,6 +4071,7 @@ export function boundSignalForContainerAwait(
       }
     } else if (
       event.kind === "SignalAwaited" &&
+      event.correlationId === undefined &&
       event.signalName === name &&
       event.stepId === containerStepId
     ) {
@@ -4068,10 +4083,102 @@ export function boundSignalForContainerAwait(
       }
     } else if (
       event.kind === "SignalAwaitAbandoned" &&
+      event.correlationId === undefined &&
       event.signalName === name &&
       event.stepId === containerStepId
     ) {
       waiters.pop();
+    }
+  }
+  return pairing.get(awaitSeq);
+}
+
+function correlationIdAt(
+  log: readonly WorkflowEvent[],
+  awaitSeq: number,
+): string | undefined {
+  for (const event of log) {
+    if (event.kind === "SignalAwaited" && event.seq === awaitSeq) {
+      return event.correlationId;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Bind a container await that carries `correlationId`. Dedup is still
+ * run-wide. A delivery for this id pairs only when `signalName` matches;
+ * a delivery for this id against a park held under a different name is
+ * deduped and not queued. Events for other ids do not enter this queue.
+ */
+function bindCorrelatedContainerAwait(
+  log: readonly WorkflowEvent[],
+  name: string,
+  containerStepId: string,
+  awaitSeq: number,
+  correlationId: string,
+): { payload: unknown; signalId: string } | undefined {
+  const queue: { payload: unknown; signalId: string; signalName: string }[] =
+    [];
+  const waiters: { seq: number; signalName: string; stepId: string }[] = [];
+  const pairing = new Map<number, { payload: unknown; signalId: string }>();
+  const observed = new Set<string>();
+  for (const event of log) {
+    if (event.kind === "SignalReceived") {
+      if (observed.has(event.signalId)) continue;
+      observed.add(event.signalId);
+      if (event.correlationId !== correlationId) continue;
+      const waiterIndex = waiters.findIndex(
+        (waiter) => waiter.signalName === event.signalName,
+      );
+      const waiter = waiterIndex >= 0 ? waiters[waiterIndex] : undefined;
+      if (waiter !== undefined) {
+        waiters.splice(waiterIndex, 1);
+        pairing.set(waiter.seq, {
+          payload: event.payload,
+          signalId: event.signalId,
+        });
+      } else if (waiters.length === 0) {
+        queue.push({
+          payload: event.payload,
+          signalId: event.signalId,
+          signalName: event.signalName,
+        });
+      }
+    } else if (
+      event.kind === "SignalAwaited" &&
+      event.correlationId === correlationId
+    ) {
+      const headIndex = queue.findIndex(
+        (item) => item.signalName === event.signalName,
+      );
+      const head = headIndex >= 0 ? queue[headIndex] : undefined;
+      if (head !== undefined) {
+        queue.splice(headIndex, 1);
+        if (event.stepId === containerStepId && event.signalName === name) {
+          pairing.set(event.seq, {
+            payload: head.payload,
+            signalId: head.signalId,
+          });
+        }
+      } else {
+        waiters.push({
+          seq: event.seq,
+          signalName: event.signalName,
+          stepId: event.stepId,
+        });
+      }
+    } else if (
+      event.kind === "SignalAwaitAbandoned" &&
+      (event.correlationId === undefined ||
+        event.correlationId === correlationId)
+    ) {
+      const waiterIndex = waiters.findIndex(
+        (waiter) =>
+          waiter.stepId === event.stepId &&
+          waiter.signalName === event.signalName,
+      );
+      if (waiterIndex >= 0) waiters.splice(waiterIndex, 1);
     }
   }
   return pairing.get(awaitSeq);
@@ -4696,9 +4803,15 @@ export function reconstructGateOutcome(
   const observed = new Set<string>();
   let awaiting = false;
   for (const event of log) {
-    if (event.kind === "SignalReceived" && event.signalName === signalName) {
+    if (event.kind === "SignalReceived") {
       if (observed.has(event.signalId)) continue;
       observed.add(event.signalId);
+      if (
+        event.correlationId !== undefined ||
+        event.signalName !== signalName
+      ) {
+        continue;
+      }
       if (awaiting) {
         return {
           timedOut: false,
@@ -4709,6 +4822,7 @@ export function reconstructGateOutcome(
       queue.push({ payload: event.payload, signalId: event.signalId });
     } else if (
       event.kind === "SignalAwaited" &&
+      event.correlationId === undefined &&
       event.signalName === signalName &&
       event.stepId === selfStepId
     ) {
@@ -4752,18 +4866,20 @@ function gateTimerId(
 }
 
 /**
- * Whether any `awaitSignal` gate OTHER than `selfStepId` awaited `signalName`
- * anywhere in the run. `reconstructGateOutcome` replays the reducer FIFO scoped
- * to a SINGLE awaiter of the name, so a second same-name awaiter -- even one
- * that already COMPLETED -- breaks that assumption: the log can no longer say
- * which gate consumed which delivery. The in-flight short-circuit refuses that
- * topology rather than risk binding a payload to the wrong gate; only a run
- * where `selfStepId` is the sole awaiter of the name is provably unambiguous. A
- * completed same-name sibling is the case a phase-scoped in-flight count would
- * miss, so the predicate keys on the durable `SignalAwaited` marker, which
- * outlives the sibling's completion.
+ * Whether any name-addressed `awaitSignal` gate OTHER than `selfStepId`
+ * awaited `signalName` anywhere in the run. A `SignalAwaited` that carries
+ * `correlationId` is not on the name queue, so it is not a foreign awaiter.
+ * `reconstructGateOutcome` replays the reducer name FIFO scoped to a SINGLE
+ * name-addressed awaiter of the name, so a second same-name awaiter -- even
+ * one that already COMPLETED -- breaks that assumption: the log can no longer
+ * say which gate consumed which delivery. The in-flight short-circuit refuses
+ * that topology rather than risk binding a payload to the wrong gate; only a
+ * run where `selfStepId` is the sole name-addressed awaiter of the name is
+ * provably unambiguous. A completed same-name sibling is the case a
+ * phase-scoped in-flight count would miss, so the predicate keys on the
+ * durable `SignalAwaited` marker, which outlives the sibling's completion.
  */
-function hasForeignSameNameAwaiter(
+export function hasForeignSameNameAwaiter(
   log: readonly WorkflowEvent[],
   signalName: string,
   selfStepId: string,
@@ -4771,6 +4887,7 @@ function hasForeignSameNameAwaiter(
   for (const event of log) {
     if (
       event.kind === "SignalAwaited" &&
+      event.correlationId === undefined &&
       event.signalName === signalName &&
       event.stepId !== selfStepId
     ) {

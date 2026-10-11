@@ -10,7 +10,13 @@
 
 import { describe, test, expect } from "bun:test";
 
-import type { WorkflowEvent } from "@intx/workflow";
+import {
+  applyEvent,
+  emptyState,
+  type SignalAwaited,
+  type SignalReceived,
+  type WorkflowEvent,
+} from "@intx/workflow";
 
 // Imported directly from the runtime module: the binding is intentionally not
 // part of the package's public surface, so it is exercised via its source path
@@ -20,6 +26,17 @@ import { boundSignalForContainerAwait } from "./run";
 const at = "2026-01-01T00:00:00.000Z";
 const SECTION = "section";
 const N = "go";
+
+function started(seq: number, stepId = SECTION): WorkflowEvent {
+  return {
+    kind: "StepStarted",
+    seq,
+    at,
+    stepId,
+    attempt: 1,
+    input: { ref: "inline:null" },
+  };
+}
 
 function runStarted(seq: number): WorkflowEvent {
   return {
@@ -32,7 +49,7 @@ function runStarted(seq: number): WorkflowEvent {
   };
 }
 
-function awaited(seq: number, name = N, stepId = SECTION): WorkflowEvent {
+function awaited(seq: number, name = N, stepId = SECTION): SignalAwaited {
   return {
     kind: "SignalAwaited",
     seq,
@@ -48,7 +65,7 @@ function received(
   signalId: string,
   payload: unknown,
   name = N,
-): WorkflowEvent {
+): SignalReceived {
   return {
     kind: "SignalReceived",
     seq,
@@ -165,6 +182,68 @@ describe("boundSignalForContainerAwait", () => {
 
   test("no signal for the await: returns undefined", () => {
     const log: WorkflowEvent[] = [runStarted(1), awaited(2)];
+    expect(boundSignalForContainerAwait(log, N, SECTION, 2)).toBeUndefined();
+  });
+
+  test("a correlated signal on the same name does not bind a name-addressed await", () => {
+    const log: WorkflowEvent[] = [
+      runStarted(1),
+      { ...received(2, "s-corr", { v: 9 }), correlationId: "corr-a" },
+      awaited(3),
+    ];
+    expect(boundSignalForContainerAwait(log, N, SECTION, 3)).toBeUndefined();
+  });
+
+  test("a correlated await binds the matching id and ignores the name queue", () => {
+    const log: WorkflowEvent[] = [
+      runStarted(1),
+      received(2, "s-name", { v: 1 }),
+      { ...received(3, "s-corr", { v: 2 }), correlationId: "corr-a" },
+      { ...awaited(4), correlationId: "corr-a" },
+    ];
+    expect(boundSignalForContainerAwait(log, N, SECTION, 4)).toEqual({
+      payload: { v: 2 },
+      signalId: "s-corr",
+    });
+  });
+
+  test("reducer fidelity: a correlated pre-consume binds the signal the reducer consumed", () => {
+    const log: WorkflowEvent[] = [
+      runStarted(1),
+      started(2),
+      received(3, "s-name", { v: 1 }),
+      { ...received(4, "s-corr", { v: 2 }), correlationId: "corr-a" },
+      { ...awaited(5), correlationId: "corr-a" },
+    ];
+    let state = emptyState("fidelity");
+    let queuedId: string | undefined;
+    for (const event of log) {
+      if (event.kind === "SignalAwaited") {
+        queuedId = state.unconsumedByCorrelation.get("corr-a")?.[0]?.id;
+      }
+      state = applyEvent(state, event);
+    }
+    expect(state.steps.get(SECTION)?.phase).toBe("in-flight");
+    expect(state.unconsumedSignals.get(N)?.map((item) => item.id)).toEqual([
+      "s-name",
+    ]);
+    expect(state.unconsumedByCorrelation.has("corr-a")).toBe(false);
+    expect(queuedId).toBe("s-corr");
+    expect(boundSignalForContainerAwait(log, N, SECTION, 5)?.signalId).toBe(
+      queuedId,
+    );
+  });
+
+  test("a name mismatch against the holding park is not bound", () => {
+    const log: WorkflowEvent[] = [
+      runStarted(1),
+      { ...awaited(2), correlationId: "corr-a" },
+      {
+        ...received(3, "s-wrong", { v: 9 }),
+        correlationId: "corr-a",
+        signalName: "stop",
+      },
+    ];
     expect(boundSignalForContainerAwait(log, N, SECTION, 2)).toBeUndefined();
   });
 });
