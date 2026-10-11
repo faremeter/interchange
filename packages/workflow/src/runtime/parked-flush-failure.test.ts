@@ -28,6 +28,7 @@ import {
 } from "@intx/workflow";
 
 import { whenRunNextBuffers, withRunCommitBarrier } from "./commit-chain";
+import { createTerminalChildHandle } from "./suspendable-child-handle";
 
 const parkedSignal = defineWorkflow({
   id: "parked-signal-flush",
@@ -108,7 +109,7 @@ function buildEnv(
     }),
     invokeStep: async () => ({ output: null }),
     invokeAction,
-    spawnChild: async () => ({ terminalStatus: "completed" }),
+    spawnChild: async () => createTerminalChildHandle("completed"),
     clock: () => new Date(0),
     newId: (prefix) => `${prefix}-parked-flush`,
     drain: createNoopDrainController(def),

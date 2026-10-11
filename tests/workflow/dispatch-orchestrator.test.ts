@@ -24,6 +24,7 @@ import {
 } from "@intx/agent";
 
 import {
+  createTerminalChildHandle,
   action,
   awaitSignal,
   createEffectContext,
@@ -715,7 +716,7 @@ function buildEnv(opts: {
     invokeStep: makeInvokeStep(convergeAtRound, plan, trace),
     invokeAction,
     effects,
-    spawnChild: async () => ({ terminalStatus: "completed" }),
+    spawnChild: async () => createTerminalChildHandle("completed"),
     clock,
     newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
     drain: createNoopDrainController(fullDemo),

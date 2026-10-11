@@ -43,7 +43,10 @@ import { type } from "arktype";
 import { generateKeyPair } from "@intx/crypto";
 import { base64Encode, hexEncode } from "@intx/types";
 import { waitUntil } from "@intx/types/testing";
-import { computeLiveDefinitionHash } from "@intx/workflow";
+import {
+  computeLiveDefinitionHash,
+  createTerminalChildHandle,
+} from "@intx/workflow";
 import {
   createDefaultDirectorRegistry,
   type Agent,
@@ -555,7 +558,7 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
         workflowRunRef: WORKFLOW_RUN_REF,
         principal,
         invokeStep,
-        spawnChild: async () => ({ terminalStatus: "completed" }),
+        spawnChild: async () => createTerminalChildHandle("completed"),
         scheduler: { scheduleIn: () => () => undefined },
         evaluateGrants: async () => ({
           effect: "allow" as const,

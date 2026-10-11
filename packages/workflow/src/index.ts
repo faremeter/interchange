@@ -44,6 +44,7 @@ export {
   onTriggerOccurrenceReattach,
   resumeResidualOf,
   createSuspendableChildHandle,
+  createTerminalChildHandle,
   createLoopIterationHandle,
   MAX_CHILD_SPAWN_DEPTH,
   ChildSpawnDepthExceededError,

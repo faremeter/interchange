@@ -27,7 +27,10 @@ import {
   loadWorkflowDefinitionFromClosure,
   type RunWorkflowChildBindings,
 } from "@intx/workflow-host";
-import { computeLiveDefinitionHash } from "@intx/workflow";
+import {
+  computeLiveDefinitionHash,
+  createTerminalChildHandle,
+} from "@intx/workflow";
 import {
   createMemoryFrameStream,
   createMemoryNdjsonStream,
@@ -335,7 +338,7 @@ function buildBindings(baseDir: string): RunWorkflowChildBindings {
     workflowRunRef: REF,
     principal: { kind: "supervisor" } as Principal,
     invokeStep: async () => ({ output: null }),
-    spawnChild: async () => ({ terminalStatus: "completed" }),
+    spawnChild: async () => createTerminalChildHandle("completed"),
     scheduler: { scheduleIn: () => () => undefined },
     evaluateGrants: async () => ({
       effect: "allow" as const,

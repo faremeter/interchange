@@ -33,6 +33,7 @@ import {
   type WorkflowEvent,
   type WorkflowRuntimeEnv,
 } from "@intx/workflow";
+import { createTerminalChildHandle } from "./suspendable-child-handle";
 
 const collided = defineWorkflow({
   id: "collided-signal",
@@ -100,7 +101,7 @@ function buildEnv(
     }),
     invokeStep: async () => ({ output: null }),
     invokeAction,
-    spawnChild: async () => ({ terminalStatus: "completed" }),
+    spawnChild: async () => createTerminalChildHandle("completed"),
     clock,
     newId: (prefix) => `${prefix}-thrown-body`,
     drain: createNoopDrainController(def),
@@ -451,7 +452,7 @@ describe("a thrown run body", () => {
         depth: args.depth,
         maxChildSpawnDepth: args.maxChildSpawnDepth,
       }).complete;
-      return { terminalStatus: result.terminalStatus };
+      return createTerminalChildHandle(result.terminalStatus);
     };
 
     const result = await runtimeRun(parent, env, { runId: parentRunId })

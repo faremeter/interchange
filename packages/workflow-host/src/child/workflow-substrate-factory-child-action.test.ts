@@ -382,7 +382,10 @@ describe("spawned body action steps", () => {
       () => undefined,
     );
 
-    expect(result.terminalStatus).toBe("completed");
+    const event = await result.next();
+    expect(event.kind).toBe("terminal");
+    if (event.kind !== "terminal") throw new Error("expected a terminal");
+    expect(event.terminalStatus).toBe("completed");
     expect(await fs.promises.readFile(marker, "utf8")).toBe("shipped");
   });
 

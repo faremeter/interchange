@@ -37,6 +37,7 @@ import { createNoopDrainController } from "./drain";
 import type { WorkflowRuntimeEnv } from "./env";
 import { runtimeRun } from "./run";
 import { TransitionError, type WorkflowEvent } from "../state-machine/index";
+import { createTerminalChildHandle } from "./suspendable-child-handle";
 
 function makeAgent(id: string) {
   return defineAgent({
@@ -96,7 +97,7 @@ describe("C-B regression: cancel racing the post-loop terminal commit", () => {
         resolvedBy: null,
       }),
       invokeStep: async () => ({ output: null }),
-      spawnChild: async () => ({ terminalStatus: "completed" }),
+      spawnChild: async () => createTerminalChildHandle("completed"),
       clock,
       newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
       drain: createNoopDrainController(def),

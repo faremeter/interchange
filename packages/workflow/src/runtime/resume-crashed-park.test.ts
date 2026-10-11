@@ -33,6 +33,7 @@ import {
   type WorkflowRuntimeEnv,
 } from "@intx/workflow";
 import { waitForEvent } from "@intx/workflow/testing";
+import { createTerminalChildHandle } from "./suspendable-child-handle";
 
 const agent = defineAgent({
   id: "a",
@@ -72,7 +73,7 @@ function buildEnv(
       resolvedBy: null,
     }),
     invokeStep: opts.invokeStep,
-    spawnChild: async () => ({ terminalStatus: "completed" }),
+    spawnChild: async () => createTerminalChildHandle("completed"),
     clock,
     newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
     drain: createNoopDrainController(def),

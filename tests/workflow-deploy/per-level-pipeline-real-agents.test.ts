@@ -83,6 +83,7 @@ import type {
   ToolResult,
 } from "@intx/types/runtime";
 import {
+  createTerminalChildHandle,
   action,
   createEffectContext,
   createInMemoryBlobSubstrate,
@@ -951,7 +952,7 @@ describe("per-level pipeline with real agents", () => {
       invokeStep,
       invokeAction,
       effects,
-      spawnChild: async () => ({ terminalStatus: "completed" }),
+      spawnChild: async () => createTerminalChildHandle("completed"),
       clock,
       newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
       drain: createNoopDrainController(pipeline),

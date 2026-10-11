@@ -17,6 +17,7 @@ import { defineAgent } from "@intx/agent";
 import {
   childWorkflow,
   createInMemoryBlobSubstrate,
+  createTerminalChildHandle,
   createInMemoryRepoStore,
   createInMemoryScheduler,
   createInMemorySignalChannel,
@@ -72,9 +73,8 @@ function makeChildSpawningParent() {
 describe("childWorkflow terminal-status propagation", () => {
   test("propagates a failed child to a StepFailed on the parent's spawn step", async () => {
     const parent = makeChildSpawningParent();
-    const spawnChild: SpawnChildWorkflow = async () => ({
-      terminalStatus: "failed",
-    });
+    const spawnChild: SpawnChildWorkflow = async () =>
+      createTerminalChildHandle("failed");
     const clock = () => new Date();
     const repoStore = createInMemoryRepoStore();
     const env: WorkflowRuntimeEnv = {
@@ -105,9 +105,8 @@ describe("childWorkflow terminal-status propagation", () => {
 
   test("propagates a cancelled child to a StepFailed on the parent's spawn step", async () => {
     const parent = makeChildSpawningParent();
-    const spawnChild: SpawnChildWorkflow = async () => ({
-      terminalStatus: "cancelled",
-    });
+    const spawnChild: SpawnChildWorkflow = async () =>
+      createTerminalChildHandle("cancelled");
     const clock = () => new Date();
     const repoStore = createInMemoryRepoStore();
     const env: WorkflowRuntimeEnv = {
@@ -184,26 +183,26 @@ describe("cancellation log invariants", () => {
     // independently of how the child would otherwise resolve.
     const parent = makeChildSpawningParent();
 
-    let resolveSpawn!: (value: {
-      terminalStatus: "completed" | "failed" | "cancelled";
-    }) => void;
+    let resolveSpawn!: (value: "completed" | "failed" | "cancelled") => void;
     let signalSpawnStarted!: () => void;
     const spawnStarted = new Promise<void>((resolve) => {
       signalSpawnStarted = resolve;
     });
     const spawnChild: SpawnChildWorkflow = ({ signal }) => {
       signalSpawnStarted();
-      const settled = new Promise<{
-        terminalStatus: "completed" | "failed" | "cancelled";
-      }>((resolve) => {
-        resolveSpawn = resolve;
-      });
+      const settled = new Promise<"completed" | "failed" | "cancelled">(
+        (resolve) => {
+          resolveSpawn = resolve;
+        },
+      );
       // When the parent aborts, settle the spawn as cancelled so
       // the spawn step's runner returns and the main loop drains.
       signal.addEventListener("abort", () => {
-        resolveSpawn({ terminalStatus: "cancelled" });
+        resolveSpawn("cancelled");
       });
-      return settled;
+      return settled.then((terminalStatus) =>
+        createTerminalChildHandle(terminalStatus),
+      );
     };
 
     const clock = () => new Date();

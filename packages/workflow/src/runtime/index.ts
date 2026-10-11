@@ -50,7 +50,10 @@ export {
   withRunCommitBarrier,
 } from "./commit-chain";
 
-export { createSuspendableChildHandle } from "./suspendable-child-handle";
+export {
+  createSuspendableChildHandle,
+  createTerminalChildHandle,
+} from "./suspendable-child-handle";
 
 export { createLoopIterationHandle } from "./loop-iteration-handle";
 

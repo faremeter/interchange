@@ -24,6 +24,7 @@ import {
   type WorkflowEvent,
   type WorkflowRuntimeEnv,
 } from "@intx/workflow";
+import { createTerminalChildHandle } from "./suspendable-child-handle";
 
 function agent(id: string) {
   return defineAgent({
@@ -75,7 +76,7 @@ function buildEnv(
     }),
     invokeStep: async () => ({ output: null }),
     spawnChild:
-      opts.spawnChild ?? (async () => ({ terminalStatus: "completed" })),
+      opts.spawnChild ?? (async () => createTerminalChildHandle("completed")),
     clock,
     newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
     drain: opts.drain ?? createNoopDrainController(def),
@@ -145,7 +146,7 @@ describe("onFailure action / childWorkflow routing", () => {
       },
     });
     const { env, repoStore } = buildEnv(def, {
-      spawnChild: async () => ({ terminalStatus: "failed" }),
+      spawnChild: async () => createTerminalChildHandle("failed"),
     });
     env.invokeStep = async (req) => {
       invoked.push(req.agent.id);
@@ -170,7 +171,7 @@ describe("onFailure action / childWorkflow routing", () => {
       },
     });
     const { env, repoStore } = buildEnv(def, {
-      spawnChild: async () => ({ terminalStatus: "cancelled" }),
+      spawnChild: async () => createTerminalChildHandle("cancelled"),
     });
     const res = await runtimeRun(def, env, { runId: "r", triggerPayload: null })
       .complete;
@@ -219,7 +220,7 @@ describe("onFailure action / childWorkflow routing", () => {
       },
     });
     const { env } = buildEnv(def, {
-      spawnChild: async () => ({ terminalStatus: "completed" }),
+      spawnChild: async () => createTerminalChildHandle("completed"),
     });
     env.invokeStep = async (req) => {
       invoked.push(req.agent.id);

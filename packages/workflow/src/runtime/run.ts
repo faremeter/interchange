@@ -5790,7 +5790,7 @@ async function runChildWorkflow(
   // runPrimitiveSafe lands StepFailed on the parent's spawn step.
   let child: { terminalStatus: "completed" | "failed" | "cancelled" };
   try {
-    child = await env.spawnChild({
+    const handle = await env.spawnChild({
       definitionRef,
       childRunId,
       input: childInput,
@@ -5800,6 +5800,13 @@ async function runChildWorkflow(
       depth: childDepth,
       maxChildSpawnDepth,
     });
+    const event = await handle.next();
+    if (event.kind !== "terminal") {
+      throw new Error(
+        `childWorkflow ${primitive.id} spawn returned a park; this drive consumes only the child's terminal status`,
+      );
+    }
+    child = { terminalStatus: event.terminalStatus };
   } catch (cause) {
     let afterThrow = await reloadState(env, parentRunId);
     const childFailed: WorkflowEvent = {

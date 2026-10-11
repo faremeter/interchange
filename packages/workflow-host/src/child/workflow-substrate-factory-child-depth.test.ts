@@ -294,7 +294,10 @@ describe("createSidecarRunChild spawn-depth ceiling", () => {
 
     // The top run settled failed: the deep spawn was rejected and the failure
     // propagated up every rung's spawn step.
-    expect(result.terminalStatus).toBe("failed");
+    const event = await result.next();
+    expect(event.kind).toBe("terminal");
+    if (event.kind !== "terminal") throw new Error("expected a terminal");
+    expect(event.terminalStatus).toBe("failed");
 
     // Depth climbed for real: the parent spawned outer (depth 1) and outer
     // spawned mid (depth 2) before the guard fired -- two successful in-process

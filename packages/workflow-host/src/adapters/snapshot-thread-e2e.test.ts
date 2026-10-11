@@ -38,6 +38,7 @@ import type {
   ReactorState,
 } from "@intx/types/runtime";
 import {
+  createTerminalChildHandle,
   createInMemoryBlobSubstrate,
   createInMemoryRepoStore,
   createInMemoryScheduler,
@@ -187,7 +188,7 @@ async function runOnce(
       resolvedBy: null,
     }),
     invokeStep,
-    spawnChild: async () => ({ terminalStatus: "completed" }),
+    spawnChild: async () => createTerminalChildHandle("completed"),
     clock,
     newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
     drain: createNoopDrainController(workflowDef),

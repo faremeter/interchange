@@ -48,6 +48,7 @@ import { createNoopDrainController } from "./drain";
 import type { RepoStore, StepInvoker, WorkflowRuntimeEnv } from "./env";
 import { runtimeRun } from "./run";
 import { TransitionError } from "../state-machine/index";
+import { createTerminalChildHandle } from "./suspendable-child-handle";
 
 function makeAgent(id: string) {
   return defineAgent({
@@ -124,7 +125,7 @@ function buildEnv(
       resolvedBy: null,
     }),
     invokeStep,
-    spawnChild: async () => ({ terminalStatus: "completed" }),
+    spawnChild: async () => createTerminalChildHandle("completed"),
     clock,
     newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
     drain: createNoopDrainController(def),

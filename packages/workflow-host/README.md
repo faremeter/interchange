@@ -78,7 +78,7 @@ Public surface (the package barrel re-exports these):
   primitive the supervisor invokes for every cancellation origin.
 
 Plus the relevant options and callback types (`StepEnvBase`,
-`RunChildWorkflow`, `ChildTerminalStatus`,
+`RunChildWorkflow`,
 `WorkflowSupervisorBindings`, `SubprocessSpawner`,
 `MailBusBindings`, `PrincipalSigner`, `SignedPayload`, etc.).
 

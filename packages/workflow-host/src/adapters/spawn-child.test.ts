@@ -11,11 +11,12 @@ import {
   WORKFLOW_RUN_GITIGNORE_PATH,
 } from "@intx/hub-sessions";
 import type { AuthorizeFn, Principal, RepoId } from "@intx/hub-sessions";
-import type {
-  SpawnSuspendableChild,
-  SuspendableChildHandle,
-  WorkflowDefinition,
-  WorkflowEvent,
+import {
+  createTerminalChildHandle,
+  type SpawnSuspendableChild,
+  type SuspendableChildHandle,
+  type WorkflowDefinition,
+  type WorkflowEvent,
 } from "@intx/workflow";
 
 import { createWorkflowRunRepoStore } from "./repo-store";
@@ -87,7 +88,7 @@ describe("workflow-host SpawnChildWorkflow adapter - in-memory resolution", () =
     const calls: Parameters<RunChildWorkflow>[0][] = [];
     const runChild: RunChildWorkflow = async (input) => {
       calls.push(input);
-      return { terminalStatus: "completed" };
+      return createTerminalChildHandle("completed");
     };
 
     const spawn = createInMemorySpawnChild({
@@ -110,7 +111,10 @@ describe("workflow-host SpawnChildWorkflow adapter - in-memory resolution", () =
       noopOnEvent,
     );
 
-    expect(result.terminalStatus).toBe("completed");
+    const event = await result.next();
+    expect(event.kind).toBe("terminal");
+    if (event.kind !== "terminal") throw new Error("expected a terminal");
+    expect(event.terminalStatus).toBe("completed");
     expect(calls).toHaveLength(1);
     const settled = calls[0];
     if (settled === undefined) throw new Error("expected one runChild call");
@@ -123,9 +127,8 @@ describe("workflow-host SpawnChildWorkflow adapter - in-memory resolution", () =
   });
 
   test("fails loud when the ref is not in the map", async () => {
-    const runChild: RunChildWorkflow = async () => ({
-      terminalStatus: "completed",
-    });
+    const runChild: RunChildWorkflow = async () =>
+      createTerminalChildHandle("completed");
     const spawn = createInMemorySpawnChild({ bodies: new Map(), runChild });
 
     const ctrl = new AbortController();
@@ -149,9 +152,8 @@ describe("workflow-host SpawnChildWorkflow adapter - in-memory resolution", () =
 
 describe("workflow-host SpawnChildWorkflow adapter - child execution", () => {
   test("returns the child's terminal status to the parent runtime", async () => {
-    const runChild: RunChildWorkflow = async () => ({
-      terminalStatus: "failed",
-    });
+    const runChild: RunChildWorkflow = async () =>
+      createTerminalChildHandle("failed");
     const spawn = createInMemorySpawnChild({
       bodies: new Map([["wf-terminal", childDefinition("wf-terminal")]]),
       runChild,
@@ -171,7 +173,10 @@ describe("workflow-host SpawnChildWorkflow adapter - child execution", () => {
       },
       noopOnEvent,
     );
-    expect(result.terminalStatus).toBe("failed");
+    const event = await result.next();
+    expect(event.kind).toBe("terminal");
+    if (event.kind !== "terminal") throw new Error("expected a terminal");
+    expect(event.terminalStatus).toBe("failed");
   });
 
   test("propagates a thrown error from the runChild callback", async () => {
@@ -208,7 +213,7 @@ describe("workflow-host SpawnChildWorkflow adapter - abort handling", () => {
     let runCalls = 0;
     const runChild: RunChildWorkflow = async () => {
       runCalls += 1;
-      return { terminalStatus: "completed" };
+      return createTerminalChildHandle("completed");
     };
     const spawn = createInMemorySpawnChild({
       bodies: new Map([["wf-pre-abort", childDefinition("wf-pre-abort")]]),
@@ -339,7 +344,7 @@ describe("workflow-host SpawnChildWorkflow adapter - sub-namespace scoping", () 
         trigger: { type: "manual", payload: {} },
       };
       await childAdapter.append(childRunId, event);
-      return { terminalStatus: "completed" };
+      return createTerminalChildHandle("completed");
     };
 
     const spawn = createInMemorySpawnChild({
@@ -361,7 +366,10 @@ describe("workflow-host SpawnChildWorkflow adapter - sub-namespace scoping", () 
       },
       noopOnEvent,
     );
-    expect(result.terminalStatus).toBe("completed");
+    const event = await result.next();
+    expect(event.kind).toBe("terminal");
+    if (event.kind !== "terminal") throw new Error("expected a terminal");
+    expect(event.terminalStatus).toBe("completed");
 
     // Inspect the workflow-run repo on disk: both runs should have
     // their own events subtree. The child's events MUST live under
