@@ -42,9 +42,11 @@ export {
   type OccurrenceReattach,
 } from "./run";
 export {
+  bufferedEvents,
   commitBuffered,
   dropChain,
   reloadState,
+  whenRunNextBuffers,
   withRunCommitBarrier,
 } from "./commit-chain";
 
