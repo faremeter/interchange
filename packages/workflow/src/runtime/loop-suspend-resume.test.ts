@@ -46,7 +46,11 @@ import {
   type WorkflowEvent,
   type WorkflowRuntimeEnv,
 } from "@intx/workflow";
-import { waitForEvent, waitForNthEvent } from "@intx/workflow/testing";
+import {
+  createObservedSignalChannel,
+  waitForEvent,
+  waitForNthEvent,
+} from "@intx/workflow/testing";
 
 import { resolveDrainBehavior, type DrainController } from "./drain";
 
@@ -323,11 +327,12 @@ describe("loop iteration suspend crash-resume", () => {
   test("refuses to resume a body parked on two concurrent author signals", async () => {
     const runId = "two-signal-run";
     const repoStore1 = createInMemoryRepoStore();
+    const channel1 = createObservedSignalChannel();
     const env1 = buildEnv({
       parentDef: twoSignalParent,
       repoStore: repoStore1,
       blobs: createInMemoryBlobSubstrate(),
-      signalChannel: createInMemorySignalChannel(),
+      signalChannel: channel1,
       invokeAction: awaitInvokeAction({ n: 0 }),
     });
     void runtimeRun(twoSignalParent, env1, { runId }).complete;
@@ -348,6 +353,10 @@ describe("loop iteration suspend crash-resume", () => {
       (e) => e.kind === "SignalAwaited" && e.signalName === "goB",
     );
     await waitForContainerPark(repoStore1, runId, "signal-relay", 1);
+    // Run 1 keeps going: it abandons the goA relay once the body surfaces goB
+    // and relays goB instead. Run 2 reuses the runId and so shares its commit
+    // buffer, so wait until run 1 is idle on that wait.
+    await channel1.awaitAwaitedCount("goB", 1);
 
     const bodyLog = await repoStore1.read(bodyRunId);
     // The crash lands before either gate's relay flushed: strip the container's
