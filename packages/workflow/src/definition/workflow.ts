@@ -976,29 +976,29 @@ function buildDependencyAdjacency(
 }
 
 /**
- * Reject a definition that lets two schedulable-concurrent `awaitSignal` steps
- * await the same signal name. `handleSignalReceived` is a FIFO single-consumer
- * scan keyed on the name, so two gates awaiting one name simultaneously make a
- * delivery's binding order-dependent, and on resume the consumed signal cannot
- * be durably re-bound to a specific gate. INTR-277 added a runtime fail-loud
- * guard for this topology; rejecting it here makes it unauthorable.
+ * Reject a definition that lets two schedulable-concurrent name-FIFO
+ * `awaitSignal` steps await the same signal name. A name-only delivery
+ * binds one such park, so two of them live at once make the binding
+ * order-dependent. The runtime guard rejects that topology for a
+ * name-addressed relay. A correlated park is outside this check.
  *
- * A loop or inline onTrigger body's awaitSignal park relays up into the parent
- * run over the body's own author signal name, so a container step contributes
- * its body's await names into the parent's concurrency set (recursively through
- * nested loop / inline onTrigger bodies). A childWorkflow runs as a separate
- * run with its own signal namespace, so its awaiters never collide with the
- * parent's and are excluded.
+ * A loop body's awaitSignal relays onto the parent under the body's
+ * author signal name and stays name-FIFO, so the loop contributes those
+ * names here, including through nested loops. An onTrigger relay is
+ * correlated, so its await names are not added. Two sections, a section
+ * beside a parent gate, and a section beside a loop may share an author
+ * name. `validateOnTriggerBody` re-enters `validateSteps` on an inline
+ * body, so two name-FIFO awaiters inside one section body are still
+ * rejected.
  *
- * Two static-analysis limitations remain, both backstopped by the runtime
- * guard:
- *   - Conservative over-reject: two same-name awaiters on a gate's mutually
- *     exclusive then/else branches are rejected, because deciding they can
- *     never both be live is a dominator analysis whose permissive-direction
- *     error would re-admit the hazard.
- *   - Under-reject: a `{ ref }` onTrigger body is a separately-deployed asset
- *     not visible here, so an await name it relays is not collected; a
- *     collision with such a body is caught by the runtime guard, not here.
+ * A childWorkflow runs as a separate run with its own signal namespace,
+ * so its awaiters are excluded.
+ *
+ * One static-analysis limitation remains, backstopped by the runtime
+ * guard for name-FIFO awaiters: two same-name awaiters on a gate's
+ * mutually exclusive then/else branches are rejected. Deciding they can
+ * never both be live is a dominator analysis whose permissive-direction
+ * error would re-admit the hazard.
  */
 function validateConcurrentAwaitSignalNames(
   steps: Record<string, Primitive>,
@@ -1037,22 +1037,20 @@ function validateConcurrentAwaitSignalNames(
 }
 
 /**
- * Collect the author signal names a loop or inline onTrigger body relays up to
- * the parent run, recursing through nested loop and inline onTrigger bodies. A
- * flat `steps` record keys gate branches and onTimeout targets as siblings, so
- * enumerating the record covers them without a graph walk. A childWorkflow body
- * runs in a separate signal namespace and is not relayed, so it is skipped.
+ * Collect the author signal names a loop body relays onto the parent
+ * run, recursing through nested loops. Those names stay on the parent's
+ * name-FIFO concurrency check. An onTrigger body is not collected: its
+ * relay park is correlated and may share an author name with other
+ * parks. A flat `steps` record keys gate branches and onTimeout targets
+ * as siblings, so enumerating the record covers them without a graph
+ * walk. A childWorkflow body runs in a separate signal namespace and is
+ * not relayed, so it is skipped.
  */
 function collectRelayedAwaitSignalNames(
   primitive: Primitive,
 ): { name: string; bodyStepId: string }[] {
-  let body: Record<string, Primitive> | undefined;
-  if (primitive.kind === "loop") {
-    body = primitive.body.steps;
-  } else if (primitive.kind === "onTrigger" && "inline" in primitive.body) {
-    body = primitive.body.inline.steps;
-  }
-  if (body === undefined) return [];
+  if (primitive.kind !== "loop") return [];
+  const body = primitive.body.steps;
   const names: { name: string; bodyStepId: string }[] = [];
   for (const [bodyStepId, bodyPrimitive] of Object.entries(body)) {
     if (bodyPrimitive.kind === "awaitSignal") {

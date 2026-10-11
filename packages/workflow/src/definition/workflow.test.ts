@@ -1453,7 +1453,7 @@ describe("concurrent awaitSignal name validation", () => {
     ).toThrow(/can concurrently await signal name go/);
   });
 
-  test("rejects an inline onTrigger body awaiting a name concurrent with a parent gate", () => {
+  test("accepts an inline onTrigger body awaiting a name concurrent with a parent gate", () => {
     expect(() =>
       defineWorkflow({
         id: "wf",
@@ -1466,6 +1466,55 @@ describe("concurrent awaitSignal name validation", () => {
               id: "section-body",
               trigger: { type: "manual" },
               steps: { w: awaitSignal({ name: "go" }) },
+            }),
+          }),
+        },
+      }),
+    ).not.toThrow();
+  });
+
+  test("accepts two inline onTrigger sections awaiting the same name", () => {
+    expect(() =>
+      defineWorkflow({
+        id: "wf",
+        trigger: { type: "manual" },
+        steps: {
+          left: onTrigger({
+            on: { type: "manual" },
+            body: defineWorkflow({
+              id: "left-body",
+              trigger: { type: "manual" },
+              steps: { w: awaitSignal({ name: "go" }) },
+            }),
+          }),
+          right: onTrigger({
+            on: { type: "manual" },
+            body: defineWorkflow({
+              id: "right-body",
+              trigger: { type: "manual" },
+              steps: { w: awaitSignal({ name: "go" }) },
+            }),
+          }),
+        },
+      }),
+    ).not.toThrow();
+  });
+
+  test("rejects two same-name gates inside one onTrigger body", () => {
+    expect(() =>
+      defineWorkflow({
+        id: "wf",
+        trigger: { type: "manual" },
+        steps: {
+          section: onTrigger({
+            on: { type: "manual" },
+            body: defineWorkflow({
+              id: "section-body",
+              trigger: { type: "manual" },
+              steps: {
+                gateA: awaitSignal({ name: "go" }),
+                gateB: awaitSignal({ name: "go" }),
+              },
             }),
           }),
         },
