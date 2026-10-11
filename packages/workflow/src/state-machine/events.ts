@@ -125,6 +125,12 @@ export interface SignalAwaited extends EventBase {
    * every reserved-channel park before this change was an approval.
    */
   parkKind?: ControlParkKind;
+  /**
+   * Addresses this park by id. A delivery pairs only when this id and
+   * `signalName` both match. Absent on a name-FIFO park: plain gates, loop
+   * relays, and signal-relay parks logged before correlated addressing.
+   */
+  correlationId?: string;
 }
 
 export interface SignalReceived extends EventBase {
@@ -132,6 +138,12 @@ export interface SignalReceived extends EventBase {
   signalName: string;
   signalId: SignalId;
   payload: unknown;
+  /**
+   * Addresses a correlated park. Pairing requires this id and `signalName`
+   * to match the park. A name mismatch dedups `signalId` and leaves the
+   * park and both queues untouched. Absent on a name-FIFO delivery.
+   */
+  correlationId?: string;
 }
 
 /**
@@ -147,6 +159,11 @@ export interface SignalAwaitAbandoned extends EventBase {
   kind: "SignalAwaitAbandoned";
   stepId: StepId;
   signalName: string;
+  /**
+   * The correlated park being retired. When both this and the live park
+   * carry an id, they must match. Absent on a name-addressed retire.
+   */
+  correlationId?: string;
 }
 
 export interface TimerSet extends EventBase {

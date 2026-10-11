@@ -609,6 +609,187 @@ describe("applyEvent: signal delivery", () => {
   });
 });
 
+describe("applyEvent: correlated signal delivery", () => {
+  function started(seq: number, stepId: string): WorkflowEvent {
+    return {
+      kind: "StepStarted",
+      seq,
+      at: T,
+      stepId,
+      attempt: 1,
+      input: { ref: "i" },
+    };
+  }
+
+  function awaited(
+    seq: number,
+    stepId: string,
+    correlationId: string,
+    signalName = "go",
+  ): WorkflowEvent {
+    return {
+      kind: "SignalAwaited",
+      seq,
+      at: T,
+      stepId,
+      signalName,
+      parkKind: "signal-relay",
+      correlationId,
+    };
+  }
+
+  function received(
+    seq: number,
+    signalId: string,
+    correlationId: string,
+    signalName = "go",
+    payload: unknown = 1,
+  ): WorkflowEvent {
+    return {
+      kind: "SignalReceived",
+      seq,
+      at: T,
+      signalName,
+      signalId,
+      payload,
+      correlationId,
+    };
+  }
+
+  test("each correlation completes only its own await of the same name", () => {
+    let state = fresh();
+    state = applyEvent(state, startRun());
+    state = applyEvent(state, started(2, "a"));
+    state = applyEvent(state, started(3, "b"));
+    state = applyEvent(state, awaited(4, "a", "corr-a"));
+    state = applyEvent(state, awaited(5, "b", "corr-b"));
+    state = applyEvent(state, received(6, "s-b", "corr-b"));
+    expect(state.steps.get("a")?.phase).toBe("awaiting-signal");
+    expect(state.steps.get("b")?.phase).toBe("in-flight");
+    state = applyEvent(state, received(7, "s-a", "corr-a"));
+    expect(state.steps.get("a")?.phase).toBe("in-flight");
+  });
+
+  test("a name-only delivery does not complete or dequeue a correlated park", () => {
+    let state = fresh();
+    state = applyEvent(state, startRun());
+    state = applyEvent(state, started(2, "a"));
+    state = applyEvent(state, received(3, "s-corr", "corr-a"));
+    expect(state.unconsumedByCorrelation.get("corr-a")).toEqual([
+      { id: "s-corr", payload: 1, signalName: "go" },
+    ]);
+    expect(state.unconsumedSignals.has("go")).toBe(false);
+    state = applyEvent(state, awaited(4, "a", "corr-a"));
+    expect(state.steps.get("a")?.phase).toBe("in-flight");
+    state = applyEvent(state, started(5, "b"));
+    state = applyEvent(state, awaited(6, "b", "corr-b"));
+    state = applyEvent(state, {
+      kind: "SignalReceived",
+      seq: 7,
+      at: T,
+      signalName: "go",
+      signalId: "s-name",
+      payload: 2,
+    });
+    expect(state.steps.get("b")?.phase).toBe("awaiting-signal");
+    expect(state.unconsumedSignals.get("go")).toEqual([
+      { id: "s-name", payload: 2 },
+    ]);
+    expect(state.unconsumedByCorrelation.has("corr-b")).toBe(false);
+  });
+
+  test("a correlated delivery does not complete a name-only park", () => {
+    let state = fresh();
+    state = applyEvent(state, startRun());
+    state = applyEvent(state, started(2, "gate"));
+    state = applyEvent(state, {
+      kind: "SignalAwaited",
+      seq: 3,
+      at: T,
+      stepId: "gate",
+      signalName: "go",
+    });
+    state = applyEvent(state, received(4, "s-corr", "corr-a"));
+    expect(state.steps.get("gate")?.phase).toBe("awaiting-signal");
+    expect(state.unconsumedByCorrelation.get("corr-a")?.length).toBe(1);
+    expect(state.unconsumedSignals.has("go")).toBe(false);
+  });
+
+  test("a name mismatch dedups and does not enqueue or clear the park", () => {
+    let state = fresh();
+    state = applyEvent(state, startRun());
+    state = applyEvent(state, started(2, "a"));
+    state = applyEvent(state, awaited(3, "a", "corr-a", "go"));
+    state = applyEvent(state, received(4, "s-wrong", "corr-a", "stop"));
+    expect(state.steps.get("a")?.phase).toBe("awaiting-signal");
+    expect(state.steps.get("a")?.awaitingSignal?.correlationId).toBe("corr-a");
+    expect(state.unconsumedByCorrelation.has("corr-a")).toBe(false);
+    expect(state.observedSignalIds.has("s-wrong")).toBe(true);
+    state = applyEvent(state, received(5, "s-wrong", "corr-a", "go"));
+    expect(state.steps.get("a")?.phase).toBe("awaiting-signal");
+    state = applyEvent(state, received(6, "s-right", "corr-a", "go"));
+    expect(state.steps.get("a")?.phase).toBe("in-flight");
+  });
+
+  test("duplicate signalId is a no-op regardless of correlation", () => {
+    let state = fresh();
+    state = applyEvent(state, startRun());
+    state = applyEvent(state, started(2, "a"));
+    state = applyEvent(state, started(3, "b"));
+    state = applyEvent(state, awaited(4, "a", "corr-a"));
+    state = applyEvent(state, awaited(5, "b", "corr-b"));
+    state = applyEvent(state, received(6, "s-1", "corr-a"));
+    expect(state.steps.get("a")?.phase).toBe("in-flight");
+    state = applyEvent(state, received(7, "s-1", "corr-b", "go", 2));
+    expect(state.steps.get("b")?.phase).toBe("awaiting-signal");
+    expect(state.unconsumedByCorrelation.has("corr-b")).toBe(false);
+  });
+
+  test("a late delivery for an abandoned correlation does not satisfy the next correlation", () => {
+    let state = fresh();
+    state = applyEvent(state, startRun());
+    state = applyEvent(state, started(2, "sec"));
+    state = applyEvent(state, awaited(3, "sec", "corr-k"));
+    state = applyEvent(state, {
+      kind: "SignalAwaitAbandoned",
+      seq: 4,
+      at: T,
+      stepId: "sec",
+      signalName: "go",
+      correlationId: "corr-k",
+    });
+    expect(state.steps.get("sec")?.phase).toBe("in-flight");
+    state = applyEvent(state, received(5, "s-late", "corr-k"));
+    expect(state.unconsumedByCorrelation.get("corr-k")).toEqual([
+      { id: "s-late", payload: 1, signalName: "go" },
+    ]);
+    expect(state.unconsumedSignals.has("go")).toBe(false);
+    state = applyEvent(state, awaited(6, "sec", "corr-next"));
+    expect(state.steps.get("sec")?.phase).toBe("awaiting-signal");
+    expect(state.unconsumedByCorrelation.get("corr-k")?.length).toBe(1);
+    expect(state.unconsumedByCorrelation.has("corr-next")).toBe(false);
+  });
+
+  test("an abandon whose correlation does not match the park is rejected", () => {
+    expectThrowsAt(
+      [
+        startRun(),
+        started(2, "sec"),
+        awaited(3, "sec", "corr-k"),
+        {
+          kind: "SignalAwaitAbandoned",
+          seq: 4,
+          at: T,
+          stepId: "sec",
+          signalName: "go",
+          correlationId: "corr-other",
+        },
+      ],
+      /does not match an active signal-relay park/,
+    );
+  });
+});
+
 describe("applyEvent: cancellation", () => {
   test("CancelRequested transitions running to cancelling", () => {
     let state = fresh();

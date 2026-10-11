@@ -11,12 +11,18 @@
 
 import { describe, test, expect } from "bun:test";
 
-import { applyEvent, emptyState, type WorkflowEvent } from "@intx/workflow";
+import {
+  applyEvent,
+  emptyState,
+  type SignalAwaited,
+  type SignalReceived,
+  type WorkflowEvent,
+} from "@intx/workflow";
 
 // Imported directly from the runtime module: like `boundSignalForContainerAwait`
 // the binding is not part of the package's public surface, so it is exercised
 // via its source path rather than promoted to the barrel for a test.
-import { reconstructGateOutcome } from "./run";
+import { hasForeignSameNameAwaiter, reconstructGateOutcome } from "./run";
 
 const at = "2026-01-01T00:00:00.000Z";
 const GATE = "gate";
@@ -44,7 +50,7 @@ function started(seq: number, stepId: string): WorkflowEvent {
   };
 }
 
-function awaited(seq: number, stepId: string, name = NAME): WorkflowEvent {
+function awaited(seq: number, stepId: string, name = NAME): SignalAwaited {
   return { kind: "SignalAwaited", seq, at, stepId, signalName: name };
 }
 
@@ -53,7 +59,7 @@ function received(
   signalId: string,
   payload: unknown,
   name = NAME,
-): WorkflowEvent {
+): SignalReceived {
   return {
     kind: "SignalReceived",
     seq,
@@ -138,5 +144,58 @@ describe("reconstructGateOutcome", () => {
     const boundId =
       outcome !== undefined && !outcome.timedOut ? outcome.signalId : undefined;
     expect(boundId).toBe(reducerConsumed);
+  });
+
+  test("reducer fidelity: a correlated delivery of the same name does not move the gate", () => {
+    const log: WorkflowEvent[] = [
+      runStarted(1),
+      started(2, GATE),
+      awaited(3, GATE),
+      { ...received(4, "s-corr", { v: 9 }), correlationId: "corr-a" },
+      received(5, "s-name", { v: 1 }),
+    ];
+    let state = emptyState("fidelity");
+    let reducerConsumed: string | undefined;
+    for (const event of log) {
+      const before = state.steps.get(GATE)?.phase;
+      state = applyEvent(state, event);
+      const after = state.steps.get(GATE)?.phase;
+      if (
+        event.kind === "SignalReceived" &&
+        before === "awaiting-signal" &&
+        after === "in-flight"
+      ) {
+        reducerConsumed = event.signalId;
+      }
+    }
+    expect(reducerConsumed).toBe("s-name");
+    expect(
+      state.unconsumedByCorrelation.get("corr-a")?.map((item) => item.id),
+    ).toEqual(["s-corr"]);
+    const outcome = reconstructGateOutcome(log, NAME, GATE);
+    const boundId =
+      outcome !== undefined && !outcome.timedOut ? outcome.signalId : undefined;
+    expect(boundId).toBe(reducerConsumed);
+  });
+
+  test("a correlated park on another step is not a foreign name awaiter", () => {
+    const log: WorkflowEvent[] = [
+      runStarted(1),
+      started(2, "section"),
+      {
+        ...awaited(3, "section"),
+        parkKind: "signal-relay",
+        correlationId: "corr-a",
+      },
+      started(4, GATE),
+      awaited(5, GATE),
+    ];
+    expect(hasForeignSameNameAwaiter(log, NAME, GATE)).toBe(false);
+    const nameSibling: WorkflowEvent[] = [
+      runStarted(1),
+      started(2, "other"),
+      awaited(3, "other"),
+    ];
+    expect(hasForeignSameNameAwaiter(nameSibling, NAME, GATE)).toBe(true);
   });
 });

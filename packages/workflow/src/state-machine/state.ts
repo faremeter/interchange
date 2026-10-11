@@ -44,6 +44,7 @@ export interface StepState {
     name: string;
     timeoutAt?: string;
     parkKind?: ControlParkKind;
+    correlationId?: string;
   };
   awaitingTimerId?: TimerId;
 }
@@ -96,6 +97,13 @@ export interface QueuedSignal {
   payload: unknown;
 }
 
+/** A signal queued for one correlation id. `signalName` is matched on consume. */
+export interface CorrelatedQueuedSignal {
+  id: SignalId;
+  payload: unknown;
+  signalName: string;
+}
+
 export interface RunState {
   runId: RunId;
   phase: RunPhase;
@@ -108,6 +116,12 @@ export interface RunState {
   observedSignalIds: Set<SignalId>;
   /** Queue per signal name for pre-await delivery. */
   unconsumedSignals: Map<string, QueuedSignal[]>;
+  /**
+   * Queue per correlation id. Name FIFO never reads or writes this map.
+   * A queued entry is consumed only by a `SignalAwaited` whose
+   * `correlationId` and `signalName` both match.
+   */
+  unconsumedByCorrelation: Map<string, CorrelatedQueuedSignal[]>;
   /**
    * Message-ids consumed by this run's `RunStarted` events. The kind
    * handler rejects a re-issued `RunStarted` whose message-id appears
@@ -129,6 +143,7 @@ export function emptyState(runId: RunId): RunState {
     pendingTimers: new Map(),
     observedSignalIds: new Set(),
     unconsumedSignals: new Map(),
+    unconsumedByCorrelation: new Map(),
     consumedMessageIds: new Set(),
   };
 }
