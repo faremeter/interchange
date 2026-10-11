@@ -149,3 +149,170 @@ test("a rejected transition does not poison the next flush", async () => {
     dropChain(runId);
   }
 });
+
+const atSignal = "2026-01-01T00:00:00.000Z";
+
+function signalReceived(signalId: string, payload: unknown) {
+  return {
+    kind: "SignalReceived" as const,
+    seq: 0,
+    at: atSignal,
+    signalName: "go",
+    signalId,
+    payload,
+  };
+}
+
+test("a repeated signal id is not appended again", async () => {
+  const runId = "run_signal_once_buffered";
+  const env = { repoStore: createInMemoryRepoStore() };
+  const firstPayload = { n: 1 };
+  try {
+    const first = await commitBuffered(
+      env,
+      runId,
+      signalReceived("sig-1", firstPayload),
+    );
+    expect(first.lastSeq).toBe(1);
+    expect(first.observedSignalIds.has("sig-1")).toBe(true);
+
+    const second = await commitBuffered(
+      env,
+      runId,
+      signalReceived("sig-1", { n: 2 }),
+    );
+    expect(second.lastSeq).toBe(first.lastSeq);
+    expect(second.unconsumedSignals.get("go")).toEqual([
+      { id: "sig-1", payload: firstPayload },
+    ]);
+
+    await flushChain(env, runId);
+    const once = await env.repoStore.read(runId);
+    expect(once.map(({ kind, seq }) => ({ kind, seq }))).toEqual([
+      { kind: "SignalReceived", seq: 1 },
+    ]);
+    expect(once[0]).toMatchObject({ signalId: "sig-1", payload: firstPayload });
+
+    const third = await commitBuffered(
+      env,
+      runId,
+      signalReceived("sig-2", { n: 3 }),
+    );
+    expect(third.lastSeq).toBe(2);
+    await flushChain(env, runId);
+    expect(
+      (await env.repoStore.read(runId)).map(({ kind, seq }) => ({ kind, seq })),
+    ).toEqual([
+      { kind: "SignalReceived", seq: 1 },
+      { kind: "SignalReceived", seq: 2 },
+    ]);
+  } finally {
+    dropChain(runId);
+  }
+});
+
+test("an immediate commit does not append a signal id the log already has", async () => {
+  const runId = "run_signal_once_immediate";
+  const env = { repoStore: createInMemoryRepoStore() };
+  const firstPayload = { n: 1 };
+  try {
+    const first = await commit(
+      env,
+      runId,
+      signalReceived("sig-1", firstPayload),
+    );
+    expect(first.lastSeq).toBe(1);
+
+    const second = await commit(env, runId, signalReceived("sig-1", { n: 2 }));
+    expect(second.lastSeq).toBe(first.lastSeq);
+    expect(second.unconsumedSignals.get("go")).toEqual([
+      { id: "sig-1", payload: firstPayload },
+    ]);
+    expect(
+      (await env.repoStore.read(runId)).map(({ kind, seq }) => ({ kind, seq })),
+    ).toEqual([{ kind: "SignalReceived", seq: 1 }]);
+
+    const third = await commit(env, runId, signalReceived("sig-2", { n: 3 }));
+    expect(third.lastSeq).toBe(2);
+    expect(
+      (await env.repoStore.read(runId)).map(({ kind, seq }) => ({ kind, seq })),
+    ).toEqual([
+      { kind: "SignalReceived", seq: 1 },
+      { kind: "SignalReceived", seq: 2 },
+    ]);
+  } finally {
+    dropChain(runId);
+  }
+});
+
+test("a repeated signal id on a finished run still rejects", async () => {
+  const runId = "run_signal_terminal";
+  const env = { repoStore: createInMemoryRepoStore() };
+  try {
+    await commit(env, runId, {
+      kind: "RunStarted",
+      seq: 0,
+      at: atSignal,
+      runId,
+      definitionHash: "definition",
+      trigger: { type: "manual", payload: null },
+    });
+    await commit(env, runId, signalReceived("sig-1", { n: 1 }));
+    await commit(env, runId, { kind: "RunCompleted", seq: 0, at: atSignal });
+    const before = await env.repoStore.read(runId);
+    await expect(
+      commit(env, runId, signalReceived("sig-1", { n: 2 })),
+    ).rejects.toThrow(/terminal phase/);
+    await expect(
+      commitBuffered(env, runId, signalReceived("sig-1", { n: 2 })),
+    ).rejects.toThrow(/terminal phase/);
+    expect(await env.repoStore.read(runId)).toEqual(before);
+  } finally {
+    dropChain(runId);
+  }
+});
+
+test("an immediate duplicate signal still flushes events already buffered", async () => {
+  const runId = "run_signal_duplicate_flushes";
+  const env = { repoStore: createInMemoryRepoStore() };
+  const firstPayload = { n: 1 };
+  try {
+    await commit(env, runId, {
+      kind: "RunStarted",
+      seq: 0,
+      at: atSignal,
+      runId,
+      definitionHash: "definition",
+      trigger: { type: "manual", payload: null },
+    });
+    await commit(env, runId, signalReceived("sig-1", firstPayload));
+    await commitBuffered(env, runId, {
+      kind: "StepStarted",
+      seq: 0,
+      at: atSignal,
+      stepId: "work",
+      attempt: 1,
+      input: { ref: "inline:null" },
+    });
+    const returned = await commit(
+      env,
+      runId,
+      signalReceived("sig-1", { n: 2 }),
+    );
+    expect(returned.lastSeq).toBe(3);
+    expect(returned.unconsumedSignals.get("go")).toEqual([
+      { id: "sig-1", payload: firstPayload },
+    ]);
+    const log = await env.repoStore.read(runId);
+    expect(log.map(({ kind, seq }) => ({ kind, seq }))).toEqual([
+      { kind: "RunStarted", seq: 1 },
+      { kind: "SignalReceived", seq: 2 },
+      { kind: "StepStarted", seq: 3 },
+    ]);
+    expect(log.filter((event) => event.kind === "SignalReceived")).toEqual([
+      expect.objectContaining({ signalId: "sig-1", payload: firstPayload }),
+    ]);
+  } finally {
+    dropChain(runId);
+  }
+});

@@ -731,12 +731,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       // The resume actually drove the run: the delivered decision landed as a
       // `SignalReceived` on the parked correlation channel, carrying the
-      // approved outcome. (The log carries two `SignalReceived` entries for the
-      // one delivery -- the wire `signal.deliver` path commits the canonical
-      // one that resolves the parked `awaitNext`, and the runtime body commits
-      // its own after `awaitNext` returns; both share the delivered `signalId`,
-      // which the state machine's `observedSignalIds` dedup makes a state no-op.
-      // So the load-bearing fact is the delivered outcome, not the raw count.)
+      // approved outcome. One delivery is one blob. The load-bearing fact
+      // is that payload.
       const finalEvents = await readWorkflowRunEvents(
         env,
         DEPLOYMENT_ID,

@@ -3159,10 +3159,10 @@ async function raceContainerSignalRelay(
   }
 
   if (outcome.tag === "signal") {
-    // The awaited signal arrived live. Commit its SignalReceived -- mirroring
-    // parkOnSignal's awaiter-commits contract, so the container log carries it
-    // in every host; a production delivery that also committed it dedups by
-    // signalId -- then relay it into the body and take the body's next event.
+    // The awaited signal arrived live. Commit its SignalReceived so a
+    // channel that did not write the blob still records it. A host
+    // delivery already in the log is not appended again. Then relay it
+    // into the body and take the body's next event.
     const before = await reloadState(env, runId);
     const received: WorkflowEvent = {
       kind: "SignalReceived",
@@ -3994,9 +3994,9 @@ function recoverDeliveredSignalRelay(
  * the wrong payload.
  *
  * Two reducer behaviors the pairing depends on, both replayed here:
- *   - dedup by `signalId`: a redelivered `SignalReceived` is a no-op in the
- *     reducer (`observedSignalIds`) yet still lands in the log, so the replay
- *     must skip an already-seen id rather than double-advance the FIFO.
+ *   - dedup by `signalId`: the reducer skips an id already in
+ *     `observedSignalIds`. Replay does the same. A second blob is not
+ *     required; a log that already has one still skips that id.
  *   - retire an abandoned awaiter: `SignalAwaitAbandoned` drops the awaiter, so
  *     a later signal queues rather than pairing with the retired await; the
  *     replay pops the container's active waiter on abandon to match. The
