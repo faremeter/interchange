@@ -305,10 +305,25 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // ---- deliver the author signal to the PARENT deployment run id ----
       // The body (a child run) never receives a signal directly; delivering to
       // the container run resolves the section's signal-relay await, and the
-      // section relays it down into the body.
-      await injectSignal(env, DEPLOYMENT_ID, containerRunId, SIGNAL_NAME, {
-        go: true,
-      });
+      // section relays it down into the body. A fresh relay park is addressed
+      // by the correlationId on that SignalAwaited.
+      const correlationId = parked.find(
+        (e) =>
+          e.type === "SignalAwaited" &&
+          e.body["parkKind"] === "signal-relay" &&
+          e.body["signalName"] === SIGNAL_NAME,
+      )?.body["correlationId"];
+      if (typeof correlationId !== "string") {
+        throw new Error("signal-relay park has no correlationId");
+      }
+      await injectSignal(
+        env,
+        DEPLOYMENT_ID,
+        containerRunId,
+        SIGNAL_NAME,
+        { go: true },
+        correlationId,
+      );
 
       // The relay reached the body: its gate completed, the body completed, and
       // the section re-armed on its input park for the next event.

@@ -99,6 +99,9 @@ const DeliverSignal = type({
   signalName: "string > 0",
   signalId: "string > 0",
   "payload?": "unknown",
+  // Addresses one onTrigger relay park. Absent, delivery stays
+  // name-FIFO and does not complete a correlated park.
+  "correlationId?": "string > 0",
 });
 
 const WorkflowRunListResponse = type({
@@ -436,7 +439,7 @@ export function createWorkflowRoutes({
       tags: ["Workflows"],
       summary: "Deliver a signal to a workflow run",
       description:
-        "Delivers a caller-supplied, stable signal to the named run of a workflow deployment. The signalId must be supplied by the caller; the run state machine dedups on it.",
+        "Delivers a caller-supplied, stable signal to the named run of a workflow deployment. The signalId must be supplied by the caller; the run state machine dedups on it. An onTrigger body await is addressed by correlationId from that relay's SignalAwaited together with the author signalName. Omit correlationId to address a name-FIFO await, such as a loop or a top-level gate.",
       responses: {
         202: {
           description: "Signal accepted for delivery",
@@ -604,6 +607,9 @@ export function createWorkflowRoutes({
                   signalName: body.signalName,
                   signalId: body.signalId,
                   payload: body.payload ?? null,
+                  ...(body.correlationId !== undefined
+                    ? { correlationId: body.correlationId }
+                    : {}),
                 },
               },
               tx,
@@ -649,6 +655,9 @@ export function createWorkflowRoutes({
           signalName: body.signalName,
           signalId: body.signalId,
           payload: body.payload,
+          ...(body.correlationId !== undefined
+            ? { correlationId: body.correlationId }
+            : {}),
         });
       } catch (err) {
         return errorResponse(

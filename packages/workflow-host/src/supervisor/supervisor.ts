@@ -432,6 +432,11 @@ export type DeliverSignalOpts = {
   signalId: string;
   /** Opaque signal payload the awaiter resolves with. */
   payload: unknown;
+  /**
+   * The onTrigger relay park this delivery addresses. Omitted, the
+   * delivery is name-FIFO and does not complete a correlated park.
+   */
+  correlationId?: string;
 };
 
 export type DeliverSourcesOpts = {
@@ -4906,6 +4911,9 @@ export function createWorkflowSupervisor(
         signalName: opts.signalName,
         signalId: opts.signalId,
         payload: opts.payload,
+        ...(opts.correlationId !== undefined
+          ? { correlationId: opts.correlationId }
+          : {}),
       },
     });
   }

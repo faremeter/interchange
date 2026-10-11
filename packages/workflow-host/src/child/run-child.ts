@@ -1383,6 +1383,9 @@ async function handleControlPayload(
             payload.data.signalName,
             payload.data.payload,
             payload.data.signalId,
+            ...(payload.data.correlationId !== undefined
+              ? [payload.data.correlationId]
+              : []),
           );
         } catch (cause) {
           const reason = cause instanceof Error ? cause.message : String(cause);

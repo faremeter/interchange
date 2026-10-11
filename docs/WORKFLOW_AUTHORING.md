@@ -361,3 +361,17 @@ Where it lives today: `buildChildRunEnv`,
 `createDefaultActionInvoker`, `packages/workflow/src/runlocal/run-local.ts`;
 `createLoopIterationHandle`,
 `packages/workflow/src/runtime/loop-iteration-handle.ts`
+
+**28.** A caller addresses an `onTrigger` body's `awaitSignal` by the
+`correlationId` on the container's relay `SignalAwaited`, together with the
+author `signalName`. The relay mints that id when the park is committed.
+Resume of a park that is still open reuses the id on that event. A delivery
+with no `correlationId` does not complete that park. A loop that is the
+deployment container, a top-level `awaitSignal`, and a relay park logged
+with no `correlationId` stay name-FIFO, including a signal queued before
+the await.
+
+Where it lives today: `driveContainerSignalRelay`,
+`packages/workflow/src/runtime/run.ts`; `handleSignalReceived`,
+`packages/workflow/src/state-machine/transition.ts`; `DeliverSignal`,
+`packages/hub-api/src/routes/workflows.ts`

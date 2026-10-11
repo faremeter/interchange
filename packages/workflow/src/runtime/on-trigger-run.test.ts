@@ -39,7 +39,6 @@ import {
   type WorkflowRuntimeEnv,
 } from "@intx/workflow";
 import { waitForEvent, waitForNthEvent } from "@intx/workflow/testing";
-import { waitUntil } from "@intx/types/testing";
 
 const at = new Date().toISOString();
 
@@ -114,11 +113,12 @@ function midApprovalSeed(
 // AUTHOR name (parkKind `"signal-relay"`). With `signalDelivered` it also
 // carries the `SignalReceived` that landed before the crash relayed it -- the
 // window where the container reduces to `in-flight` with the payload only in
-// the log (recovered via the FIFO pairing).
+// the log. A park with `correlationId` is addressed by that id; a park
+// without one stays name-FIFO.
 function midSignalRelaySeed(
   runId: string,
   name: string,
-  opts: { signalDelivered: boolean },
+  opts: { signalDelivered: boolean; correlationId?: string },
   childRunId: string = sectionEventRunId(runId, 0),
 ): WorkflowEvent[] {
   const events: WorkflowEvent[] = [
@@ -153,6 +153,9 @@ function midSignalRelaySeed(
       stepId: "section",
       signalName: name,
       parkKind: "signal-relay",
+      ...(opts.correlationId !== undefined
+        ? { correlationId: opts.correlationId }
+        : {}),
     },
   ];
   if (opts.signalDelivered) {
@@ -163,9 +166,25 @@ function midSignalRelaySeed(
       signalName: name,
       signalId: "relay-1",
       payload: { text: "delivered" },
+      ...(opts.correlationId !== undefined
+        ? { correlationId: opts.correlationId }
+        : {}),
     });
   }
   return events;
+}
+
+function relayCorrelationId(events: readonly WorkflowEvent[]): string {
+  const awaited = events.find(
+    (e) => e.kind === "SignalAwaited" && e.parkKind === "signal-relay",
+  );
+  if (
+    awaited?.kind !== "SignalAwaited" ||
+    awaited.correlationId === undefined
+  ) {
+    throw new Error("expected a correlated signal-relay park");
+  }
+  return awaited.correlationId;
 }
 
 // The durable parent log a section leaves when a body child is parked
@@ -1090,14 +1109,10 @@ describe("runOnTrigger", () => {
     await run.complete.catch(() => undefined);
   });
 
-  // The widened same-name guard in `driveContainerSignalRelay` (ANY other step
-  // awaiting the same author name is refused, not just a signal-relay sibling)
-  // is unit-covered below for a plain author `awaitSignal` gate -- the case a
-  // signal-relay-only guard would have admitted and mis-bound. The
-  // two-concurrent-sections topology stays deferred (its deterministic
-  // construction is fragile and correlated author-signals are not yet wired);
-  // the guard stands as defense-in-depth there.
-  test("refuses a plain author awaitSignal sibling awaiting the same name", async () => {
+  // A plain author gate beside an onTrigger section shares the author name.
+  // The section relay carries a correlationId, so it is not on the name
+  // queue and the name-mode guard does not treat the gate as a conflict.
+  test("parks a correlated section relay beside a plain author gate on the same name", async () => {
     const runId = "sec-guard-plain-gate";
     const repoStore = createInMemoryRepoStore();
     const channel = createInMemorySignalChannel();
@@ -1116,17 +1131,15 @@ describe("runOnTrigger", () => {
       id: "on-trigger-guard",
       steps: { section, gate: awaitSignal({ name: "go" }) },
     });
-    let signalParked = false;
     const spawnSuspendableChild: SpawnSuspendableChild = async () => {
       let stage = 0;
       return {
         next: async () => {
           stage += 1;
           if (stage === 1) {
-            // Wait until the plain `gate` sibling is parked on "go" so the guard
-            // deterministically observes the collision, then signal-park. The
-            // gate flushes its SignalAwaited durably before it waits on the
-            // channel, so that event is the park.
+            // Wait until the plain `gate` sibling is parked on "go", then
+            // signal-park. The gate flushes its SignalAwaited durably before
+            // it waits on the channel, so that event is the park.
             await waitForEvent(
               repoStore,
               runId,
@@ -1135,7 +1148,6 @@ describe("runOnTrigger", () => {
                 e.stepId === "gate" &&
                 e.signalName === "go",
             );
-            signalParked = true;
             return { kind: "signal-park", name: "go" };
           }
           return { kind: "terminal", terminalStatus: "completed" };
@@ -1155,36 +1167,34 @@ describe("runOnTrigger", () => {
       { runId, triggerPayload: { text: "event-0" } },
     );
 
-    // The body signal-parks on "go" -> the guard runs. The section fails on the
-    // guard, but its StepFailed stays BUFFERED while the plain gate keeps the run
-    // parked (a failed sibling does not auto-cancel a live awaiter), so cancel to
-    // flush the durable log and unwind.
-    await waitUntil(() => signalParked);
-    expect(signalParked).toBe(true);
-    await run.cancel("supervisor-operator", "test done");
-    const result = await run.complete.catch(() => undefined);
-    const events = result?.events ?? (await repoStore.read(runId));
-
-    // The widened guard refused loudly: the section failed with the same-name
-    // message BEFORE the container emitted its own signal-relay await (a
-    // signal-relay-only guard would have admitted the plain gate and mis-bound).
-    const sectionFailed = events.find(
-      (e) => e.kind === "StepFailed" && e.stepId === "section",
+    // The section emits its own correlated relay. The plain gate stays
+    // name-addressed. Cancel to unwind the gate, which is still parked.
+    const relay = await waitForEvent(
+      repoStore,
+      runId,
+      (e) =>
+        e.kind === "SignalAwaited" &&
+        e.stepId === "section" &&
+        e.parkKind === "signal-relay" &&
+        e.signalName === "go",
     );
-    expect(sectionFailed?.kind).toBe("StepFailed");
-    if (sectionFailed?.kind === "StepFailed") {
-      expect(sectionFailed.error.message).toContain(
-        "already awaiting the same signal name go",
-      );
+    if (relay.kind !== "SignalAwaited") {
+      throw new Error(`expected SignalAwaited, got ${relay.kind}`);
     }
-    expect(
-      events.some(
-        (e) =>
-          e.kind === "SignalAwaited" &&
-          e.stepId === "section" &&
-          e.parkKind === "signal-relay",
-      ),
-    ).toBe(false);
+    expect(relay.correlationId).toEqual(expect.any(String));
+    const events = await repoStore.read(runId);
+    const gate = events.find(
+      (e) => e.kind === "SignalAwaited" && e.stepId === "gate",
+    );
+    expect(gate?.kind).toBe("SignalAwaited");
+    if (gate?.kind === "SignalAwaited") {
+      expect(gate.signalName).toBe("go");
+      expect(gate.correlationId).toBeUndefined();
+    }
+    expect(events.some((e) => e.kind === "StepFailed")).toBe(false);
+
+    await run.cancel("supervisor-operator", "test done");
+    await run.complete.catch(() => undefined);
   });
 
   test("proxies a body author-signal await up as a signal-relay and relays the signal", async () => {
@@ -1234,11 +1244,14 @@ describe("runOnTrigger", () => {
       { runId, triggerPayload: { text: "event-0" } },
     );
 
-    // The section proxied the body's "go" gate up as a signal-relay await on the
-    // SAME name. Deliver it and the section relays it (with the original
-    // signalId) into the body, which completes and re-arms.
+    // The section proxied the body's "go" gate up as a correlated signal-relay
+    // await on the SAME name. A name-only delivery does not complete it. The
+    // matching correlation does, and the section relays that signal (with the
+    // original signalId) into the body, which completes and re-arms.
     await waitForPark(repoStore, runId, "signal-relay", 1);
-    await channel.deliver("go", { ok: true }, "sig-1");
+    const correlationId = relayCorrelationId(await repoStore.read(runId));
+    await channel.deliver("go", { ok: false }, "sig-name-only");
+    await channel.deliver("go", { ok: true }, "sig-1", correlationId);
     await waitForPark(repoStore, runId, "input", 1);
 
     expect(delivered).toEqual({
@@ -1260,9 +1273,15 @@ describe("runOnTrigger", () => {
         (e) =>
           e.kind === "SignalReceived" &&
           e.signalName === "go" &&
-          e.signalId === "sig-1",
+          e.signalId === "sig-1" &&
+          e.correlationId === correlationId,
       ),
     ).toBe(true);
+    expect(
+      log.some(
+        (e) => e.kind === "SignalReceived" && e.signalId === "sig-name-only",
+      ),
+    ).toBe(false);
     expect(log.filter((e) => e.kind === "ChildCompleted").length).toBe(1);
 
     await run.cancel("supervisor-operator", "test done");
@@ -1307,14 +1326,13 @@ describe("runOnTrigger", () => {
     await waitForPark(repoStore, runId, "input", 1);
 
     const log = await repoStore.read(runId);
+    const correlationId = relayCorrelationId(log);
     expect(
       log.some(
-        (e) => e.kind === "SignalAwaited" && e.parkKind === "signal-relay",
-      ),
-    ).toBe(true);
-    expect(
-      log.some(
-        (e) => e.kind === "SignalAwaitAbandoned" && e.signalName === "go",
+        (e) =>
+          e.kind === "SignalAwaitAbandoned" &&
+          e.signalName === "go" &&
+          e.correlationId === correlationId,
       ),
     ).toBe(true);
     expect(log.filter((e) => e.kind === "ChildCompleted").length).toBe(1);
@@ -1396,6 +1414,251 @@ describe("runOnTrigger", () => {
       ).length,
     ).toBe(1);
     expect(log.filter((e) => e.kind === "ChildCompleted").length).toBe(1);
+
+    await run.cancel("supervisor-operator", "test done");
+    await run.complete.catch(() => undefined);
+  });
+
+  test("reuses the logged correlation when a signal-relay park is still open", async () => {
+    const runId = "sec-relay-resume-corr";
+    const name = "go";
+    const correlationId = "corr-open";
+    const seed = midSignalRelaySeed(runId, name, {
+      signalDelivered: false,
+      correlationId,
+    });
+
+    const repoStore = createInMemoryRepoStore();
+    await repoStore.appendBatch(runId, seed);
+    const channel = createInMemorySignalChannel();
+    let delivered:
+      | { name: string; payload: unknown; signalId: string }
+      | undefined;
+    const spawnSuspendableChild: SpawnSuspendableChild = async () => {
+      let release: (() => void) | null = null;
+      return {
+        next: async () => {
+          await new Promise<void>((r) => {
+            release = r;
+          });
+          return { kind: "terminal", terminalStatus: "completed" };
+        },
+        resume: async () => undefined,
+        deliverSignal: async (n, payload, signalId) => {
+          delivered = { name: n, payload, signalId };
+          if (release !== null) {
+            const r = release;
+            release = null;
+            r();
+          }
+        },
+      };
+    };
+
+    const def = sectionWorkflow();
+    const run = runtimeRun(
+      def,
+      buildEnv({
+        def,
+        repoStore,
+        signalChannel: channel,
+        spawnSuspendableChild,
+      }),
+      { runId, resumeFromEvents: seed },
+    );
+
+    // The open park's id is reused. A name-only delivery does not complete
+    // it, and resume does not mint a second relay await.
+    await channel.deliver(name, { text: "name-only" }, "sig-name");
+    await channel.deliver(name, { text: "late" }, "sig-2", correlationId);
+    await waitForPark(repoStore, runId, "input", 1);
+
+    expect(delivered).toEqual({
+      name,
+      payload: { text: "late" },
+      signalId: "sig-2",
+    });
+    const log = await repoStore.read(runId);
+    expect(
+      log.filter(
+        (e) => e.kind === "SignalAwaited" && e.parkKind === "signal-relay",
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        signalName: name,
+        correlationId,
+      }),
+    ]);
+    expect(
+      log.some(
+        (e) =>
+          e.kind === "SignalReceived" &&
+          e.signalId === "sig-2" &&
+          e.correlationId === correlationId,
+      ),
+    ).toBe(true);
+    expect(
+      log.some((e) => e.kind === "SignalReceived" && e.signalId === "sig-name"),
+    ).toBe(false);
+
+    await run.cancel("supervisor-operator", "test done");
+    await run.complete.catch(() => undefined);
+  });
+
+  test("an abandoned correlation does not satisfy the next park on the same name", async () => {
+    const runId = "sec-relay-turn";
+    const name = "go";
+    const abandonedId = "corr-a";
+    const openId = "corr-b";
+    const event0 = sectionEventRunId(runId, 0);
+    const event1 = sectionEventRunId(runId, 1);
+    const seed: WorkflowEvent[] = [
+      {
+        kind: "RunStarted",
+        seq: 1,
+        at,
+        runId,
+        definitionHash: "x",
+        trigger: { type: "manual", payload: { text: "event-0" } },
+      },
+      {
+        kind: "StepStarted",
+        seq: 2,
+        at,
+        stepId: "section",
+        attempt: 1,
+        input: { ref: "inline:null" },
+      },
+      {
+        kind: "ChildSpawned",
+        seq: 3,
+        at,
+        stepId: "section",
+        childRunId: event0,
+        childDefinitionRef: "body-ref",
+      },
+      {
+        kind: "SignalAwaited",
+        seq: 4,
+        at,
+        stepId: "section",
+        signalName: name,
+        parkKind: "signal-relay",
+        correlationId: abandonedId,
+      },
+      {
+        kind: "SignalAwaitAbandoned",
+        seq: 5,
+        at,
+        stepId: "section",
+        signalName: name,
+        correlationId: abandonedId,
+      },
+      {
+        kind: "SignalReceived",
+        seq: 6,
+        at,
+        signalName: name,
+        signalId: "sig-abandoned",
+        payload: { text: "late-for-turn-0" },
+        correlationId: abandonedId,
+      },
+      {
+        kind: "ChildCompleted",
+        seq: 7,
+        at,
+        childRunId: event0,
+        terminalStatus: "completed",
+      },
+      {
+        kind: "ChildSpawned",
+        seq: 8,
+        at,
+        stepId: "section",
+        childRunId: event1,
+        childDefinitionRef: "body-ref",
+      },
+      {
+        kind: "SignalAwaited",
+        seq: 9,
+        at,
+        stepId: "section",
+        signalName: name,
+        parkKind: "signal-relay",
+        correlationId: openId,
+      },
+    ];
+
+    const repoStore = createInMemoryRepoStore();
+    await repoStore.appendBatch(runId, seed);
+    const channel = createInMemorySignalChannel();
+    let delivered:
+      | { name: string; payload: unknown; signalId: string }
+      | undefined;
+    const spawnSuspendableChild: SpawnSuspendableChild = async () => {
+      let release: (() => void) | null = null;
+      return {
+        next: async () => {
+          await new Promise<void>((r) => {
+            release = r;
+          });
+          return { kind: "terminal", terminalStatus: "completed" };
+        },
+        resume: async () => undefined,
+        deliverSignal: async (n, payload, signalId) => {
+          delivered = { name: n, payload, signalId };
+          if (release !== null) {
+            const r = release;
+            release = null;
+            r();
+          }
+        },
+      };
+    };
+
+    const def = sectionWorkflow();
+    const run = runtimeRun(
+      def,
+      buildEnv({
+        def,
+        repoStore,
+        signalChannel: channel,
+        spawnSuspendableChild,
+      }),
+      { runId, resumeFromEvents: seed },
+    );
+
+    await channel.deliver(name, { text: "turn-0" }, "sig-turn-0", abandonedId);
+    await channel.deliver(name, { text: "turn-1" }, "sig-turn-1", openId);
+    await waitForPark(repoStore, runId, "input", 1);
+
+    expect(delivered).toEqual({
+      name,
+      payload: { text: "turn-1" },
+      signalId: "sig-turn-1",
+    });
+    const log = await repoStore.read(runId);
+    expect(
+      log.filter(
+        (e) => e.kind === "SignalAwaited" && e.parkKind === "signal-relay",
+      ),
+    ).toEqual([
+      expect.objectContaining({ correlationId: abandonedId }),
+      expect.objectContaining({ correlationId: openId }),
+    ]);
+    expect(
+      log.filter(
+        (e) => e.kind === "SignalReceived" && e.correlationId === abandonedId,
+      ),
+    ).toHaveLength(1);
+    expect(
+      log.some(
+        (e) =>
+          e.kind === "SignalReceived" &&
+          e.signalId === "sig-turn-1" &&
+          e.correlationId === openId,
+      ),
+    ).toBe(true);
 
     await run.cancel("supervisor-operator", "test done");
     await run.complete.catch(() => undefined);

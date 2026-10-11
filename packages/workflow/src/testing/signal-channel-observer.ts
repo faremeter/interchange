@@ -72,13 +72,19 @@ export function createObservedSignalChannel(): ObservedSignalChannel {
   }
 
   return {
-    deliver(name, payload, signalId) {
-      return inner.deliver(name, payload, signalId);
+    deliver(name, payload, signalId, correlationId) {
+      if (correlationId === undefined) {
+        return inner.deliver(name, payload, signalId);
+      }
+      return inner.deliver(name, payload, signalId, correlationId);
     },
-    awaitNext(name, signal) {
+    awaitNext(name, signal, correlationId) {
       counts.set(name, countOf(name) + 1);
       announce();
-      return inner.awaitNext(name, signal);
+      if (correlationId === undefined) {
+        return inner.awaitNext(name, signal);
+      }
+      return inner.awaitNext(name, signal, correlationId);
     },
     awaitedCount: countOf,
     async awaitAwaitedCount(name, count) {

@@ -443,6 +443,7 @@ export type SidecarRouter = {
     signalName: string;
     signalId: string;
     payload: unknown;
+    correlationId?: string;
   }): Promise<void>;
   /**
    * Deliver a workflow-host drain control payload to the sidecar that
@@ -636,6 +637,7 @@ export type SidecarAllocationRouter = {
       signalName: string;
       signalId: string;
       payload: unknown;
+      correlationId?: string;
     },
     signal?: AbortSignal,
   ): Promise<void>;
@@ -5338,6 +5340,7 @@ export function createSidecarRouter(
     signalName: string;
     signalId: string;
     payload: unknown;
+    correlationId?: string;
   }): Promise<void> {
     const routed = routedIncarnation(opts.agentAddress);
     if (routed === undefined) {
@@ -5355,6 +5358,9 @@ export function createSidecarRouter(
         signalName: opts.signalName,
         signalId: opts.signalId,
         payload: opts.payload,
+        ...(opts.correlationId !== undefined
+          ? { correlationId: opts.correlationId }
+          : {}),
       });
       return true;
     });
@@ -5368,6 +5374,7 @@ export function createSidecarRouter(
       signalName: string;
       signalId: string;
       payload: unknown;
+      correlationId?: string;
     },
     signal?: AbortSignal,
   ): Promise<void> {

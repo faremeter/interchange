@@ -2397,6 +2397,7 @@ async function runLoop(
       depth,
       maxChildSpawnDepth,
       abort,
+      signalRelayAddressing: "name",
     });
     occurrenceResume = undefined;
 
@@ -2508,6 +2509,14 @@ type SuspendableOccurrenceResume =
   | { kind: "signal-relay-drive-fresh"; name: string };
 
 /**
+ * How this container addresses a body `awaitSignal` it relays.
+ * `"name"` keeps the name FIFO (a loop that is itself the addressable
+ * run). `"correlation"` mints an id on each fresh relay park so a
+ * delivery for one park cannot satisfy the next.
+ */
+type SignalRelayAddressing = "name" | "correlation";
+
+/**
  * Drive one occurrence's suspendable-child body to terminal, durably: commit
  * `ChildSpawned`, spawn the body, re-link a crash-recovered park, proxy each of
  * the body's parks up on THIS run's own park machinery over `containerStepId`
@@ -2537,6 +2546,7 @@ async function driveSuspendableOccurrence(
     depth: number;
     maxChildSpawnDepth: number;
     abort: AbortSignal;
+    signalRelayAddressing: SignalRelayAddressing;
   },
 ): Promise<{ terminalStatus: "completed" | "failed" | "cancelled" }> {
   const {
@@ -2548,6 +2558,7 @@ async function driveSuspendableOccurrence(
     depth,
     maxChildSpawnDepth,
     abort,
+    signalRelayAddressing,
   } = args;
 
   let before = await reloadState(env, runId);
@@ -2622,6 +2633,7 @@ async function driveSuspendableOccurrence(
     // The container's signal-relay await is durable; the re-spawned body
     // re-parks on the name silently, so re-drive the race from the recovered
     // await seq (no re-emit) and continue with the body event it yields.
+    const relayLog = await env.repoStore.read(runId);
     pending = await raceContainerSignalRelay(
       env,
       runId,
@@ -2629,6 +2641,7 @@ async function driveSuspendableOccurrence(
       child,
       resume.name,
       resume.awaitSeq,
+      correlationIdAt(relayLog, resume.awaitSeq),
       abort,
     );
   } else if (resume?.kind === "signal-relay-drive-fresh") {
@@ -2643,6 +2656,7 @@ async function driveSuspendableOccurrence(
       containerStepId,
       child,
       resume.name,
+      signalRelayAddressing,
       abort,
     );
   }
@@ -2690,6 +2704,7 @@ async function driveSuspendableOccurrence(
       containerStepId,
       child,
       bodyEvent.name,
+      signalRelayAddressing,
       abort,
     );
   }
@@ -2936,6 +2951,7 @@ async function runOnTrigger(
         depth,
         maxChildSpawnDepth,
         abort,
+        signalRelayAddressing: "correlation",
       },
     );
 
@@ -3007,42 +3023,39 @@ async function driveContainerSignalRelay(
   containerStepId: string,
   child: SuspendableChildHandle,
   name: string,
+  addressing: SignalRelayAddressing,
   abort: AbortSignal,
 ): Promise<Awaited<ReturnType<SuspendableChildHandle["next"]>>> {
   const state = await reloadState(env, runId);
 
-  // Fail-loud guard on the one residual divergence from the reducer's pairing:
-  // `boundSignalForContainerAwait` is container-scoped and faithful ONLY while
-  // THIS container is the sole step awaiting `name`. If ANY other step is
-  // already awaiting the SAME author name in this parent run -- another
-  // section's signal-relay proxy OR a plain author `awaitSignal` gate (which
-  // reduces with no parkKind) -- the reducer consumes a delivery by
-  // `state.steps` Map-insertion order across ALL steps (see
-  // `handleSignalReceived`), not this container's seq order, so the helper
-  // could mis-bind and relay a payload the reducer delivered to the other
-  // awaiter. Refuse the topology loudly rather than route a signal to the wrong
-  // step. Mirrors `hasForeignSameNameAwaiter` on the plain-gate resume path; a
-  // single section re-awaiting a name sequentially is always one active awaiter
-  // and stays faithful. Parity with the resume guard is why the parkKind is NOT
-  // filtered here -- a plain-gate sibling reduces to `"approval"` and would slip
-  // a signal-relay-only check.
-  for (const [otherStepId, otherStep] of state.steps) {
-    if (
-      otherStepId !== containerStepId &&
-      otherStep.phase === "awaiting-signal" &&
-      otherStep.awaitingSignal?.name === name
-    ) {
-      throw new Error(
-        `onTrigger ${containerStepId} signal-relay: step ${otherStepId} is ` +
-          `already awaiting the same signal name ${name}; two steps ` +
-          `awaiting the same signal name concurrently is not supported`,
-      );
+  // Name mode still assumes this container is the sole name-addressed
+  // awaiter of `name`: the name replay is container-scoped, while the
+  // reducer consumes by `state.steps` insertion order. A correlated park
+  // is not on that queue. Correlation mode addresses by id, so another
+  // step waiting on the same author name is not a conflict.
+  if (addressing === "name") {
+    for (const [otherStepId, otherStep] of state.steps) {
+      if (
+        otherStepId !== containerStepId &&
+        otherStep.phase === "awaiting-signal" &&
+        otherStep.awaitingSignal?.name === name &&
+        otherStep.awaitingSignal.correlationId === undefined
+      ) {
+        throw new Error(
+          `onTrigger ${containerStepId} signal-relay: step ${otherStepId} is ` +
+            `already awaiting the same signal name ${name}; two steps ` +
+            `awaiting the same signal name concurrently is not supported`,
+        );
+      }
     }
   }
 
-  // Emit the container's signal-relay await over the body's author name. The
-  // commit's reducer pass decides (a) vs (b): a signal queued before it
-  // pre-consumes it (in-flight); otherwise the container is left awaiting.
+  // A fresh correlated park mints once. Resume of a park that is still
+  // open reuses the id already on that SignalAwaited and does not call
+  // this path. The body gate stays the author name; the id is only the
+  // address on this container's relay.
+  const correlationId =
+    addressing === "correlation" ? env.newId("corr") : undefined;
   const awaited: WorkflowEvent = {
     kind: "SignalAwaited",
     seq: state.lastSeq + 1,
@@ -3050,6 +3063,7 @@ async function driveContainerSignalRelay(
     stepId: containerStepId,
     signalName: name,
     parkKind: "signal-relay",
+    ...(correlationId !== undefined ? { correlationId } : {}),
   };
   const awaitSeq = awaited.seq;
   await commit(env, runId, awaited);
@@ -3109,6 +3123,7 @@ async function driveContainerSignalRelay(
     child,
     name,
     awaitSeq,
+    correlationId,
     abort,
   );
 }
@@ -3131,6 +3146,7 @@ async function raceContainerSignalRelay(
   child: SuspendableChildHandle,
   name: string,
   awaitSeq: number,
+  correlationId: string | undefined,
   abort: AbortSignal,
 ): Promise<Awaited<ReturnType<SuspendableChildHandle["next"]>>> {
   // `awaitNext` rejects on `raceAbort`; `next()` returns a terminal when the
@@ -3140,16 +3156,24 @@ async function raceContainerSignalRelay(
     raceAbort.abort();
   };
   bridgeAbort(abort, onOuterAbort);
-  const pSignal = awaitSignalFor(
-    env,
-    runId,
-    containerStepId,
-    name,
-    raceAbort.signal,
-  ).then((r) => ({ tag: "signal" as const, r }));
+  const waited =
+    correlationId === undefined
+      ? awaitSignalFor(env, runId, containerStepId, name, raceAbort.signal)
+      : awaitSignalFor(
+          env,
+          runId,
+          containerStepId,
+          name,
+          raceAbort.signal,
+          correlationId,
+        );
+  const pSignal = waited.then((r) => ({ tag: "signal" as const, r }));
   const pNext = child.next().then((ev) => ({ tag: "next" as const, ev }));
   let outcome:
-    | { tag: "signal"; r: { payload: unknown; signalId: string } }
+    | {
+        tag: "signal";
+        r: { payload: unknown; signalId: string; correlationId?: string };
+      }
     | { tag: "next"; ev: Awaited<ReturnType<SuspendableChildHandle["next"]>> };
   try {
     outcome = await Promise.race([pSignal, pNext]);
@@ -3176,6 +3200,9 @@ async function raceContainerSignalRelay(
       signalName: name,
       signalId: outcome.r.signalId,
       payload: outcome.r.payload,
+      ...(outcome.r.correlationId !== undefined
+        ? { correlationId: outcome.r.correlationId }
+        : {}),
     };
     await commit(env, runId, received);
     await flush(env, runId);
@@ -3204,6 +3231,7 @@ async function raceContainerSignalRelay(
       at: env.clock().toISOString(),
       stepId: containerStepId,
       signalName: name,
+      ...(correlationId !== undefined ? { correlationId } : {}),
     };
     await commit(env, runId, abandoned);
     await flush(env, runId);
@@ -4982,21 +5010,27 @@ async function awaitSignalFor(
   stepId: string,
   signalName: string,
   abort: AbortSignal,
-): Promise<{ payload: unknown; signalId: string }> {
+  correlationId?: string,
+): Promise<{ payload: unknown; signalId: string; correlationId?: string }> {
   const wait = new AbortController();
   const detach = bridgeAbort(abort, () => {
     wait.abort();
   });
-  const waiting = env.signalChannel.awaitNext(signalName, wait.signal);
+  const waiting =
+    correlationId === undefined
+      ? env.signalChannel.awaitNext(signalName, wait.signal)
+      : env.signalChannel.awaitNext(signalName, wait.signal, correlationId);
   const waitSettled = waiting.then(
     () => undefined,
     () => undefined,
   );
   try {
     const log = await env.repoStore.read(runId);
-    return (
-      signalBoundToAwait(runId, log, stepId, signalName) ?? (await waiting)
-    );
+    const bound = signalBoundToAwait(runId, log, stepId, signalName);
+    if (bound !== undefined) {
+      return correlationId === undefined ? bound : { ...bound, correlationId };
+    }
+    return await waiting;
   } finally {
     detach();
     wait.abort();

@@ -480,6 +480,9 @@ export const SignalDeliverFrame = type({
   signalName: "string",
   signalId: "string",
   payload: "unknown",
+  // Addresses one onTrigger relay park. Absent, the delivery stays
+  // name-FIFO and does not complete a correlated park.
+  "correlationId?": "string > 0",
 });
 export type SignalDeliverFrame = typeof SignalDeliverFrame.infer;
 
