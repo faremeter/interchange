@@ -3,7 +3,11 @@ import { Link, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft } from "lucide-react";
 
-import { findAwaitingSignal, isTerminalRunEvents } from "@intx/hub-client";
+import {
+  findAwaitingSignals,
+  isTerminalRunEvents,
+  type AwaitingSignal,
+} from "@intx/hub-client";
 
 import { MutationError } from "@/components/mutation-error";
 import {
@@ -194,6 +198,7 @@ export function TenantWorkflowDetailPage() {
     signalId: string;
     signalName: string;
     runIdLocked: boolean;
+    correlationId?: string;
   } | null>(null);
   const [approveRunId, setApproveRunId] = useState("");
 
@@ -231,13 +236,16 @@ export function TenantWorkflowDetailPage() {
   function openDiscoveredApprove(
     deploymentId: string,
     runId: string,
-    signalName: string,
+    park: AwaitingSignal,
   ) {
     setApproveTarget({
       deploymentId,
       signalId: crypto.randomUUID(),
-      signalName,
+      signalName: park.signalName,
       runIdLocked: true,
+      ...(park.correlationId !== undefined
+        ? { correlationId: park.correlationId }
+        : {}),
     });
     setApproveRunId(runId);
     signalMut.reset();
@@ -263,6 +271,9 @@ export function TenantWorkflowDetailPage() {
         runId: approveRunId.trim(),
         signalName: approveTarget.signalName,
         signalId: approveTarget.signalId,
+        ...(approveTarget.correlationId !== undefined
+          ? { correlationId: approveTarget.correlationId }
+          : {}),
       },
       { onSuccess: closeApprove },
     );
@@ -611,6 +622,12 @@ export function TenantWorkflowDetailPage() {
                 ? "The run identifier was discovered from the run's event stream."
                 : "Enter the run identifier of the run that paused on the approval step."}
             </p>
+            {approveTarget?.correlationId !== undefined && (
+              <p className="text-xs text-muted-foreground">
+                Correlation{" "}
+                <span className="font-mono">{approveTarget.correlationId}</span>
+              </p>
+            )}
             <div className="grid gap-2">
               <Label htmlFor="approve-run-id">Run ID</Label>
               <Input
@@ -646,7 +663,11 @@ function DeploymentRunConsole({
 }: {
   tenantId: string;
   deploymentId: string;
-  onApprove: (deploymentId: string, runId: string, signalName: string) => void;
+  onApprove: (
+    deploymentId: string,
+    runId: string,
+    park: AwaitingSignal,
+  ) => void;
 }) {
   const queryClient = useQueryClient();
   const [triggerContent, setTriggerContent] = useState("");
@@ -741,6 +762,36 @@ function DeploymentRunConsole({
   );
 }
 
+export function AwaitingSignalParks({
+  parks,
+  onSend,
+}: {
+  parks: readonly AwaitingSignal[];
+  onSend: (park: AwaitingSignal) => void;
+}) {
+  return parks.map((park) => (
+    <div
+      key={park.seq}
+      className="mt-3 flex items-center justify-between gap-2 rounded-md border border-dashed p-2"
+    >
+      <p className="text-xs text-muted-foreground">
+        Awaiting signal <span className="font-mono">{park.signalName}</span>
+        {park.stepId !== undefined && (
+          <>
+            {" "}
+            at <span className="font-mono">{park.stepId}</span>
+          </>
+        )}
+      </p>
+      <Button size="sm" onClick={() => onSend(park)}>
+        {parks.length === 1
+          ? "Approve"
+          : `Send ${park.stepId ?? park.signalName}`}
+      </Button>
+    </div>
+  ));
+}
+
 function RunEventTimeline({
   tenantId,
   deploymentId,
@@ -750,7 +801,11 @@ function RunEventTimeline({
   tenantId: string;
   deploymentId: string;
   runId: string;
-  onApprove: (deploymentId: string, runId: string, signalName: string) => void;
+  onApprove: (
+    deploymentId: string,
+    runId: string,
+    park: AwaitingSignal,
+  ) => void;
 }) {
   const { data, error, isLoading } = useQuery(
     workflowRunEventsQuery(tenantId, deploymentId, runId),
@@ -772,7 +827,7 @@ function RunEventTimeline({
 
   const events = data.events;
   const terminal = isTerminalRunEvents(events);
-  const awaiting = findAwaitingSignal(events);
+  const awaiting = findAwaitingSignals(events);
 
   return (
     <div className="mt-4 rounded-lg border bg-background p-3">
@@ -785,22 +840,10 @@ function RunEventTimeline({
         </Badge>
       </div>
 
-      {awaiting && (
-        <div className="mt-3 flex items-center justify-between gap-2 rounded-md border border-dashed p-2">
-          <p className="text-xs text-muted-foreground">
-            Awaiting signal{" "}
-            <span className="font-mono">{awaiting.signalName}</span>
-          </p>
-          <Button
-            size="sm"
-            onClick={() =>
-              onApprove(deploymentId, data.runId, awaiting.signalName)
-            }
-          >
-            Approve
-          </Button>
-        </div>
-      )}
+      <AwaitingSignalParks
+        parks={awaiting}
+        onSend={(park) => onApprove(deploymentId, data.runId, park)}
+      />
 
       <RunEventList events={events} />
     </div>

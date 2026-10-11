@@ -2,10 +2,12 @@ import type { WorkflowRunEvent } from "./validators";
 
 export type { WorkflowRunEvent };
 
-// A run parked on a signal it has not yet received: the seq of the latest
-// unresolved `SignalAwaited` event and the signal it awaits. Null when the run
-// is not currently waiting.
+// One live signal park a caller can complete. `correlationId` is set on an
+// onTrigger relay park; a name-only gate omits it. `stepId` is the step
+// that parked, when the event recorded one.
 export type AwaitingSignal = {
   seq: number;
   signalName: string;
+  stepId?: string;
+  correlationId?: string;
 };

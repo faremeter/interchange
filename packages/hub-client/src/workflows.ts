@@ -60,6 +60,8 @@ export type DeliverSignalInput = {
   signalName: string;
   signalId: string;
   payload?: unknown;
+  /** Set to address one correlated park. Omit for a name-only delivery. */
+  correlationId?: string;
 };
 
 function workflowsBasePath(tenantId: string): string {
@@ -126,6 +128,7 @@ export async function deliverWorkflowSignal(
     signalName: string;
     signalId: string;
     payload?: unknown;
+    correlationId?: string;
   } = {
     runId: input.runId,
     signalName: input.signalName,
@@ -133,6 +136,9 @@ export async function deliverWorkflowSignal(
   };
   if ("payload" in input) {
     body.payload = input.payload;
+  }
+  if (input.correlationId !== undefined) {
+    body.correlationId = input.correlationId;
   }
   await transport.fetch(
     "POST",
