@@ -762,3 +762,93 @@ describe("resume awaiting signal", () => {
     });
   });
 });
+
+describe("signal committed before the wait starts", () => {
+  test("a re-parked gate takes a signal committed between reading the gate and starting its wait", async () => {
+    const runId = "run-gap";
+    const base = buildEnv(gateOnly);
+    const inner = createInMemorySignalChannel();
+    let waits = 0;
+    let landed: Promise<void> | undefined;
+    // The delivery commits after the resumed run read the gate as awaiting but
+    // before its wait starts, and the channel never surfaces it: what a log
+    // tail registered after the commit sees.
+    const channel: SignalChannel = {
+      deliver: (name, payload, signalId) =>
+        inner.deliver(name, payload, signalId),
+      awaitNext: (name, signal) => {
+        waits += 1;
+        landed ??= base.repoStore.append(runId, {
+          kind: "SignalReceived",
+          seq: 4,
+          at,
+          signalName: "go",
+          signalId: "sig-gap",
+          payload: { gap: true },
+        });
+        return inner.awaitNext(name, signal);
+      },
+    };
+    const env = { ...base, signalChannel: channel };
+    const seed: WorkflowEvent[] = [
+      runStartedSeed(runId),
+      {
+        kind: "StepStarted",
+        seq: 2,
+        at,
+        stepId: "w",
+        attempt: 1,
+        input: { ref: "inline:null" },
+      },
+      { kind: "SignalAwaited", seq: 3, at, stepId: "w", signalName: "go" },
+    ];
+
+    const result = await runtimeRun(gateOnly, env, {
+      runId,
+      resumeFromEvents: seed,
+    }).complete;
+    await landed;
+    expect(result.terminalStatus).toBe("completed");
+    expect(waits).toBe(1);
+    const completed = result.events.find(
+      (e) => e.kind === "StepCompleted" && e.stepId === "w",
+    );
+    if (completed?.kind !== "StepCompleted") {
+      throw new Error("gate not completed");
+    }
+    expect(await env.blobs.resolveRef(completed.output.ref)).toEqual({
+      gap: true,
+    });
+  });
+
+  test("a gate takes a signal already queued in the log when it parks", async () => {
+    const runId = "run-queued";
+    const env = buildEnv(gateOnly);
+    const seed: WorkflowEvent[] = [
+      runStartedSeed(runId),
+      {
+        kind: "SignalReceived",
+        seq: 2,
+        at,
+        signalName: "go",
+        signalId: "sig-early",
+        payload: { early: true },
+      },
+    ];
+
+    const result = await runtimeRun(gateOnly, env, {
+      runId,
+      resumeFromEvents: seed,
+    }).complete;
+    expect(result.terminalStatus).toBe("completed");
+    const completed = result.events.find(
+      (e) => e.kind === "StepCompleted" && e.stepId === "w",
+    );
+    if (completed?.kind !== "StepCompleted") {
+      throw new Error("gate not completed");
+    }
+    expect(await env.blobs.resolveRef(completed.output.ref)).toEqual({
+      early: true,
+    });
+  });
+});
