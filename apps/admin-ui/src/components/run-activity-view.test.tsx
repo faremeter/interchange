@@ -16,7 +16,7 @@ function render(props: {
   events?: WorkflowRunEvent[];
   hydrated?: boolean;
   terminal?: boolean;
-  awaiting?: AwaitingSignal | null;
+  awaiting?: readonly AwaitingSignal[];
   error?: Error | null;
 }) {
   return renderToStaticMarkup(
@@ -24,7 +24,7 @@ function render(props: {
       events={props.events ?? []}
       hydrated={props.hydrated ?? false}
       terminal={props.terminal ?? false}
-      awaiting={props.awaiting ?? null}
+      awaiting={props.awaiting ?? []}
       error={props.error ?? null}
     />,
   );
@@ -71,14 +71,14 @@ describe("RunActivityView", () => {
   test("surfaces the awaited signal name while the run is parked", () => {
     const html = render({
       hydrated: true,
-      awaiting: { seq: 2, signalName: "approve" },
+      awaiting: [{ seq: 2, signalName: "approve" }],
     });
     expect(html).toContain("Awaiting signal");
     expect(html).toContain("approve");
   });
 
   test("omits the awaiting notice when the run is not parked", () => {
-    const html = render({ hydrated: true, awaiting: null });
+    const html = render({ hydrated: true, awaiting: [] });
     expect(html).not.toContain("Awaiting signal");
   });
 

@@ -18,9 +18,11 @@ await mock.module("@tanstack/react-router", () => ({
   Link: ({ children }: { children: React.ReactNode }) => <a>{children}</a>,
 }));
 
-const { TenantWorkflowDetailPage, WorkflowModelOfferingField } = await import(
-  "./tenant-workflow-detail"
-);
+const {
+  AwaitingSignalParks,
+  TenantWorkflowDetailPage,
+  WorkflowModelOfferingField,
+} = await import("./tenant-workflow-detail");
 
 function makeWorkflow(
   overrides: Partial<WorkflowAssetResponse> = {},
@@ -120,5 +122,42 @@ describe("TenantWorkflowDetailPage launch form", () => {
       </QueryClientProvider>,
     );
     expect(html).toContain("Loading...");
+  });
+});
+
+describe("AwaitingSignalParks", () => {
+  test("one park keeps the Approve action and names the step", () => {
+    const html = renderToStaticMarkup(
+      <AwaitingSignalParks
+        parks={[{ seq: 1, signalName: "approve", stepId: "gate" }]}
+        onSend={() => undefined}
+      />,
+    );
+    expect(html).toContain("approve");
+    expect(html).toContain("gate");
+    expect(html).toContain(">Approve<");
+    expect(html).not.toContain(">Send ");
+  });
+
+  test("two parks of the same name are picked by step", () => {
+    const html = renderToStaticMarkup(
+      <AwaitingSignalParks
+        parks={[
+          { seq: 1, signalName: "go", stepId: "left", correlationId: "corr-a" },
+          {
+            seq: 2,
+            signalName: "go",
+            stepId: "right",
+            correlationId: "corr-b",
+          },
+        ]}
+        onSend={() => undefined}
+      />,
+    );
+    expect(html).toContain(">Send left<");
+    expect(html).toContain(">Send right<");
+    expect(html).toContain(">left<");
+    expect(html).toContain(">right<");
+    expect(html).not.toContain(">Approve<");
   });
 });

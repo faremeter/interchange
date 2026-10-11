@@ -18,7 +18,7 @@ export function RunActivityView({
   events: WorkflowRunEvent[];
   hydrated: boolean;
   terminal: boolean;
-  awaiting: AwaitingSignal | null;
+  awaiting: readonly AwaitingSignal[];
   error: Error | null;
 }) {
   return (
@@ -38,12 +38,20 @@ export function RunActivityView({
         </p>
       )}
 
-      {awaiting && (
-        <p className="mb-2 rounded-md border border-dashed p-2 text-xs text-muted-foreground">
-          Awaiting signal{" "}
-          <span className="font-mono">{awaiting.signalName}</span>
+      {awaiting.map((park) => (
+        <p
+          key={park.seq}
+          className="mb-2 rounded-md border border-dashed p-2 text-xs text-muted-foreground"
+        >
+          Awaiting signal <span className="font-mono">{park.signalName}</span>
+          {park.stepId !== undefined && (
+            <>
+              {" "}
+              at <span className="font-mono">{park.stepId}</span>
+            </>
+          )}
         </p>
-      )}
+      ))}
 
       <div className="rounded-lg border bg-background p-3">
         {!hydrated ? (

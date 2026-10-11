@@ -4,6 +4,7 @@ export {
   TERMINAL_RUN_EVENT_TYPES,
   isTerminalRunEvents,
   findAwaitingSignal,
+  findAwaitingSignals,
 } from "./transforms";
 export { WorkflowRunEvent, WorkflowRunEvents } from "./validators";
 export { createRunSession, type RunSession } from "./session";

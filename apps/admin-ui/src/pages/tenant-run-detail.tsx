@@ -5,7 +5,7 @@ import { ArrowLeft } from "lucide-react";
 import {
   createBrowserTransport,
   createRunSession,
-  findAwaitingSignal,
+  findAwaitingSignals,
   type RunSession,
   type WorkflowRunEvent,
 } from "@intx/hub-client";
@@ -65,7 +65,7 @@ function RunActivity({ tenantId, runId }: { tenantId: string; runId: string }) {
   const events: WorkflowRunEvent[] = session?.events ?? [];
   const hydrated = session?.hydrated ?? false;
   const terminal = session?.terminal ?? false;
-  const awaiting = findAwaitingSignal(events);
+  const awaiting = findAwaitingSignals(events);
 
   return (
     <RunActivityView

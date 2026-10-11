@@ -164,6 +164,24 @@ describe("deliverWorkflowSignal", () => {
     });
   });
 
+  test("sends correlationId when the caller addresses one park", async () => {
+    const { transport, calls } = createMockTransport(() => undefined);
+
+    await deliverWorkflowSignal(transport, TENANT_ID, DEPLOYMENT_ID, {
+      runId: "run_1",
+      signalName: "go",
+      signalId: "sig_1",
+      correlationId: "corr-1",
+    });
+
+    expect(calls[0]?.body).toEqual({
+      runId: "run_1",
+      signalName: "go",
+      signalId: "sig_1",
+      correlationId: "corr-1",
+    });
+  });
+
   test("omits payload from the body when the caller does not supply one", async () => {
     const { transport, calls } = createMockTransport(() => undefined);
 
