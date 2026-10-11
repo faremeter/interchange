@@ -41,6 +41,7 @@
 
 import {
   applyEvent,
+  isTerminalRunPhase,
   resumeFromLog,
   type RunState,
   type WorkflowEvent,
@@ -179,6 +180,21 @@ function throwIfFlushFailed(runId: string): void {
   if (cause !== undefined) throw cause;
 }
 
+/**
+ * A `SignalReceived` whose id is already on this run. Host `deliver`
+ * appends that blob, and the runtime commits the same id again; the
+ * in-memory channel does not append, so the first commit still records
+ * it. A finished run is not this case: `applyEvent` must still reject
+ * the event before anything is buffered.
+ */
+function signalAlreadyRecorded(state: RunState, event: WorkflowEvent): boolean {
+  return (
+    event.kind === "SignalReceived" &&
+    !isTerminalRunPhase(state.phase) &&
+    state.observedSignalIds.has(event.signalId)
+  );
+}
+
 function followChain<T>(runId: string, body: () => Promise<T>): Promise<T> {
   const prev = commitChains.get(runId) ?? Promise.resolve();
   const next = (async () => {
@@ -231,6 +247,7 @@ export async function commitBuffered(
 ): Promise<RunState> {
   return followChain(runId, async () => {
     const fresh = await readStateWithPending(env, runId);
+    if (signalAlreadyRecorded(fresh, event)) return fresh;
     const adjustedEvent: WorkflowEvent = { ...event, seq: fresh.lastSeq + 1 };
     const nextState = applyEvent(fresh, adjustedEvent);
     getBuffer(runId).push(adjustedEvent);
@@ -258,6 +275,12 @@ export async function commit(
 ): Promise<RunState> {
   return followChain(runId, async () => {
     const fresh = await readStateWithPending(env, runId);
+    if (signalAlreadyRecorded(fresh, event)) {
+      // This event is not appended. Events already buffered still have
+      // to land: immediate commit drains the buffer either way.
+      await flushBuffer(env, runId);
+      return fresh;
+    }
     const adjustedEvent: WorkflowEvent = { ...event, seq: fresh.lastSeq + 1 };
     // Validate the transition before appending so a state-machine
     // rejection leaves the log clean. A subsequent commit on the same
