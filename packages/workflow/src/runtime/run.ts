@@ -77,6 +77,7 @@ import {
   applyEvent,
   controlParkKindOf,
   decideTerminalRunFlip,
+  emptyState,
   isTerminalRunPhase,
   resumeFromLog,
   TransitionError,
@@ -3139,9 +3140,13 @@ async function raceContainerSignalRelay(
     raceAbort.abort();
   };
   bridgeAbort(abort, onOuterAbort);
-  const pSignal = env.signalChannel
-    .awaitNext(name, raceAbort.signal)
-    .then((r) => ({ tag: "signal" as const, r }));
+  const pSignal = awaitSignalFor(
+    env,
+    runId,
+    containerStepId,
+    name,
+    raceAbort.signal,
+  ).then((r) => ({ tag: "signal" as const, r }));
   const pNext = child.next().then((ev) => ({ tag: "next" as const, ev }));
   let outcome:
     | { tag: "signal"; r: { payload: unknown; signalId: string } }
@@ -4814,6 +4819,75 @@ function findAwaitedSignalNameForStep(
 }
 
 /**
+ * The signal the reducer gave `stepId`'s latest await on `signalName`, or
+ * `undefined` while that await is unanswered. Folds the log through the reducer
+ * itself, so the binding cannot drift from the run's own state.
+ */
+function signalBoundToAwait(
+  runId: string,
+  log: readonly WorkflowEvent[],
+  stepId: string,
+  signalName: string,
+): { payload: unknown; signalId: string } | undefined {
+  let state = emptyState(runId);
+  let bound: { payload: unknown; signalId: string } | undefined;
+  for (const event of log) {
+    const queued = state.unconsumedSignals.get(signalName)?.[0];
+    const wasAwaiting =
+      findAwaitedSignalNameForStep(state, stepId) === signalName;
+    state = applyEvent(state, event);
+    const awaiting = findAwaitedSignalNameForStep(state, stepId) === signalName;
+    if (
+      event.kind === "SignalAwaited" &&
+      event.stepId === stepId &&
+      event.signalName === signalName
+    ) {
+      bound =
+        awaiting || queued === undefined
+          ? undefined
+          : { payload: queued.payload, signalId: queued.id };
+    } else if (event.kind === "SignalReceived" && wasAwaiting && !awaiting) {
+      bound = { payload: event.payload, signalId: event.signalId };
+    }
+  }
+  return bound;
+}
+
+/**
+ * Wait on the signal channel for the signal answering `stepId`'s await. The
+ * channel only sees signals delivered after `awaitNext` is called, but the
+ * caller read the step as awaiting before that; a signal delivered in between
+ * is already in the log, so it is taken from there.
+ */
+async function awaitSignalFor(
+  env: WorkflowRuntimeEnv,
+  runId: string,
+  stepId: string,
+  signalName: string,
+  abort: AbortSignal,
+): Promise<{ payload: unknown; signalId: string }> {
+  const wait = new AbortController();
+  const detach = bridgeAbort(abort, () => {
+    wait.abort();
+  });
+  const waiting = env.signalChannel.awaitNext(signalName, wait.signal);
+  const waitSettled = waiting.then(
+    () => undefined,
+    () => undefined,
+  );
+  try {
+    const log = await env.repoStore.read(runId);
+    return (
+      signalBoundToAwait(runId, log, stepId, signalName) ?? (await waiting)
+    );
+  } finally {
+    detach();
+    wait.abort();
+    await waitSettled;
+  }
+}
+
+/**
  * Signal-park core, shared by `runAwaitSignal` and the step-suspend arm
  * in `runStep`. Given a step already marked started, it emits the
  * `SignalAwaited` marker (unless the step is already `awaiting-signal` on
@@ -5138,7 +5212,10 @@ async function parkOnSignalResult(
     })();
   }
   try {
-    const received = await env.signalChannel.awaitNext(
+    const received = await awaitSignalFor(
+      env,
+      runId,
+      opts.stepId,
       opts.signalName,
       combinedAbort.signal,
     );

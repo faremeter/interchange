@@ -4,11 +4,12 @@
 // buffer. The fold throws `non-monotonic sequence`, and the run's
 // `complete` promise fulfills failed with that message on the `RunFailed`.
 //
-// The injection is the third read whose durable log ends in
+// The injection is the fourth read whose durable log ends in
 // `SignalAwaited`. The first is the reload before the sibling is numbered.
-// The second is the read inside that numbering, before the sibling is
-// pushed; injecting on either lets the sibling take the next sequence and
-// the run stays parked. The in-memory store returns its live log array, so
+// The second is the gate checking its log once its wait has started. The
+// third is the read inside the sibling's numbering, before the sibling is
+// pushed; injecting on any of them lets the sibling take the next sequence,
+// so nothing collides. The in-memory store returns its live log array, so
 // the read copies the log before appending the injected event.
 
 import { describe, expect, test } from "bun:test";
@@ -119,7 +120,7 @@ describe("a thrown run body", () => {
         const last = events.at(-1);
         if (last?.kind !== "SignalAwaited") return events;
         awaitedReads += 1;
-        if (awaitedReads !== 3) return events;
+        if (awaitedReads !== 4) return events;
         const injected: WorkflowEvent = {
           kind: "SignalReceived",
           seq: last.seq + 1,
@@ -350,7 +351,7 @@ describe("a thrown run body", () => {
         const last = events.at(-1);
         if (last?.kind !== "SignalAwaited") return events;
         awaitedReads += 1;
-        if (awaitedReads !== 3) return events;
+        if (awaitedReads !== 4) return events;
         const injected: WorkflowEvent = {
           kind: "SignalReceived",
           seq: last.seq + 1,
