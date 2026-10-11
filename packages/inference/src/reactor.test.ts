@@ -5,6 +5,7 @@ import { createAuthzExtension } from "./authz-extension";
 import { createGateManager } from "./gates";
 import { createCorrelationRegistry } from "./correlation";
 import { createReactor } from "./reactor";
+import { classifyHTTPError } from "./errors";
 import { createDefaultDependencies } from "./providers";
 import { createDefaultDirector } from "./default-director";
 import { assertWellFormedToolSequence } from "./turns";
@@ -6352,6 +6353,29 @@ describe("createReactor — source failover", () => {
     await waitFor("reactor.done");
 
     // context_overflow aborts the cycle; s1 is never tried.
+    expect(attemptedSourceIds).toEqual(["s0"]);
+    expect(getEvent(events, "inference.error").data.error.category).toBe(
+      "context_overflow",
+    );
+  });
+
+  test("does not fail over on a 429 whose message is a context overflow", async () => {
+    const { reactor, events, waitFor, attemptedSourceIds } = multiSourceReactor(
+      {
+        sourceIds: ["s0", "s1"],
+        resultFor: () =>
+          classifyHTTPError(
+            429,
+            "Request too large: the context is too long for this model",
+          ),
+      },
+    );
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    // Status-code 429 must not pre-empt the message-based context_overflow
+    // classification; s1 is never tried.
     expect(attemptedSourceIds).toEqual(["s0"]);
     expect(getEvent(events, "inference.error").data.error.category).toBe(
       "context_overflow",

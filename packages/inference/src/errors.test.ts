@@ -7,6 +7,7 @@ import {
   classifyProtocolMismatch,
   ProtocolMismatchError,
 } from "./errors";
+import overflowFixture from "./fixtures/context-overflow-anthropic.json";
 
 describe("classifyHTTPError", () => {
   test("401 → credential_failure", () => {
@@ -65,6 +66,91 @@ describe("classifyHTTPError", () => {
     const raw = { error: { message: "oops" } };
     const err = classifyHTTPError(500, "Server Error", raw);
     expect(err.raw).toBe(raw);
+  });
+
+  test("real Anthropic overflow body → context_overflow", () => {
+    const err = classifyHTTPError(
+      400,
+      overflowFixture.error.message,
+      overflowFixture,
+    );
+    expect(err.category).toBe("context_overflow");
+  });
+
+  test("429 with context-overflow wording → context_overflow, not quota_exhausted", () => {
+    const err = classifyHTTPError(
+      429,
+      "Request too large: the context is too long for this model",
+    );
+    expect(err.category).toBe("context_overflow");
+  });
+
+  test("413 with context-overflow wording → context_overflow", () => {
+    const err = classifyHTTPError(
+      413,
+      "413 Payload Too Large: the request exceeds the maximum context length allowed",
+    );
+    expect(err.category).toBe("context_overflow");
+  });
+
+  test("413 with no overflow signal → fatal", () => {
+    const err = classifyHTTPError(413, "Payload Too Large");
+    expect(err.category).toBe("fatal");
+  });
+
+  test("400 with 'maximum' alone → fatal", () => {
+    const err = classifyHTTPError(400, "maximum retries exceeded");
+    expect(err.category).toBe("fatal");
+  });
+
+  test("400 with 'context' followed by a limit word → context_overflow", () => {
+    const err = classifyHTTPError(
+      400,
+      "context length exceeded: 210000 tokens requested, 200000 allowed",
+    );
+    expect(err.category).toBe("context_overflow");
+  });
+
+  test("400 with 'too many tokens' → fatal", () => {
+    const err = classifyHTTPError(400, "too many tokens");
+    expect(err.category).toBe("fatal");
+  });
+
+  test("429 with 'too many tokens in flight' → quota_exhausted", () => {
+    const err = classifyHTTPError(429, "too many tokens in flight");
+    expect(err.category).toBe("quota_exhausted");
+  });
+
+  test("429 rate limit that mentions 'context' → quota_exhausted", () => {
+    const err = classifyHTTPError(
+      429,
+      "Rate limit exceeded for this deployment context. Retry after 20 seconds.",
+    );
+    expect(err.category).toBe("quota_exhausted");
+  });
+
+  test("429 OpenAI-style TPM rate limit → quota_exhausted", () => {
+    const err = classifyHTTPError(
+      429,
+      "Rate limit reached for requests. You've used 29000 of 30000 tokens per min (TPM): Limit 30000, Used 29000, Requested 2000",
+    );
+    expect(err.category).toBe("quota_exhausted");
+  });
+
+  test("429 Anthropic rate_limit_error wording → quota_exhausted", () => {
+    const err = classifyHTTPError(
+      429,
+      "Number of request tokens has exceeded your per-minute rate limit. Please try again later.",
+    );
+    expect(err.category).toBe("quota_exhausted");
+  });
+
+  test("400 max_tokens output-cap validation error → fatal", () => {
+    const err = classifyHTTPError(
+      400,
+      "max_tokens: 300000 > 64000, which is the maximum allowed",
+    );
+    expect(err.category).toBe("fatal");
   });
 });
 

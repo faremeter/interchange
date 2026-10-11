@@ -834,7 +834,7 @@ Provider errors are classified into categories that determine the reactor's resp
 ### Error Categories
 
 - **Retryable** — Rate limits (429), server errors (500, 502, 503, 504), overload, network failures. Response: exponential backoff with retry.
-- **Context overflow** — Request exceeds the model's context window. Each provider phrases this differently (20+ known patterns). Response: trigger compaction, not retry.
+- **Context overflow** — Request exceeds the model's context window. Detected by matching the error message against context/prompt-size vocabulary on 400, 413, and 429 responses, since no cross-provider error-code taxonomy exists to switch on instead. Response: trigger compaction, not retry.
 - **Credential failure** — Authentication rejected, token expired. Response: emit a credential gate, suspend the reactor for credential refresh. In a platform with managed credentials, expiry is expected and recoverable.
 - **Quota exhausted** — Provider-level usage limit hit (distinct from transient rate limits). The `runInference` wrapper retries it mechanically (see Retry Behavior); once the wrapper gives up, the reactor fails over to the next inference source rather than re-running the exhausted one.
 - **Fatal** — Invalid request, unsupported model, malformed content. Response: fail immediately with diagnostic information.
