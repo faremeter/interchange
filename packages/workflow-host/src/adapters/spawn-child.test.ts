@@ -46,7 +46,8 @@ let signingKey: KeyPair;
 // lifted to an internal ref at child boot and resolved from the parent's
 // in-memory closure map with no on-disk read and no separate per-child
 // re-verify (the parent's re-verify already covers the inline child). It drives
-// the child terminal-only; the onTrigger-body re-verify gate lives on the
+// the child as a live handle the parent drives across parks; the
+// onTrigger-body re-verify gate lives on the
 // suspendable adapter and is covered in `reverify.test.ts`.
 
 beforeAll(async () => {

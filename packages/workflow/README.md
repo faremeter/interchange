@@ -216,30 +216,40 @@ A loop body may also spawn a `childWorkflow` grandchild: the child is lifted to
 a ref and runs as its own child run, depth-counted against the tree-wide spawn
 ceiling exactly like any other child.
 
-A `childWorkflow` child cannot hold a human gate, and neither can anything
-inside it. The relay that makes a loop iteration's pause durable is severed at
-the `childWorkflow` boundary: a child run carries no address of its own, and
-the spawning step waits for its terminal rather than driving it across parks,
-so no decision can be routed back down. A body nested inside the child
-inherits that answer, so this holds at any depth rather than only for a gate
-written directly in the child.
+A `childWorkflow` child carries no address of its own. The spawning step
+drives the child across its parks and relays each one onto the parent: an
+approval, carrying the body's snapshot, an author `awaitSignal`, and the
+input park a trigger budget takes between turns. A gate inside a loop in
+the child climbs the same way, one layer at a time, until it reaches the
+deployment's addressable run. The hub approval is registered on that run.
+The spawn step awaits one signal at a time. A second park that is already
+live in the child stays queued until the decision for the first is relayed
+down. A queued park whose gate has already moved on is not given a signal
+that arrived while it waited.
 
-An untimed wait beneath that boundary fails the step that asked for it, naming
-the gate, rather than waiting on a signal nobody can send. A gate carrying a
-`timeout` is unaffected, because its own timer resolves it without anything
-upstream.
+A parked child does not survive a restart. The spawn step is left
+`awaiting-signal`, and resume rejects that step, so the run fails instead
+of starting the child a second time.
+
+On drain, the relay sits on the spawn step. That step defaults to
+`"cancel"`, so a parked child is torn down with it. The child's own
+`drainBehavior` is not what drain consults.
+
+An untimed park is still refused in a run whose env says nothing upstream
+can answer it. That run writes no suspension. A child may already have
+recorded its own await, because a `childWorkflow` spawner forces the
+child's flag true; the parent's refusal then tears the child down. A gate
+carrying a `timeout` is unaffected, because its own timer resolves it
+without anything upstream.
 
 Where the spawn step sits at a workflow root, an `onFailure` handler on it
-absorbs this failure like any other child failure, so a workflow that routes
-around child failures swallows it; leave that step unrouted if you want to see
-it. A spawn step in a `loop` body cannot carry `onFailure` at all -- routing is
-honored only at a workflow root, and a loop body is not one -- so the failure
-surfaces there regardless.
+routes a child that ended `failed` and does not route one that ended
+`cancelled`. A spawn step in a `loop` body cannot carry `onFailure` at all --
+routing is honored only at a workflow root, and a loop body is not one.
 
-To hold a human gate, keep the `awaitSignal` in a run the control plane can
-address: the deployment's own run, whether directly or in a `loop` body or
-`onTrigger` section body of it, whose container relays the decision down. What
-no container can do is reach across the `childWorkflow` boundary.
+To hold a human gate inside a child, write the `awaitSignal` in the child.
+The deployment run is what an operator addresses. A signal posted there is
+relayed down. The child run id is not an address.
 
 Of those homes the `onTrigger` section body carries the same relay. Its run id
 is `<parentRunId>__<sectionId>__<eventIndex>` (`sectionBodyRunId`), so two runs
@@ -269,9 +279,9 @@ layer.
 
 Practical guidance: use a loop to repeat a self-contained unit -- which may park
 on an `awaitSignal`, spawn a `childWorkflow`, or run a nested `loop` -- until a
-pure `while`/`carry` says stop. Keep the gate in the body itself: an untimed
-`awaitSignal` inside a `childWorkflow` the body spawns, at any depth, fails the
-step rather than waiting. Model a `sleep` delay at a top-level step or an
+pure `while`/`carry` says stop. An untimed `awaitSignal` inside a `childWorkflow`
+the body spawns waits, and climbs through the spawn step, the same way a gate in
+the loop body itself does. Model a `sleep` delay at a top-level step or an
 onTrigger section, not in a loop body. Keep a loop body's action idempotent
 where practical, since a mid-invocation crash is not re-run: the iteration
 fails, and the loop fails the run unless `onIterationFailure` is `"tolerate"`.

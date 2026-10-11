@@ -601,22 +601,23 @@ keys the host's binary called out); the factory never sees
 Each spawn seam also declares `hasUpstreamSignalResolver` on the
 runtime env it builds, and the value is a per-seam judgement no
 type can make. Declare `true` where an answer can reach the run:
-the deployment's own addressable run, and a suspendable body whose
-container re-parks on the body's own signal and relays a decision
-back down. Declare `false` on a terminal `childWorkflow` child,
-which carries no address and whose spawner awaits its terminal
-rather than driving it across parks. The field is required, so an
-omission is a compile error -- but a wrong `true` is not. Declared
-on a terminal-child seam it type-checks and reinstates the silent
-hang the flag exists to remove: the run parks forever on a signal
-nobody can send.
+the deployment's own addressable run, a suspendable body whose
+container relays a decision back down, and a `childWorkflow` child,
+whose parent drives it across parks and relays each one onto the
+parent. The child stays unaddressable. The field is required, so an
+omission is a compile error. A `childWorkflow` spawner forces `true`
+rather than inheriting the parent's flag: a parent `false` would
+refuse a gate the relay can answer. A run that still sets the flag
+`false` refuses an untimed park and writes no suspension of its own.
+A child whose flag was forced true may already have recorded its await;
+the refusing parent's failure tears that child down.
 
 The in-tree seams are the worked example. `buildRuntimeEnv`
 (`packages/workflow-host/src/child/run-child.ts`) declares `true`
 for the deployment's own run. In
 `packages/workflow-host/src/child/substrate-factory.ts`,
-`createSidecarRunChild` declares `false` and
-`createSidecarSpawnSuspendableChild` declares `true`.
+`createSidecarRunChild` and `createSidecarSpawnSuspendableChild`
+both declare `true`.
 
 The supervisor's `binaryPath` binding resolves to the host's own
 binary statically. In the sidecar
@@ -667,10 +668,12 @@ The four observation points and why they are the four:
    the typical pause sits through drain untouched; an author who
    explicitly opts in via `drainBehavior: "cancel"` gets the
    short-circuit at entry and again on `drain.signal` mid-await.
-   What drain can meet here is bounded by where a park is allowed at
-   all. In a run whose env declares `hasUpstreamSignalResolver`
-   false, an untimed park is refused before it suspends, so the only
-   pause a drain finds beneath a terminal `childWorkflow` child is a
+   What drain can meet under a `childWorkflow` is the spawn step the
+   relay sits on, not a step inside the child. That step defaults to
+   `"cancel"`, so a parked child is torn down with it. The child's own
+   `drainBehavior` is not what drain consults. A run whose env declares
+   `hasUpstreamSignalResolver` false still refuses an untimed park
+   before it suspends, so the only pause drain finds in that run is a
    timed one, which its own timer ends whatever drain decides.
 
 The four sites cover every place the runtime body blocks long
@@ -740,39 +743,42 @@ Child-workflow drain coordination splits two ways:
   its own runtime, which then drains through its own four
   observation points.
 
-Neither path has to reckon with a parked grandchild. An untimed park
-beneath a terminal `childWorkflow` child is refused before it
-suspends, so what a drain finds under such a child is in-flight work
-the cancel cascade tears down, or a timed wait its own timer ends.
+A parked `childWorkflow` is one of those same-deployment children. The
+relay sits on the spawn step, so the parent's drain observation of that
+step is what tears the child down. A parked child does not survive a
+restart either: the spawn step is left `awaiting-signal`, and resume
+rejects that step instead of spawning the child again.
 
-#### Why a child cannot hold a control-plane park
+#### How a child park reaches the addressable run
 
-A run can be answered from outside only where the control plane can
-reach it: the deployment's single addressable run, or a suspendable
-child whose container re-parks on the body's own signal and relays the
-decision back down. A `childWorkflow` child is neither. It carries no
-address, the hub refuses to deliver a signal to any run id but the
-deployment's, and the spawning step awaits the child's terminal rather
-than driving it across parks.
+A run can be answered from outside only at the deployment's single
+addressable run. A `childWorkflow` child carries no address, and the hub
+refuses to deliver a signal to any other run id. The spawning step drives
+the child across parks and relays each one onto the parent: an approval,
+carrying the body's snapshot, an author `awaitSignal`, and a trigger-budget
+input park. A gate inside a loop in the child climbs the same way, one
+layer at a time, until the park is on the deployment run. That is the run
+the hub approval is registered against, and the run an operator signals.
+The spawn step awaits one signal at a time. A second park that is already
+live in the child stays queued until the decision for the first is relayed
+down. A queued park whose gate has already moved on is not given a signal
+that arrived while it waited.
 
-The env therefore carries `hasUpstreamSignalResolver`, set by the seam
-that spawns a run, and the runtime refuses an untimed park wherever it
-is false. The check lives at the park itself because that is the only
-place both facts are known: whether a resolver exists is the seam's
-knowledge, while whether this particular park is untimed is the leaf's.
+The env carries `hasUpstreamSignalResolver`, set by the seam that spawns
+a run. The runtime refuses an untimed park on a run whose flag is false,
+and that run writes no suspension. A `childWorkflow` spawner forces the
+child's flag true: the parent relays, and inheriting a parent false would
+refuse a gate the relay can answer. The child may already have written
+its own `SignalAwaited`; the parent's refusal then tears the child down.
+A loop or `onTrigger` body still inherits its container's flag, and an
+input park in one of those bodies is rejected rather than relayed.
 
 A timed gate is exempt. Its scheduler timer resolves it in process, so
-it needs nothing upstream and works beneath the boundary today.
+it needs nothing upstream.
 
-Refusing before anything durable is written keeps the log honest: a run
-that cannot proceed carries no suspension recording that it is waiting.
-
-It does not prevent an orphaned approval row, and it is worth being
-precise about why, because the reverse is easy to assume. A park in a
-terminal child could not have registered one in any case. An author
-`awaitSignal` on an author-chosen name produces no control-plane park at
-all, and a terminal child's env carries no notify sink -- the only sink
-in production is on the deployment's addressable run.
+A parked child does not survive a restart. Resume rejects the spawn step
+left `awaiting-signal` and records `RunFailed`. It does not spawn the
+child a second time.
 
 #### Recycle
 

@@ -317,7 +317,9 @@ for the policy itself; `normalize`,
 **24.** A loop body may contain `awaitSignal`, `childWorkflow` and a nested
 loop, but may NOT contain `sleep` or `onTrigger`. The `awaitSignal` permission
 is a definition-time one only: an untimed gate inside a `childWorkflow` the
-body spawns passes this check and is refused at runtime instead (entry 27).
+body spawns passes this check and is relayed at runtime onto the parent
+(entry 27). A same-name awaiter in that child and the parent is rejected
+here, because the relay puts both names on the parent's channel.
 
 Where it lives today: the `LoopPrimitive` doc comment,
 `packages/workflow/src/definition/primitives.ts` (enforced by
@@ -350,17 +352,34 @@ Where it lives today: `sectionBodyRunId`,
 `packages/workflow/src/runtime/run.ts`; `workflow_run.id`,
 `packages/db/src/schema/workflow-run.ts`
 
-**27.** An untimed park is REFUSED wherever nothing upstream could answer it:
-beneath a `childWorkflow` child, at any depth. A park is not only an
-`awaitSignal` an author writes: an agent step that suspends on a tool declared
-`approval: "ask"` is refused the same way, as is the input park of a step with
-a trigger budget. The child carries no address of its own and its spawner
-awaits its terminal rather than driving it across parks, so no signal can
-reach the gate. The step that asked fails, naming the gate, before any
-suspension is written. A gate carrying a `timeout` is exempt, because its own
-timer resolves it in process. The seam that spawns a run states the fact as
-`hasUpstreamSignalResolver`, which is why the deployment's own run and a
-container-driven suspendable body both keep their gates.
+**27.** A `childWorkflow` child carries no address of its own. The spawning
+step drives the child across parks and relays each one onto the parent run:
+an approval, with the body's snapshot, an author `awaitSignal`, and the input
+park of a step with a trigger budget. A gate inside a loop in the child
+climbs the same way until it reaches the deployment's addressable run. The
+hub approval is registered on that run. A signal posted at the deployment
+run id is what reaches the child. The child run id is not an address. The
+spawn step awaits one signal at a time. A second park that is already live
+in the child stays queued until the decision for the first is relayed down.
+A queued park whose gate has already moved on is not given a signal that
+arrived while it waited.
+
+A parked child does not survive a restart. The spawn step is left
+`awaiting-signal`, and resume rejects that step rather than spawning the
+child again. On drain the relay sits on the spawn step, which defaults to
+`"cancel"`, so a parked child is torn down with that step. The child's own
+`drainBehavior` is not what drain consults.
+
+An untimed park is still REFUSED in a run whose env says nothing upstream
+can answer it. The step that asked fails, naming the gate, before any
+suspension is written. A gate carrying a `timeout` is exempt, because its
+own timer resolves it in process. The seam that spawns a run states the fact
+as `hasUpstreamSignalResolver`. The deployment's own run sets it true. A
+`childWorkflow` spawner forces it true as well, because the parent relays,
+and inheriting a parent false would refuse a gate the relay can answer. A
+loop or `onTrigger` body inherits its container's flag. An input park inside
+a loop or `onTrigger` body is still rejected: those handles do not re-arm an
+input park.
 
 Where it lives today: the "Crash and suspension behavior of a `loop` body"
 section of `packages/workflow/README.md`, the `hasUpstreamSignalResolver`

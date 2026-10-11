@@ -996,21 +996,21 @@ function buildDependencyAdjacency(
  *
  * A loop body's awaitSignal relays onto the parent under the body's
  * author signal name and stays name-FIFO, so the loop contributes those
- * names here, including through nested loops. An onTrigger relay is
- * correlated, so its await names are not added. Two sections, a section
- * beside a parent gate, and a section beside a loop may share an author
- * name. `validateOnTriggerBody` re-enters `validateSteps` on an inline
- * body, so two name-FIFO awaiters inside one section body are still
- * rejected.
+ * names here, including through nested loops. An inline childWorkflow
+ * relays the same way and contributes its body's names, including a
+ * child nested in a loop. An onTrigger relay is correlated, so its await
+ * names are not added. Two sections, a section beside a parent gate, and
+ * a section beside a loop may share an author name.
+ * `validateOnTriggerBody` re-enters `validateSteps` on an inline body, so
+ * two name-FIFO awaiters inside one section body are still rejected.
  *
- * A childWorkflow runs as a separate run with its own signal namespace,
- * so its awaiters are excluded.
- *
- * One static-analysis limitation remains, backstopped by the runtime
- * guard for name-FIFO awaiters: two same-name awaiters on a gate's
- * mutually exclusive then/else branches are rejected. Deciding they can
+ * Two static-analysis limitations remain, both backstopped by the runtime
+ * guard for name-FIFO awaiters. Two same-name awaiters on a gate's
+ * mutually exclusive then/else branches are rejected: deciding they can
  * never both be live is a dominator analysis whose permissive-direction
- * error would re-admit the hazard.
+ * error would re-admit the hazard. A `{ ref }` childWorkflow is a
+ * separate definition, so an await name it relays is not collected, and
+ * the runtime guard catches that collision.
  */
 function validateConcurrentAwaitSignalNames(
   steps: Record<string, Primitive>,
@@ -1049,20 +1049,29 @@ function validateConcurrentAwaitSignalNames(
 }
 
 /**
- * Collect the author signal names a loop body relays onto the parent
- * run, recursing through nested loops. Those names stay on the parent's
- * name-FIFO concurrency check. An onTrigger body is not collected: its
- * relay park is correlated and may share an author name with other
- * parks. A flat `steps` record keys gate branches and onTimeout targets
- * as siblings, so enumerating the record covers them without a graph
- * walk. A childWorkflow body runs in a separate signal namespace and is
- * not relayed, so it is skipped.
+ * Collect the author signal names a loop body or an inline childWorkflow
+ * relays onto the parent run. The walk recurses through nested loops and
+ * nested inline children. Those names stay on the parent's name-FIFO
+ * concurrency check. An onTrigger body is not collected: its relay park
+ * is correlated and may share an author name with other parks. A flat
+ * `steps` record keys gate branches and onTimeout targets as siblings, so
+ * enumerating the record covers them without a graph walk. A `{ ref }`
+ * childWorkflow stays opaque: its names are not in this definition, and
+ * the runtime relay refuses a second name-FIFO awaiter of the same name.
  */
 function collectRelayedAwaitSignalNames(
   primitive: Primitive,
 ): { name: string; bodyStepId: string }[] {
-  if (primitive.kind !== "loop") return [];
-  const body = primitive.body.steps;
+  let body: Record<string, Primitive> | undefined;
+  if (primitive.kind === "loop") {
+    body = primitive.body.steps;
+  } else if (
+    primitive.kind === "childWorkflow" &&
+    "inline" in primitive.definition
+  ) {
+    body = primitive.definition.inline.steps;
+  }
+  if (body === undefined) return [];
   const names: { name: string; bodyStepId: string }[] = [];
   for (const [bodyStepId, bodyPrimitive] of Object.entries(body)) {
     if (bodyPrimitive.kind === "awaitSignal") {

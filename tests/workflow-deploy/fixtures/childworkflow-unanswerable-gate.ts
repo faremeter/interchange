@@ -1,20 +1,11 @@
-// Source-entry builder for a top-level `childWorkflow` whose child holds a
-// gate nothing can answer.
+// Source-entry builder for a top-level `childWorkflow` whose child parks.
 //
-// The child is a terminal child: it carries no address of its own, and the
-// spawner awaits its terminal rather than driving it across parks. An untimed
-// `awaitSignal` there therefore waits on a signal that can never arrive. The
-// deployment must fail the run at the gate instead, and no approval may reach
-// the tenant.
-//
-// `timedGate` renders the same shape with a deadline, which is answerable in
-// process and must still run: it is the boundary the refusal must not cross.
-//
-// `askTool` renders the shape the issue actually reports: instead of an author
-// gate, the child's step carries a tool marked for approval, so the park is a
-// control-plane suspension rather than a named signal. That is the only shape
-// that would register a correlation with the hub if it were allowed to park,
-// which is what makes "no approval reached an operator" checkable.
+// The child stays unaddressable. The parent relays each park onto the
+// deployment run: an author `awaitSignal` is delivered there, and an
+// approval-marked tool call registers on that run carrying the body's
+// snapshot. `timedGate` gives the child's gate a deadline so the child can
+// settle on its own timer. `askTool` replaces the author gate with a tool
+// marked for approval, which is the park that registers a hub approval.
 
 import path from "node:path";
 
@@ -29,7 +20,7 @@ export type ChildWorkflowUnanswerableGateParams = {
   workflowId: string;
   /** The child `defineWorkflow` id. */
   childWorkflowId: string;
-  /** The author signal name the child waits on, never delivered. */
+  /** The author signal name the child waits on. The parent relays it. */
   signalName: string;
   /**
    * Give the child's gate a deadline, routing to the child's trailing step on

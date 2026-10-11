@@ -254,10 +254,16 @@ export async function commitBuffered(
   env: CommitEnv,
   runId: string,
   event: WorkflowEvent,
+  guard?: (state: RunState) => void,
 ): Promise<RunState> {
   return followChain(runId, async () => {
     const fresh = await readStateWithPending(env, runId);
     if (signalAlreadyRecorded(fresh, event)) return fresh;
+    // A throw here leaves the buffer unchanged. A check that must exclude
+    // a concurrent writer of this same event belongs in the guard: the
+    // chain is the lock those writers share, and the fresh read above is
+    // the state both of them see.
+    guard?.(fresh);
     const adjustedEvent: WorkflowEvent = { ...event, seq: fresh.lastSeq + 1 };
     const nextState = applyEvent(fresh, adjustedEvent);
     getBuffer(runId).push(adjustedEvent);

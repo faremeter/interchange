@@ -5,9 +5,11 @@
 // because the defect it guards is a missing env spread, and every added
 // nesting layer is another place to reintroduce one.
 //
-// The production chain is: terminal child env (false) -> loop iteration env
-// (inherits) -> nested loop iteration env (inherits). Each hop is a spread of
-// the container's env, so a single missing spread anywhere reopens the hole.
+// The chain is: a run that declared itself unanswerable, then a loop
+// iteration env that inherits the flag, then a nested loop iteration env that
+// inherits it again. Each hop is a spread of the container's env, so a single
+// missing spread anywhere reopens the hole. A childWorkflow spawner does not
+// inherit the flag: it forces true, and the parent relays.
 
 import { describe, test, expect } from "bun:test";
 

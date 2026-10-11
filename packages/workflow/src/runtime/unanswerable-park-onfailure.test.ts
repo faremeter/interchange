@@ -1,11 +1,7 @@
-// What an `onFailure` route does with an unanswerable child gate, and where
-// such a route may be written at all.
-//
-// The README tells an author that a handler on the spawn step absorbs this
-// refusal like any other child failure, and to leave the step unrouted to see
-// it. Both halves hold at a workflow root. Inside a loop body the route is not
-// merely ineffective -- `defineWorkflow` rejects it -- so the guidance has a
-// boundary worth pinning down.
+// A relayed child gate is not a child failure, so an `onFailure` handler on
+// the spawn step is not taken. Delivering the signal completes the child, and
+// the success path prunes the handler. Inside a loop body the route is not
+// merely unused: `defineWorkflow` rejects it.
 
 import { describe, test, expect } from "bun:test";
 import { defineAgent } from "@intx/agent";
@@ -33,14 +29,26 @@ const allowAll: WorkflowAuthorizeFn = async () => ({
   resolvedBy: null,
 });
 
+function childTerminal(output: unknown): string {
+  if (
+    typeof output === "object" &&
+    output !== null &&
+    "terminalStatus" in output &&
+    typeof output.terminalStatus === "string"
+  ) {
+    return output.terminalStatus;
+  }
+  throw new Error("spawn output missing terminalStatus");
+}
+
 const gatedChild = defineWorkflow({
   id: "gated-child",
   trigger: { type: "manual" },
   steps: { hold: awaitSignal({ name: "approve" }) },
 });
 
-describe("a refused child gate under a top-level spawn step", () => {
-  test("an onFailure route absorbs it and the run completes", async () => {
+describe("a relayed child gate under a top-level spawn step", () => {
+  test("an onFailure route is not taken, and success prunes the handler", async () => {
     const def = defineWorkflow({
       id: "routed",
       trigger: { type: "manual" },
@@ -54,25 +62,18 @@ describe("a refused child gate under a top-level spawn step", () => {
       authorize: allowAll,
       hasUpstreamSignalResolver: true,
     });
+    await run.signal("approve", { ok: true }, "sig-1");
     const result = await run.complete;
     expect(result.terminalStatus).toBe("completed");
 
-    // Completing alone would also hold if the child never failed, which is
-    // the opposite of what this test is for. Pin the absorption: the spawn
-    // step failed, it routed to the handler, and the handler ran. The child's
-    // own message naming the gate stays in the child's log, which a terminal
-    // child does not share with its parent.
-    const failed = result.events.find((e) => e.kind === "StepFailed");
-    if (failed?.kind !== "StepFailed") {
-      throw new Error("expected the spawn step to fail");
-    }
-    expect(failed.stepId).toBe("spawn");
-    expect(failed.routedTo).toBe("recover");
-    expect(failed.error.message).toContain("ended failed");
-    expect(result.outputs).toHaveProperty("recover");
-  }, 15000);
+    // The gate was relayed, not refused. The spawn step completed, so the
+    // handler branch was pruned and never ran.
+    expect(result.events.some((e) => e.kind === "StepFailed")).toBe(false);
+    expect(result.outputs).not.toHaveProperty("recover");
+    expect(childTerminal(result.outputs.spawn)).toBe("completed");
+  });
 
-  test("an unrouted spawn step surfaces it as a failed run", async () => {
+  test("an unrouted spawn step completes when the signal is delivered", async () => {
     const def = defineWorkflow({
       id: "unrouted",
       trigger: { type: "manual" },
@@ -83,24 +84,15 @@ describe("a refused child gate under a top-level spawn step", () => {
       authorize: allowAll,
       hasUpstreamSignalResolver: true,
     });
+    await run.signal("approve", { ok: true }, "sig-1");
     const result = await run.complete;
-    expect(result.terminalStatus).toBe("failed");
-
-    // The run must fail AT the spawn step, carrying the child's terminal, so
-    // an author reading the parent log is pointed at the child that could not
-    // hold its gate. The child was spawned and reported a failed terminal --
-    // the refusal is not a spawn that never happened.
-    const failed = result.events.find((e) => e.kind === "StepFailed");
-    if (failed?.kind !== "StepFailed") {
-      throw new Error("expected the spawn step to fail");
-    }
-    expect(failed.stepId).toBe("spawn");
-    expect(failed.error.message).toContain("ended failed");
+    expect(result.terminalStatus).toBe("completed");
+    expect(childTerminal(result.outputs.spawn)).toBe("completed");
     const completed = result.events.find((e) => e.kind === "ChildCompleted");
     expect(
       completed?.kind === "ChildCompleted" ? completed.terminalStatus : "",
-    ).toBe("failed");
-  }, 15000);
+    ).toBe("completed");
+  });
 });
 
 describe("a spawn step inside a loop body", () => {
