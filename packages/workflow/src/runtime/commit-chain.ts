@@ -92,6 +92,16 @@ export function whenRunNextBuffers(runId: string): Promise<void> {
 }
 
 /**
+ * Events buffered for this run and not yet flushed. A copy: the caller
+ * must not be able to push into the buffer `flush` clears.
+ */
+export function bufferedEvents(runId: string): readonly WorkflowEvent[] {
+  const buf = pendingBuffers.get(runId);
+  if (buf === undefined) return [];
+  return buf.slice();
+}
+
+/**
  * Reconstruct the run's current state from the durable log folded
  * with any pending (buffered-but-unflushed) events. Used inside the
  * chain for seq assignment and by every `reloadState` caller in the
