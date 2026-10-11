@@ -1,10 +1,12 @@
-// In-process FIFO single-consumer signal channel.
+// In-process signal channel.
 //
-// Mirrors the state machine's signal semantics: a `SignalReceived`
-// before any `SignalAwaited` is queued under the signal name and
-// consumed by the next awaiter for that name. Per-signal dedup by
-// `signalId` is enforced by the state machine; this layer only
-// tracks the dispatch queue.
+// A delivery pairs with the earliest awaiter of the same author name
+// whose correlationId is equal (`undefined` with `undefined`). A
+// correlated delivery does not wake a name-only awaiter, and a
+// name-only delivery does not wake a correlated one. An unmatched
+// delivery stays queued under the author name until such an awaiter
+// arrives. Per-signal dedup by `signalId` is the state machine's
+// job; this layer only tracks the dispatch queue.
 
 import type { SignalChannel } from "../runtime/env";
 

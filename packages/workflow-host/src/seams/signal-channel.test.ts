@@ -605,4 +605,204 @@ describe("workflow-host signal channel", () => {
       dropChain(runId);
     }
   });
+
+  test("peek reads the name queue and the matching correlation separately", async () => {
+    const dataDir = await makeTempDir("sigchan-peek-");
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": permissiveHandler("workflow-runs-peek") },
+      authorize: allowAll,
+    });
+    const repoId: RepoId = { kind: "agent-state", id: "deployment-peek" };
+    const runId = "r-peek";
+    const state: RunState = {
+      ...emptyState(runId),
+      unconsumedSignals: new Map([
+        ["go", [{ id: "sig-name", payload: { n: true } }]],
+      ]),
+      unconsumedByCorrelation: new Map([
+        [
+          "corr-1",
+          [
+            { id: "sig-stop", payload: { s: true }, signalName: "stop" },
+            { id: "sig-c", payload: { c: true }, signalName: "go" },
+          ],
+        ],
+        [
+          "corr-other",
+          [{ id: "sig-x", payload: { x: true }, signalName: "stop" }],
+        ],
+      ]),
+    };
+    const channel = createWorkflowHostSignalChannel({
+      repoStore: store,
+      runtimeStore: runtimeStoreFor(store, repoId),
+      principal,
+      repoId,
+      ref: REF,
+      runId,
+      readState: () => state,
+      newId: makeIdGen("sig"),
+      clock: () => new Date(),
+    });
+    try {
+      const named = await channel.awaitNext("go");
+      expect(named).toEqual({ payload: { n: true }, signalId: "sig-name" });
+      expect(named).not.toHaveProperty("correlationId");
+
+      const correlated = await channel.awaitNext("go", undefined, "corr-1");
+      expect(correlated).toEqual({
+        payload: { c: true },
+        signalId: "sig-c",
+        correlationId: "corr-1",
+      });
+
+      const otherName = await channel.awaitNext(
+        "stop",
+        undefined,
+        "corr-other",
+      );
+      expect(otherName.signalId).toBe("sig-x");
+
+      // The non-matching name stayed at the head of corr-1. Peek
+      // reads past it instead of handing it to the "go" awaiter.
+      const skipped = await channel.awaitNext("stop", undefined, "corr-1");
+      expect(skipped.signalId).toBe("sig-stop");
+    } finally {
+      await channel.stop();
+      dropChain(runId);
+    }
+
+    const onlyCorrelated: RunState = {
+      ...emptyState(runId),
+      unconsumedByCorrelation: new Map([
+        ["corr-1", [{ id: "sig-c2", payload: { c: 2 }, signalName: "go" }]],
+      ]),
+    };
+    const isolated = createWorkflowHostSignalChannel({
+      repoStore: store,
+      runtimeStore: runtimeStoreFor(store, repoId),
+      principal,
+      repoId,
+      ref: REF,
+      runId,
+      readState: () => onlyCorrelated,
+      newId: makeIdGen("sig"),
+      clock: () => new Date(),
+    });
+    try {
+      let nameStole = false;
+      const pending = isolated.awaitNext("go").then(
+        () => {
+          nameStole = true;
+        },
+        () => {
+          // stop() rejects the name awaiter that peek did not satisfy.
+        },
+      );
+      const correlatedHit = await isolated.awaitNext("go", undefined, "corr-1");
+      expect(correlatedHit.signalId).toBe("sig-c2");
+      expect(nameStole).toBe(false);
+      void pending;
+    } finally {
+      await isolated.stop();
+      dropChain(runId);
+    }
+  });
+
+  test("a live name waiter and a live correlated waiter do not share a delivery", async () => {
+    const dataDir = await makeTempDir("sigchan-slots-");
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": permissiveHandler("workflow-runs-slots") },
+      authorize: allowAll,
+    });
+    const repoId: RepoId = { kind: "agent-state", id: "deployment-slots" };
+    const runId = "r-slots";
+    const channel = createWorkflowHostSignalChannel({
+      repoStore: store,
+      runtimeStore: runtimeStoreFor(store, repoId),
+      principal,
+      repoId,
+      ref: REF,
+      runId,
+      readState: () => emptyState(runId),
+      newId: makeIdGen("sig"),
+      clock: () => new Date(),
+    });
+    try {
+      const named = channel.awaitNext("go");
+      const correlated = channel.awaitNext("go", undefined, "corr-1");
+
+      await channel.deliver("go", { c: true }, "sig-c", "corr-1");
+      expect(await correlated).toEqual({
+        payload: { c: true },
+        signalId: "sig-c",
+        correlationId: "corr-1",
+      });
+
+      await channel.deliver("go", { n: true }, "sig-name");
+      const namedResult = await named;
+      expect(namedResult).toEqual({
+        payload: { n: true },
+        signalId: "sig-name",
+      });
+      expect(namedResult).not.toHaveProperty("correlationId");
+    } finally {
+      await channel.stop();
+      dropChain(runId);
+    }
+  });
+
+  test("a name delivery does not resolve a correlated waiter that is already subscribed", async () => {
+    const dataDir = await makeTempDir("sigchan-name-skip-");
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: {
+        "agent-state": permissiveHandler("workflow-runs-name-skip"),
+      },
+      authorize: allowAll,
+    });
+    const repoId: RepoId = {
+      kind: "agent-state",
+      id: "deployment-name-skip",
+    };
+    const runId = "r-name-skip";
+    const channel = createWorkflowHostSignalChannel({
+      repoStore: store,
+      runtimeStore: runtimeStoreFor(store, repoId),
+      principal,
+      repoId,
+      ref: REF,
+      runId,
+      readState: () => emptyState(runId),
+      newId: makeIdGen("sig"),
+      clock: () => new Date(),
+    });
+    try {
+      const correlated = channel.awaitNext("go", undefined, "corr-1");
+      const named = channel.awaitNext("go");
+
+      await channel.deliver("go", { n: true }, "sig-name");
+      const namedResult = await named;
+      expect(namedResult).toEqual({
+        payload: { n: true },
+        signalId: "sig-name",
+      });
+      expect(namedResult).not.toHaveProperty("correlationId");
+
+      await channel.deliver("go", { c: true }, "sig-c", "corr-1");
+      expect(await correlated).toEqual({
+        payload: { c: true },
+        signalId: "sig-c",
+        correlationId: "corr-1",
+      });
+    } finally {
+      await channel.stop();
+      dropChain(runId);
+    }
+  });
 });
