@@ -314,7 +314,10 @@ describe("createSidecarRunChild grant capping", () => {
       noopOnEvent,
     );
 
-    expect(result.terminalStatus).toBe("completed");
+    const event = await result.next();
+    expect(event.kind).toBe("terminal");
+    if (event.kind !== "terminal") throw new Error("expected a terminal");
+    expect(event.terminalStatus).toBe("completed");
     expect(seenResources).toEqual([definition]);
     expect(seenConsumers).toEqual([definition]);
     expect(filteredConsumers).toBe(sentinel);
@@ -375,7 +378,10 @@ describe("createSidecarRunChild grant capping", () => {
       noopOnEvent,
     );
 
-    expect(result.terminalStatus).toBe("completed");
+    const event = await result.next();
+    expect(event.kind).toBe("terminal");
+    if (event.kind !== "terminal") throw new Error("expected a terminal");
+    expect(event.terminalStatus).toBe("completed");
     expect(collected).toBe(0);
     expect(consumersCollected).toBe(0);
     const childGrants = await readRunGrants({

@@ -10,6 +10,7 @@ import { describe, test, expect } from "bun:test";
 import { createDefaultDirectorRegistry, defineAgent } from "@intx/agent";
 
 import {
+  createTerminalChildHandle,
   createInMemoryBlobSubstrate,
   createInMemoryRepoStore,
   createInMemoryScheduler,
@@ -90,10 +91,7 @@ describe("resume-from-log seam", () => {
         resolvedBy: null,
       }),
       invokeStep: invokeStepNever,
-      spawnChild: async () => ({
-        childRunId: "n/a",
-        terminalStatus: "completed",
-      }),
+      spawnChild: async () => createTerminalChildHandle("completed"),
       clock,
       newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
       drain: createNoopDrainController(def),
@@ -135,7 +133,7 @@ describe("resume-from-log seam", () => {
       invokeStep: async () => ({
         output: { large: "x".repeat(64) },
       }),
-      spawnChild: async () => ({ terminalStatus: "completed" }),
+      spawnChild: async () => createTerminalChildHandle("completed"),
       clock,
       newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
       drain: createNoopDrainController(def),
@@ -183,7 +181,7 @@ describe("resume-from-log seam", () => {
       invokeStep: async () => ({
         output: { large: "x".repeat(64) },
       }),
-      spawnChild: async () => ({ terminalStatus: "completed" }),
+      spawnChild: async () => createTerminalChildHandle("completed"),
       clock,
       newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
       drain: createNoopDrainController(def),

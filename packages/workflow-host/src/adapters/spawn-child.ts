@@ -20,15 +20,16 @@
 //     covered by the parent's re-verify -- no separate on-disk read and no
 //     separate per-body re-verify.
 //
-//   - childWorkflow (the terminal adapter): an owned import embedded inline in
+//   - childWorkflow (the settled adapter): an owned import embedded inline in
 //     the parent's definition. It is lifted to an internal `{ ref }` at child
 //     boot and resolved in-memory from the parent's closure map
 //     (`createInMemorySpawnChild`) -- exactly like a source-ref onTrigger
 //     body, with NO on-disk asset and NO separate per-child re-verify (the
 //     parent's re-verify already covers it, since the inline child rides the
-//     parent's hashed projection). The terminal-only drive (await the child's
-//     terminal, no park) is the only thing that distinguishes it from the
-//     suspendable body adapter.
+//     parent's hashed projection). The drive is what distinguishes it from
+//     the suspendable body adapter: this adapter returns a handle already
+//     settled to the child's terminal, and the parent reads that one event
+//     and does not proxy parks.
 //
 // Drain coordination is handled by the supervisor's drain primitive
 // (`packages/workflow-host/src/supervisor`), not by this adapter. The
@@ -72,13 +73,6 @@ import type {
 import type { CredentialMaterialRef } from "../child/run-child";
 
 /**
- * The terminal-status shape the runtime body expects back from a
- * spawn. Mirrored from `SpawnChildWorkflow`'s return type so the
- * `runChild` callback's signature is symmetric with the adapter's.
- */
-export type ChildTerminalStatus = "completed" | "failed" | "cancelled";
-
-/**
  * Runtime-supplied child execution callback. The supervisor owns the
  * child `WorkflowRuntimeEnv` construction (per-deployment substrate,
  * per-run blob substrate, child director registry) and the
@@ -115,10 +109,10 @@ export type RunChildWorkflow = (
   },
   onEvent: (event: InferenceEvent) => void,
   credentialMaterial?: CredentialMaterialRef,
-) => Promise<{ terminalStatus: ChildTerminalStatus }>;
+) => Promise<SuspendableChildHandle>;
 
 /**
- * Construct the terminal `WorkflowRuntimeEnv.SpawnChildWorkflow` adapter for an
+ * Construct the settled `WorkflowRuntimeEnv.spawnChild` adapter for an
  * owned childWorkflow import. The child re-evaluated the whole pinned closure
  * and lifted every inline child to an internal `{ ref }`, so the child
  * definitions are in hand and already covered by the parent's re-verify.
@@ -128,8 +122,8 @@ export type RunChildWorkflow = (
  * materializing the child back out and re-fingerprinting it would round-trip
  * trusted-in-hand data for no gain, and the closure re-eval on restart
  * re-derives the same bodies durably. Mirrors
- * {@link createInMemorySpawnSuspendableChild} but drives the child terminal-only
- * (await its terminal status) rather than across approval parks.
+ * {@link createInMemorySpawnSuspendableChild}, and passes the settled handle
+ * `runChild` returns through without unwrapping it.
  */
 /**
  * Host-side widening of the runtime {@link SpawnChildWorkflow} contract: the
@@ -188,7 +182,7 @@ export function createInMemorySpawnChild(opts: {
       throw abortError(signal);
     }
 
-    const result = await opts.runChild(
+    return opts.runChild(
       {
         definition,
         definitionRef,
@@ -203,7 +197,6 @@ export function createInMemorySpawnChild(opts: {
       onEvent,
       credentialMaterial,
     );
-    return { terminalStatus: result.terminalStatus };
   };
 }
 

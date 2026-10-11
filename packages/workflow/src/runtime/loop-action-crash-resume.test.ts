@@ -45,6 +45,7 @@ import {
   type WorkflowEvent,
   type WorkflowRuntimeEnv,
 } from "@intx/workflow";
+import { createTerminalChildHandle } from "./suspendable-child-handle";
 
 const body = defineWorkflow({
   id: "body",
@@ -149,7 +150,7 @@ function buildEnv(args: {
     invokeStep,
     invokeAction,
     effects: args.effects,
-    spawnChild: async () => ({ terminalStatus: "completed" }),
+    spawnChild: async () => createTerminalChildHandle("completed"),
     clock,
     newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
     drain: createNoopDrainController(parentWorkflow),

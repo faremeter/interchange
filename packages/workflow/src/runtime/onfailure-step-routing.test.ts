@@ -28,6 +28,7 @@ import {
   type WorkflowEvent,
   type WorkflowRuntimeEnv,
 } from "@intx/workflow";
+import { createTerminalChildHandle } from "./suspendable-child-handle";
 
 // A sibling whose invocation settles only after several microtasks, waking the
 // drive loop's Promise.race in the middle of a concurrent prune.
@@ -67,7 +68,7 @@ function buildEnv(
       resolvedBy: null,
     }),
     invokeStep: opts.invokeStep ?? (async () => ({ output: null })),
-    spawnChild: async () => ({ terminalStatus: "completed" }),
+    spawnChild: async () => createTerminalChildHandle("completed"),
     clock,
     newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
     drain: opts.drain ?? createNoopDrainController(def),

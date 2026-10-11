@@ -16,6 +16,7 @@ import { createInMemorySignalChannel } from "../runlocal/signal-channel";
 import { createNoopDrainController } from "./drain";
 import type { RepoStore, WorkflowRuntimeEnv } from "./env";
 import type { WorkflowEvent } from "../state-machine/index";
+import { createTerminalChildHandle } from "./suspendable-child-handle";
 
 /**
  * A repo store that aborts `teardown` as soon as an event of `kind` has been
@@ -101,7 +102,7 @@ export function buildAbortWindowEnv(
       resolvedBy: null,
     }),
     invokeStep: async () => ({ output: null }),
-    spawnChild: async () => ({ terminalStatus: "completed" }),
+    spawnChild: async () => createTerminalChildHandle("completed"),
     clock,
     newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
     drain: createNoopDrainController(def),

@@ -82,6 +82,7 @@ import {
   createLoopIterationHandle,
   createNoopDrainController,
   createSuspendableChildHandle,
+  createTerminalChildHandle,
   eagerlyResolveLoopFns,
   emptyState,
   enumerateInlineLoopBodies,
@@ -1406,14 +1407,14 @@ async function writeChildRunGrants(args: {
  * delegates to. The returned callback, when invoked with the parent
  * runtime's attribution + the parent-allocated `childRunId` + the
  * resolved `WorkflowDefinition`, builds a fresh `WorkflowRuntimeEnv`
- * scoped to `childRunId`, invokes `runtimeRun`, and returns the
- * child's terminal status.
+ * scoped to `childRunId`, invokes `runtimeRun`, and returns a handle
+ * already settled to the child's terminal.
  *
  * Abort propagation: the parent-supplied `signal` is wired to the child
  * run's local-abort seam (`RuntimeRunOptions.localAbort`). If it aborts --
  * mid-flight or pre-aborted -- the child's own cancel controller aborts, an
- * in-flight step fails, and the returned promise resolves with
- * `terminalStatus: "failed"`. There is no durable `CancelRequested`: an
+ * in-flight step fails, and the returned handle's terminal is `"failed"`.
+ * There is no durable `CancelRequested`: an
  * in-process child writes through the proxy substrate and cannot sign the
  * supervisor cancel one would require.
  *
@@ -1481,9 +1482,9 @@ export function createSidecarRunChild(
       childRunId,
       parentRunId,
       onEvent,
-      // Terminal: the caller awaits this child's terminal rather than driving
-      // it across parks, and no signal can be addressed to a child run, so a
-      // park inside it has nothing that could answer it.
+      // Settled: the caller reads one terminal event rather than driving this
+      // child across parks, and no signal can be addressed to a child run, so
+      // a park inside it has nothing that could answer it.
       hasUpstreamSignalResolver: false,
       ...(credentialMaterial !== undefined
         ? { materialCell: credentialMaterial }
@@ -1510,7 +1511,11 @@ export function createSidecarRunChild(
         localAbort: signal,
       });
       const result = await handle.complete;
-      return { terminalStatus: result.terminalStatus };
+      // The handle handed back does not deliver. The child has already
+      // settled, so stopping the channel in the finally below, before the
+      // caller observes the handle, is valid. A handle that still accepted
+      // resume or deliverSignal could not be returned from here.
+      return createTerminalChildHandle(result.terminalStatus);
     } finally {
       await signalChannel.stop();
     }
@@ -1761,8 +1766,8 @@ async function buildChildRunEnv(args: {
    * Whether a park in this child can be answered from outside it. The two
    * seams that share this builder differ precisely here, so neither gets a
    * default: a suspendable body is driven across its parks by a container
-   * that relays a decision back down, while a terminal child has no address
-   * and no relay above it.
+   * that relays a decision back down, while a childWorkflow child is
+   * returned already settled and has no relay above it.
    */
   hasUpstreamSignalResolver: boolean;
 }): Promise<{

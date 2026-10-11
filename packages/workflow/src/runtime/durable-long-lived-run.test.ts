@@ -44,6 +44,7 @@ import {
   type WorkflowRuntimeEnv,
 } from "@intx/workflow";
 import { waitForNthEvent } from "@intx/workflow/testing";
+import { createTerminalChildHandle } from "./suspendable-child-handle";
 
 // ---------------------------------------------------------------------------
 // The durable conversation store the run rehydrates from. In production this
@@ -150,7 +151,7 @@ function buildEnv(args: {
       resolvedBy: null,
     }),
     invokeStep: args.invokeStep,
-    spawnChild: async () => ({ terminalStatus: "completed" }),
+    spawnChild: async () => createTerminalChildHandle("completed"),
     clock,
     newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
     drain: createNoopDrainController(args.def),

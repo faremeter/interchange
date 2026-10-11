@@ -26,6 +26,30 @@ import { bridgeAbort } from "./abort-bridge";
 import { runtimeRun } from "./run";
 import type { WorkflowEvent } from "../state-machine/index";
 
+/**
+ * A handle that has already reached a terminal. `next` returns that same
+ * terminal on every call, matching a live handle after `complete` settles.
+ * `resume` and `deliverSignal` reject: this handle has no channel, and a
+ * delivery after settle is a caller bug.
+ */
+export function createTerminalChildHandle(
+  terminalStatus: "completed" | "failed" | "cancelled",
+): SuspendableChildHandle {
+  const terminal = {
+    kind: "terminal" as const,
+    terminalStatus,
+  };
+  const rejectSettled = (): Promise<never> =>
+    Promise.reject(
+      new Error(`child handle has already settled ${terminalStatus}`),
+    );
+  return {
+    next: () => Promise.resolve(terminal),
+    resume: () => rejectSettled(),
+    deliverSignal: () => rejectSettled(),
+  };
+}
+
 export function createSuspendableChildHandle(
   env: WorkflowRuntimeEnv,
   args: {

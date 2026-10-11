@@ -54,6 +54,7 @@ import type {
   WorkflowRunWorkflowProcessPrincipal,
 } from "@intx/hub-sessions";
 import {
+  createTerminalChildHandle,
   awaitSignal,
   createInMemoryBlobSubstrate,
   createInMemoryScheduler,
@@ -197,7 +198,7 @@ function buildEnv(
       resolvedBy: null,
     }),
     invokeStep: STUB_INVOKER,
-    spawnChild: async () => ({ terminalStatus: "completed" }),
+    spawnChild: async () => createTerminalChildHandle("completed"),
     clock,
     newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 10)}`,
     drain: createNoopDrainController(definition),

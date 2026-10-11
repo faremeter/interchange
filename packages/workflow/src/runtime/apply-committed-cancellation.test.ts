@@ -11,6 +11,7 @@ import { flushChain } from "./commit-chain";
 import { createNoopDrainController } from "./drain";
 import type { RepoStore, WorkflowRuntimeEnv } from "./env";
 import { runtimeRun } from "./run";
+import { createTerminalChildHandle } from "./suspendable-child-handle";
 
 const definition = defineWorkflow({
   id: "apply-committed-cancellation",
@@ -64,7 +65,7 @@ async function startParkedRun() {
       );
       throw signal.reason;
     },
-    spawnChild: async () => ({ terminalStatus: "completed" }),
+    spawnChild: async () => createTerminalChildHandle("completed"),
     clock,
     newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
     drain: createNoopDrainController(definition),

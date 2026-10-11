@@ -43,6 +43,7 @@ import {
   type WorkflowEvent,
   type WorkflowRuntimeEnv,
 } from "@intx/workflow";
+import { createTerminalChildHandle } from "./suspendable-child-handle";
 
 function makeAgent(id: string) {
   return defineAgent({
@@ -105,7 +106,7 @@ describe("re-fire adopts a crashed step from the durable log", () => {
         resolvedBy: null,
       }),
       invokeStep,
-      spawnChild: async () => ({ terminalStatus: "completed" }),
+      spawnChild: async () => createTerminalChildHandle("completed"),
       clock,
       newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
       drain: createNoopDrainController(def),
@@ -203,7 +204,7 @@ describe("re-fire adopts a crashed step from the durable log", () => {
         resolvedBy: null,
       }),
       invokeStep: failingInvokeStep,
-      spawnChild: async () => ({ terminalStatus: "completed" }),
+      spawnChild: async () => createTerminalChildHandle("completed"),
       clock,
       newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
       drain: createNoopDrainController(def),
@@ -290,7 +291,7 @@ describe("re-fire adopts a crashed step from the durable log", () => {
         resolvedBy: null,
       }),
       invokeStep,
-      spawnChild: async () => ({ terminalStatus: "completed" }),
+      spawnChild: async () => createTerminalChildHandle("completed"),
       clock,
       newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
       drain: createNoopDrainController(def),
@@ -386,7 +387,7 @@ describe("re-fire adopts a crashed step from the durable log", () => {
         resolvedBy: null,
       }),
       invokeStep: blockingInvokeStep,
-      spawnChild: async () => ({ terminalStatus: "completed" }),
+      spawnChild: async () => createTerminalChildHandle("completed"),
       clock,
       newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
       drain: createNoopDrainController(def),
@@ -474,7 +475,7 @@ describe("seeded resume adopts a completed step by skip", () => {
         resolvedBy: null,
       }),
       invokeStep,
-      spawnChild: async () => ({ terminalStatus: "completed" }),
+      spawnChild: async () => createTerminalChildHandle("completed"),
       clock,
       newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
       drain: createNoopDrainController(def),

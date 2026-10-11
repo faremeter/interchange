@@ -26,6 +26,7 @@ import { runtimeRun, type RuntimeRunOptions } from "../runtime/run";
 import { createNoopDrainController } from "../runtime/drain";
 import { createEffectContext } from "../runtime/effect-context";
 import { createLoopIterationHandle } from "../runtime/loop-iteration-handle";
+import { createTerminalChildHandle } from "../runtime/suspendable-child-handle";
 import type {
   ActionInvoker,
   EffectLedger,
@@ -408,9 +409,9 @@ export function createInMemorySpawnChild(
       runId: childRunId,
       depth,
       maxChildSpawnDepth,
-      // Terminal: the parent awaits this child's terminal rather than driving
-      // it across parks, and nothing upstream can address the child run, so a
-      // park inside it could never be answered.
+      // Settled: the parent reads one terminal event rather than driving
+      // this child across parks, and nothing upstream can address the child
+      // run, so a park inside it could never be answered.
       hasUpstreamSignalResolver: false,
     });
     const onParentAbort = (): void => {
@@ -419,7 +420,7 @@ export function createInMemorySpawnChild(
     signal.addEventListener("abort", onParentAbort);
     try {
       const result = await child.complete;
-      return { terminalStatus: result.terminalStatus };
+      return createTerminalChildHandle(result.terminalStatus);
     } finally {
       // Drop the listener when the child has settled so the parent's
       // per-step abort signal does not retain a reference to a child

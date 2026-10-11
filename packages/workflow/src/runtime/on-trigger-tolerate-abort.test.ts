@@ -39,6 +39,7 @@ import {
   type WorkflowRuntimeEnv,
 } from "@intx/workflow";
 import { waitForEvent } from "@intx/workflow/testing";
+import { createTerminalChildHandle } from "./suspendable-child-handle";
 
 const noopInvokeStep: StepInvoker = () => {
   throw new Error("test: invokeStep must not be called");
@@ -63,7 +64,7 @@ function buildEnv(args: {
       resolvedBy: null,
     }),
     invokeStep: noopInvokeStep,
-    spawnChild: async () => ({ terminalStatus: "completed" }),
+    spawnChild: async () => createTerminalChildHandle("completed"),
     spawnSuspendableChild: args.spawnSuspendableChild,
     clock,
     newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,

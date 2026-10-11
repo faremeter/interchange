@@ -23,6 +23,7 @@ import type {
 } from "@intx/hub-sessions";
 import type { KeyPair } from "@intx/types/runtime";
 import {
+  createTerminalChildHandle,
   action,
   awaitSignal,
   createInMemoryBlobSubstrate,
@@ -244,7 +245,7 @@ async function runLoopDelivery(args: {
       throw new Error("loop signal delivery: invokeStep must not be called");
     },
     invokeAction,
-    spawnChild: async () => ({ terminalStatus: "completed" }),
+    spawnChild: async () => createTerminalChildHandle("completed"),
     clock,
     newId: (prefix) => `${prefix}-id`,
     drain: createNoopDrainController(parentDef),

@@ -313,7 +313,10 @@ describe("in-process child parent-abort", () => {
     abort.abort();
 
     const result = await settled;
-    expect(result.terminalStatus).toBe("failed");
+    const event = await result.next();
+    expect(event.kind).toBe("terminal");
+    if (event.kind !== "terminal") throw new Error("expected a terminal");
+    expect(event.terminalStatus).toBe("failed");
     await expectLocalFailTeardown(substrate, childRunId);
   });
 

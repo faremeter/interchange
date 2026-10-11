@@ -29,6 +29,7 @@ import type { BlobSubstrate, WorkflowRuntimeEnv } from "./env";
 import { createNoopDrainController } from "./drain";
 import { createLoopIterationHandle } from "./loop-iteration-handle";
 import { runtimeRun } from "./run";
+import { createTerminalChildHandle } from "./suspendable-child-handle";
 
 const body = defineWorkflow({
   id: "handle-body",
@@ -63,7 +64,7 @@ function buildEnv(
       actionResolver,
     ),
     effects: createInMemoryEffectLedger(),
-    spawnChild: async () => ({ terminalStatus: "completed" }),
+    spawnChild: async () => createTerminalChildHandle("completed"),
     clock,
     newId: (prefix) => `${prefix}-0`,
     drain: createNoopDrainController(body),

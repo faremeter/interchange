@@ -42,6 +42,7 @@ import {
   shouldAbortForDrain,
   type DrainController,
 } from "./drain";
+import { createTerminalChildHandle } from "./suspendable-child-handle";
 
 function makeAgent(id: string) {
   return defineAgent({
@@ -184,7 +185,7 @@ function buildEnv(
       resolvedBy: null,
     }),
     invokeStep,
-    spawnChild: async () => ({ terminalStatus: "completed" }),
+    spawnChild: async () => createTerminalChildHandle("completed"),
     clock,
     newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
     drain,

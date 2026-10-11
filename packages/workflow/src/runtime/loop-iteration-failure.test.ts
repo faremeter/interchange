@@ -41,6 +41,7 @@ import {
   type WorkflowRuntimeEnv,
 } from "@intx/workflow";
 import { waitForEvent, waitForNthEvent } from "@intx/workflow/testing";
+import { createTerminalChildHandle } from "./suspendable-child-handle";
 
 const allowAll: WorkflowAuthorizeFn = async () => ({
   effect: "allow",
@@ -249,7 +250,7 @@ function buildEnv(args: {
       throw new Error("loop iteration-failure test: invokeStep unused");
     },
     invokeAction: args.invokeAction,
-    spawnChild: async () => ({ terminalStatus: "completed" }),
+    spawnChild: async () => createTerminalChildHandle("completed"),
     clock,
     newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
     drain: createNoopDrainController(args.parentDef),

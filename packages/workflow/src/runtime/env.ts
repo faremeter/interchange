@@ -323,7 +323,9 @@ export interface BlobSubstrate {
  * inline child -- to a concrete `WorkflowDefinition` using whatever in-memory
  * lookup the runtime supplies (a lifted-body map in `runLocal`, the parent's
  * re-evaluated closure map in production), constructs the child run against
- * the supplied id, and returns the terminal status.
+ * the supplied id, and returns a handle already settled to the child's
+ * terminal. `runChildWorkflow` reads that one terminal event and does not
+ * proxy parks.
  *
  * The runtime body does not carry a definition lookup of its own.
  */
@@ -343,9 +345,7 @@ export type SpawnChildWorkflow = (input: {
   depth: number;
   /** The tree-wide spawn-depth ceiling, threaded to the child run. */
   maxChildSpawnDepth: number;
-}) => Promise<{
-  terminalStatus: "completed" | "failed" | "cancelled";
-}>;
+}) => Promise<SuspendableChildHandle>;
 
 /**
  * An approval park surfaced from a suspendable child body: the reserved
@@ -391,8 +391,9 @@ export type SuspendableChildHandle = {
 
 /**
  * Spawn a body sub-DAG as a child run that MAY suspend on an approval park.
- * Unlike `spawnChild` (which awaits a terminal), this returns a live handle
- * the caller drives across parks: the child's control-plane approval parks
+ * Unlike `spawnChild`, which returns a handle already settled to the child's
+ * terminal, this returns a live handle the caller drives across parks: the
+ * child's control-plane approval parks
  * surface via `handle.next()` so the caller proxies them up its own run's
  * park machinery, and `handle.resume` relays the granted decision back into
  * the child. onTrigger runs every event's body through this seam, so a body
@@ -561,12 +562,9 @@ export interface WorkflowRuntimeEnv {
    * {@link SpawnSuspendableChild}). Optional: a host that does not wire it
    * does not support onTrigger sections, and `runOnTrigger` fails loudly.
    *
-   * This is a second child-drive seam alongside the terminal-only
-   * `spawnChild` that `childWorkflow` uses, rather than one unified
-   * park-aware seam. The two are kept separate because unifying them would
-   * require migrating `childWorkflow`'s terminal-only path onto the
-   * park-aware drive; that is a deliberate, separate decision, not an
-   * oversight.
+   * Both seams return a {@link SuspendableChildHandle}. This callback is
+   * driven across parks. `spawnChild` is returned already settled, and
+   * `runChildWorkflow` reads one terminal event and does not proxy parks.
    */
   spawnSuspendableChild?: SpawnSuspendableChild;
   /**

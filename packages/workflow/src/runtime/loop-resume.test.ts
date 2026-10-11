@@ -43,6 +43,7 @@ import {
 } from "@intx/workflow";
 
 import { isResumableLoopStep } from "./dag";
+import { createTerminalChildHandle } from "./suspendable-child-handle";
 
 const body = defineWorkflow({
   id: "body",
@@ -155,7 +156,7 @@ function buildEnv(
     invokeStep,
     invokeAction,
     effects,
-    spawnChild: async () => ({ terminalStatus: "completed" }),
+    spawnChild: async () => createTerminalChildHandle("completed"),
     clock,
     newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
     drain: createNoopDrainController(parentWorkflow),

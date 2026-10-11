@@ -5,7 +5,10 @@ import path from "node:path";
 
 import { generateKeyPair } from "@intx/crypto";
 import { base64Encode, hexEncode } from "@intx/types";
-import { computeLiveDefinitionHash } from "@intx/workflow";
+import {
+  computeLiveDefinitionHash,
+  createTerminalChildHandle,
+} from "@intx/workflow";
 import { loadWorkflowDefinitionFromClosure } from "@intx/workflow-host";
 import type { ApprovalSnapshot, KeyPair } from "@intx/types/runtime";
 import type {
@@ -378,7 +381,7 @@ function buildBindings(opts: {
     workflowRunRef: "refs/heads/main",
     principal,
     invokeStep: async () => ({ output: null }),
-    spawnChild: async () => ({ terminalStatus: "completed" }),
+    spawnChild: async () => createTerminalChildHandle("completed"),
     scheduler: {
       scheduleIn: () => () => undefined,
     },
@@ -2022,7 +2025,7 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
       workflowRunRef: "refs/heads/main",
       principal,
       invokeStep,
-      spawnChild: async () => ({ terminalStatus: "completed" }),
+      spawnChild: async () => createTerminalChildHandle("completed"),
       scheduler: { scheduleIn: () => () => undefined },
       evaluateGrants: async () => ({
         effect: "allow" as const,
@@ -2211,7 +2214,7 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
       workflowRunRef: "refs/heads/main",
       principal,
       invokeStep,
-      spawnChild: async () => ({ terminalStatus: "completed" }),
+      spawnChild: async () => createTerminalChildHandle("completed"),
       scheduler: { scheduleIn: () => () => undefined },
       evaluateGrants: async () => ({
         effect: "allow" as const,

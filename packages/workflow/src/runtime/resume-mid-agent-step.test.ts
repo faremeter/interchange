@@ -24,6 +24,7 @@ import {
   type WorkflowEvent,
   type WorkflowRuntimeEnv,
 } from "@intx/workflow";
+import { createTerminalChildHandle } from "./suspendable-child-handle";
 
 function makeAgent(id: string) {
   return defineAgent({
@@ -65,7 +66,7 @@ describe("resume mid-agent-step", () => {
         resolvedBy: null,
       }),
       invokeStep,
-      spawnChild: async () => ({ terminalStatus: "completed" }),
+      spawnChild: async () => createTerminalChildHandle("completed"),
       clock,
       newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
       drain: createNoopDrainController(def),
@@ -169,7 +170,7 @@ describe("resume mid-agent-step", () => {
         resolvedBy: null,
       }),
       invokeStep,
-      spawnChild: async () => ({ terminalStatus: "completed" }),
+      spawnChild: async () => createTerminalChildHandle("completed"),
       clock,
       newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
       drain: createNoopDrainController(def),

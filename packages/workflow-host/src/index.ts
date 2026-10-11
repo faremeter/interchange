@@ -37,7 +37,6 @@ export {
 export {
   createInMemorySpawnChild,
   createInMemorySpawnSuspendableChild,
-  type ChildTerminalStatus,
   type RunChildWorkflow,
   type RunSuspendableChild,
 } from "./adapters/spawn-child";

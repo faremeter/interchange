@@ -39,6 +39,7 @@ import {
   type WorkflowRuntimeEnv,
 } from "@intx/workflow";
 import { waitForEvent, waitForNthEvent } from "@intx/workflow/testing";
+import { createTerminalChildHandle } from "./suspendable-child-handle";
 
 function textOf(turn: ConversationTurn): string {
   return turn.content.map((b) => (b.type === "text" ? b.text : "")).join("");
@@ -106,7 +107,7 @@ function buildEnv(args: {
       resolvedBy: null,
     }),
     invokeStep: args.invokeStep,
-    spawnChild: async () => ({ terminalStatus: "completed" }),
+    spawnChild: async () => createTerminalChildHandle("completed"),
     clock,
     newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
     drain: createNoopDrainController(args.def),

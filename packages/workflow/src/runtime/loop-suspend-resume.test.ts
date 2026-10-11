@@ -53,6 +53,7 @@ import {
 } from "@intx/workflow/testing";
 
 import { resolveDrainBehavior, type DrainController } from "./drain";
+import { createTerminalChildHandle } from "./suspendable-child-handle";
 
 const loopFns = (ref: string): LoopFn => {
   // Converge after the first iteration; `carry` is unused but must resolve.
@@ -98,7 +99,7 @@ function buildEnv(args: {
     authorize,
     invokeStep: args.invokeStep ?? noopInvokeStep,
     invokeAction: args.invokeAction,
-    spawnChild: async () => ({ terminalStatus: "completed" }),
+    spawnChild: async () => createTerminalChildHandle("completed"),
     clock,
     newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
     drain: args.drain ?? createNoopDrainController(args.parentDef),
