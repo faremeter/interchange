@@ -305,6 +305,18 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
     });
 
+    test("an empty config update keeps the stored sidecar placement", async () => {
+      await setTenantConfig({ sidecarPlacement: PLACEMENT });
+      const res = await patchTenant(MANAGE_TENANT, {});
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({
+        config: { sidecarPlacement: PLACEMENT },
+      });
+      expect(await savedTenantConfig()).toEqual({
+        sidecarPlacement: PLACEMENT,
+      });
+    });
+
     test("concurrent updates to different config keys both persist", async () => {
       const [lifecycleRes, placementRes] = await Promise.all([
         patchTenant(MANAGE_TENANT, { lifecycle: { maxLifetime: "1h" } }),
