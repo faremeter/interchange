@@ -2187,7 +2187,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
     });
 
-    test.each(["last ensure throws", "last ensure rejects"] as const)(
+    test.each([
+      "missing provisioner",
+      "last ensure throws",
+      "last ensure rejects",
+    ] as const)(
       "pending cancellation survives %s and settles dispatches after history recovery",
       async (failure) => {
         const dispatches = createWorkflowRunDispatchStore(h.db);
@@ -2232,7 +2236,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             status: "replacing",
             generation: 2,
             ensureAcceptedGeneration: null,
-            ensureAttempts: 9,
+            ensureAttempts: failure === "missing provisioner" ? 1 : 9,
             deploymentCleanupConfirmed: true,
             providerHoldReleased: true,
             nextAttemptAt: current,
@@ -2262,7 +2266,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         const reconciler = createSidecarAllocationReconciler({
           allocationStore: store,
           plugins: createSidecarPluginRegistry({
-            provisioners: [provisioner],
+            provisioners:
+              failure === "missing provisioner" ? [] : [provisioner],
           }),
           router: {
             fenceAllocation: () => undefined,
@@ -2279,10 +2284,19 @@ describe.skipIf(!harnessDbEnvAvailable())(
           hubWebSocketUrl: "wss://hub.example/ws",
           now: () => current,
         });
+        if (failure === "missing provisioner") await cancel();
         expect(await reconciler.reconcileNext()).toBe(true);
+        if (failure === "missing provisioner") {
+          current = new Date(current.getTime() + 300_000);
+          await store.wakeReconciliation(allocationId, 2);
+          expect(await reconciler.reconcileNext()).toBe(true);
+        }
         expect(await store.findById(allocationId)).toMatchObject({
-          status: "releasing",
-          failureCode: "sidecar_provisioning_retry_exhausted",
+          status: failure === "missing provisioner" ? "failed" : "releasing",
+          failureCode:
+            failure === "missing provisioner"
+              ? "provisioner_unavailable"
+              : "sidecar_provisioning_retry_exhausted",
           deploymentCleanupConfirmed: true,
         });
         await service({
@@ -2320,8 +2334,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
           status: "cancelled",
           failureCode: null,
         });
-        expect(await reconciler.reconcileNext()).toBe(true);
-        expect((await store.findById(allocationId))?.status).toBe("released");
+        if (failure !== "missing provisioner") {
+          expect(await reconciler.reconcileNext()).toBe(true);
+          expect((await store.findById(allocationId))?.status).toBe("released");
+        }
         for (const id of ["pending", "acknowledged"])
           expect(await dispatches.findById(id)).toMatchObject({
             status: "abandoned",

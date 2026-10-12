@@ -150,9 +150,9 @@ keep running past the Hub's cleanup disconnect deadline: a recorded failure
 cannot stop a disconnected process. Expiry records `destroy_failed` with
 `sidecar_cleanup_disconnect_timeout`; automatic cleanup resumes only if the
 sidecar reconnects. If the sidecar has been destroyed, operator recovery is
-required. Exhausted retries, permanent provider rejection, and
-`sidecar_cleanup_preparation_timeout` require operator recovery and preserve
-cleanup-only bindings for inventory without restoring workflow routes.
+required. Exhausted retries, permanent provider rejection, `provisioner_unavailable`,
+and `sidecar_cleanup_preparation_timeout` require operator recovery. Where cleanup
+remains, its binding allows inventory reports without restoring workflow routes.
 Removal is confirmed by an undeploy acknowledgement
 or by provider destruction that guarantees the worker and its restorable state
 cannot return.
@@ -290,7 +290,8 @@ Release status is available at
 policy, deadlines, and cleanup errors. After a cleanup disconnect timeout,
 automatic cleanup resumes only if the sidecar reconnects. If the sidecar has been
 destroyed, operator recovery is required. Exhausted retries, permanent provider
-rejection, and `sidecar_cleanup_preparation_timeout` require operator recovery.
+rejection, `provisioner_unavailable`, and `sidecar_cleanup_preparation_timeout`
+require operator recovery.
 `DELETE /api/tenants/:tenantId/workflows/runs/:runId` requests
 cancellation of a live run and returns `202`; its cancellation retention
 policy then applies.

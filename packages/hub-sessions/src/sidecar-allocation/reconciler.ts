@@ -182,6 +182,7 @@ const MAX_RETRY_BACKOFF_ATTEMPT = 5;
 const FIRST_DEPLOY_RETRY_LIMIT_MS = 60_000;
 const MAX_ENSURE_ATTEMPTS = 10;
 const PROVISIONING_RETRY_EXHAUSTED = "sidecar_provisioning_retry_exhausted";
+const PROVISIONER_AVAILABILITY_GRACE_MS = 5 * 60_000;
 const PROVISIONER_AVAILABILITY_RETRY_MS = 30_000;
 const CLEANUP_PREPARATION_GRACE_MS = 5 * 60_000;
 
@@ -377,6 +378,7 @@ export function createSidecarAllocationReconciler({
     });
   }
 
+  const provisionerUnavailableDeadlines = new Map<string, Date>();
   const cleanupPreparationDeadlines = new Map<string, Date>();
 
   function provisionerFor(
@@ -398,7 +400,66 @@ export function createSidecarAllocationReconciler({
       return {
         error: `Provisioner ${allocation.provisionerId} has binding ${provisioner.bindingFingerprint}; this allocation requires binding ${allocation.provisionerBindingFingerprint}`,
       };
+    provisionerUnavailableDeadlines.delete(allocation.id);
     return { provisioner };
+  }
+
+  async function waitForProvisioner(
+    allocation: SidecarAllocation,
+    leaseId: string,
+    reason: string,
+    cleanup?: CleanupProgress,
+  ): Promise<boolean> {
+    const status = allocation.status;
+    if (
+      status === "failed" ||
+      status === "released" ||
+      status === "destroy_failed"
+    )
+      throw new Error(
+        `Cannot wait for a provisioner while allocation ${allocation.id} is ${status}`,
+      );
+    let deadline = provisionerUnavailableDeadlines.get(allocation.id);
+    if (deadline === undefined) {
+      deadline = new Date(now().getTime() + PROVISIONER_AVAILABILITY_GRACE_MS);
+      provisionerUnavailableDeadlines.set(allocation.id, deadline);
+    }
+    const observedAt = now();
+    if (deadline <= observedAt) return false;
+    logger.warn`Waiting for allocation ${allocation.id}'s provisioner until ${deadline.toISOString()}: ${reason}`;
+    if (cleanup?.requestFailed) {
+      await retryDestroy(
+        allocation,
+        leaseId,
+        cleanup,
+        {
+          code: SIDECAR_CLEANUP_UNCONFIRMED_FAILURE_CODE,
+          message: cleanup.message,
+        },
+        deadline,
+      );
+    } else {
+      const delay = Math.min(
+        PROVISIONER_AVAILABILITY_RETRY_MS,
+        deadline.getTime() - observedAt.getTime(),
+      );
+      if (cleanup !== undefined) {
+        await retryCleanupWithoutAttempt(allocation, leaseId, cleanup, delay);
+      } else {
+        await finishReconciliation(allocation.id, () =>
+          allocationStore.scheduleRetry({
+            allocationId: allocation.id,
+            expectedStatus: status,
+            expectedGeneration: allocation.generation,
+            expectedLeaseId: leaseId,
+            nextAttemptAt: new Date(observedAt.getTime() + delay),
+            minimumDelayMs: delay,
+            now: observedAt,
+          }),
+        );
+      }
+    }
+    return true;
   }
 
   function retryAt(attempt: number): Date {
@@ -1095,6 +1156,7 @@ export function createSidecarAllocationReconciler({
     leaseId: string,
     cleanup: CleanupProgress,
     failure: { code: string; message: string },
+    retryDeadline?: Date,
   ): Promise<void> {
     if (
       allocation.status !== "replacing" &&
@@ -1129,7 +1191,12 @@ export function createSidecarAllocationReconciler({
         allocationId: allocation.id,
         expectedStatus: status,
         expectedGeneration: allocation.generation,
-        nextAttemptAt: retryAt(allocation.destroyAttempts),
+        nextAttemptAt: new Date(
+          Math.min(
+            retryAt(allocation.destroyAttempts).getTime(),
+            retryDeadline?.getTime() ?? Infinity,
+          ),
+        ),
         expectedLeaseId: leaseId,
         attempt: "destroy",
         now: now(),
@@ -1621,21 +1688,37 @@ export function createSidecarAllocationReconciler({
         await finishDeploymentCleanup(allocation, leaseId, cleanup);
         return;
       }
-      logger.error`Cleanup blocked for allocation ${allocation.id} on sidecar ${allocation.sidecarId ?? "unknown"} generation ${String(allocation.generation)}: ${selected.error}. Restore the matching provisioner to finish releasing capacity`;
-      if (cleanup.requestFailed) {
-        // An actual sidecar failure still spends an attempt even though its
-        // provider is unavailable. Missing configuration alone does not.
-        await retryDestroy(allocation, leaseId, cleanup, {
-          code: SIDECAR_CLEANUP_UNCONFIRMED_FAILURE_CODE,
-          message: cleanup.message,
+      if (
+        await waitForProvisioner(allocation, leaseId, selected.error, cleanup)
+      )
+        return;
+      logger.error`Provisioner availability grace expired for ${allocation.status} allocation ${allocation.id} on sidecar ${allocation.sidecarId ?? "unknown"} generation ${String(allocation.generation)}: ${selected.error}. Prior allocation reason: ${allocation.failureCode ?? "none"} ${allocation.failureMessage ?? ""}`;
+      if (cleanup.providerHoldReleased && cleanup.confirmed) {
+        const failed = await allocationStore.failWithoutInfrastructure({
+          allocationId: allocation.id,
+          expectedStatus: "replacing",
+          expectedGeneration: allocation.generation,
+          expectedLeaseId: leaseId,
+          code: "provisioner_unavailable",
+          message: selected.error,
+          now: now(),
         });
+        if (failed !== null)
+          router.retireAllocation({
+            allocationId: failed.id,
+            generation: failed.generation,
+          });
       } else {
-        await retryCleanupWithoutAttempt(
-          allocation,
-          leaseId,
-          cleanup,
-          PROVISIONER_AVAILABILITY_RETRY_MS,
-        );
+        const failed = await allocationStore.markDestroyFailed({
+          allocationId: allocation.id,
+          expectedGeneration: allocation.generation,
+          expectedLeaseId: leaseId,
+          code: "provisioner_unavailable",
+          message: selected.error,
+          countAttempt: cleanup.requestFailed,
+          now: now(),
+        });
+        if (failed !== null) fence(failed);
       }
       return;
     }
@@ -1691,47 +1774,32 @@ export function createSidecarAllocationReconciler({
       await acceptPlacement(allocation, leaseId, pendingPlacement.result);
       return;
     }
-    const selected = provisionerFor(allocation);
-    if ("error" in selected) {
-      if (allocation.status === "pending") {
-        const failed = await allocationStore.failWithoutInfrastructure({
-          allocationId: allocation.id,
-          expectedStatus: "pending",
-          expectedGeneration: allocation.generation,
-          code: "provisioner_unavailable",
-          message: selected.error,
-          expectedLeaseId: leaseId,
-          now: now(),
-        });
-        if (failed !== null) {
-          router.retireAllocation({
-            allocationId: failed.id,
-            generation: failed.generation,
-          });
-        }
-      } else {
-        const status = allocation.status;
-        await finishReconciliation(allocation.id, () =>
-          allocationStore.scheduleRetry({
+    switch (allocation.status) {
+      case "pending": {
+        const selected = provisionerFor(allocation);
+        if ("error" in selected) {
+          if (await waitForProvisioner(allocation, leaseId, selected.error))
+            return;
+          const failed = await allocationStore.failWithoutInfrastructure({
             allocationId: allocation.id,
-            expectedStatus: status,
+            expectedStatus: "pending",
             expectedGeneration: allocation.generation,
-            nextAttemptAt: retryAt(
-              allocation.ensureAttempts + allocation.destroyAttempts,
-            ),
+            code: "provisioner_unavailable",
+            message: selected.error,
             expectedLeaseId: leaseId,
             now: now(),
-          }),
-        );
-      }
-      return;
-    }
-    const { provisioner } = selected;
-
-    switch (allocation.status) {
-      case "pending":
-        await bindAndEnsure(allocation, leaseId, provisioner, false);
+          });
+          if (failed !== null) {
+            router.retireAllocation({
+              allocationId: failed.id,
+              generation: failed.generation,
+            });
+          }
+          return;
+        }
+        await bindAndEnsure(allocation, leaseId, selected.provisioner, false);
         return;
+      }
       case "provisioning": {
         // The raw bearer token and unrecorded acceptance are not durable. A
         // restart has no parked result to resume, so it fences uncertain work.
@@ -1906,11 +1974,17 @@ export function createSidecarAllocationReconciler({
 
   async function repairUnscheduledConnections(): Promise<void> {
     const parked = [...pendingPlacements];
+    const unavailable = [...provisionerUnavailableDeadlines.keys()];
     const preparing = [...cleanupPreparationDeadlines.keys()];
     const allocations = await allocationStore.listForConnectionRepair();
     const current = new Map(
       allocations.map((allocation) => [allocation.id, allocation]),
     );
+    for (const id of unavailable) {
+      const allocation = current.get(id);
+      if (allocation === undefined || allocation.status === "destroy_failed")
+        provisionerUnavailableDeadlines.delete(id);
+    }
     for (const id of preparing) {
       const allocation = current.get(id);
       if (
