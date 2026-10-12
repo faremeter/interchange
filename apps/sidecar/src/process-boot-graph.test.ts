@@ -2,7 +2,7 @@ import { describe, test, expect } from "bun:test";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-// Boot-graph guard for the spawned workflow-child and the probe child.
+// Boot-graph guards for the sidecar and its workflow and probe children.
 //
 // Each child evaluates its whole module graph on every cold start. It must
 // never pull the control-plane database layer (`@intx/db` / `drizzle`) or the
@@ -11,8 +11,10 @@ import { dirname, join } from "node:path";
 // importing the orchestrator that spawns the child is a backwards dependency.
 // The db-free substrate is reachable via `@intx/hub-sessions/substrate` and
 // the path helpers via `@intx/hub-agent/paths`; the package barrels are not.
+// The sidecar loads its orchestrator and repository substrate without the
+// Hub services or database layer.
 //
-// This walks the child's VALUE-import graph and fails if any forbidden module
+// This walks each process's VALUE-import graph and fails if any forbidden module
 // is reachable. `Bun.build` erases `import type` and type-only specifiers
 // before resolution (the project's `verbatimModuleSyntax` + `isolatedModules`
 // guarantee every value-syntax import that survives is a real runtime import),
@@ -92,7 +94,7 @@ function forbiddenReason(spec: string): string | null {
   return null;
 }
 
-async function childValueImportGraph(entrypoints: string[]): Promise<{
+async function valueImportGraph(entrypoints: string[]): Promise<{
   importers: Map<string, Set<string>>;
   modules: Set<string>;
   resolveFailures: string[];
@@ -151,13 +153,16 @@ async function childValueImportGraph(entrypoints: string[]): Promise<{
   });
 
   if (!result.success) {
-    throw new AggregateError(result.logs, "Child import graph failed to build");
+    throw new AggregateError(
+      result.logs,
+      "Process import graph failed to build",
+    );
   }
   return { importers, modules, resolveFailures };
 }
 
 async function expectCleanBootGraph(binary: string): Promise<void> {
-  const { importers, resolveFailures } = await childValueImportGraph(
+  const { importers, resolveFailures } = await valueImportGraph(
     binaryEntrypoints(binary),
   );
 
@@ -204,9 +209,7 @@ describe("workflow-child boot graph", () => {
   });
 
   test("excludes supervisor orchestration and parent-only wire schemas", async () => {
-    const { modules } = await childValueImportGraph(
-      binaryEntrypoints(CHILD_BINARY),
-    );
+    const { modules } = await valueImportGraph(binaryEntrypoints(CHILD_BINARY));
     const forbiddenModules = [
       "packages/types/src/index.ts",
       "packages/types/src/runtime.ts",
@@ -246,7 +249,7 @@ describe("workflow-probe-child boot graph", () => {
 });
 
 test("probe and authoring imports exclude unused host and execution schemas", async () => {
-  const { importers, modules, resolveFailures } = await childValueImportGraph([
+  const { importers, modules, resolveFailures } = await valueImportGraph([
     ...binaryEntrypoints(PROBE_BINARY),
     Bun.resolveSync("@intx/agent/authoring", repoRoot),
     Bun.resolveSync("@intx/workflow/definition", repoRoot),
@@ -289,6 +292,27 @@ test("probe and authoring imports exclude unused host and execution schemas", as
   expect(
     [...modules].filter((module) =>
       forbiddenModules.some((path) => module.startsWith(path)),
+    ),
+  ).toEqual([]);
+});
+
+test("sidecar boot respects process boundaries", async () => {
+  const { importers, modules, resolveFailures } = await valueImportGraph([
+    join(repoRoot, "apps/sidecar/src/index.ts"),
+  ]);
+  expect(resolveFailures).toEqual([]);
+  expect(modules).toContain(
+    "packages/workflow-host/src/deploy/workflow-host-wiring.ts",
+  );
+  expect(importers.has("@intx/hub-sessions/substrate")).toBe(true);
+  expect(
+    [...importers.keys()].filter(
+      (specifier) =>
+        specifier === "@intx/hub-sessions" ||
+        specifier === "@intx/db" ||
+        specifier.startsWith("@intx/db/") ||
+        specifier === "drizzle-orm" ||
+        specifier.startsWith("drizzle-orm/"),
     ),
   ).toEqual([]);
 });

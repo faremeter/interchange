@@ -27,6 +27,8 @@ import {
   type CredentialCipher,
   type SignalKind,
 } from "@intx/types";
+import { deriveWorkflowRunId } from "@intx/types/workflow-run-id";
+import { workflowSourceAssetMountPath } from "@intx/types/workflow-sources";
 import {
   parseInferenceEvent,
   type ApprovalSnapshot,
@@ -148,10 +150,7 @@ function deploymentSourceGitRoot(
  * mount-path helper) so deploy and restore agree without the frame's delivered
  * assets. Source-format entries resolve through `deriveSourceGitDirs` instead.
  */
-function deriveSourceAssetMounts(
-  pin: SourceRefPin,
-  workflowSourceAssetMountPath: (assetId: string) => string,
-): Map<string, string> {
+function deriveSourceAssetMounts(pin: SourceRefPin): Map<string, string> {
   const mounts = new Map<string, string>();
   for (const entry of pin.closure.entries) {
     if (
@@ -248,7 +247,6 @@ export async function resolveDeploymentAssetMounts(
   dataDir: string,
   deploymentId: string,
   pin: SourceRefPin,
-  workflowSourceAssetMountPath: (assetId: string) => string,
   sourceAssetGitDir: (gitDirRoot: string, assetId: string) => string,
 ): Promise<{
   assetRoot: string;
@@ -256,10 +254,7 @@ export async function resolveDeploymentAssetMounts(
   gitDirs: ReadonlyMap<string, string>;
 }> {
   const assetRoot = deploymentSourceAssetRoot(dataDir, deploymentId);
-  const assetMounts = deriveSourceAssetMounts(
-    pin,
-    workflowSourceAssetMountPath,
-  );
+  const assetMounts = deriveSourceAssetMounts(pin);
   for (const [assetId, mountPath] of assetMounts) {
     const mountDir = pathJoin(assetRoot, mountPath);
     if (!(await isExistingDir(mountDir))) {
@@ -339,8 +334,8 @@ type StepStrategy = {
  *
  * `stepOrder.length === 1` is the single-agent deploy: the sole
  * step keeps the deploy's own mail address, so its grants live in the
- * agent-state repo keyed by `parseAgentId(address)`. The spawned child
- * reads the agent's grants from where the run's identity already
+ * agent-state repo keyed by `deriveWorkflowRunId(address)`. The spawned
+ * child reads the agent's grants from where the run's identity already
  * lives, and the deploy frame's run address is preserved (the
  * workflow-run repo stays keyed by `deriveWorkflowRunRepoId(address)`).
  *
@@ -361,20 +356,19 @@ function createStepStrategy(args: {
   legacyAddress: string;
   stepOrder: readonly string[];
   multistepDeriveStepAddress: DeriveStepAddress;
-  parseAgentId: (agentAddress: string) => string;
 }): StepStrategy {
   if (args.stepOrder.length === 1) {
     return {
       deriveStepAddress: () => args.legacyAddress,
-      // `parseAgentId` is deferred into the closure rather than computed
-      // eagerly: the supervisor only invokes `deriveStepRepoId` while
-      // assembling the credentialsSnapshot inside `spawn()`, so a
+      // `deriveWorkflowRunId` is deferred into the closure rather than
+      // computed eagerly: the supervisor only invokes `deriveStepRepoId`
+      // while assembling the credentialsSnapshot inside `spawn()`, so a
       // malformed address surfaces at the same point the rest of the
       // spawn path would fault rather than ahead of the deploy router's
       // other boundary checks.
       deriveStepRepoId: () => ({
         kind: "agent-state",
-        id: args.parseAgentId(args.legacyAddress),
+        id: deriveWorkflowRunId(args.legacyAddress),
       }),
     };
   }
@@ -1268,12 +1262,8 @@ export function createSidecarDeployRouter<
     definition: WorkflowProjectionDefinition;
     context: string;
   }) => readonly string[];
-  /** Workspace-relative mount path a tarball source asset is delivered under. */
-  workflowSourceAssetMountPath: (assetId: string) => string;
   /** Absolute git directory a source-format asset is indexed into. */
   sourceAssetGitDir: (gitDirRoot: string, assetId: string) => string;
-  /** Run id of an `<runId>@<domain>` address. */
-  parseAgentId: (agentAddress: string) => string;
   /**
    * The most incarnations the router holds; a deploy of another address
    * past it is refused. Defaults to `MAX_SIDECAR_INCARNATIONS`, the most a
@@ -1747,7 +1737,6 @@ export function createSidecarDeployRouter<
         dataDir,
         deploymentId,
         pin,
-        deps.workflowSourceAssetMountPath,
         deps.sourceAssetGitDir,
       );
 
@@ -1813,7 +1802,6 @@ export function createSidecarDeployRouter<
       legacyAddress: spec.agentAddress,
       stepOrder: spec.definition.stepOrder,
       multistepDeriveStepAddress,
-      parseAgentId: deps.parseAgentId,
     });
 
     // Every step id the deployment's credentials snapshot must cover. This is
@@ -2461,7 +2449,6 @@ export function createSidecarDeployRouter<
         legacyAddress: frame.agentAddress,
         stepOrder: effectiveDefinition.stepOrder,
         multistepDeriveStepAddress,
-        parseAgentId: deps.parseAgentId,
       });
 
       // The spec the shared spawn core consumes, and the durable record that
@@ -2594,7 +2581,7 @@ export function createSidecarDeployRouter<
       );
     },
     async control(frame): Promise<WorkflowControlOutcome> {
-      if (deps.parseAgentId(frame.agentAddress) !== frame.runId) {
+      if (deriveWorkflowRunId(frame.agentAddress) !== frame.runId) {
         throw new Error(
           "Workflow control run does not match the deployment address",
         );

@@ -79,14 +79,16 @@ pull in the shapes they need:
 - `@intx/types/workflow-sources` — schemas for where a code-sourced
   workflow definition's bytes come from: `WorkflowDefinitionRegistrySource`,
   `WorkflowDefinitionAssetSource` (with its `tarball` and `source`
-  `package` arms), unioned as `WorkflowDefinitionSource`.
+  `package` arms), unioned as `WorkflowDefinitionSource`, and the shared
+  `workflowSourceAssetMountPath` layout helper.
 - `@intx/types/attachments` — MIME classification, attachment categories,
   and attachment size/count limits.
 - `@intx/types/signals` — signal kinds, approval decisions, and correlation
   signal-name helpers.
 - `@intx/types/agent-address` — formatting and parsing run mail addresses.
 - `@intx/types/workflow-run-id` — `deriveWorkflowRunId`, which extracts a
-  deployment's top-level run ID from its mail address.
+  deployment's top-level run ID from its mail address and throws on an
+  invalid address.
 - `@intx/types/base64` — byte encoding and decoding.
 - `@intx/types/concat` — `concatBytes` for combining byte arrays.
 - `@intx/types/has-code` — the `hasCode` error guard.

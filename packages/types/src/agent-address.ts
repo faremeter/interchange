@@ -5,11 +5,6 @@
 // The shape of the right-hand side of the "@" is not validated beyond the
 // requirement that it be non-empty: tightening the contract (DNS-ish
 // validation, normalisation, etc.) is a separate follow-up.
-//
-// `@intx/hub-sessions`'s `parseAgentId` is the canonical throwing wrapper
-// over `parseRunAddress` — call it when a `null` return would
-// propagate as a silent bug, and keep this parser's `null` return
-// reserved for callers that already have a structured fallback.
 
 const RUN_PREFIX = "run_";
 
