@@ -4,10 +4,6 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { type } from "arktype";
-import postgres from "postgres";
-
-import { generateId } from "@intx/hub-common";
-import { loadHarnessDbConfig } from "@intx/test-harness/db-harness";
 
 import {
   harnessHubEnvAvailable,
@@ -21,46 +17,12 @@ import {
   type CreatedTenant,
   type SignedUpUser,
 } from "./lib/git-asset-fixtures";
-
-type MembershipStatus = "active" | "suspended" | "invited" | "deactivated";
+import {
+  addMembership,
+  type MembershipStatus,
+} from "./lib/membership-fixtures";
 
 const TenantName = type({ name: "string" });
-
-async function addMembership(
-  schema: string,
-  tenantId: string,
-  user: SignedUpUser,
-  roleName: "admin" | "member",
-  status: MembershipStatus,
-): Promise<void> {
-  const dbConfig = loadHarnessDbConfig();
-  const sql = postgres({
-    host: dbConfig.host,
-    port: dbConfig.port,
-    user: dbConfig.user,
-    password: dbConfig.password,
-    database: dbConfig.database,
-    max: 1,
-    connection: { search_path: `"${schema.replace(/"/g, '""')}"` },
-  });
-  try {
-    const principalId = generateId("principal");
-    await sql`insert into principal (id, tenant_id, kind, ref_id, status)
-              values (${principalId}, ${tenantId}, 'user', ${user.userId}, ${status})`;
-    const assigned =
-      await sql`insert into principal_role (principal_id, role_id)
-              select ${principalId}, id from role
-              where tenant_id = ${tenantId} and name = ${roleName}
-              returning role_id`;
-    if (assigned.length !== 1) {
-      throw new Error(
-        `addMembership: tenant ${tenantId} has no ${roleName} role to assign`,
-      );
-    }
-  } finally {
-    await sql.end();
-  }
-}
 
 describe.skipIf(!harnessHubEnvAvailable())(
   "tenant update authorization",
