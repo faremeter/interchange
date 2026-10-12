@@ -16,6 +16,7 @@ import {
 import type { TenantEnv } from "../context";
 import { errorResponse } from "../error-response";
 import { isReferencedRowViolation } from "../pg-errors";
+import { findUserPrincipal } from "../principal-lookup";
 import { ts } from "../format";
 import { generateId } from "@intx/hub-common";
 import { idResource } from "../middleware/grant";
@@ -401,12 +402,9 @@ export function createInviteRoutes({
         return errorResponse(c, "not_found", "No user found with that email");
       }
 
-      const existing = await db.query.principal.findFirst({
-        where: and(
-          eq(principal.tenantId, tenantCtx.id),
-          eq(principal.kind, "user"),
-          eq(principal.refId, invitedUser.id),
-        ),
+      const existing = await findUserPrincipal(db, {
+        tenantId: tenantCtx.id,
+        userId: invitedUser.id,
       });
 
       if (existing) {

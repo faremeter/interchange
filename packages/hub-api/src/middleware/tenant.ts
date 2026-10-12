@@ -1,12 +1,13 @@
-import { eq, and } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import type { Context, MiddlewareHandler, Next } from "hono";
 
-import { tenant, principal } from "@intx/db/schema";
+import { tenant } from "@intx/db/schema";
 import type { DB } from "@intx/db";
 import { getLogger } from "@intx/log";
 
 import { unauthorizedResponse, type AppEnv, type TenantEnv } from "../context";
 import { errorResponse } from "../error-response";
+import { findUserPrincipal } from "../principal-lookup";
 
 const log = getLogger(["hub", "middleware", "tenant"]);
 
@@ -46,12 +47,9 @@ export function createResolveTenant({
       return errorResponse(c, "not_found", "Tenant not found");
     }
 
-    const principalRow = await db.query.principal.findFirst({
-      where: and(
-        eq(principal.tenantId, tenantId),
-        eq(principal.kind, "user"),
-        eq(principal.refId, user.id),
-      ),
+    const principalRow = await findUserPrincipal(db, {
+      tenantId,
+      userId: user.id,
     });
 
     if (!principalRow) {
