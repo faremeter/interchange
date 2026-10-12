@@ -18,7 +18,7 @@ Every route falls into one of three scopes:
 
 - **`/api/tenants/:tenantId/...`** -- Tenant-scoped operations. All reads and writes within a tenant.
 - **`/api/me/...`** -- User-scoped, cross-tenant reads. Dashboard views aggregating across all tenants the user belongs to.
-- **`/api/...`** -- Global operations. Auth, tenant creation, system health, model catalog.
+- **`/api/...`** -- Global operations. Auth, tenant creation, system health, model catalog. Creating a tenant under a parent is the one global operation that checks a grant, in the parent tenant.
 
 ### Why tenant is always in the path
 

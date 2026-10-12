@@ -21,7 +21,11 @@ import type { ConditionRegistry, GrantStore } from "@intx/types/authz";
 
 import type { AppEnv } from "./context";
 import { createSessionMiddleware } from "./middleware/session";
-import { createRequireGrant, type RequireGrant } from "./middleware/grant";
+import {
+  createAuthorizeGrant,
+  createRequireGrant,
+  type RequireGrant,
+} from "./middleware/grant";
 import { createResolveTenant, requireAuth } from "./middleware/tenant";
 import type { GetSession } from "./session";
 import type {
@@ -218,6 +222,10 @@ export function mountHubRoutes(
   const conditionRegistry: ConditionRegistry = opts.conditionRegistry ?? {
     time_window: timeWindowEvaluator,
   };
+  const authorizeGrant = createAuthorizeGrant({
+    grantStore,
+    conditionRegistry,
+  });
   const requireGrant: RequireGrant = createRequireGrant({
     grantStore,
     conditionRegistry,
@@ -290,6 +298,7 @@ export function mountHubRoutes(
       principalKeyStore,
       grantStore,
       conditionRegistry,
+      authorizeGrant,
     }),
   );
 
