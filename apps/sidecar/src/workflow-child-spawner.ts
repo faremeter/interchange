@@ -145,12 +145,14 @@ function frameReaderFromFd(fd: number): FrameReader {
  * channel and surfaces the parent-side read fd as the supervisor's
  * `FrameReader`.
  *
- * Failure modes flow through the returned handle's `exited` promise.
- * A `Bun.spawn` that fails to launch (binary missing, env malformed,
- * `EXEC` error) settles `exited` with a non-zero code; the
- * supervisor's `wireChild` races `exited` against `readyPromise`
- * inside `spawn()` so a spawn-time crash surfaces as a rejected
- * spawn rather than a wedged `starting` state.
+ * A child that fails to launch (binary missing or not executable)
+ * makes `Bun.spawn` throw, so this spawner throws synchronously and no
+ * handle exists. The supervisor calls the spawner before it enters
+ * `starting`, so a first spawn rejects and the supervisor stays idle;
+ * a recycle that fails this way shuts the supervisor down. A child
+ * that launches and then dies before `ready` ends the control
+ * channel, which rejects the ready handshake; the ready timeout
+ * covers a child that keeps the channel open without sending `ready`.
  */
 export const defaultSubprocessSpawner: SubprocessSpawner = ({
   binaryPath,

@@ -1,16 +1,13 @@
 // End-to-end exercise of the Bun.spawn-backed `defaultSubprocessSpawner`.
-// The supervisor's `wireChild` consumes
-// four behaviours from the handle:
+// The supervisor relies on four behaviours of the spawner:
 //
 //   1. The control channel surfaces NDJSON lines the child writes
 //      to its stdout. A real child writes a signed `ready` envelope
 //      here; the test stub writes a sentinel NDJSON line.
 //   2. The handle's `exited` future resolves with the child's
-//      terminal exit code so the supervisor can race spawn-time
-//      crashes against `readyPromise`.
-//   3. A `Bun.spawn` that fails immediately (binary missing) settles
-//      `exited` with a non-zero code rapidly enough for that race
-//      to fire.
+//      terminal exit code.
+//   3. A child that cannot launch (binary missing) makes the spawner
+//      throw synchronously, so no handle is returned.
 //   4. The child's runtime env is exactly the supervisor-supplied
 //      env -- unrelated `process.env` entries do not leak in.
 
@@ -130,16 +127,11 @@ eventStream.write(event, () => {
     }
   });
 
-  test("spawn-time failure surfaces fast enough for the supervisor's readyPromise race", async () => {
-    // The supervisor's `wireChild` races `handle.exited` against
-    // the child's `readyPromise`. A child that fails to reach
-    // `ready` (the production binary's failure mode for malformed
-    // env: throws in `parseSpawnTimeEnv` before opening the
-    // control channel) must surface as `exited` settling with a
-    // non-zero code -- otherwise the supervisor wedges in
-    // `starting`. The inline child below exits 1 without writing
-    // a single byte; the spawner's `exited` future must observe
-    // the terminal code.
+  test("a child that exits before writing anything resolves exited with its code", async () => {
+    // The production binary fails this way on a malformed env: it
+    // throws in `parseSpawnTimeEnv` before writing `ready`. The
+    // inline child below exits 7 without writing a single byte; the
+    // spawner's `exited` future must observe the terminal code.
     const childScript = `process.exit(7);`;
     const scriptPath = await writeChildScript(childScript);
     const wrapperPath = path.join(
@@ -162,14 +154,12 @@ eventStream.write(event, () => {
   });
 
   test("Bun.spawn synchronous throws on a missing binary surface to the caller", () => {
-    // The other half of the spawn-time race: a binary path that
-    // does not exist on disk surfaces as a synchronous throw from
-    // `Bun.spawn`, which the supervisor's `spawn(opts)` propagates
-    // to its caller. The supervisor never reaches the
-    // readyPromise race in this branch; the throw IS the failure
-    // signal. Pin the synchronous-throw behaviour here so a future
-    // Bun release that swaps to an async failure mode does not
-    // silently change the supervisor's spawn-error surface.
+    // A binary path that does not exist on disk surfaces as a
+    // synchronous throw from `Bun.spawn`, which the supervisor's
+    // `spawn(opts)` propagates to its caller; the throw is the
+    // failure signal. Pin the synchronous-throw behaviour here so a
+    // future Bun release that swaps to an async failure mode does
+    // not silently change the supervisor's spawn-error surface.
     expect(() => {
       defaultSubprocessSpawner({
         binaryPath: "/nonexistent-binary-for-spawner-test",
