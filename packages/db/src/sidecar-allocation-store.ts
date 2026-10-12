@@ -101,6 +101,7 @@ export type SidecarAllocation = {
   readonly reconciliationLeaseExpiresAt?: Date;
   /** Outstanding deploy attempt, retained after its reconciliation lease ends. */
   readonly initializationLeaseId?: string;
+  /** Sidecar identities bound in the current provisioning sequence. */
   readonly ensureAttempts: number;
   readonly destroyAttempts: number;
   /** Confirmed removal for this cleanup generation, retained across retries. */
@@ -208,7 +209,7 @@ export type ScheduleSidecarAllocationRetryArgs = {
       readonly failure?: never;
     }
   | {
-      readonly attempt?: "ensure";
+      readonly attempt?: never;
       readonly failure?: {
         readonly code: string;
         readonly message: string;
@@ -224,6 +225,8 @@ export type BeginSidecarReplacementArgs = {
   readonly onlyIfInitializationIncomplete?: boolean;
   readonly expectedInitializationLeaseId?: string;
   readonly nextAttemptAt: Date;
+  /** Schedule a new sequence when the previous worker finished initialization. */
+  readonly firstAttemptAt: Date;
   readonly failureCode: string;
   readonly failureMessage: string;
   readonly now?: Date;
@@ -254,15 +257,23 @@ export type FailStoppedSidecarDeploymentArgs = {
 
 export type BeginUnrecoverableSidecarReleaseArgs = {
   readonly allocationId: string;
-  readonly expectedStatus: "allocated" | "provisioning";
   readonly expectedGeneration: number;
   readonly expectedLeaseId: string;
-  readonly onlyIfInitializationIncomplete?: boolean;
-  readonly expectedInitializationLeaseId?: string;
   readonly failureCode: string;
   readonly failureMessage: string;
   readonly now?: Date;
-};
+} & (
+  | {
+      readonly expectedStatus: "allocated" | "provisioning";
+      readonly onlyIfInitializationIncomplete?: boolean;
+      readonly expectedInitializationLeaseId?: string;
+    }
+  | {
+      readonly expectedStatus: "replacing";
+      readonly onlyIfInitializationIncomplete?: never;
+      readonly expectedInitializationLeaseId?: never;
+    }
+);
 
 export type MarkSidecarReleasedArgs = {
   readonly allocationId: string;
@@ -294,7 +305,7 @@ export type ScheduleSidecarReconnectIfUnscheduledArgs =
 
 export type FailSidecarAllocationArgs = {
   readonly allocationId: string;
-  readonly expectedStatus: "pending" | "provisioning";
+  readonly expectedStatus: "pending" | "provisioning" | "replacing";
   readonly expectedGeneration: number;
   readonly code: string;
   readonly message: string;
@@ -787,9 +798,37 @@ function buildSidecarAllocationStore(
       readonly failureMessage: string;
     },
   ): Promise<SidecarAllocation | null> {
-    const releasing = await beginRelease(args, tx);
-    if (releasing === null) return null;
     const now = databaseTimestamp(args.now);
+    let releasing: SidecarAllocation | null;
+    if (args.expectedStatus === "replacing") {
+      // This generation already fences the old copy for cleanup. Giving up
+      // replacement must preserve its proofs, attempts and disconnect window.
+      const [updated] = await tx
+        .update(sidecarAllocation)
+        .set({
+          status: "releasing",
+          failureCode: args.failureCode,
+          failureMessage: args.failureMessage,
+          nextAttemptAt: now,
+          reconciliationLeaseId: null,
+          reconciliationLeaseExpiresAt: null,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(sidecarAllocation.id, args.allocationId),
+            eq(sidecarAllocation.status, args.expectedStatus),
+            eq(sidecarAllocation.generation, args.expectedGeneration),
+            ...leaseCondition(args.expectedLeaseId),
+          ),
+        )
+        .returning();
+      releasing =
+        updated === undefined ? null : parseSidecarAllocationRow(updated);
+    } else {
+      releasing = await beginRelease(args, tx);
+    }
+    if (releasing === null) return null;
     // Confirmed removal leaves the requested cancellation and its dispatches
     // to lifecycle after accepted-history recovery.
     if (
@@ -1038,6 +1077,7 @@ function buildSidecarAllocationStore(
             adapterManifestDigest: args.adapterManifestDigest,
             status: "provisioning",
             generation: args.expectedGeneration + 1,
+            ensureAttempts: sql`${sidecarAllocation.ensureAttempts} + 1`,
             deploymentCleanupConfirmed: false,
             providerHoldReleased: false,
             ensureAcceptedGeneration: null,
@@ -1094,6 +1134,7 @@ function buildSidecarAllocationStore(
             status: "provisioning",
             // A delayed cleanup hello must not match the replacement binding.
             generation: args.generation + 1,
+            ensureAttempts: sql`${sidecarAllocation.ensureAttempts} + 1`,
             deploymentCleanupConfirmed: false,
             providerHoldReleased: false,
             ensureAcceptedGeneration: null,
@@ -1173,7 +1214,6 @@ function buildSidecarAllocationStore(
             ensureAcceptedGeneration: args.generation,
             externalRef: args.externalRef ?? null,
             nextAttemptAt: sidecarAllocation.connectDeadline,
-            ensureAttempts: sql`${sidecarAllocation.ensureAttempts} + 1`,
             failureCode: null,
             failureMessage: null,
             updatedAt: databaseTimestamp(args.now),
@@ -1204,9 +1244,6 @@ function buildSidecarAllocationStore(
               : sql`greatest(${sql.param(args.nextAttemptAt, sidecarAllocation.nextAttemptAt)}, clock_timestamp() + (${args.minimumDelayMs} * interval '1 millisecond'))`,
           reconciliationLeaseId: null,
           reconciliationLeaseExpiresAt: null,
-          ...(args.attempt === "ensure"
-            ? { ensureAttempts: sql`${sidecarAllocation.ensureAttempts} + 1` }
-            : {}),
           ...(args.attempt === "destroy"
             ? { destroyAttempts: sql`${sidecarAllocation.destroyAttempts} + 1` }
             : {}),
@@ -1318,11 +1355,8 @@ function buildSidecarAllocationStore(
     ): Promise<SidecarAllocation | null> {
       const now = databaseTimestamp(args.now);
       return db.transaction(async (tx) => {
-        if (
-          args.onlyIfInitializationIncomplete &&
-          (await initializationCompleted(tx, args))
-        )
-          return null;
+        const initialized = await initializationCompleted(tx, args);
+        if (args.onlyIfInitializationIncomplete && initialized) return null;
         // The digest stays: the row still names the sidecar being destroyed,
         // which hosts it for reuse until `destroy` returns, and
         // `bindReplacementSidecar` records the digest of the next sidecar.
@@ -1332,11 +1366,16 @@ function buildSidecarAllocationStore(
             status: "replacing",
             generation: args.expectedGeneration + 1,
             destroyAttempts: 0,
+            // Provider acceptance alone does not complete a provisioning sequence.
+            // Preserve its budget until a worker has actually initialized.
+            ensureAttempts: initialized ? 0 : sidecarAllocation.ensureAttempts,
             deploymentCleanupConfirmed: sql`${sidecarAllocation.ensureAcceptedGeneration} is null`,
             providerHoldReleased: false,
             initializationLeaseId: null,
             ensureAcceptedGeneration: null,
-            nextAttemptAt: args.nextAttemptAt,
+            nextAttemptAt: initialized
+              ? args.firstAttemptAt
+              : args.nextAttemptAt,
             reconciliationLeaseId: null,
             reconciliationLeaseExpiresAt: null,
             connectDeadline: null,
@@ -1598,6 +1637,12 @@ function buildSidecarAllocationStore(
           eq(sidecarAllocation.status, args.expectedStatus),
           eq(sidecarAllocation.generation, args.expectedGeneration),
           ...leaseCondition(args.expectedLeaseId),
+          ...(args.expectedStatus === "replacing"
+            ? [
+                eq(sidecarAllocation.deploymentCleanupConfirmed, true),
+                eq(sidecarAllocation.providerHoldReleased, true),
+              ]
+            : []),
         );
         if (
           (await lockAllocationWithSidecars(executor, condition)) === undefined
@@ -1998,12 +2043,13 @@ function buildSidecarAllocationStore(
       const [updated] = await db
         .update(sidecarAllocation)
         .set({
-          // A parked disconnect wait wakes immediately. Reconnect notifications
-          // preserve counted-failure backoff even if the socket closed again.
+          // Wake disconnected cleanup immediately, but preserve failure backoff
+          // and the replacement delay before releasing the old provider hold.
           nextAttemptAt: preserveRetryBackoff
             ? sql`case
                 when ${sidecarAllocation.status} in ('releasing', 'replacing')
-                  and ${sidecarAllocation.destroyAttempts} > 0
+                  and (${sidecarAllocation.destroyAttempts} > 0 or
+                    (${sidecarAllocation.status} = 'replacing' and not ${sidecarAllocation.providerHoldReleased}))
                   and ${sidecarAllocation.nextAttemptAt} is not null
                   and ${sidecarAllocation.nextAttemptAt} is distinct from ${sidecarAllocation.connectDeadline}
                 then ${sidecarAllocation.nextAttemptAt}

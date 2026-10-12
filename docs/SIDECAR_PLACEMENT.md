@@ -209,6 +209,25 @@ connect as a new sidecar, even while that sidecar is restarting: after that a
 probe fails, and a deployment is failed and has to be started again, which
 costs little since it has not run yet.
 
+### Provisioning retries
+
+Provisioning and parked restoration allow at most 10 attempts for retryable
+failures. Once a first placement is accepted, missing the connection deadline
+fails it with `sidecar_connect_failed` instead of starting another attempt.
+Binding an identity spends an attempt before `ensure`, even if interrupted.
+Cleanup and Hub restarts preserve the count. Only replacing a parked worker
+that completed initialization resets the count and backoff; replacements that
+never connect keep spending the same budget.
+
+Retryable provisioning failures back off for 1, 2, 4, 8, 16, then 30 seconds,
+independently of cleanup attempts. Old-sidecar reconnects preserve this delay.
+Exhaustion fails the workflow with `sidecar_provisioning_retry_exhausted` unless
+cancellation is pending and no deployment remains. Outstanding capacity is released
+through the cleanup policy below. The failure includes the last cause
+and is recorded before replacement cleanup. That cleanup continues under the
+same generation, preserving its confirmations, attempt count and disconnect
+deadline. No eleventh attempt is started.
+
 ### Release and replacement cleanup
 
 Release requires both the provisioner's hold to be released and deployment
@@ -255,7 +274,8 @@ for destruction confirmation; provider unavailability then falls back to sidecar
 cleanup or the disconnect wait.
 
 Release and replacement use the same cleanup limits. A new release or replacement
-starts a fresh attempt budget; retries and reconnects preserve the remaining budget.
+starts a fresh attempt budget; retries, reconnects and giving up an exhausted
+replacement preserve the remaining budget.
 When the provider has released its hold but cleanup still needs a disconnected
 sidecar, the allocation stays `releasing` or `replacing` without spending cleanup attempts.
 It waits until reconnect or a durable deadline based on `maxDisconnected`.

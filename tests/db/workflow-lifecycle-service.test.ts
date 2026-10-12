@@ -2187,6 +2187,194 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
     });
 
+    test.each(["last ensure throws", "last ensure rejects"] as const)(
+      "pending cancellation survives %s and settles dispatches after history recovery",
+      async (failure) => {
+        const dispatches = createWorkflowRunDispatchStore(h.db);
+        for (const id of ["pending", "acknowledged"]) {
+          await dispatches.enqueue({
+            id,
+            anchorRunId: runId,
+            messageId: id,
+            senderAddress: "sender@example.test",
+            rawMessage: new Uint8Array([1]),
+            stepGrants: [],
+            now: current,
+          });
+        }
+        await dispatches.acknowledge({
+          allocationId,
+          anchorRunId: runId,
+          generation: 1,
+          messageId: "acknowledged",
+          now: current,
+        });
+        const store = createSidecarAllocationStore(h.db, {
+          getSidecarInventory: () => ({
+            capacity: DEFAULT_SIDECAR_CAPACITY,
+            retainedIncarnations: [],
+          }),
+        });
+        const lifecycle = service();
+        const cancel = async () => {
+          expect(
+            await lifecycle.requestCancellation(
+              tenantId,
+              runId,
+              "User cancelled",
+            ),
+          ).toBe("pending");
+          await leavePending();
+        };
+        await h.db
+          .update(sidecarAllocation)
+          .set({
+            status: "replacing",
+            generation: 2,
+            ensureAcceptedGeneration: null,
+            ensureAttempts: 9,
+            deploymentCleanupConfirmed: true,
+            providerHoldReleased: true,
+            nextAttemptAt: current,
+          })
+          .where(eq(sidecarAllocation.id, allocationId));
+        const provisioner = {
+          id: "test",
+          apiVersion: 2 as const,
+          bindingFingerprint: "test:1",
+          capabilities: [],
+          ensure: async () => {
+            await cancel();
+            if (failure === "last ensure throws")
+              throw new Error("Provisioning unavailable");
+            return {
+              kind: "rejected" as const,
+              code: "provider_unavailable",
+              message: "Try again",
+              retryable: true,
+            };
+          },
+          destroy: async () => ({
+            kind: "destroyed" as const,
+            cleanup: "confirmed" as const,
+          }),
+        };
+        const reconciler = createSidecarAllocationReconciler({
+          allocationStore: store,
+          plugins: createSidecarPluginRegistry({
+            provisioners: [provisioner],
+          }),
+          router: {
+            fenceAllocation: () => undefined,
+            retireAllocation: () => undefined,
+            getCleanupConnection: () => undefined,
+            holdsAllocatedBinding: () => false,
+            isAllocatedSidecarReady: async () => false,
+            reportedDeploymentFailure: () => undefined,
+            syncSidecar: async () => undefined,
+            waitForAllocatedSidecar: async () => undefined,
+            waitForSidecarInventory: async () => undefined,
+            undeployAllocation: async () => undefined,
+          },
+          hubWebSocketUrl: "wss://hub.example/ws",
+          now: () => current,
+        });
+        expect(await reconciler.reconcileNext()).toBe(true);
+        expect(await store.findById(allocationId)).toMatchObject({
+          status: "releasing",
+          failureCode: "sidecar_provisioning_retry_exhausted",
+          deploymentCleanupConfirmed: true,
+        });
+        await service({
+          runReader: {
+            readLatestRunEvents: async () => {
+              throw new Error("Accepted history temporarily unavailable");
+            },
+          },
+        }).reconcileNext();
+        expect(await pendingIds()).toHaveLength(1);
+        expect(
+          await h.db.query.workflowRun.findFirst({
+            where: eq(workflowRun.id, runId),
+          }),
+        ).toMatchObject({
+          status: "running",
+          failureCode: null,
+          infrastructureFailedAt: null,
+          cancellationReason: "User cancelled",
+        });
+        for (const id of ["pending", "acknowledged"])
+          expect(await dispatches.findById(id)).toMatchObject({
+            status: id,
+            failureCode: null,
+          });
+        await service({
+          runReader: { hasRepository: async () => true },
+        }).reconcileNext();
+        expect(await pendingIds()).toHaveLength(0);
+        expect(
+          await h.db.query.workflowRun.findFirst({
+            where: eq(workflowRun.id, runId),
+          }),
+        ).toMatchObject({
+          status: "cancelled",
+          failureCode: null,
+        });
+        expect(await reconciler.reconcileNext()).toBe(true);
+        expect((await store.findById(allocationId))?.status).toBe("released");
+        for (const id of ["pending", "acknowledged"])
+          expect(await dispatches.findById(id)).toMatchObject({
+            status: "abandoned",
+            failureCode: "workflow_cancelled",
+            failureMessage: "User cancelled",
+          });
+      },
+    );
+
+    test.each([false, true])(
+      "unrecoverable replacement preserves cancellation only after confirmed removal: %s",
+      async (confirmed) => {
+        const { lifecycle, dispatches } = await cancelledCleanup(confirmed);
+        await h.db
+          .update(sidecarAllocation)
+          .set({ status: "replacing" })
+          .where(eq(sidecarAllocation.id, allocationId));
+        const store = createSidecarAllocationStore(h.db);
+        expect(
+          await store.beginUnrecoverableRelease({
+            allocationId,
+            expectedStatus: "replacing",
+            expectedGeneration: 2,
+            expectedLeaseId: "cancel-cleanup",
+            failureCode: "sidecar_provisioning_retry_exhausted",
+            failureMessage: "Provisioning exhausted",
+            now: current,
+          }),
+        ).toMatchObject({
+          status: "releasing",
+          deploymentCleanupConfirmed: confirmed,
+        });
+        await lifecycle.reconcileNext();
+        expect(
+          await h.db.query.workflowRun.findFirst({
+            where: eq(workflowRun.id, runId),
+          }),
+        ).toMatchObject({
+          status: confirmed ? "cancelled" : "failed",
+          failureCode: confirmed
+            ? null
+            : "sidecar_provisioning_retry_exhausted",
+        });
+        for (const id of ["pending", "acknowledged"])
+          expect(await dispatches.findById(id)).toMatchObject({
+            status: "abandoned",
+            failureCode: confirmed
+              ? "workflow_cancelled"
+              : "sidecar_provisioning_retry_exhausted",
+          });
+      },
+    );
+
     test("unconfirmed cancellation keeps the cleanup failure outcome", async () => {
       const { lifecycle, fail } = await cancelledCleanup(false);
       await fail();

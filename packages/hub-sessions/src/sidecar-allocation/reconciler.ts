@@ -180,6 +180,8 @@ const MAX_RETRY_BACKOFF_ATTEMPT = 5;
 // How long a first deploy that keeps failing before its deploy frame is sent
 // is retried, from its first failure.
 const FIRST_DEPLOY_RETRY_LIMIT_MS = 60_000;
+const MAX_ENSURE_ATTEMPTS = 10;
+const PROVISIONING_RETRY_EXHAUSTED = "sidecar_provisioning_retry_exhausted";
 const PROVISIONER_AVAILABILITY_RETRY_MS = 30_000;
 const CLEANUP_PREPARATION_GRACE_MS = 5 * 60_000;
 
@@ -535,16 +537,21 @@ export function createSidecarAllocationReconciler({
         // It may still be running, and the Hub cannot restore sidecar-local
         // files. A parked run continues from the committed log. Provisioning
         // ran nothing yet, so a new generation replaces it.
+        const exhausted =
+          allocation.status === "provisioning" &&
+          allocation.ensureAttempts >= MAX_ENSURE_ATTEMPTS;
         const updated =
-          allocation.status === "allocated" && !replaceParked
+          (allocation.status === "allocated" && !replaceParked) || exhausted
             ? await allocationStore.beginUnrecoverableRelease({
                 ...initializationCheck,
                 allocationId: allocation.id,
-                expectedStatus: "allocated",
+                expectedStatus: exhausted ? "provisioning" : "allocated",
                 expectedGeneration: allocation.generation,
                 expectedLeaseId: leaseId,
-                failureCode: code,
-                failureMessage: message,
+                failureCode: exhausted ? PROVISIONING_RETRY_EXHAUSTED : code,
+                failureMessage: exhausted
+                  ? `Provisioning failed after ${String(allocation.ensureAttempts)} attempts: ${message}`
+                  : message,
                 now: now(),
               })
             : await allocationStore.beginReplacement({
@@ -557,13 +564,16 @@ export function createSidecarAllocationReconciler({
                 expectedGeneration: allocation.generation,
                 expectedLeaseId: leaseId,
                 nextAttemptAt: retryAt(
-                  allocation.ensureAttempts + allocation.destroyAttempts,
+                  Math.max(0, allocation.ensureAttempts - 1),
                 ),
+                firstAttemptAt: retryAt(0),
                 failureCode: code,
                 failureMessage: message,
                 now: now(),
               });
         if (updated !== null) {
+          if (exhausted)
+            logger.error`Provisioning retry budget exhausted for allocation ${allocation.id} after ${String(allocation.ensureAttempts)} attempts. Last failure: ${message}`;
           // A late commit still advances the fence before this queued work
           // settles and its allocation becomes eligible for another claim.
           fence(updated);
@@ -1541,6 +1551,45 @@ export function createSidecarAllocationReconciler({
     allocation: SidecarAllocation,
     leaseId: string,
   ): Promise<void> {
+    if (
+      allocation.status === "replacing" &&
+      allocation.ensureAttempts >= MAX_ENSURE_ATTEMPTS &&
+      (await allocationStore.hasRunnableAnchor(allocation.anchorRunId, now()))
+    ) {
+      // beginReplacement already reset the budget if the previous worker
+      // initialized. Record exhaustion before cleanup can fail for another cause.
+      const lastFailure = allocation.failureMessage ?? allocation.failureCode;
+      const message = `Provisioning failed after ${String(allocation.ensureAttempts)} attempts${lastFailure === undefined ? "" : `: ${lastFailure}`}`;
+      const target = {
+        allocationId: allocation.id,
+        expectedStatus: "replacing" as const,
+        expectedGeneration: allocation.generation,
+        expectedLeaseId: leaseId,
+        now: now(),
+      };
+      const failed =
+        allocation.deploymentCleanupConfirmed && allocation.providerHoldReleased
+          ? await allocationStore.failWithoutInfrastructure({
+              ...target,
+              code: PROVISIONING_RETRY_EXHAUSTED,
+              message,
+            })
+          : await allocationStore.beginUnrecoverableRelease({
+              ...target,
+              failureCode: PROVISIONING_RETRY_EXHAUSTED,
+              failureMessage: message,
+            });
+      if (failed !== null) {
+        logger.error`Provisioning retry budget exhausted for allocation ${allocation.id} after ${String(allocation.ensureAttempts)} attempts. Last failure: ${lastFailure ?? "No failure reason recorded"}`;
+        if (failed.status === "failed")
+          router.retireAllocation({
+            allocationId: failed.id,
+            generation: failed.generation,
+          });
+        else fence(failed);
+      }
+      return;
+    }
     if (
       allocation.status === "releasing" &&
       allocation.sidecarId === undefined
