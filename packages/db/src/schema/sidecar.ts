@@ -16,7 +16,11 @@ export const sidecar = pgTable("sidecar", {
   })
     .notNull()
     .default("online"),
-  lastHeartbeat: timestamp("last_heartbeat"),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  lastHeartbeat: timestamp("last_heartbeat", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 });
