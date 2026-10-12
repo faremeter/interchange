@@ -35,6 +35,11 @@
 // relay reached the child body); the long-lived container never self-completes
 // and re-arms on an input park.
 //
+// Later tests in this file keep that path and pin the addressing split: a
+// name-only post does not complete a new relay, a late correlation does not
+// complete the next turn, two sections do not share a delivery, and a
+// top-level gate on the same name still completes by name.
+//
 // Harness justification: SPAWN-REAL. Real hub, real sidecar subprocess, real
 // workflow-process child driving `runOnTrigger` with the production
 // suspendable-child seam. No inference (the body is pure runtime). The signal
@@ -82,11 +87,21 @@ import {
   onTriggerBodyEntry,
   type OnTriggerBodyVariant,
 } from "./fixtures/on-trigger-body";
+import {
+  onTriggerGateBesideSectionEntry,
+  onTriggerTwoSectionsEntry,
+} from "./fixtures/on-trigger-signal-routing";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const DEPLOYMENT_ID = "run_on-trigger-signal-delivery-1";
 const DEPLOYMENT_ID_TIMED = "run_on-trigger-timed-abandon-1";
+const DEPLOYMENT_ID_TWO = "run_on-trigger-two-sections-1";
+const DEPLOYMENT_ID_GATE = "run_on-trigger-gate-beside-1";
 const SECTION_ID = "section";
+const LEFT_ID = "left";
+const RIGHT_ID = "right";
+const GATE_ID = "gate";
+const NEXT_ID = "next";
 const SIGNAL_NAME = "proceed";
 
 // The definition's own tenant, the caller principal that creates the
@@ -98,6 +113,8 @@ const TENANT_ID = "tnt_on_trigger_signal";
 const CALLER_PRINCIPAL_ID = "prn_on_trigger_signal";
 const DEFINITION_ASSET_ID = "ast_on_trigger_signal_wf";
 const TIMED_DEFINITION_ASSET_ID = "ast_on_trigger_timed_wf";
+const TWO_SECTIONS_ASSET_ID = "ast_on_trigger_two_sections_wf";
+const GATE_BESIDE_ASSET_ID = "ast_on_trigger_gate_beside_wf";
 
 let env: DeployFlowEnv;
 let h: TestDb;
@@ -117,7 +134,12 @@ beforeAll(async () => {
     tenantId: TENANT_ID,
     kind: "user",
   });
-  for (const id of [DEFINITION_ASSET_ID, TIMED_DEFINITION_ASSET_ID]) {
+  for (const id of [
+    DEFINITION_ASSET_ID,
+    TIMED_DEFINITION_ASSET_ID,
+    TWO_SECTIONS_ASSET_ID,
+    GATE_BESIDE_ASSET_ID,
+  ]) {
     await seedAsset(h.db, {
       id,
       tenantId: TENANT_ID,
@@ -158,26 +180,54 @@ async function readContainerEvents(
   return readWorkflowRunEvents(env, anchorRunId, containerRunId);
 }
 
-const hasChildCompleted = (
-  events: { type: string; body: Record<string, unknown> }[],
-  childRunId: string,
-): boolean =>
+type RunEvents = { type: string; body: Record<string, unknown> }[];
+
+const hasChildCompleted = (events: RunEvents, childRunId: string): boolean =>
   events.some(
     (e) => e.type === "ChildCompleted" && e.body["childRunId"] === childRunId,
   );
 
+function field(body: Record<string, unknown>, key: string): string | undefined {
+  const value = body[key];
+  return typeof value === "string" ? value : undefined;
+}
+
+function relayCorrelationId(events: RunEvents, stepId: string): string {
+  const park = events.find(
+    (e) =>
+      e.type === "SignalAwaited" &&
+      e.body["parkKind"] === "signal-relay" &&
+      e.body["stepId"] === stepId &&
+      e.body["signalName"] === SIGNAL_NAME,
+  );
+  const correlationId =
+    park === undefined ? undefined : field(park.body, "correlationId");
+  if (correlationId === undefined) {
+    throw new Error(`${stepId} relay park has no correlationId`);
+  }
+  return correlationId;
+}
+
+function receivedSignal(
+  events: RunEvents,
+  signalId: string,
+): Record<string, unknown> | undefined {
+  return events.find(
+    (e) => e.type === "SignalReceived" && e.body["signalId"] === signalId,
+  )?.body;
+}
+
 /**
- * Deploy a single onTrigger section with the given body BY SOURCE-REF, fire the
- * first event, and wait for the section to proxy the body's author
- * `awaitSignal` gate UP as a signal-relay await on the container. Returns the
- * container run id so each test drives the section from there. Shared by the
- * delivery and timeout scenarios, which diverge only in what becomes of the
- * proxied await.
+ * Deploy a source-ref workflow, fire its first mail, and wait until `parked`
+ * holds. Each section id is given the mock inference source the deploy pins,
+ * matching the single-section helper. The bodies under test are not agents.
  */
-async function deployAndTriggerSection(opts: {
+async function deployAndPark(opts: {
   anchorRunId: string;
   definitionAssetId: string;
-  body: OnTriggerBodyVariant;
+  entryModule: string;
+  sectionIds: readonly string[];
+  parked: (events: RunEvents) => boolean;
 }): Promise<{ workflowRunRepoId: RepoId; containerRunId: string }> {
   const { anchorRunId } = opts;
   const deploymentMailAddress = deriveRunAddress({
@@ -192,6 +242,10 @@ async function deployAndTriggerSection(opts: {
     credentialId: "sk-mock",
     model: "mock-model",
   };
+  const sources: Record<string, InferenceSource[]> = {};
+  for (const sectionId of opts.sectionIds) {
+    sources[sectionId] = [inferenceSource];
+  }
 
   const config: HarnessConfig = {
     sessionId: SESSION_ID,
@@ -213,15 +267,8 @@ async function deployAndTriggerSection(opts: {
     `mail.send:${DEPLOYMENT_DOMAIN}`,
   ]);
 
-  const entryModule = onTriggerBodyEntry({
-    address: deploymentMailAddress,
-    sectionId: SECTION_ID,
-    body: opts.body,
-    workflowId: `wf_${anchorRunId}`,
-  });
-
   const handle = await deployWorkflowSourceForTest(env, {
-    entryModule,
+    entryModule: opts.entryModule,
     db: h.db,
     tenantId: TENANT_ID,
     definitionAssetId: opts.definitionAssetId,
@@ -230,7 +277,7 @@ async function deployAndTriggerSection(opts: {
     agentAddress: deploymentMailAddress,
     approvals: operatorApprovals,
     config,
-    sources: { [SECTION_ID]: [inferenceSource] },
+    sources,
   });
   expect(handle.publicKey).toBeTruthy();
 
@@ -241,8 +288,6 @@ async function deployAndTriggerSection(opts: {
     { diagnostics: env.sidecarDiagnostics },
   );
 
-  // Fire the first event; the body parks on its author gate and the section
-  // proxies it up as a signal-relay await on the container.
   await fireMailTrigger(env, deploymentMailAddress, {
     messageId: `<${anchorRunId}@integration.interchange>`,
     content: "trigger the section",
@@ -250,12 +295,7 @@ async function deployAndTriggerSection(opts: {
   await waitFor(
     async () => {
       const events = await readContainerEvents(anchorRunId, workflowRunRepoId);
-      return events.some(
-        (e) =>
-          e.type === "SignalAwaited" &&
-          e.body["parkKind"] === "signal-relay" &&
-          e.body["signalName"] === SIGNAL_NAME,
-      );
+      return opts.parked(events);
     },
     { diagnostics: env.sidecarDiagnostics },
   );
@@ -266,6 +306,43 @@ async function deployAndTriggerSection(opts: {
   return { workflowRunRepoId, containerRunId };
 }
 
+/**
+ * Deploy a single onTrigger section with the given body BY SOURCE-REF, fire the
+ * first event, and wait for the section to proxy the body's author
+ * `awaitSignal` gate UP as a signal-relay await on the container. Returns the
+ * container run id so each test drives the section from there. Shared by the
+ * delivery and timeout scenarios, which diverge only in what becomes of the
+ * proxied await.
+ */
+async function deployAndTriggerSection(opts: {
+  anchorRunId: string;
+  definitionAssetId: string;
+  body: OnTriggerBodyVariant;
+}): Promise<{ workflowRunRepoId: RepoId; containerRunId: string }> {
+  const deploymentMailAddress = deriveRunAddress({
+    runId: opts.anchorRunId,
+    domain: DEPLOYMENT_DOMAIN,
+  });
+  return deployAndPark({
+    anchorRunId: opts.anchorRunId,
+    definitionAssetId: opts.definitionAssetId,
+    sectionIds: [SECTION_ID],
+    entryModule: onTriggerBodyEntry({
+      address: deploymentMailAddress,
+      sectionId: SECTION_ID,
+      body: opts.body,
+      workflowId: `wf_${opts.anchorRunId}`,
+    }),
+    parked: (events) =>
+      events.some(
+        (e) =>
+          e.type === "SignalAwaited" &&
+          e.body["parkKind"] === "signal-relay" &&
+          e.body["signalName"] === SIGNAL_NAME,
+      ),
+  });
+}
+
 describe.skipIf(!harnessDbEnvAvailable())(
   "onTrigger body author-signal delivered to the parent run reaches the body via the section",
   () => {
@@ -273,7 +350,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
     });
 
-    test("a signal delivered to the deployment run resolves the body's awaitSignal gate", async () => {
+    test("a name-only delivery leaves the new park and the correlation completes it", async () => {
       // A non-agent awaitSignal gate (no timeout) -- the signal-relay capability.
       const { containerRunId } = await deployAndTriggerSection({
         anchorRunId: DEPLOYMENT_ID,
@@ -302,20 +379,41 @@ describe.skipIf(!harnessDbEnvAvailable())(
         ),
       ).toBe(false);
 
-      // ---- deliver the author signal to the PARENT deployment run id ----
-      // The body (a child run) never receives a signal directly; delivering to
-      // the container run resolves the section's signal-relay await, and the
-      // section relays it down into the body. A fresh relay park is addressed
-      // by the correlationId on that SignalAwaited.
-      const correlationId = parked.find(
-        (e) =>
-          e.type === "SignalAwaited" &&
-          e.body["parkKind"] === "signal-relay" &&
-          e.body["signalName"] === SIGNAL_NAME,
-      )?.body["correlationId"];
-      if (typeof correlationId !== "string") {
-        throw new Error("signal-relay park has no correlationId");
-      }
+      // A fresh relay park is addressed by the correlationId on that
+      // SignalAwaited. A name-only post is recorded and does not complete it.
+      const correlationId = relayCorrelationId(parked, SECTION_ID);
+      const childRunId = sectionBodyRunId(containerRunId, SECTION_ID, 0);
+      const nameOnly = await injectSignal(
+        env,
+        DEPLOYMENT_ID,
+        containerRunId,
+        SIGNAL_NAME,
+        { go: false },
+      );
+      await waitFor(
+        async () => {
+          const events = await readWorkflowRunEvents(
+            env,
+            DEPLOYMENT_ID,
+            containerRunId,
+          );
+          return receivedSignal(events, nameOnly.signalId) !== undefined;
+        },
+        { diagnostics: env.sidecarDiagnostics },
+      );
+      const afterName = await readWorkflowRunEvents(
+        env,
+        DEPLOYMENT_ID,
+        containerRunId,
+      );
+      const nameOnlyBody = receivedSignal(afterName, nameOnly.signalId);
+      expect(nameOnlyBody).toBeDefined();
+      expect(nameOnlyBody?.["correlationId"]).toBeUndefined();
+      expect(hasChildCompleted(afterName, childRunId)).toBe(false);
+
+      // The body (a child run) never receives a signal directly. Delivering
+      // the correlation to the container resolves the relay, and the section
+      // relays it down into the body.
       await injectSignal(
         env,
         DEPLOYMENT_ID,
@@ -463,6 +561,323 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(finalTypes).not.toContain("RunCompleted");
       expect(finalTypes).not.toContain("RunFailed");
       expect(finalTypes).not.toContain("RunCancelled");
+
+      // The abandoned correlation is still the only relay. Delivering it now
+      // records the signal and must not satisfy the next turn, which mints
+      // its own id when the second mail parks.
+      const abandoned = relayCorrelationId(finalEvents, SECTION_ID);
+      const late = await injectSignal(
+        env,
+        DEPLOYMENT_ID_TIMED,
+        containerRunId,
+        SIGNAL_NAME,
+        { late: true },
+        abandoned,
+      );
+      const turnAddress = deriveRunAddress({
+        runId: DEPLOYMENT_ID_TIMED,
+        domain: DEPLOYMENT_DOMAIN,
+      });
+      await fireMailTrigger(env, turnAddress, {
+        messageId: `<${DEPLOYMENT_ID_TIMED}-turn-2@integration.interchange>`,
+        content: "second event",
+      });
+      const nextChild = sectionBodyRunId(containerRunId, SECTION_ID, 1);
+      await waitFor(
+        async () => {
+          const events = await readWorkflowRunEvents(
+            env,
+            DEPLOYMENT_ID_TIMED,
+            containerRunId,
+          );
+          const nextRelay = events.some(
+            (e) =>
+              e.type === "SignalAwaited" &&
+              e.body["parkKind"] === "signal-relay" &&
+              e.body["signalName"] === SIGNAL_NAME &&
+              field(e.body, "correlationId") !== undefined &&
+              field(e.body, "correlationId") !== abandoned,
+          );
+          return (
+            receivedSignal(events, late.signalId) !== undefined && nextRelay
+          );
+        },
+        { diagnostics: env.sidecarDiagnostics },
+      );
+      const turned = await readWorkflowRunEvents(
+        env,
+        DEPLOYMENT_ID_TIMED,
+        containerRunId,
+      );
+      const nextCorrelation = turned.find(
+        (e) =>
+          e.type === "SignalAwaited" &&
+          e.body["parkKind"] === "signal-relay" &&
+          field(e.body, "correlationId") !== undefined &&
+          field(e.body, "correlationId") !== abandoned,
+      );
+      const nextId =
+        nextCorrelation === undefined
+          ? undefined
+          : field(nextCorrelation.body, "correlationId");
+      expect(nextId).toBeDefined();
+      expect(receivedSignal(turned, late.signalId)?.["correlationId"]).toBe(
+        abandoned,
+      );
+      expect(
+        turned.some(
+          (e) =>
+            e.type === "SignalReceived" &&
+            field(e.body, "correlationId") === nextId,
+        ),
+      ).toBe(false);
+      expect(hasChildCompleted(turned, nextChild)).toBe(false);
+    }, 120_000);
+
+    test("two sections awaiting the same name do not share a delivery", async () => {
+      const address = deriveRunAddress({
+        runId: DEPLOYMENT_ID_TWO,
+        domain: DEPLOYMENT_DOMAIN,
+      });
+      const { containerRunId } = await deployAndPark({
+        anchorRunId: DEPLOYMENT_ID_TWO,
+        definitionAssetId: TWO_SECTIONS_ASSET_ID,
+        sectionIds: [LEFT_ID, RIGHT_ID],
+        entryModule: onTriggerTwoSectionsEntry({
+          address,
+          signalName: SIGNAL_NAME,
+          leftId: LEFT_ID,
+          rightId: RIGHT_ID,
+          workflowId: `wf_${DEPLOYMENT_ID_TWO}`,
+        }),
+        parked: (events) => {
+          const relays = events.filter(
+            (e) =>
+              e.type === "SignalAwaited" &&
+              e.body["parkKind"] === "signal-relay" &&
+              e.body["signalName"] === SIGNAL_NAME,
+          );
+          const steps = new Set(
+            relays
+              .map((e) => field(e.body, "stepId"))
+              .filter((id) => id !== undefined),
+          );
+          return steps.has(LEFT_ID) && steps.has(RIGHT_ID);
+        },
+      });
+      const parked = await readWorkflowRunEvents(
+        env,
+        DEPLOYMENT_ID_TWO,
+        containerRunId,
+      );
+      const leftCorrelation = relayCorrelationId(parked, LEFT_ID);
+      const rightCorrelation = relayCorrelationId(parked, RIGHT_ID);
+      expect(leftCorrelation).not.toBe(rightCorrelation);
+      const leftChild = sectionBodyRunId(containerRunId, LEFT_ID, 0);
+      const rightChild = sectionBodyRunId(containerRunId, RIGHT_ID, 0);
+
+      const nameOnly = await injectSignal(
+        env,
+        DEPLOYMENT_ID_TWO,
+        containerRunId,
+        SIGNAL_NAME,
+        { go: false },
+      );
+      await waitFor(
+        async () => {
+          const events = await readWorkflowRunEvents(
+            env,
+            DEPLOYMENT_ID_TWO,
+            containerRunId,
+          );
+          return receivedSignal(events, nameOnly.signalId) !== undefined;
+        },
+        { diagnostics: env.sidecarDiagnostics },
+      );
+      const afterName = await readWorkflowRunEvents(
+        env,
+        DEPLOYMENT_ID_TWO,
+        containerRunId,
+      );
+      expect(hasChildCompleted(afterName, leftChild)).toBe(false);
+      expect(hasChildCompleted(afterName, rightChild)).toBe(false);
+
+      await injectSignal(
+        env,
+        DEPLOYMENT_ID_TWO,
+        containerRunId,
+        SIGNAL_NAME,
+        { go: true },
+        leftCorrelation,
+      );
+      await waitFor(
+        async () => {
+          const events = await readWorkflowRunEvents(
+            env,
+            DEPLOYMENT_ID_TWO,
+            containerRunId,
+          );
+          return (
+            hasChildCompleted(events, leftChild) &&
+            events.some(
+              (e) =>
+                e.type === "SignalAwaited" &&
+                e.body["parkKind"] === "input" &&
+                e.body["stepId"] === LEFT_ID,
+            )
+          );
+        },
+        { diagnostics: env.sidecarDiagnostics },
+      );
+      const afterLeft = await readWorkflowRunEvents(
+        env,
+        DEPLOYMENT_ID_TWO,
+        containerRunId,
+      );
+      expect(hasChildCompleted(afterLeft, rightChild)).toBe(false);
+
+      await injectSignal(
+        env,
+        DEPLOYMENT_ID_TWO,
+        containerRunId,
+        SIGNAL_NAME,
+        { go: true },
+        rightCorrelation,
+      );
+      await waitFor(
+        async () => {
+          const events = await readWorkflowRunEvents(
+            env,
+            DEPLOYMENT_ID_TWO,
+            containerRunId,
+          );
+          return (
+            hasChildCompleted(events, rightChild) &&
+            events.some(
+              (e) =>
+                e.type === "SignalAwaited" &&
+                e.body["parkKind"] === "input" &&
+                e.body["stepId"] === RIGHT_ID,
+            )
+          );
+        },
+        { diagnostics: env.sidecarDiagnostics },
+      );
+    }, 120_000);
+
+    test("a name-only delivery completes the top-level gate and the correlation completes the section", async () => {
+      const address = deriveRunAddress({
+        runId: DEPLOYMENT_ID_GATE,
+        domain: DEPLOYMENT_DOMAIN,
+      });
+      const { containerRunId } = await deployAndPark({
+        anchorRunId: DEPLOYMENT_ID_GATE,
+        definitionAssetId: GATE_BESIDE_ASSET_ID,
+        // The deploy frame requires a sources entry for every step id. The
+        // gates do not call a model; the mock source only fills the map.
+        sectionIds: [GATE_ID, NEXT_ID, SECTION_ID],
+        entryModule: onTriggerGateBesideSectionEntry({
+          address,
+          signalName: SIGNAL_NAME,
+          sectionId: SECTION_ID,
+          gateId: GATE_ID,
+          nextId: NEXT_ID,
+          workflowId: `wf_${DEPLOYMENT_ID_GATE}`,
+        }),
+        parked: (events) => {
+          const gateParked = events.some(
+            (e) =>
+              e.type === "SignalAwaited" &&
+              e.body["stepId"] === GATE_ID &&
+              e.body["signalName"] === SIGNAL_NAME &&
+              field(e.body, "correlationId") === undefined,
+          );
+          const sectionParked = events.some(
+            (e) =>
+              e.type === "SignalAwaited" &&
+              e.body["parkKind"] === "signal-relay" &&
+              e.body["stepId"] === SECTION_ID &&
+              e.body["signalName"] === SIGNAL_NAME &&
+              field(e.body, "correlationId") !== undefined,
+          );
+          return gateParked && sectionParked;
+        },
+      });
+      const parked = await readWorkflowRunEvents(
+        env,
+        DEPLOYMENT_ID_GATE,
+        containerRunId,
+      );
+      const correlationId = relayCorrelationId(parked, SECTION_ID);
+      const sectionChild = sectionBodyRunId(containerRunId, SECTION_ID, 0);
+
+      const nameOnly = await injectSignal(
+        env,
+        DEPLOYMENT_ID_GATE,
+        containerRunId,
+        SIGNAL_NAME,
+        { go: false },
+      );
+      await waitFor(
+        async () => {
+          const events = await readWorkflowRunEvents(
+            env,
+            DEPLOYMENT_ID_GATE,
+            containerRunId,
+          );
+          return events.some(
+            (e) =>
+              e.type === "SignalAwaited" &&
+              e.body["stepId"] === NEXT_ID &&
+              e.body["signalName"] === NEXT_ID,
+          );
+        },
+        { diagnostics: env.sidecarDiagnostics },
+      );
+      const afterGate = await readWorkflowRunEvents(
+        env,
+        DEPLOYMENT_ID_GATE,
+        containerRunId,
+      );
+      expect(
+        receivedSignal(afterGate, nameOnly.signalId)?.["correlationId"],
+      ).toBeUndefined();
+      expect(hasChildCompleted(afterGate, sectionChild)).toBe(false);
+      expect(
+        afterGate.some(
+          (e) =>
+            e.type === "SignalReceived" &&
+            field(e.body, "correlationId") === correlationId,
+        ),
+      ).toBe(false);
+
+      await injectSignal(
+        env,
+        DEPLOYMENT_ID_GATE,
+        containerRunId,
+        SIGNAL_NAME,
+        { go: true },
+        correlationId,
+      );
+      await waitFor(
+        async () => {
+          const events = await readWorkflowRunEvents(
+            env,
+            DEPLOYMENT_ID_GATE,
+            containerRunId,
+          );
+          return (
+            hasChildCompleted(events, sectionChild) &&
+            events.some(
+              (e) =>
+                e.type === "SignalAwaited" &&
+                e.body["parkKind"] === "input" &&
+                e.body["stepId"] === SECTION_ID,
+            )
+          );
+        },
+        { diagnostics: env.sidecarDiagnostics },
+      );
     }, 120_000);
   },
 );
