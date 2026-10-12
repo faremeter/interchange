@@ -105,6 +105,7 @@ export function createTenantRoutes({
           "Not permitted to create a tenant under the parent",
           ErrorResponse,
         ),
+        409: jsonResponse("Slug already taken", ErrorResponse),
       },
     }),
     validator("json", CreateTenant),

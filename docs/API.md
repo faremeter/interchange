@@ -244,6 +244,7 @@ Body: CreateTenant
 400: ErrorResponse -- Validation error
 401: ErrorResponse -- Authentication required
 403: ErrorResponse -- Not permitted to create a tenant under the parent
+409: ErrorResponse -- Slug already taken
 
 ### GET /api/tenants/:tenantId
 Get tenant details
