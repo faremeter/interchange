@@ -28,6 +28,7 @@ import type { AgentDeployFrame } from "@intx/types/sidecar";
 import type { WorkflowDefinition } from "@intx/workflow";
 import type { SubprocessSpawner } from "@intx/workflow-host";
 
+import { DEFAULT_SIDECAR_CAPACITY } from "@intx/types/sidecar";
 import {
   createDeploymentAddressRegistry,
   createMultistepDrainRouter,
@@ -164,6 +165,7 @@ describe("deploy-failure registry leak", () => {
 
     let spawnerInvoked = false;
     const router = createSidecarDeployRouter({
+      ...DEFAULT_SIDECAR_CAPACITY,
       ...deployHostBindings(),
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- an unsupported frame throws before sessions is touched
       sessions: {} as Parameters<
@@ -256,6 +258,7 @@ describe("deploy-failure registry leak", () => {
     };
 
     const router = createSidecarDeployRouter({
+      ...DEFAULT_SIDECAR_CAPACITY,
       ...deployHostBindings(),
       sessions,
       keyStore,
@@ -412,6 +415,7 @@ describe("deploy-failure registry leak", () => {
     };
 
     const router = createSidecarDeployRouter({
+      ...DEFAULT_SIDECAR_CAPACITY,
       ...deployHostBindings(),
       sessions,
       keyStore,
@@ -513,6 +517,7 @@ describe("deploy-failure registry leak", () => {
     );
     writeFileSync(dataDir, "");
     const router = createSidecarDeployRouter({
+      ...DEFAULT_SIDECAR_CAPACITY,
       ...deployHostBindings(),
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- undeploy only deletes the agent directory
       sessions: {

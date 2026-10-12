@@ -20,7 +20,8 @@ process into a host for hub-deployed agents.
 `createSidecarOrchestrator` takes a `SidecarOrchestratorConfig`
 specifying how to reach the hub (`hubURL`, `sidecarId`, `token`,
 `transport`), where to persist agent state (`dataDir`), the sidecar's
-crypto operations (`cryptoOps`), and the host-injected deploy-router
+crypto operations (`cryptoOps`), the deployment limits every `hello`
+advertises (`capacity`), and the host-injected deploy-router
 factory (`createDeployRouter`) that routes every `agent.deploy` frame
 on the link. Optional fields supply the multi-step inbound routers
 (`mailInboundRouter`, `signalInboundRouter`, `drainInboundRouter`,

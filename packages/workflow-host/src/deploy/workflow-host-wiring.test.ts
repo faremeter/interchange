@@ -25,6 +25,7 @@ import {
 } from "@intx/workflow-host";
 import type { WorkflowDefinition } from "@intx/workflow";
 import {
+  DEFAULT_SIDECAR_CAPACITY,
   DeploymentStoppedFrame,
   HostedIncarnation,
   MAX_DEPLOYMENT_ERROR_LENGTH,
@@ -309,6 +310,7 @@ describe("createSidecarDeployRouter provision-step (no-spawn) mode", () => {
     });
 
     const router = createSidecarDeployRouter({
+      ...DEFAULT_SIDECAR_CAPACITY,
       ...deployHostBindings(),
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- provisionStep exercises only initRepo
       sessions: {
@@ -883,6 +885,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       });
     };
     const router = createSidecarDeployRouter({
+      ...DEFAULT_SIDECAR_CAPACITY,
       ...deployHostBindings(),
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the workflow path never invokes provisionAgent/persistHubPublicKey (single-step uses the narrow initRepo; the child mints its own key); the stubs throw if it does. initRepo is a no-op for the single-step head repo.
       sessions: {
@@ -3302,6 +3305,36 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       reason: "Keep the finished deployment",
     } as const;
   }
+
+  test("zero retained capacity refuses retention without freeing an unremoved copy", async () => {
+    const dataDir = await createTempBaseDir("sidecar-no-retention-");
+    const spawner = makeReadyDrivingSpawner(14900);
+    const { router } = await buildMultistepFixture({
+      spawner: spawner.spawner,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+      maxActiveDeployments: 1,
+      maxRetainedDeployments: 0,
+    });
+    const address = "run_no_retention@example.com";
+    const deploying = router.deploy(
+      singleStepFrame(address, "wf-no-retention"),
+    );
+    await spawner.driveReadyFor(0);
+    await deploying;
+    expect(await router.control(retainCommand(address))).toEqual({
+      retention: "refused",
+    });
+    expect(
+      (await scanWorkflowRunRecords(dataDir, createNoopCredentialCipher()))[0]
+        ?.record,
+    ).toMatchObject({
+      state: "stopped",
+      retention: "refused",
+    });
+    await expect(
+      router.deploy(singleStepFrame("run_next@example.com", "wf-no-retention")),
+    ).rejects.toThrow("no active deployment slot");
+  });
 
   test("moves a stopped copy into kept capacity and persists an overflow refusal", async () => {
     const dataDir = await createTempBaseDir("sidecar-kept-capacity-");

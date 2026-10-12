@@ -13,8 +13,31 @@ import {
   parseAdapterManifestEnv,
 } from "@intx/types/adapter-manifest";
 import { hexDecode } from "@intx/types/hex";
+import { DEFAULT_SIDECAR_CAPACITY, SidecarCapacity } from "@intx/types/sidecar";
+import { type } from "arktype";
 
 const DEFAULT_CACHE_MAX_BYTES = 10 * 1024 * 1024 * 1024;
+
+export function parseDeploymentCapacity(
+  active: string | undefined,
+  retained: string | undefined,
+): SidecarCapacity {
+  const capacity = SidecarCapacity({
+    maxActiveDeployments:
+      active === undefined || active.trim() === ""
+        ? DEFAULT_SIDECAR_CAPACITY.maxActiveDeployments
+        : Number(active),
+    maxRetainedDeployments:
+      retained === undefined || retained.trim() === ""
+        ? DEFAULT_SIDECAR_CAPACITY.maxRetainedDeployments
+        : Number(retained),
+  });
+  if (capacity instanceof type.errors)
+    throw new Error(
+      `Invalid SIDECAR_MAX_ACTIVE_DEPLOYMENTS or SIDECAR_MAX_RETAINED_DEPLOYMENTS: ${capacity.summary}`,
+    );
+  return capacity;
+}
 
 // The operator key the sidecar seals its at-rest credential material under
 // (inference-source apiKeys, and the tool credential material store). A

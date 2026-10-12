@@ -13,8 +13,9 @@ import {
   MAX_REF_TIP_ENTRY_LENGTH,
   MAX_REF_TIPS_FRAME,
   MAX_SIDECAR_INCARNATIONS,
-  MAX_SIDECAR_ACTIVE_DEPLOYMENTS,
-  MAX_SIDECAR_RETAINED_DEPLOYMENTS,
+  DEFAULT_SIDECAR_ACTIVE_DEPLOYMENTS,
+  DEFAULT_SIDECAR_CAPACITY,
+  DEFAULT_SIDECAR_RETAINED_DEPLOYMENTS,
   MAX_CACHED_SENDER_ADDRESSES_FRAME,
   MAX_CREDENTIAL_REVOCATIONS_FRAME,
   MAX_MAIL_ADDRESSES_FRAME,
@@ -518,20 +519,111 @@ describe("frame array-length ceilings", () => {
     }));
 
   describe("HelloFrame incarnations", () => {
-    const base = { type: "hello", sidecarId: "sc-1", token: "tok" };
+    const base = {
+      type: "hello",
+      sidecarId: "sc-1",
+      token: "tok",
+      capacity: DEFAULT_SIDECAR_CAPACITY,
+    };
 
     test("accepts a frame at the ceiling", () => {
       const frame = {
         ...base,
+        capacity: {
+          maxActiveDeployments: DEFAULT_SIDECAR_ACTIVE_DEPLOYMENTS,
+          maxRetainedDeployments:
+            MAX_SIDECAR_INCARNATIONS - DEFAULT_SIDECAR_ACTIVE_DEPLOYMENTS,
+        },
         incarnations: incarnations(MAX_SIDECAR_INCARNATIONS).map(
           (entry, index) =>
-            index < MAX_SIDECAR_ACTIVE_DEPLOYMENTS
+            index < DEFAULT_SIDECAR_ACTIVE_DEPLOYMENTS
               ? entry
               : { ...entry, state: "stopped", retention: "kept" },
         ),
       };
       expect(HelloFrame(frame) instanceof type.errors).toBe(false);
       expect(SidecarFrame(frame) instanceof type.errors).toBe(false);
+    });
+
+    test("requires the sidecar to advertise its capacity", () => {
+      const { capacity: _capacity, ...withoutCapacity } = base;
+      expect(
+        HelloFrame({ ...withoutCapacity, incarnations: [] }) instanceof
+          type.errors,
+      ).toBe(true);
+    });
+
+    test("validates inventory against the advertised capacity", () => {
+      const capacity = { maxActiveDeployments: 2, maxRetainedDeployments: 0 };
+      expect(
+        HelloFrame({
+          ...base,
+          capacity,
+          incarnations: incarnations(2),
+        }) instanceof type.errors,
+      ).toBe(false);
+      expect(
+        HelloFrame({
+          ...base,
+          capacity,
+          incarnations: incarnations(3),
+        }) instanceof type.errors,
+      ).toBe(true);
+      expect(
+        HelloFrame({
+          ...base,
+          capacity,
+          incarnations: [
+            {
+              address: "kept@example.test",
+              generation: 1,
+              state: "stopped",
+              retention: "kept",
+            },
+          ],
+        }) instanceof type.errors,
+      ).toBe(true);
+    });
+
+    test("accepts active inventory above the default and rejects impossible capacities", () => {
+      const count = DEFAULT_SIDECAR_ACTIVE_DEPLOYMENTS + 1;
+      const capacity = {
+        maxActiveDeployments: count,
+        maxRetainedDeployments: 0,
+      };
+      expect(
+        HelloFrame({
+          ...base,
+          capacity,
+          incarnations: incarnations(count),
+        }) instanceof type.errors,
+      ).toBe(false);
+      expect(
+        HelloFrame({
+          ...base,
+          capacity: { ...capacity, maxActiveDeployments: 0 },
+          incarnations: [],
+        }) instanceof type.errors,
+      ).toBe(true);
+      expect(
+        HelloFrame({
+          ...base,
+          capacity: {
+            ...capacity,
+            maxRetainedDeployments: MAX_SIDECAR_INCARNATIONS,
+          },
+          incarnations: [],
+        }) instanceof type.errors,
+      ).toBe(true);
+      expect(
+        HubFrame({
+          type: "welcome",
+          routed: incarnations(count).map(({ address, generation }) => ({
+            address,
+            generation,
+          })),
+        }) instanceof type.errors,
+      ).toBe(false);
     });
 
     test("rejects a frame past the ceiling through the union", () => {
@@ -547,15 +639,15 @@ describe("frame array-length ceilings", () => {
       expect(
         HelloFrame({
           ...base,
-          incarnations: incarnations(MAX_SIDECAR_ACTIVE_DEPLOYMENTS + 1),
+          incarnations: incarnations(DEFAULT_SIDECAR_ACTIVE_DEPLOYMENTS + 1),
         }) instanceof type.errors,
       ).toBe(true);
       expect(
         HelloFrame({
           ...base,
-          incarnations: incarnations(MAX_SIDECAR_RETAINED_DEPLOYMENTS + 1).map(
-            (entry) => ({ ...entry, state: "stopped", retention: "kept" }),
-          ),
+          incarnations: incarnations(
+            DEFAULT_SIDECAR_RETAINED_DEPLOYMENTS + 1,
+          ).map((entry) => ({ ...entry, state: "stopped", retention: "kept" })),
         }) instanceof type.errors,
       ).toBe(true);
       expect(
@@ -634,6 +726,7 @@ describe("frame array-length ceilings", () => {
       type: "hello",
       sidecarId: "sc-1",
       token: "tok",
+      capacity: DEFAULT_SIDECAR_CAPACITY,
       incarnations: [
         { address: "wf@example.test", generation: 1, state: "stopped" },
       ].map((base) => ({ ...base, ...incarnation })),
@@ -709,7 +802,7 @@ describe("frame array-length ceilings", () => {
       },
     );
 
-    test("fits a long error to the bound without splitting a surrogate pair", () => {
+    test("fits a long error without splitting a surrogate pair", () => {
       expect(fitDeploymentError("")).toBe(
         "Deployment failed without an error message",
       );
@@ -731,6 +824,7 @@ describe("frame array-length ceilings", () => {
       type: "hello",
       sidecarId: "sc-1",
       token: "tok",
+      capacity: DEFAULT_SIDECAR_CAPACITY,
       incarnations: incarnations(1),
     };
 
@@ -844,6 +938,7 @@ describe("frame array-length ceilings", () => {
         type: "hello",
         sidecarId: "sc-1",
         token: "tok",
+        capacity: DEFAULT_SIDECAR_CAPACITY,
         incarnations: [],
       };
       expect(HelloFrame(base) instanceof type.errors).toBe(false);

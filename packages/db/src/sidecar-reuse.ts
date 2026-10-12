@@ -1,6 +1,6 @@
 import { and, eq, inArray, ne, or } from "drizzle-orm";
 
-import { MAX_SIDECAR_ACTIVE_DEPLOYMENTS } from "@intx/types/sidecar";
+import type { SidecarCapacity } from "@intx/types/sidecar";
 
 import type { DBExecutor } from "./client";
 import { sidecar, sidecarAllocation, workflowProbe } from "./schema";
@@ -36,11 +36,16 @@ export type RetainedSidecarIncarnation = {
   readonly generation: number;
 };
 
+export type SidecarInventory = {
+  readonly capacity: SidecarCapacity;
+  readonly retainedIncarnations: readonly RetainedSidecarIncarnation[];
+};
+
 export type SidecarAllocationStoreOptions = {
-  /** Missing or undefined inventory blocks placement; an empty array is known. */
-  readonly getRetainedIncarnations?: (
+  /** Missing or undefined inventory blocks placement. */
+  readonly getSidecarInventory?: (
     sidecarId: string,
-  ) => readonly RetainedSidecarIncarnation[] | undefined;
+  ) => SidecarInventory | undefined;
 };
 
 /** Lock sidecars in ID order before locking the probe or allocation that moves. */
@@ -178,18 +183,18 @@ export async function assertSidecarHasRoom(
       ),
     );
   // Read after the database wait: the connection may have changed meanwhile.
-  const retained = args.getRetainedIncarnations?.(args.sidecarId);
-  if (retained === undefined)
+  const inventory = args.getSidecarInventory?.(args.sidecarId);
+  if (inventory === undefined)
     throw new SidecarInventoryUnavailableError(args.sidecarId);
   const active = reservations.filter(
     (reservation) =>
-      !retained.some(
+      !inventory.retainedIncarnations.some(
         (incarnation) =>
           incarnation.allocationId === reservation.id &&
           incarnation.generation === reservation.ensureAcceptedGeneration,
       ),
   ).length;
-  if (active >= MAX_SIDECAR_ACTIVE_DEPLOYMENTS) {
+  if (active >= inventory.capacity.maxActiveDeployments) {
     throw new SidecarReuseRejectedError(
       args.sidecarId,
       `it already hosts ${String(active)} deployments occupying all active slots`,

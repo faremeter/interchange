@@ -41,11 +41,28 @@ import { WorkflowDefinitionSource } from "./workflow-sources";
 // and routes through the existing invalid-frame drop+log path; no handler change
 // is needed.
 
-export const MAX_SIDECAR_ACTIVE_DEPLOYMENTS = 128;
-export const MAX_SIDECAR_RETAINED_DEPLOYMENTS = 256;
-// Every record remains in one capacity pool until its deletion succeeds.
-export const MAX_SIDECAR_INCARNATIONS =
-  MAX_SIDECAR_ACTIVE_DEPLOYMENTS + MAX_SIDECAR_RETAINED_DEPLOYMENTS;
+export const DEFAULT_SIDECAR_ACTIVE_DEPLOYMENTS = 128;
+export const DEFAULT_SIDECAR_RETAINED_DEPLOYMENTS = 256;
+// Bounds inventory processing independently of an operator's capacity settings.
+export const MAX_SIDECAR_INCARNATIONS = 2_048;
+
+export const SidecarCapacity = type({
+  maxActiveDeployments: "number.integer >= 1",
+  maxRetainedDeployments: "number.integer >= 0",
+}).narrow(
+  (capacity, ctx) =>
+    capacity.maxActiveDeployments + capacity.maxRetainedDeployments <=
+      MAX_SIDECAR_INCARNATIONS ||
+    ctx.mustBe(
+      `at most ${String(MAX_SIDECAR_INCARNATIONS)} deployments combined`,
+    ),
+);
+export type SidecarCapacity = typeof SidecarCapacity.infer;
+
+export const DEFAULT_SIDECAR_CAPACITY: SidecarCapacity = {
+  maxActiveDeployments: DEFAULT_SIDECAR_ACTIVE_DEPLOYMENTS,
+  maxRetainedDeployments: DEFAULT_SIDECAR_RETAINED_DEPLOYMENTS,
+};
 
 // Bounds on what a sidecar reports about a deployment it holds. The Hub keeps
 // a reported stop until it fails the deployment, and stores a deploy error on
@@ -123,10 +140,10 @@ export const MAX_MAIL_OUTBOUND_BODY_BYTES = 44 * 1024 * 1024;
 const FRAME_OVERHEAD_BYTES = 20 * 1024 * 1024;
 
 // The ceiling wired as the hub sidecar websocket's `maxPayloadLength`. Bun
-// closes the connection on a RECEIVED message larger than this, so it must clear
-// the largest legit received frame -- the `mail.outbound` frame, whose
-// rawMessage is bounded by `MAX_MAIL_OUTBOUND_BODY_BYTES`, plus framing
-// overhead. maxPayloadLength gates incoming messages only; it does NOT limit
+// closes the connection on a RECEIVED message larger than this. It clears a
+// `mail.outbound` body at its byte limit plus framing overhead; all other
+// inbound frames, including complete deployment inventories, must also fit.
+// maxPayloadLength gates incoming messages only; it does NOT limit
 // what the hub sends, so the hub->sidecar inline-asset deploy does not factor
 // into this number.
 export const MAX_SIDECAR_FRAME_BYTES =
@@ -212,6 +229,7 @@ export const HelloFrame = type({
   type: "'hello'",
   sidecarId: "string",
   token: "string",
+  capacity: SidecarCapacity,
   // A sidecar holds one incarnation of an address, so a list that names one
   // twice does not say which of them it holds.
   incarnations: HostedIncarnation.array()
@@ -221,17 +239,7 @@ export const HelloFrame = type({
         new Set(incarnations.map((incarnation) => incarnation.address)).size ===
           incarnations.length ||
         ctx.mustBe("a list that names each address once"),
-    )
-    .narrow((incarnations, ctx) => {
-      const retained = incarnations.filter(
-        (incarnation) => incarnation.retention === "kept",
-      ).length;
-      return (
-        (retained <= MAX_SIDECAR_RETAINED_DEPLOYMENTS &&
-          incarnations.length - retained <= MAX_SIDECAR_ACTIVE_DEPLOYMENTS) ||
-        ctx.mustBe("within the active and retained deployment limits")
-      );
-    }),
+    ),
   // The rotatable (non-run) sender addresses this sidecar holds cached keys
   // for. The hub re-resolves each current key and re-pushes it on a
   // `sender.key.refresh`, so a user-principal rotation that landed while the
@@ -240,6 +248,15 @@ export const HelloFrame = type({
   "cachedSenderAddresses?": type("string")
     .array()
     .atMostLength(MAX_CACHED_SENDER_ADDRESSES_FRAME),
+}).narrow(({ incarnations, capacity }, ctx) => {
+  const retained = incarnations.filter(
+    (incarnation) => incarnation.retention === "kept",
+  ).length;
+  return (
+    (retained <= capacity.maxRetainedDeployments &&
+      incarnations.length - retained <= capacity.maxActiveDeployments) ||
+    ctx.mustBe("within the advertised active and retained deployment limits")
+  );
 });
 export type HelloFrame = typeof HelloFrame.infer;
 
@@ -887,7 +904,7 @@ export const WelcomeFrame = type({
   type: "'welcome'",
   routed: type({ address: "string", generation: Generation })
     .array()
-    .atMostLength(MAX_SIDECAR_ACTIVE_DEPLOYMENTS),
+    .atMostLength(MAX_SIDECAR_INCARNATIONS),
 });
 export type WelcomeFrame = typeof WelcomeFrame.infer;
 

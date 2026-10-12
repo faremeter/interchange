@@ -7,7 +7,10 @@ import {
   test,
 } from "bun:test";
 import { eq, sql } from "drizzle-orm";
-import { MAX_SIDECAR_ACTIVE_DEPLOYMENTS } from "@intx/types/sidecar";
+import {
+  DEFAULT_SIDECAR_CAPACITY,
+  DEFAULT_SIDECAR_ACTIVE_DEPLOYMENTS,
+} from "@intx/types/sidecar";
 import {
   createSidecarAllocationReconciler,
   createSidecarPluginRegistry,
@@ -141,7 +144,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       adapterManifestDigest = MANIFEST_DIGEST,
     ) {
       const store = createSidecarAllocationStore(h.db, {
-        getRetainedIncarnations: () => [],
+        getSidecarInventory: () => ({
+          capacity: DEFAULT_SIDECAR_CAPACITY,
+          retainedIncarnations: [],
+        }),
       });
       await store.createPending({
         id: allocationId,
@@ -266,7 +272,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         expect(confirmedAtDestroy).toEqual([true]);
         connected = connectedAfterRestart;
         const restartedStore = createSidecarAllocationStore(h.db, {
-          getRetainedIncarnations: () => [],
+          getSidecarInventory: () => ({
+            capacity: DEFAULT_SIDECAR_CAPACITY,
+            retainedIncarnations: [],
+          }),
         });
         const restarted = createSidecarAllocationReconciler({
           ...dependencies,
@@ -340,7 +349,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         allocationStore: store,
       }).reconcileNext();
       const restartedStore = createSidecarAllocationStore(h.db, {
-        getRetainedIncarnations: () => [],
+        getSidecarInventory: () => ({
+          capacity: DEFAULT_SIDECAR_CAPACITY,
+          retainedIncarnations: [],
+        }),
       });
       expect(await restartedStore.findById(id)).toMatchObject({
         status: "releasing",
@@ -1139,6 +1151,79 @@ describe.skipIf(!harnessDbEnvAvailable())(
     );
 
     describe("placing an allocation on an existing sidecar", () => {
+      test.each([1, 2])(
+        "placement and adoption use the advertised active limit %s",
+        async (maxActiveDeployments) => {
+          const first = await bindFirstGeneration("alloc-first", ANCHOR_RUN_ID);
+          await first.markAllocated({
+            allocationId: "alloc-first",
+            generation: 1,
+          });
+          await seedAnchor("anchor-second");
+          await bindFirstGeneration("alloc-second", "anchor-second");
+          const store = createSidecarAllocationStore(h.db, {
+            getSidecarInventory: () => ({
+              capacity: { maxActiveDeployments, maxRetainedDeployments: 0 },
+              retainedIncarnations: [],
+            }),
+          });
+          const placing = {
+            allocationId: "alloc-second",
+            generation: 1,
+            sidecarId: "alloc-first-minted",
+          };
+          if (maxActiveDeployments === 1)
+            await expect(store.markAllocated(placing)).rejects.toBeInstanceOf(
+              SidecarReuseRejectedError,
+            );
+          else
+            expect(await store.markAllocated(placing)).toMatchObject({
+              sidecarId: placing.sidecarId,
+            });
+          await seedAnchor("anchor-adopted");
+          await expect(
+            store.createAdopted({
+              id: "alloc-adopted",
+              anchorRunId: "anchor-adopted",
+              tenantId: TENANT_ID,
+              provisionerId: "ec2-spot",
+              provisionerApiVersion: 2,
+              provisionerBindingFingerprint: "ec2-spot:test",
+              adapterManifestDigest: MANIFEST_DIGEST,
+              maxDisconnectedMs: 900_000,
+              sidecarId: placing.sidecarId,
+              generation: 1,
+              connectDeadline: new Date(Date.now() + 60_000),
+            }),
+          ).rejects.toBeInstanceOf(SidecarReuseRejectedError);
+        },
+      );
+
+      test("a larger advertised limit permits placement beyond the default", async () => {
+        await fillActiveSlots();
+        await seedAnchor("anchor-extra");
+        await bindFirstGeneration("alloc-extra", "anchor-extra");
+        const store = createSidecarAllocationStore(h.db, {
+          getSidecarInventory: () => ({
+            capacity: {
+              maxActiveDeployments: DEFAULT_SIDECAR_ACTIVE_DEPLOYMENTS + 1,
+              maxRetainedDeployments: 0,
+            },
+            retainedIncarnations: [],
+          }),
+        });
+        expect(
+          await store.markAllocated({
+            allocationId: "alloc-extra",
+            generation: 1,
+            sidecarId: "alloc-first-minted",
+          }),
+        ).toMatchObject({
+          status: "allocated",
+          sidecarId: "alloc-first-minted",
+        });
+      });
+
       async function fillActiveSlots() {
         const store = await bindFirstGeneration("alloc-first", ANCHOR_RUN_ID);
         await store.markAllocated({
@@ -1146,7 +1231,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           generation: 1,
         });
         const others = Array.from(
-          { length: MAX_SIDECAR_ACTIVE_DEPLOYMENTS - 1 },
+          { length: DEFAULT_SIDECAR_ACTIVE_DEPLOYMENTS - 1 },
           (_, index) => `alloc-active-${String(index)}`,
         );
         for (const id of others) {
@@ -1190,7 +1275,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
             })
             .where(eq(sidecarAllocation.id, "alloc-first"));
           const store = createSidecarAllocationStore(h.db, {
-            getRetainedIncarnations: () => [],
+            getSidecarInventory: () => ({
+              capacity: DEFAULT_SIDECAR_CAPACITY,
+              retainedIncarnations: [],
+            }),
           });
           const leaseId = "never-accepted-cleanup";
           expect(
@@ -1231,7 +1319,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
           // A fresh store reads durable proof, without an undeploy or inventory
           // entry for this allocation ever having existed.
           const restarted = createSidecarAllocationStore(h.db, {
-            getRetainedIncarnations: () => [],
+            getSidecarInventory: () => ({
+              capacity: DEFAULT_SIDECAR_CAPACITY,
+              retainedIncarnations: [],
+            }),
           });
           expect(
             await restarted.markAllocated({
@@ -1253,9 +1344,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
         await bindFirstGeneration("alloc-last", "anchor-last");
         let retained: readonly RetainedSidecarIncarnation[] = [];
         const store = createSidecarAllocationStore(h.db, {
-          getRetainedIncarnations: (sidecarId) => {
+          getSidecarInventory: (sidecarId) => {
             expect(sidecarId).toBe("alloc-first-minted");
-            return retained;
+            return {
+              capacity: DEFAULT_SIDECAR_CAPACITY,
+              retainedIncarnations: retained,
+            };
           },
         });
         const placing = {
@@ -1299,10 +1393,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
           await seedAnchor("anchor-last");
           await bindFirstGeneration("alloc-last", "anchor-last");
           const store = createSidecarAllocationStore(h.db, {
-            getRetainedIncarnations: () => [
-              { allocationId: "alloc-first", generation: 1 },
-              { allocationId: "unknown-allocation", generation: 1 },
-            ],
+            getSidecarInventory: () => ({
+              capacity: DEFAULT_SIDECAR_CAPACITY,
+              retainedIncarnations: [
+                { allocationId: "alloc-first", generation: 1 },
+                { allocationId: "unknown-allocation", generation: 1 },
+              ],
+            }),
           });
           await expect(
             store.markAllocated({
@@ -1330,7 +1427,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
           await bindFirstGeneration("alloc-last", "anchor-last");
           let inventoryKnown = true;
           const store = createSidecarAllocationStore(h.db, {
-            getRetainedIncarnations: () => (inventoryKnown ? [] : undefined),
+            getSidecarInventory: () =>
+              inventoryKnown
+                ? {
+                    capacity: DEFAULT_SIDECAR_CAPACITY,
+                    retainedIncarnations: [],
+                  }
+                : undefined,
           });
           const placing = {
             allocationId: "alloc-last",
@@ -1422,10 +1525,18 @@ describe.skipIf(!harnessDbEnvAvailable())(
         await fillActiveSlots();
         await seedAnchor("anchor-adopted");
         const store = createSidecarAllocationStore(h.db, {
-          getRetainedIncarnations: (sidecarId) =>
+          getSidecarInventory: (sidecarId) =>
             sidecarId === "alloc-first-minted"
-              ? [{ allocationId: "alloc-first", generation: 1 }]
-              : [],
+              ? {
+                  capacity: DEFAULT_SIDECAR_CAPACITY,
+                  retainedIncarnations: [
+                    { allocationId: "alloc-first", generation: 1 },
+                  ],
+                }
+              : {
+                  capacity: DEFAULT_SIDECAR_CAPACITY,
+                  retainedIncarnations: [],
+                },
         });
         expect(
           await store.createAdopted({
@@ -1513,7 +1624,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             generation: 1,
           });
           const others = Array.from(
-            { length: MAX_SIDECAR_ACTIVE_DEPLOYMENTS - 1 },
+            { length: DEFAULT_SIDECAR_ACTIVE_DEPLOYMENTS - 1 },
             (_, index) => `alloc-full-${String(index)}`,
           );
           for (const id of others) {
@@ -1549,7 +1660,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
               sidecarId: "alloc-first-minted",
             }),
           ).rejects.toThrow(
-            `it already hosts ${String(MAX_SIDECAR_ACTIVE_DEPLOYMENTS)} deployments`,
+            `it already hosts ${String(DEFAULT_SIDECAR_ACTIVE_DEPLOYMENTS)} deployments`,
           );
 
           if (status === "releasing") {
@@ -1585,7 +1696,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           generation: 1,
         });
         const others = Array.from(
-          { length: MAX_SIDECAR_ACTIVE_DEPLOYMENTS - 1 },
+          { length: DEFAULT_SIDECAR_ACTIVE_DEPLOYMENTS - 1 },
           (_, index) => `alloc-full-${String(index)}`,
         );
         for (const id of others) {
@@ -1628,7 +1739,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             connectDeadline: new Date(Date.now() + 60_000),
           }),
         ).rejects.toThrow(
-          `it already hosts ${String(MAX_SIDECAR_ACTIVE_DEPLOYMENTS)} deployments`,
+          `it already hosts ${String(DEFAULT_SIDECAR_ACTIVE_DEPLOYMENTS)} deployments`,
         );
         expect(await store.findById("probe-adopted")).toBeNull();
       });
@@ -1742,7 +1853,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     async function createClaimedAllocation(id: string) {
       const store = createSidecarAllocationStore(h.db, {
-        getRetainedIncarnations: () => [],
+        getSidecarInventory: () => ({
+          capacity: DEFAULT_SIDECAR_CAPACITY,
+          retainedIncarnations: [],
+        }),
       });
       await store.createPending({
         id,
@@ -2239,7 +2353,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     test("fences replacement before binding a new physical sidecar", async () => {
       const store = createSidecarAllocationStore(h.db, {
-        getRetainedIncarnations: () => [],
+        getSidecarInventory: () => ({
+          capacity: DEFAULT_SIDECAR_CAPACITY,
+          retainedIncarnations: [],
+        }),
       });
       const pending = await store.createPending({
         id: "alloc-1",
@@ -2378,7 +2495,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     test("never replaces an allocated worker", async () => {
       const store = createSidecarAllocationStore(h.db, {
-        getRetainedIncarnations: () => [],
+        getSidecarInventory: () => ({
+          capacity: DEFAULT_SIDECAR_CAPACITY,
+          retainedIncarnations: [],
+        }),
       });
       const pending = await store.createPending({
         id: "alloc-allocated",
@@ -2473,7 +2593,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     test("timed-out claims leave database capacity for unrelated queries", async () => {
       const store = createSidecarAllocationStore(h.db, {
-        getRetainedIncarnations: () => [],
+        getSidecarInventory: () => ({
+          capacity: DEFAULT_SIDECAR_CAPACITY,
+          retainedIncarnations: [],
+        }),
       });
       const locked = Promise.withResolvers<boolean>();
       const unlock = Promise.withResolvers<boolean>();
@@ -2529,7 +2652,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     test("abandoned recovery reads leave database capacity for unrelated queries", async () => {
       const store = createSidecarAllocationStore(h.db, {
-        getRetainedIncarnations: () => [],
+        getSidecarInventory: () => ({
+          capacity: DEFAULT_SIDECAR_CAPACITY,
+          retainedIncarnations: [],
+        }),
       });
       for (let index = 0; index < 10; index += 1) {
         const id = `recovery-capacity-${String(index)}`;
@@ -2726,7 +2852,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     test("parking preserves a reconnect wake that races an accepted worker", async () => {
       const store = createSidecarAllocationStore(h.db, {
-        getRetainedIncarnations: () => [],
+        getSidecarInventory: () => ({
+          capacity: DEFAULT_SIDECAR_CAPACITY,
+          retainedIncarnations: [],
+        }),
       });
       await store.createPending({
         id: "alloc-park-wake",
@@ -2775,7 +2904,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     test("parking after an error floors an allocated retry at the backoff", async () => {
       const store = createSidecarAllocationStore(h.db, {
-        getRetainedIncarnations: () => [],
+        getSidecarInventory: () => ({
+          capacity: DEFAULT_SIDECAR_CAPACITY,
+          retainedIncarnations: [],
+        }),
       });
       await store.createPending({
         id: "alloc-park-backoff",
@@ -2834,7 +2966,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     test("holds the reconciliation lease until the accepted worker connects", async () => {
       const store = createSidecarAllocationStore(h.db, {
-        getRetainedIncarnations: () => [],
+        getSidecarInventory: () => ({
+          capacity: DEFAULT_SIDECAR_CAPACITY,
+          retainedIncarnations: [],
+        }),
       });
       await store.createPending({
         id: "alloc-ready",
@@ -3359,7 +3494,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     test("gives the accepted generation its allocation's disconnect limit", async () => {
       const store = createSidecarAllocationStore(h.db, {
-        getRetainedIncarnations: () => [],
+        getSidecarInventory: () => ({
+          capacity: DEFAULT_SIDECAR_CAPACITY,
+          retainedIncarnations: [],
+        }),
       });
       await store.createPending({
         id: "alloc-reconnect",
@@ -3440,7 +3578,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     test("at Hub start gives the first-connect window until the first deploy completes, then the disconnect limit", async () => {
       const store = createSidecarAllocationStore(h.db, {
-        getRetainedIncarnations: () => [],
+        getSidecarInventory: () => ({
+          capacity: DEFAULT_SIDECAR_CAPACITY,
+          retainedIncarnations: [],
+        }),
       });
       await store.createPending({
         id: "alloc-hub-start",
@@ -3504,7 +3645,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     test("repairs a disconnect deadline only while an allocation remains unscheduled and unleased", async () => {
       const store = createSidecarAllocationStore(h.db, {
-        getRetainedIncarnations: () => [],
+        getSidecarInventory: () => ({
+          capacity: DEFAULT_SIDECAR_CAPACITY,
+          retainedIncarnations: [],
+        }),
       });
       await store.createPending({
         id: "alloc-repair",
@@ -3933,7 +4077,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
     for (const status of ["replacing", "releasing"] as const) {
       test(`preserves capacity and stops reconciliation after ${status} fails permanently`, async () => {
         const store = createSidecarAllocationStore(h.db, {
-          getRetainedIncarnations: () => [],
+          getSidecarInventory: () => ({
+            capacity: DEFAULT_SIDECAR_CAPACITY,
+            retainedIncarnations: [],
+          }),
         });
         const dispatchStore = createWorkflowRunDispatchStore(h.db);
         await store.createPending({
@@ -4206,7 +4353,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         principalId: "prn-unrecoverable-run",
       });
       const store = createSidecarAllocationStore(h.db, {
-        getRetainedIncarnations: () => [],
+        getSidecarInventory: () => ({
+          capacity: DEFAULT_SIDECAR_CAPACITY,
+          retainedIncarnations: [],
+        }),
       });
       const dispatchStore = createWorkflowRunDispatchStore(h.db);
       await store.createPending({
@@ -4340,7 +4490,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         definitionId: DEFINITION_ID,
       });
       const store = createSidecarAllocationStore(h.db, {
-        getRetainedIncarnations: () => [],
+        getSidecarInventory: () => ({
+          capacity: DEFAULT_SIDECAR_CAPACITY,
+          retainedIncarnations: [],
+        }),
       });
       const dispatchStore = createWorkflowRunDispatchStore(h.db);
       await store.createPending({

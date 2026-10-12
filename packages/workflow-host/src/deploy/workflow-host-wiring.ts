@@ -42,8 +42,6 @@ import type {
 } from "@intx/types/inbound-mail-policy";
 import {
   fitDeploymentError,
-  MAX_SIDECAR_ACTIVE_DEPLOYMENTS,
-  MAX_SIDECAR_RETAINED_DEPLOYMENTS,
   WORKFLOW_CONTROL_INITIALIZING_ERROR,
   WorkflowProjectionDefinition,
   type AgentDeployFrame,
@@ -110,11 +108,9 @@ import {
 
 const logger = getLogger(["interchange", "sidecar", "workflow-host-wiring"]);
 
-// How many deployments a boot restores at once. More starve each other past
-// the default 30-second ready timeout on small hosts. With this many, a full
-// sidecar whose every child takes that whole timeout spends about 8 minutes,
-// about half the default disconnect limit, on those timeouts alone before it
-// connects.
+// Keep concurrency low so children do not starve each other past their ready
+// timeout on small hosts. Higher active capacity takes longer to restore;
+// size maxDisconnected accordingly.
 const RESTORE_CONCURRENCY = 8;
 
 /**
@@ -1266,9 +1262,9 @@ export function createSidecarDeployRouter<
   }) => readonly string[];
   /** Absolute git directory a source-format asset is indexed into. */
   sourceAssetGitDir: (gitDirRoot: string, assetId: string) => string;
-  /** Test seams for the fixed production capacity limits. */
-  maxActiveDeployments?: number;
-  maxRetainedDeployments?: number;
+  /** Capacity settings resolved by the host at startup. */
+  maxActiveDeployments: number;
+  maxRetainedDeployments: number;
   /**
    * Remove a deployment's workflow-run repository from the substrate, and with
    * it the run record the repository's directory holds. Undeploy calls it
@@ -1343,10 +1339,7 @@ export function createSidecarDeployRouter<
     deps.updateWorkflowRunRecordSources ?? updateWorkflowRunRecordSources;
   const applyClosure = deps.applyFrozenWorkflowClosure;
   const multistepSpawner = deps.multistepSubprocessSpawner;
-  const maxActiveDeployments =
-    deps.maxActiveDeployments ?? MAX_SIDECAR_ACTIVE_DEPLOYMENTS;
-  const maxRetainedDeployments =
-    deps.maxRetainedDeployments ?? MAX_SIDECAR_RETAINED_DEPLOYMENTS;
+  const { maxActiveDeployments, maxRetainedDeployments } = deps;
   const multistepDeriveStepAddress: DeriveStepAddress =
     deps.multistepDeriveStepAddress ??
     (({ runId, stepId }) => `${runId}-${stepId}`);

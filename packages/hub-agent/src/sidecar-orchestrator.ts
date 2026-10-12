@@ -17,6 +17,7 @@ import type { SignalKind } from "@intx/types";
 import type {
   DeploymentStoppedFrame,
   HostedIncarnation,
+  SidecarCapacity,
 } from "@intx/types/sidecar";
 import type {
   ApprovalSnapshot,
@@ -219,6 +220,7 @@ export type SidecarOrchestratorConfig = {
    * `incarnations`; omitted, the link holds none.
    */
   getIncarnations?: () => HostedIncarnation[];
+  capacity: SidecarCapacity;
   /**
    * Returns the rotatable (non-run) sender addresses this sidecar holds cached
    * keys for. Forwarded to the hub link, which reports them on every
@@ -284,6 +286,7 @@ export function createSidecarOrchestrator(
     applyWorkflowRunPack,
     workflowProbeExecutor,
     getIncarnations,
+    capacity,
     getCachedSenderAddresses,
     onWorkflowAddressesRoutable,
     onWorkflowAddressesUnroutable,
@@ -397,6 +400,7 @@ export function createSidecarOrchestrator(
       : {}),
     ...(workflowProbeExecutor !== undefined ? { workflowProbeExecutor } : {}),
     ...(getIncarnations !== undefined ? { getIncarnations } : {}),
+    capacity,
     ...(getCachedSenderAddresses !== undefined
       ? { getCachedSenderAddresses }
       : {}),

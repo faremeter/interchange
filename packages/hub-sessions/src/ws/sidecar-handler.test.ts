@@ -9,7 +9,10 @@ import {
 
 import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 import { configureSync, getConfig } from "@intx/log";
-import { MAX_CACHED_SENDER_ADDRESSES_FRAME } from "@intx/types/sidecar";
+import {
+  DEFAULT_SIDECAR_CAPACITY,
+  MAX_CACHED_SENDER_ADDRESSES_FRAME,
+} from "@intx/types/sidecar";
 import { waitUntil } from "@intx/types/testing";
 
 import {
@@ -131,6 +134,7 @@ async function connect(
       type: "hello",
       sidecarId: identity.sidecarId,
       token: "token",
+      capacity: DEFAULT_SIDECAR_CAPACITY,
       incarnations: agentAddresses.map((address) => ({
         address,
         generation: identity.generation,
@@ -268,6 +272,7 @@ describe("SidecarRouter allocation routing", () => {
         type: "hello",
         sidecarId: identity.sidecarId,
         token: "token",
+        capacity: DEFAULT_SIDECAR_CAPACITY,
         incarnations: [],
       }),
     );
@@ -286,6 +291,7 @@ describe("SidecarRouter allocation routing", () => {
         type: "hello",
         sidecarId: identity.sidecarId,
         token: "token",
+        capacity: DEFAULT_SIDECAR_CAPACITY,
         incarnations: [
           {
             address: identity.workflowRunAddress,
@@ -311,6 +317,7 @@ describe("SidecarRouter allocation routing", () => {
         type: "hello",
         sidecarId: identity.sidecarId,
         token: "token",
+        capacity: DEFAULT_SIDECAR_CAPACITY,
         incarnations: [
           {
             address: identity.workflowRunAddress,

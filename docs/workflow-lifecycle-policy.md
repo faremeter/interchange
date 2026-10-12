@@ -137,11 +137,11 @@ limit the Hub fails the deployment's live runs as an infrastructure loss and
 begins releasing its allocation at once. A returning sidecar regains no
 workflow routes; a cleanup disconnect timeout allows cleanup to resume on
 reconnect. Its later history is refused under the release fence, so whatever
-it did while away is discarded. A restarting sidecar connects only after it
-has restored its deployments, 8 at a time; when every workflow child takes its
-whole 30-second ready timeout, a full one spends about 8 minutes on those
-timeouts alone, so a shorter limit can fail the deployments of a sidecar that
-is only restarting.
+it did while away is discarded. A restarting sidecar restores eight deployments
+at a time before connecting. Size `maxDisconnected` for the
+[restore time](HARNESS_DESIGN.md#self-restoration) at the configured
+`SIDECAR_MAX_ACTIVE_DEPLOYMENTS`, including startup overhead, or a restart can
+exceed the deadline and fail deployments.
 
 On a sidecar that also hosts other work, release removes only this
 deployment's hold on the sidecar. A connected sidecar is told to undeploy the

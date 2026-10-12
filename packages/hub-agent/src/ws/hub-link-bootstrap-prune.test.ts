@@ -37,6 +37,7 @@ import type {
 import { hexDecode } from "@intx/types";
 import { waitUntil } from "@intx/types/testing";
 
+import { DEFAULT_SIDECAR_CAPACITY } from "@intx/types/sidecar";
 import { createHubLink, type DeployRouter } from "./hub-link";
 import { resolveInboundMailPolicy } from "./inbound-signature";
 import type { AgentKeyStore } from "../agent-key-store";
@@ -267,6 +268,7 @@ describe("hub-link workflow-run pack bootstrap prune", () => {
     const welcomed = Promise.withResolvers<boolean>();
 
     const client = createHubLink({
+      capacity: DEFAULT_SIDECAR_CAPACITY,
       hubURL: `ws://localhost:${env.server.port}/ws`,
       sidecarId: "sc-bootstrap-prune",
       token: "test-token",

@@ -1,3 +1,4 @@
+import { DEFAULT_SIDECAR_CAPACITY } from "@intx/types/sidecar";
 import {
   afterAll,
   beforeAll,
@@ -978,8 +979,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
       let confirmed = false;
       const allocations = createSidecarAllocationStore(h.db, {
-        getRetainedIncarnations: () =>
-          confirmed ? [{ allocationId, generation: 1 }] : [],
+        getSidecarInventory: () =>
+          confirmed
+            ? {
+                capacity: DEFAULT_SIDECAR_CAPACITY,
+                retainedIncarnations: [{ allocationId, generation: 1 }],
+              }
+            : { capacity: DEFAULT_SIDECAR_CAPACITY, retainedIncarnations: [] },
       });
       const placement = {
         allocationId: "capacity-allocation-127",
@@ -1567,7 +1573,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const destroyed: string[] = [];
       const reconciler = createSidecarAllocationReconciler({
         allocationStore: createSidecarAllocationStore(h.db, {
-          getRetainedIncarnations: () => [],
+          getSidecarInventory: () => ({
+            capacity: DEFAULT_SIDECAR_CAPACITY,
+            retainedIncarnations: [],
+          }),
         }),
         plugins: createSidecarPluginRegistry({
           provisioners: [
@@ -2564,7 +2573,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       }>();
       let destroyed = false;
       const allocationStore = createSidecarAllocationStore(h.db, {
-        getRetainedIncarnations: () => [],
+        getSidecarInventory: () => ({
+          capacity: DEFAULT_SIDECAR_CAPACITY,
+          retainedIncarnations: [],
+        }),
       });
       const reconciler = createSidecarAllocationReconciler({
         allocationStore,

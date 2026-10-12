@@ -109,6 +109,7 @@ export {
   SidecarReuseRejectedError,
   SidecarInventoryUnavailableError,
   type RetainedSidecarIncarnation,
+  type SidecarInventory,
   type SidecarAllocationStoreOptions,
 } from "./sidecar-reuse";
 export {

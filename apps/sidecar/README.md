@@ -38,6 +38,23 @@ relocates the tarball cache (defaults to a subdirectory of the data
 dir), and the cache and registry size caps are read through
 `src/config.ts`.
 
+`SIDECAR_MAX_ACTIVE_DEPLOYMENTS` sets the active deployment limit (default 128,
+positive integer). `SIDECAR_MAX_RETAINED_DEPLOYMENTS` sets the retained-record
+limit (default 256, non-negative integer); zero triggers
+[retention refusal and cleanup](../../docs/SIDECAR_PLACEMENT.md#active-and-retained-capacity). Their sum
+must not exceed the protocol ceiling of 2,048 records. These settings are read
+at startup and advertised to the Hub on every connection, so placement uses
+the sidecar's configured active limit. The complete `hello` frame must also fit
+the 64 MiB WebSocket frame-size limit. Errors in hello use the same
+4,096-character limit as individual stop reports.
+
+Restart is required to change capacity. If the stored active or retained
+inventory exceeds the new limit, startup fails without deleting records; clean
+up deployments before reducing capacity below their counts.
+
+When raising active capacity, size each workflow's `maxDisconnected` for the
+longer [restore time](../../docs/HARNESS_DESIGN.md#self-restoration).
+
 `SIDECAR_DATA_DIR` must be durably established on a filesystem that supports
 file and directory synchronization (`fsync`). Deployment creation, state
 markers, and removal require both; filesystems that reject directory

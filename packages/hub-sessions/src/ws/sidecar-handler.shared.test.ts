@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  DEFAULT_SIDECAR_CAPACITY,
   AgentUndeployFrame,
   WorkflowControlFrame,
   type HostedIncarnation,
@@ -210,6 +211,64 @@ function framesOfType(ws: TestWs, type: string): Record<string, unknown>[] {
 }
 
 describe("SidecarRouter placement inventory", () => {
+  test("capacity follows the current complete hello through reconnect", async () => {
+    const reading = Promise.withResolvers<undefined>();
+    const finish = Promise.withResolvers<undefined>();
+    let hold = false;
+    const { router } = createSharedRouter([first], {
+      resolveSidecarBindings: async () => {
+        if (hold) {
+          reading.resolve(undefined);
+          await finish.promise;
+        }
+        return [first];
+      },
+    });
+    const original = openSocket(router);
+    await original.awaitSent((sent) =>
+      sent.some((raw) => raw.includes('"welcome"')),
+    );
+    expect(router.getSidecarInventory(SIDECAR)).toEqual({
+      capacity: DEFAULT_SIDECAR_CAPACITY,
+      retainedIncarnations: [],
+    });
+    hold = true;
+    const replacement = createMockWs();
+    const capacity = { maxActiveDeployments: 1, maxRetainedDeployments: 0 };
+    router.handleOpen(replacement);
+    router.handleMessage(
+      replacement,
+      JSON.stringify({
+        type: "hello",
+        sidecarId: SIDECAR,
+        token: "token",
+        capacity,
+        incarnations: [],
+      }),
+    );
+    try {
+      await reading.promise;
+      expect(router.getSidecarInventory(SIDECAR)).toBeUndefined();
+      finish.resolve(undefined);
+      await replacement.awaitSent((sent) =>
+        sent.some((raw) => raw.includes('"welcome"')),
+      );
+      expect(original.closed).toBe(true);
+      expect(router.getSidecarInventory(SIDECAR)).toEqual({
+        capacity,
+        retainedIncarnations: [],
+      });
+      router.handleClose(original);
+      expect(router.getSidecarInventory(SIDECAR)?.capacity).toEqual(capacity);
+      router.handleClose(replacement);
+      expect(router.getSidecarInventory(SIDECAR)).toBeUndefined();
+    } finally {
+      finish.resolve(undefined);
+      router.handleClose(original);
+      router.handleClose(replacement);
+    }
+  });
+
   test("inventory waits through hello validation and closes again on disconnect", async () => {
     const reading = Promise.withResolvers<undefined>();
     const finish = Promise.withResolvers<undefined>();
@@ -237,13 +296,19 @@ describe("SidecarRouter placement inventory", () => {
     const ws = openSocket(router);
     try {
       await reading.promise;
-      expect(router.getRetainedIncarnations(SIDECAR)).toBeUndefined();
+      expect(
+        router.getSidecarInventory(SIDECAR)?.retainedIncarnations,
+      ).toBeUndefined();
       expect(ready).toBe(false);
       finish.resolve(undefined);
       await waiting;
-      expect(router.getRetainedIncarnations(SIDECAR)).toEqual([]);
+      expect(router.getSidecarInventory(SIDECAR)?.retainedIncarnations).toEqual(
+        [],
+      );
       router.handleClose(ws);
-      expect(router.getRetainedIncarnations(SIDECAR)).toBeUndefined();
+      expect(
+        router.getSidecarInventory(SIDECAR)?.retainedIncarnations,
+      ).toBeUndefined();
     } finally {
       finish.resolve(undefined);
       controller.abort();
@@ -273,14 +338,18 @@ describe("SidecarRouter placement inventory", () => {
       const controller = new AbortController();
       try {
         await reading.promise;
-        expect(router.getRetainedIncarnations(SIDECAR)).toBeUndefined();
+        expect(
+          router.getSidecarInventory(SIDECAR)?.retainedIncarnations,
+        ).toBeUndefined();
         const waiting = router.waitForSidecarInventory(
           SIDECAR,
           controller.signal,
         );
         finish.resolve(undefined);
         await waiting;
-        expect(router.getRetainedIncarnations(SIDECAR)).toEqual([]);
+        expect(
+          router.getSidecarInventory(SIDECAR)?.retainedIncarnations,
+        ).toEqual([]);
         expect(original.closed).toBe(!failed);
         expect(replacement.closed).toBe(failed);
       } finally {
@@ -351,7 +420,9 @@ describe("SidecarRouter retention accounting", () => {
       },
     });
     const ws = await reconnect(router, [kept]);
-    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([target(first)]);
+    expect(router.getSidecarInventory(SIDECAR)?.retainedIncarnations).toEqual([
+      target(first),
+    ]);
     expect(router.getRetentionCandidates()).toEqual([
       { ...target(first), sidecarId: SIDECAR },
     ]);
@@ -368,7 +439,9 @@ describe("SidecarRouter retention accounting", () => {
     expect(await request.pending).toBeInstanceOf(
       WorkflowControlHistoryPendingError,
     );
-    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([target(first)]);
+    expect(router.getSidecarInventory(SIDECAR)?.retainedIncarnations).toEqual([
+      target(first),
+    ]);
     expect(router.getRetentionCandidates()).toEqual([
       { ...target(first), sidecarId: SIDECAR },
     ]);
@@ -406,7 +479,9 @@ describe("SidecarRouter retention accounting", () => {
       }),
     );
     expect(await pending).toBeInstanceOf(WorkflowControlHistoryPendingError);
-    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([target(first)]);
+    expect(router.getSidecarInventory(SIDECAR)?.retainedIncarnations).toEqual([
+      target(first),
+    ]);
     expect(router.getRetentionCandidates()).toEqual([
       { ...target(first), sidecarId: SIDECAR },
     ]);
@@ -449,7 +524,9 @@ describe("SidecarRouter retention accounting", () => {
       expect(await pending).toBeInstanceOf(Error);
       finish.resolve(undefined);
       await router.syncSidecar(SIDECAR);
-      expect(router.getRetainedIncarnations(SIDECAR)).toEqual([target(first)]);
+      expect(router.getSidecarInventory(SIDECAR)?.retainedIncarnations).toEqual(
+        [target(first)],
+      );
       expect(router.getRetentionCandidates()).toEqual([
         { ...target(first), sidecarId: SIDECAR },
       ]);
@@ -463,7 +540,9 @@ describe("SidecarRouter retention accounting", () => {
     const { router } = createSharedRouter([first]);
     const ws = await reconnect(router, [first.workflowRunAddress]);
     const { pending, frame } = await retain(router, ws);
-    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([]);
+    expect(router.getSidecarInventory(SIDECAR)?.retainedIncarnations).toEqual(
+      [],
+    );
     router.handleMessage(
       ws,
       JSON.stringify({
@@ -474,7 +553,9 @@ describe("SidecarRouter retention accounting", () => {
       }),
     );
     await router.syncSidecar(SIDECAR);
-    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([]);
+    expect(router.getSidecarInventory(SIDECAR)?.retainedIncarnations).toEqual(
+      [],
+    );
     router.handleMessage(
       ws,
       JSON.stringify({
@@ -486,14 +567,20 @@ describe("SidecarRouter retention accounting", () => {
     );
     expect(await pending).toBe("kept");
     expect(router.getAllocationRetention(target(first))).toBe("kept");
-    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([target(first)]);
+    expect(router.getSidecarInventory(SIDECAR)?.retainedIncarnations).toEqual([
+      target(first),
+    ]);
     expect(router.getRoutableAddresses()).toEqual([]);
     router.handleClose(ws);
     expect(router.getAllocationRetention(target(first))).toBeUndefined();
-    expect(router.getRetainedIncarnations(SIDECAR)).toBeUndefined();
+    expect(
+      router.getSidecarInventory(SIDECAR)?.retainedIncarnations,
+    ).toBeUndefined();
     await reconnect(router, [kept]);
     expect(router.getAllocationRetention(target(first))).toBe("kept");
-    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([target(first)]);
+    expect(router.getSidecarInventory(SIDECAR)?.retainedIncarnations).toEqual([
+      target(first),
+    ]);
   });
 
   test("refused retention remains an active reservation and replays on reconnect", async () => {
@@ -510,11 +597,15 @@ describe("SidecarRouter retention accounting", () => {
       }),
     );
     expect(await pending).toBe("refused");
-    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([]);
+    expect(router.getSidecarInventory(SIDECAR)?.retainedIncarnations).toEqual(
+      [],
+    );
     expect(router.getAllocationRetention(target(first))).toBe("refused");
     await reconnect(router, [{ ...kept, retention: "refused" }]);
     expect(router.getAllocationRetention(target(first))).toBe("refused");
-    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([]);
+    expect(router.getSidecarInventory(SIDECAR)?.retainedIncarnations).toEqual(
+      [],
+    );
   });
 
   test("a stopped copy or terminal run without a retention decision still occupies active capacity", async () => {
@@ -522,12 +613,16 @@ describe("SidecarRouter retention accounting", () => {
       validateSidecarIdentity: async (_binding, use) => use !== "reclaim",
     });
     await reconnect(router, [first.workflowRunAddress]);
-    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([]);
+    expect(router.getSidecarInventory(SIDECAR)?.retainedIncarnations).toEqual(
+      [],
+    );
     await reconnect(router, [
       { address: first.workflowRunAddress, generation: 1, state: "stopped" },
     ]);
     expect(router.getAllocationRetention(target(first))).toBeUndefined();
-    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([]);
+    expect(router.getSidecarInventory(SIDECAR)?.retainedIncarnations).toEqual(
+      [],
+    );
   });
 
   test("a cleanup fence preserves the physical generation of a kept copy", async () => {
@@ -539,11 +634,17 @@ describe("SidecarRouter retention accounting", () => {
       cleanup: { sidecarId: SIDECAR },
     });
     expect(router.getAllocationRetention(target(cleanup))).toBeUndefined();
-    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([target(first)]);
+    expect(router.getSidecarInventory(SIDECAR)?.retainedIncarnations).toEqual([
+      target(first),
+    ]);
     await reconnect(router, [{ ...kept, state: "tearing-down" }]);
-    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([target(first)]);
+    expect(router.getSidecarInventory(SIDECAR)?.retainedIncarnations).toEqual([
+      target(first),
+    ]);
     router.retireAllocation(target(cleanup));
-    expect(router.getRetainedIncarnations(SIDECAR)).toBeUndefined();
+    expect(
+      router.getSidecarInventory(SIDECAR)?.retainedIncarnations,
+    ).toBeUndefined();
   });
 
   test("a stale retention acknowledgement cannot free a replacement's reservation", async () => {
@@ -567,7 +668,9 @@ describe("SidecarRouter retention accounting", () => {
     );
     await router.syncSidecar(SIDECAR);
     expect(router.getAllocationRetention(target(replacement))).toBeUndefined();
-    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([]);
+    expect(router.getSidecarInventory(SIDECAR)?.retainedIncarnations).toEqual(
+      [],
+    );
   });
 
   test("an ineligible retain request leaves a live copy routed", async () => {
@@ -602,7 +705,9 @@ describe("SidecarRouter retention accounting", () => {
       }),
     );
     expect(await pending).toBeInstanceOf(Error);
-    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([]);
+    expect(router.getSidecarInventory(SIDECAR)?.retainedIncarnations).toEqual(
+      [],
+    );
   });
 
   test("an acknowledgement whose validation outlives its request publishes no retention proof", async () => {
@@ -640,7 +745,9 @@ describe("SidecarRouter retention accounting", () => {
     expect(await pending).toBeInstanceOf(Error);
     validation.resolve(true);
     await router.syncSidecar(SIDECAR);
-    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([]);
+    expect(router.getSidecarInventory(SIDECAR)?.retainedIncarnations).toEqual(
+      [],
+    );
     expect(router.getAllocationRetention(target(first))).toBeUndefined();
     router.handleClose(ws);
   });
@@ -671,7 +778,9 @@ describe("SidecarRouter retention accounting", () => {
     expect(frame.action).toBe("retain");
     expect(frame.agentAddress).toBe(first.workflowRunAddress);
     expect(timeouts.filter((ms) => ms === 4321)).toHaveLength(1);
-    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([]);
+    expect(router.getSidecarInventory(SIDECAR)?.retainedIncarnations).toEqual(
+      [],
+    );
     const pending = router.retainAllocation(target(first), 500);
     // Registration and a following sync must finish without waiting for the ack.
     await router.syncSidecar(SIDECAR);
@@ -686,7 +795,9 @@ describe("SidecarRouter retention accounting", () => {
       }),
     );
     expect(await pending).toBe("kept");
-    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([target(first)]);
+    expect(router.getSidecarInventory(SIDECAR)?.retainedIncarnations).toEqual([
+      target(first),
+    ]);
     expect(framesOfType(ws, "workflow.control")).toHaveLength(1);
     router.handleClose(ws);
   });
@@ -716,7 +827,9 @@ describe("SidecarRouter retention accounting", () => {
       expect(router.getRoutableAddresses()).toEqual([
         second.workflowRunAddress,
       ]);
-      expect(router.getRetainedIncarnations(SIDECAR)).toEqual([]);
+      expect(router.getSidecarInventory(SIDECAR)?.retainedIncarnations).toEqual(
+        [],
+      );
     } finally {
       router.handleClose(ws);
     }
@@ -741,7 +854,9 @@ describe("SidecarRouter retention accounting", () => {
       }),
     );
     expect(await pending).toBe("kept");
-    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([target(first)]);
+    expect(router.getSidecarInventory(SIDECAR)?.retainedIncarnations).toEqual([
+      target(first),
+    ]);
     router.handleClose(ws);
   });
 
@@ -847,7 +962,9 @@ describe("SidecarRouter retention accounting", () => {
         retention: "kept",
       }),
     );
-    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([]);
+    expect(router.getSidecarInventory(SIDECAR)?.retainedIncarnations).toEqual(
+      [],
+    );
     router.handleMessage(
       replacement,
       JSON.stringify({
@@ -867,7 +984,9 @@ describe("SidecarRouter retention accounting", () => {
     const ws = await reconnect(router, [kept, second.workflowRunAddress]);
     await router.syncSidecar(SIDECAR);
     expect(framesOfType(ws, "workflow.control")).toEqual([]);
-    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([target(first)]);
+    expect(router.getSidecarInventory(SIDECAR)?.retainedIncarnations).toEqual([
+      target(first),
+    ]);
     expect(router.getRoutableAddresses()).toEqual([second.workflowRunAddress]);
     router.handleClose(ws);
   });
@@ -887,7 +1006,9 @@ describe("SidecarRouter retention accounting", () => {
     const ws = await reconnect(router, [first.workflowRunAddress]);
     expect(router.getRoutableAddresses()).toEqual([]);
     expect(framesOfType(ws, "agent.undeploy")).toEqual([]);
-    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([]);
+    expect(router.getSidecarInventory(SIDECAR)?.retainedIncarnations).toEqual(
+      [],
+    );
     await ws.awaitSent((sent) =>
       sent.some((raw) => raw.includes('"workflow.control"')),
     );
@@ -904,7 +1025,9 @@ describe("SidecarRouter retention accounting", () => {
     hosted.bindings = [cleanup, second];
     await router.syncSidecar(SIDECAR);
     expect(router.getCleanupConnection(target(cleanup))).toBe(ws);
-    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([target(first)]);
+    expect(router.getSidecarInventory(SIDECAR)?.retainedIncarnations).toEqual([
+      target(first),
+    ]);
     expect(framesOfType(ws, "agent.undeploy")).toEqual([]);
     router.handleClose(ws);
   });
@@ -947,9 +1070,9 @@ describe("SidecarRouter retention accounting", () => {
         expect(router.getCleanupConnection(target(cleanup))).toBe(
           change === "transfer" ? ws : undefined,
         );
-        expect(router.getRetainedIncarnations(SIDECAR)).toEqual(
-          change === "transfer" ? [target(first)] : [],
-        );
+        expect(
+          router.getSidecarInventory(SIDECAR)?.retainedIncarnations,
+        ).toEqual(change === "transfer" ? [target(first)] : []);
         expect(framesOfType(ws, "agent.undeploy")).toEqual([]);
       } finally {
         finish.resolve(undefined);
@@ -996,7 +1119,9 @@ describe("SidecarRouter retention accounting", () => {
     );
     expect(await pending).toBeInstanceOf(Error);
     expect(router.getCleanupConnection(target(cleanup))).toBe(ws);
-    expect(router.getRetainedIncarnations(SIDECAR)).toEqual([target(first)]);
+    expect(router.getSidecarInventory(SIDECAR)?.retainedIncarnations).toEqual([
+      target(first),
+    ]);
     expect(framesOfType(ws, "agent.undeploy")).toEqual([]);
     expect(ws.closed).toBe(false);
     router.handleClose(ws);
