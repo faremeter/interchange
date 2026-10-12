@@ -29,6 +29,7 @@ import { createInMemoryTransport } from "@intx/mail-memory";
 import { hexDecode, hexEncode } from "@intx/types";
 import { waitUntil } from "@intx/types/testing";
 
+import { DEFAULT_SIDECAR_CAPACITY } from "@intx/types/sidecar";
 import { createHubLink, type DeployRouter } from "./hub-link";
 import { resolveInboundMailPolicy } from "./inbound-signature";
 import { createSenderKeyCache } from "../sender-key-cache";
@@ -240,6 +241,7 @@ describe("hub-link sender-key rotation on reconnect", () => {
         removeFileDurable,
       });
       const first = createHubLink({
+        capacity: DEFAULT_SIDECAR_CAPACITY,
         hubURL,
         sidecarId,
         token: "test-token",
@@ -272,6 +274,7 @@ describe("hub-link sender-key rotation on reconnect", () => {
       expect(reconnectCache.get(sender)).toEqual(oldKey);
       const workflowAddress = "run_deploy@tenant.example";
       const second = createHubLink({
+        capacity: DEFAULT_SIDECAR_CAPACITY,
         hubURL,
         sidecarId,
         token: "test-token",
@@ -341,6 +344,7 @@ describe("hub-link sender-key rotation on reconnect", () => {
         removeFileDurable,
       });
       const first = createHubLink({
+        capacity: DEFAULT_SIDECAR_CAPACITY,
         hubURL,
         sidecarId,
         token: "test-token",
@@ -379,6 +383,7 @@ describe("hub-link sender-key rotation on reconnect", () => {
       expect(reconnectCache.get(sender)).toEqual(key);
       const workflowAddress = "run_deploy@tenant.example";
       const second = createHubLink({
+        capacity: DEFAULT_SIDECAR_CAPACITY,
         hubURL,
         sidecarId,
         token: "test-token",

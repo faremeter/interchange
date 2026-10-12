@@ -3,6 +3,7 @@ import type { HostedIncarnation } from "@intx/types/sidecar";
 
 import type { SidecarCredentials } from "../sidecar-allocation/contracts";
 
+import { DEFAULT_SIDECAR_CAPACITY } from "@intx/types/sidecar";
 import {
   createSidecarRouter,
   type AllocatedSidecarTarget,
@@ -148,7 +149,13 @@ export function helloFrame(
   incarnations: readonly HostedIncarnation[] = [],
   token = "token",
 ): string {
-  return JSON.stringify({ type: "hello", sidecarId, token, incarnations });
+  return JSON.stringify({
+    type: "hello",
+    sidecarId,
+    token,
+    capacity: DEFAULT_SIDECAR_CAPACITY,
+    incarnations,
+  });
 }
 
 /**

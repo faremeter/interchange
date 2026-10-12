@@ -7,7 +7,10 @@ import {
   test,
 } from "bun:test";
 import { eq, sql } from "drizzle-orm";
-import { MAX_SIDECAR_ACTIVE_DEPLOYMENTS } from "@intx/types/sidecar";
+import {
+  DEFAULT_SIDECAR_CAPACITY,
+  DEFAULT_SIDECAR_ACTIVE_DEPLOYMENTS,
+} from "@intx/types/sidecar";
 
 import {
   createSidecarAllocationStore,
@@ -186,7 +189,7 @@ describe.skipIf(!harnessDbEnvAvailable())("sidecar ownership locking", () => {
     await seedAllocation("holder", "allocated");
     await seedAllocation("placing", "provisioning", "sidecar-offered");
     const store = createSidecarAllocationStore(h.db, {
-      getRetainedIncarnations: () => undefined,
+      getSidecarInventory: () => undefined,
     });
     await expect(
       store.markAllocated({
@@ -208,7 +211,10 @@ describe.skipIf(!harnessDbEnvAvailable())("sidecar ownership locking", () => {
       await seedAllocation("placing", "provisioning", "sidecar-offered");
       let known = !available;
       const store = createSidecarAllocationStore(h.db, {
-        getRetainedIncarnations: () => (known ? [] : undefined),
+        getSidecarInventory: () =>
+          known
+            ? { capacity: DEFAULT_SIDECAR_CAPACITY, retainedIncarnations: [] }
+            : undefined,
       });
       const locked = Promise.withResolvers<number>();
       const release = Promise.withResolvers<undefined>();
@@ -259,16 +265,21 @@ describe.skipIf(!harnessDbEnvAvailable())("sidecar ownership locking", () => {
   test.each(["retained", "removed"] as const)(
     "%s capacity admits only one of two placements into the last active slot",
     async (proof) => {
-      for (let index = 0; index < MAX_SIDECAR_ACTIVE_DEPLOYMENTS; index++) {
+      for (let index = 0; index < DEFAULT_SIDECAR_ACTIVE_DEPLOYMENTS; index++) {
         await seedAllocation(`holder-${String(index)}`, "allocated");
       }
       await seedAllocation("first", "provisioning", "sidecar-offered");
       await seedAllocation("second", "provisioning", "sidecar-other");
       const store = createSidecarAllocationStore(h.db, {
-        getRetainedIncarnations: (sidecarId) =>
+        getSidecarInventory: (sidecarId) =>
           proof === "retained" && sidecarId === SHARED_SIDECAR_ID
-            ? [{ allocationId: "holder-0", generation: 1 }]
-            : [],
+            ? {
+                capacity: DEFAULT_SIDECAR_CAPACITY,
+                retainedIncarnations: [
+                  { allocationId: "holder-0", generation: 1 },
+                ],
+              }
+            : { capacity: DEFAULT_SIDECAR_CAPACITY, retainedIncarnations: [] },
       });
       if (proof === "removed") {
         await store.beginRelease({
@@ -354,7 +365,10 @@ describe.skipIf(!harnessDbEnvAvailable())("sidecar ownership locking", () => {
             .where(eq(sidecarAllocation.id, "holder"));
         await seedAllocation("joining", "provisioning", "sidecar-offered");
         const store = createSidecarAllocationStore(h.db, {
-          getRetainedIncarnations: () => [],
+          getSidecarInventory: () => ({
+            capacity: DEFAULT_SIDECAR_CAPACITY,
+            retainedIncarnations: [],
+          }),
         });
         const place = () =>
           store.markAllocated({
@@ -427,7 +441,10 @@ describe.skipIf(!harnessDbEnvAvailable())("sidecar ownership locking", () => {
       await seedProbe("releasing");
       await seedAllocation("joining", "provisioning", "sidecar-offered");
       const store = createSidecarAllocationStore(h.db, {
-        getRetainedIncarnations: () => [],
+        getSidecarInventory: () => ({
+          capacity: DEFAULT_SIDECAR_CAPACITY,
+          retainedIncarnations: [],
+        }),
       });
       const probes = createWorkflowProbeStore(h.db);
       const place = () =>
@@ -465,7 +482,10 @@ describe.skipIf(!harnessDbEnvAvailable())("sidecar ownership locking", () => {
     });
     await seedAllocation("joining", "provisioning", "sidecar-offered");
     const store = createSidecarAllocationStore(h.db, {
-      getRetainedIncarnations: () => [],
+      getSidecarInventory: () => ({
+        capacity: DEFAULT_SIDECAR_CAPACITY,
+        retainedIncarnations: [],
+      }),
     });
     const probes = createWorkflowProbeStore(h.db);
     const results = await runInLockOrder(
@@ -511,7 +531,10 @@ describe.skipIf(!harnessDbEnvAvailable())("sidecar ownership locking", () => {
     await seedAllocation("first", "provisioning", SHARED_SIDECAR_ID);
     await seedAllocation("second", "provisioning", "sidecar-other");
     const store = createSidecarAllocationStore(h.db, {
-      getRetainedIncarnations: () => [],
+      getSidecarInventory: () => ({
+        capacity: DEFAULT_SIDECAR_CAPACITY,
+        retainedIncarnations: [],
+      }),
     });
     const [first, second] = await runInLockOrder(
       () =>

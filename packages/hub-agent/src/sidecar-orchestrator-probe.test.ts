@@ -27,6 +27,7 @@ import type { ToolPackageManifest } from "@intx/types/tool-packages";
 import type { WorkflowProbeRequestFrame } from "@intx/types/sidecar";
 import { waitUntil } from "@intx/types/testing";
 
+import { DEFAULT_SIDECAR_CAPACITY } from "@intx/types/sidecar";
 import { createSidecarOrchestrator } from "./sidecar-orchestrator";
 import { resolveInboundMailPolicy } from "./ws/inbound-signature";
 import type { WorkflowProbeExecutor, WorkflowProbeResult } from "./ws/hub-link";
@@ -154,6 +155,7 @@ describe("createSidecarOrchestrator workflow-probe threading", () => {
 
     const sidecarId = "sc-probe-thread";
     const orchestrator = createSidecarOrchestrator({
+      capacity: DEFAULT_SIDECAR_CAPACITY,
       hubURL: `ws://localhost:${String(env.server.port)}/ws`,
       sidecarId,
       token: "test-token",

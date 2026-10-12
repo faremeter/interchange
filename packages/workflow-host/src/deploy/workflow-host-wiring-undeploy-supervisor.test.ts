@@ -37,6 +37,7 @@ import {
   readPayloadsOfType,
   waitForUpstreamPayload,
 } from "@intx/workflow-host/testing";
+import { DEFAULT_SIDECAR_CAPACITY } from "@intx/types/sidecar";
 import { createSidecarDeployRouter } from "./workflow-host-wiring";
 import {
   createMultistepDrainRouter,
@@ -200,6 +201,7 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
       const drainRouter = createMultistepDrainRouter();
 
       const router = createSidecarDeployRouter({
+        ...DEFAULT_SIDECAR_CAPACITY,
         ...deployHostBindings(),
         // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the single-step branch invokes only initRepo (head deploy-tree repo); provisionAgent/persistHubPublicKey stay unused (the supervised child mints its own key and persists no hub-agent config)
         sessions: {

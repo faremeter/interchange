@@ -43,6 +43,7 @@ import {
 import { configureSync, getConfig } from "@intx/log";
 import { waitUntil } from "@intx/types/testing";
 
+import { DEFAULT_SIDECAR_CAPACITY } from "@intx/types/sidecar";
 import { createHubLink, type DeployRouter } from "./hub-link";
 import {
   resolveInboundMailPolicy,
@@ -302,6 +303,7 @@ describe("hub-link mail.inbound throwing router", () => {
     const policyRegistry = createInboundMailPolicyRegistry();
     policyRegistry.register(deploymentAddress, ADMIT_ALL_INBOUND_MAIL_POLICY);
     const client = createHubLink({
+      capacity: DEFAULT_SIDECAR_CAPACITY,
       hubURL: `ws://localhost:${env.server.port}/ws`,
       sidecarId: "sc-mail-wedge",
       token: "test-token",
@@ -424,6 +426,7 @@ describe("hub-link mail.inbound acknowledgement across an undeploy", () => {
     policyRegistry.register(staying, ADMIT_ALL_INBOUND_MAIL_POLICY);
     const held = new Set([leaving, staying]);
     const client = createHubLink({
+      capacity: DEFAULT_SIDECAR_CAPACITY,
       hubURL: `ws://localhost:${server.port}/ws`,
       sidecarId: "sc-mail-ack-undeploy",
       token: "test-token",
@@ -639,6 +642,7 @@ describe("hub-link mail.inbound signature enforcement", () => {
     const bindings = withTestDeployBindings();
     await provisionDeploymentKey(bindings.keyStore, deploymentAddress);
     const client = createHubLink({
+      capacity: DEFAULT_SIDECAR_CAPACITY,
       hubURL: `ws://localhost:${env.server.port}/ws`,
       sidecarId: `sc-enforce-${label}`,
       token: "test-token",

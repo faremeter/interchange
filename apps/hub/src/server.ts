@@ -460,7 +460,7 @@ export async function createHubServer({
       : {}),
   });
   const sidecarAllocationStore = createSidecarAllocationStore(db, {
-    getRetainedIncarnations: sidecarRouter.getRetainedIncarnations,
+    getSidecarInventory: sidecarRouter.getSidecarInventory,
   });
   const workflowRunReader = createWorkflowRunReader(agentRepoStore.repoStore);
   const launchSpecs = createWorkflowRunLaunchSpecStore(db);

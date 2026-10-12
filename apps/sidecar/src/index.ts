@@ -37,6 +37,7 @@ import { loadAdapterRegistry } from "@intx/inference/providers";
 
 import {
   parseReconnectDelayMs,
+  parseDeploymentCapacity,
   readAdapterManifest,
   readCacheMaxBytes,
   readCredentialEncryptionKey,
@@ -110,6 +111,10 @@ const cacheRoot =
     ? sidecarCacheDir
     : path.join(dataDir, "cache", "tarballs");
 const cacheMaxBytes = readCacheMaxBytes();
+const capacity = parseDeploymentCapacity(
+  process.env["SIDECAR_MAX_ACTIVE_DEPLOYMENTS"],
+  process.env["SIDECAR_MAX_RETAINED_DEPLOYMENTS"],
+);
 const registryMaxTarballBytes = readRegistryMaxTarballBytes();
 
 // Operator-configured custom inference adapters, resolved once at the
@@ -502,6 +507,7 @@ let sidecarDeployRouter: SidecarDeployRouter | undefined;
 
 const orchestrator = createSidecarOrchestrator({
   hubURL: hubWsUrl,
+  capacity,
   sidecarId,
   token: sidecarToken,
   dataDir,
@@ -613,6 +619,7 @@ const orchestrator = createSidecarOrchestrator({
     publishDeploymentStopped,
   }) => {
     const router = createSidecarDeployRouter({
+      ...capacity,
       sessions,
       keyStore,
       transport,

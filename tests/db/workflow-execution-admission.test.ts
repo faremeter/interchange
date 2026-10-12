@@ -32,7 +32,7 @@ import {
   type SidecarRouterConfig,
 } from "@intx/hub-sessions";
 import type { HarnessConfig } from "@intx/types/runtime";
-import { HubFrame } from "@intx/types/sidecar";
+import { DEFAULT_SIDECAR_CAPACITY, HubFrame } from "@intx/types/sidecar";
 import { createMockWs } from "./sidecar-test-helpers";
 
 const MANIFEST_DIGEST = "1".repeat(64);
@@ -133,6 +133,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           type: "hello",
           sidecarId: target.sidecarId,
           token: "token",
+          capacity: DEFAULT_SIDECAR_CAPACITY,
           incarnations: [],
         }),
       );
@@ -523,6 +524,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           type: "hello",
           sidecarId: target.sidecarId,
           token: "token",
+          capacity: DEFAULT_SIDECAR_CAPACITY,
           incarnations: [
             {
               address: target.workflowRunAddress,

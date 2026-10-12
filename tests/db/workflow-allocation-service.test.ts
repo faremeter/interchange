@@ -37,6 +37,7 @@ import {
   type SidecarCapabilityRule,
 } from "@intx/types";
 import type { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
+import { DEFAULT_SIDECAR_CAPACITY } from "@intx/types/sidecar";
 import { createApprovalSet } from "@intx/workflow-deploy";
 import {
   createTestDb,
@@ -425,7 +426,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
           },
           credentialCipher: CIPHER,
           allocationRouter: {
-            getRetainedIncarnations: () => (known ? [] : undefined),
+            getSidecarInventory: () =>
+              known
+                ? {
+                    capacity: DEFAULT_SIDECAR_CAPACITY,
+                    retainedIncarnations: [],
+                  }
+                : undefined,
             async waitForSidecarInventory(sidecarId, signal) {
               expect(sidecarId).toBe("sc-inventory-adoption");
               entered.resolve(undefined);
@@ -603,7 +610,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         },
         credentialCipher: CIPHER,
         allocationRouter: {
-          getRetainedIncarnations: () => [],
+          getSidecarInventory: () => ({
+            capacity: DEFAULT_SIDECAR_CAPACITY,
+            retainedIncarnations: [],
+          }),
           waitForSidecarInventory: async () => undefined,
           fenceAllocation: () => undefined,
           retireAllocation: () => undefined,
@@ -702,7 +712,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         },
         credentialCipher: CIPHER,
         allocationRouter: {
-          getRetainedIncarnations: () => [],
+          getSidecarInventory: () => ({
+            capacity: DEFAULT_SIDECAR_CAPACITY,
+            retainedIncarnations: [],
+          }),
           waitForSidecarInventory: async () => undefined,
           fenceAllocation: () => undefined,
           retireAllocation: () => undefined,
@@ -754,7 +767,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         },
         credentialCipher: CIPHER,
         allocationRouter: {
-          getRetainedIncarnations: () => [],
+          getSidecarInventory: () => ({
+            capacity: DEFAULT_SIDECAR_CAPACITY,
+            retainedIncarnations: [],
+          }),
           waitForSidecarInventory: async () => undefined,
           fenceAllocation: () => undefined,
           retireAllocation: () => undefined,
@@ -829,7 +845,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         },
         credentialCipher: CIPHER,
         allocationRouter: {
-          getRetainedIncarnations: () => [],
+          getSidecarInventory: () => ({
+            capacity: DEFAULT_SIDECAR_CAPACITY,
+            retainedIncarnations: [],
+          }),
           waitForSidecarInventory: async () => undefined,
           fenceAllocation: () => undefined,
           retireAllocation: () => undefined,
@@ -951,6 +970,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
               type: "hello",
               sidecarId: request.sidecarId,
               token: request.token,
+              capacity: DEFAULT_SIDECAR_CAPACITY,
               incarnations: [],
             }),
           );
@@ -1035,7 +1055,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         },
         credentialCipher: CIPHER,
         allocationRouter: {
-          getRetainedIncarnations: () => [],
+          getSidecarInventory: () => ({
+            capacity: DEFAULT_SIDECAR_CAPACITY,
+            retainedIncarnations: [],
+          }),
           waitForSidecarInventory: async () => undefined,
           fenceAllocation: () => undefined,
           retireAllocation: () => undefined,
@@ -1117,7 +1140,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         },
         credentialCipher: CIPHER,
         allocationRouter: {
-          getRetainedIncarnations: () => [],
+          getSidecarInventory: () => ({
+            capacity: DEFAULT_SIDECAR_CAPACITY,
+            retainedIncarnations: [],
+          }),
           waitForSidecarInventory: async () => undefined,
           fenceAllocation: () => undefined,
           retireAllocation: (target) => retireCalls.push(target),
@@ -1219,7 +1245,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         },
         credentialCipher: CIPHER,
         allocationRouter: {
-          getRetainedIncarnations: () => [],
+          getSidecarInventory: () => ({
+            capacity: DEFAULT_SIDECAR_CAPACITY,
+            retainedIncarnations: [],
+          }),
           waitForSidecarInventory: async () => undefined,
           fenceAllocation: () => undefined,
           retireAllocation: () => undefined,
@@ -1305,7 +1334,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         },
         credentialCipher: CIPHER,
         allocationRouter: {
-          getRetainedIncarnations: () => [],
+          getSidecarInventory: () => ({
+            capacity: DEFAULT_SIDECAR_CAPACITY,
+            retainedIncarnations: [],
+          }),
           waitForSidecarInventory: async () => undefined,
           fenceAllocation: () => undefined,
           retireAllocation: () => undefined,
@@ -1391,7 +1423,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
           { capability: "isolation:workload", effect: "require" },
         ],
         allocationRouter: {
-          getRetainedIncarnations: () => [],
+          getSidecarInventory: () => ({
+            capacity: DEFAULT_SIDECAR_CAPACITY,
+            retainedIncarnations: [],
+          }),
           waitForSidecarInventory: async () => undefined,
           fenceAllocation: () => undefined,
           retireAllocation: () => undefined,
@@ -1455,7 +1490,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
             { capability: "isolation:*:invalid", effect: "require" },
           ],
           allocationRouter: {
-            getRetainedIncarnations: () => [],
+            getSidecarInventory: () => ({
+              capacity: DEFAULT_SIDECAR_CAPACITY,
+              retainedIncarnations: [],
+            }),
             waitForSidecarInventory: async () => undefined,
             fenceAllocation: () => undefined,
             retireAllocation: () => undefined,

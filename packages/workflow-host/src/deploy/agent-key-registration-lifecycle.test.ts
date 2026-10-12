@@ -37,6 +37,7 @@ import {
 } from "@intx/workflow-host/testing";
 import { type } from "arktype";
 
+import { DEFAULT_SIDECAR_CAPACITY } from "@intx/types/sidecar";
 import { createSidecarDeployRouter } from "./workflow-host-wiring";
 import { WorkflowRunRecord } from "./workflow-run-record";
 import {
@@ -185,6 +186,7 @@ describe("agent signing-key registration lifecycle on the host transport", () =>
     const repoStore = createSpawnTestRepoStore(tempBase);
 
     const router = createSidecarDeployRouter({
+      ...DEFAULT_SIDECAR_CAPACITY,
       ...deployHostBindings(),
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the single-step branch invokes only initRepo (head deploy-tree repo); provisionAgent/persistHubPublicKey stay unused (the supervised child mints its own key and persists no hub-agent config)
       sessions: {

@@ -33,7 +33,11 @@ import { upgradeWebSocket, websocket } from "hono/bun";
 import { type } from "arktype";
 import { createInMemoryTransport } from "@intx/mail-memory";
 import { hexDecode, hexEncode } from "@intx/types";
-import { HelloFrame, type HostedIncarnation } from "@intx/types/sidecar";
+import {
+  DEFAULT_SIDECAR_CAPACITY,
+  HelloFrame,
+  type HostedIncarnation,
+} from "@intx/types/sidecar";
 import { configureSync, getConfig } from "@intx/log";
 import { waitUntil } from "@intx/types/testing";
 
@@ -277,6 +281,7 @@ function createTestLink(
   evictSenderKey: (address: string) => Promise<void> = async () => undefined,
 ) {
   return createHubLink({
+    capacity: DEFAULT_SIDECAR_CAPACITY,
     hubURL: `ws://localhost:${env.server.port}/ws`,
     sidecarId,
     token: "test-token",

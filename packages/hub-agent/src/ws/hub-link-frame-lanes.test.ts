@@ -5,7 +5,11 @@ import { upgradeWebSocket, websocket } from "hono/bun";
 
 import { createInMemoryTransport } from "@intx/mail-memory";
 import type { HarnessConfig } from "@intx/types/runtime";
-import { MAX_DEPLOYMENT_ERROR_LENGTH, SidecarFrame } from "@intx/types/sidecar";
+import {
+  DEFAULT_SIDECAR_CAPACITY,
+  MAX_DEPLOYMENT_ERROR_LENGTH,
+  SidecarFrame,
+} from "@intx/types/sidecar";
 
 import type { AgentKeyStore } from "../agent-key-store";
 import type { SessionManager } from "../session-manager";
@@ -212,6 +216,7 @@ async function connectLink(
   overrides: Partial<HubLinkConfig>,
 ): Promise<{ link: ReturnType<typeof createHubLink>; hub: HubConnection }> {
   const link = createHubLink({
+    capacity: DEFAULT_SIDECAR_CAPACITY,
     hubURL: hub.url,
     sidecarId,
     token: "token",

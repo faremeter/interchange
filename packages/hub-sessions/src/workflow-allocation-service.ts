@@ -139,7 +139,7 @@ export type WorkflowAllocationServiceDeps = {
     SidecarAllocationRouter,
     | "detachAllocation"
     | "fenceAllocation"
-    | "getRetainedIncarnations"
+    | "getSidecarInventory"
     | "isAllocatedWorkflowActive"
     | "reportedDeploymentFailure"
     | "stoppedDeploymentHistory"
@@ -255,7 +255,7 @@ export function createWorkflowAllocationService({
   now = () => new Date(),
 }: WorkflowAllocationServiceDeps): WorkflowAllocationService {
   const allocationStore = createSidecarAllocationStore(db, {
-    getRetainedIncarnations: allocationRouter.getRetainedIncarnations,
+    getSidecarInventory: allocationRouter.getSidecarInventory,
   });
   const probeStore = createWorkflowProbeStore(db);
   const launchSpecStore = createWorkflowRunLaunchSpecStore(db);

@@ -9,6 +9,7 @@ import { hexEncode } from "@intx/types";
 import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import { projectLiveToInert } from "@intx/workflow";
 import {
+  DEFAULT_SIDECAR_CAPACITY,
   type AgentDeployFrame,
   WorkflowProjectionDefinition,
 } from "@intx/types/sidecar";
@@ -223,7 +224,10 @@ function createMockAllocationRouter(
     calls,
     getCleanupConnection: () => undefined,
     getAllocationRetention: () => undefined,
-    getRetainedIncarnations: () => [],
+    getSidecarInventory: () => ({
+      capacity: DEFAULT_SIDECAR_CAPACITY,
+      retainedIncarnations: [],
+    }),
     waitForSidecarInventory: async () => undefined,
     getRetentionCandidates: () => [],
     async retainAllocation() {

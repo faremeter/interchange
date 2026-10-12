@@ -15,6 +15,7 @@ import {
   HubFrame,
   MAX_MAIL_OUTBOUND_BODY_BYTES,
   type SidecarFrame,
+  type SidecarCapacity,
   type AgentDeployFrame,
   type AgentDeployErrorFrame,
   type AgentUndeployErrorFrame,
@@ -719,6 +720,7 @@ export type HubLinkConfig = {
    * (tests / deployments with no workflow substrate).
    */
   getIncarnations?: () => HostedIncarnation[];
+  capacity: SidecarCapacity;
   /**
    * Returns the rotatable (non-run) sender addresses this sidecar holds cached
    * keys for. Read at each (re)connect and reported on the hello frame so the
@@ -867,6 +869,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     applyWorkflowRunPack,
     workflowProbeExecutor = defaultWorkflowProbeExecutor,
     getIncarnations = () => [],
+    capacity,
     getCachedSenderAddresses = () => [],
     onWorkflowAddressesRoutable,
     onWorkflowAddressesUnroutable,
@@ -2296,6 +2299,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         type: "hello",
         sidecarId,
         token,
+        capacity,
         incarnations: getIncarnations(),
         ...(cachedSenderAddresses.length > 0 ? { cachedSenderAddresses } : {}),
       });

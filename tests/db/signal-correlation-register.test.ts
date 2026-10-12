@@ -44,6 +44,7 @@ import {
   seedWorkflowRun,
 } from "@intx/test-harness/seed";
 
+import { DEFAULT_SIDECAR_CAPACITY } from "@intx/types/sidecar";
 import { createMockWs } from "./sidecar-test-helpers";
 
 // The lookups factory reads repoStore when constructing dispatch projection,
@@ -192,6 +193,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           type: "hello",
           sidecarId: "sc-1",
           token: "tok",
+          capacity: DEFAULT_SIDECAR_CAPACITY,
           incarnations: [{ address: WF_ADDR, generation: 1, state: "live" }],
         }),
       );
@@ -219,6 +221,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           type: "hello",
           sidecarId: "sc-1",
           token: "tok",
+          capacity: DEFAULT_SIDECAR_CAPACITY,
           incarnations: [{ address: address, generation: 1, state: "live" }],
         }),
       );
@@ -285,6 +288,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           type: "hello",
           sidecarId: "sc-1",
           token: "tok",
+          capacity: DEFAULT_SIDECAR_CAPACITY,
           incarnations: [
             { address: barrierAddress, generation: 1, state: "live" },
           ],

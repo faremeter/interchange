@@ -15,6 +15,7 @@ import { waitUntil } from "@intx/types/testing";
 
 import type { AgentKeyStore } from "../agent-key-store";
 import type { SessionManager } from "../session-manager";
+import { DEFAULT_SIDECAR_CAPACITY } from "@intx/types/sidecar";
 import { createHubLink, type DeployRouter } from "./hub-link";
 import { resolveInboundMailPolicy } from "./inbound-signature";
 
@@ -204,6 +205,7 @@ function connectLink(
   const routable: string[] = [];
   let reconnect: (() => void) | undefined;
   const link = createHubLink({
+    capacity: DEFAULT_SIDECAR_CAPACITY,
     hubURL: `ws://localhost:${String(server.port)}/ws`,
     sidecarId,
     token: "token",

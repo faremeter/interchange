@@ -79,6 +79,7 @@ import {
   createSidecarDeployRouter,
   type SidecarDeployRouter,
 } from "@intx/workflow-host/deploy";
+import { DEFAULT_SIDECAR_CAPACITY } from "@intx/types/sidecar";
 
 const DEFAULT_SIZES = [1, 5, 10, 20];
 
@@ -307,6 +308,7 @@ async function buildRouter(args: {
   const tempBase = fs.mkdtempSync(path.join(os.tmpdir(), "boot-restore-repo-"));
   const repoStore = createSpawnTestRepoStore(tempBase);
   return createSidecarDeployRouter({
+    ...DEFAULT_SIDECAR_CAPACITY,
     ...deployHostBindings(),
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the workflow path never invokes provisionAgent/persistHubPublicKey; single-step uses the narrow initRepo
     sessions: {

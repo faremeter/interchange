@@ -1,6 +1,60 @@
 import { describe, test, expect } from "bun:test";
 
-import { parseReconnectDelayMs } from "./config";
+import {
+  DEFAULT_SIDECAR_CAPACITY,
+  MAX_SIDECAR_INCARNATIONS,
+} from "@intx/types/sidecar";
+import { parseDeploymentCapacity, parseReconnectDelayMs } from "./config";
+
+describe("parseDeploymentCapacity", () => {
+  test("uses the production defaults when unset or blank", () => {
+    expect(parseDeploymentCapacity(undefined, undefined)).toEqual(
+      DEFAULT_SIDECAR_CAPACITY,
+    );
+    expect(parseDeploymentCapacity(" ", "")).toEqual(DEFAULT_SIDECAR_CAPACITY);
+  });
+
+  test("configures each pool independently and allows retention to be disabled", () => {
+    expect(parseDeploymentCapacity(" 512 ", "1024")).toEqual({
+      maxActiveDeployments: 512,
+      maxRetainedDeployments: 1024,
+    });
+    expect(parseDeploymentCapacity(undefined, "0")).toEqual({
+      ...DEFAULT_SIDECAR_CAPACITY,
+      maxRetainedDeployments: 0,
+    });
+  });
+
+  test.each(["0", "-1", "1.5", "NaN", "Infinity", "128oops"])(
+    "rejects an invalid active limit: %s",
+    (raw) => {
+      expect(() => parseDeploymentCapacity(raw, undefined)).toThrow(
+        "SIDECAR_MAX_ACTIVE_DEPLOYMENTS",
+      );
+    },
+  );
+
+  test.each(["-1", "1.5", "NaN", "Infinity", "256oops"])(
+    "rejects an invalid retained limit: %s",
+    (raw) => {
+      expect(() => parseDeploymentCapacity(undefined, raw)).toThrow(
+        "SIDECAR_MAX_RETAINED_DEPLOYMENTS",
+      );
+    },
+  );
+
+  test("bounds the combined inventory separately from the defaults", () => {
+    expect(
+      parseDeploymentCapacity("1", String(MAX_SIDECAR_INCARNATIONS - 1)),
+    ).toEqual({
+      maxActiveDeployments: 1,
+      maxRetainedDeployments: MAX_SIDECAR_INCARNATIONS - 1,
+    });
+    expect(() =>
+      parseDeploymentCapacity("1", String(MAX_SIDECAR_INCARNATIONS)),
+    ).toThrow("combined");
+  });
+});
 
 // The first link of the reconnect-delay chain: operator env string to the
 // `reconnectDelayMs` option the boot edge forwards to the hub link. The

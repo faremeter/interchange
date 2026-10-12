@@ -38,6 +38,7 @@ import {
 } from "@intx/test-harness/db-harness";
 import { seedTenants, seedWorkflowRun } from "@intx/test-harness/seed";
 import {
+  DEFAULT_SIDECAR_CAPACITY,
   WorkflowControlFrame,
   type HostedIncarnation,
 } from "@intx/types/sidecar";
@@ -171,6 +172,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           type: "hello",
           sidecarId: SIDECAR,
           token: TOKEN,
+          capacity: DEFAULT_SIDECAR_CAPACITY,
           incarnations: copies.map((copy) => copy.incarnation),
         }),
       );
@@ -262,7 +264,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
         status: "failed",
         failureCode: "original_failure",
       });
-      expect(f.router.getRetainedIncarnations(SIDECAR)).toEqual([copy.target]);
+      expect(
+        f.router.getSidecarInventory(SIDECAR)?.retainedIncarnations,
+      ).toEqual([copy.target]);
     });
 
     test("an earlier receive keeps retention pending with backoff until it settles", async () => {
@@ -331,7 +335,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         f.router.getCleanupConnection({ ...first.target, generation: 2 }),
       ).toBe(f.ws);
       const store = createSidecarAllocationStore(h.db, {
-        getRetainedIncarnations: f.router.getRetainedIncarnations,
+        getSidecarInventory: f.router.getSidecarInventory,
       });
       // Observe the second release before its caller gets to publish the fence.
       await store.beginRelease({
@@ -343,10 +347,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(
         f.router.getCleanupConnection({ ...second.target, generation: 2 }),
       ).toBe(f.ws);
-      expect(f.router.getRetainedIncarnations(SIDECAR)).toEqual([
-        first.target,
-        second.target,
-      ]);
+      expect(
+        f.router.getSidecarInventory(SIDECAR)?.retainedIncarnations,
+      ).toEqual([first.target, second.target]);
       expect(
         f.ws.sent
           .map((raw): unknown => JSON.parse(raw))
@@ -370,7 +373,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const copy = await seedCopy("run_permanent_cleanup", true);
       const before = await fixture([copy]);
       const store = createSidecarAllocationStore(h.db, {
-        getRetainedIncarnations: before.router.getRetainedIncarnations,
+        getSidecarInventory: before.router.getSidecarInventory,
       });
       await store.beginRelease({
         allocationId: copy.target.allocationId,
@@ -425,7 +428,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const after = await fixture([copy], async (router) => {
         restarted = createSidecarAllocationReconciler({
           allocationStore: createSidecarAllocationStore(h.db, {
-            getRetainedIncarnations: router.getRetainedIncarnations,
+            getSidecarInventory: router.getSidecarInventory,
           }),
           router,
           plugins,
@@ -440,9 +443,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(await restarted.reconcileNext()).toBe(false);
       expect(destroys).toBe(1);
       expect(after.router.getCleanupConnection(target)).toBe(after.ws);
-      expect(after.router.getRetainedIncarnations(SIDECAR)).toEqual([
-        copy.target,
-      ]);
+      expect(
+        after.router.getSidecarInventory(SIDECAR)?.retainedIncarnations,
+      ).toEqual([copy.target]);
       expect(await after.router.isAllocatedSidecarReady(target)).toBe(false);
       expect(
         after.ws.sent.some((frame) =>
@@ -478,7 +481,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         status: "deployed",
       });
       const store = createSidecarAllocationStore(h.db, {
-        getRetainedIncarnations: f.router.getRetainedIncarnations,
+        getSidecarInventory: f.router.getSidecarInventory,
       });
       await h.db.insert(sidecarAllocation).values({
         id: "allocation-inventory",

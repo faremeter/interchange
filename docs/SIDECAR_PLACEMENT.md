@@ -105,12 +105,23 @@ credential encryption key included. A provisioner that declares
 
 ### Active and retained capacity
 
-A sidecar reserves at most 128 active deployments and keeps at most 256
-retained records. Starting, running, stopped-but-unconfirmed, and cleanup copies
+A sidecar defaults to 128 active deployments and 256 retained records. Operators
+set `SIDECAR_MAX_ACTIVE_DEPLOYMENTS` (positive integer) and
+`SIDECAR_MAX_RETAINED_DEPLOYMENTS` (non-negative integer) at sidecar startup;
+zero refuses retention and triggers cleanup as described below. The combined
+limit cannot exceed 2,048 records. Startup fails if stored inventory
+exceeds either configured limit, without deleting records to make it fit.
+Starting, running, stopped-but-unconfirmed, and cleanup copies
 whose removal is unconfirmed keep their reservation. Confirmed removal frees the
 active slot even when releasing the provider's hold is still pending or failed.
-The complete `hello` reports both pools,
-up to 384 records; `welcome` routes at most 128. Restart resumes active records without stopped or teardown marks and leaves
+The complete `hello` advertises both limits and reports both pools; `welcome`
+routes the active copies. The Hub rejects a `hello` that omits its capacity.
+The complete `hello` must fit the 64 MiB WebSocket frame-size limit as well as
+the record ceiling. Hello errors use the same 4,096-character limit as individual
+stop reports.
+The Hub reads capacity and retained-copy proofs together from the current
+connection and uses the advertised active limit for placement and probe adoption.
+Restart resumes active records without stopped or teardown marks and leaves
 retained records unspawned.
 
 For a terminal run, the Hub requests `workflow.control` with `action: retain`.

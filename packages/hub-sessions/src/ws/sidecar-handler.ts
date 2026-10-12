@@ -7,7 +7,7 @@
 import { getLogger } from "@intx/log";
 import {
   WorkflowRunNotExecutableError,
-  type RetainedSidecarIncarnation,
+  type SidecarInventory,
   type WorkflowRunExecutionTarget,
 } from "@intx/db";
 import { chunkPack, createPackReceiver } from "@intx/pack-transport";
@@ -32,6 +32,7 @@ import {
   type DeploymentStoppedFrame,
   type DeploymentRetention,
   type HostedIncarnation,
+  type SidecarCapacity,
   type PackAckFrame,
   type HubFrame,
   type MailInboundFrame,
@@ -179,6 +180,7 @@ export class WorkflowControlHistoryPendingError extends Error {
 
 export type SidecarConnection = {
   sidecarId: string;
+  capacity: SidecarCapacity;
   /**
    * The probe and allocation generations this sidecar currently hosts, keyed
    * by allocation id. A provisioner may place several on one sidecar; each
@@ -529,9 +531,7 @@ export type SidecarAllocationRouter = {
     readonly sidecarId: string;
   })[];
   /** Undefined until the current connection's complete inventory is known. */
-  getRetainedIncarnations(
-    sidecarId: string,
-  ): readonly RetainedSidecarIncarnation[] | undefined;
+  getSidecarInventory(sidecarId: string): SidecarInventory | undefined;
   /** Wait outside placement transactions; the caller's signal bounds the wait. */
   waitForSidecarInventory(
     sidecarId: string,
@@ -1765,6 +1765,7 @@ export function createSidecarRouter(
             sidecarId,
             incarnations,
             cachedSenderAddresses,
+            frame.capacity,
           ),
         ).catch((err: unknown) => {
           const message = err instanceof Error ? err.message : String(err);
@@ -2577,6 +2578,7 @@ export function createSidecarRouter(
     sidecarId: string,
     incarnations: readonly HostedIncarnation[],
     cachedSenderAddresses: string[],
+    capacity: SidecarCapacity,
   ): Promise<void> {
     const existing = connections.get(ws);
     if (existing !== undefined && existing.sidecarId !== sidecarId) {
@@ -2654,6 +2656,7 @@ export function createSidecarRouter(
 
     const conn: SidecarConnection = existing ?? {
       sidecarId,
+      capacity,
       bindings: new Map(),
       workflowAddresses: new Map(),
       unansweredDeploys: new Map(),
@@ -2662,6 +2665,7 @@ export function createSidecarRouter(
         ws.send(JSON.stringify(frame));
       },
     };
+    conn.capacity = capacity;
     connections.set(ws, conn);
     sidecarSockets.set(sidecarId, ws);
 
@@ -4480,32 +4484,35 @@ export function createSidecarRouter(
     });
   }
 
-  function getRetainedIncarnations(
+  function getSidecarInventory(
     sidecarId: string,
-  ): readonly RetainedSidecarIncarnation[] | undefined {
+  ): SidecarInventory | undefined {
     const current = sidecarInventoryConnection(sidecarId);
     if (current === undefined) return undefined;
     const { ws, conn } = current;
     const retained = connectionRetention.get(ws);
-    return [...conn.bindings.values()].flatMap((binding) => {
-      if (
-        binding.kind === "probe" ||
-        !isFencedAsCurrent(binding) ||
-        allocatedConnections.get(binding.allocationId)?.ws !== ws
-      )
-        return [];
-      const copy = retained?.get(binding.workflowRunAddress);
-      if (
-        copy?.retention !== "kept" ||
-        (binding.kind === "cleanup"
-          ? copy.generation > binding.generation
-          : copy.generation !== binding.generation)
-      )
-        return [];
-      return [
-        { allocationId: binding.allocationId, generation: copy.generation },
-      ];
-    });
+    const retainedIncarnations = [...conn.bindings.values()].flatMap(
+      (binding) => {
+        if (
+          binding.kind === "probe" ||
+          !isFencedAsCurrent(binding) ||
+          allocatedConnections.get(binding.allocationId)?.ws !== ws
+        )
+          return [];
+        const copy = retained?.get(binding.workflowRunAddress);
+        if (
+          copy?.retention !== "kept" ||
+          (binding.kind === "cleanup"
+            ? copy.generation > binding.generation
+            : copy.generation !== binding.generation)
+        )
+          return [];
+        return [
+          { allocationId: binding.allocationId, generation: copy.generation },
+        ];
+      },
+    );
+    return { capacity: conn.capacity, retainedIncarnations };
   }
 
   function getRetentionCandidates() {
@@ -6156,7 +6163,7 @@ export function createSidecarRouter(
     retainAllocation,
     getAllocationRetention,
     getRetentionCandidates,
-    getRetainedIncarnations,
+    getSidecarInventory,
     waitForSidecarInventory,
     sendSourcesUpdate,
     sendCredentialsUpdate,

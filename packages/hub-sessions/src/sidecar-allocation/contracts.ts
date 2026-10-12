@@ -77,7 +77,7 @@ export type SidecarOperationFailure = typeof SidecarOperationFailure.infer;
  * used. The Hub accepts only a sidecar that still hosts another probe or
  * allocation of the same provisioner binding, including one whose release or
  * replacement has not yet destroyed it. A deployment also needs the sidecar to
- * have fewer than `MAX_SIDECAR_ACTIVE_DEPLOYMENTS` active reservations. Copies
+ * have fewer active reservations than the capacity it advertised in hello. Copies
  * with confirmed removal or retained storage do not consume active capacity.
  * This is checked when an allocation is placed and when a deployment adopts
  * its probe's sidecar, not when the probe is placed.

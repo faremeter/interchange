@@ -19,7 +19,10 @@ import {
   afterAll,
   beforeEach,
 } from "bun:test";
-import { MAX_MAIL_OUTBOUND_BODY_BYTES } from "@intx/types/sidecar";
+import {
+  DEFAULT_SIDECAR_CAPACITY,
+  MAX_MAIL_OUTBOUND_BODY_BYTES,
+} from "@intx/types/sidecar";
 import type {
   HubTransport,
   RemoteSendHandler,
@@ -113,6 +116,7 @@ const unusedDeployRouter: DeployRouter = {
 function makeLink(hostedSenders = ["s@example.test"]) {
   const capture = createCapturingTransport();
   const link = createHubLink({
+    capacity: DEFAULT_SIDECAR_CAPACITY,
     hubURL: "ws://localhost:0/ws",
     sidecarId: "sc-body-cap",
     token: "test-token",

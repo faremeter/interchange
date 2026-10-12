@@ -585,9 +585,9 @@ describe("SidecarRouter allocation control protocols", () => {
     expect(await acknowledgeRetain()).toBeInstanceOf(
       WorkflowControlHistoryPendingError,
     );
-    expect(router.getRetainedIncarnations(TEST_IDENTITY.sidecarId)).toEqual([
-      TEST_TARGET,
-    ]);
+    expect(
+      router.getSidecarInventory(TEST_IDENTITY.sidecarId)?.retainedIncarnations,
+    ).toEqual([TEST_TARGET]);
     pushPack(router, ws, "retained-while-history-pending");
     await ws.awaitSent(() => framesOfType(ws, "repo.pack.ack").length === 1);
     expect(received).toBe(1);
@@ -657,9 +657,10 @@ describe("SidecarRouter allocation control protocols", () => {
         expect(
           framesOfType(ws, final ? "repo.pack.reject" : "repo.pack.ack"),
         ).not.toHaveLength(0);
-        expect(router.getRetainedIncarnations(TEST_IDENTITY.sidecarId)).toEqual(
-          [],
-        );
+        expect(
+          router.getSidecarInventory(TEST_IDENTITY.sidecarId)
+            ?.retainedIncarnations,
+        ).toEqual([]);
       } finally {
         router.handleClose(ws);
       }
