@@ -10,7 +10,7 @@ import {
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 
 import { generateKeyPair, sha256 } from "@intx/crypto";
 import {
@@ -39,6 +39,7 @@ import {
 import { seedTenants, seedWorkflowRun } from "@intx/test-harness/seed";
 import {
   DEFAULT_SIDECAR_CAPACITY,
+  AgentUndeployFrame,
   WorkflowControlFrame,
   type HostedIncarnation,
 } from "@intx/types/sidecar";
@@ -461,6 +462,297 @@ describe.skipIf(!harnessDbEnvAvailable())(
           where: eq(workflowRun.id, copy.id),
         }),
       ).toMatchObject({ status: "failed", failureCode: "original_failure" });
+    });
+
+    test("a parked replacement removes its previous copy before ensuring new capacity", async () => {
+      const copy = await seedCopy("run_parked_replacement");
+      await h.db
+        .update(workflowRun)
+        .set({
+          status: "running",
+          endedAt: null,
+          capacityReleaseAt: null,
+          failureCode: null,
+          failureMessage: null,
+        })
+        .where(eq(workflowRun.id, copy.id));
+      const store = createSidecarAllocationStore(h.db, {
+        getSidecarInventory: () => ({
+          capacity: DEFAULT_SIDECAR_CAPACITY,
+          retainedIncarnations: [],
+        }),
+      });
+      await store.wakeReconciliation(copy.target.allocationId, 1);
+      await store.claimNextReconcilable({
+        leaseId: "parked-replacement",
+        leaseDurationMs: 60_000,
+      });
+      expect(
+        await store.beginReplacement({
+          allocationId: copy.target.allocationId,
+          expectedStatus: "allocated",
+          expectedGeneration: 1,
+          expectedLeaseId: "parked-replacement",
+          nextAttemptAt: new Date(0),
+          failureCode: "sidecar_connect_failed",
+          failureMessage: "Parked worker disconnected",
+        }),
+      ).toMatchObject({
+        status: "replacing",
+        generation: 2,
+        deploymentCleanupConfirmed: false,
+        providerHoldReleased: false,
+      });
+      const credentials = createSidecarCredentialResolver({ db: h.db });
+      expect(await credentials.resolveBindings(SIDECAR)).toMatchObject([
+        {
+          kind: "cleanup",
+          allocationId: copy.target.allocationId,
+          generation: 2,
+        },
+      ]);
+      let ensures = 0;
+      let reconciler:
+        | ReturnType<typeof createSidecarAllocationReconciler>
+        | undefined;
+      const f = await fixture([copy], async (router) => {
+        reconciler = createSidecarAllocationReconciler({
+          allocationStore: store,
+          router,
+          plugins: createSidecarPluginRegistry({
+            provisioners: [
+              {
+                id: "test",
+                apiVersion: 2,
+                bindingFingerprint: "test:v1",
+                capabilities: [],
+                destroy: async () => ({
+                  kind: "destroyed",
+                  cleanup: "required",
+                }),
+                ensure: async () => {
+                  ensures++;
+                  return { kind: "accepted" };
+                },
+              },
+            ],
+          }),
+          hubWebSocketUrl: "wss://hub.example/ws",
+          createSidecarId: () => "parked-replacement-sidecar",
+        });
+        await reconciler.initialize();
+      });
+      if (reconciler === undefined) throw new Error("Missing reconciler");
+      const target = { ...copy.target, generation: 2 };
+      expect(f.router.getCleanupConnection(target)).toBe(f.ws);
+      expect(f.router.getRoutableAddresses()).toEqual([]);
+      const running = reconciler.reconcileNext();
+      await f.ws.awaitSent((sent) =>
+        sent.some((raw) => raw.includes('"type":"agent.undeploy"')),
+      );
+      expect(ensures).toBe(0);
+      const request = f.ws.sent.find((raw) =>
+        raw.includes('"type":"agent.undeploy"'),
+      );
+      if (request === undefined) throw new Error("Missing undeploy request");
+      const frame = AgentUndeployFrame.assert(JSON.parse(request));
+      f.router.handleMessage(
+        f.ws,
+        JSON.stringify({
+          type: "agent.undeploy.ack",
+          requestId: frame.requestId,
+          agentAddress: frame.agentAddress,
+          generation: frame.generation,
+        }),
+      );
+      await running;
+      expect(ensures).toBe(1);
+      expect(await store.findById(copy.target.allocationId)).toMatchObject({
+        status: "allocated",
+        sidecarId: "parked-replacement-sidecar",
+        generation: 3,
+        deploymentCleanupConfirmed: false,
+        providerHoldReleased: false,
+      });
+      expect(
+        await h.db.query.workflowRun.findFirst({
+          where: eq(workflowRun.id, copy.id),
+        }),
+      ).toMatchObject({
+        status: "running",
+        publicKey: null,
+        credentialRefs: null,
+      });
+    });
+
+    test("a delayed cleanup hello cannot displace its running replacement", async () => {
+      const copy = await seedCopy("run_replaced");
+      const peer = await seedCopy("run_peer");
+      await h.db
+        .update(workflowRun)
+        .set({
+          status: "running",
+          endedAt: null,
+          capacityReleaseAt: null,
+          failureCode: null,
+          failureMessage: null,
+        })
+        .where(inArray(workflowRun.id, [copy.id, peer.id]));
+      const store = createSidecarAllocationStore(h.db, {
+        getSidecarInventory: () => ({
+          capacity: DEFAULT_SIDECAR_CAPACITY,
+          retainedIncarnations: [],
+        }),
+      });
+      await store.wakeReconciliation(copy.target.allocationId, 1);
+      await store.claimNextReconcilable({
+        leaseId: "begin-replacement",
+        leaseDurationMs: 60_000,
+      });
+      const cleanup = await store.beginReplacement({
+        allocationId: copy.target.allocationId,
+        expectedStatus: "allocated",
+        expectedGeneration: 1,
+        expectedLeaseId: "begin-replacement",
+        nextAttemptAt: new Date(0),
+        failureCode: "sidecar_connect_failed",
+        failureMessage: "Parked worker disconnected",
+      });
+      if (cleanup === null) throw new Error("Missing replacement allocation");
+      const cleanupTarget = {
+        allocationId: cleanup.id,
+        generation: cleanup.generation,
+      };
+      await store.claimNextReconcilable({
+        leaseId: "replacement-capacity",
+        leaseDurationMs: 60_000,
+      });
+      expect(
+        await store.confirmDeploymentCleanup({
+          ...cleanupTarget,
+          expectedLeaseId: "replacement-capacity",
+        }),
+      ).toBe(true);
+
+      const readingPeer = Promise.withResolvers<undefined>();
+      const finishHello = Promise.withResolvers<undefined>();
+      const credentials = createSidecarCredentialResolver({ db: h.db });
+      const router = createSidecarRouter({
+        authenticateSidecar: async ({ token }) => credentials.resolve(token),
+        resolveSidecarBindings: credentials.resolveBindings,
+        validateSidecarIdentity: async (identity, use) => {
+          const current = await credentials.isCurrent(identity, use);
+          if (
+            identity.allocationId === peer.target.allocationId &&
+            use === "reclaim"
+          ) {
+            readingPeer.resolve(undefined);
+            await finishHello.promise;
+          }
+          return current;
+        },
+        withExecutableWorkflowRun: (target, send, signal) =>
+          withExecutableWorkflowRun(h.db, target, send, signal),
+      });
+      routers.push(router);
+      router.fenceAllocation(cleanup.id, cleanup.generation, {
+        cleanup: { sidecarId: SIDECAR },
+      });
+      router.fenceAllocation(peer.target.allocationId, peer.target.generation);
+      const connect = (
+        sidecarId: string,
+        token: string,
+        incarnations: HostedIncarnation[],
+      ) => {
+        const ws = createMockWs();
+        sockets.push(ws);
+        router.handleOpen(ws);
+        router.handleMessage(
+          ws,
+          JSON.stringify({
+            type: "hello",
+            sidecarId,
+            token,
+            capacity: DEFAULT_SIDECAR_CAPACITY,
+            incarnations,
+          }),
+        );
+        return ws;
+      };
+      // Removal is already confirmed. The reconnect snapshots the cleanup
+      // binding while the provider's release is still pending.
+      const old = connect(SIDECAR, TOKEN, [
+        { address: peer.address, generation: 1, state: "live" },
+      ]);
+      try {
+        await readingPeer.promise;
+        expect(
+          await store.confirmProviderRelease({
+            ...cleanupTarget,
+            expectedLeaseId: "replacement-capacity",
+          }),
+        ).toBe(true);
+        const bound = await store.bindReplacementSidecar({
+          ...cleanupTarget,
+          sidecarId: "replacement-sidecar",
+          tokenHashSha256: await sha256("replacement-token"),
+          connectDeadline: new Date(Date.now() + 120_000),
+          expectedLeaseId: "replacement-capacity",
+          adapterManifestDigest: NO_MANIFEST_DIGEST,
+        });
+        if (bound === null) throw new Error("Missing replacement binding");
+        const target = { allocationId: bound.id, generation: bound.generation };
+        router.fenceAllocation(bound.id, bound.generation);
+        await store.markAllocated({
+          ...target,
+          expectedLeaseId: "replacement-capacity",
+        });
+        const initialization = {
+          ...target,
+          anchorRunId: copy.id,
+          tenantId: TENANT,
+          leaseId: "replacement-capacity",
+          signal: new AbortController().signal,
+        };
+        expect(await store.beginInitialization(initialization)).toBe(true);
+        expect(
+          await store.completeInitialization({
+            ...initialization,
+            publicKey: "cd".repeat(32),
+          }),
+        ).toBe(true);
+        const replacement = connect(
+          "replacement-sidecar",
+          "replacement-token",
+          [
+            {
+              address: copy.address,
+              generation: bound.generation,
+              state: "live",
+            },
+          ],
+        );
+        await replacement.awaitSent((sent) =>
+          sent.some((frame) => frame.includes('"welcome"')),
+        );
+        expect(router.getRoutableAddresses()).toContain(copy.address);
+
+        finishHello.resolve(undefined);
+        await old.awaitSent((sent) =>
+          sent.some((frame) => frame.includes('"welcome"')),
+        );
+        await router.syncSidecar(SIDECAR);
+        expect(replacement.closed).toBe(false);
+        expect(
+          replacement.sent.some((frame) => frame.includes('"agent.undeploy"')),
+        ).toBe(false);
+        expect(router.getRoutableAddresses()).toContain(copy.address);
+        expect(await router.isAllocatedSidecarReady(target)).toBe(true);
+        expect(router.getCleanupConnection(cleanupTarget)).toBeUndefined();
+      } finally {
+        finishHello.resolve(undefined);
+        await router.syncSidecar(SIDECAR);
+      }
     });
 
     test("missing inventory fails at two minutes and releases the provider hold without another ensure", async () => {

@@ -179,7 +179,7 @@ records the confirmed outcome in the run row without fabricating workflow events
 A failed cleanup remains visible. It reserves an active slot only while neither
 removal nor transfer to retained storage has been confirmed. The separate
 provider obligation can remain failed after the copy has freed its active slot.
-See [Release cleanup](SIDECAR_PLACEMENT.md#release-cleanup) and
+See [Release and replacement cleanup](SIDECAR_PLACEMENT.md#release-and-replacement-cleanup) and
 [Active and retained capacity](SIDECAR_PLACEMENT.md#active-and-retained-capacity).
 
 Before a workflow-run pack can advance Git, the Hub records a pending projection
@@ -212,6 +212,10 @@ its initialization lease is still set is released on the next boot without
 another park classification. A destroy that cannot be retried still fails the
 run through the existing destroy-failed path. Replacing a worker does not by
 itself record that capacity was lost.
+
+Before binding replacement capacity, removal of the previous copy must be
+confirmed by undeploy or provider destruction. A returning old worker has a
+cleanup binding without workflow routes.
 
 Lifecycle reconciliation uses the shared reconciliation scheduler with eight
 independent slots per Hub. Each slot selects one run at a time, and active

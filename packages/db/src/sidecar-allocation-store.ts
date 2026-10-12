@@ -107,7 +107,7 @@ export type SidecarAllocation = {
   readonly deploymentCleanupConfirmed: boolean;
   /** Confirmed provider release for this cleanup generation, retained across retries. */
   readonly providerHoldReleased: boolean;
-  /** Also bounds waiting for a cleanup connection while releasing. */
+  /** Also bounds waiting for a cleanup connection. */
   readonly connectDeadline?: Date;
   /** How long the sidecar may stay disconnected before the Hub fails it. */
   readonly maxDisconnectedMs: number;
@@ -729,9 +729,10 @@ function buildSidecarAllocationStore(
         nextAttemptAt: now,
         reconciliationLeaseId: null,
         reconciliationLeaseExpiresAt: null,
-        // Preserve an initialized deployment's existing disconnect window.
+        // Preserve the disconnect window for an initialized deployment or
+        // replacement cleanup, which has already cleared the anchor's key.
         // A first-connect deadline does not bound subsequent cleanup waiting.
-        connectDeadline: sql`case when exists (select 1 from ${workflowRun} where ${workflowRun.id} = ${sidecarAllocation.anchorRunId} and ${workflowRun.publicKey} is not null) then ${sidecarAllocation.connectDeadline} else null end`,
+        connectDeadline: sql`case when ${sidecarAllocation.status} = 'replacing' or exists (select 1 from ${workflowRun} where ${workflowRun.id} = ${sidecarAllocation.anchorRunId} and ${workflowRun.publicKey} is not null) then ${sidecarAllocation.connectDeadline} else null end`,
         // Placement and initialization retry diagnostics are not release causes.
         // Preserve a recorded workflow failure, or the reason supplied by release.
         failureCode:
@@ -1300,7 +1301,7 @@ function buildSidecarAllocationStore(
         .where(
           and(
             eq(sidecarAllocation.id, args.allocationId),
-            eq(sidecarAllocation.status, "releasing"),
+            inArray(sidecarAllocation.status, ["releasing", "replacing"]),
             eq(sidecarAllocation.generation, args.generation),
             ...leaseCondition(args.expectedLeaseId),
           ),
@@ -1330,6 +1331,7 @@ function buildSidecarAllocationStore(
           .set({
             status: "replacing",
             generation: args.expectedGeneration + 1,
+            destroyAttempts: 0,
             deploymentCleanupConfirmed: sql`${sidecarAllocation.ensureAcceptedGeneration} is null`,
             providerHoldReleased: false,
             initializationLeaseId: null,
@@ -1937,7 +1939,7 @@ function buildSidecarAllocationStore(
       const [updated] = await db
         .update(sidecarAllocation)
         .set({
-          status: "releasing",
+          status: sql`case when ${sidecarAllocation.status} = 'replacing' then 'replacing' else 'releasing' end`,
           connectDeadline: null,
           nextAttemptAt: sql`now()`,
           updatedAt: sql`now()`,
@@ -1957,7 +1959,10 @@ function buildSidecarAllocationStore(
               parked === undefined
                 ? undefined
                 : and(
-                    eq(sidecarAllocation.status, "releasing"),
+                    inArray(sidecarAllocation.status, [
+                      "releasing",
+                      "replacing",
+                    ]),
                     eq(sidecarAllocation.connectDeadline, parked.deadline),
                     eq(sidecarAllocation.nextAttemptAt, parked.deadline),
                     eq(
@@ -2010,7 +2015,7 @@ function buildSidecarAllocationStore(
           // completes; repeated hellos must not extend initialization forever.
           ...(connected
             ? {
-                connectDeadline: sql`case when ${sidecarAllocation.status} = 'releasing' or exists (select 1 from ${workflowRun} where ${workflowRun.id} = ${sidecarAllocation.anchorRunId} and ${workflowRun.publicKey} is not null) then null else ${sidecarAllocation.connectDeadline} end`,
+                connectDeadline: sql`case when ${sidecarAllocation.status} in ('releasing', 'replacing') or exists (select 1 from ${workflowRun} where ${workflowRun.id} = ${sidecarAllocation.anchorRunId} and ${workflowRun.publicKey} is not null) then null else ${sidecarAllocation.connectDeadline} end`,
               }
             : {}),
         })
