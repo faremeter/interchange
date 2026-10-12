@@ -30,6 +30,55 @@ export type CreateRequireGrantDeps = {
   conditionRegistry: ConditionRegistry;
 };
 
+export type AuthorizeGrantCheck = {
+  principalId: string;
+  tenantId: string;
+  resource: string;
+  action: string;
+};
+
+/**
+ * Bound grant check for a caller that names the principal and tenant itself,
+ * such as a route whose tenant comes from the request body rather than the
+ * path. Logs a denial and returns whether the grant allows the action.
+ */
+export type AuthorizeGrant = (check: AuthorizeGrantCheck) => Promise<boolean>;
+
+export function createAuthorizeGrant({
+  grantStore,
+  conditionRegistry,
+}: CreateRequireGrantDeps): AuthorizeGrant {
+  return async function authorizeGrant({
+    principalId,
+    tenantId,
+    resource,
+    action,
+  }) {
+    const result = await authorize(
+      grantStore,
+      principalId,
+      tenantId,
+      resource,
+      action,
+      conditionRegistry,
+    );
+    if (result.effect === "allow") return true;
+
+    log.info(
+      "Authorization denied for {principalId}: {resource} {action} -> {effect}",
+      {
+        principalId,
+        tenantId,
+        resource,
+        action,
+        effect: result.effect ?? "no_match",
+        resolvedBy: result.resolvedBy?.id ?? null,
+      },
+    );
+    return false;
+  };
+}
+
 /**
  * Builds a `requireGrant` middleware factory bound to the application's
  * grant store and condition registry. Usage:
@@ -37,44 +86,25 @@ export type CreateRequireGrantDeps = {
  *   const requireGrant = createRequireGrant({ grantStore, conditionRegistry });
  *   app.get("/", requireGrant("workflow-run:*", "read"), handler);
  */
-export function createRequireGrant({
-  grantStore,
-  conditionRegistry,
-}: CreateRequireGrantDeps): RequireGrant {
+export function createRequireGrant(deps: CreateRequireGrantDeps): RequireGrant {
+  const authorizeGrant = createAuthorizeGrant(deps);
   return function requireGrant(resource, action) {
     return createMiddleware<TenantEnv>(async (c, next) => {
-      const principal = c.get("principal");
-      const tenant = c.get("tenant");
-
       const resolvedResource =
         typeof resource === "function"
           ? resource({ param: (name) => c.req.param(name) })
           : resource;
 
-      const result = await authorize(
-        grantStore,
-        principal.id,
-        tenant.id,
-        resolvedResource,
+      const allowed = await authorizeGrant({
+        principalId: c.get("principal").id,
+        tenantId: c.get("tenant").id,
+        resource: resolvedResource,
         action,
-        conditionRegistry,
-      );
-
-      if (result.effect === "allow") {
+      });
+      if (allowed) {
         await next();
         return;
       }
-
-      log.info(
-        "Authorization denied for {principalId}: {resource} {action} -> {effect}",
-        {
-          principalId: principal.id,
-          resource: resolvedResource,
-          action,
-          effect: result.effect ?? "no_match",
-          resolvedBy: result.resolvedBy?.id ?? null,
-        },
-      );
 
       return errorResponse(
         c,
