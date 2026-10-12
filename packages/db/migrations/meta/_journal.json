@@ -736,6 +736,13 @@
       "when": 1791488793990,
       "tag": "0105_sidecar_allocation_first_deploy_failure",
       "breakpoints": true
+    },
+    {
+      "idx": 106,
+      "version": "7",
+      "when": 1791842736947,
+      "tag": "0106_sidecar_timestamps_with_time_zone",
+      "breakpoints": true
     }
   ]
 }
