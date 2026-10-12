@@ -7,6 +7,7 @@ import { generateKeyPair } from "@intx/crypto";
 import { hexDecode, hexEncode } from "@intx/types";
 import { APPROVAL_SNAPSHOT_MAX_BYTES } from "@intx/types/runtime";
 import type { Mail } from "@intx/types/runtime";
+import { parseInferenceEvent } from "@intx/types/inference-events";
 import {
   createMemoryFrameStream,
   createMemoryNdjsonStream,
@@ -18,7 +19,7 @@ import {
   createEventChannelSender,
   decodeEnvelope,
   encodeEnvelope,
-  EventPayload,
+  type EventPayload,
   FrameEnvelope,
   generateChannelId,
   generateHmacKey,
@@ -915,7 +916,7 @@ describe("Event channel", () => {
         onCrash: (reason) => crashes.push(reason),
       })) {
         received.push(payload);
-        if (received.length === 2) return;
+        if (received.length === 3) return;
       }
     })();
 
@@ -929,11 +930,18 @@ describe("Event channel", () => {
       seq: 2,
       data: { messageId: "m1", messageRunId: "mr1", receivedAt: 100 },
     });
+    const custom: EventPayload = {
+      type: "custom.progress",
+      seq: 3,
+      data: { completed: 2 },
+    };
+    await sender.send(custom);
     stream.close();
     await consumer;
 
     expect(crashes).toEqual([]);
-    expect(received.length).toBe(2);
+    expect(received).toHaveLength(3);
+    expect(received[2]).toEqual(custom);
   });
 
   test("serializes concurrent sends so frames keep seq order", async () => {
@@ -1511,12 +1519,12 @@ describe("Payload union disjointness", () => {
     expect(validated instanceof type.errors).toBe(true);
   });
 
-  test("a ControlPayload shape does not satisfy EventPayload", () => {
+  test("the event parser rejects a control payload", () => {
     const controlShape = {
       type: "drain",
       data: { deadlineMs: 1000 },
     };
-    const validated = EventPayload(controlShape);
+    const validated = parseInferenceEvent(controlShape);
     expect(validated instanceof type.errors).toBe(true);
   });
 });

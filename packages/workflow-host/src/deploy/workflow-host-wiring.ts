@@ -27,14 +27,13 @@ import { deriveWorkflowRunId } from "@intx/types/workflow-run-id";
 import { workflowSourceAssetMountPath } from "@intx/types/workflow-sources";
 import type { CredentialCipher } from "@intx/types/credential-cipher";
 import type { SignalKind } from "@intx/types/signals";
-import {
-  parseInferenceEvent,
-  type ApprovalSnapshot,
-  type CryptoProvider,
-  type InferenceEvent,
-  type InferenceSource,
-  type KeyPair,
-  type SendReceipt,
+import type {
+  ApprovalSnapshot,
+  CryptoProvider,
+  InferenceEvent,
+  InferenceSource,
+  KeyPair,
+  SendReceipt,
 } from "@intx/types/runtime";
 import type {
   InboundMailOutcome,
@@ -2011,19 +2010,10 @@ export function createSidecarDeployRouter<
         definitionHash,
         warmKeep,
         onInferenceEvent: (event) => {
-          // The event arrives HMAC-verified over the child's event channel.
-          // Re-narrow it to the hub's `InferenceEvent` union; a parse
-          // failure means upstream corruption, so drop it loudly rather
-          // than forwarding an unvalidated payload onto the hub timeline.
-          const validated = parseInferenceEvent(event);
-          if (validated instanceof type.errors) {
-            logger.warn`dropping workflow inference event for ${spec.agentAddress}: ${validated.summary}`;
-            return;
-          }
           publishInferenceEvent(
             spec.agentAddress,
             spec.generation,
-            validated,
+            event,
             spec.sessionId,
           );
         },

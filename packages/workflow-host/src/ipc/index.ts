@@ -119,7 +119,7 @@
 //    events -- shapes whose authority is the deployment's identity
 //    (which the supervisor and child share via the HMAC key) and
 //    whose rate is high. The per-kind validators in `control-payloads.ts`
-//    and the `EventPayload` union in `event-channel.ts` accept disjoint
+//    and `parseInferenceEvent` used by `event-channel.ts` accept disjoint
 //    payload shapes. A control payload
 //    that included an inference-event shape would defeat the split;
 //    an inference-event payload that included a `drain` or `recycle`
@@ -154,8 +154,8 @@ export {
 
 export {
   DEFAULT_EVENT_BUFFER_LIMIT,
-  EventPayload,
   receiveEventChannel,
+  type EventPayload,
   type EventChannelReceiverOpts,
   type FrameReader,
 } from "./event-channel";

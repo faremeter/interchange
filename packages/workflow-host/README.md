@@ -49,7 +49,9 @@ The package is organized along the abstract pieces it implements:
   `ipc/index.ts`; the supervisor imports the individual primitives without
   constructing the combined control-payload union. Each message kind's top-level
   validator is built on first receipt and cached; shared payload schemas and
-  the message header are still constructed at module load.
+  the message header are still constructed at module load. The event receiver
+  authenticates and validates each payload into the canonical `InferenceEvent`
+  type, which the deploy router forwards without a second validation pass.
 - `supervisor/` — the per-deployment supervisor. See the next
   section.
 - `child/` — the workflow-process child entry function

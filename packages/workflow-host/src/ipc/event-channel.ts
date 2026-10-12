@@ -17,29 +17,25 @@
 // silent drop, and a blocking writer would deadlock against the
 // reactor's emit path.
 //
-// Mixing failure mode: the payload union here covers InferenceEvent
-// shapes only. A "control message" structurally shaped as `drain` or
-// `recycle` will not satisfy this union and the receiver will crash.
+// The receiver validates every payload with `parseInferenceEvent`, which
+// applies the shared `InferenceEvent` schema. A control-shaped payload such
+// as `drain` or `recycle` fails validation; the receiver reports a crash
+// and stops.
 // The per-kind control validators in `control-payloads.ts` reject these
 // inference-event shapes, keeping the channels' payload schemas disjoint.
 
 import { type } from "arktype";
 
 import { hexDecode } from "@intx/types/hex";
-import { InferenceEvent } from "@intx/types/runtime";
+import {
+  parseInferenceEvent,
+  type InferenceEvent,
+} from "@intx/types/inference-events";
 
 import { decodeEnvelope, encodeEnvelope, MacedEnvelope } from "./envelope";
 import { verifyHmac } from "./crypto";
 
-/**
- * The event channel additionally carries the two bracket events the
- * reactor emits per message run. They are part of the InferenceEvent
- * union upstream; re-exporting the union directly keeps this channel
- * structurally identical to what the hub's `agent.event` frame
- * carries today.
- */
-export const EventPayload = InferenceEvent;
-export type EventPayload = typeof EventPayload.infer;
+export type EventPayload = InferenceEvent;
 
 export interface FrameReader {
   read(): AsyncIterableIterator<Uint8Array>;
@@ -210,7 +206,7 @@ export async function* receiveEventChannel(
       }
       highestSeq = maced.envelope.seq;
 
-      const payload = EventPayload(maced.envelope.payload);
+      const payload = parseInferenceEvent(maced.envelope.payload);
       if (payload instanceof type.errors) {
         crashed = true;
         opts.onCrash(

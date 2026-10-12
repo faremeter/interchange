@@ -116,7 +116,6 @@ export {
 export {
   ControlPayload,
   DEFAULT_EVENT_BUFFER_LIMIT,
-  EventPayload,
   FrameEnvelope,
   IPC_CRYPTO,
   MailboxNotifyHeaders,
@@ -143,6 +142,7 @@ export {
   type EventChannelReceiverOpts,
   type EventChannelSender,
   type EventChannelSenderOpts,
+  type EventPayload,
   type FrameReader,
   type FrameWriter,
   type NdjsonReader,
