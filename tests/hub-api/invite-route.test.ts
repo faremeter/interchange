@@ -32,6 +32,7 @@ import { seedPrincipal, seedTenants } from "@intx/test-harness/seed";
 // active signing key on the write path.
 
 const TENANT_ID = "tnt_invite";
+const OTHER_TENANT_ID = "tnt_invite_other";
 const ACTOR_PRINCIPAL_ID = "prn_invite_actor";
 const ACTOR_USER_ID = "usr_invite_actor";
 const INVITEE_USER_ID = "usr_invitee";
@@ -139,7 +140,7 @@ beforeEach(async () => {
 });
 
 async function setup() {
-  await seedTenants(h.db, [{ id: TENANT_ID }]);
+  await seedTenants(h.db, [{ id: TENANT_ID }, { id: OTHER_TENANT_ID }]);
   // The acting user's active principal makes it a tenant member; the grant
   // authorizes the invite.
   await seedPrincipal(h.db, {
@@ -215,6 +216,47 @@ describe.skipIf(!harnessDbEnvAvailable())(
           ),
         );
       expect(key).toBeDefined();
+    });
+
+    test("refuses a user who already has a principal in the tenant, whatever its status", async () => {
+      const app = await setup();
+      await seedPrincipal(h.db, {
+        id: "prn_invitee_suspended",
+        tenantId: TENANT_ID,
+        kind: "user",
+        refId: INVITEE_USER_ID,
+        status: "suspended",
+      });
+
+      const res = await app.request(
+        `/api/tenants/${TENANT_ID}/members/invite`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ email: INVITEE_EMAIL }),
+        },
+      );
+      expect(res.status).toBe(409);
+    });
+
+    test("invites a user whose only principal is in another tenant", async () => {
+      const app = await setup();
+      await seedPrincipal(h.db, {
+        id: "prn_invitee_elsewhere",
+        tenantId: OTHER_TENANT_ID,
+        kind: "user",
+        refId: INVITEE_USER_ID,
+      });
+
+      const res = await app.request(
+        `/api/tenants/${TENANT_ID}/members/invite`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ email: INVITEE_EMAIL }),
+        },
+      );
+      expect(res.status).toBe(201);
     });
   },
 );

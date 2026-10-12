@@ -1,10 +1,10 @@
 import { type } from "arktype";
-import { eq, and, sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { describeRoute, validator } from "hono-openapi";
 import { authorize } from "@intx/authz";
 
-import { tenant, principal, role, principalRole, grant } from "@intx/db/schema";
+import { tenant, role, principalRole, grant } from "@intx/db/schema";
 import {
   createPrincipalStore,
   parseTenantRow,
@@ -25,6 +25,7 @@ import {
 import { unauthorizedResponse, type AppEnv } from "../context";
 import { errorResponse, tenantConfigErrorResponse } from "../error-response";
 import { first, ts } from "../format";
+import { findUserPrincipal } from "../principal-lookup";
 import { jsonResponse } from "../openapi";
 import { generateId } from "@intx/hub-common";
 
@@ -270,12 +271,9 @@ export function createTenantRoutes({
         return errorResponse(c, "not_found", "Tenant not found");
       }
 
-      const membership = await db.query.principal.findFirst({
-        where: and(
-          eq(principal.tenantId, tenantId),
-          eq(principal.kind, "user"),
-          eq(principal.refId, user.id),
-        ),
+      const membership = await findUserPrincipal(db, {
+        tenantId,
+        userId: user.id,
       });
       if (!membership) {
         return errorResponse(c, "forbidden", "Not a member of this tenant");
@@ -321,15 +319,11 @@ export function createTenantRoutes({
       const tenantId = c.req.param("tenantId");
       const body = c.req.valid("json");
 
-      const membership = await db.query.principal.findFirst({
-        where: and(
-          eq(principal.tenantId, tenantId),
-          eq(principal.kind, "user"),
-          eq(principal.refId, user.id),
-          eq(principal.status, "active"),
-        ),
+      const membership = await findUserPrincipal(db, {
+        tenantId,
+        userId: user.id,
       });
-      if (!membership) {
+      if (membership?.status !== "active") {
         return errorResponse(c, "forbidden", "Not a member of this tenant");
       }
 

@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { createMiddleware } from "hono/factory";
 import type { Context, Env, MiddlewareHandler } from "hono";
 
@@ -13,6 +13,7 @@ import { base64Decode } from "@intx/types";
 
 import type { AppEnv, PrincipalRow, TenantRow } from "../context";
 import { errorResponse } from "../error-response";
+import { findUserPrincipal } from "../principal-lookup";
 
 const log = getLogger(["hub", "git-token"]);
 
@@ -282,12 +283,9 @@ async function resolvePrincipal(
     });
   }
 
-  return await db.query.principal.findFirst({
-    where: and(
-      eq(principal.tenantId, resolvedTenantId),
-      eq(principal.kind, "user"),
-      eq(principal.refId, tokenRow.userId),
-    ),
+  return await findUserPrincipal(db, {
+    tenantId: resolvedTenantId,
+    userId: tokenRow.userId,
   });
 }
 
