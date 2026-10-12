@@ -123,7 +123,7 @@ export type SidecarAllocationReconcilerDeps = {
   readonly leaseDurationMs?: number;
   readonly connectTimeoutMs?: number;
   readonly operationTimeoutMs?: number;
-  /** Failed attempts allowed for a release before polling stops. */
+  /** Failed cleanup attempts allowed for a release or replacement before polling stops. */
   readonly maxCleanupAttempts?: number;
   /**
    * Bounds admitted claims, active reconciliation, and retained allocation
@@ -1099,10 +1099,7 @@ export function createSidecarAllocationReconciler({
       ? "Deployment removal is confirmed, but the provisioner hold remains unreleased"
       : "Deployment removal remains unconfirmed";
     logger.warn`Cleanup attempt ${String(allocation.destroyAttempts + 1)} failed for allocation ${allocation.id} on sidecar ${allocation.sidecarId ?? "unknown"} generation ${String(allocation.generation)}: ${failure.code}: ${failure.message}`;
-    if (
-      status === "releasing" &&
-      allocation.destroyAttempts + 1 >= maxCleanupAttempts
-    ) {
+    if (allocation.destroyAttempts + 1 >= maxCleanupAttempts) {
       await finishReconciliation(allocation.id, async () => {
         const failed = await allocationStore.markDestroyFailed({
           allocationId: allocation.id,
@@ -1228,10 +1225,7 @@ export function createSidecarAllocationReconciler({
               cleanup.attemptedConnections.add(current);
             });
             if (connection === undefined) return false;
-            if (
-              allocation.status === "releasing" &&
-              allocation.connectDeadline !== undefined
-            ) {
+            if (allocation.connectDeadline !== undefined) {
               const connected = await allocationStore
                 .recordCleanupConnection({
                   allocationId: allocation.id,
@@ -1351,7 +1345,8 @@ export function createSidecarAllocationReconciler({
       }
       await allocationStore.scheduleRetry({
         allocationId: allocation.id,
-        expectedStatus: "releasing",
+        expectedStatus:
+          allocation.status === "replacing" ? "replacing" : "releasing",
         expectedGeneration: allocation.generation,
         expectedLeaseId: leaseId,
         nextAttemptAt: deadline ?? now(),
@@ -1405,7 +1400,7 @@ export function createSidecarAllocationReconciler({
       );
       return false;
     }
-    if (allocation.status === "releasing" && !cleanup.requestFailed) {
+    if (!cleanup.requestFailed) {
       // Disconnecting is not cleanup progress and must not restart the grace.
       await waitForCleanupConnection(allocation, leaseId);
       return false;
@@ -1896,7 +1891,8 @@ export function createSidecarAllocationReconciler({
     }
     for (const allocation of allocations) {
       const parkedCleanup =
-        allocation.status === "releasing" &&
+        (allocation.status === "releasing" ||
+          allocation.status === "replacing") &&
         allocation.connectDeadline !== undefined &&
         allocation.nextAttemptAt?.getTime() ===
           allocation.connectDeadline.getTime()

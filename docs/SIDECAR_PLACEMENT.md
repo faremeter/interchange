@@ -209,7 +209,7 @@ connect as a new sidecar, even while that sidecar is restarting: after that a
 probe fails, and a deployment is failed and has to be started again, which
 costs little since it has not run yet.
 
-### Release cleanup
+### Release and replacement cleanup
 
 Release requires both the provisioner's hold to be released and deployment
 cleanup to be confirmed. A successful `destroy` must report `cleanup: confirmed`
@@ -254,24 +254,31 @@ confirms removal. While removal is unconfirmed, the Hub can still ask the provid
 for destruction confirmation; provider unavailability then falls back to sidecar
 cleanup or the disconnect wait.
 
+Release and replacement use the same cleanup limits. A new release or replacement
+starts a fresh attempt budget; retries and reconnects preserve the remaining budget.
 When the provider has released its hold but cleanup still needs a disconnected
-sidecar, the allocation stays `releasing` without spending cleanup attempts.
+sidecar, the allocation stays `releasing` or `replacing` without spending cleanup attempts.
 It waits until reconnect or a durable deadline based on `maxDisconnected`.
 An initialized deployment's disconnect deadline survives release;
-otherwise the first observed cleanup wait starts the window. Repeated checks and
-Hub restarts do not extend it. A current reconnect clears the disconnect
-deadline with its reconciliation wake, so a later disconnection gets a new
+otherwise the first observed cleanup wait starts the window, including cleanup
+of a parked deployment's old copy during replacement. Repeated checks and
+Hub restarts do not extend it. Releasing during replacement preserves the same
+cleanup deadline. A current reconnect clears the disconnect deadline with its
+reconciliation wake, so a later disconnection gets a new
 window even if the readiness or cleanup pass has not run yet. The initial
 deployment's first-connect deadline stays until initialization completes.
 
 Expiry records `sidecar_cleanup_disconnect_timeout`, logs an error, and keeps
-the reservation and cleanup binding. A returned cleanup connection moves only
+the reservation and cleanup binding. If replacement cleanup times out or exhausts
+its retry budget, the still-live workflow fails and no replacement is provisioned.
+A reconnect before failure preserves `replacing` and allows replacement after
+confirmed cleanup. A returned cleanup connection moves only
 this failure back to `releasing`, preserving its attempt count. The workflow's
 terminal outcome stays unchanged and it regains no routes; the reconciler owns
 the acknowledged undeploy.
-The repair sweep retries a missed reconnect write for a parked release
+The repair sweep retries a missed reconnect write for a parked release or replacement
 or a disconnect-timeout failure while the cleanup connection is present. A parked
-release is woken only while its deadline schedule and attempt count are unchanged
+cleanup wait is woken only while its deadline schedule and attempt count are unchanged
 and no active reconciliation lease owns it. Repeated notifications cannot reset the attempt budget
 or reopen exhaustion or permanent provider rejection. Failed provider calls while
 the hold remains unreleased and attempted undeploys spend the retry budget,
@@ -318,8 +325,9 @@ it neither proves removal nor stops an unreachable worker.
 
 Cleanup retries log warnings without replacing the allocation's release reason.
 Exhaustion and permanent rejection log errors and record the cleanup outcome on
-the allocation. When cleanup fails a live deployment, its original workflow or
-allocation reason takes precedence for the workflow failure. Dispatch abandonment
+the allocation. When release cleanup fails a live deployment, its original workflow or
+allocation reason takes precedence for the workflow failure. Replacement cleanup
+failure records the cleanup reason on the still-live workflow. Dispatch abandonment
 caused by that failure records the cleanup error separately.
 Successful release after a reconnect clears the disconnect-timeout marker.
 Detailed cleanup history is kept in logs.
