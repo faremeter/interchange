@@ -411,6 +411,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             ? await store.beginRelease(previous)
             : await store.beginReplacement({
                 ...previous,
+                firstAttemptAt: new Date(0),
                 nextAttemptAt: new Date(0),
                 failureCode: "sidecar_connect_failed",
                 failureMessage: "Parked worker disconnected",
@@ -530,6 +531,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           expectedStatus: "provisioning",
           expectedGeneration: 1,
           expectedLeaseId: initialization.leaseId,
+          firstAttemptAt: new Date(0),
           nextAttemptAt: new Date(0),
           failureCode: "ensure_outcome_unknown",
           failureMessage: "Ensure interrupted",
@@ -853,7 +855,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
           | "none"
           | "undeploy"
           | "provider error"
-          | "provider rejection" = "none",
+          | "provider rejection"
+          | "ensure error"
+          | "ensure rejection" = "none",
       ) {
         const { store, allocation, leaseId, initialization } =
           await createClaimedAllocation("alloc-replacement-cleanup");
@@ -877,6 +881,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             expectedStatus: "allocated",
             expectedGeneration: 1,
             expectedLeaseId: leaseId,
+            firstAttemptAt: new Date(0),
             nextAttemptAt: new Date(0),
             failureCode: "sidecar_connect_failed",
             failureMessage: "Parked worker disconnected",
@@ -884,11 +889,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
         ).toMatchObject({
           status: "replacing",
           destroyAttempts: 0,
+          ensureAttempts: 0,
           deploymentCleanupConfirmed: false,
         });
         const state = {
           now: new Date(),
           connected: failure === "undeploy",
+          ensureSucceeds: false,
         };
         const calls: string[] = [];
         const connection = {};
@@ -899,6 +906,17 @@ describe.skipIf(!harnessDbEnvAvailable())(
           capabilities: [],
           ensure: async () => {
             calls.push("ensure");
+            if (!state.ensureSucceeds) {
+              if (failure === "ensure error")
+                throw new Error("Provisioning unavailable");
+              if (failure === "ensure rejection")
+                return {
+                  kind: "rejected" as const,
+                  retryable: true,
+                  code: "unavailable",
+                  message: "Try again",
+                };
+            }
             return { kind: "accepted" as const };
           },
           destroy: async () => {
@@ -1075,6 +1093,460 @@ describe.skipIf(!harnessDbEnvAvailable())(
           destroyAttempts: 0,
         });
       });
+
+      test.each(["ensure error", "ensure rejection"] as const)(
+        "old-sidecar reconnects preserve provisioning backoff after %s",
+        async (failure) => {
+          const { store, target, state, calls, options } =
+            await replacingCleanup(failure);
+          state.connected = true;
+          // Keep the retry in the future on the database clock without sleeping.
+          state.now = new Date(Date.now() + 60_000);
+          const reconciler = createSidecarAllocationReconciler(options);
+          expect(await reconciler.reconcileNext()).toBe(true);
+          const replacing = await store.findById(target.allocationId);
+          if (replacing?.nextAttemptAt === undefined)
+            throw new Error("Missing replacement retry");
+          expect(replacing).toMatchObject({
+            status: "replacing",
+            ensureAttempts: 1,
+            destroyAttempts: 0,
+            providerHoldReleased: false,
+          });
+          const reconnect = {
+            allocationId: replacing.id,
+            generation: replacing.generation,
+          };
+          for (let flap = 0; flap < 10; flap++) {
+            await reconciler.handleConnected(reconnect);
+            expect((await store.findById(replacing.id))?.nextAttemptAt).toEqual(
+              replacing.nextAttemptAt,
+            );
+            expect(await reconciler.reconcileNext()).toBe(false);
+          }
+          expect(calls.filter((call) => call === "ensure")).toHaveLength(1);
+          // Drive the schedule due; a healthy retry must still be able to run.
+          state.ensureSucceeds = true;
+          await store.wakeReconciliation(replacing.id, replacing.generation);
+          expect(await reconciler.reconcileNext()).toBe(true);
+          expect(await store.findById(replacing.id)).toMatchObject({
+            status: "allocated",
+            ensureAttempts: 2,
+          });
+          expect(calls.filter((call) => call === "ensure")).toHaveLength(2);
+        },
+      );
+
+      test.each([
+        "ensure error",
+        "ensure rejection",
+        "last attempt succeeds",
+      ] as const)(
+        "bounds provisioning across cleanup and restart: %s",
+        async (outcome) => {
+          const { store, target, state, calls, options } =
+            await replacingCleanup(
+              outcome === "ensure rejection" ? outcome : "ensure error",
+            );
+          state.connected = true;
+          for (let attempt = 1; attempt <= 10; attempt++) {
+            // Failed cleanup attempts must not accelerate or delay provisioning's backoff.
+            await h.db
+              .update(sidecarAllocation)
+              .set({ destroyAttempts: 2 })
+              .where(eq(sidecarAllocation.id, target.allocationId));
+            const current = await store.findById(target.allocationId);
+            if (current === null) throw new Error("Missing allocation");
+            state.ensureSucceeds =
+              outcome === "last attempt succeeds" && attempt === 10;
+            const reconciler = createSidecarAllocationReconciler(options);
+            await reconciler.initialize();
+            await store.wakeReconciliation(current.id, current.generation);
+            expect(await reconciler.reconcileNext()).toBe(true);
+            const next = await store.findById(current.id);
+            expect(next?.ensureAttempts).toBe(attempt);
+            expect(calls.filter((call) => call === "ensure")).toHaveLength(
+              attempt,
+            );
+            if (attempt < 10) {
+              expect(next?.status).toBe("replacing");
+              expect(next?.nextAttemptAt?.getTime()).toBe(
+                state.now.getTime() +
+                  Math.min(1_000 * 2 ** (attempt - 1), 30_000),
+              );
+            } else {
+              expect(next?.status).toBe(
+                state.ensureSucceeds ? "allocated" : "releasing",
+              );
+            }
+          }
+          if (state.ensureSucceeds) return;
+          expect(
+            await h.db.query.workflowRun.findFirst({
+              where: eq(workflowRun.id, ANCHOR_RUN_ID),
+            }),
+          ).toMatchObject({
+            status: "failed",
+            failureCode: "sidecar_provisioning_retry_exhausted",
+          });
+          const final = createSidecarAllocationReconciler(options);
+          await final.initialize();
+          await final.reconcileNext();
+          expect((await store.findById(target.allocationId))?.status).toBe(
+            "released",
+          );
+          expect(await final.reconcileNext()).toBe(false);
+          expect(calls.filter((call) => call === "ensure")).toHaveLength(10);
+        },
+      );
+
+      test.each([false, true])(
+        "bounds accepted workers that never connect and resets only after initialization (last connects: %s)",
+        async (lastConnects) => {
+          const { store, target, state, calls, options } =
+            await replacingCleanup();
+          const provisioner = options.plugins.getProvisioner("ec2-spot");
+          if (provisioner === null) throw new Error("Missing test provisioner");
+          let connected = false;
+          const restoring: Parameters<
+            typeof createSidecarAllocationReconciler
+          >[0] = {
+            ...options,
+            plugins: {
+              ...options.plugins,
+              getProvisioner: () => ({
+                ...provisioner,
+                destroy: async () => ({
+                  kind: "destroyed",
+                  cleanup: "confirmed",
+                }),
+              }),
+            },
+            router: {
+              ...options.router,
+              getCleanupConnection: () => undefined,
+              holdsAllocatedBinding: () => connected,
+              isAllocatedSidecarReady: async () => connected,
+              waitForAllocatedSidecar: async (_target, timeoutMs) => {
+                expect(timeoutMs).toBe(0);
+                throw new Error("Sidecar never connected before its deadline");
+              },
+            },
+            classifyParkedRun: async () => ({
+              verdict: "parked",
+              reason: "Committed run remains parked",
+            }),
+            onReady: async (allocation, context) => {
+              const initializing = {
+                allocationId: allocation.id,
+                generation: allocation.generation,
+                anchorRunId: allocation.anchorRunId,
+                tenantId: allocation.tenantId,
+                ...context,
+              };
+              expect(await store.beginInitialization(initializing)).toBe(true);
+              expect(
+                await store.completeInitialization({
+                  ...initializing,
+                  publicKey: "restored-key",
+                }),
+              ).toBe(true);
+            },
+          };
+          for (let attempt = 1; attempt <= 10; attempt++) {
+            const current = await store.findById(target.allocationId);
+            if (current === null) throw new Error("Missing allocation");
+            connected = lastConnects && attempt === 10;
+            const reconciler = createSidecarAllocationReconciler(restoring);
+            await reconciler.initialize();
+            await store.wakeReconciliation(current.id, current.generation);
+            expect(await reconciler.reconcileNext()).toBe(true);
+            const accepted = await store.findById(current.id);
+            if (accepted === null)
+              throw new Error("Missing accepted allocation");
+            expect(accepted).toMatchObject({
+              status: "allocated",
+              ensureAttempts: attempt,
+            });
+            expect(calls.filter((call) => call === "ensure")).toHaveLength(
+              attempt,
+            );
+            if (connected) break;
+            if (accepted.connectDeadline === undefined)
+              throw new Error("Missing connect deadline");
+            state.now = accepted.connectDeadline;
+            await store.wakeReconciliation(accepted.id, accepted.generation);
+            expect(await reconciler.reconcileNext()).toBe(true);
+            const replacing = await store.findById(current.id);
+            expect(replacing).toMatchObject({
+              status: "replacing",
+              ensureAttempts: attempt,
+            });
+            expect(replacing?.nextAttemptAt?.getTime()).toBe(
+              state.now.getTime() +
+                Math.min(1_000 * 2 ** (attempt - 1), 30_000),
+            );
+          }
+
+          const reconciler = createSidecarAllocationReconciler(restoring);
+          const current = await store.findById(target.allocationId);
+          if (current === null) throw new Error("Missing allocation");
+          if (lastConnects) {
+            expect(
+              await h.db.query.workflowRun.findFirst({
+                where: eq(workflowRun.id, ANCHOR_RUN_ID),
+              }),
+            ).toMatchObject({ status: "running", publicKey: "restored-key" });
+            connected = false;
+            const disconnected = await store.markConnectionLost({
+              allocationId: current.id,
+              generation: current.generation,
+              now: state.now,
+              firstConnectDeadline: new Date(state.now.getTime() + 120_000),
+            });
+            if (disconnected?.connectDeadline === undefined)
+              throw new Error("Missing disconnect deadline");
+            state.now = disconnected.connectDeadline;
+            await store.wakeReconciliation(current.id, current.generation);
+            await reconciler.reconcileNext();
+            const replacing = await store.findById(current.id);
+            expect(replacing).toMatchObject({
+              status: "replacing",
+              ensureAttempts: 0,
+            });
+            expect(replacing?.nextAttemptAt?.getTime()).toBe(
+              state.now.getTime() + 1_000,
+            );
+            expect(
+              await h.db.query.workflowRun.findFirst({
+                where: eq(workflowRun.id, ANCHOR_RUN_ID),
+              }),
+            ).toMatchObject({ publicKey: null });
+            connected = true;
+          }
+          const replacing = await store.findById(target.allocationId);
+          if (replacing === null) throw new Error("Missing replacement");
+          await store.wakeReconciliation(replacing.id, replacing.generation);
+          await reconciler.reconcileNext();
+          expect(await store.findById(replacing.id)).toMatchObject(
+            lastConnects
+              ? { status: "allocated", ensureAttempts: 1 }
+              : {
+                  status: "releasing",
+                  ensureAttempts: 10,
+                  failureCode: "sidecar_provisioning_retry_exhausted",
+                  failureMessage:
+                    "Provisioning failed after 10 attempts: Sidecar never connected before its deadline",
+                },
+          );
+          expect(calls.filter((call) => call === "ensure")).toHaveLength(
+            lastConnects ? 11 : 10,
+          );
+          expect(
+            await h.db.query.workflowRun.findFirst({
+              where: eq(workflowRun.id, ANCHOR_RUN_ID),
+            }),
+          ).toMatchObject(
+            lastConnects
+              ? { status: "running" }
+              : {
+                  status: "failed",
+                  failureCode: "sidecar_provisioning_retry_exhausted",
+                  failureMessage:
+                    "Provisioning failed after 10 attempts: Sidecar never connected before its deadline",
+                },
+          );
+          if (!lastConnects) {
+            await store.wakeReconciliation(replacing.id, replacing.generation);
+            expect(await reconciler.reconcileNext()).toBe(true);
+            expect(await store.findById(replacing.id)).toMatchObject({
+              status: "released",
+              failureCode: "sidecar_provisioning_retry_exhausted",
+            });
+          }
+        },
+      );
+
+      test("failing a replacement rejects stale ownership without failing its workflow", async () => {
+        const { store, target, state } = await replacingCleanup();
+        const leaseId = "exhausted-replacement";
+        const claimed = await store.claimNextReconcilable({
+          leaseId,
+          leaseDurationMs: 60_000,
+        });
+        expect(claimed?.id).toBe(target.allocationId);
+        const failure = {
+          ...target,
+          expectedStatus: "replacing" as const,
+          expectedGeneration: target.generation,
+          expectedLeaseId: leaseId,
+          failureCode: "sidecar_provisioning_retry_exhausted",
+          failureMessage: "Provisioning attempts exhausted",
+          now: state.now,
+        };
+        for (const stale of [
+          { expectedLeaseId: "stale-lease" },
+          { expectedGeneration: target.generation - 1 },
+          { expectedStatus: "allocated" as const },
+        ])
+          expect(
+            await store.beginUnrecoverableRelease({ ...failure, ...stale }),
+          ).toBeNull();
+        expect(await store.findById(target.allocationId)).toEqual(claimed);
+        expect(
+          await h.db.query.workflowRun.findFirst({
+            where: eq(workflowRun.id, ANCHOR_RUN_ID),
+          }),
+        ).toMatchObject({ status: "running", failureCode: null });
+        expect(await store.beginUnrecoverableRelease(failure)).toMatchObject({
+          status: "releasing",
+          generation: target.generation,
+        });
+      });
+
+      test("exhausted provisioning leaves a pending cancellation to lifecycle after confirmed removal", async () => {
+        const { store, target, state, calls, options } =
+          await replacingCleanup();
+        await h.db
+          .update(sidecarAllocation)
+          .set({
+            ensureAttempts: 10,
+            deploymentCleanupConfirmed: true,
+            providerHoldReleased: true,
+          })
+          .where(eq(sidecarAllocation.id, target.allocationId));
+        await h.db
+          .update(workflowRun)
+          .set({ cancellationRequestedAt: state.now })
+          .where(eq(workflowRun.id, ANCHOR_RUN_ID));
+        expect(
+          await createSidecarAllocationReconciler(options).reconcileNext(),
+        ).toBe(true);
+        expect(await store.findById(target.allocationId)).toMatchObject({
+          status: "releasing",
+          providerHoldReleased: true,
+          deploymentCleanupConfirmed: true,
+        });
+        expect(
+          await h.db.query.workflowRun.findFirst({
+            where: eq(workflowRun.id, ANCHOR_RUN_ID),
+          }),
+        ).toMatchObject({
+          status: "running",
+          failureCode: null,
+          cancellationRequestedAt: state.now,
+        });
+        expect(calls).toEqual([]);
+      });
+
+      test.each(["none", "provider error", "undeploy"] as const)(
+        "records provisioning exhaustion before replacement cleanup can fail: %s",
+        async (failure) => {
+          const { store, target, state, calls, options } =
+            await replacingCleanup(failure);
+          const deadline = new Date(state.now.getTime() + 5_000);
+          const progress = {
+            ensureAttempts: 10,
+            destroyAttempts: 2,
+            providerHoldReleased: failure !== "provider error",
+            deploymentCleanupConfirmed: failure === "provider error",
+            connectDeadline: deadline,
+          };
+          await h.db
+            .update(sidecarAllocation)
+            .set({
+              ...progress,
+              failureMessage: "Replacement never connected",
+            })
+            .where(eq(sidecarAllocation.id, target.allocationId));
+          const reconciler = createSidecarAllocationReconciler(options);
+          await reconciler.initialize();
+          expect(await reconciler.reconcileNext()).toBe(true);
+          const message =
+            "Provisioning failed after 10 attempts: Replacement never connected";
+          expect(await store.findById(target.allocationId)).toMatchObject({
+            ...progress,
+            generation: target.generation,
+            status: "releasing",
+            failureCode: "sidecar_provisioning_retry_exhausted",
+            failureMessage: message,
+          });
+          expect(calls).toEqual([]);
+          const failedRun = await h.db.query.workflowRun.findFirst({
+            where: eq(workflowRun.id, ANCHOR_RUN_ID),
+          });
+          expect(failedRun).toMatchObject({
+            status: "failed",
+            failureCode: "sidecar_provisioning_retry_exhausted",
+            failureMessage: message,
+            endedAt: state.now,
+          });
+          expect(await reconciler.reconcileNext()).toBe(true);
+          if (failure === "none") {
+            expect(await store.findById(target.allocationId)).toMatchObject({
+              ...progress,
+              status: "releasing",
+              nextAttemptAt: deadline,
+            });
+            state.now = deadline;
+            await store.wakeReconciliation(
+              target.allocationId,
+              target.generation,
+            );
+            expect(await reconciler.reconcileNext()).toBe(true);
+          }
+          expect(await store.findById(target.allocationId)).toMatchObject({
+            status: "destroy_failed",
+            destroyAttempts: failure === "none" ? 2 : 3,
+            failureCode:
+              failure === "none"
+                ? SIDECAR_CLEANUP_DISCONNECT_TIMEOUT_FAILURE_CODE
+                : SIDECAR_CLEANUP_RETRY_EXHAUSTED_FAILURE_CODE,
+          });
+          expect(
+            await h.db.query.workflowRun.findFirst({
+              where: eq(workflowRun.id, ANCHOR_RUN_ID),
+            }),
+          ).toEqual(failedRun);
+          expect(calls).not.toContain("ensure");
+        },
+      );
+
+      test.each(["provisioning", "replacing"] as const)(
+        "does not start an eleventh provisioning attempt after recovering %s",
+        async (status) => {
+          const { store, target, calls, options } = await replacingCleanup();
+          await h.db
+            .update(sidecarAllocation)
+            .set({
+              status,
+              ensureAttempts: 10,
+              deploymentCleanupConfirmed: status === "replacing",
+              providerHoldReleased: status === "replacing",
+            })
+            .where(eq(sidecarAllocation.id, target.allocationId));
+          const restarted = createSidecarAllocationReconciler(options);
+          await restarted.initialize();
+          await restarted.reconcileNext();
+          expect(await store.findById(target.allocationId)).toMatchObject({
+            status: status === "replacing" ? "failed" : "releasing",
+            failureCode: "sidecar_provisioning_retry_exhausted",
+            failureMessage:
+              status === "replacing"
+                ? "Provisioning failed after 10 attempts: Parked worker disconnected"
+                : "Provisioning failed after 10 attempts: Hub restarted before sidecar provisioning acceptance was recorded",
+            ensureAttempts: 10,
+          });
+          expect(calls).not.toContain("ensure");
+          if (status === "provisioning") {
+            await restarted.reconcileNext();
+            expect((await store.findById(target.allocationId))?.status).toBe(
+              "released",
+            );
+          }
+          expect(await restarted.reconcileNext()).toBe(false);
+        },
+      );
 
       test.each(["undeploy", "provider error", "provider rejection"] as const)(
         "exhausts failed %s attempts and fails the parked workflow",
@@ -1735,6 +2207,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             expectedStatus: "provisioning" as const,
             failureCode: "ensure_outcome_unknown",
             failureMessage: "Ensure interrupted",
+            firstAttemptAt: new Date(0),
             nextAttemptAt: new Date(0),
           };
           const cleanup =
@@ -2961,6 +3434,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           expectedStatus: "provisioning",
           expectedGeneration: 1,
           expectedLeaseId: "lease-stale",
+          firstAttemptAt: replacementAt,
           nextAttemptAt: replacementAt,
           failureCode: "ensure_failed",
           failureMessage: "stale reconciler",
@@ -2981,6 +3455,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         expectedStatus: "provisioning",
         expectedGeneration: 1,
         expectedLeaseId: "lease-current",
+        firstAttemptAt: replacementAt,
         nextAttemptAt: replacementAt,
         failureCode: "ensure_failed",
         failureMessage: "provider request timed out",
@@ -3073,6 +3548,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           expectedStatus: "provisioning",
           expectedGeneration: 1,
           expectedLeaseId: "lease-current",
+          firstAttemptAt: new Date(),
           nextAttemptAt: new Date(),
           failureCode: "sidecar_connect_failed",
           failureMessage: "connect timeout",
@@ -3782,13 +4258,15 @@ describe.skipIf(!harnessDbEnvAvailable())(
     );
 
     test.each([
-      { status: "releasing", connected: true },
-      { status: "releasing", connected: false },
-      { status: "replacing", connected: true },
-      { status: "replacing", connected: false },
+      { status: "releasing", connected: true, destroyAttempts: 1 },
+      { status: "releasing", connected: false, destroyAttempts: 1 },
+      { status: "replacing", connected: true, destroyAttempts: 1 },
+      { status: "replacing", connected: false, destroyAttempts: 1 },
+      { status: "replacing", connected: true, destroyAttempts: 0 },
+      { status: "replacing", connected: false, destroyAttempts: 0 },
     ] as const)(
-      "cleanup backoff survives reconnect notifications, but parked waits wake immediately: %j",
-      async ({ status, connected }) => {
+      "cleanup and replacement backoff survive reconnects, but parked waits wake immediately: %j",
+      async ({ status, connected, destroyAttempts }) => {
         const { store, allocation } = await createClaimedAllocation(
           "alloc-cleanup-reconnect-backoff",
         );
@@ -3797,7 +4275,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           .update(sidecarAllocation)
           .set({
             status,
-            destroyAttempts: 1,
+            destroyAttempts,
             connectDeadline: null,
             nextAttemptAt: retryAt,
             reconciliationLeaseId: null,
@@ -3814,7 +4292,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           expect(await wake()).toBe(true);
           expect(await store.findById(allocation.id)).toMatchObject({
             status,
-            destroyAttempts: 1,
+            destroyAttempts,
           });
           expect((await store.findById(allocation.id))?.nextAttemptAt).toEqual(
             retryAt,
@@ -3837,7 +4315,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             leaseId: "reconnected-cleanup",
             leaseDurationMs: 60_000,
           }),
-        ).toMatchObject({ id: allocation.id, status, destroyAttempts: 1 });
+        ).toMatchObject({ id: allocation.id, status, destroyAttempts });
         expect((await store.findById(allocation.id))?.connectDeadline).toEqual(
           connected ? undefined : deadline,
         );
@@ -4526,6 +5004,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             expectedLeaseId: leaseId,
             failureCode: "sidecar_connect_failed",
             failureMessage: "Parked worker disconnected",
+            firstAttemptAt: new Date(0),
             nextAttemptAt: new Date(0),
           }),
         ).toMatchObject({
@@ -4584,6 +5063,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         expectedLeaseId: "placement-lease",
         failureCode: "sidecar_reuse_rejected",
         failureMessage: "The previous placement was full",
+        firstAttemptAt: new Date(0),
         nextAttemptAt: new Date(0),
       });
       await h.db
@@ -4680,6 +5160,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           await store.beginReplacement({
             ...transition,
             expectedStatus: "provisioning",
+            firstAttemptAt: new Date(0),
             nextAttemptAt: new Date(0),
             failureCode: "ensure_failed",
             failureMessage: "Provider request timed out",

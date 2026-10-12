@@ -3652,6 +3652,7 @@ describe("createSidecarAllocationReconciler", () => {
       failureCode: "capacity_unavailable",
       failureMessage: "Capacity is temporarily unavailable",
       nextAttemptAt: new Date(NOW.getTime() + 5_000),
+      firstAttemptAt: new Date(NOW.getTime() + 5_000),
       now: NOW,
     });
   });
