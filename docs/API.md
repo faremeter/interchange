@@ -250,7 +250,7 @@ Body: CreateTenant
 Get tenant details
 
 200: TenantResponse -- Tenant details
-403: ErrorResponse -- Not a member of this tenant
+403: ErrorResponse -- Not an active member of this tenant
 404: ErrorResponse -- Tenant not found
 409: ErrorResponse -- Stored tenant config is invalid
 

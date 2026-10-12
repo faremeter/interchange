@@ -290,15 +290,17 @@ export function mountHubRoutes(
   // so Hono includes it in the middleware chain.
   app.use("/api/tenants/:tenantId/*", resolveTenant);
 
-  // Global tenant routes (create needs auth, detail/update handle auth inline)
+  // Tenant create, detail and update. Detail and update mount resolveTenant
+  // and requireGrant on their own handlers, so their gate does not depend on
+  // the wildcard above also matching the bare tenant path.
   app.route(
     "/api/tenants",
     createTenantRoutes({
       db,
       principalKeyStore,
-      grantStore,
-      conditionRegistry,
       authorizeGrant,
+      resolveTenant,
+      requireGrant,
     }),
   );
 

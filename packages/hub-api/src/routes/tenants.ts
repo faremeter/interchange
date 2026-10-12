@@ -1,8 +1,7 @@
 import { type } from "arktype";
 import { eq, sql } from "drizzle-orm";
-import { Hono, type Context } from "hono";
+import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { describeRoute, validator } from "hono-openapi";
-import { authorize } from "@intx/authz";
 import { getLogger } from "@intx/log";
 
 import { tenant, role, principalRole, grant } from "@intx/db/schema";
@@ -13,7 +12,6 @@ import {
   validateLifecyclePolicyEdit,
 } from "@intx/db";
 import type { DB, PrincipalKeyStore } from "@intx/db";
-import type { GrantStore, ConditionRegistry } from "@intx/types/authz";
 import {
   CreateTenant,
   ErrorResponse,
@@ -23,9 +21,13 @@ import {
   type TenantConfigPatch,
 } from "@intx/types";
 
-import { unauthorizedResponse, type AppEnv } from "../context";
+import { unauthorizedResponse, type AppEnv, type TenantEnv } from "../context";
 import { errorResponse, tenantConfigErrorResponse } from "../error-response";
-import type { AuthorizeGrant } from "../middleware/grant";
+import {
+  idResource,
+  type AuthorizeGrant,
+  type RequireGrant,
+} from "../middleware/grant";
 import { first, ts } from "../format";
 import { findUserPrincipal } from "../principal-lookup";
 import { jsonResponse } from "../openapi";
@@ -75,17 +77,17 @@ function mergeTenantConfig(
 export type CreateTenantRoutesDeps = {
   db: DB["db"];
   principalKeyStore: PrincipalKeyStore;
-  grantStore: GrantStore;
-  conditionRegistry: ConditionRegistry;
   authorizeGrant: AuthorizeGrant;
+  resolveTenant: MiddlewareHandler<TenantEnv>;
+  requireGrant: RequireGrant;
 };
 
 export function createTenantRoutes({
   db,
   principalKeyStore,
-  grantStore,
-  conditionRegistry,
   authorizeGrant,
+  resolveTenant,
+  requireGrant,
 }: CreateTenantRoutesDeps): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
   const principalStore = createPrincipalStore(db, principalKeyStore);
@@ -301,34 +303,14 @@ export function createTenantRoutes({
       summary: "Get tenant details",
       responses: {
         200: jsonResponse("Tenant details", TenantResponse),
-        403: jsonResponse("Not a member of this tenant", ErrorResponse),
+        403: jsonResponse("Not an active member of this tenant", ErrorResponse),
         404: jsonResponse("Tenant not found", ErrorResponse),
         409: jsonResponse("Stored tenant config is invalid", ErrorResponse),
       },
     }),
+    resolveTenant,
     async (c) => {
-      const user = c.get("user");
-      if (!user) {
-        return unauthorizedResponse(c);
-      }
-
-      const tenantId = c.req.param("tenantId");
-
-      const tenantRow = await db.query.tenant.findFirst({
-        where: eq(tenant.id, tenantId),
-      });
-      if (!tenantRow) {
-        return errorResponse(c, "not_found", "Tenant not found");
-      }
-
-      const membership = await findUserPrincipal(db, {
-        tenantId,
-        userId: user.id,
-      });
-      if (!membership) {
-        return errorResponse(c, "forbidden", "Not a member of this tenant");
-      }
-
+      const tenantRow = c.get("tenant");
       try {
         return c.json(formatTenant(tenantRow));
       } catch (err) {
@@ -359,39 +341,13 @@ export function createTenantRoutes({
         ),
       },
     }),
+    resolveTenant,
+    requireGrant(idResource("tenant", "tenantId"), "manage"),
     validator("json", UpdateTenant),
     async (c) => {
-      const user = c.get("user");
-      if (!user) {
-        return unauthorizedResponse(c);
-      }
-
-      const tenantId = c.req.param("tenantId");
+      const tenantId = c.get("tenant").id;
       const body = c.req.valid("json");
 
-      const membership = await findUserPrincipal(db, {
-        tenantId,
-        userId: user.id,
-      });
-      if (membership?.status !== "active") {
-        return errorResponse(c, "forbidden", "Not a member of this tenant");
-      }
-
-      const authorization = await authorize(
-        grantStore,
-        membership.id,
-        tenantId,
-        `tenant:${tenantId}`,
-        "manage",
-        conditionRegistry,
-      );
-      if (authorization.effect !== "allow") {
-        return errorResponse(
-          c,
-          "forbidden",
-          "You do not have permission to manage this tenant",
-        );
-      }
       const result = await db.transaction(async (tx) => {
         // A concurrent update waits here, then merges into the committed result.
         const [current] = await tx
