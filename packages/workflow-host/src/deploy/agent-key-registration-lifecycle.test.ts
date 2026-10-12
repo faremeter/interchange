@@ -20,7 +20,7 @@ import {
   createNoopCredentialCipher,
   generateKeyPair,
 } from "@intx/crypto";
-import { hexEncode, parseRunAddress } from "@intx/types";
+import { hexEncode } from "@intx/types";
 import { createInMemoryTransport } from "@intx/mail-memory";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 import {
@@ -49,14 +49,6 @@ function deriveWorkflowRunRepoId(agentAddress: string): string {
   return agentAddress.replaceAll(/[^a-zA-Z0-9_-]/g, "-");
 }
 
-function parseAgentId(agentAddress: string): string {
-  const parsed = parseRunAddress(agentAddress);
-  if (parsed === null) {
-    throw new Error(`Invalid run address: "${agentAddress}"`);
-  }
-  return parsed.runId;
-}
-
 const resolvedInboundMailPolicy = {
   clean: "admit",
   error: "reject",
@@ -71,12 +63,9 @@ const resolvedInboundMailPolicy = {
 function deployHostBindings() {
   return {
     deriveWorkflowRunRepoId,
-    parseAgentId,
     inertFlatNamespaceStepIds: (args: {
       definition: { readonly stepOrder: readonly string[] };
     }) => args.definition.stepOrder,
-    workflowSourceAssetMountPath: (assetId: string) =>
-      `source-assets/${assetId}/`,
     sourceAssetGitDir: (gitDirRoot: string, assetId: string) =>
       path.join(gitDirRoot, assetId),
     readRegistries: () => new Map(),

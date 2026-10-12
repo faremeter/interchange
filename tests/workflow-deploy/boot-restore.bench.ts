@@ -65,7 +65,6 @@ import {
   type SubprocessHandle,
   type SubprocessSpawner,
 } from "@intx/workflow-host";
-import { parseRunAddress } from "@intx/types";
 import type { AgentDeployFrame } from "@intx/types/sidecar";
 import type { WorkflowDefinition } from "@intx/workflow";
 import {
@@ -266,14 +265,6 @@ const stubApplyFrozenWorkflowClosure: NonNullable<
   });
 };
 
-function parseAgentId(agentAddress: string): string {
-  const parsed = parseRunAddress(agentAddress);
-  if (parsed === null) {
-    throw new Error(`Invalid run address: "${agentAddress}"`);
-  }
-  return parsed.runId;
-}
-
 const resolvedInboundMailPolicy = {
   clean: "admit",
   error: "reject",
@@ -289,9 +280,6 @@ function deployHostBindings() {
   return {
     deriveWorkflowRunRepoId,
     inertFlatNamespaceStepIds,
-    parseAgentId,
-    workflowSourceAssetMountPath: (assetId: string) =>
-      `source-assets/${assetId}/`,
     sourceAssetGitDir: (gitDirRoot: string, assetId: string) =>
       path.join(gitDirRoot, assetId),
     readRegistries: () => new Map(),

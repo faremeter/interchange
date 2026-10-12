@@ -36,9 +36,10 @@ import {
 } from "@intx/tool-packaging";
 import type { WorkflowSourceAssetMount } from "@intx/types/sidecar";
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
-import type {
-  WorkflowDefinitionAssetSource,
-  WorkflowDefinitionRegistrySource,
+import {
+  workflowSourceAssetMountPath,
+  type WorkflowDefinitionAssetSource,
+  type WorkflowDefinitionRegistrySource,
 } from "@intx/types/workflow-sources";
 
 import {
@@ -191,16 +192,6 @@ export async function resolveWorkflowClosure(
     defaultRegistry: registrySource.name,
   });
   return resolver.resolveClosure([parsePin(args.pin)]);
-}
-
-/**
- * The workspace-relative mount path a workflow definition's source asset is
- * delivered under, keyed by asset id. Both the probe (inline delivery) and the
- * deploy (streamed fan-out) build their `assetId -> mountPath` maps through
- * this one helper, so the same asset lands at the same path on both paths.
- */
-export function workflowSourceAssetMountPath(assetId: string): string {
-  return `source-assets/${assetId}/`;
 }
 
 /**

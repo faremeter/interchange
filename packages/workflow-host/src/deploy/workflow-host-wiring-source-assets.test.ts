@@ -7,10 +7,6 @@ import type { SourceRefPin } from "@intx/types/sidecar";
 
 import { resolveDeploymentAssetMounts } from "./workflow-host-wiring";
 
-function workflowSourceAssetMountPath(assetId: string): string {
-  return `source-assets/${assetId}/`;
-}
-
 function sourceAssetGitDir(gitDirRoot: string, assetId: string): string {
   return path.join(gitDirRoot, assetId);
 }
@@ -116,7 +112,6 @@ describe("resolveDeploymentAssetMounts", () => {
       dataDir,
       DEPLOYMENT_ID,
       assetPin([assetId]),
-      workflowSourceAssetMountPath,
       sourceAssetGitDir,
     );
 
@@ -143,7 +138,6 @@ describe("resolveDeploymentAssetMounts", () => {
       dataDir,
       DEPLOYMENT_ID,
       assetPin([assetId, assetId]),
-      workflowSourceAssetMountPath,
       sourceAssetGitDir,
     );
     expect(assetMounts.size).toBe(1);
@@ -155,7 +149,6 @@ describe("resolveDeploymentAssetMounts", () => {
         dataDir,
         DEPLOYMENT_ID,
         assetPin(["asset_missing"]),
-        workflowSourceAssetMountPath,
         sourceAssetGitDir,
       ),
     ).rejects.toThrow(/is not present in the durable store/);
@@ -180,7 +173,6 @@ describe("resolveDeploymentAssetMounts", () => {
       dataDir,
       DEPLOYMENT_ID,
       sourcePin(assetId, [".", "packages/member-1"]),
-      workflowSourceAssetMountPath,
       sourceAssetGitDir,
     );
 
@@ -205,7 +197,6 @@ describe("resolveDeploymentAssetMounts", () => {
         dataDir,
         DEPLOYMENT_ID,
         sourcePin("asset_missing", ["."]),
-        workflowSourceAssetMountPath,
         sourceAssetGitDir,
       ),
     ).rejects.toThrow(/has no indexed git store/);
@@ -235,7 +226,6 @@ describe("resolveDeploymentAssetMounts", () => {
       dataDir,
       DEPLOYMENT_ID,
       registryPin,
-      workflowSourceAssetMountPath,
       sourceAssetGitDir,
     );
     expect(assetMounts.size).toBe(0);

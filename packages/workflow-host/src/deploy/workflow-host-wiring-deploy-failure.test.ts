@@ -24,7 +24,6 @@ import {
   generateKeyPair,
 } from "@intx/crypto";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
-import { parseRunAddress } from "@intx/types";
 import type { AgentDeployFrame } from "@intx/types/sidecar";
 import type { WorkflowDefinition } from "@intx/workflow";
 import type { SubprocessSpawner } from "@intx/workflow-host";
@@ -41,14 +40,6 @@ function deriveWorkflowRunRepoId(agentAddress: string): string {
   return agentAddress.replaceAll(/[^a-zA-Z0-9_-]/g, "-");
 }
 
-function parseAgentId(agentAddress: string): string {
-  const parsed = parseRunAddress(agentAddress);
-  if (parsed === null) {
-    throw new Error(`Invalid run address: "${agentAddress}"`);
-  }
-  return parsed.runId;
-}
-
 const resolvedInboundMailPolicy = {
   clean: "admit",
   error: "reject",
@@ -63,12 +54,9 @@ const resolvedInboundMailPolicy = {
 function deployHostBindings() {
   return {
     deriveWorkflowRunRepoId,
-    parseAgentId,
     inertFlatNamespaceStepIds: (args: {
       definition: { readonly stepOrder: readonly string[] };
     }) => args.definition.stepOrder,
-    workflowSourceAssetMountPath: (assetId: string) =>
-      `source-assets/${assetId}/`,
     sourceAssetGitDir: (gitDirRoot: string, assetId: string) =>
       pathJoin(gitDirRoot, assetId),
     readRegistries: () => new Map(),

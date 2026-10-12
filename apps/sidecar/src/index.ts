@@ -22,11 +22,7 @@ import {
   type HubLink,
 } from "@intx/hub-agent";
 import { hexDecode, hexEncode } from "@intx/types";
-import {
-  createAgentRepoStore,
-  parseAgentId,
-  workflowSourceAssetMountPath,
-} from "@intx/hub-sessions";
+import { createAgentRepoStore } from "@intx/hub-sessions/substrate";
 import {
   applyFrozenWorkflowClosure,
   createTarballCache,
@@ -663,9 +659,7 @@ const orchestrator = createSidecarOrchestrator({
       maxInlineAssetPayloadBytes: MAX_INLINE_ASSET_PAYLOAD_BYTES,
       deriveWorkflowRunRepoId,
       inertFlatNamespaceStepIds,
-      workflowSourceAssetMountPath,
       sourceAssetGitDir,
-      parseAgentId,
       publishWorkflowInferenceEvent,
       publishWorkflowSuspension,
       ...(onDispatchTiming !== undefined ? { onDispatchTiming } : {}),

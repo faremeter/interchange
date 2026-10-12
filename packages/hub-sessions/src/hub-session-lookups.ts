@@ -22,7 +22,8 @@ import {
   workflowRun,
 } from "@intx/db/schema";
 import { getLogger } from "@intx/log";
-import { parseRunAddress, signalName } from "@intx/types";
+import { signalName } from "@intx/types/signals";
+import { deriveWorkflowRunId } from "@intx/types/workflow-run-id";
 import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 
 import type { AgentRepoStore } from "./agent-repo";
@@ -302,7 +303,7 @@ export function createHubSessionLookups(
         );
       }
       const agentAddress = repoId.id;
-      const agentId = parseAgentId(agentAddress);
+      const agentId = deriveWorkflowRunId(agentAddress);
       try {
         await agentRepoStore.receiveAgentStatePack(
           { kind: "agent-state", id: agentId },
@@ -537,20 +538,6 @@ export function createHubSessionLookups(
       return { accepted: true };
     },
   };
-}
-
-/**
- * Extract the run id from an `<runId>@<domain>` run address.
- * Throws on any input the `@intx/types`-owned `parseRunAddress`
- * rejects: missing or leading `@`, empty domain, or a run id
- * without the canonical `run_` prefix.
- */
-export function parseAgentId(agentAddress: string): string {
-  const parsed = parseRunAddress(agentAddress);
-  if (parsed === null) {
-    throw new Error(`Invalid run address: "${agentAddress}"`);
-  }
-  return parsed.runId;
 }
 
 /**

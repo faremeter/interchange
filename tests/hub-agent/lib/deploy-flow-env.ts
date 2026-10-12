@@ -58,7 +58,6 @@ import {
   enqueueInbox,
   installAndApproveWorkflowDefinition,
   DEFAULT_ASSET_REF,
-  parseAgentId,
   readWorkflowRunRefTips,
   type AgentRepoStore,
   type InstallAndApproveResult,
@@ -937,7 +936,7 @@ export async function startHub(
           );
         }
         const agentAddress = repoId.id;
-        const agentId = parseAgentId(agentAddress);
+        const agentId = deriveWorkflowRunId(agentAddress);
         // Mirror createHubSessionLookups' fallback branch only: catch
         // every receive failure and surface it as a structured "corrupt"
         // rejection, so a transient (e.g. the agent directory being torn

@@ -80,7 +80,6 @@ export {
 export {
   createHubSessionLookups,
   findRoutableById,
-  parseAgentId,
   resolveRoutableAddress,
   resolveRunIdForSession,
   resolveRunSessionId,
@@ -129,7 +128,6 @@ export {
   type ParkedRunVerdict,
 } from "./parked-run";
 export { ensureWorkflowDefinitionForAsset } from "./workflow-definition-ensure";
-export { workflowSourceAssetMountPath } from "./workflow-closure-resolution";
 export {
   createReconciliationScheduler,
   DEFAULT_SIDECAR_ALLOCATION_CONCURRENCY,

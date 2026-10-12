@@ -11,7 +11,7 @@ import {
   createNoopCredentialCipher,
   generateKeyPair,
 } from "@intx/crypto";
-import { hexEncode, parseRunAddress } from "@intx/types";
+import { hexEncode } from "@intx/types";
 import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import { createInMemoryTransport } from "@intx/mail-memory";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
@@ -66,14 +66,6 @@ function deriveWorkflowRunRepoId(agentAddress: string): string {
   return agentAddress.replaceAll(/[^a-zA-Z0-9_-]/g, "-");
 }
 
-function parseAgentId(agentAddress: string): string {
-  const parsed = parseRunAddress(agentAddress);
-  if (parsed === null) {
-    throw new Error(`Invalid run address: "${agentAddress}"`);
-  }
-  return parsed.runId;
-}
-
 const resolvedInboundMailPolicy = {
   clean: "admit",
   error: "reject",
@@ -88,12 +80,9 @@ const resolvedInboundMailPolicy = {
 function deployHostBindings() {
   return {
     deriveWorkflowRunRepoId,
-    parseAgentId,
     inertFlatNamespaceStepIds: (args: {
       definition: { readonly stepOrder: readonly string[] };
     }) => args.definition.stepOrder,
-    workflowSourceAssetMountPath: (assetId: string) =>
-      `source-assets/${assetId}/`,
     sourceAssetGitDir: (gitDirRoot: string, assetId: string) =>
       path.join(gitDirRoot, assetId),
     readRegistries: () => new Map(),
@@ -550,7 +539,7 @@ type MultistepDeployArgs = {
   /**
    * Override the deploy frame's `agentAddress`. Single-step projections
    * are the agent-launch identity path: the deploy router derives the
-   * sole step's agent-state repo from `parseAgentId(agentAddress)`, which
+   * sole step's agent-state repo from `deriveWorkflowRunId(agentAddress)`, which
    * requires the canonical `run_<id>@<domain>` shape. Tests that drive a
    * single-step projection supply a valid instance address here; the
    * default keeps the historical multi-step address for the multi-step
