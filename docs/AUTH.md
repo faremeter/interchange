@@ -21,7 +21,7 @@ A user can belong to many tenants. Tenant context is always encoded in the URL p
 | -------------------------- | -------------------------------- | ------------------------------------------------------------------------------------ |
 | Tenant-scoped              | `/api/tenants/tnt_abc/workflows` | Principal resolved from `(user_id, tnt_abc)`, grants evaluated                       |
 | User-scoped (cross-tenant) | `/api/me/principals`             | All of the user's principals resolved, results aggregated and tagged with `tenantId` |
-| Global                     | `/api/tenants`, `/api/auth/**`   | No tenant context needed                                                             |
+| Global                     | `/api/tenants`, `/api/auth/**`   | No tenant context needed, except a tenant created under a parent (see Tenant Schema) |
 
 ## Principals
 
@@ -406,3 +406,5 @@ tenant
 What mail keys on is `domain`, not `slug`: `domain` is the sender stamp on outbound mail and the recipient run address, and the recipient address is the key into the inbound mail policy lookup and the mail router. The create route derives `domain` as the lowercased slug plus a suffix, but that derivation is the route's own convention -- nothing relates the two columns, and `domain` carries no grammar constraint. So the check bounds what the route derives a domain from; a write path that bypasses the route sets `domain` freely.
 
 Tenants can be organized hierarchically. Child tenants inherit policies from their parent (additive restrictions only). Federation between sibling tenants requires explicit trust establishment.
+
+A child tenant inherits use of its parent's tenant-owned credentials, providers, catalogs, assets and OAuth clients without a grant of its own. So creating a tenant with a `parent_id` takes authority in the parent: the caller must have an active principal there that is allowed `create` on `tenant:*`. The system owner and admin roles hold it; the member role does not. Every refusal is the same 403, whether the parent does not exist, the caller is not an active member, or the grant is missing, so the route does not reveal whether a tenant id exists or who belongs to it. A tenant created with no parent needs only an authenticated user.

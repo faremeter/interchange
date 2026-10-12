@@ -1,8 +1,9 @@
 import { type } from "arktype";
 import { eq, sql } from "drizzle-orm";
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { describeRoute, validator } from "hono-openapi";
 import { authorize } from "@intx/authz";
+import { getLogger } from "@intx/log";
 
 import { tenant, role, principalRole, grant } from "@intx/db/schema";
 import {
@@ -24,12 +25,23 @@ import {
 
 import { unauthorizedResponse, type AppEnv } from "../context";
 import { errorResponse, tenantConfigErrorResponse } from "../error-response";
+import type { AuthorizeGrant } from "../middleware/grant";
 import { first, ts } from "../format";
 import { findUserPrincipal } from "../principal-lookup";
 import { jsonResponse } from "../openapi";
 import { generateId } from "@intx/hub-common";
 
+const log = getLogger(["hub", "tenants"]);
+
 const SYSTEM_ROLES = ["owner", "admin", "member"] as const;
+
+function forbiddenUnderParent(c: Context): Response {
+  return errorResponse(
+    c,
+    "forbidden",
+    "You do not have permission to create a tenant under this parent",
+  );
+}
 
 function formatTenant(row: typeof tenant.$inferSelect) {
   const parsed = parseTenantRow(row);
@@ -65,6 +77,7 @@ export type CreateTenantRoutesDeps = {
   principalKeyStore: PrincipalKeyStore;
   grantStore: GrantStore;
   conditionRegistry: ConditionRegistry;
+  authorizeGrant: AuthorizeGrant;
 };
 
 export function createTenantRoutes({
@@ -72,6 +85,7 @@ export function createTenantRoutes({
   principalKeyStore,
   grantStore,
   conditionRegistry,
+  authorizeGrant,
 }: CreateTenantRoutesDeps): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
   const principalStore = createPrincipalStore(db, principalKeyStore);
@@ -82,10 +96,15 @@ export function createTenantRoutes({
       tags: ["Tenants"],
       summary: "Create a tenant",
       description:
-        "Creates a new tenant. The authenticated user becomes the owner with a principal and default owner role.",
+        "Creates a new tenant. The authenticated user becomes the owner with a principal and default owner role. A tenant created under `parentId` inherits the parent's credentials, providers, catalogs, assets and OAuth clients, so the caller must be an active member of the parent and hold `create` on `tenant:*` there.",
       responses: {
         201: jsonResponse("Tenant created", TenantResponse),
         400: jsonResponse("Validation error", ErrorResponse),
+        401: jsonResponse("Authentication required", ErrorResponse),
+        403: jsonResponse(
+          "Not permitted to create a tenant under the parent",
+          ErrorResponse,
+        ),
       },
     }),
     validator("json", CreateTenant),
@@ -96,6 +115,36 @@ export function createTenantRoutes({
       }
 
       const body = c.req.valid("json");
+
+      // A child inherits the parent's tenant-owned surface, so attaching one
+      // takes authority in the parent. Every refusal returns the same 403, so
+      // the route does not reveal whether a tenant id exists or who belongs to
+      // it. A principal row cannot outlive its tenant, so a missing parent lands
+      // in the same branch as a non-member. The check stays outside the insert
+      // transaction because the grant store does not read through it; only a
+      // lock on the parent row would close the window, and the cost of the race
+      // is a parent deleted in between failing the insert's foreign key as a 500.
+      if (body.parentId != null) {
+        const parentId = body.parentId;
+        const parentPrincipal = await findUserPrincipal(db, {
+          tenantId: parentId,
+          userId: user.id,
+        });
+        if (parentPrincipal?.status !== "active") {
+          log.info(
+            "Tenant creation denied for {userId}: no active membership in parent {parentId}",
+            { userId: user.id, parentId },
+          );
+          return forbiddenUnderParent(c);
+        }
+        const allowed = await authorizeGrant({
+          principalId: parentPrincipal.id,
+          tenantId: parentId,
+          resource: "tenant:*",
+          action: "create",
+        });
+        if (!allowed) return forbiddenUnderParent(c);
+      }
 
       const tenantId = generateId("tenant");
       // Derive the domain from a lowercased slug and check the slug conflict

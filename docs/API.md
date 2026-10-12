@@ -236,12 +236,14 @@ Soft-revokes a tenant-bound git token by setting `revokedAt`. The row is retaine
 ### POST /api/tenants
 Create a tenant
 
-Creates a new tenant. The authenticated user becomes the owner with a principal and default owner role.
+Creates a new tenant. The authenticated user becomes the owner with a principal and default owner role. A tenant created under `parentId` inherits the parent's credentials, providers, catalogs, assets and OAuth clients, so the caller must be an active member of the parent and hold `create` on `tenant:*` there.
 
 Body: CreateTenant
 
 201: TenantResponse -- Tenant created
 400: ErrorResponse -- Validation error
+401: ErrorResponse -- Authentication required
+403: ErrorResponse -- Not permitted to create a tenant under the parent
 
 ### GET /api/tenants/:tenantId
 Get tenant details
