@@ -147,12 +147,14 @@ function frameReaderFromFd(fd: number): FrameReader {
  *
  * A child that fails to launch (binary missing or not executable)
  * makes `Bun.spawn` throw, so this spawner throws synchronously and no
- * handle exists. The supervisor calls the spawner before it enters
- * `starting`, so a first spawn rejects and the supervisor stays idle;
- * a recycle that fails this way shuts the supervisor down. A child
- * that launches and then dies before `ready` ends the control
- * channel, which rejects the ready handshake; the ready timeout
- * covers a child that keeps the channel open without sending `ready`.
+ * handle exists. If Bun returns no event channel fd, the spawner kills
+ * the child's process group and throws the same way. The supervisor
+ * calls the spawner before it enters `starting`, so a first spawn
+ * rejects and the supervisor stays idle; a recycle that fails this way
+ * shuts the supervisor down. A child that launches and then dies
+ * before `ready` ends the control channel, which rejects the ready
+ * handshake; the ready timeout covers a child that keeps the channel
+ * open without sending `ready`.
  */
 export const defaultSubprocessSpawner: SubprocessSpawner = ({
   binaryPath,
@@ -179,6 +181,13 @@ export const defaultSubprocessSpawner: SubprocessSpawner = ({
   }
   const eventFd = proc.stdio[CHILD_EVENT_CHANNEL_FD];
   if (typeof eventFd !== "number") {
+    // The throw drops the only handle to a child that leads its own group,
+    // so stop the group here or nothing will.
+    try {
+      signalGroup("SIGKILL");
+    } catch (err) {
+      logger.error`Cannot stop workflow child ${String(proc.pid)} that has no event channel: ${err instanceof Error ? err.message : String(err)}`;
+    }
     throw new Error(
       `workflow-host-wiring: Bun.spawn did not return a numeric fd at stdio[${String(CHILD_EVENT_CHANNEL_FD)}] for the event channel; got ${typeof eventFd}`,
     );
