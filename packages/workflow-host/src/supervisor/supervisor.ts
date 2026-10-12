@@ -64,13 +64,10 @@ import {
   type WorkflowRunSupervisorPrincipal,
   type WorkflowRunWorkflowProcessPrincipal,
 } from "@intx/hub-sessions/substrate";
-import {
-  base64Decode,
-  base64Encode,
-  deriveMessageId,
-  deriveWorkflowRunId,
-  signalName,
-} from "@intx/types";
+import { base64Decode, base64Encode } from "@intx/types/base64";
+import { deriveMessageId } from "@intx/types/message-id";
+import { deriveWorkflowRunId } from "@intx/types/workflow-run-id";
+import { signalName } from "@intx/types/signals";
 import { RepoId } from "@intx/types/repo";
 import type { CredentialDelivery } from "@intx/types/credential-delivery";
 import { inboundMessageToRaw } from "@intx/mail-memory";
@@ -99,15 +96,15 @@ import type { CancelOrigin } from "@intx/workflow";
 
 import {
   createControlChannelSender,
-  generateChannelId,
-  generateHmacKey,
-  receiveControlChannel,
-  receiveEventChannel,
   type ControlChannelSender,
-  type ControlPayload,
-  type EventPayload,
-  type OutboundMessagePayload,
-} from "../ipc/index";
+} from "../ipc/control-sender";
+import { generateChannelId, generateHmacKey } from "../ipc/crypto";
+import { receiveControlChannel } from "../ipc/control-receiver";
+import { receiveEventChannel, type EventPayload } from "../ipc/event-channel";
+import type {
+  ControlPayload,
+  OutboundMessagePayload,
+} from "../ipc/control-payloads";
 
 import {
   assembleCredentialsSnapshot,

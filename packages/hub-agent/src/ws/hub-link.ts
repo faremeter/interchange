@@ -64,7 +64,8 @@ import {
   type InboundSignatureVerdict,
   type ResolvedInboundMailPolicy,
 } from "./inbound-signature";
-import { base64Decode, base64Encode, isRunAddress } from "@intx/types";
+import { base64Decode, base64Encode } from "@intx/types/base64";
+import { isRunAddress } from "@intx/types/agent-address";
 import type {
   ApprovalSnapshot,
   CryptoProvider,

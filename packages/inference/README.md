@@ -9,6 +9,10 @@ prompt to settled tool calls.
 Consumed by `@intx/harness`, which composes the reactor with tool
 runners, directors, and runtime capabilities.
 
+Hosts that only validate adapter configuration can import `AdapterManifest`
+and `loadAdapterFactories` from `@intx/inference/manifest` without loading the
+reactor and inference assembly.
+
 ```ts
 import { createReactorAssembly, createDefaultDirector } from "@intx/inference";
 

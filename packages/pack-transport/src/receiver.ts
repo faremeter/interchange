@@ -5,7 +5,7 @@
 // frames followed by a repo.pack.done. The receiver validates seq continuity
 // and rejects concurrent transfers for the same agent.
 
-import { base64Decode } from "@intx/types";
+import { base64Decode } from "@intx/types/base64";
 import type {
   PackPushFrame,
   PackDoneFrame,

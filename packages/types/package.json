@@ -149,6 +149,21 @@
       "intx-src": "./src/workflow-run-id.ts",
       "types": "./dist/workflow-run-id.d.ts",
       "default": "./dist/workflow-run-id.js"
+    },
+    "./message-id": {
+      "intx-src": "./src/message-id.ts",
+      "types": "./dist/message-id.d.ts",
+      "default": "./dist/message-id.js"
+    },
+    "./credential-cipher": {
+      "intx-src": "./src/credential-cipher.ts",
+      "types": "./dist/credential-cipher.d.ts",
+      "default": "./dist/credential-cipher.js"
+    },
+    "./grants": {
+      "intx-src": "./src/grants.ts",
+      "types": "./dist/grants.d.ts",
+      "default": "./dist/grants.js"
     }
   },
   "dependencies": {

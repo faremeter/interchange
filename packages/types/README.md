@@ -24,6 +24,11 @@ pull in the shapes they need:
   the wire frames under `@intx/types/sidecar` below), run addresses,
   hex and base64 helpers, and the `hasCode` error guard.
 - `@intx/types/hex` — hexadecimal byte encoding and decoding.
+- `@intx/types/message-id` — canonical Message-ID parsing and derivation.
+- `@intx/types/credential-cipher` — credential cipher contracts and the
+  authenticated-data helpers for sealed credentials and signing keys.
+- `@intx/types/grants` — grant creation, update, and evaluation schemas,
+  grant requirements, approval items, and effect/origin enums.
 - `@intx/types/authz` — grant rules, condition contexts, and
   authorization result shapes shared between `@intx/authz` and the
   hub.

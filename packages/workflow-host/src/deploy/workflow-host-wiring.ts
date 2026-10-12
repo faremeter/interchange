@@ -21,14 +21,12 @@ import type {
   RepoStore,
   WorkflowRunSupervisorPrincipal,
 } from "@intx/hub-sessions/substrate";
-import {
-  hexEncode,
-  parseRunAddress,
-  type CredentialCipher,
-  type SignalKind,
-} from "@intx/types";
+import { hexEncode } from "@intx/types/hex";
+import { parseRunAddress } from "@intx/types/agent-address";
 import { deriveWorkflowRunId } from "@intx/types/workflow-run-id";
 import { workflowSourceAssetMountPath } from "@intx/types/workflow-sources";
+import type { CredentialCipher } from "@intx/types/credential-cipher";
+import type { SignalKind } from "@intx/types/signals";
 import {
   parseInferenceEvent,
   type ApprovalSnapshot,
@@ -60,9 +58,9 @@ import {
 import type { CredentialDelivery } from "@intx/types/credential-delivery";
 import {
   STEP_ID_PATTERN,
-  projectLiveToInert,
   type WorkflowDefinition,
-} from "@intx/workflow";
+} from "@intx/workflow/definition";
+import { projectLiveToInert } from "@intx/workflow/projection";
 
 import { loadWorkflowDefinitionFromClosure } from "../workflow-definition-loader";
 import { readRunGrants, runGrantsPath } from "../run-grants";

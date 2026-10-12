@@ -2,7 +2,7 @@
 //
 // Splits a packfile into base64-encoded chunks suitable for repo.pack.push frames.
 
-import { base64Encode } from "@intx/types";
+import { base64Encode } from "@intx/types/base64";
 
 export const PACK_CHUNK_SIZE = 64 * 1024;
 

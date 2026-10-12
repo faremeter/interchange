@@ -72,7 +72,7 @@ import {
   RuntimeResumeUnsupportedError,
 } from "./errors";
 import { loopBodyRunId, scopedStepId, sectionBodyRunId } from "./step-scope";
-import { inlineBodyRef } from "../ontrigger-bodies";
+import { inlineBodyRef } from "../inline-body-ref";
 import {
   applyEvent,
   controlParkKindOf,

@@ -25,7 +25,10 @@ import { dirname, join as pathJoin, resolve } from "node:path";
 import { type } from "arktype";
 
 import { getLogger } from "@intx/log";
-import { credentialAad, type CredentialCipher } from "@intx/types";
+import {
+  credentialAad,
+  type CredentialCipher,
+} from "@intx/types/credential-cipher";
 import { InferenceSource } from "@intx/types/runtime";
 import { CredentialDelivery } from "@intx/types/credential-delivery";
 import { Generation, SourceRefPin } from "@intx/types/sidecar";

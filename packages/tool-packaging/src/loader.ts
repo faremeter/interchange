@@ -52,7 +52,7 @@ import type {
 import {
   isAnnotatedDirectorFactory,
   isAnnotatedPluginFactory,
-} from "@intx/agent";
+} from "@intx/agent/authoring";
 import type { ToolCredentialDeclaration } from "@intx/types/package-json";
 import { ToolCredentialDeclarationArray } from "@intx/types/package-json";
 import type { ToolCall, ToolResult } from "@intx/types/runtime";

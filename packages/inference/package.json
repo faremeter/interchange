@@ -19,6 +19,11 @@
       "intx-src": "./src/default-director.ts",
       "types": "./dist/default-director.d.ts",
       "default": "./dist/default-director.js"
+    },
+    "./manifest": {
+      "intx-src": "./src/manifest.ts",
+      "types": "./dist/manifest.d.ts",
+      "default": "./dist/manifest.js"
     }
   },
   "dependencies": {

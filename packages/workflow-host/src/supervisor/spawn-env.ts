@@ -7,7 +7,7 @@
 // broke every recycle -- is no longer expressible: the required keys are
 // built as an exactly-typed record, so omitting one is a compile error.
 
-import { hexEncode } from "@intx/types";
+import { hexEncode } from "@intx/types/hex";
 
 import type { RequiredSpawnEnvKey } from "../child/env-bootstrap";
 

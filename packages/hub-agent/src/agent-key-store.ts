@@ -12,7 +12,8 @@
 // verifyDeployCommit for incoming deploy packs.
 
 import fsp from "node:fs/promises";
-import { hasCode, hexDecode } from "@intx/types";
+import { hasCode } from "@intx/types/has-code";
+import { hexDecode } from "@intx/types/hex";
 import type { KeyPair } from "@intx/types/runtime";
 
 import { keysDir, privateKeyPath, publicKeyPath } from "./agent-paths";

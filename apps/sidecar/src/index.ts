@@ -21,7 +21,7 @@ import {
   sourceAssetGitDir,
   type HubLink,
 } from "@intx/hub-agent";
-import { hexDecode, hexEncode } from "@intx/types";
+import { hexDecode, hexEncode } from "@intx/types/hex";
 import { createAgentRepoStore } from "@intx/hub-sessions/substrate";
 import {
   applyFrozenWorkflowClosure,

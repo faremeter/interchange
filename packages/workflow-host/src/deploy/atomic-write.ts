@@ -10,7 +10,8 @@ import { open, rename, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
 
 import { getLogger } from "@intx/log";
-import { hasCode, hexEncode } from "@intx/types";
+import { hasCode } from "@intx/types/has-code";
+import { hexEncode } from "@intx/types/hex";
 
 const logger = getLogger(["interchange", "sidecar", "atomic-write"]);
 
