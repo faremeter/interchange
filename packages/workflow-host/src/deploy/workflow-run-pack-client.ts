@@ -16,7 +16,7 @@
 import { type } from "arktype";
 
 import { getLogger } from "@intx/log";
-import { SourcesUpdatedData } from "../ipc/control-channel";
+import { SourcesUpdatedData } from "../ipc/control-payloads";
 import type { InferenceSource } from "@intx/types/runtime";
 import { CredentialDelivery } from "@intx/types/credential-delivery";
 import type { WorkflowRunRefTips } from "@intx/types/sidecar";

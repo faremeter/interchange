@@ -25,6 +25,13 @@ the `HarnessBuilder` source-admission check (`canBuildSource`) the
 deploy router uses to reject an unbuildable inference source before
 spawning.
 
+The sidecar imports the repository substrate and workflow inspection entry
+points without loading Hub database services or the agent execution runtime.
+See the [workflow-host documentation](../../packages/workflow-host/README.md)
+for channel validation and schema initialization.
+`src/process-boot-graph.test.ts` guards these startup dependencies alongside
+the workflow-child and probe-child import graphs.
+
 Run it under Bun. Startup requires `SIDECAR_DATA_DIR`, `HUB_WS_URL`,
 `SIDECAR_ID`, and `SIDECAR_TOKEN`. Optional `SIDECAR_CACHE_DIR`
 relocates the tarball cache (defaults to a subdirectory of the data

@@ -90,14 +90,12 @@ import { generateKeyPair } from "@intx/crypto";
 
 import {
   createControlChannelSender,
-  generateChannelId,
-  generateHmacKey,
-  receiveControlChannel,
-  receiveEventChannel,
   type ControlChannelSender,
-  type ControlPayload,
-  type EventPayload,
-} from "../ipc/index";
+} from "../ipc/control-sender";
+import { generateChannelId, generateHmacKey } from "../ipc/crypto";
+import { receiveControlChannel } from "../ipc/control-receiver";
+import { receiveEventChannel, type EventPayload } from "../ipc/event-channel";
+import type { ControlPayload } from "../ipc/control-payloads";
 
 import {
   assembleCredentialsSnapshot,

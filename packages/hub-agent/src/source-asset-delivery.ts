@@ -18,7 +18,7 @@ import {
   DEFAULT_PACK_MATERIALIZATION_LIMITS,
   indexPackIntoGitDir,
 } from "@intx/storage-isogit/node";
-import { base64Decode } from "@intx/types";
+import { base64Decode } from "@intx/types/base64";
 import type { WorkflowSourceAssetMount } from "@intx/types/sidecar";
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
 

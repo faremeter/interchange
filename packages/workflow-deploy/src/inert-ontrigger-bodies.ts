@@ -60,7 +60,7 @@ import {
   WorkflowProjectionDefinition,
   WorkflowStep,
 } from "@intx/types/sidecar";
-import { inlineBodyRef } from "@intx/workflow";
+import { inlineBodyRef } from "@intx/workflow/projection";
 import {
   LOOP_BODY_DESCENT,
   walkStepTree,

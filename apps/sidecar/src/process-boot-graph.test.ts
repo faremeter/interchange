@@ -11,8 +11,8 @@ import { dirname, join } from "node:path";
 // importing the orchestrator that spawns the child is a backwards dependency.
 // The db-free substrate is reachable via `@intx/hub-sessions/substrate` and
 // the path helpers via `@intx/hub-agent/paths`; the package barrels are not.
-// The sidecar loads its orchestrator and repository substrate without the
-// Hub services or database layer.
+// The sidecar loads its orchestrator but excludes Hub services, agent execution,
+// broad helper barrels, and the eager combined control-payload schema.
 //
 // This walks each process's VALUE-import graph and fails if any forbidden module
 // is reachable. `Bun.build` erases `import type` and type-only specifiers
@@ -283,6 +283,7 @@ test("probe and authoring imports exclude unused host and execution schemas", as
     "packages/types/src/inference-events.ts",
     "packages/types/src/sidecar.ts",
     "packages/workflow/src/runtime/",
+    "packages/workflow/src/ontrigger-bodies.ts",
     "packages/workflow-host/src/probe/index.ts",
     "packages/workflow-host/src/probe/protocol.ts",
     "packages/workflow-host/src/supervisor/",
@@ -315,4 +316,11 @@ test("sidecar boot respects process boundaries", async () => {
         specifier.startsWith("drizzle-orm/"),
     ),
   ).toEqual([]);
+  const forbiddenModules = [
+    "packages/types/src/index.ts",
+    "packages/inference/src/index.ts",
+    "packages/agent/src/agent.ts",
+    "packages/workflow-host/src/ipc/control-channel.ts",
+  ];
+  expect(forbiddenModules.filter((module) => modules.has(module))).toEqual([]);
 });

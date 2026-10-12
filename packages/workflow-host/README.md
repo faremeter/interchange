@@ -46,7 +46,10 @@ The package is organized along the abstract pieces it implements:
   reader into the child is what that capability waits on.
 - `ipc/` — control and event channel implementations the
   supervisor wraps. Threat model lives at the top of
-  `ipc/index.ts`; the supervisor uses these primitives directly.
+  `ipc/index.ts`; the supervisor imports the individual primitives without
+  constructing the combined control-payload union. Each message kind's top-level
+  validator is built on first receipt and cached; shared payload schemas and
+  the message header are still constructed at module load.
 - `supervisor/` — the per-deployment supervisor. See the next
   section.
 - `child/` — the workflow-process child entry function

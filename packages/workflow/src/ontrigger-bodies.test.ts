@@ -12,8 +12,8 @@ import {
   type WorkflowDefinition,
 } from "./definition/index";
 import { defineAgent } from "@intx/agent";
+import { inlineBodyRef } from "./inline-body-ref";
 import {
-  inlineBodyRef,
   rewriteInlineOnTriggerBodies,
   rewriteInlineChildWorkflowBodies,
   enumerateInlineLoopBodies,

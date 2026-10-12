@@ -33,7 +33,7 @@ import type {
   WorkflowRunSupervisorPrincipal,
 } from "@intx/hub-sessions/substrate";
 import type { CancelOrigin } from "@intx/workflow";
-import { hexEncode } from "@intx/types";
+import { hexEncode } from "@intx/types/hex";
 
 import type {
   PrincipalSigner,

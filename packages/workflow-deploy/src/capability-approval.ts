@@ -15,7 +15,7 @@
 
 import { isDeepStrictEqual } from "node:util";
 
-import { type ApprovalItem, GrantRequirement } from "@intx/types";
+import { type ApprovalItem, GrantRequirement } from "@intx/types/grants";
 
 import type { CapabilityWalkResult } from "./capability-walk";
 

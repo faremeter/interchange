@@ -1,6 +1,6 @@
 import { type } from "arktype";
 import { getLogger } from "@intx/log";
-import { mimeTypeAndSubtype } from "@intx/types";
+import { mimeTypeAndSubtype } from "@intx/types/attachments";
 import type {
   MessageHeaders,
   BodyStructure,
