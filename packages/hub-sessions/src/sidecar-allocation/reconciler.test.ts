@@ -209,6 +209,19 @@ function deps(args: {
 }
 
 describe("createSidecarAllocationReconciler", () => {
+  async function reconcileThroughProviderGrace(
+    options: SidecarAllocationReconcilerDeps,
+  ) {
+    let at = NOW;
+    const reconciler = createSidecarAllocationReconciler({
+      ...options,
+      now: () => at,
+    });
+    await reconciler.reconcileNext();
+    at = new Date(NOW.getTime() + 300_000);
+    await reconciler.reconcileNext();
+  }
+
   function releasingState() {
     const state = {
       row: allocation({
@@ -533,12 +546,22 @@ describe("createSidecarAllocationReconciler", () => {
           options.router.undeployAllocation = sentUndeploy(async () => {
             throw new Error("cleanup acknowledgement timed out");
           });
-        await createSidecarAllocationReconciler({
+        const configured = {
           ...options,
           maxCleanupAttempts: scenario.includes("exhaustion") ? 1 : 10,
-        }).reconcileNext();
+        };
+        if (
+          scenario === "missing provider" ||
+          scenario === "provider binding mismatch"
+        )
+          await reconcileThroughProviderGrace(configured);
+        else
+          await createSidecarAllocationReconciler(configured).reconcileNext();
         const terminal =
-          scenario.includes("exhaustion") || scenario === "permanent rejection";
+          scenario.includes("exhaustion") ||
+          scenario === "permanent rejection" ||
+          scenario === "missing provider" ||
+          scenario === "provider binding mismatch";
         expect(state.row.status).toBe(
           terminal
             ? "destroy_failed"
@@ -563,12 +586,7 @@ describe("createSidecarAllocationReconciler", () => {
         expect(
           logs.some(
             (log) =>
-              log.level ===
-                (terminal ||
-                scenario === "missing provider" ||
-                scenario === "provider binding mismatch"
-                  ? "error"
-                  : "warning") &&
+              log.level === (terminal ? "error" : "warning") &&
               log.message.includes(message) &&
               log.message.includes("alloc-1") &&
               log.message.includes("sc-shared") &&
@@ -606,11 +624,13 @@ describe("createSidecarAllocationReconciler", () => {
   );
 
   test.each(["missing", "binding mismatch"])(
-    "waits for a %s provisioner without spending attempts and resumes when the original binding returns",
+    "fails a %s provisioner after its grace and does not resume when it returns",
     async (unavailable) => {
       const { state, store } = releasingState();
-      state.row = { ...state.row, destroyAttempts: 9 };
-      let clock = NOW;
+      state.row = {
+        ...state.row,
+        destroyAttempts: 9,
+      };
       let restored = false;
       let destroys = 0;
       let undeploys = 0;
@@ -626,59 +646,33 @@ describe("createSidecarAllocationReconciler", () => {
           ? provisioner
           : unavailable === "missing"
             ? null
-            : testProvisioner({
-                bindingFingerprint: "other-backend",
-                destroy: async () => {
-                  throw new Error("Must not call a different backend");
-                },
-              });
+            : testProvisioner({ bindingFingerprint: "other-backend" });
       options.router.undeployAllocation = sentUndeploy(async () => {
         undeploys++;
       });
-      const claim = store.claimNextReconcilable;
-      store.claimNextReconcilable = (args) =>
-        state.row.nextAttemptAt !== undefined &&
-        state.row.nextAttemptAt <= clock
-          ? claim(args)
-          : Promise.resolve(null);
-      const retry = store.scheduleRetry;
-      store.scheduleRetry = async (args) => {
-        expect(args.attempt).toBeUndefined();
-        expect(args.minimumDelayMs).toBe(30_000);
-        return retry(args);
-      };
-      const reconciler = createSidecarAllocationReconciler({
-        ...options,
-        now: () => clock,
+      await reconcileThroughProviderGrace(options);
+      expect(state.row).toMatchObject({
+        status: "destroy_failed",
+        failureCode: "provisioner_unavailable",
+        destroyAttempts: 9,
+        deploymentCleanupConfirmed: true,
       });
-      for (let check = 0; check < 12; check++) {
-        expect(await reconciler.reconcileNext()).toBe(true);
-        expect(state.row).toMatchObject({
-          status: "releasing",
-          destroyAttempts: 9,
-          deploymentCleanupConfirmed: true,
-          nextAttemptAt: new Date(clock.getTime() + 30_000),
-        });
-        expect(await reconciler.reconcileNext()).toBe(false);
-        clock = new Date(clock.getTime() + 30_000);
-      }
-      expect(destroys).toBe(0);
-      expect(undeploys).toBe(1);
+      expect(state.row.nextAttemptAt).toBeUndefined();
       restored = true;
-      options.router.getCleanupConnection = () => undefined;
-      const restarted = createSidecarAllocationReconciler({
-        ...options,
-        now: () => clock,
-      });
+      const restarted = createSidecarAllocationReconciler(options);
       await restarted.initialize();
-      expect(await restarted.reconcileNext()).toBe(true);
-      expect(state.row.status).toBe("released");
-      expect(destroys).toBe(1);
+      await restarted.handleConnected({
+        allocationId: state.row.id,
+        generation: state.row.generation,
+      });
+      await restarted.repairUnscheduledConnections();
+      expect(await restarted.reconcileNext()).toBe(false);
+      expect(destroys).toBe(0);
       expect(undeploys).toBe(1);
     },
   );
 
-  test("an undeploy failure still exhausts cleanup while its provisioner is missing", async () => {
+  test("failed undeploys can exhaust cleanup during the provider grace period", async () => {
     const { state, store } = releasingState();
     state.row = { ...state.row, destroyAttempts: 9 };
     const options = deps({ store });
@@ -696,17 +690,18 @@ describe("createSidecarAllocationReconciler", () => {
     expect(state.row.failureMessage).toContain("Local teardown failed");
   });
 
-  test("missing provider and sidecar connections do not consume cleanup attempts", async () => {
+  test("an expired provider grace fails disconnected cleanup without counting an unattempted operation", async () => {
     const { state, store } = releasingState();
     const options = deps({ store, ready: false });
     options.plugins.getProvisioner = () => null;
-    await createSidecarAllocationReconciler(options).reconcileNext();
+    await reconcileThroughProviderGrace(options);
     expect(state.row).toMatchObject({
-      status: "releasing",
+      status: "destroy_failed",
       destroyAttempts: 0,
       deploymentCleanupConfirmed: false,
-      nextAttemptAt: new Date(NOW.getTime() + 30_000),
+      failureCode: "provisioner_unavailable",
     });
+    expect(state.row.nextAttemptAt).toBeUndefined();
   });
 
   test("releases an allocation that never had a sidecar without consulting its provider", async () => {
@@ -1227,17 +1222,13 @@ describe("createSidecarAllocationReconciler", () => {
         cleanups += 1;
         running = false;
       });
-      await createSidecarAllocationReconciler({
-        ...options,
-        maxCleanupAttempts: 1,
-      }).reconcileNext();
+      const configured = { ...options, maxCleanupAttempts: 1 };
+      if (failure === "missing" || failure === "mismatched")
+        await reconcileThroughProviderGrace(configured);
+      else await createSidecarAllocationReconciler(configured).reconcileNext();
       expect(running).toBe(false);
       expect(cleanups).toBe(1);
-      expect(state.row.status).toBe(
-        failure === "missing" || failure === "mismatched"
-          ? "releasing"
-          : "destroy_failed",
-      );
+      expect(state.row.status).toBe("destroy_failed");
     },
   );
 
@@ -1779,6 +1770,7 @@ describe("createSidecarAllocationReconciler", () => {
 
   test("a cleanup deadline after sync fences the queued connection selection", async () => {
     const { state, store } = releasingState();
+    state.row = { ...state.row, providerHoldReleased: true };
     const expired = Promise.withResolvers<undefined>();
     const wake = store.wakeReconciliation;
     store.wakeReconciliation = async (...args) => {
@@ -1824,6 +1816,7 @@ describe("createSidecarAllocationReconciler", () => {
 
   test("a failing cleanup sync preserves the wake of a replacement connection", async () => {
     const { state, store } = releasingState();
+    state.row = { ...state.row, providerHoldReleased: true };
     const claim = store.claimNextReconcilable;
     store.claimNextReconcilable = async (args) =>
       state.row.nextAttemptAt !== undefined && state.row.nextAttemptAt <= NOW
@@ -1860,10 +1853,9 @@ describe("createSidecarAllocationReconciler", () => {
     await reconciler.reconcileNext();
     expect(undeploys).toBe(1);
     expect(state.row).toMatchObject({
-      status: "releasing",
+      status: "released",
       destroyAttempts: 0,
       deploymentCleanupConfirmed: true,
-      nextAttemptAt: new Date(NOW.getTime() + 30_000),
     });
     expect(await reconciler.reconcileNext()).toBe(false);
   });
@@ -1942,10 +1934,69 @@ describe("createSidecarAllocationReconciler", () => {
     );
   }
 
+  test.each(["releasing", "replacing"] as const)(
+    "provider grace preserves a reconnect before the retry write while %s",
+    async (status) => {
+      const { state, store } = releasingState();
+      state.row = { ...state.row, status };
+      store.claimNextReconcilable = async () =>
+        state.row.status === status &&
+        state.row.nextAttemptAt !== undefined &&
+        state.row.nextAttemptAt <= NOW
+          ? state.row
+          : null;
+      store.wakeReconciliation = async () => {
+        state.row = { ...state.row, nextAttemptAt: NOW };
+        return true;
+      };
+      const retries: Parameters<AllocationStore["scheduleRetry"]>[0][] = [];
+      const schedule = store.scheduleRetry;
+      store.scheduleRetry = async (args) => {
+        retries.push(args);
+        return schedule(args);
+      };
+      let connection: object | undefined;
+      let connected: Promise<void> | undefined;
+      let undeploys = 0;
+      const options = deps({ store });
+      options.router.getCleanupConnection = () => connection;
+      options.router.undeployAllocation = sentUndeploy(async () => {
+        undeploys++;
+      });
+      options.plugins.getProvisioner = () => {
+        if (connected === undefined) {
+          connection = {};
+          connected = reconciler.handleConnected({
+            allocationId: state.row.id,
+            generation: state.row.generation,
+          });
+        }
+        return null;
+      };
+      const reconciler = createSidecarAllocationReconciler(options);
+
+      await reconciler.reconcileNext();
+      await connected;
+      expect(state.row.nextAttemptAt).toEqual(NOW);
+      expect(retries[0]?.minimumDelayMs).toBeUndefined();
+      expect(undeploys).toBe(0);
+      expect(await reconciler.reconcileNext()).toBe(true);
+      expect(undeploys).toBe(1);
+      expect(state.row).toMatchObject({
+        status,
+        deploymentCleanupConfirmed: true,
+        destroyAttempts: 0,
+      });
+      expect(retries[1]?.minimumDelayMs).toBe(30_000);
+      expect(await reconciler.reconcileNext()).toBe(false);
+    },
+  );
+
   test.each(["before", "during", "after", "closed", "none"] as const)(
     "counted cleanup preserves backoff across reconnect timing: %s",
     async (when) => {
       const { state, store } = releasingState();
+      state.row = { ...state.row, providerHoldReleased: true };
       const writing = Promise.withResolvers<undefined>();
       const allowWrite = Promise.withResolvers<undefined>();
       if (when === "during" || when === "closed") {
@@ -3401,6 +3452,109 @@ describe("createSidecarAllocationReconciler", () => {
 
     expect(calls).toEqual(["initialize", "ready"]);
   });
+
+  test("fails pending provisioning after the provider grace", async () => {
+    const current = allocation();
+    const failures: string[] = [];
+    const store = fakeStore({
+      claimNextReconcilable: async () => current,
+      scheduleRetry: async () => current,
+      failWithoutInfrastructure: async (args) => {
+        failures.push(args.code);
+        return { ...current, status: "failed" };
+      },
+    });
+    const options = deps({ store });
+    options.plugins.getProvisioner = () => null;
+    await reconcileThroughProviderGrace(options);
+    expect(failures).toEqual(["provisioner_unavailable"]);
+  });
+
+  test("recovers uncertain provisioning before looking up its provider", async () => {
+    const current = allocation({
+      status: "provisioning",
+      generation: 1,
+      ensureAttempts: 1,
+    });
+    let replacement:
+      | Parameters<AllocationStore["beginReplacement"]>[0]
+      | undefined;
+    const store = fakeStore({
+      claimNextReconcilable: async () => current,
+      beginReplacement: async (args) => {
+        replacement = args;
+        return { ...current, status: "replacing", generation: 2 };
+      },
+    });
+    const options = deps({ store });
+    let lookups = 0;
+    options.plugins.getProvisioner = () => {
+      lookups++;
+      return null;
+    };
+    await createSidecarAllocationReconciler(options).reconcileNext();
+    expect(replacement).toMatchObject({
+      expectedStatus: "provisioning",
+      failureCode: "ensure_outcome_unknown",
+    });
+    expect(lookups).toBe(0);
+  });
+
+  test.each(["missing", "mismatched"])(
+    "a healthy allocated worker recovers after Hub restart with a %s provider",
+    async (failure) => {
+      const current = allocation({
+        status: "allocated",
+        generation: 1,
+        sidecarId: "sc-running",
+        ensureAcceptedGeneration: 1,
+      });
+      let ready = 0;
+      let initialized = 0;
+      let recovered = 0;
+      let lookups = 0;
+      let at = NOW;
+      const store = fakeStore({
+        listActive: async () => [current],
+        scheduleReconnectAfterHubStart: async () => current,
+        claimNextReconcilable: async () => current,
+        markConnectionReady: async () => {
+          ready++;
+          return current;
+        },
+      });
+      const options = {
+        ...deps({
+          store,
+          onReady: async () => {
+            initialized++;
+          },
+        }),
+        now: () => at,
+        onInitializationRecovery: async () => {
+          recovered++;
+        },
+      };
+      options.plugins.getProvisioner = () => {
+        lookups++;
+        return failure === "missing"
+          ? null
+          : testProvisioner({ bindingFingerprint: "other-backend" });
+      };
+      const reconciler = createSidecarAllocationReconciler(options);
+      await reconciler.initialize();
+      await reconciler.reconcileNext();
+      expect(ready).toBe(1);
+      at = new Date(NOW.getTime() + 600_000);
+      await reconciler.reconcileNext();
+      expect({ ready, initialized, recovered, lookups }).toEqual({
+        ready: 2,
+        initialized: 2,
+        recovered: 2,
+        lookups: 0,
+      });
+    },
+  );
 
   test("fails terminally when ensure is rejected as non-retryable", async () => {
     const pending = allocation();

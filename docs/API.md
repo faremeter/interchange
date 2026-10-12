@@ -535,7 +535,7 @@ Returns the deployment's saved policy, deadlines, and allocation cleanup status.
 ### POST /api/tenants/:tenantId/workflows/runs/:runId/capacity/release
 Release workflow capacity
 
-Durably requests release of a terminal top-level run's allocation. Poll the Location header for cleanup status. Stopped cleanup returns 409. After a cleanup disconnect timeout, automatic cleanup resumes only if the sidecar reconnects. If the sidecar has been destroyed, operator recovery is required. Exhausted retries, permanent provider rejections, and `sidecar_cleanup_preparation_timeout` require operator recovery. Reconnects and this request do not restart exhausted cleanup. Returns 503 while accepted run history cannot yet be reconciled; retry later.
+Durably requests release of a terminal top-level run's allocation. Poll the Location header for cleanup status. Stopped cleanup returns 409. After a cleanup disconnect timeout, automatic cleanup resumes only if the sidecar reconnects. If the sidecar has been destroyed, operator recovery is required. Exhausted retries, permanent provider rejections, `provisioner_unavailable`, and `sidecar_cleanup_preparation_timeout` require operator recovery. Reconnects and this request do not restart exhausted cleanup. Returns 503 while accepted run history cannot yet be reconciled; retry later.
 
 202: (no content) -- Release requested
 204: (no content) -- Capacity already released or absent

@@ -270,8 +270,9 @@ It survives retries and Hub restarts and resets with a new release, replacement,
 or capacity binding; releasing a replacement preserves it. Once recorded, provider
 failures cannot spend the cleanup budget or prevent release after the sidecar
 confirms removal. While removal is unconfirmed, the Hub can still ask the provider
-for destruction confirmation; provider unavailability then falls back to sidecar
-cleanup or the disconnect wait.
+for destruction confirmation. A release falls back to sidecar cleanup or the
+disconnect wait if its provider is unavailable. Replacement also needs a provider
+for its next placement and follows the provider-availability grace below.
 
 Release and replacement use the same cleanup limits. A new release or replacement
 starts a fresh attempt budget; retries, reconnects and giving up an exhausted
@@ -311,13 +312,31 @@ Expiry records `sidecar_cleanup_preparation_timeout`
 and requires operator recovery. Hub restart resets the grace. Failed provider
 calls for an unreleased hold still count if sidecar preparation also fails.
 
-If an unreleased hold's provisioner is missing from the Hub's plugin registry, or
-its version or binding differs from the recorded provider, the Hub logs that exact
-configuration problem. A cleanup pass with no sidecar failure waits 30 seconds
-without spending an attempt. Connected-sidecar cleanup still runs independently,
-and its confirmation survives this wait. Actual sidecar cleanup failures spend
-attempts and can exhaust the budget even while the provider is missing. Otherwise,
-release remains pending until the matching provisioner returns and releases its hold.
+If a provisioner needed for provisioning, replacement, or releasing an outstanding
+hold is missing from the Hub's plugin registry, or its version or binding differs
+from the recorded provider, the Hub gives the configuration five minutes to recover.
+Provider availability is checked only for provider operations. Readiness and
+initialization of an allocated worker do not require a provisioner, so a missing
+provider cannot fail an otherwise healthy deployment after Hub restart.
+The Hub keeps this deadline in memory per allocation and checks every 30 seconds.
+Repeated checks and reconnects do not extend it or spend provisioning or cleanup
+attempts. Finding the matching provider clears the deadline and resumes work.
+A Hub restart starts a fresh five-minute window when it next observes the missing
+provider; this grace period has no durable database state.
+It is a best-effort limit per Hub process, not a cluster-wide deadline. If multiple
+Hubs claim the same allocation, each observes its own grace window.
+
+If the provider is still unavailable at expiry, the Hub records
+`provisioner_unavailable` and fails the live workflow unless cancellation is pending
+and no deployment remains. Unfinished cleanup becomes `destroy_failed`, preserving
+its cleanup binding and removal proof; when no infrastructure obligation remains,
+the allocation becomes `failed`.
+Restoring the provider does not automatically reopen either failure.
+Connected-sidecar cleanup still runs before checking the provider. A release whose
+hold was already released does not need the provider and can finish sidecar cleanup
+under the attempt and disconnect limits. Actual failed undeploys still
+spend cleanup attempts during the provider grace period and may exhaust that
+budget before the configuration deadline.
 
 Provider and sidecar failures share `maxCleanupAttempts` (10 by default).
 Exhaustion records `destroy_failed` with `sidecar_cleanup_retry_exhausted` and

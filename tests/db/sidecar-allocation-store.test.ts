@@ -895,6 +895,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         const state = {
           now: new Date(),
           connected: failure === "undeploy",
+          providerAvailable: true,
           ensureSucceeds: false,
         };
         const calls: string[] = [];
@@ -937,7 +938,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
           {
             allocationStore: store,
             plugins: {
-              getProvisioner: () => provisioner,
+              getProvisioner: () =>
+                state.providerAvailable ? provisioner : null,
               selectProvisioner: async () => ({ ok: true, provisioner }),
             },
             router: {
@@ -1058,7 +1060,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
 
       test("release during replacement preserves the running cleanup disconnect deadline", async () => {
-        const { store, target, state, options } = await replacingCleanup();
+        const { store, target, state, calls, options } =
+          await replacingCleanup();
         const reconciler = createSidecarAllocationReconciler(options);
         await reconciler.reconcileNext();
         const parked = await store.findById(target.allocationId);
@@ -1082,6 +1085,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         expect(releasing.connectDeadline).toEqual(deadline);
         expect(releasing.providerHoldReleased).toBe(true);
 
+        state.providerAvailable = false;
         state.now = deadline;
         const restarted = createSidecarAllocationReconciler(options);
         await restarted.initialize();
@@ -1092,6 +1096,18 @@ describe.skipIf(!harnessDbEnvAvailable())(
           failureCode: SIDECAR_CLEANUP_DISCONNECT_TIMEOUT_FAILURE_CODE,
           destroyAttempts: 0,
         });
+        state.connected = true;
+        await restarted.handleConnected({
+          allocationId: releasing.id,
+          generation: releasing.generation,
+        });
+        expect(await restarted.reconcileNext()).toBe(true);
+        expect(await store.findById(releasing.id)).toMatchObject({
+          status: "released",
+          providerHoldReleased: true,
+          deploymentCleanupConfirmed: true,
+        });
+        expect(calls).toEqual(["destroy", "undeploy"]);
       });
 
       test.each(["ensure error", "ensure rejection"] as const)(
@@ -1437,6 +1453,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
           cancellationRequestedAt: state.now,
         });
         expect(calls).toEqual([]);
+        state.providerAvailable = false;
+        const restarted = createSidecarAllocationReconciler(options);
+        await restarted.initialize();
+        expect(await restarted.reconcileNext()).toBe(true);
+        expect(await store.findById(target.allocationId)).toMatchObject({
+          status: "released",
+        });
+        expect(calls).toEqual([]);
       });
 
       test.each(["none", "provider error", "undeploy"] as const)(
@@ -1511,6 +1535,220 @@ describe.skipIf(!harnessDbEnvAvailable())(
           expect(calls).not.toContain("ensure");
         },
       );
+
+      test.each([
+        { removed: false, released: false },
+        { removed: false, released: true },
+        { removed: true, released: false },
+        { removed: true, released: true },
+      ])(
+        "an expired provider grace stops replacement with cleanup proof %j",
+        async ({ removed, released }) => {
+          const { store, target, state, calls, options } =
+            await replacingCleanup();
+          await h.db
+            .update(sidecarAllocation)
+            .set({
+              deploymentCleanupConfirmed: removed,
+              providerHoldReleased: released,
+            })
+            .where(eq(sidecarAllocation.id, target.allocationId));
+          if (!removed || !released)
+            expect(
+              await store.failWithoutInfrastructure({
+                allocationId: target.allocationId,
+                expectedStatus: "replacing",
+                expectedGeneration: target.generation,
+                code: "provisioner_unavailable",
+                message: "Must preserve unfinished cleanup",
+              }),
+            ).toBeNull();
+          state.providerAvailable = false;
+          const reconciler = createSidecarAllocationReconciler(options);
+          await reconciler.reconcileNext();
+          const deadline = new Date(state.now.getTime() + 300_000);
+          const waitingForProvider = await store.findById(target.allocationId);
+          expect(waitingForProvider).toMatchObject({
+            status: "replacing",
+            ensureAttempts: 0,
+            destroyAttempts: 0,
+          });
+          expect(
+            waitingForProvider?.nextAttemptAt?.getTime(),
+          ).toBeGreaterThanOrEqual(state.now.getTime() + 30_000);
+          expect(
+            waitingForProvider?.nextAttemptAt?.getTime(),
+          ).toBeLessThanOrEqual(deadline.getTime());
+          state.now = new Date(state.now.getTime() + 120_000);
+          await store.wakeReconciliation(
+            target.allocationId,
+            target.generation,
+          );
+          await reconciler.reconcileNext();
+          expect((await store.findById(target.allocationId))?.status).toBe(
+            "replacing",
+          );
+          state.now = deadline;
+          await store.wakeReconciliation(
+            target.allocationId,
+            target.generation,
+          );
+          await reconciler.reconcileNext();
+          const failed = await store.findById(target.allocationId);
+          expect(failed).toMatchObject({
+            status: removed && released ? "failed" : "destroy_failed",
+            failureCode: "provisioner_unavailable",
+            destroyAttempts: 0,
+            deploymentCleanupConfirmed: removed,
+            providerHoldReleased: released,
+          });
+          expect(failed?.nextAttemptAt).toBeUndefined();
+          expect(
+            await h.db.query.workflowRun.findFirst({
+              where: eq(workflowRun.id, ANCHOR_RUN_ID),
+            }),
+          ).toMatchObject({
+            status: "failed",
+            failureCode: "provisioner_unavailable",
+          });
+          state.providerAvailable = true;
+          state.connected = true;
+          const restarted = createSidecarAllocationReconciler(options);
+          await restarted.initialize();
+          await restarted.handleConnected(target);
+          await restarted.repairUnscheduledConnections();
+          expect(await restarted.reconcileNext()).toBe(false);
+          expect(calls).toEqual([]);
+        },
+      );
+
+      test.each(["missing", "mismatched"])(
+        "recovers a %s provider and only needs it again when replacing capacity",
+        async (failure) => {
+          const { store, target, state, calls, options } =
+            await replacingCleanup();
+          const matching = options.plugins.getProvisioner("ec2-spot");
+          if (matching === null) throw new Error("Missing test provisioner");
+          let restored = false;
+          options.plugins.getProvisioner = () =>
+            restored
+              ? matching
+              : failure === "missing"
+                ? null
+                : { ...matching, bindingFingerprint: "other-backend" };
+          const reconciler = createSidecarAllocationReconciler(options);
+          await reconciler.reconcileNext();
+          const firstDeadline = new Date(state.now.getTime() + 300_000);
+          expect(await store.findById(target.allocationId)).toMatchObject({
+            destroyAttempts: 0,
+            ensureAttempts: 0,
+          });
+          restored = true;
+          state.connected = true;
+          state.now = new Date(state.now.getTime() + 240_000);
+          await store.wakeReconciliation(
+            target.allocationId,
+            target.generation,
+          );
+          await reconciler.reconcileNext();
+          const recovered = await store.findById(target.allocationId);
+          if (recovered === null)
+            throw new Error("Missing recovered allocation");
+          expect(recovered.status).toBe("allocated");
+          expect(calls.filter((call) => call === "ensure")).toHaveLength(1);
+          expect(
+            await h.db.query.workflowRun.findFirst({
+              where: eq(workflowRun.id, ANCHOR_RUN_ID),
+            }),
+          ).toMatchObject({ status: "running" });
+
+          await h.db
+            .update(workflowRun)
+            .set({ publicKey: "restored-key" })
+            .where(eq(workflowRun.id, ANCHOR_RUN_ID));
+          restored = false;
+          const healthy = createSidecarAllocationReconciler(options);
+          await healthy.initialize();
+          await healthy.handleConnected({
+            allocationId: recovered.id,
+            generation: recovered.generation,
+          });
+          await healthy.reconcileNext();
+          const deadline = new Date(state.now.getTime() + 300_000);
+          expect((await store.findById(recovered.id))?.status).toBe(
+            "allocated",
+          );
+          expect(deadline.getTime()).toBeGreaterThan(firstDeadline.getTime());
+          state.now = deadline;
+          await store.wakeReconciliation(recovered.id, recovered.generation);
+          expect(await healthy.reconcileNext()).toBe(true);
+          expect((await store.findById(recovered.id))?.status).toBe(
+            "allocated",
+          );
+          expect(
+            await h.db.query.workflowRun.findFirst({
+              where: eq(workflowRun.id, ANCHOR_RUN_ID),
+            }),
+          ).toMatchObject({ status: "running" });
+
+          await store.wakeReconciliation(recovered.id, recovered.generation);
+          await store.claimNextReconcilable({
+            leaseId: "later-replacement",
+            leaseDurationMs: 60_000,
+          });
+          const replacing = await store.beginReplacement({
+            allocationId: recovered.id,
+            expectedStatus: "allocated",
+            expectedGeneration: recovered.generation,
+            expectedLeaseId: "later-replacement",
+            firstAttemptAt: new Date(0),
+            nextAttemptAt: new Date(0),
+            failureCode: "sidecar_connect_failed",
+            failureMessage: "Parked worker disconnected again",
+          });
+          if (replacing === null) throw new Error("Missing replacement");
+          await healthy.reconcileNext();
+          expect((await store.findById(recovered.id))?.status).toBe(
+            "replacing",
+          );
+          state.now = new Date(state.now.getTime() + 300_000);
+          await store.wakeReconciliation(replacing.id, replacing.generation);
+          await healthy.reconcileNext();
+          expect(await store.findById(recovered.id)).toMatchObject({
+            status: "destroy_failed",
+            failureCode: "provisioner_unavailable",
+          });
+          expect(calls.filter((call) => call === "ensure")).toHaveLength(1);
+        },
+      );
+
+      test("restarting the Hub grants a fresh provider grace period", async () => {
+        const { store, target, state, options } = await replacingCleanup();
+        state.providerAvailable = false;
+        const firstDeadline = new Date(state.now.getTime() + 300_000);
+        await createSidecarAllocationReconciler(options).reconcileNext();
+        state.now = new Date(state.now.getTime() + 240_000);
+        const restarted = createSidecarAllocationReconciler(options);
+        await restarted.initialize();
+        await store.wakeReconciliation(target.allocationId, target.generation);
+        await restarted.reconcileNext();
+        const newDeadline = new Date(state.now.getTime() + 300_000);
+        state.now = firstDeadline;
+        await store.wakeReconciliation(target.allocationId, target.generation);
+        await restarted.reconcileNext();
+        expect(await store.findById(target.allocationId)).toMatchObject({
+          status: "replacing",
+          destroyAttempts: 0,
+          ensureAttempts: 0,
+        });
+        state.now = newDeadline;
+        await store.wakeReconciliation(target.allocationId, target.generation);
+        await restarted.reconcileNext();
+        expect(await store.findById(target.allocationId)).toMatchObject({
+          status: "destroy_failed",
+          failureCode: "provisioner_unavailable",
+        });
+      });
 
       test.each(["provisioning", "replacing"] as const)(
         "does not start an eleventh provisioning attempt after recovering %s",
