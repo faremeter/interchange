@@ -160,6 +160,60 @@ describe.skipIf(!harnessHubEnvAvailable())(
       await expectRefusedWithoutRow(admin, parent.tenantId);
     });
 
+    test("a refused outsider holds no tenant that inherits the parent's providers", async () => {
+      const created = await apiCall(
+        hub.url,
+        "POST",
+        `/api/tenants/${parent.tenantId}/providers`,
+        { name: `inherited-${uniqueSlug()}`, plugin: "openai" },
+        owner.cookies,
+      );
+      expect(created.status).toBe(201);
+      const providerId = type({ id: "string" }).assert(created.data).id;
+
+      // A child the parent allows does inherit the provider, so a tenant under
+      // the parent is what the outsider must not come to hold.
+      const child = await createUnder(owner, parent.tenantId);
+      expect(child.status).toBe(201);
+      const childId = Created.assert(child.data).id;
+      const inherited = await apiCall(
+        hub.url,
+        "GET",
+        `/api/tenants/${childId}/providers/${providerId}`,
+        undefined,
+        owner.cookies,
+      );
+      expect(inherited.status).toBe(200);
+
+      const outsider = await signUpUser(hub.url);
+      const own = await createTenant(hub.url, outsider);
+      expect(await createUnder(outsider, parent.tenantId)).toEqual(REFUSAL);
+
+      // The outsider's only membership is its own top-level tenant, so no
+      // tenant it can act in has the parent in its ancestor chain.
+      const memberships = await apiCall(
+        hub.url,
+        "GET",
+        "/api/me/principals",
+        undefined,
+        outsider.cookies,
+      );
+      expect(memberships.status).toBe(200);
+      expect(
+        type({ data: type({ tenantId: "string" }).array() })
+          .assert(memberships.data)
+          .data.map((p) => p.tenantId),
+      ).toEqual([own.tenantId]);
+      const ownRow = await apiCall(
+        hub.url,
+        "GET",
+        `/api/tenants/${own.tenantId}`,
+        undefined,
+        outsider.cookies,
+      );
+      expect(Created.assert(ownRow.data).parentId).toBeNull();
+    });
+
     test("the parent's owner creates a child of the parent", async () => {
       const res = await createUnder(owner, parent.tenantId);
       expect(res.status).toBe(201);
