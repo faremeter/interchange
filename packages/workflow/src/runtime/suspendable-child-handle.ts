@@ -7,10 +7,12 @@
 // child each build a host-shaped env and hand it here, so they share park,
 // resume, and signal semantics by construction.
 //
-// The helper OWNS `onPark` / `onSignalPark`: it spreads the caller's env and
-// installs its own sinks to feed the FIFO the caller drains via `next()`. The
-// caller must therefore pass an env that has not wired its own park sinks; a
-// silent override would drop them, so this fails loud instead.
+// The helper OWNS `onPark` / `onSignalPark` / `onSignalAwaiter`: it spreads
+// the caller's env and installs its own sinks. Park sinks feed the FIFO the
+// caller drains via `next()`. `onSignalAwaiter` records that a re-park has
+// entered `awaitNext`, which `whenSignalAwaiter` waits for. The caller must
+// pass an env that has not wired these sinks; a silent override would drop
+// them, so this fails loud instead.
 
 import { signalName } from "@intx/types/signals";
 
@@ -94,11 +96,15 @@ export function createSuspendableChildHandle(
     surfaceInputPark,
   } = args;
 
-  if (env.onPark !== undefined || env.onSignalPark !== undefined) {
+  if (
+    env.onPark !== undefined ||
+    env.onSignalPark !== undefined ||
+    env.onSignalAwaiter !== undefined
+  ) {
     throw new Error(
       `createSuspendableChildHandle: the env for ${childRunId} already wired ` +
-        `onPark/onSignalPark; this helper owns the park sinks, so a caller-set ` +
-        `sink would be silently overridden`,
+        `onPark/onSignalPark/onSignalAwaiter; this helper owns those sinks, ` +
+        `so a caller-set sink would be silently overridden`,
     );
   }
 
@@ -119,6 +125,29 @@ export function createSuspendableChildHandle(
       wake = null;
       resolve();
     }
+  };
+
+  // Names whose re-park has entered `awaitNext`. A host channel does not
+  // replay a blob that landed before that subscription, and a re-park does
+  // not re-fire `onSignalPark`, so a caller holding the decision waits here
+  // and delivers after the name is recorded.
+  const awaiterReady = new Set<string>();
+  const awaiterWaiters = new Map<
+    string,
+    { resolve: () => void; reject: (error: Error) => void }[]
+  >();
+  const resolveAwaiter = (name: string): void => {
+    awaiterReady.add(name);
+    const waiters = awaiterWaiters.get(name);
+    if (waiters === undefined) return;
+    awaiterWaiters.delete(name);
+    for (const waiter of waiters) waiter.resolve();
+  };
+  const rejectAwaiterWaiters = (error: Error): void => {
+    for (const waiters of awaiterWaiters.values()) {
+      for (const waiter of waiters) waiter.reject(error);
+    }
+    awaiterWaiters.clear();
   };
 
   const runEnv: WorkflowRuntimeEnv = {
@@ -162,6 +191,9 @@ export function createSuspendableChildHandle(
         ...(park.timeout !== undefined ? { timeout: park.timeout } : {}),
       });
       notify();
+    },
+    onSignalAwaiter: (park) => {
+      resolveAwaiter(park.name);
     },
   };
 
@@ -217,6 +249,12 @@ export function createSuspendableChildHandle(
       if (cleanup !== undefined) void cleanup();
       notify();
       notifyReleaseWaiters();
+      rejectAwaiterWaiters(
+        failure ??
+          new Error(
+            `child run ${childRunId} settled before a resumed gate re-armed`,
+          ),
+      );
     });
 
   // One read of the child log. `open` means a step is still awaiting
@@ -424,5 +462,22 @@ export function createSuspendableChildHandle(
     },
     readParkRelease,
     waitForParkRelease,
+    whenSignalAwaiter: (name) => {
+      if (awaiterReady.has(name)) return Promise.resolve();
+      if (failure !== null) return Promise.reject(failure);
+      if (settled !== null) {
+        return Promise.reject(
+          new Error(`child run ${childRunId} settled before ${name} re-armed`),
+        );
+      }
+      return new Promise<void>((resolve, reject) => {
+        const waiters = awaiterWaiters.get(name);
+        if (waiters !== undefined) {
+          waiters.push({ resolve, reject });
+          return;
+        }
+        awaiterWaiters.set(name, [{ resolve, reject }]);
+      });
+    },
   };
 }

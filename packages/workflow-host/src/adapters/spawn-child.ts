@@ -29,8 +29,10 @@
 //     parent's re-verify already covers it, since the inline child rides the
 //     parent's hashed projection). The callback returns a live handle. The
 //     parent drives it across parks and relays each one onto the parent run.
-//     The child stays unaddressable. A parked child does not survive a
-//     restart.
+//     The child stays unaddressable. A parked child survives a process
+//     restart: `resumeFromEvents` re-adopts its log and the parent
+//     reestablishes the relay. The spawn step's drain default is still
+//     `"cancel"`, so a redeploy tears that parked child down.
 //
 // Drain coordination is handled by the supervisor's drain primitive
 // (`packages/workflow-host/src/supervisor`), not by this adapter. The
@@ -107,6 +109,7 @@ export type RunChildWorkflow = (
     signal: AbortSignal;
     depth: number;
     maxChildSpawnDepth: number;
+    resumeFromEvents?: readonly WorkflowEvent[];
   },
   onEvent: (event: InferenceEvent) => void,
   credentialMaterial?: CredentialMaterialRef,
@@ -156,6 +159,7 @@ export function createInMemorySpawnChild(opts: {
       signal,
       depth,
       maxChildSpawnDepth,
+      resumeFromEvents,
     },
     onEvent,
     credentialMaterial,
@@ -194,6 +198,7 @@ export function createInMemorySpawnChild(opts: {
         signal,
         depth,
         maxChildSpawnDepth,
+        ...(resumeFromEvents !== undefined ? { resumeFromEvents } : {}),
       },
       onEvent,
       credentialMaterial,

@@ -325,8 +325,10 @@ export interface BlobSubstrate {
  * re-evaluated closure map in production), constructs the child run against
  * the supplied id, and returns a live handle. `runChildWorkflow` drives that
  * handle across the child's parks and relays each one onto the parent run.
- * The child run stays unaddressable. A parked child does not survive a
- * restart: resume still rejects a `childWorkflow` left `awaiting-signal`.
+ * The child run stays unaddressable. A parked child survives a process
+ * restart: the caller passes `resumeFromEvents` from the child log and the
+ * parent reestablishes the relay. The spawn step's drain behavior is what
+ * a redeploy consults, and that default is still `"cancel"`.
  *
  * The runtime body does not carry a definition lookup of its own.
  */
@@ -346,6 +348,15 @@ export type SpawnChildWorkflow = (input: {
   depth: number;
   /** The tree-wide spawn-depth ceiling, threaded to the child run. */
   maxChildSpawnDepth: number;
+  /**
+   * Re-adopt a child that was mid-flight when the process crashed. Drive
+   * `runtimeRun` from this durable log instead of `input`. Omit the field
+   * when the child log is empty: an empty array is a resume with no
+   * payload, and a child that died after `ChildSpawned` and before its own
+   * `RunStarted` must start from `input`. A re-park does not re-fire
+   * `onPark` or `onSignalPark`.
+   */
+  resumeFromEvents?: readonly WorkflowEvent[];
 }) => Promise<SuspendableChildHandle>;
 
 /**
@@ -434,6 +445,16 @@ export type SuspendableChildHandle = {
         terminalStatus: "completed" | "failed" | "cancelled";
       }
   >;
+  /**
+   * Resolves once a re-park of `name` has entered `awaitNext`. A caller
+   * that already holds the decision delivers after this, so a channel
+   * that tails from head sees the blob. Rejects if the child settles
+   * before the gate re-arms.
+   *
+   * Present on the live suspendable handle. A terminal handle has no
+   * channel and omits it.
+   */
+  whenSignalAwaiter?(name: string): Promise<void>;
 };
 
 /**
@@ -709,6 +730,15 @@ export interface WorkflowRuntimeEnv {
    * off any suspendable-child path parks silently as before.
    */
   onSignalPark?: (park: WorkflowSignalPark) => void;
+  /**
+   * Fired when a re-park enters `awaitNext`, after that call has registered
+   * its subscriber and before the runtime waits on it. A host channel tails
+   * from head and does not replay a blob that landed before this
+   * subscription. A re-park does not re-fire `onSignalPark`, so the caller
+   * that already holds the decision waits for this registration and
+   * delivers after it. Fresh parks do not fire it.
+   */
+  onSignalAwaiter?: (park: { runId: string; name: string }) => void;
   /**
    * Optional read-only recovery hook: enumerate the durable pending approval
    * operations a step left behind, keyed by `{ runId, stepId, attempt }`. The

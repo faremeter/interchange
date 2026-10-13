@@ -9,14 +9,14 @@
 // waited. An untimed relay is
 // refused when the parent's own flag says nothing upstream can answer it,
 // and that parent writes no suspension. A child that dies during an
-// approval relay fails the spawn step. A parked childWorkflow does not
-// survive a restart: resume rejects the step left awaiting-signal and does
-// not spawn the child again.
+// approval relay fails the spawn step. A parked child survives a process
+// restart: resume reattaches the same child run and reestablishes the
+// relay. The child stays unaddressable; the parent is the resume root.
 
 import { describe, expect, test } from "bun:test";
 
 import { createDefaultDirectorRegistry, defineAgent } from "@intx/agent";
-import { signalName } from "@intx/types";
+import { correlationIdFromSignalName, signalName } from "@intx/types";
 import type { ApprovalSnapshot } from "@intx/types/runtime";
 
 import {
@@ -34,6 +34,7 @@ import {
   loop,
   rewriteInlineChildWorkflowBodies,
   runLocal,
+  loopBodyRunId,
   runtimeRun,
   sleep,
   step,
@@ -74,8 +75,6 @@ const snapshot: ApprovalSnapshot = {
   inputSchema: { type: "object" },
   arguments: { amount: 100 },
 };
-
-const at = new Date().toISOString();
 
 // The parent drive pulls one park at a time. Returning the handle only after
 // every named child await is durable leaves the others queued for that first
@@ -195,8 +194,15 @@ function startRelayed(args: {
   holdUntilChildAwaits?: readonly string[];
   signalChannel?: SignalChannel;
   spawnChild?: SpawnChildWorkflow;
+  repoStore?: RepoStore;
+  resumeFromEvents?: readonly WorkflowEvent[];
+  onSignalPark?: (park: {
+    runId: string;
+    name: string;
+    timeout?: number;
+  }) => void;
 }): { run: RuntimeWorkflowRun; repoStore: RepoStore } {
-  const repoStore = createInMemoryRepoStore();
+  const repoStore = args.repoStore ?? createInMemoryRepoStore();
   const clock = (): Date => new Date();
   const newId = (prefix: string): string =>
     `${prefix}-${Math.random().toString(36).slice(2, 8)}`;
@@ -225,11 +231,15 @@ function startRelayed(args: {
           args.invokeStep,
           args.holdUntilChildAwaits,
         )
-      : createInMemorySpawnChild(childBodies, {
-          authorize: allowAll,
-          invokeStep: args.invokeStep,
-          ...(args.loopFns !== undefined ? { loopFns: args.loopFns } : {}),
-        }));
+      : createInMemorySpawnChild(
+          childBodies,
+          {
+            authorize: allowAll,
+            invokeStep: args.invokeStep,
+            ...(args.loopFns !== undefined ? { loopFns: args.loopFns } : {}),
+          },
+          repoStore,
+        ));
   const env: WorkflowRuntimeEnv = {
     repoStore,
     scheduler: createInMemoryScheduler({ repoStore, clock }),
@@ -244,11 +254,19 @@ function startRelayed(args: {
     drain: createNoopDrainController(rewritten),
     hasUpstreamSignalResolver: true,
     ...(args.onPark !== undefined ? { onPark: args.onPark } : {}),
+    ...(args.onSignalPark !== undefined
+      ? { onSignalPark: args.onSignalPark }
+      : {}),
     ...(args.loopFns !== undefined ? { loopFns: args.loopFns } : {}),
   };
   env.spawnLoopIteration = createSpawnLoopIteration(env, loopBodies);
   return {
-    run: runtimeRun(rewritten, env, { runId: args.runId }),
+    run: runtimeRun(rewritten, env, {
+      runId: args.runId,
+      ...(args.resumeFromEvents !== undefined
+        ? { resumeFromEvents: args.resumeFromEvents }
+        : {}),
+    }),
     repoStore,
   };
 }
@@ -1389,91 +1407,766 @@ async function raceLoggedSignalAgainstRelease(
   };
 }
 
-describe("a parked childWorkflow does not survive a restart", () => {
-  const child = gatedChild("resume-child");
-  const definition = defineWorkflow({
-    id: "resume-parent",
-    trigger: { type: "manual" },
-    steps: { spawn: childWorkflow({ definition: child }) },
+function spawnedChildId(
+  events: readonly WorkflowEvent[],
+  stepId: string,
+): string {
+  for (const event of events) {
+    if (event.kind === "ChildSpawned" && event.stepId === stepId) {
+      return event.childRunId;
+    }
+  }
+  throw new Error(`no ChildSpawned for ${stepId}`);
+}
+
+async function copyLog(
+  repoStore: RepoStore,
+  runId: string,
+): Promise<WorkflowEvent[]> {
+  return [...(await repoStore.read(runId))];
+}
+
+async function seedLog(
+  repoStore: RepoStore,
+  runId: string,
+  events: readonly WorkflowEvent[],
+): Promise<void> {
+  for (const event of events) {
+    await repoStore.append(runId, event);
+  }
+}
+
+function countEvents(
+  events: readonly WorkflowEvent[],
+  kind: WorkflowEvent["kind"],
+): number {
+  return events.filter((event) => event.kind === kind).length;
+}
+
+describe("a parked childWorkflow survives a process restart", () => {
+  test("reestablishes an author gate and completes on the later signal", async () => {
+    const parent = defineWorkflow({
+      id: "resume-author-parent",
+      trigger: { type: "manual" },
+      steps: {
+        spawn: childWorkflow({ definition: gatedChild("resume-author") }),
+      },
+    });
+    const runId = "run-resume-author";
+    const first = startRelayed({
+      definition: parent,
+      runId,
+      invokeStep: async () => ({ output: null }),
+    });
+    void first.run.complete;
+    await waitForEvent(
+      first.repoStore,
+      runId,
+      (event) =>
+        event.kind === "SignalAwaited" &&
+        event.stepId === "spawn" &&
+        event.signalName === "go",
+    );
+    const parentLog = await copyLog(first.repoStore, runId);
+    const childId = spawnedChildId(parentLog, "spawn");
+    const childLog = await copyLog(first.repoStore, childId);
+    expect(
+      childLog.some(
+        (event) => event.kind === "SignalAwaited" && event.signalName === "go",
+      ),
+    ).toBe(true);
+
+    const repoStore = createInMemoryRepoStore();
+    await seedLog(repoStore, childId, childLog);
+    const { run } = startRelayed({
+      definition: parent,
+      runId,
+      invokeStep: async () => ({ output: null }),
+      repoStore,
+      resumeFromEvents: parentLog,
+    });
+    await run.signal("go", { done: true }, "sig-resume-author");
+    const result = await run.complete;
+
+    expect(result.terminalStatus).toBe("completed");
+    expect(countEvents(result.events, "ChildSpawned")).toBe(1);
+    expect(spawnOutput(result.outputs.spawn).childRunId).toBe(childId);
+    expect(
+      result.events.filter(
+        (event) => event.kind === "SignalReceived" && event.signalName === "go",
+      ),
+    ).toHaveLength(1);
   });
 
-  const parkKinds = ["approval", "input", "signal-relay"] as const;
-
-  for (const parkKind of parkKinds) {
-    test(`resume of a ${parkKind} park fails the run and does not spawn again`, async () => {
-      let spawns = 0;
-      const clock = (): Date => new Date();
-      const repoStore = createInMemoryRepoStore();
-      const env: WorkflowRuntimeEnv = {
-        repoStore,
-        scheduler: createInMemoryScheduler({ repoStore, clock }),
-        signalChannel: createInMemorySignalChannel(),
-        blobs: createInMemoryBlobSubstrate(),
-        directors: createDefaultDirectorRegistry(),
-        authorize: allowAll,
-        invokeStep: async () => ({ output: null }),
-        spawnChild: async () => {
-          spawns += 1;
-          throw new Error("spawnChild must not run");
-        },
-        clock,
-        newId: (prefix) => `${prefix}-resume`,
-        drain: createNoopDrainController(definition),
-        hasUpstreamSignalResolver: true,
-      };
-      const runId = `run-resume-${parkKind}`;
-      const signal = parkKind === "signal-relay" ? "go" : signalName("corr-1");
-      const seed: WorkflowEvent[] = [
-        {
-          kind: "RunStarted",
-          seq: 1,
-          at,
-          runId,
-          definitionHash: "x",
-          trigger: { type: "manual", payload: undefined },
-        },
-        {
-          kind: "StepStarted",
-          seq: 2,
-          at,
-          stepId: "spawn",
-          attempt: 1,
-          input: { ref: "inline:null" },
-        },
-        {
-          kind: "ChildSpawned",
-          seq: 3,
-          at,
-          stepId: "spawn",
-          childRunId: "run-child-1",
-          childDefinitionRef: "child-ref",
-        },
-        {
-          kind: "SignalAwaited",
-          seq: 4,
-          at,
-          stepId: "spawn",
-          signalName: signal,
-          parkKind,
-        },
-      ];
-      const result = await runtimeRun(definition, env, {
-        runId,
-        resumeFromEvents: seed,
-      }).complete;
-
-      expect(result.terminalStatus).toBe("failed");
-      const last = result.events.at(-1);
-      if (last?.kind !== "RunFailed") {
-        throw new Error("expected RunFailed");
-      }
-      expect(last.error.message).toContain(
-        "not supported by the in-process runtime",
-      );
-      expect(spawns).toBe(0);
-      expect(
-        result.events.filter((event) => event.kind === "ChildSpawned"),
-      ).toHaveLength(1);
+  test("reestablishes an approval and completes on the later decision", async () => {
+    const parent = defineWorkflow({
+      id: "resume-approval-parent",
+      trigger: { type: "manual" },
+      steps: {
+        spawn: childWorkflow({
+          definition: defineWorkflow({
+            id: "resume-approval-child",
+            trigger: { type: "manual" },
+            steps: { hold: step({ agent }) },
+          }),
+        }),
+      },
     });
-  }
+    const runId = "run-resume-approval";
+    const suspending: StepInvoker = async (req) => {
+      if (req.resume !== undefined) return { output: null };
+      return {
+        suspend: {
+          correlationId: "corr-body",
+          kind: "approval",
+          approvalSnapshot: snapshot,
+        },
+      };
+    };
+    const first = startRelayed({
+      definition: parent,
+      runId,
+      invokeStep: suspending,
+    });
+    void first.run.complete;
+    await waitForEvent(
+      first.repoStore,
+      runId,
+      (event) =>
+        event.kind === "SignalAwaited" &&
+        event.stepId === "spawn" &&
+        event.parkKind === "approval",
+    );
+    const parentLog = await copyLog(first.repoStore, runId);
+    const childId = spawnedChildId(parentLog, "spawn");
+    const childLog = await copyLog(first.repoStore, childId);
+
+    let freshInvokes = 0;
+    let resumed: unknown;
+    const repoStore = createInMemoryRepoStore();
+    await seedLog(repoStore, childId, childLog);
+    const { run } = startRelayed({
+      definition: parent,
+      runId,
+      invokeStep: async (req) => {
+        if (req.resume === undefined) {
+          freshInvokes += 1;
+          return { output: null };
+        }
+        resumed = req.resume.decision;
+        return { output: null };
+      },
+      repoStore,
+      resumeFromEvents: parentLog,
+    });
+    await run.signal(
+      signalName("corr-body"),
+      { outcome: "approved" },
+      "sig-resume-approval",
+    );
+    const result = await run.complete;
+
+    expect(result.terminalStatus).toBe("completed");
+    expect(freshInvokes).toBe(0);
+    expect(resumed).toEqual({ outcome: "approved" });
+    expect(countEvents(result.events, "ChildSpawned")).toBe(1);
+    expect(spawnOutput(result.outputs.spawn).childRunId).toBe(childId);
+  });
+
+  test("reestablishes an input park and delivers the next turn", async () => {
+    const parent = defineWorkflow({
+      id: "resume-input-parent",
+      trigger: { type: "manual" },
+      steps: {
+        spawn: childWorkflow({
+          definition: defineWorkflow({
+            id: "resume-input-child",
+            trigger: { type: "manual" },
+            steps: { chat: step({ agent, triggers: 2 }) },
+          }),
+        }),
+      },
+    });
+    const runId = "run-resume-input";
+    const first = startRelayed({
+      definition: parent,
+      runId,
+      invokeStep: async () => ({ output: null }),
+    });
+    void first.run.complete;
+    await waitForEvent(
+      first.repoStore,
+      runId,
+      (event) =>
+        event.kind === "SignalAwaited" &&
+        event.stepId === "spawn" &&
+        event.parkKind === "input",
+    );
+    const parentLog = await copyLog(first.repoStore, runId);
+    const childId = spawnedChildId(parentLog, "spawn");
+    const childLog = await copyLog(first.repoStore, childId);
+    const awaited = parentLog.find(
+      (event) => event.kind === "SignalAwaited" && event.parkKind === "input",
+    );
+    if (awaited === undefined || awaited.kind !== "SignalAwaited") {
+      throw new Error("parent input await missing");
+    }
+    const correlationId = correlationIdFromSignalName(awaited.signalName);
+    if (correlationId === undefined) {
+      throw new Error("input await is not a reserved name");
+    }
+
+    const decisions: unknown[] = [];
+    let freshInvokes = 0;
+    const repoStore = createInMemoryRepoStore();
+    await seedLog(repoStore, childId, childLog);
+    const { run } = startRelayed({
+      definition: parent,
+      runId,
+      invokeStep: async (req) => {
+        if (req.resume === undefined) {
+          freshInvokes += 1;
+          return { output: null };
+        }
+        decisions.push(req.resume.decision);
+        return { output: null };
+      },
+      repoStore,
+      resumeFromEvents: parentLog,
+    });
+    const nextTurn = { text: "next-turn" };
+    await run.signal(signalName(correlationId), nextTurn, "sig-resume-input");
+    const result = await run.complete;
+
+    expect(result.terminalStatus).toBe("completed");
+    expect(freshInvokes).toBe(0);
+    expect(decisions).toEqual([nextTurn]);
+    expect(countEvents(result.events, "ChildSpawned")).toBe(1);
+  });
+
+  test("relays a second park the parent had not reached", async () => {
+    const parent = defineWorkflow({
+      id: "resume-two-parent",
+      trigger: { type: "manual" },
+      steps: {
+        spawn: childWorkflow({
+          definition: defineWorkflow({
+            id: "resume-two-child",
+            trigger: { type: "manual" },
+            steps: {
+              alpha: awaitSignal({ name: "alpha" }),
+              beta: awaitSignal({ name: "beta" }),
+            },
+          }),
+        }),
+      },
+    });
+    const runId = "run-resume-two";
+    const first = startRelayed({
+      definition: parent,
+      runId,
+      invokeStep: async () => ({ output: null }),
+    });
+    void first.run.complete;
+    await waitForEvent(
+      first.repoStore,
+      runId,
+      (event) => event.kind === "SignalAwaited" && event.stepId === "spawn",
+    );
+    const parentPartial = await copyLog(first.repoStore, runId);
+    const childId = spawnedChildId(parentPartial, "spawn");
+    await waitForEvent(
+      first.repoStore,
+      childId,
+      (event) => event.kind === "SignalAwaited" && event.signalName === "alpha",
+    );
+    await waitForEvent(
+      first.repoStore,
+      childId,
+      (event) => event.kind === "SignalAwaited" && event.signalName === "beta",
+    );
+    const parentLog = await copyLog(first.repoStore, runId);
+    const childLog = await copyLog(first.repoStore, childId);
+    expect(
+      parentLog.filter((event) => event.kind === "SignalAwaited"),
+    ).toHaveLength(1);
+
+    const repoStore = createInMemoryRepoStore();
+    await seedLog(repoStore, childId, childLog);
+    const { run } = startRelayed({
+      definition: parent,
+      runId,
+      invokeStep: async () => ({ output: null }),
+      repoStore,
+      resumeFromEvents: parentLog,
+    });
+    await run.signal("alpha", { ok: true }, "sig-alpha");
+    await run.signal("beta", { ok: true }, "sig-beta");
+    const result = await run.complete;
+
+    expect(result.terminalStatus).toBe("completed");
+    expect(countEvents(result.events, "ChildSpawned")).toBe(1);
+    expect(
+      result.events.filter(
+        (event) =>
+          event.kind === "SignalReceived" &&
+          (event.signalName === "alpha" || event.signalName === "beta"),
+      ),
+    ).toHaveLength(2);
+  });
+
+  test("delivers a decision the parent already recorded", async () => {
+    const parent = defineWorkflow({
+      id: "resume-delivered-parent",
+      trigger: { type: "manual" },
+      steps: {
+        spawn: childWorkflow({
+          definition: gatedChild("resume-delivered"),
+        }),
+      },
+    });
+    const runId = "run-resume-delivered";
+    const first = startRelayed({
+      definition: parent,
+      runId,
+      invokeStep: async () => ({ output: null }),
+    });
+    void first.run.complete;
+    await waitForEvent(
+      first.repoStore,
+      runId,
+      (event) => event.kind === "SignalAwaited" && event.signalName === "go",
+    );
+    const parentLog = await copyLog(first.repoStore, runId);
+    const childId = spawnedChildId(parentLog, "spawn");
+    const childLog = await copyLog(first.repoStore, childId);
+    const last = parentLog.at(-1);
+    if (last === undefined) throw new Error("empty parent log");
+    parentLog.push({
+      kind: "SignalReceived",
+      seq: last.seq + 1,
+      at: new Date().toISOString(),
+      signalName: "go",
+      signalId: "sig-already",
+      payload: { done: true },
+    });
+
+    const repoStore = createInMemoryRepoStore();
+    await seedLog(repoStore, childId, childLog);
+    const { run } = startRelayed({
+      definition: parent,
+      runId,
+      invokeStep: async () => ({ output: null }),
+      repoStore,
+      resumeFromEvents: parentLog,
+    });
+    const result = await run.complete;
+    const resumedChild = await copyLog(repoStore, childId);
+
+    expect(result.terminalStatus).toBe("completed");
+    expect(countEvents(result.events, "ChildSpawned")).toBe(1);
+    expect(
+      result.events.filter(
+        (event) =>
+          event.kind === "SignalReceived" && event.signalId === "sig-already",
+      ),
+    ).toHaveLength(1);
+    expect(
+      resumedChild.filter(
+        (event) =>
+          event.kind === "SignalReceived" && event.signalId === "sig-already",
+      ),
+    ).toHaveLength(1);
+  });
+
+  test("does not deliver a decision the child already consumed", async () => {
+    const parent = defineWorkflow({
+      id: "resume-consumed-parent",
+      trigger: { type: "manual" },
+      steps: {
+        spawn: childWorkflow({ definition: gatedChild("resume-consumed") }),
+      },
+    });
+    const runId = "run-resume-consumed";
+    const first = startRelayed({
+      definition: parent,
+      runId,
+      invokeStep: async () => ({ output: null }),
+    });
+    await first.run.signal("go", { done: true }, "sig-once");
+    const finished = await first.run.complete;
+    expect(finished.terminalStatus).toBe("completed");
+    const childId = spawnedChildId(finished.events, "spawn");
+    const childLog = await copyLog(first.repoStore, childId);
+    const childSignals = childLog.filter(
+      (event) =>
+        event.kind === "SignalReceived" && event.signalId === "sig-once",
+    ).length;
+    expect(childSignals).toBe(1);
+    const completedAt = finished.events.findIndex(
+      (event) => event.kind === "ChildCompleted",
+    );
+    if (completedAt < 0) throw new Error("ChildCompleted missing");
+    const parentLog = finished.events.slice(0, completedAt);
+    expect(
+      parentLog.some(
+        (event) =>
+          event.kind === "SignalReceived" && event.signalId === "sig-once",
+      ),
+    ).toBe(true);
+
+    const repoStore = createInMemoryRepoStore();
+    await seedLog(repoStore, childId, childLog);
+    const { run } = startRelayed({
+      definition: parent,
+      runId,
+      invokeStep: async () => ({ output: null }),
+      repoStore,
+      resumeFromEvents: parentLog,
+    });
+    const result = await run.complete;
+    const resumedChild = await copyLog(repoStore, childId);
+
+    expect(result.terminalStatus).toBe("completed");
+    expect(countEvents(result.events, "ChildSpawned")).toBe(1);
+    expect(
+      resumedChild.filter(
+        (event) =>
+          event.kind === "SignalReceived" && event.signalId === "sig-once",
+      ),
+    ).toHaveLength(1);
+  });
+
+  test("an empty child log starts that same id and keeps the spawn input", async () => {
+    const parent = defineWorkflow({
+      id: "resume-empty-parent",
+      trigger: { type: "manual" },
+      steps: {
+        spawn: childWorkflow({
+          definition: defineWorkflow({
+            id: "resume-empty-child",
+            trigger: { type: "manual" },
+            steps: {
+              seen: step({
+                agent,
+                input: { from: "trigger.payload" },
+              }),
+              hold: awaitSignal({ name: "go", after: ["seen"] }),
+            },
+          }),
+          input: { literal: { token: "keep" } },
+        }),
+      },
+    });
+    const runId = "run-resume-empty";
+    // ChildSpawned is flushed before the spawner runs. Holding the spawner
+    // open keeps that crash window: the parent log names a child run whose
+    // own log was never written. Letting the child start would share this
+    // process's commit chain with the resume.
+    const first = startRelayed({
+      definition: parent,
+      runId,
+      invokeStep: async () => ({ output: null }),
+      spawnChild: () => new Promise<never>(() => undefined),
+    });
+    void first.run.complete;
+    await waitForEvent(
+      first.repoStore,
+      runId,
+      (event) => event.kind === "ChildSpawned" && event.stepId === "spawn",
+    );
+    const full = await copyLog(first.repoStore, runId);
+    const spawnedAt = full.findIndex((event) => event.kind === "ChildSpawned");
+    if (spawnedAt < 0) throw new Error("ChildSpawned missing");
+    const parentLog = full.slice(0, spawnedAt + 1);
+    expect(parentLog.some((event) => event.kind === "SignalAwaited")).toBe(
+      false,
+    );
+    const childId = spawnedChildId(parentLog, "spawn");
+
+    const seen: unknown[] = [];
+    const repoStore = createInMemoryRepoStore();
+    const { run } = startRelayed({
+      definition: parent,
+      runId,
+      invokeStep: async (req) => {
+        seen.push(req.input);
+        return { output: null };
+      },
+      repoStore,
+      resumeFromEvents: parentLog,
+    });
+    await run.signal("go", { done: true }, "sig-keep");
+    const result = await run.complete;
+
+    expect(result.terminalStatus).toBe("completed");
+    expect(seen).toEqual([{ token: "keep" }]);
+    expect(countEvents(result.events, "ChildSpawned")).toBe(1);
+    expect(spawnOutput(result.outputs.spawn).childRunId).toBe(childId);
+  });
+
+  test("an unproxied approval fails before spawn and writes no await", async () => {
+    const parent = defineWorkflow({
+      id: "resume-unproxied-parent",
+      trigger: { type: "manual" },
+      steps: {
+        spawn: childWorkflow({
+          definition: defineWorkflow({
+            id: "resume-unproxied-child",
+            trigger: { type: "manual" },
+            steps: { hold: step({ agent }) },
+          }),
+        }),
+      },
+    });
+    const runId = "run-resume-unproxied";
+    const first = startRelayed({
+      definition: parent,
+      runId,
+      invokeStep: async (req) => {
+        if (req.resume !== undefined) return { output: null };
+        return {
+          suspend: {
+            correlationId: "corr-body",
+            kind: "approval",
+            approvalSnapshot: snapshot,
+          },
+        };
+      },
+    });
+    void first.run.complete;
+    await waitForEvent(
+      first.repoStore,
+      runId,
+      (event) =>
+        event.kind === "SignalAwaited" && event.parkKind === "approval",
+    );
+    const full = await copyLog(first.repoStore, runId);
+    const childId = spawnedChildId(full, "spawn");
+    const childLog = await copyLog(first.repoStore, childId);
+    const awaitAt = full.findIndex(
+      (event) =>
+        event.kind === "SignalAwaited" && event.parkKind === "approval",
+    );
+    if (awaitAt < 0) throw new Error("approval await missing");
+    const parentLog = full.slice(0, awaitAt);
+
+    let spawns = 0;
+    const repoStore = createInMemoryRepoStore();
+    await seedLog(repoStore, childId, childLog);
+    const { run } = startRelayed({
+      definition: parent,
+      runId,
+      invokeStep: async () => ({ output: null }),
+      spawnChild: () => {
+        spawns += 1;
+        return Promise.reject(new Error("spawnChild must not run"));
+      },
+      repoStore,
+      resumeFromEvents: parentLog,
+    });
+    const result = await run.complete;
+    const failed = result.events.find((event) => event.kind === "StepFailed");
+
+    expect(result.terminalStatus).toBe("failed");
+    expect(spawns).toBe(0);
+    expect(failed?.kind === "StepFailed" ? failed.error.message : "").toContain(
+      "approval",
+    );
+    expect(failed?.kind === "StepFailed" ? failed.error.message : "").toContain(
+      "snapshot",
+    );
+    expect(result.events.some((event) => event.kind === "SignalAwaited")).toBe(
+      false,
+    );
+  });
+
+  test("a nested childWorkflow still climbs after resume", async () => {
+    const middle = defineWorkflow({
+      id: "resume-middle",
+      trigger: { type: "manual" },
+      steps: {
+        inner: childWorkflow({ definition: gatedChild("resume-leaf") }),
+      },
+    });
+    const parent = defineWorkflow({
+      id: "resume-outer",
+      trigger: { type: "manual" },
+      steps: { spawn: childWorkflow({ definition: middle }) },
+    });
+    const runId = "run-resume-nested";
+    const first = startRelayed({
+      definition: parent,
+      runId,
+      invokeStep: async () => ({ output: null }),
+    });
+    void first.run.complete;
+    await waitForEvent(
+      first.repoStore,
+      runId,
+      (event) => event.kind === "SignalAwaited" && event.signalName === "go",
+    );
+    const parentLog = await copyLog(first.repoStore, runId);
+    const middleId = spawnedChildId(parentLog, "spawn");
+    const middleLog = await copyLog(first.repoStore, middleId);
+    const leafId = spawnedChildId(middleLog, "inner");
+    const leafLog = await copyLog(first.repoStore, leafId);
+
+    const repoStore = createInMemoryRepoStore();
+    await seedLog(repoStore, middleId, middleLog);
+    await seedLog(repoStore, leafId, leafLog);
+    const { run } = startRelayed({
+      definition: parent,
+      runId,
+      invokeStep: async () => ({ output: null }),
+      repoStore,
+      resumeFromEvents: parentLog,
+    });
+    await run.signal("go", { done: true }, "sig-nested");
+    const result = await run.complete;
+    const resumedMiddle = await copyLog(repoStore, middleId);
+
+    expect(result.terminalStatus).toBe("completed");
+    expect(countEvents(result.events, "ChildSpawned")).toBe(1);
+    expect(countEvents(resumedMiddle, "ChildSpawned")).toBe(1);
+  });
+
+  test("a childWorkflow under a loop still climbs after resume", async () => {
+    const parent = defineWorkflow({
+      id: "resume-loop-parent",
+      trigger: { type: "manual" },
+      steps: {
+        spawn: childWorkflow({
+          definition: defineWorkflow({
+            id: "resume-loop-child",
+            trigger: { type: "manual" },
+            steps: {
+              rework: loop({
+                body: defineWorkflow({
+                  id: "resume-loop-body",
+                  trigger: { type: "manual" },
+                  steps: {
+                    inner: childWorkflow({
+                      definition: gatedChild("resume-loop-leaf"),
+                    }),
+                  },
+                }),
+                while: "cont",
+                carry: "next",
+                input: { literal: 0 },
+                maxIterations: 2,
+                onExhausted: "fin",
+              }),
+              fin: step({ agent, after: ["rework"] }),
+            },
+          }),
+        }),
+      },
+    });
+    const runId = "run-resume-loop";
+    const first = startRelayed({
+      definition: parent,
+      runId,
+      invokeStep: async () => ({ output: null }),
+      loopFns: loopFnsReturning(false),
+    });
+    void first.run.complete;
+    await waitForEvent(
+      first.repoStore,
+      runId,
+      (event) => event.kind === "SignalAwaited" && event.signalName === "go",
+    );
+    const parentLog = await copyLog(first.repoStore, runId);
+    const childId = spawnedChildId(parentLog, "spawn");
+    const childLog = await copyLog(first.repoStore, childId);
+    const bodyId = loopBodyRunId(childId, "rework", 0);
+    const bodyLog = await copyLog(first.repoStore, bodyId);
+    const leafId = spawnedChildId(bodyLog, "inner");
+    const leafLog = await copyLog(first.repoStore, leafId);
+
+    const repoStore = createInMemoryRepoStore();
+    await seedLog(repoStore, childId, childLog);
+    await seedLog(repoStore, bodyId, bodyLog);
+    await seedLog(repoStore, leafId, leafLog);
+    const { run } = startRelayed({
+      definition: parent,
+      runId,
+      invokeStep: async () => ({ output: null }),
+      loopFns: loopFnsReturning(false),
+      repoStore,
+      resumeFromEvents: parentLog,
+    });
+    await run.signal("go", { done: true }, "sig-loop");
+    const result = await run.complete;
+    const resumedBody = await copyLog(repoStore, bodyId);
+
+    expect(result.terminalStatus).toBe("completed");
+    expect(countEvents(result.events, "ChildSpawned")).toBe(1);
+    expect(countEvents(resumedBody, "ChildSpawned")).toBe(1);
+  });
+
+  test("a fresh author relay keeps the remaining timeout", async () => {
+    const parent = defineWorkflow({
+      id: "resume-timed-parent",
+      trigger: { type: "manual" },
+      steps: {
+        spawn: childWorkflow({
+          definition: defineWorkflow({
+            id: "resume-timed-child",
+            trigger: { type: "manual" },
+            steps: {
+              hold: awaitSignal({
+                name: "go",
+                timeout: 60_000,
+                onTimeout: "after",
+              }),
+              after: step({ agent, after: ["hold"] }),
+            },
+          }),
+        }),
+      },
+    });
+    const runId = "run-resume-timed";
+    const first = startRelayed({
+      definition: parent,
+      runId,
+      invokeStep: async () => ({ output: null }),
+    });
+    void first.run.complete;
+    await waitForEvent(
+      first.repoStore,
+      runId,
+      (event) => event.kind === "SignalAwaited" && event.signalName === "go",
+    );
+    const full = await copyLog(first.repoStore, runId);
+    const childId = spawnedChildId(full, "spawn");
+    const childLog = await copyLog(first.repoStore, childId);
+    const awaitAt = full.findIndex(
+      (event) => event.kind === "SignalAwaited" && event.signalName === "go",
+    );
+    if (awaitAt < 0) throw new Error("timed await missing");
+    const parentLog = full.slice(0, awaitAt);
+    const timeouts: number[] = [];
+    const repoStore = createInMemoryRepoStore();
+    await seedLog(repoStore, childId, childLog);
+    const { run } = startRelayed({
+      definition: parent,
+      runId,
+      invokeStep: async () => ({ output: null }),
+      repoStore,
+      resumeFromEvents: parentLog,
+      onSignalPark: (park) => {
+        if (park.timeout !== undefined) timeouts.push(park.timeout);
+      },
+    });
+    await run.signal("go", { done: true }, "sig-timed");
+    const result = await run.complete;
+
+    expect(result.terminalStatus).toBe("completed");
+    expect(timeouts.length).toBeGreaterThan(0);
+    const timeout = timeouts[0];
+    if (timeout === undefined) throw new Error("timeout missing");
+    expect(timeout).toBeGreaterThan(0);
+    expect(timeout).toBeLessThanOrEqual(60_000);
+  });
 });

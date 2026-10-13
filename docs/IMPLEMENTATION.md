@@ -745,9 +745,10 @@ Child-workflow drain coordination splits two ways:
 
 A parked `childWorkflow` is one of those same-deployment children. The
 relay sits on the spawn step, so the parent's drain observation of that
-step is what tears the child down. A parked child does not survive a
-restart either: the spawn step is left `awaiting-signal`, and resume
-rejects that step instead of spawning the child again.
+step is what tears the child down. A parked child survives a process
+restart. Resume reattaches the same child run from its log and
+reestablishes the relay on the spawn step. The child stays unaddressable;
+the parent is the resume root.
 
 #### How a child park reaches the addressable run
 
@@ -776,9 +777,9 @@ input park in one of those bodies is rejected rather than relayed.
 A timed gate is exempt. Its scheduler timer resolves it in process, so
 it needs nothing upstream.
 
-A parked child does not survive a restart. Resume rejects the spawn step
-left `awaiting-signal` and records `RunFailed`. It does not spawn the
-child a second time.
+A parked child survives a process restart. Resume reattaches the same
+child run from its log and reestablishes the relay on the spawn step. The
+child stays unaddressable; the parent is the resume root.
 
 #### Recycle
 
