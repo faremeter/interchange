@@ -12,6 +12,9 @@
 // approval relay fails the spawn step. A parked child survives a process
 // restart: resume reattaches the same child run and reestablishes the
 // relay. The child stays unaddressable; the parent is the resume root.
+// A timed gate keeps its deadline across that resume. That includes a
+// gate inside a loop whose parent has not recorded the relay, and a
+// deadline that has already passed.
 
 import { describe, expect, test } from "bun:test";
 
@@ -196,6 +199,8 @@ function startRelayed(args: {
   spawnChild?: SpawnChildWorkflow;
   repoStore?: RepoStore;
   resumeFromEvents?: readonly WorkflowEvent[];
+  hasUpstreamSignalResolver?: boolean;
+  clock?: () => Date;
   onSignalPark?: (park: {
     runId: string;
     name: string;
@@ -203,7 +208,7 @@ function startRelayed(args: {
   }) => void;
 }): { run: RuntimeWorkflowRun; repoStore: RepoStore } {
   const repoStore = args.repoStore ?? createInMemoryRepoStore();
-  const clock = (): Date => new Date();
+  const clock = args.clock ?? ((): Date => new Date());
   const newId = (prefix: string): string =>
     `${prefix}-${Math.random().toString(36).slice(2, 8)}`;
   const { workflow: rewritten, bodies } = rewriteInlineChildWorkflowBodies(
@@ -237,6 +242,7 @@ function startRelayed(args: {
             authorize: allowAll,
             invokeStep: args.invokeStep,
             ...(args.loopFns !== undefined ? { loopFns: args.loopFns } : {}),
+            ...(args.clock !== undefined ? { clock: args.clock } : {}),
           },
           repoStore,
         ));
@@ -252,7 +258,7 @@ function startRelayed(args: {
     clock,
     newId,
     drain: createNoopDrainController(rewritten),
-    hasUpstreamSignalResolver: true,
+    hasUpstreamSignalResolver: args.hasUpstreamSignalResolver ?? true,
     ...(args.onPark !== undefined ? { onPark: args.onPark } : {}),
     ...(args.onSignalPark !== undefined
       ? { onSignalPark: args.onSignalPark }
@@ -2168,5 +2174,185 @@ describe("a parked childWorkflow survives a process restart", () => {
     if (timeout === undefined) throw new Error("timeout missing");
     expect(timeout).toBeGreaterThan(0);
     expect(timeout).toBeLessThanOrEqual(60_000);
+  });
+
+  test("a nested timed gate keeps its deadline when the parent has not recorded the relay", async () => {
+    const now = Date.parse("2026-01-01T00:00:00.000Z");
+    const clock = (): Date => new Date(now);
+    const parent = defineWorkflow({
+      id: "resume-nested-timed-parent",
+      trigger: { type: "manual" },
+      steps: {
+        spawn: childWorkflow({
+          definition: defineWorkflow({
+            id: "resume-nested-timed-child",
+            trigger: { type: "manual" },
+            steps: {
+              rework: loop({
+                body: defineWorkflow({
+                  id: "resume-nested-timed-body",
+                  trigger: { type: "manual" },
+                  steps: {
+                    hold: awaitSignal({
+                      name: "go",
+                      timeout: 60_000,
+                      onTimeout: "done",
+                    }),
+                    done: step({ agent, after: ["hold"] }),
+                  },
+                }),
+                while: "cont",
+                carry: "next",
+                input: { literal: 0 },
+                maxIterations: 2,
+                onExhausted: "fin",
+              }),
+              fin: step({ agent, after: ["rework"] }),
+            },
+          }),
+        }),
+      },
+    });
+    const runId = "run-resume-nested-timed";
+    const first = startRelayed({
+      definition: parent,
+      runId,
+      invokeStep: async () => ({ output: null }),
+      loopFns: loopFnsReturning(false),
+      hasUpstreamSignalResolver: false,
+      clock,
+    });
+    void first.run.complete;
+    await waitForEvent(
+      first.repoStore,
+      runId,
+      (event) =>
+        event.kind === "SignalAwaited" &&
+        event.stepId === "spawn" &&
+        event.signalName === "go",
+    );
+    const full = await copyLog(first.repoStore, runId);
+    const childId = spawnedChildId(full, "spawn");
+    const childLog = await copyLog(first.repoStore, childId);
+    const bodyId = loopBodyRunId(childId, "rework", 0);
+    const bodyLog = await copyLog(first.repoStore, bodyId);
+    expect(
+      childLog.some(
+        (event) =>
+          event.kind === "SignalAwaited" &&
+          event.signalName === "go" &&
+          event.timeoutAt !== undefined,
+      ),
+    ).toBe(true);
+    const awaitAt = full.findIndex(
+      (event) =>
+        event.kind === "SignalAwaited" &&
+        event.stepId === "spawn" &&
+        event.signalName === "go",
+    );
+    if (awaitAt < 0) throw new Error("nested await missing");
+    const parentLog = full.slice(0, awaitAt);
+    const timeouts: number[] = [];
+    const repoStore = createInMemoryRepoStore();
+    await seedLog(repoStore, childId, childLog);
+    await seedLog(repoStore, bodyId, bodyLog);
+    const { run } = startRelayed({
+      definition: parent,
+      runId,
+      invokeStep: async () => ({ output: null }),
+      loopFns: loopFnsReturning(false),
+      hasUpstreamSignalResolver: false,
+      clock,
+      repoStore,
+      resumeFromEvents: parentLog,
+      onSignalPark: (park) => {
+        if (park.timeout !== undefined) timeouts.push(park.timeout);
+      },
+    });
+    await run.signal("go", { done: true }, "sig-nested-timed");
+    const result = await run.complete;
+
+    expect(result.terminalStatus).toBe("completed");
+    expect(result.events.some((event) => event.kind === "StepFailed")).toBe(
+      false,
+    );
+    expect(timeouts.some((timeout) => timeout > 0)).toBe(true);
+  });
+
+  test("a timed gate whose deadline has passed still finishes when the parent cannot be answered", async () => {
+    let now = Date.parse("2026-01-01T00:00:00.000Z");
+    const clock = (): Date => new Date(now);
+    const parent = defineWorkflow({
+      id: "resume-expired-parent",
+      trigger: { type: "manual" },
+      steps: {
+        spawn: childWorkflow({
+          definition: defineWorkflow({
+            id: "resume-expired-child",
+            trigger: { type: "manual" },
+            steps: {
+              hold: awaitSignal({
+                name: "go",
+                timeout: 60_000,
+                onTimeout: "after",
+              }),
+              after: step({ agent, after: ["hold"] }),
+            },
+          }),
+        }),
+      },
+    });
+    const runId = "run-resume-expired";
+    const first = startRelayed({
+      definition: parent,
+      runId,
+      invokeStep: async () => ({ output: null }),
+      hasUpstreamSignalResolver: false,
+      clock,
+    });
+    void first.run.complete;
+    await waitForEvent(
+      first.repoStore,
+      runId,
+      (event) =>
+        event.kind === "SignalAwaited" &&
+        event.stepId === "spawn" &&
+        event.signalName === "go",
+    );
+    const full = await copyLog(first.repoStore, runId);
+    const childId = spawnedChildId(full, "spawn");
+    const childLog = await copyLog(first.repoStore, childId);
+    const awaited = childLog.find(
+      (event) => event.kind === "SignalAwaited" && event.signalName === "go",
+    );
+    if (awaited?.kind !== "SignalAwaited" || awaited.timeoutAt === undefined) {
+      throw new Error("child timeoutAt missing");
+    }
+    const awaitAt = full.findIndex(
+      (event) =>
+        event.kind === "SignalAwaited" &&
+        event.stepId === "spawn" &&
+        event.signalName === "go",
+    );
+    if (awaitAt < 0) throw new Error("expired await missing");
+    const parentLog = full.slice(0, awaitAt);
+    now += 120_000;
+    const repoStore = createInMemoryRepoStore();
+    await seedLog(repoStore, childId, childLog);
+    const { run } = startRelayed({
+      definition: parent,
+      runId,
+      invokeStep: async () => ({ output: null }),
+      hasUpstreamSignalResolver: false,
+      clock,
+      repoStore,
+      resumeFromEvents: parentLog,
+    });
+    const result = await run.complete;
+
+    expect(result.terminalStatus).toBe("completed");
+    expect(result.events.some((event) => event.kind === "StepFailed")).toBe(
+      false,
+    );
   });
 });
