@@ -3,7 +3,6 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { describeRoute, validator } from "hono-openapi";
 
-import { authorize } from "@intx/authz";
 import type { DB, ApprovalStore, SignalCorrelationStore } from "@intx/db";
 import { approval, sidecarAllocation } from "@intx/db/schema";
 import type { ConditionRegistry, GrantStore } from "@intx/types/authz";
@@ -29,6 +28,7 @@ import { getLogger } from "@intx/log";
 
 import type { TenantEnv } from "../context";
 import { errorResponse } from "../error-response";
+import { createAuthorizeGrant } from "../middleware/grant";
 import { ts } from "../format";
 import {
   approvalToolName,
@@ -195,15 +195,17 @@ export async function resolveApproval(
     return { kind: "not_found" };
   }
 
-  const authz = await authorize(
+  const authorizeGrant = createAuthorizeGrant({
     grantStore,
-    args.principalId,
-    args.tenantId,
-    `approval:${approval.anchorRunId}`,
-    "resolve",
     conditionRegistry,
-  );
-  if (authz.effect !== "allow") {
+  });
+  const allowed = await authorizeGrant({
+    principalId: args.principalId,
+    tenantId: args.tenantId,
+    resource: `approval:${approval.anchorRunId}`,
+    action: "resolve",
+  });
+  if (!allowed) {
     return { kind: "forbidden" };
   }
 
@@ -399,6 +401,7 @@ export function createApprovalRoutes(
   deps: CreateApprovalRoutesDeps,
 ): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
+  const authorizeGrant = createAuthorizeGrant(deps);
 
   app.get(
     "/",
@@ -429,15 +432,13 @@ export function createApprovalRoutes(
       // approvals by id via the detail route. The action is `resolve`, the
       // same capability the approve/reject routes gate on -- reading an
       // approval is part of being able to resolve it.
-      const authz = await authorize(
-        deps.grantStore,
-        principal.id,
-        tenant.id,
-        "approval:*",
-        "resolve",
-        deps.conditionRegistry,
-      );
-      if (authz.effect !== "allow") {
+      const allowed = await authorizeGrant({
+        principalId: principal.id,
+        tenantId: tenant.id,
+        resource: "approval:*",
+        action: "resolve",
+      });
+      if (!allowed) {
         return errorResponse(
           c,
           "forbidden",
@@ -502,15 +503,13 @@ export function createApprovalRoutes(
       // Same grant the approve/reject routes require: whoever can resolve this
       // approval can read it. No status filter -- a resolved approval is still
       // fetchable so the UI can show its terminal state.
-      const authz = await authorize(
-        deps.grantStore,
-        principal.id,
-        tenant.id,
-        `approval:${row.anchorRunId}`,
-        "resolve",
-        deps.conditionRegistry,
-      );
-      if (authz.effect !== "allow") {
+      const allowed = await authorizeGrant({
+        principalId: principal.id,
+        tenantId: tenant.id,
+        resource: `approval:${row.anchorRunId}`,
+        action: "resolve",
+      });
+      if (!allowed) {
         return errorResponse(
           c,
           "forbidden",
