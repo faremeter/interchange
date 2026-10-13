@@ -38,7 +38,10 @@ import type {
   PendingOperation,
 } from "@intx/types/runtime-core";
 import type { RuntimeCapabilities } from "@intx/types/runtime-capabilities";
-import { AdapterManifest } from "@intx/types/adapter-manifest";
+import {
+  type AdapterManifest,
+  parseAdapterManifestEnv,
+} from "@intx/types/adapter-manifest";
 import { evaluateGrants } from "@intx/authz";
 import type { GrantRule } from "@intx/authz";
 import { createDependencies, type AdapterRegistry } from "@intx/inference";
@@ -333,22 +336,21 @@ function parseBodyInferenceSources(raw: string): BodyInferenceSources {
  * every child.
  */
 export function parseAdapterManifest(raw: string): AdapterManifest {
-  let parsed: unknown;
+  let manifest: AdapterManifest | undefined;
   try {
-    parsed = JSON.parse(raw);
+    manifest = parseAdapterManifestEnv(raw);
   } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    throw new Error(`sidecar workflow-child substrate config: ${message}`, {
+      cause,
+    });
+  }
+  if (manifest === undefined) {
     throw new Error(
-      "sidecar workflow-child substrate config: SIDECAR_ADAPTER_MANIFEST is not valid JSON",
-      { cause },
+      "sidecar workflow-child substrate config: SIDECAR_ADAPTER_MANIFEST must be a serialized manifest",
     );
   }
-  const validated = AdapterManifest(parsed);
-  if (validated instanceof type.errors) {
-    throw new Error(
-      `sidecar workflow-child substrate config: SIDECAR_ADAPTER_MANIFEST failed validation: ${validated.summary}`,
-    );
-  }
-  return validated;
+  return manifest;
 }
 
 /**

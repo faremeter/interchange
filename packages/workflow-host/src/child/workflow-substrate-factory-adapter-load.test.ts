@@ -57,10 +57,18 @@ describe("child-side adapter manifest load path", () => {
 
   test("a malformed manifest fails loud naming the env key", () => {
     expect(() => parseAdapterManifest("{not json")).toThrow(
-      /SIDECAR_ADAPTER_MANIFEST is not valid JSON/,
+      /^sidecar workflow-child substrate config: SIDECAR_ADAPTER_MANIFEST is not valid JSON$/,
     );
     expect(() =>
       parseAdapterManifest(JSON.stringify([{ provider: 1 }])),
-    ).toThrow(/SIDECAR_ADAPTER_MANIFEST failed validation/);
+    ).toThrow(
+      /^sidecar workflow-child substrate config: SIDECAR_ADAPTER_MANIFEST failed validation: /,
+    );
+  });
+
+  test("a blank manifest is a serialization bug", () => {
+    expect(() => parseAdapterManifest(" ")).toThrow(
+      /^sidecar workflow-child substrate config: SIDECAR_ADAPTER_MANIFEST must be a serialized manifest$/,
+    );
   });
 });
