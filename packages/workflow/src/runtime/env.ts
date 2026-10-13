@@ -327,8 +327,10 @@ export interface BlobSubstrate {
  * handle across the child's parks and relays each one onto the parent run.
  * The child run stays unaddressable. A parked child survives a process
  * restart: the caller passes `resumeFromEvents` from the child log and the
- * parent reestablishes the relay. The spawn step's drain behavior is what
- * a redeploy consults, and that default is still `"cancel"`.
+ * parent reestablishes the relay. The spawn step defaults to `"wait"`, so
+ * the drain signal does not abort it, whether the child is parked or still
+ * mid-step. An explicit `"cancel"` still aborts the child through
+ * `localAbort`.
  *
  * The runtime body does not carry a definition lookup of its own.
  */

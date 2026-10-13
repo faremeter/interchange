@@ -17,6 +17,7 @@ import { createDefaultDirectorRegistry, defineAgent } from "@intx/agent";
 
 import {
   awaitSignal,
+  childWorkflow,
   defineWorkflow,
   onTrigger,
   sleep,
@@ -222,6 +223,37 @@ describe("DrainController shape", () => {
     expect(resolveDrainBehavior(def, "waitSignal")).toBe("wait");
     expect(resolveDrainBehavior(def, "cancelSignal")).toBe("cancel");
     expect(resolveDrainBehavior(def, "sleepStep")).toBe("cancel");
+  });
+
+  test("childWorkflow stores wait, and an omitted field falls back to wait", () => {
+    const child = defineWorkflow({
+      id: "child",
+      trigger: { type: "manual" },
+      steps: { s: step({ agent: makeAgent("a") }) },
+    });
+    // The constructor always writes the field. Stripping it is the only
+    // way to reach the runtime fallback for a hand-built primitive.
+    const spawned = childWorkflow({ definition: child });
+    const { drainBehavior: stored, ...omitted } = spawned;
+    expect(stored).toBe("wait");
+    const def = defineWorkflow({
+      id: "parent",
+      trigger: { type: "manual" },
+      steps: {
+        spawn: omitted,
+        cancelSpawn: childWorkflow({
+          definition: child,
+          drainBehavior: "cancel",
+        }),
+      },
+    });
+    expect(resolveDrainBehavior(def, "spawn")).toBe("wait");
+    expect(resolveDrainBehavior(def, "cancelSpawn")).toBe("cancel");
+    const spawn = def.steps["spawn"];
+    if (spawn === undefined || spawn.kind !== "childWorkflow") {
+      throw new Error("expected the omitted primitive to stay a childWorkflow");
+    }
+    expect(spawn.drainBehavior).toBeUndefined();
   });
 
   test("an onTrigger section drains as wait by default, honoring an explicit cancel", () => {

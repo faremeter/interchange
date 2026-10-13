@@ -232,8 +232,10 @@ child run from its log and reestablishes the relay on the spawn step. The
 child stays unaddressable; the parent is the resume root.
 
 On drain, the relay sits on the spawn step. That step defaults to
-`"cancel"`, so a parked child is torn down with it. The child's own
-`drainBehavior` is not what drain consults.
+`"wait"`, so the drain signal does not abort it, whether the child is
+parked or still mid-step. An explicit `"cancel"` still aborts the child
+through `localAbort`. The child's own `drainBehavior` is not what drain
+consults.
 
 An untimed park is still refused in a run whose env says nothing upstream
 can answer it. That run writes no suspension. A child may already have

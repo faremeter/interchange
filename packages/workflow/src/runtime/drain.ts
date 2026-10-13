@@ -55,7 +55,10 @@ export interface DrainController {
  *
  * The default-by-kind table mirrors the constructors in
  * `definition/primitives.ts`:
- *   - `sleep`, `childWorkflow` default to `"cancel"`.
+ *   - `sleep` defaults to `"cancel"`.
+ *   - `childWorkflow` defaults to `"wait"`. Drain consults the spawn step
+ *     for the whole time it is in flight, including a parked relay and a
+ *     child that is still mid-step.
  *   - `awaitSignal` defaults to `"wait"` (the human-in-the-loop case).
  *   - `step` defaults to `"cancel"` when its trigger budget is `1`
  *     (batch) and to `"wait"` when the budget is larger (multi-turn
@@ -89,7 +92,7 @@ export function resolveDrainBehavior(
     case "sleep":
       return primitive.drainBehavior ?? "cancel";
     case "childWorkflow":
-      return primitive.drainBehavior ?? "cancel";
+      return primitive.drainBehavior ?? "wait";
     case "onTrigger":
       // A live event-driven section is definitionally interactive;
       // draining means "stop feeding new events", not "abort the paused
