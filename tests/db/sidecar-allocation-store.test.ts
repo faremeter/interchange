@@ -17,6 +17,7 @@ import {
 
 import {
   createSidecarAllocationStore,
+  createWorkflowProbeStore,
   createWorkflowRunDispatchStore,
   createWorkflowRunLaunchSpecStore,
   SIDECAR_DEPLOYMENT_STOPPED_FAILURE_CODE,
@@ -35,6 +36,7 @@ import {
   type TestDb,
 } from "@intx/test-harness/db-harness";
 import {
+  seedAsset,
   seedPrincipal,
   seedTenants,
   seedWorkflowRun,
@@ -44,6 +46,8 @@ const TENANT_ID = "tnt-allocation";
 const DEFINITION_ID = "wfd-allocation";
 const ANCHOR_RUN_ID = "dep-allocation";
 const PRINCIPAL_ID = "prn-allocation";
+const MANIFEST_DIGEST = "1".repeat(64);
+const OTHER_MANIFEST_DIGEST = "2".repeat(64);
 
 describe.skipIf(!harnessDbEnvAvailable())(
   "sidecarAllocationStore (real DB)",
@@ -130,6 +134,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       allocationId: string,
       anchorRunId: string,
       provisionerId = "ec2-spot",
+      adapterManifestDigest = MANIFEST_DIGEST,
     ) {
       const store = createSidecarAllocationStore(h.db);
       await store.createPending({
@@ -139,6 +144,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId,
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: `${provisionerId}:test`,
+        adapterManifestDigest,
         maxDisconnectedMs: 900_000,
       });
       await store.bindInitialSidecar({
@@ -146,9 +152,42 @@ describe.skipIf(!harnessDbEnvAvailable())(
         expectedGeneration: 0,
         sidecarId: `${allocationId}-minted`,
         tokenHashSha256: new TextEncoder().encode(allocationId),
+        adapterManifestDigest,
         connectDeadline: new Date(Date.now() + 60_000),
       });
       return store;
+    }
+
+    // Puts a probing probe of the allocations' provisioner binding on its own
+    // sidecar, which then hosts no allocation.
+    async function seedProbeHost(
+      probeId: string,
+      adapterManifestDigest: string,
+    ) {
+      await seedAsset(h.db, {
+        id: "ast-allocation",
+        tenantId: TENANT_ID,
+        kind: "workflow",
+        name: "allocation-workflow",
+      });
+      const probeStore = createWorkflowProbeStore(h.db);
+      await probeStore.create({
+        id: probeId,
+        tenantId: TENANT_ID,
+        definitionAssetId: "ast-allocation",
+        source: { kind: "registry", registry: "npmjs" },
+        entry: "./workflow.mjs",
+        provisionerId: "ec2-spot",
+        provisionerApiVersion: 1,
+        provisionerBindingFingerprint: "ec2-spot:test",
+        adapterManifestDigest,
+      });
+      await probeStore.bindSidecar({
+        probeId,
+        sidecarId: `${probeId}-minted`,
+        tokenHashSha256: new TextEncoder().encode(probeId),
+      });
+      await probeStore.markProbing({ probeId });
     }
 
     describe("placing an allocation on an existing sidecar", () => {
@@ -235,6 +274,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             provisionerId: "ec2-spot",
             provisionerApiVersion: 1 as const,
             provisionerBindingFingerprint: "ec2-spot:test",
+            adapterManifestDigest: MANIFEST_DIGEST,
             maxDisconnectedMs: 900_000,
             sidecarId: "alloc-first-minted",
             status: "allocated" as const,
@@ -281,6 +321,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             provisionerId: "ec2-spot",
             provisionerApiVersion: 1 as const,
             provisionerBindingFingerprint: "ec2-spot:test",
+            adapterManifestDigest: MANIFEST_DIGEST,
             maxDisconnectedMs: 900_000,
             sidecarId: "alloc-first-minted",
             status: "allocated" as const,
@@ -297,6 +338,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             provisionerId: "ec2-spot",
             provisionerApiVersion: 1,
             provisionerBindingFingerprint: "ec2-spot:test",
+            adapterManifestDigest: MANIFEST_DIGEST,
             maxDisconnectedMs: 900_000,
             sidecarId: "alloc-first-minted",
             generation: 1,
@@ -306,6 +348,90 @@ describe.skipIf(!harnessDbEnvAvailable())(
           `it already hosts ${String(MAX_SIDECAR_INCARNATIONS)} deployments`,
         );
         expect(await store.findById("probe-adopted")).toBeNull();
+      });
+
+      test("rejects a sidecar whose allocation booted with another adapter manifest", async () => {
+        await seedAnchor("anchor-second");
+        const store = await bindFirstGeneration(
+          "alloc-first",
+          ANCHOR_RUN_ID,
+          "ec2-spot",
+          OTHER_MANIFEST_DIGEST,
+        );
+        await store.markAllocated({
+          allocationId: "alloc-first",
+          generation: 1,
+        });
+        await bindFirstGeneration("alloc-second", "anchor-second");
+
+        await expect(
+          store.markAllocated({
+            allocationId: "alloc-second",
+            generation: 1,
+            sidecarId: "alloc-first-minted",
+          }),
+        ).rejects.toBeInstanceOf(SidecarReuseRejectedError);
+        expect(await store.findById("alloc-second")).toMatchObject({
+          status: "provisioning",
+          sidecarId: "alloc-second-minted",
+          adapterManifestDigest: MANIFEST_DIGEST,
+        });
+      });
+
+      test("rejects a sidecar whose allocation predates recording the adapter manifest", async () => {
+        await seedAnchor("anchor-second");
+        const store = await bindFirstGeneration("alloc-first", ANCHOR_RUN_ID);
+        await store.markAllocated({
+          allocationId: "alloc-first",
+          generation: 1,
+        });
+        await h.db
+          .update(sidecarAllocation)
+          .set({ adapterManifestDigest: "unrecorded" })
+          .where(eq(sidecarAllocation.id, "alloc-first"));
+        await bindFirstGeneration("alloc-second", "anchor-second");
+
+        await expect(
+          store.markAllocated({
+            allocationId: "alloc-second",
+            generation: 1,
+            sidecarId: "alloc-first-minted",
+          }),
+        ).rejects.toBeInstanceOf(SidecarReuseRejectedError);
+      });
+
+      test("places an allocation on a sidecar whose probe booted with the same adapter manifest", async () => {
+        await seedProbeHost("probe-host", MANIFEST_DIGEST);
+        const store = await bindFirstGeneration("alloc-first", ANCHOR_RUN_ID);
+
+        expect(
+          await store.markAllocated({
+            allocationId: "alloc-first",
+            generation: 1,
+            sidecarId: "probe-host-minted",
+          }),
+        ).toMatchObject({
+          status: "allocated",
+          sidecarId: "probe-host-minted",
+          adapterManifestDigest: MANIFEST_DIGEST,
+        });
+      });
+
+      test("rejects a sidecar whose probe booted with another adapter manifest", async () => {
+        await seedProbeHost("probe-host", OTHER_MANIFEST_DIGEST);
+        const store = await bindFirstGeneration("alloc-first", ANCHOR_RUN_ID);
+
+        await expect(
+          store.markAllocated({
+            allocationId: "alloc-first",
+            generation: 1,
+            sidecarId: "probe-host-minted",
+          }),
+        ).rejects.toBeInstanceOf(SidecarReuseRejectedError);
+        expect(await store.findById("alloc-first")).toMatchObject({
+          status: "provisioning",
+          sidecarId: "alloc-first-minted",
+        });
       });
 
       test("rejects a sidecar another provisioner runs", async () => {
@@ -340,6 +466,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "ec2-spot",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "ec2-spot:test",
+        adapterManifestDigest: MANIFEST_DIGEST,
         maxDisconnectedMs: 900_000,
       });
       const leaseId = `${id}-lease`;
@@ -349,6 +476,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         expectedGeneration: 0,
         sidecarId: `${id}-sidecar`,
         tokenHashSha256: new Uint8Array([1, 2, 3]),
+        adapterManifestDigest: MANIFEST_DIGEST,
         connectDeadline: new Date(Date.now() + 60_000),
         expectedLeaseId: leaseId,
       });
@@ -825,6 +953,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "ec2-spot",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "ec2-spot:test",
+        adapterManifestDigest: MANIFEST_DIGEST,
         maxDisconnectedMs: 900_000,
       });
       expect(pending.status).toBe("pending");
@@ -835,6 +964,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         expectedGeneration: 0,
         sidecarId: "sidecar-generation-1",
         tokenHashSha256: new Uint8Array([1, 2, 3]),
+        adapterManifestDigest: MANIFEST_DIGEST,
         connectDeadline: new Date(0),
       });
       expect(initial?.status).toBe("provisioning");
@@ -923,6 +1053,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         generation: 2,
         sidecarId: "sidecar-generation-2",
         tokenHashSha256: new Uint8Array([4, 5, 6]),
+        adapterManifestDigest: MANIFEST_DIGEST,
         connectDeadline: new Date(Date.now() + 60_000),
       });
       expect(replacement?.status).toBe("provisioning");
@@ -955,6 +1086,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "ec2-spot",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "ec2-spot:test",
+        adapterManifestDigest: MANIFEST_DIGEST,
         maxDisconnectedMs: 900_000,
       });
       await store.bindInitialSidecar({
@@ -962,6 +1094,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         expectedGeneration: 0,
         sidecarId: "sidecar-allocated",
         tokenHashSha256: new Uint8Array([1, 2, 3]),
+        adapterManifestDigest: MANIFEST_DIGEST,
         connectDeadline: new Date(0),
       });
       await store.markAllocated({ allocationId: pending.id, generation: 1 });
@@ -1004,6 +1137,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           provisionerId: "ec2-spot",
           provisionerApiVersion: 1,
           provisionerBindingFingerprint: "ec2-spot:test",
+          adapterManifestDigest: MANIFEST_DIGEST,
           maxDisconnectedMs: 900_000,
         }),
       ).rejects.toThrow(/has no launch specification/);
@@ -1018,6 +1152,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "ec2-spot",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "ec2-spot:test",
+        adapterManifestDigest: MANIFEST_DIGEST,
         maxDisconnectedMs: 900_000,
       });
 
@@ -1110,6 +1245,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           provisionerId: "test",
           provisionerApiVersion: 1,
           provisionerBindingFingerprint: "test:v1",
+          adapterManifestDigest: MANIFEST_DIGEST,
           maxDisconnectedMs: 900_000,
           sidecarId: id,
           generation: 1,
@@ -1191,6 +1327,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "ec2-spot",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "ec2-spot:test",
+        adapterManifestDigest: MANIFEST_DIGEST,
         maxDisconnectedMs: 900_000,
       } as const;
       const first = await store.createPending({
@@ -1244,6 +1381,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "ec2-spot",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "ec2-spot:test",
+        adapterManifestDigest: MANIFEST_DIGEST,
         maxDisconnectedMs: 900_000,
       });
       await store.claimNextReconcilable({
@@ -1290,6 +1428,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "ec2-spot",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "ec2-spot:test",
+        adapterManifestDigest: MANIFEST_DIGEST,
         maxDisconnectedMs: 900_000,
       });
       await store.claimNextReconcilable({
@@ -1301,6 +1440,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         expectedGeneration: 0,
         sidecarId: "sidecar-park-wake",
         tokenHashSha256: new Uint8Array([1, 2, 3]),
+        adapterManifestDigest: MANIFEST_DIGEST,
         connectDeadline: new Date(Date.now() + 60_000),
         expectedLeaseId: "lease-park-wake",
       });
@@ -1335,6 +1475,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "ec2-spot",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "ec2-spot:test",
+        adapterManifestDigest: MANIFEST_DIGEST,
         maxDisconnectedMs: 900_000,
       });
       await store.bindInitialSidecar({
@@ -1342,6 +1483,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         expectedGeneration: 0,
         sidecarId: "sidecar-park-backoff",
         tokenHashSha256: new Uint8Array([1, 2, 3]),
+        adapterManifestDigest: MANIFEST_DIGEST,
         connectDeadline: new Date(Date.now() + 60_000),
       });
       await store.markAllocated({
@@ -1390,6 +1532,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "ec2-spot",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "ec2-spot:test",
+        adapterManifestDigest: MANIFEST_DIGEST,
         maxDisconnectedMs: 900_000,
       });
       const claimed = await store.claimNextReconcilable({
@@ -1402,6 +1545,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         expectedGeneration: 0,
         sidecarId: "sidecar-ready",
         tokenHashSha256: new Uint8Array([7, 8, 9]),
+        adapterManifestDigest: MANIFEST_DIGEST,
         connectDeadline: new Date(Date.now() + 60_000),
         expectedLeaseId: "lease-ready",
       });
@@ -1701,6 +1845,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "ec2-spot",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "ec2-spot:test",
+        adapterManifestDigest: MANIFEST_DIGEST,
         maxDisconnectedMs: 120_000,
       });
       await store.bindInitialSidecar({
@@ -1708,6 +1853,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         expectedGeneration: 0,
         sidecarId: "sidecar-reconnect",
         tokenHashSha256: new Uint8Array([1, 2, 3]),
+        adapterManifestDigest: MANIFEST_DIGEST,
         connectDeadline: new Date(Date.now() + 60_000),
       });
       await store.markAllocated({
@@ -1778,6 +1924,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "ec2-spot",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "ec2-spot:test",
+        adapterManifestDigest: MANIFEST_DIGEST,
         maxDisconnectedMs: 600_000,
       });
       const stored = new Date(Date.now() + 60_000);
@@ -1786,6 +1933,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         expectedGeneration: 0,
         sidecarId: "sidecar-hub-start",
         tokenHashSha256: new Uint8Array([7, 8, 9]),
+        adapterManifestDigest: MANIFEST_DIGEST,
         connectDeadline: stored,
       });
       await store.markAllocated({
@@ -1838,6 +1986,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "ec2-spot",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "ec2-spot:test",
+        adapterManifestDigest: MANIFEST_DIGEST,
         maxDisconnectedMs: 120_000,
       });
       await store.bindInitialSidecar({
@@ -1845,6 +1994,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         expectedGeneration: 0,
         sidecarId: "sidecar-repair",
         tokenHashSha256: new Uint8Array([4, 5, 6]),
+        adapterManifestDigest: MANIFEST_DIGEST,
         connectDeadline: new Date(Date.now() + 60_000),
       });
       await store.markAllocated({
@@ -2045,6 +2195,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "ec2-spot",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "ec2-spot:test",
+        adapterManifestDigest: MANIFEST_DIGEST,
         maxDisconnectedMs: 900_000,
       });
       await store.bindInitialSidecar({
@@ -2052,6 +2203,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         expectedGeneration: 0,
         sidecarId: "sidecar-terminal",
         tokenHashSha256: new Uint8Array([1, 2, 3]),
+        adapterManifestDigest: MANIFEST_DIGEST,
         connectDeadline: new Date(0),
       });
       expect(
@@ -2143,6 +2295,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           provisionerId: "ec2-spot",
           provisionerApiVersion: 1,
           provisionerBindingFingerprint: "ec2-spot:test",
+          adapterManifestDigest: MANIFEST_DIGEST,
           maxDisconnectedMs: 900_000,
         });
         await store.bindInitialSidecar({
@@ -2150,6 +2303,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           expectedGeneration: 0,
           sidecarId: "sidecar-destroy",
           tokenHashSha256: new Uint8Array([1, 2, 3]),
+          adapterManifestDigest: MANIFEST_DIGEST,
           connectDeadline: new Date(0),
         });
         if (status === "releasing") {
@@ -2274,6 +2428,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             generation: 2,
             sidecarId: "sidecar-replacement",
             tokenHashSha256: new Uint8Array([4, 5, 6]),
+            adapterManifestDigest: MANIFEST_DIGEST,
             connectDeadline: new Date(0),
           }),
         ).toBeNull();
@@ -2301,6 +2456,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           provisionerId: "ec2-spot",
           provisionerApiVersion: 1,
           provisionerBindingFingerprint: "ec2-spot:test",
+          adapterManifestDigest: MANIFEST_DIGEST,
           maxDisconnectedMs: 900_000,
         });
         await store.bindInitialSidecar({
@@ -2308,6 +2464,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           expectedGeneration: 0,
           sidecarId: "sidecar-other",
           tokenHashSha256: new Uint8Array([4, 5, 7]),
+          adapterManifestDigest: MANIFEST_DIGEST,
           connectDeadline: new Date(0),
         });
         // Capacity left for operator cleanup hosts no current work, so no
@@ -2340,6 +2497,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "ec2-spot",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "ec2-spot:test",
+        adapterManifestDigest: MANIFEST_DIGEST,
         maxDisconnectedMs: 900_000,
       });
       expect(pending.status).toBe("pending");
@@ -2349,6 +2507,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         expectedGeneration: 0,
         sidecarId: "sidecar-deployed",
         tokenHashSha256: new Uint8Array([1, 2, 3]),
+        adapterManifestDigest: MANIFEST_DIGEST,
         connectDeadline: new Date(0),
       });
       expect(
@@ -2401,6 +2560,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "ec2-spot",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "ec2-spot:test",
+        adapterManifestDigest: MANIFEST_DIGEST,
         maxDisconnectedMs: 900_000,
       });
       await store.bindInitialSidecar({
@@ -2408,6 +2568,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         expectedGeneration: 0,
         sidecarId: "sidecar-unrecoverable",
         tokenHashSha256: new Uint8Array([1, 2, 3]),
+        adapterManifestDigest: MANIFEST_DIGEST,
         connectDeadline: new Date(0),
       });
       await store.markAllocated({
@@ -2529,6 +2690,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "ec2-spot",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "ec2-spot:test",
+        adapterManifestDigest: MANIFEST_DIGEST,
         maxDisconnectedMs: 900_000,
       });
       await store.bindInitialSidecar({
@@ -2536,6 +2698,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         expectedGeneration: 0,
         sidecarId: "sidecar-stopped",
         tokenHashSha256: new Uint8Array([1, 2, 3]),
+        adapterManifestDigest: MANIFEST_DIGEST,
         connectDeadline: new Date(0),
       });
       await store.markAllocated({

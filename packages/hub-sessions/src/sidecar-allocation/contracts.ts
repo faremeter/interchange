@@ -25,6 +25,11 @@ export type EnsureSidecarRequest = {
    * Passed through opaquely — the sidecar's adapter registry is the single
    * authority that resolves entries and admits `model_provider.plugin`
    * values at deploy time. Absent means no custom adapters are declared.
+   * A sidecar reads its manifest only when it starts, so a provisioner that
+   * answers with a sidecar it already runs must return one that booted with
+   * this manifest, also when it retries an ensure for the same generation.
+   * The Hub refuses reuse across a manifest change, so a changed manifest
+   * applies to new placements only.
    */
   readonly adapterManifest?: AdapterManifest;
 };

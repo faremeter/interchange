@@ -28,6 +28,7 @@ import {
 const TENANT_ID = "tenant-reuse-locks";
 const ASSET_ID = "asset-reuse-locks";
 const SHARED_SIDECAR_ID = "sidecar-shared";
+const MANIFEST_DIGEST = "1".repeat(64);
 const BINDING = {
   provisionerId: "test",
   provisionerApiVersion: 1,
@@ -97,6 +98,7 @@ describe.skipIf(!harnessDbEnvAvailable())("sidecar ownership locking", () => {
       generation: 1,
       maxDisconnectedMs: 900_000,
       ...BINDING,
+      adapterManifestDigest: MANIFEST_DIGEST,
     });
   }
 
@@ -117,6 +119,7 @@ describe.skipIf(!harnessDbEnvAvailable())("sidecar ownership locking", () => {
         wireHash: "a".repeat(64),
       },
       ...BINDING,
+      adapterManifestDigest: MANIFEST_DIGEST,
     });
   }
 
@@ -227,6 +230,7 @@ describe.skipIf(!harnessDbEnvAvailable())("sidecar ownership locking", () => {
                 generation: 1,
                 sidecarId: "sidecar-replacement",
                 tokenHashSha256: new TextEncoder().encode("replacement"),
+                adapterManifestDigest: MANIFEST_DIGEST,
                 connectDeadline: new Date(Date.now() + 60_000),
               });
           }
@@ -313,6 +317,7 @@ describe.skipIf(!harnessDbEnvAvailable())("sidecar ownership locking", () => {
               maxDisconnectedMs: 900_000,
               connectDeadline: new Date(Date.now() + 60_000),
               ...BINDING,
+              adapterManifestDigest: MANIFEST_DIGEST,
             },
             tx,
           );

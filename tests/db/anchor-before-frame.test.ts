@@ -95,6 +95,7 @@ const INFERENCE_SOURCE: InferenceSource = {
   model: "mock-model",
 };
 const SOURCES = { only: [INFERENCE_SOURCE] };
+const MANIFEST_DIGEST = "1".repeat(64);
 const CONFIG: HarnessConfig = {
   sessionId: "ses-anchor-before-frame",
   agentId: ANCHOR_RUN_ID,
@@ -240,6 +241,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "provisioner-anchor-test",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "fp-anchor-test",
+        adapterManifestDigest: MANIFEST_DIGEST,
         maxDisconnectedMs: 900_000,
         status: "allocated",
         generation: ALLOC_GENERATION,

@@ -21,6 +21,7 @@ import {
 } from "@intx/db/schema";
 import { eq } from "drizzle-orm";
 import {
+  adapterManifestDigest,
   createSidecarCredentialResolver,
   createSidecarPluginRegistry,
   createSidecarRouter,
@@ -67,6 +68,14 @@ const OFFERING_ID = "mof-workflow-probe";
 const CREDENTIAL_ID = "cred-workflow-probe";
 const CREDENTIAL_SECRET = "probe-test-secret";
 const CIPHER = createEnvKeyCredentialCipher(new Uint8Array(32).fill(7));
+const MANIFEST_DIGEST = "1".repeat(64);
+const ADAPTER_MANIFEST = [
+  {
+    provider: "openai-responses",
+    specifier: "@corbits/openai-responses",
+    export: "createAdapter",
+  },
+];
 const SOURCE: WorkflowDefinitionSource = {
   kind: "asset",
   assetId: ASSET_ID,
@@ -407,13 +416,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         },
         hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
         defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
-        adapterManifest: [
-          {
-            provider: "openai-responses",
-            specifier: "@corbits/openai-responses",
-            export: "createAdapter",
-          },
-        ],
+        adapterManifest: ADAPTER_MANIFEST,
         createAllocationId: () => "sal-probe-adopted",
         createSidecarId: () => "sc-probe-adopted",
         createToken: () => "probe-token",
@@ -427,13 +430,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(prepared.allocationId).toBe("sal-probe-adopted");
       expect(ensureCalls).toHaveLength(1);
       expect(ensureCalls[0]).toMatchObject({
-        adapterManifest: [
-          {
-            provider: "openai-responses",
-            specifier: "@corbits/openai-responses",
-            export: "createAdapter",
-          },
-        ],
+        adapterManifest: ADAPTER_MANIFEST,
       });
       expect(destroyCalls).toHaveLength(0);
       expect(detachCalls).toEqual([]);
@@ -444,6 +441,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         status: "succeeded",
         provisionerId: "sandbox",
         sidecarId: "sc-probe-adopted",
+        adapterManifestDigest: await adapterManifestDigest(ADAPTER_MANIFEST),
       });
       expect(probe?.result).toEqual(probeResult());
       expect(probe === undefined || !("sourceOfferingIds" in probe)).toBe(true);
@@ -458,6 +456,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         ensureAcceptedGeneration: 0,
         sidecarId: "sc-probe-adopted",
         maxDisconnectedMs: 2_400_000,
+        adapterManifestDigest: await adapterManifestDigest(ADAPTER_MANIFEST),
       });
       expect(
         await h.db.query.workflowRun.findFirst({
@@ -988,6 +987,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: provisioner.id,
         provisionerApiVersion: provisioner.apiVersion,
         provisionerBindingFingerprint: provisioner.bindingFingerprint,
+        adapterManifestDigest: MANIFEST_DIGEST,
       });
       await probeStore.bindSidecar({
         probeId: "sal-startup-cleanup",
@@ -1104,6 +1104,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         },
         hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
         defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
+        adapterManifest: ADAPTER_MANIFEST,
         createAllocationId: () => {
           const id = ids.shift();
           if (id === undefined) throw new Error("unexpected allocation id");
@@ -1126,7 +1127,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         await h.db.query.workflowProbe.findFirst({
           where: eq(workflowProbe.id, "sal-probe-released"),
         }),
-      ).toMatchObject({ status: "succeeded" });
+      ).toMatchObject({
+        status: "succeeded",
+        adapterManifestDigest: await adapterManifestDigest(ADAPTER_MANIFEST),
+      });
       expect(
         await createSidecarAllocationStore(h.db).findByAnchorRunId(
           "run-probe-released",
@@ -1135,6 +1139,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: "sal-workflow-pending",
         status: "pending",
         provisionerId: "ios-worker",
+        adapterManifestDigest: await adapterManifestDigest(ADAPTER_MANIFEST),
       });
     });
 

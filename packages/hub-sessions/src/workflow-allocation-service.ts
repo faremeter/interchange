@@ -39,6 +39,7 @@ import {
 
 import type { DeployContent } from "./agent-repo";
 import {
+  adapterManifestDigest,
   DestroySidecarResult,
   EnsureSidecarResult,
   type SidecarCapabilityMismatch,
@@ -251,6 +252,7 @@ export function createWorkflowAllocationService({
   const allocationStore = createSidecarAllocationStore(db);
   const probeStore = createWorkflowProbeStore(db);
   const launchSpecStore = createWorkflowRunLaunchSpecStore(db);
+  const currentAdapterManifestDigest = adapterManifestDigest(adapterManifest);
   const validatedProbeCapabilityRules =
     SidecarCapabilityRule.array()(probeCapabilityRules);
 
@@ -399,6 +401,7 @@ export function createWorkflowAllocationService({
     provisioner: SidecarProvisioner;
     probe: WorkflowProbe;
     adoptProbe: boolean;
+    adapterManifestDigest: string;
   }): Promise<PreparedProvisionedWorkflowDeployment> {
     const { request, approved, provisioner, probe, adoptProbe } = args;
     const probeSidecarId = probe.sidecarId;
@@ -482,6 +485,7 @@ export function createWorkflowAllocationService({
             provisionerApiVersion: provisioner.apiVersion,
             provisionerBindingFingerprint: provisioner.bindingFingerprint,
             sidecarId: probeSidecarId,
+            adapterManifestDigest: args.adapterManifestDigest,
             generation: probe.generation,
             ...(probe.externalRef !== null
               ? { externalRef: probe.externalRef }
@@ -510,6 +514,7 @@ export function createWorkflowAllocationService({
             provisionerId: provisioner.id,
             provisionerApiVersion: provisioner.apiVersion,
             provisionerBindingFingerprint: provisioner.bindingFingerprint,
+            adapterManifestDigest: args.adapterManifestDigest,
             maxDisconnectedMs,
             now: createdAt,
           },
@@ -575,6 +580,7 @@ export function createWorkflowAllocationService({
       }),
     );
     const probeId = createAllocationId();
+    const digest = await currentAdapterManifestDigest;
     let probe = await probeStore.create({
       id: probeId,
       tenantId: args.tenantId,
@@ -585,6 +591,7 @@ export function createWorkflowAllocationService({
       provisionerId: probeProvisioner.id,
       provisionerApiVersion: probeProvisioner.apiVersion,
       provisionerBindingFingerprint: probeProvisioner.bindingFingerprint,
+      adapterManifestDigest: digest,
       now: now(),
     });
 
@@ -736,6 +743,7 @@ export function createWorkflowAllocationService({
         provisioner: deploymentProvisioner,
         probe,
         adoptProbe,
+        adapterManifestDigest: digest,
       });
     } catch (error) {
       try {

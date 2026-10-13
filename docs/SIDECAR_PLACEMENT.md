@@ -108,6 +108,18 @@ same ones. It reports each of them stopped after every `welcome`, outside the
 `hello`: the Hub fails a current deployment left out and undeploys a stale
 one, which deletes its run record.
 
+A sidecar reads its adapter manifest only when it starts. A provisioner that
+answers `ensure` with a sidecar it already runs must return one that booted
+with the `adapterManifest` the request carries. This rule also applies when the
+provisioner retries an `ensure` for the same generation. The Hub records a
+digest of the manifest with each probe and allocation generation. It accepts a
+reused sidecar only when the work that the sidecar hosts has the same digest.
+Thus the Hub refuses reuse across a manifest change. A deployment that adopts
+its probe's sidecar needs no such check, because the same call created that
+probe under the same manifest. Work recorded before the Hub kept these digests
+never matches. A manifest change applies to new placements only: work that
+runs stays on its sidecar.
+
 Work placed on a sidecar a provisioner already runs gets the same 2 minutes to
 connect as a new sidecar, even while that sidecar is restarting: after that a
 probe fails, and a deployment is failed and has to be started again, which

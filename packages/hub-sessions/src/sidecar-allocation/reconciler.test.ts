@@ -21,6 +21,7 @@ import {
   TEST_TARGET,
   tick,
 } from "../ws/sidecar-handler.test-helpers";
+import { adapterManifestDigest } from "./adapter-manifest-digest";
 import type { EnsureSidecarResult, SidecarProvisioner } from "./contracts";
 import {
   SidecarDeploymentMissingError,
@@ -34,6 +35,8 @@ import {
 } from "./reconciler";
 
 const NOW = new Date("2026-08-03T12:00:00.000Z");
+// The digest a reconciler with no declared adapter manifest records.
+const NO_MANIFEST_DIGEST = await adapterManifestDigest(undefined);
 
 function allocation(
   overrides: Partial<SidecarAllocation> = {},
@@ -45,6 +48,7 @@ function allocation(
     provisionerId: "test",
     provisionerApiVersion: 1,
     provisionerBindingFingerprint: "test:v1",
+    adapterManifestDigest: NO_MANIFEST_DIGEST,
     maxDisconnectedMs: 900_000,
     status: "pending",
     generation: 0,
@@ -374,13 +378,17 @@ describe("createSidecarAllocationReconciler", () => {
       },
     ];
     let claimed = false;
+    let recordedDigest: string | undefined;
     const store = fakeStore({
       claimNextReconcilable: async () => {
         if (claimed) return null;
         claimed = true;
         return pending;
       },
-      bindInitialSidecar: async () => provisioning,
+      bindInitialSidecar: async (args) => {
+        recordedDigest = args.adapterManifestDigest;
+        return { ...provisioning, adapterManifestDigest: recordedDigest };
+      },
       parkReconciliation: async () => true,
     });
     let ensuredManifest: unknown;
@@ -396,6 +404,61 @@ describe("createSidecarAllocationReconciler", () => {
 
     expect(await reconciler.reconcileNext()).toBe(true);
     expect(ensuredManifest).toEqual(adapterManifest);
+    expect(recordedDigest).toBe(await adapterManifestDigest(adapterManifest));
+  });
+
+  test("records the adapter manifest digest when it binds a replacement sidecar", async () => {
+    const replacing = allocation({
+      status: "replacing",
+      generation: 2,
+      sidecarId: "sc-old",
+      externalRef: "vm-old",
+    });
+    const provisioning = allocation({
+      ...replacing,
+      status: "provisioning",
+      sidecarId: "sc-new",
+      connectDeadline: new Date(NOW.getTime() + 120_000),
+      reconciliationLeaseId: "lease-1",
+    });
+    const adapterManifest = [
+      {
+        provider: "openai-responses",
+        specifier: "@corbits/openai-responses",
+        export: "createAdapter",
+      },
+    ];
+    let claimed = false;
+    let recordedDigest: string | undefined;
+    const store = fakeStore({
+      claimNextReconcilable: async () => {
+        if (claimed) return null;
+        claimed = true;
+        return replacing;
+      },
+      bindReplacementSidecar: async (args) => {
+        recordedDigest = args.adapterManifestDigest;
+        return { ...provisioning, adapterManifestDigest: recordedDigest };
+      },
+      parkReconciliation: async () => true,
+    });
+    let ensuredManifest: unknown;
+    const provisioner = testProvisioner({
+      async destroy() {
+        return { kind: "destroyed" };
+      },
+      async ensure(request) {
+        ensuredManifest = request.adapterManifest;
+        return { kind: "accepted" };
+      },
+    });
+    const reconciler = createSidecarAllocationReconciler(
+      deps({ store, provisioner, adapterManifest }),
+    );
+
+    expect(await reconciler.reconcileNext()).toBe(true);
+    expect(ensuredManifest).toEqual(adapterManifest);
+    expect(recordedDigest).toBe(await adapterManifestDigest(adapterManifest));
   });
 
   test("parks an accepted provision without waiting for its websocket", async () => {

@@ -23,6 +23,8 @@ export type CreateWorkflowProbeArgs = {
   readonly provisionerId: string;
   readonly provisionerApiVersion: 1;
   readonly provisionerBindingFingerprint: string;
+  /** The adapter manifest the probe's ensure carries. */
+  readonly adapterManifestDigest: string;
   readonly now?: Date;
 };
 
@@ -93,6 +95,7 @@ export function createWorkflowProbeStore(db: DBHandle) {
           provisionerId: args.provisionerId,
           provisionerApiVersion: args.provisionerApiVersion,
           provisionerBindingFingerprint: args.provisionerBindingFingerprint,
+          adapterManifestDigest: args.adapterManifestDigest,
           createdAt,
           updatedAt: createdAt,
         })
@@ -176,6 +179,7 @@ export function createWorkflowProbeStore(db: DBHandle) {
               provisionerBindingFingerprint:
                 probe.provisionerBindingFingerprint,
             },
+            adapterManifestDigest: probe.adapterManifestDigest,
             placing: { allocationId: probe.id },
           });
         }

@@ -30,6 +30,7 @@ const TENANT_ID = "tnt-dispatch";
 const DEFINITION_ID = "wfd-dispatch";
 const ANCHOR_RUN_ID = "dep-dispatch";
 const SENDER_ADDRESS = "principal-dispatch@tnt-dispatch.example";
+const MANIFEST_DIGEST = "1".repeat(64);
 
 describe.skipIf(!harnessDbEnvAvailable())(
   "workflowRunDispatchStore (real DB)",
@@ -73,6 +74,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "ec2-spot",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "ec2-spot:test",
+        adapterManifestDigest: MANIFEST_DIGEST,
         maxDisconnectedMs: 900_000,
         sidecarId: "sidecar-ack",
         status: "allocated",
@@ -248,6 +250,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "ec2-spot",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "ec2-spot:test",
+        adapterManifestDigest: MANIFEST_DIGEST,
         maxDisconnectedMs: 900_000,
         sidecarId: "sidecar-other",
         status: "allocated",

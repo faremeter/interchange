@@ -67,6 +67,12 @@ export type SidecarAllocation = {
   readonly provisionerApiVersion: 1;
   readonly provisionerBindingFingerprint: string;
   readonly sidecarId?: string;
+  /**
+   * The digest of the adapter manifest that the Hub sent, or will send, in
+   * the ensure for the current generation. For a row with a sidecar, it is
+   * the manifest that the sidecar booted with.
+   */
+  readonly adapterManifestDigest: string;
   readonly status: SidecarAllocationStatus;
   readonly generation: number;
   readonly ensureAcceptedGeneration?: number;
@@ -96,6 +102,7 @@ export type CreatePendingSidecarAllocationArgs = {
   readonly provisionerId: string;
   readonly provisionerApiVersion: 1;
   readonly provisionerBindingFingerprint: string;
+  readonly adapterManifestDigest: string;
   readonly maxDisconnectedMs: number;
   readonly now?: Date;
 };
@@ -129,6 +136,8 @@ export type BindInitialSidecarArgs = {
   readonly expectedGeneration: number;
   readonly sidecarId: string;
   readonly tokenHashSha256: Uint8Array;
+  /** The adapter manifest the ensure for this sidecar carries. */
+  readonly adapterManifestDigest: string;
   readonly connectDeadline: Date;
   readonly expectedLeaseId?: string;
   readonly now?: Date;
@@ -139,6 +148,8 @@ export type BindReplacementSidecarArgs = {
   readonly generation: number;
   readonly sidecarId: string;
   readonly tokenHashSha256: Uint8Array;
+  /** The adapter manifest the ensure for this sidecar carries. */
+  readonly adapterManifestDigest: string;
   readonly connectDeadline: Date;
   readonly expectedLeaseId?: string;
   readonly now?: Date;
@@ -284,6 +295,7 @@ function parseSidecarAllocationRow(
     ),
     provisionerBindingFingerprint: row.provisionerBindingFingerprint,
     ...(row.sidecarId !== null ? { sidecarId: row.sidecarId } : {}),
+    adapterManifestDigest: row.adapterManifestDigest,
     status: SidecarAllocationStatusValidator.assert(row.status),
     generation: row.generation,
     ...(row.ensureAcceptedGeneration !== null
@@ -697,6 +709,7 @@ export function createSidecarAllocationStore(db: DBHandle) {
         provisionerApiVersion: args.provisionerApiVersion,
         provisionerBindingFingerprint: args.provisionerBindingFingerprint,
         sidecarId: args.sidecarId,
+        adapterManifestDigest: args.adapterManifestDigest,
         status: "allocated",
         generation: args.generation,
         ensureAcceptedGeneration: args.generation,
@@ -810,6 +823,7 @@ export function createSidecarAllocationStore(db: DBHandle) {
           provisionerId: args.provisionerId,
           provisionerApiVersion: args.provisionerApiVersion,
           provisionerBindingFingerprint: args.provisionerBindingFingerprint,
+          adapterManifestDigest: args.adapterManifestDigest,
           status: "pending",
           generation: 0,
           maxDisconnectedMs: args.maxDisconnectedMs,
@@ -869,6 +883,7 @@ export function createSidecarAllocationStore(db: DBHandle) {
           .update(sidecarAllocation)
           .set({
             sidecarId: args.sidecarId,
+            adapterManifestDigest: args.adapterManifestDigest,
             status: "provisioning",
             generation: args.expectedGeneration + 1,
             ensureAcceptedGeneration: null,
@@ -921,6 +936,7 @@ export function createSidecarAllocationStore(db: DBHandle) {
           .update(sidecarAllocation)
           .set({
             sidecarId: args.sidecarId,
+            adapterManifestDigest: args.adapterManifestDigest,
             status: "provisioning",
             ensureAcceptedGeneration: null,
             externalRef: null,
@@ -986,6 +1002,7 @@ export function createSidecarAllocationStore(db: DBHandle) {
               provisionerBindingFingerprint:
                 allocation.provisionerBindingFingerprint,
             },
+            adapterManifestDigest: allocation.adapterManifestDigest,
             placing: { allocationId: allocation.id },
           });
           await assertSidecarHasRoom(tx, {
@@ -1073,6 +1090,9 @@ export function createSidecarAllocationStore(db: DBHandle) {
           (await initializationCompleted(tx, args))
         )
           return null;
+        // The digest stays: the row still names the sidecar being destroyed,
+        // which hosts it for reuse until `destroy` returns, and
+        // `bindReplacementSidecar` records the digest of the next sidecar.
         const [updated] = await tx
           .update(sidecarAllocation)
           .set({

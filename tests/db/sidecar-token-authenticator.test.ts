@@ -31,6 +31,7 @@ import {
 } from "@intx/test-harness/seed";
 
 const TENANT_ID = "tnt-sidecar-auth";
+const MANIFEST_DIGEST = "1".repeat(64);
 
 // The mock-DB unit test proves the authenticator's control flow, but it
 // never exercises the real `bytea` lookup: the token hash is written to
@@ -97,6 +98,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           provisionerId: "test",
           provisionerApiVersion: 1,
           provisionerBindingFingerprint: "test:v1",
+          adapterManifestDigest: MANIFEST_DIGEST,
           maxDisconnectedMs: 900_000,
           sidecarId: opts.id,
           status: "allocated",
@@ -212,6 +214,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "test",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "test:v1",
+        adapterManifestDigest: MANIFEST_DIGEST,
         sidecarId: "sc-shared",
       });
       const resolver = createSidecarCredentialResolver({ db: h.db });
