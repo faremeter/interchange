@@ -31,8 +31,10 @@
 //     parent drives it across parks and relays each one onto the parent run.
 //     The child stays unaddressable. A parked child survives a process
 //     restart: `resumeFromEvents` re-adopts its log and the parent
-//     reestablishes the relay. The spawn step's drain default is still
-//     `"cancel"`, so a redeploy tears that parked child down.
+//     reestablishes the relay. The spawn step defaults to `"wait"`, so the
+//     drain signal does not abort it, whether the child is parked or still
+//     mid-step. An explicit `"cancel"` still aborts the child through
+//     `localAbort`.
 //
 // Drain coordination is handled by the supervisor's drain primitive
 // (`packages/workflow-host/src/supervisor`), not by this adapter. The

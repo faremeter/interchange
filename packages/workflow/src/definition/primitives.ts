@@ -7,12 +7,15 @@
 // reuse the same constructor result under different keys without
 // repeating themselves.
 //
-// `drainBehavior` defaults differ per primitive: `sleep` and
-// `childWorkflow` default to `"cancel"` because long compute should not
-// block a redeploy past `drainTimeout`; `awaitSignal` defaults to
-// `"wait"` because human-in-the-loop pauses are the canonical case the
-// spec calls out and operators do not want them silently cancelled at
-// redeploy. A `step` defaults to `"cancel"` when its trigger budget is
+// `drainBehavior` defaults differ per primitive: `sleep` defaults to
+// `"cancel"` because long compute should not block a redeploy past
+// `drainTimeout`. `childWorkflow` defaults to `"wait"`: drain consults
+// the spawn step for the whole time it is in flight, including a parked
+// relay and a child that is still mid-step, and a local abort would tear
+// that child down. `awaitSignal` defaults to `"wait"` because
+// human-in-the-loop pauses are the canonical case the spec calls out and
+// operators do not want them silently cancelled at redeploy. A `step`
+// defaults to `"cancel"` when its trigger budget is
 // `1` (batch) and `"wait"` when the budget is larger (multi-turn or
 // unbounded) -- a long-lived step is definitionally interactive.
 // `map`'s outer node carries no `drainBehavior` -- its inner step
@@ -192,8 +195,10 @@ export interface SleepPrimitive extends PrimitiveBase {
  * A parked child survives a process restart. Resume reattaches the same
  * child run from its log and reestablishes the relay on the spawn step.
  * The child stays unaddressable; the parent is the resume root. On drain
- * the relay sits on this step. The
- * step defaults to `"cancel"`, so a parked child is torn down with it. The
+ * the relay sits on this step. The step defaults to `"wait"`, so the drain
+ * signal does not abort it. That covers the whole time the step is in
+ * flight, including a parked relay and a child that is still mid-step. An
+ * explicit `"cancel"` still aborts the child through `localAbort`. The
  * child's own `drainBehavior` is not what drain consults.
  *
  * A run whose env says nothing upstream can answer refuses an untimed
@@ -646,7 +651,9 @@ export interface ChildWorkflowOpts {
 }
 
 export function childWorkflow(opts: ChildWorkflowOpts): ChildWorkflowPrimitive {
-  const drainBehavior: DrainBehavior = opts.drainBehavior ?? "cancel";
+  // Stored on the primitive, so the value is part of the definition hash.
+  // Omitting the option selects `"wait"`.
+  const drainBehavior: DrainBehavior = opts.drainBehavior ?? "wait";
   return {
     kind: "childWorkflow",
     id: "",

@@ -670,8 +670,11 @@ The four observation points and why they are the four:
    short-circuit at entry and again on `drain.signal` mid-await.
    What drain can meet under a `childWorkflow` is the spawn step the
    relay sits on, not a step inside the child. That step defaults to
-   `"cancel"`, so a parked child is torn down with it. The child's own
-   `drainBehavior` is not what drain consults. A run whose env declares
+   `"wait"`, so the drain signal does not abort it. That covers the
+   whole time the step is in flight, including a parked relay and a
+   child that is still mid-step. An explicit `"cancel"` still aborts
+   the child through `localAbort`. The child's own `drainBehavior` is
+   not what drain consults. A run whose env declares
    `hasUpstreamSignalResolver` false still refuses an untimed park
    before it suspends, so the only pause drain finds in that run is a
    timed one, which its own timer ends whatever drain decides.
@@ -684,14 +687,17 @@ main-loop tick takes effect before they could matter.
 
 `"wait"` vs `"cancel"` is declared per primitive. The constructors
 in `packages/workflow/src/definition/primitives.ts` set the
-defaults: `step`, `sleep`, and `childWorkflow` default to
+defaults: `step` (trigger budget `1`) and `sleep` default to
 `"cancel"` (long compute should not block a redeploy past the
-drainTimeout); `awaitSignal` defaults to `"wait"` (human-in-the-
-loop pauses are the canonical case the spec calls out, and
-operators do not want them silently cancelled at redeploy). `map`'s
-outer node carries no `drainBehavior` -- its inner step carries
-its own. `gate` and `escalation` are non-blocking and resolve as
-`"cancel"` for short-circuit purposes only.
+drainTimeout). `childWorkflow` defaults to `"wait"` because drain
+consults the spawn step for the whole time it is in flight, and a
+local abort would tear the child down. `awaitSignal` defaults to
+`"wait"` (human-in-the-loop pauses are the canonical case the spec
+calls out, and operators do not want them silently cancelled at
+redeploy). `map`'s outer node carries no `drainBehavior` -- its
+inner step carries its own. `gate` and `escalation` are
+non-blocking and resolve as `"cancel"` for short-circuit purposes
+only.
 
 The supervisor's drainTimeout accumulator lives in
 `packages/workflow-host/src/supervisor/drain-timeout.ts`. Default
@@ -729,12 +735,12 @@ test) is:
 Child-workflow drain coordination splits two ways:
 
 - **Same-deployment children** run inside the same workflow-process
-  as the parent. They share the parent's `DrainController` instance
-  through the runtime env; no extra mechanism is required. The
-  parent's main loop iteration over its own in-flight steps
-  includes the spawn step, and the existing
-  `ChildCancelRequested` emission path in `runtime/run.ts` covers
-  child propagation.
+  as the parent. The child does not share the parent's
+  `DrainController`. Its controller's signal never aborts, so a step
+  inside the child keeps running when the deployment drains. Drain
+  consults the spawn step on the parent. A cancel of the parent run
+  still records `ChildCancelRequested` and cascades through
+  `runtime/run.ts`.
 - **Cross-deployment children** run under a different deployment
   with its own supervisor and its own drain accumulator. The
   parent's `ChildCancelRequested` event lands on the parent run's
@@ -744,11 +750,13 @@ Child-workflow drain coordination splits two ways:
   observation points.
 
 A parked `childWorkflow` is one of those same-deployment children. The
-relay sits on the spawn step, so the parent's drain observation of that
-step is what tears the child down. A parked child survives a process
-restart. Resume reattaches the same child run from its log and
-reestablishes the relay on the spawn step. The child stays unaddressable;
-the parent is the resume root.
+relay sits on the spawn step. That step defaults to `"wait"`, so the
+drain signal does not abort it, whether the child is parked or still
+mid-step. An explicit `"cancel"` still aborts the child through
+`localAbort`. The child's own `drainBehavior` is not what drain
+consults. A parked child survives a process restart. Resume reattaches
+the same child run from its log and reestablishes the relay on the spawn
+step. The child stays unaddressable; the parent is the resume root.
 
 #### How a child park reaches the addressable run
 

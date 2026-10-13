@@ -1902,6 +1902,16 @@ describe("primitive defaults", () => {
     const m = map({ over: { from: "trigger.payload" }, step: inner });
     expect(m.step.drainBehavior).toBe("wait");
   });
+
+  test("childWorkflow defaults drainBehavior to wait", () => {
+    const spawned = childWorkflow({ definition: simpleBody() });
+    expect(spawned.drainBehavior).toBe("wait");
+    const explicit = childWorkflow({
+      definition: simpleBody(),
+      drainBehavior: "cancel",
+    });
+    expect(explicit.drainBehavior).toBe("cancel");
+  });
 });
 
 describe("hashDefinition", () => {
