@@ -45,7 +45,8 @@ export function resumeResidualOf(
     isResumableAwaitingSignalStep(def, stepId, phase) ||
     isResumableReceivedAwaitSignalStep(def, stepId, phase) ||
     isResumableOnTriggerStep(def, stepId, phase) ||
-    isResumableSleepStep(def, stepId, phase)
+    isResumableSleepStep(def, stepId, phase) ||
+    isResumableChildWorkflowStep(def, stepId, phase)
   ) {
     return "continue";
   }
@@ -186,11 +187,11 @@ export function isResumableOnTriggerStep(
  * routed through the EffectContext; the barrier is what makes the action
  * non-re-invocable at this layer.
  *
- * Container/coordination primitives left `in-flight` -- a `map` outer
- * step, a `childWorkflow`, etc. -- are deliberately excluded: they have a
- * re-arm surface the in-process runtime body lacks (rebuilding the map
- * iteration state), so they throw `RuntimeResumeUnsupportedError`, which the
- * run records as `RunFailed`. (An `awaitSignal` gate left `in-flight`, timed or not, is
+ * A `map` outer step left `in-flight` is deliberately excluded: rebuilding
+ * its iteration state is a re-arm surface this runtime body lacks, so it
+ * throws `RuntimeResumeUnsupportedError`, which the run records as
+ * `RunFailed`. A `childWorkflow` is admitted by
+ * `isResumableChildWorkflowStep`. (An `awaitSignal` gate left `in-flight`, timed or not, is
  * instead admitted by `isResumableReceivedAwaitSignalStep`, which reconstructs
  * its outcome from the log.) A synthetic map/loop inner id (`<id>[i]`) is not a
  * definition key, so it resolves to `undefined` and is excluded here;
@@ -235,6 +236,24 @@ export function isResumableSleepStep(
   return def.steps[stepId]?.kind === "sleep";
 }
 
+/**
+ * A `childWorkflow` spawn step left non-terminal in a seed log is resumable
+ * in both of its live phases. `in-flight` is a spawn whose child has not
+ * yet parked the parent, or whose relay decision was consumed before the
+ * crash. `awaiting-signal` is the parent proxy of a child park. `runChildWorkflow`
+ * reattaches the recorded child run and reestablishes that relay. The step
+ * has no synthetic id, so the kind is read off the step itself. The resume
+ * guard and `nextSchedulable` both key on this predicate.
+ */
+export function isResumableChildWorkflowStep(
+  def: StepKindLookup,
+  stepId: string,
+  phase: StepPhase,
+): boolean {
+  if (phase !== "in-flight" && phase !== "awaiting-signal") return false;
+  return def.steps[stepId]?.kind === "childWorkflow";
+}
+
 export function nextSchedulable(
   def: WorkflowDefinition,
   state: RunState,
@@ -257,9 +276,11 @@ export function nextSchedulable(
   // already-logged `SignalReceived` (`isResumableReceivedAwaitSignalStep`,
   // the crash-after-signal-before-StepCompleted window), an onTrigger
   // section container in-flight or awaiting-signal
-  // (`isResumableOnTriggerStep`, re-derived by `runOnTrigger`), and a `sleep`
+  // (`isResumableOnTriggerStep`, re-derived by `runOnTrigger`), a `sleep`
   // step awaiting-timer or in-flight (`isResumableSleepStep`, re-adopted by
-  // `runSleep`). The resume guard keys on the SAME predicates so the two
+  // `runSleep`), and a `childWorkflow` spawn step in-flight or
+  // awaiting-signal (`isResumableChildWorkflowStep`, reattached by
+  // `runChildWorkflow`). The resume guard keys on the SAME predicates so the two
   // views agree.
   if (state.phase !== "running") {
     return [];
@@ -281,7 +302,8 @@ export function nextSchedulable(
       !isResumableAwaitingSignalStep(def, stepId, existing.phase) &&
       !isResumableReceivedAwaitSignalStep(def, stepId, existing.phase) &&
       !isResumableOnTriggerStep(def, stepId, existing.phase) &&
-      !isResumableSleepStep(def, stepId, existing.phase)
+      !isResumableSleepStep(def, stepId, existing.phase) &&
+      !isResumableChildWorkflowStep(def, stepId, existing.phase)
     ) {
       continue;
     }

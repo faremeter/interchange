@@ -16,12 +16,10 @@
  * `in-flight`) which the runtime settles as a terminal `StepFailed`
  * rather than re-arming. A log that stops while a step is
  * `awaiting-timer`, mid-`map`, or otherwise `in-flight` with no
- * resumable carve-out, or while a `childWorkflow` is `awaiting-signal`,
- * has no schedulable primitive to advance it. A parked child does not
- * survive a restart.
- * The runtime cannot re-arm the timer scheduler entry, rebuild the
- * inner-map iteration state, or re-enter that parked child from the log
- * alone. The run records that throw as `RunFailed`.
+ * resumable carve-out has no schedulable primitive to advance it.
+ * The runtime cannot re-arm the timer scheduler entry or rebuild the
+ * inner-map iteration state from the log alone. The run records that
+ * throw as `RunFailed`.
  *
  * Surfacing the limitation as a structured error keeps the contract
  * honest instead of stalling with an opaque "no schedulable

@@ -32,6 +32,7 @@ import type {
   EffectLedger,
   LoopFnRegistry,
   StepInvoker,
+  RepoStore,
   SpawnChildWorkflow,
   SpawnSuspendableChild,
   WorkflowRun,
@@ -108,14 +109,18 @@ export function runLocal(
 }
 
 /**
- * The per-run env `runLocal` and the child spawner share. Every call builds
- * a fresh repo, channel, blob store, effect ledger, and drain. The top-level
- * run drives this env with `runtimeRun`. The spawner hands the same shape to
- * `createSuspendableChildHandle` and does not also drive it.
+ * The per-run env `runLocal` and the child spawner share. The top-level call
+ * builds a fresh repo, channel, blob store, effect ledger, and drain. A
+ * spawned child writes its event log into the store it is given, under its
+ * own run id, and still builds a fresh channel, blob store, effect ledger,
+ * and drain. The top-level run drives this env with `runtimeRun`. The
+ * spawner hands the same shape to `createSuspendableChildHandle` and does
+ * not also drive it.
  */
 function assembleRunLocalEnv(
   definition: WorkflowDefinition,
   options: RunLocalOptions,
+  sharedRepoStore?: RepoStore,
 ): { rewritten: WorkflowDefinition; env: WorkflowRuntimeEnv } {
   const directors = options.directors ?? createDefaultDirectorRegistry();
   const authorize = options.authorize;
@@ -154,7 +159,7 @@ function assembleRunLocalEnv(
     }
   }
 
-  const repoStore = createInMemoryRepoStore();
+  const repoStore = sharedRepoStore ?? createInMemoryRepoStore();
   const env: WorkflowRuntimeEnv = {
     repoStore,
     scheduler: createInMemoryScheduler({ repoStore, clock }),
@@ -168,6 +173,7 @@ function assembleRunLocalEnv(
     spawnChild: createInMemorySpawnChild(
       childBodies,
       inheritChildOptions(options),
+      repoStore,
     ),
     clock,
     newId,
@@ -216,9 +222,10 @@ function extractRuntimeOptions(options: RunLocalOptions): RuntimeRunOptions {
  *
  * Everything omitted here is either per-run identity the spawn callback
  * supplies itself (`runId`, `triggerPayload`, `depth`) or per-run
- * substrate the child builds fresh (its own event log, blob store, signal
- * channel, and effect ledger), matching how the deployed host scopes each
- * child run's substrate under its own `childRunId`.
+ * substrate the child builds fresh (its blob store, signal channel, and
+ * effect ledger). The event log is the parent's store, scoped by
+ * `childRunId`, the same way the deployed host scopes each child under
+ * one workflow-run repo.
  */
 type InheritedChildOptions = Pick<
   RunLocalOptions,
@@ -380,6 +387,7 @@ export function createSpawnLoopIteration(
 export function createInMemorySpawnChild(
   bodies: ReadonlyMap<string, WorkflowDefinition>,
   inherited: InheritedChildOptions,
+  sharedRepoStore?: RepoStore,
 ): SpawnChildWorkflow {
   return async ({
     definitionRef,
@@ -388,6 +396,7 @@ export function createInMemorySpawnChild(
     signal,
     depth,
     maxChildSpawnDepth,
+    resumeFromEvents,
   }) => {
     // Four awaits separate the child run id allocation from this call, one of
     // them a durable flush, so a cancel can land before the spawner runs.
@@ -417,16 +426,21 @@ export function createInMemorySpawnChild(
     // parent env is the env the child runs under. The resolver flag is forced
     // true: the parent relays, and a parent false must not refuse a gate the
     // relay can answer. The in-memory channel has no stop.
-    const { rewritten, env } = assembleRunLocalEnv(resolved, {
-      ...inherited,
-      hasUpstreamSignalResolver: true,
-    });
+    const { rewritten, env } = assembleRunLocalEnv(
+      resolved,
+      {
+        ...inherited,
+        hasUpstreamSignalResolver: true,
+      },
+      sharedRepoStore,
+    );
     return createSuspendableChildHandle(env, {
       definition: rewritten,
       childRunId,
       input,
       depth,
       maxChildSpawnDepth,
+      ...(resumeFromEvents !== undefined ? { resumeFromEvents } : {}),
       signal,
       surfaceInputPark: true,
     });

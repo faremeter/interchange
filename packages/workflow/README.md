@@ -227,9 +227,9 @@ live in the child stays queued until the decision for the first is relayed
 down. A queued park whose gate has already moved on is not given a signal
 that arrived while it waited.
 
-A parked child does not survive a restart. The spawn step is left
-`awaiting-signal`, and resume rejects that step, so the run fails instead
-of starting the child a second time.
+A parked child survives a process restart. Resume reattaches the same
+child run from its log and reestablishes the relay on the spawn step. The
+child stays unaddressable; the parent is the resume root.
 
 On drain, the relay sits on the spawn step. That step defaults to
 `"cancel"`, so a parked child is torn down with it. The child's own
