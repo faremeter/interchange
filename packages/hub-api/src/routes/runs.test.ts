@@ -127,6 +127,13 @@ type MockDBOpts = {
   /** Rows the approvals-list route's `approvalStore.listByRunId` returns
    * (query.approval.findMany). Defaults to `[]`. */
   approvals?: Record<string, unknown>[];
+  /** The row the blob route's `query.sessionMail.findFirst` returns. */
+  mail?: {
+    id: string;
+    runId: string | null;
+    sessionId: string;
+    raw: Uint8Array;
+  };
 };
 
 function notImplemented(path: string) {
@@ -220,6 +227,10 @@ function createMockDB(opts: MockDBOpts) {
       approval: {
         findFirst: notImplemented("db.query.approval.findFirst"),
         findMany: async () => opts.approvals ?? [],
+      },
+      sessionMail: {
+        findFirst: async () => opts.mail,
+        findMany: notImplemented("db.query.sessionMail.findMany"),
       },
     },
     select: selectChain,
@@ -1144,6 +1155,44 @@ describe("GET /workflows/runs/blobs/:blobId", () => {
     expect(res.status).toBe(400);
     const body: unknown = await res.json();
     expect(body).toMatchObject({ error: { code: "bad_request" } });
+  });
+
+  const MAIL_ID = "mail_blob";
+  const blobURL = `/api/tenants/${TENANT_ID}/workflows/runs/blobs/blob_${MAIL_ID}_1`;
+  const mail = {
+    id: MAIL_ID,
+    runId: RUN_ID,
+    sessionId: "ses_test",
+    raw: new TextEncoder().encode(
+      'Content-Type: multipart/mixed; boundary="b"\r\n\r\n' +
+        "--b\r\nContent-Type: text/plain\r\n\r\nhello\r\n--b--\r\n",
+    ),
+  };
+  const db = { tenant: testTenant, principal: testPrincipal, mail };
+
+  test("returns a part of a run's mail to a principal who can read the run", async () => {
+    const app = createTestApp({
+      db,
+      grants: [makeGrant({ resource: `workflow-run:${RUN_ID}` })],
+    });
+    const res = await app.request(blobURL);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("hello");
+  });
+
+  test("refuses a part of a run's mail to a principal who can read only another run", async () => {
+    const app = createTestApp({
+      db,
+      grants: [makeGrant({ resource: "workflow-run:run_other" })],
+    });
+    const res = await app.request(blobURL);
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({
+      error: {
+        code: "forbidden",
+        message: "You do not have permission to perform this action",
+      },
+    });
   });
 });
 
