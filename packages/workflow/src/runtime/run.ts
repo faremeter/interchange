@@ -3083,7 +3083,9 @@ async function runOnTrigger(
  * The `"park-release"` leg reads the child park before it accepts a signal
  * that is already waiting. A gate that has moved on is not given that
  * signal. The parent's relay await is abandoned when it is still open, and
- * a signal already paired into the parent log is left there.
+ * the signal already paired into the parent log is left there. A gate that
+ * is still open takes that paired signal. The event is already committed,
+ * so the relay does not append it again.
  */
 function finishRelayPull(
   child: SuspendableChildHandle,
@@ -3406,6 +3408,45 @@ async function raceChildSignalRelease(
     tag: "release" as const,
     rel,
   }));
+  // The channel tails from the moment `awaitNext` is called, so a signal
+  // committed before that wait is only in the log. Both waits are already
+  // started: a signal or a release during this read is still observed, and
+  // a signal that arrived earlier is taken here. That event is already
+  // committed. Relay it while the child gate is open, and do not append a
+  // second `SignalReceived`. A gate that has left the park is not given it.
+  let logged: { payload: unknown; signalId: string } | undefined;
+  try {
+    const log = await env.repoStore.read(runId);
+    logged = signalBoundToAwait(runId, log, containerStepId, name);
+  } catch (cause) {
+    raceAbort.abort();
+    detachRaceAbort();
+    await signalWait.catch(() => undefined);
+    await releaseWait.catch(() => undefined);
+    throw cause;
+  }
+  if (logged !== undefined) {
+    // Stop the watch before the delivery. The child's own SignalReceived
+    // would otherwise look like the gate timing out.
+    raceAbort.abort();
+    detachRaceAbort();
+    await signalWait.catch(() => undefined);
+    await releaseWait.catch(() => undefined);
+    const again = await readChildPark(child, containerStepId, name);
+    if (again.kind !== "open") {
+      return closeChildRelayWithoutDelivery(
+        env,
+        runId,
+        containerStepId,
+        child,
+        name,
+        again,
+        pull,
+      );
+    }
+    await child.deliverSignal(name, logged.payload, logged.signalId);
+    return finishRelayPull(child, pull);
+  }
   let outcome:
     | { tag: "signal"; r: { payload: unknown; signalId: string } }
     | { tag: "release"; rel: ChildParkRelease };

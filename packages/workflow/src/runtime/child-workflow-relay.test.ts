@@ -335,6 +335,89 @@ describe("childWorkflow signal relay", () => {
     expect(output.childRunId.length).toBeGreaterThan(0);
   });
 
+  test("relays an author signal committed before the channel wait", async () => {
+    const parent = defineWorkflow({
+      id: "preread-parent",
+      trigger: { type: "manual" },
+      steps: {
+        spawn: childWorkflow({ definition: gatedChild("preread-child") }),
+      },
+    });
+    const runId = "run-preread";
+    const inner = createInMemoryRepoStore();
+    let parentTip: WorkflowEvent | undefined;
+    const repoStore: RepoStore = {
+      read: (id) => inner.read(id),
+      append: async (id, event) => {
+        if (id === runId) parentTip = event;
+        await inner.append(id, event);
+      },
+      appendBatch: async (id, events) => {
+        if (id === runId) {
+          const last = events.at(-1);
+          if (last !== undefined) parentTip = last;
+        }
+        await inner.appendBatch(id, events);
+      },
+      subscribe: (id, opts) => inner.subscribe(id, opts),
+    };
+    let injected = false;
+    let appendFailure: unknown;
+    const { run } = startRelayed({
+      definition: parent,
+      runId,
+      invokeStep: async () => ({ output: null }),
+      repoStore,
+      signalChannel: {
+        deliver: () => Promise.reject(new Error("deliver is not used")),
+        awaitNext: (name, signal) => {
+          if (!injected && name === "go") {
+            injected = true;
+            const last = parentTip;
+            if (last === undefined) {
+              return Promise.reject(new Error("parent log empty"));
+            }
+            const event: WorkflowEvent = {
+              kind: "SignalReceived",
+              seq: last.seq + 1,
+              at: new Date().toISOString(),
+              signalName: name,
+              signalId: "sig-early",
+              payload: { done: true },
+            };
+            parentTip = event;
+            // The in-memory append updates the log before it yields, so
+            // the relay's read after this call sees the signal. The
+            // returned wait does not replay it.
+            void inner.append(runId, event).catch((cause: unknown) => {
+              appendFailure = cause;
+            });
+          }
+          return pendingSignal(signal);
+        },
+      },
+    });
+    const result = await run.complete;
+    const childId = spawnedChildId(result.events, "spawn");
+    const childLog = await copyLog(repoStore, childId);
+
+    expect(injected).toBe(true);
+    expect(appendFailure).toBeUndefined();
+    expect(result.terminalStatus).toBe("completed");
+    expect(
+      result.events.filter(
+        (event) =>
+          event.kind === "SignalReceived" && event.signalId === "sig-early",
+      ),
+    ).toHaveLength(1);
+    expect(
+      childLog.filter(
+        (event) =>
+          event.kind === "SignalReceived" && event.signalId === "sig-early",
+      ),
+    ).toHaveLength(1);
+  });
+
   test("climbs an author signal through a nested childWorkflow", async () => {
     const middle = defineWorkflow({
       id: "middle",
@@ -1339,6 +1422,14 @@ async function raceLoggedSignalAgainstRelease(
     finishWatch = resolve;
   });
   let sentPark = false;
+  let watchStarted = false;
+  let sawLogRead = false;
+  let markLogRead = (): void => {
+    throw new Error("log read was not armed");
+  };
+  const logReadAfterWatch = new Promise<void>((resolve) => {
+    markLogRead = resolve;
+  });
   const child = defineWorkflow({
     id: "logged-signal-child",
     trigger: { type: "manual" },
@@ -1350,10 +1441,25 @@ async function raceLoggedSignalAgainstRelease(
     steps: { spawn: childWorkflow({ definition: child }) },
   });
   const runId = `run-logged-${release.kind}`;
-  const { run, repoStore } = startRelayed({
+  const inner = createInMemoryRepoStore();
+  const repoStore: RepoStore = {
+    read: async (id) => {
+      const events = await inner.read(id);
+      if (watchStarted && id === runId && !sawLogRead) {
+        sawLogRead = true;
+        markLogRead();
+      }
+      return events;
+    },
+    append: (id, event) => inner.append(id, event),
+    appendBatch: (id, events) => inner.appendBatch(id, events),
+    subscribe: (id, opts) => inner.subscribe(id, opts),
+  };
+  const { run } = startRelayed({
     definition: parent,
     runId,
     invokeStep: async () => ({ output: null }),
+    repoStore,
     signalChannel: {
       deliver: () => Promise.reject(new Error("deliver is not used")),
       awaitNext: (_name, signal) => pendingSignal(signal),
@@ -1382,6 +1488,7 @@ async function raceLoggedSignalAgainstRelease(
         },
         readParkRelease: () => Promise.resolve({ kind: "open" as const }),
         waitForParkRelease: () => {
+          watchStarted = true;
           markWatch();
           return watchResult;
         },
@@ -1396,6 +1503,10 @@ async function raceLoggedSignalAgainstRelease(
       event.signalName === "fast",
   );
   await watchEntered;
+  // The relay reads the log once the waits are started. Commit after
+  // that read, so this signal is not the one the log read relays. The
+  // release then wins, and the logged signal stays undelivered.
+  await logReadAfterWatch;
   await commit({ repoStore }, runId, {
     kind: "SignalReceived",
     seq: 0,
