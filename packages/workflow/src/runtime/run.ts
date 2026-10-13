@@ -2526,8 +2526,9 @@ type SuspendableOccurrenceResume =
   // emitted its relay await before the crash (in-flight, no durable relay). The
   // re-adopted body re-parks silently, so there is no await to reestablish and
   // no `onSignalPark` to surface it -- drive the container relay FRESH over the
-  // recovered name instead.
-  | { kind: "signal-relay-drive-fresh"; name: string };
+  // recovered name instead. `timeoutAt` is the body's deadline, when the gate
+  // is timed, so the fresh relay stays timed.
+  | { kind: "signal-relay-drive-fresh"; name: string; timeoutAt?: string };
 
 type ChildRelayPull = "next" | "hold";
 
@@ -2678,6 +2679,12 @@ async function driveSuspendableOccurrence(
     // onSignalPark). Drive the container relay FRESH over the recovered name --
     // emit the relay await and race -- so the container ends up awaiting the
     // signal that will arrive, and continue with the body event it yields.
+    // The body's deadline rides along, so the fresh relay stays timed when
+    // the gate is timed.
+    const freshTimeout = remainingSignalTimeout(
+      resume.timeoutAt,
+      env.clock().getTime(),
+    );
     pending = await driveContainerSignalRelay(
       env,
       runId,
@@ -2687,6 +2694,7 @@ async function driveSuspendableOccurrence(
       signalRelayAddressing,
       abort,
       "next",
+      freshTimeout,
     );
   }
 
@@ -3135,6 +3143,14 @@ async function driveContainerSignalRelay(
     signalName: name,
     parkKind: "signal-relay",
     ...(correlationId !== undefined ? { correlationId } : {}),
+    // The deadline is part of the relay await. A parent that resumes before
+    // it has recorded its own await reads this field and keeps a timed gate
+    // timed. An untimed relay omits it.
+    ...(timeout !== undefined
+      ? {
+          timeoutAt: new Date(env.clock().getTime() + timeout).toISOString(),
+        }
+      : {}),
   };
   const awaitSeq = awaited.seq;
   await commit(env, runId, awaited);
@@ -4076,7 +4092,21 @@ async function finishLoopResume(
   }
   const parkedName = authorAwaits[0];
   if (parkedName !== undefined) {
-    return { kind: "signal-relay-drive-fresh", name: parkedName };
+    let timeoutAt: string | undefined;
+    for (const step of childState.steps.values()) {
+      if (
+        step.phase === "awaiting-signal" &&
+        step.awaitingSignal?.name === parkedName
+      ) {
+        timeoutAt = step.awaitingSignal.timeoutAt;
+        break;
+      }
+    }
+    return {
+      kind: "signal-relay-drive-fresh",
+      name: parkedName,
+      ...(timeoutAt !== undefined ? { timeoutAt } : {}),
+    };
   }
   return undefined;
 }
@@ -6495,6 +6525,11 @@ function childSawSignal(
   return false;
 }
 
+/**
+ * Milliseconds left until `timeoutAt`. A deadline that has already passed
+ * is still a timed gate: zero lets the in-process timer finish it. An
+ * absent or unreadable deadline is an untimed park.
+ */
 function remainingSignalTimeout(
   timeoutAt: string | undefined,
   nowMs: number,
@@ -6503,7 +6538,7 @@ function remainingSignalTimeout(
   const deadline = Date.parse(timeoutAt);
   if (!Number.isFinite(deadline)) return undefined;
   const remaining = deadline - nowMs;
-  if (!(remaining > 0)) return undefined;
+  if (!(remaining > 0)) return 0;
   return remaining;
 }
 
