@@ -68,6 +68,7 @@ const DEPLOYMENT_REPO_ID = deriveWorkflowRunRepoId(DEPLOYMENT_ADDRESS);
 const FOREIGN_DEPLOYMENT = "dep-foreign";
 const FOREIGN_DEPLOYMENT_ADDRESS = "run_dep_foreign@tnt.example";
 const WFR_REF = "refs/heads/main";
+const MANIFEST_DIGEST = "1".repeat(64);
 
 function eventBody(seq: number, type: string, at?: string): string {
   return JSON.stringify({ seq, type, ...(at !== undefined ? { at } : {}) });
@@ -148,6 +149,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "test",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "test:v1",
+        adapterManifestDigest: MANIFEST_DIGEST,
         maxDisconnectedMs: 900_000,
         status: "allocated",
         generation: 1,

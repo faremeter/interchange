@@ -36,6 +36,11 @@ export const sidecarAllocation = pgTable(
     sidecarId: text("sidecar_id").references(() => sidecar.id, {
       onDelete: "restrict",
     }),
+    // The digest of the adapter manifest that the Hub sent, or will send, in
+    // the ensure for this generation. For a row with a sidecar, it is the
+    // manifest that the sidecar booted with. The Hub uses it to place new
+    // work only on a sidecar that loaded the manifest the work needs.
+    adapterManifestDigest: text("adapter_manifest_digest").notNull(),
     status: text("status")
       .$type<SidecarAllocationStatus>()
       .notNull()

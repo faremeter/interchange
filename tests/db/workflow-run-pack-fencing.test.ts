@@ -41,6 +41,7 @@ const ANCHOR_ADDRESS = "run_pack_fence@tenant.example";
 const ALLOCATION_ID = "alloc-pack-fence";
 const WORKFLOW_RUN_REPO_ID = deriveWorkflowRunRepoId(ANCHOR_ADDRESS);
 const WORKFLOW_RUN_REF = "refs/heads/events";
+const MANIFEST_DIGEST = "1".repeat(64);
 
 describe.skipIf(!harnessDbEnvAvailable())(
   "workflow-run pack allocation fencing (real DB)",
@@ -74,6 +75,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "test-provisioner",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "test-provisioner:pack-fence",
+        adapterManifestDigest: MANIFEST_DIGEST,
         maxDisconnectedMs: 900_000,
         status: "allocated",
         generation: 1,

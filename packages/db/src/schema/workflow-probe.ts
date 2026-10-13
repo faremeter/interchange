@@ -60,6 +60,11 @@ export const workflowProbe = pgTable(
     sidecarId: text("sidecar_id").references(() => sidecar.id, {
       onDelete: "restrict",
     }),
+    // The digest of the adapter manifest that the Hub sends in the ensure for
+    // this probe. For a probe with a sidecar, it is the manifest that the
+    // sidecar booted with. The Hub uses it to place new work only on a
+    // sidecar that loaded the manifest the work needs.
+    adapterManifestDigest: text("adapter_manifest_digest").notNull(),
     generation: integer("generation").notNull().default(0),
     externalRef: text("external_ref"),
     result: jsonb("result").$type<WorkflowProbeResult>(),

@@ -9,16 +9,22 @@ import {
 import { eq } from "drizzle-orm";
 
 import { createWorkflowProbeStore, SidecarReuseRejectedError } from "@intx/db";
-import { sidecar } from "@intx/db/schema";
+import { sidecar, sidecarAllocation, workflowProbe } from "@intx/db/schema";
 import {
   createTestDb,
   harnessDbEnvAvailable,
   type TestDb,
 } from "@intx/test-harness/db-harness";
-import { seedAsset, seedTenants } from "@intx/test-harness/seed";
+import {
+  seedAsset,
+  seedTenants,
+  seedWorkflowRun,
+} from "@intx/test-harness/seed";
 
 const TENANT_ID = "tnt-probe-store";
 const ASSET_ID = "asset-probe-store";
+const MANIFEST_DIGEST = "1".repeat(64);
+const OTHER_MANIFEST_DIGEST = "2".repeat(64);
 
 describe.skipIf(!harnessDbEnvAvailable())(
   "workflowProbeStore (real DB)",
@@ -46,7 +52,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     // Creates a probe and binds the identity minted for it, as the
     // allocation service does before calling ensure.
-    async function bindProbe(probeId: string) {
+    async function bindProbe(
+      probeId: string,
+      adapterManifestDigest = MANIFEST_DIGEST,
+    ) {
       const store = createWorkflowProbeStore(h.db);
       await store.create({
         id: probeId,
@@ -57,6 +66,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "sandbox",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "sandbox:test",
+        adapterManifestDigest,
       });
       await store.bindSidecar({
         probeId,
@@ -64,6 +74,37 @@ describe.skipIf(!harnessDbEnvAvailable())(
         tokenHashSha256: new TextEncoder().encode(probeId),
       });
       return store;
+    }
+
+    // Seeds an allocated deployment of the probes' provisioner binding as the
+    // only work on a sidecar.
+    async function seedAllocationHost(
+      sidecarId: string,
+      adapterManifestDigest: string,
+    ) {
+      await h.db.insert(sidecar).values({
+        id: sidecarId,
+        url: null,
+        tokenHashSha256: new TextEncoder().encode(sidecarId),
+      });
+      await seedWorkflowRun(h.db, {
+        id: `run-${sidecarId}`,
+        anchorRunId: `run-${sidecarId}`,
+        tenantId: TENANT_ID,
+      });
+      await h.db.insert(sidecarAllocation).values({
+        id: `alloc-${sidecarId}`,
+        anchorRunId: `run-${sidecarId}`,
+        tenantId: TENANT_ID,
+        sidecarId,
+        status: "allocated",
+        generation: 1,
+        maxDisconnectedMs: 900_000,
+        provisionerId: "sandbox",
+        provisionerApiVersion: 1,
+        provisionerBindingFingerprint: "sandbox:test",
+        adapterManifestDigest,
+      });
     }
 
     test("places a probe on a sidecar that hosts another probe", async () => {
@@ -114,6 +155,71 @@ describe.skipIf(!harnessDbEnvAvailable())(
         store.markProbing({
           probeId: "probe-second",
           sidecarId: "probe-first-minted",
+        }),
+      ).rejects.toBeInstanceOf(SidecarReuseRejectedError);
+      expect(await store.get("probe-second")).toMatchObject({
+        status: "provisioning",
+        sidecarId: "probe-second-minted",
+      });
+    });
+
+    test("rejects a sidecar whose probe booted with another adapter manifest", async () => {
+      const store = await bindProbe("probe-first", OTHER_MANIFEST_DIGEST);
+      await store.markProbing({ probeId: "probe-first" });
+      await bindProbe("probe-second");
+
+      await expect(
+        store.markProbing({
+          probeId: "probe-second",
+          sidecarId: "probe-first-minted",
+        }),
+      ).rejects.toBeInstanceOf(SidecarReuseRejectedError);
+      expect(await store.get("probe-second")).toMatchObject({
+        status: "provisioning",
+        sidecarId: "probe-second-minted",
+      });
+    });
+
+    test("rejects a sidecar whose probe predates recording the adapter manifest", async () => {
+      const store = await bindProbe("probe-first");
+      await store.markProbing({ probeId: "probe-first" });
+      await h.db
+        .update(workflowProbe)
+        .set({ adapterManifestDigest: "unrecorded" })
+        .where(eq(workflowProbe.id, "probe-first"));
+      await bindProbe("probe-second");
+
+      await expect(
+        store.markProbing({
+          probeId: "probe-second",
+          sidecarId: "probe-first-minted",
+        }),
+      ).rejects.toBeInstanceOf(SidecarReuseRejectedError);
+    });
+
+    test("places a probe on a sidecar whose allocation booted with the same adapter manifest", async () => {
+      await seedAllocationHost("sidecar-deployment", MANIFEST_DIGEST);
+      const store = await bindProbe("probe-second");
+
+      expect(
+        await store.markProbing({
+          probeId: "probe-second",
+          sidecarId: "sidecar-deployment",
+        }),
+      ).toMatchObject({
+        status: "probing",
+        sidecarId: "sidecar-deployment",
+      });
+    });
+
+    test("rejects a sidecar whose allocation booted with another adapter manifest", async () => {
+      await seedAllocationHost("sidecar-deployment", OTHER_MANIFEST_DIGEST);
+      const store = await bindProbe("probe-second");
+
+      await expect(
+        store.markProbing({
+          probeId: "probe-second",
+          sidecarId: "sidecar-deployment",
         }),
       ).rejects.toBeInstanceOf(SidecarReuseRejectedError);
       expect(await store.get("probe-second")).toMatchObject({

@@ -42,6 +42,10 @@ export async function lockSidecars(
  * a provisioner cannot claim another backend's sidecar. Work that is being
  * replaced or released counts: the provisioner keeps its hold on the sidecar
  * until `destroy` returns, so from its side the sidecar is still in use.
+ * The sidecar must also have booted with the adapter manifest the placing
+ * work's ensure carried, which the Hub knows only from a hosting row whose
+ * digest equals `adapterManifestDigest`; a sidecar reads its manifest only at
+ * start, so work never joins one that loaded another manifest.
  * Whether sharing suits the work is the provisioner's decision.
  * Locks the sidecar row so placements and removal of hosting bindings serialize.
  */
@@ -50,6 +54,7 @@ export async function assertSidecarReusable(
   args: {
     readonly sidecarId: string;
     readonly binding: SidecarProvisionerBinding;
+    readonly adapterManifestDigest: string;
     readonly placing: { readonly allocationId: string };
   },
 ): Promise<void> {
@@ -79,6 +84,7 @@ export async function assertSidecarReusable(
           sidecarAllocation.provisionerBindingFingerprint,
           args.binding.provisionerBindingFingerprint,
         ),
+        eq(sidecarAllocation.adapterManifestDigest, args.adapterManifestDigest),
       ),
     )
     .limit(1);
@@ -100,13 +106,14 @@ export async function assertSidecarReusable(
           workflowProbe.provisionerBindingFingerprint,
           args.binding.provisionerBindingFingerprint,
         ),
+        eq(workflowProbe.adapterManifestDigest, args.adapterManifestDigest),
       ),
     )
     .limit(1);
   if (hostedProbe !== undefined) return;
   throw new SidecarReuseRejectedError(
     args.sidecarId,
-    `it hosts no current probe or allocation of provisioner ${args.binding.provisionerId}`,
+    `it hosts no current probe or allocation of provisioner ${args.binding.provisionerId} that booted with the same adapter manifest`,
   );
 }
 

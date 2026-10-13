@@ -35,6 +35,8 @@ import type { HarnessConfig } from "@intx/types/runtime";
 import { HubFrame } from "@intx/types/sidecar";
 import { createMockWs } from "./sidecar-test-helpers";
 
+const MANIFEST_DIGEST = "1".repeat(64);
+
 const target = {
   allocationId: "allocation_admission",
   generation: 1,
@@ -102,6 +104,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "test",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "test:1",
+        adapterManifestDigest: MANIFEST_DIGEST,
         maxDisconnectedMs: 900_000,
       });
     });

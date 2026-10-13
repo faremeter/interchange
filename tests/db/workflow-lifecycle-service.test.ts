@@ -45,6 +45,8 @@ import {
   type WorkflowRunReader,
 } from "@intx/hub-sessions";
 
+const MANIFEST_DIGEST = "1".repeat(64);
+
 describe.skipIf(!harnessDbEnvAvailable())(
   "durable workflow capacity release",
   () => {
@@ -151,6 +153,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "test",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "test:1",
+        adapterManifestDigest: MANIFEST_DIGEST,
         maxDisconnectedMs: 900_000,
         sidecarId: "sidecar",
         status: "allocated",
@@ -251,6 +254,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "test",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "test:1",
+        adapterManifestDigest: MANIFEST_DIGEST,
         maxDisconnectedMs: 900_000,
         sidecarId: `sidecar_${id}`,
         status: "allocated",

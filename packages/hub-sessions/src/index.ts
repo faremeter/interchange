@@ -101,6 +101,7 @@ export {
   pushCredentialReconcile,
 } from "./credential-push";
 export {
+  adapterManifestDigest,
   chooseFirstSidecarProvisioner,
   createSidecarPluginRegistry,
   createSidecarAllocationReconciler,

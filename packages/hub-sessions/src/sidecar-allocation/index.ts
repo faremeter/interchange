@@ -24,6 +24,7 @@ export {
   type SidecarIdentityUse,
   type SidecarProvisioner,
 } from "./contracts";
+export { adapterManifestDigest } from "./adapter-manifest-digest";
 export {
   createSidecarAllocationReconciler,
   type SidecarAllocationReconciler,

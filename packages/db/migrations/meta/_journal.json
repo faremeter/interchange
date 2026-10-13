@@ -743,6 +743,13 @@
       "when": 1791842736947,
       "tag": "0106_sidecar_timestamps_with_time_zone",
       "breakpoints": true
+    },
+    {
+      "idx": 107,
+      "version": "7",
+      "when": 1791907231430,
+      "tag": "0107_sidecar_adapter_manifest_digest",
+      "breakpoints": true
     }
   ]
 }
