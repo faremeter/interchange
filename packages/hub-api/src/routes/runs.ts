@@ -10,7 +10,6 @@ import {
   workflowRun,
 } from "@intx/db/schema";
 import type { DB, ApprovalStore, PrincipalKeyStore } from "@intx/db";
-import { authorize } from "@intx/authz";
 import type { ConditionRegistry, GrantStore } from "@intx/types/authz";
 import { extractPartByPath } from "@intx/mime";
 
@@ -51,7 +50,7 @@ import { WorkflowRunEventsResponse, formatRunEvent } from "./run-events-view";
 
 import type { TenantEnv } from "../context";
 import { errorResponse } from "../error-response";
-import { idResource } from "../middleware/grant";
+import { createAuthorizeGrant, idResource } from "../middleware/grant";
 import type { RequireGrant } from "../middleware/grant";
 import { loadCommittedRunGrants } from "../run-grant-materialization";
 import { workflowRunRepoId } from "../workflow-run-lifecycle";
@@ -181,6 +180,10 @@ export function createRunRoutes({
   approvalStore,
 }: CreateRunRoutesDeps): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
+  const authorizeGrant = createAuthorizeGrant({
+    grantStore,
+    conditionRegistry,
+  });
 
   // The run-event log reader is available only when the workflow-run substrate
   // is; a null reader makes the turns/events routes answer 503, never an empty
@@ -395,16 +398,14 @@ export function createRunRoutes({
 
       const principal = c.get("principal");
 
-      const authResult = await authorize(
-        grantStore,
-        principal.id,
-        tenant.id,
-        `workflow-run:${resolvedRunId}`,
-        "read",
-        conditionRegistry,
-      );
+      const allowed = await authorizeGrant({
+        principalId: principal.id,
+        tenantId: tenant.id,
+        resource: `workflow-run:${resolvedRunId}`,
+        action: "read",
+      });
 
-      if (authResult.effect !== "allow") {
+      if (!allowed) {
         return errorResponse(
           c,
           "forbidden",
