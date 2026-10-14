@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import type { CallbackFsClient, FsClient } from "isomorphic-git";
+import git, { type CallbackFsClient, type FsClient } from "isomorphic-git";
 import { createIsogitStorage } from "./index";
 import { createNodeIsogitRuntime } from "./node-runtime";
 import { normalizeRuntime, type IsogitRuntime } from "./runtime";
@@ -188,5 +188,82 @@ test("flushes a new branch before publishing it through HEAD", async () => {
   expect(observations).toEqual([
     { branchExists: true, head: "ref: refs/heads/main" },
     { branchExists: true, head: "ref: refs/heads/durable-branch" },
+  ]);
+});
+
+test.each([
+  ["add", "a failed read"],
+  ["commit", "a failed read"],
+  ["commit", "no contents"],
+] as const)(
+  "git %s rejects an index with %s instead of reading it as empty",
+  async (operation, fault) => {
+    const dir = await tempDir();
+    const indexPath = path.join(dir, ".git", "index");
+    let armed = false;
+    const runtime = runtimeWith({
+      promises: {
+        ...fs.promises,
+        async readFile(...args: Parameters<typeof fs.promises.readFile>) {
+          if (armed && args[0] === indexPath) {
+            if (fault === "no contents") return undefined;
+            throw Object.assign(new Error("injected index read failure"), {
+              code: "EIO",
+            });
+          }
+          return fs.promises.readFile(...args);
+        },
+      },
+    });
+    const store = await createIsogitStorage(runtime).createIsogitStore(dir);
+    await store.writeBlob("output", new Uint8Array([1]));
+    const head = (await store.commit({ message: "Committed output" })).hash;
+    await fs.promises.writeFile(path.join(dir, "turns.jsonl"), "");
+    const indexBefore = await fs.promises.readFile(indexPath);
+    const gitFs = normalizeRuntime(runtime).fs.git;
+
+    armed = true;
+    await expect(
+      operation === "add"
+        ? git.add({ fs: gitFs, dir, filepath: "turns.jsonl" })
+        : git.commit({
+            fs: gitFs,
+            dir,
+            message: "Checkpoint",
+            author: { name: "test", email: "test@example.com" },
+          }),
+    ).rejects.toThrow("Index file is empty");
+    armed = false;
+    expect(await fs.promises.readFile(indexPath)).toEqual(indexBefore);
+    expect(await git.resolveRef({ fs, dir, ref: "HEAD" })).toBe(head);
+  },
+);
+
+test("checkpoints and their rollback run through a callback filesystem client", async () => {
+  const dir = await tempDir();
+  let fail = false;
+  const storage = createIsogitStorage({
+    ...runtimeWith(callbackFs()),
+    async flush() {
+      if (!fail) return;
+      fail = false;
+      throw new Error("injected checkpoint flush failure");
+    },
+  });
+  const store = await storage.createIsogitStore(dir);
+  await store.writeBlob("first", new Uint8Array([1]));
+  const first = await store.commit({ message: "First checkpoint" });
+  await store.writeBlob("second", new Uint8Array([2]));
+
+  fail = true;
+  await expect(store.commit({ message: "Failed checkpoint" })).rejects.toThrow(
+    "injected checkpoint flush failure",
+  );
+  const retried = await store.commit({ message: "Retry checkpoint" });
+  expect(retried.parentHash).toBe(first.hash);
+  expect(await git.listFiles({ fs, dir, ref: retried.hash })).toEqual([
+    ".gitignore",
+    "tool-output/first",
+    "tool-output/second",
   ]);
 });
