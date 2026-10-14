@@ -167,6 +167,62 @@ function guardIndexReads(fs: FsClient): FsClient {
   });
 }
 
+type ListingFailure = { path: unknown; cause: unknown };
+
+function listingError(
+  first: ListingFailure,
+  errors: readonly unknown[],
+): AggregateError {
+  const detail =
+    first.cause instanceof Error ? first.cause.message : String(first.cause);
+  return new AggregateError(
+    errors,
+    `Could not list ${String(first.path)}: ${detail}`,
+  );
+}
+
+/**
+ * Run an isomorphic-git operation and fail it when a directory listing
+ * fails. isomorphic-git turns every listing failure except ENOTDIR into an
+ * empty listing, so staging a directory could otherwise skip its children
+ * without an error.
+ */
+export async function withListingFailures<T>(
+  fs: FsClient,
+  run: (fs: FsClient) => Promise<T>,
+): Promise<T> {
+  const failures: ListingFailure[] = [];
+  const client = wrapGitFs(fs, {
+    readdir: async (...args) => {
+      try {
+        return await callFs(fs, "readdir", args);
+      } catch (cause) {
+        if (!hasCode(cause) || cause.code !== "ENOTDIR") {
+          failures.push({ path: args[0], cause });
+        }
+        throw cause;
+      }
+    },
+  });
+
+  let result: T;
+  try {
+    result = await run(client);
+  } catch (cause) {
+    const first = failures[0];
+    if (first === undefined) throw cause;
+    throw listingError(first, [...failures.map((f) => f.cause), cause]);
+  }
+  const first = failures[0];
+  if (first !== undefined) {
+    throw listingError(
+      first,
+      failures.map((f) => f.cause),
+    );
+  }
+  return result;
+}
+
 function fileStat(value: unknown, method: FsMethod): FileSystemStat {
   if (typeof value !== "object" || value === null) {
     throw new TypeError(`Filesystem ${method} returned an invalid stat`);

@@ -52,6 +52,12 @@ failure; reusing the same path for different content is rejected. Mail commits
 reconcile an uncertain ref publication before the same store accepts another
 message, so a committed message cannot have its ordinal reused.
 
+Conversation checkpoints stage the context files and tool-output directory
+in one Git index update. Tool-output files are processed sequentially; every
+output is re-read, hashed, and compressed on each checkpoint. Spills and
+checkpoints fail when tool-output is a symlink or a file rather than a
+directory, and a checkpoint fails when the directory cannot be listed.
+
 Browsers can use the included LightningFS IndexedDB adapter:
 
 ```ts
