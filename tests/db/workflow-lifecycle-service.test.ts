@@ -7,7 +7,7 @@ import {
   expect,
   test,
 } from "bun:test";
-import { eq, inArray } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 
 import {
@@ -22,6 +22,7 @@ import {
   SidecarReuseRejectedError,
   SIDECAR_CLEANUP_RETRY_EXHAUSTED_FAILURE_CODE,
   SIDECAR_CLEANUP_DISCONNECT_TIMEOUT_FAILURE_CODE,
+  SIDECAR_CLEANUP_OPERATOR_RELEASED_FAILURE_CODE,
   withExecutableWorkflowRun,
 } from "@intx/db";
 import * as dbSchema from "@intx/db/schema";
@@ -89,6 +90,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         db: options.db ?? h.db,
         retentionRouter: {
           fenceAllocation: () => undefined,
+          retireAllocation: () => undefined,
           getRetentionCandidates: () => [],
           holdsAllocatedBinding: () => true,
           getAllocationRetention: () => "kept",
@@ -1729,6 +1731,136 @@ describe.skipIf(!harnessDbEnvAvailable())(
         (await createSidecarAllocationStore(h.db).findById(allocationId))
           ?.generation,
       ).toBe(1);
+    });
+
+    test("an operator releases stopped cleanup only at the inspected generation", async () => {
+      expect(
+        await service().releaseStoppedCleanup(tenantId, runId, 1, "operator"),
+      ).toBe("not_stopped");
+      await h.db
+        .update(workflowRun)
+        .set({ status: "failed", endedAt: current })
+        .where(eq(workflowRun.id, runId));
+      await h.db
+        .update(sidecarAllocation)
+        .set({
+          status: "destroy_failed",
+          failureCode: "provider_refused",
+          failureMessage: "Manual cleanup needed",
+        })
+        .where(eq(sidecarAllocation.id, allocationId));
+      const retired: unknown[] = [];
+      const lifecycle = service({
+        retentionRouter: {
+          retireAllocation: (target) => {
+            retired.push(target);
+          },
+        },
+      });
+      expect(
+        await lifecycle.releaseStoppedCleanup("other", runId, 1, "operator"),
+      ).toBe("not_found");
+      expect(
+        (await lifecycle.getStatus(tenantId, runId))?.allocation?.generation,
+      ).toBe(1);
+      expect(
+        await lifecycle.releaseStoppedCleanup(tenantId, runId, 2, "operator"),
+      ).toBe("generation_mismatch");
+      expect(retired).toEqual([]);
+
+      expect(
+        await lifecycle.releaseStoppedCleanup(tenantId, runId, 1, "operator"),
+      ).toBe("released");
+      expect(retired).toEqual([{ allocationId, generation: 1 }]);
+      expect(
+        (await lifecycle.getStatus(tenantId, runId))?.allocation,
+      ).toMatchObject({
+        status: "released",
+        failureCode: SIDECAR_CLEANUP_OPERATOR_RELEASED_FAILURE_CODE,
+        failureMessage:
+          "Released by operator after cleanup stopped with provider_refused: Manual cleanup needed",
+      });
+      // A retry finds the release it already made and does not repeat it.
+      expect(
+        await lifecycle.releaseStoppedCleanup(tenantId, runId, 1, "operator"),
+      ).toBe("released");
+      expect(retired).toHaveLength(1);
+      expect(await lifecycle.releaseCapacity(tenantId, runId)).toBe("released");
+    });
+
+    test("concurrent operator releases both report the release", async () => {
+      await h.db
+        .update(workflowRun)
+        .set({ status: "failed", endedAt: current })
+        .where(eq(workflowRun.id, runId));
+      await h.db
+        .update(sidecarAllocation)
+        .set({ status: "destroy_failed", failureCode: "provider_refused" })
+        .where(eq(sidecarAllocation.id, allocationId));
+      const retired: unknown[] = [];
+      const lifecycle = service({
+        retentionRouter: {
+          retireAllocation: (target) => {
+            retired.push(target);
+          },
+        },
+      });
+      const locked = Promise.withResolvers<number>();
+      const unlock = Promise.withResolvers<undefined>();
+      // Holding the sidecar lock lets both requests read the stopped row
+      // before either one can release it.
+      const blocker = h.db.transaction(async (tx) => {
+        await tx
+          .select()
+          .from(sidecar)
+          .where(eq(sidecar.id, "sidecar"))
+          .for("update");
+        const [backend] = await tx.execute(sql`select pg_backend_pid() as pid`);
+        const pid = backend?.["pid"];
+        if (typeof pid !== "number") throw new Error("Missing backend PID");
+        locked.resolve(pid);
+        await unlock.promise;
+      });
+      void blocker.catch(locked.reject);
+      const blockerPid = await locked.promise;
+      let settled = 0;
+      const releases = [
+        lifecycle.releaseStoppedCleanup(tenantId, runId, 1, "operator"),
+        lifecycle.releaseStoppedCleanup(tenantId, runId, 1, "operator"),
+      ];
+      const finished = Promise.allSettled(
+        releases.map((release) =>
+          release.finally(() => {
+            settled += 1;
+          }),
+        ),
+      );
+      try {
+        // Postgres exposes lock waits only through its activity view. A
+        // second row-lock waiter queues behind the first, not the blocker.
+        for (;;) {
+          const [waiters] = await h.db.execute(sql`
+            with recursive waiter(pid) as (
+              select pid from pg_stat_activity
+              where ${blockerPid} = any(pg_blocking_pids(pid))
+              union
+              select activity.pid from pg_stat_activity activity
+              join waiter on waiter.pid = any(pg_blocking_pids(activity.pid))
+            )
+            select count(*)::int as count from waiter
+          `);
+          if (waiters?.["count"] === 2) break;
+          if (settled > 0)
+            throw new Error("A release did not wait for the sidecar lock");
+          await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+      } finally {
+        unlock.resolve(undefined);
+        await blocker;
+        await finished;
+      }
+      expect(await Promise.all(releases)).toEqual(["released", "released"]);
+      expect(retired).toEqual([{ allocationId, generation: 1 }]);
     });
 
     test.each([

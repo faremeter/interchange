@@ -183,6 +183,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           const lifecycle = createWorkflowLifecycleService({
             retentionRouter: {
               fenceAllocation: () => undefined,
+              retireAllocation: () => undefined,
               getRetentionCandidates: () => [],
               holdsAllocatedBinding: () => true,
               getAllocationRetention: () => "kept",
@@ -402,6 +403,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         const lifecycle = createWorkflowLifecycleService({
           retentionRouter: {
             fenceAllocation: () => undefined,
+            retireAllocation: () => undefined,
             getRetentionCandidates: () => [],
             holdsAllocatedBinding: () => true,
             getAllocationRetention: () => "kept",
@@ -552,6 +554,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         const lifecycle = createWorkflowLifecycleService({
           retentionRouter: {
             fenceAllocation: () => undefined,
+            retireAllocation: () => undefined,
             getRetentionCandidates: () => [],
             holdsAllocatedBinding: () => true,
             getAllocationRetention: () => "kept",

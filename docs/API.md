@@ -45,6 +45,7 @@
 | GET | /api/tenants/:tenantId/workflows/runs/:runId/offerings | List run offerings |
 | GET | /api/tenants/:tenantId/workflows/runs/:runId/lifecycle | Get workflow lifecycle status |
 | POST | /api/tenants/:tenantId/workflows/runs/:runId/capacity/release | Release workflow capacity |
+| POST | /api/tenants/:tenantId/workflows/runs/:runId/capacity/recover | Release capacity whose cleanup stopped |
 | GET | /api/tenants/:tenantId/workflows/runs/:runId/events | Read a run's event log |
 | POST | /api/tenants/:tenantId/workflows/runs/:runId/mail | Send mail to a run |
 | GET | /api/tenants/:tenantId/workflows/runs/:runId/mail | List mail for a run |
@@ -535,13 +536,25 @@ Returns the deployment's saved policy, deadlines, and allocation cleanup status.
 ### POST /api/tenants/:tenantId/workflows/runs/:runId/capacity/release
 Release workflow capacity
 
-Durably requests release of a terminal top-level run's allocation. Poll the Location header for cleanup status. Stopped cleanup returns 409. After a cleanup disconnect timeout, automatic cleanup resumes only if the sidecar reconnects. If the sidecar has been destroyed, operator recovery is required. Exhausted retries, permanent provider rejections, `provisioner_unavailable`, and `sidecar_cleanup_preparation_timeout` require operator recovery. Reconnects and this request do not restart exhausted cleanup. Returns 503 while accepted run history cannot yet be reconciled; retry later.
+Durably requests release of a terminal top-level run's allocation. Poll the Location header for cleanup status. Stopped cleanup returns 409. After a cleanup disconnect timeout, automatic cleanup resumes only if the sidecar reconnects. If the sidecar has been destroyed, operator recovery is required. Exhausted retries, permanent provider rejections, `provisioner_unavailable`, and `sidecar_cleanup_preparation_timeout` require operator recovery. Reconnects and this request do not restart exhausted cleanup. Once removal is confirmed outside the Hub, `POST .../capacity/recover` releases the allocation. Returns 503 while accepted run history cannot yet be reconciled; retry later.
 
 202: (no content) -- Release requested
 204: (no content) -- Capacity already released or absent
 404: ErrorResponse -- Run not found
 409: ErrorResponse -- Run is live or automatic cleanup has stopped
 503: ErrorResponse -- Workflow lifecycle service or run history unavailable
+
+### POST /api/tenants/:tenantId/workflows/runs/:runId/capacity/recover
+Release capacity whose cleanup stopped
+
+Releases a `destroy_failed` allocation on the caller's word that its deployment copy and provider hold are gone. The Hub does not verify this. Use it only after confirming removal outside the Hub, since a copy that is still running keeps using the sidecar while the Hub places other work there. Send the allocation generation read from the lifecycle status. Requires the `recover` action on the run, which only the owner role holds by default. Repeating a successful request returns 204. The allocation keeps `sidecar_cleanup_operator_released` with the caller and the stopped cleanup's reason as its failure record.
+
+Body: RecoverWorkflowCapacityRequest
+
+204: (no content) -- Capacity released
+404: ErrorResponse -- Run or allocation not found
+409: ErrorResponse -- Cleanup has not stopped, or the allocation generation changed
+503: ErrorResponse -- Workflow lifecycle service unavailable
 
 ### GET /api/tenants/:tenantId/workflows/runs/:runId/events
 Read a run's event log
@@ -1549,6 +1562,10 @@ Source: packages/types/src/providers.ts
 **metadata**: Free-form provider-specific configuration not covered by the typed fields. Not interpreted by the hub.
 **scopes**: OAuth scopes associated with this provider integration.
 
+### RecoverWorkflowCapacityRequest
+`{ generation: number % 1 & >= 0 }`
+Source: packages/types/src/workflow-lifecycle.ts
+
 ### RejectAction
 `{ message?: string, scope?: "always" | "once" }`
 Source: packages/types/src/approvals.ts
@@ -1688,7 +1705,7 @@ Source: packages/types/src/workflows.ts
 **status**: Deployment lifecycle status. `recovering` means the Hub is replacing deployment capacity. `failed` is a terminal allocation failure with no infrastructure. `destroy_failed` means automatic cleanup stopped. Read `GET /api/tenants/:tenantId/workflows/runs/:runId/lifecycle` for the allocation's failure code and message.
 
 ### WorkflowLifecycleResponse
-`{ allocation: { failureCode: string | null, failureMessage: string | null, id: string, status: "allocated" | "destroy_failed" | "failed" | "pending" | "provisioning" | "released" | "releasing" | "replacing" } | null, cancellationDeadline: string | null, cancellationReason: string | null, cancellationRequestedAt: string | null, capacityReleaseAt: string | null, expiresAt: string | null, policy: { capacityRetention?: { cancelled?: string , completed?: string , failed?: string , + (undeclared): reject }, maxDisconnected?: string , maxLifetime?: string , + (undeclared): reject }, runId: string, status: "cancelled" | "completed" | "deployed" | "failed" | "running" }`
+`{ allocation: { failureCode: string | null, failureMessage: string | null, generation: number, id: string, status: "allocated" | "destroy_failed" | "failed" | "pending" | "provisioning" | "released" | "releasing" | "replacing" } | null, cancellationDeadline: string | null, cancellationReason: string | null, cancellationRequestedAt: string | null, capacityReleaseAt: string | null, expiresAt: string | null, policy: { capacityRetention?: { cancelled?: string , completed?: string , failed?: string , + (undeclared): reject }, maxDisconnected?: string , maxLifetime?: string , + (undeclared): reject }, runId: string, status: "cancelled" | "completed" | "deployed" | "failed" | "running" }`
 Source: packages/types/src/workflow-lifecycle.ts
 
 ### WorkflowRollbackRequest
