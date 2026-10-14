@@ -25,11 +25,18 @@ import type { CommitSigner } from "./signer";
 import {
   buildSigningArgs,
   commitDurably,
+  createIndexRollback,
   restoreIndexAfterFailedCommit,
 } from "./commit-helpers";
 import { withRepoDirLock } from "./repo-lock";
 import { maybeGCUnderLock, type GCPolicy } from "./gc";
-import { decodeUTF8, flushRuntime, type StorageRuntime } from "./runtime";
+import {
+  decodeUTF8,
+  flushRuntime,
+  withListingFailures,
+  type FileSystemStat,
+  type StorageRuntime,
+} from "./runtime";
 import { hasCode } from "@intx/types/has-code";
 
 const TURNS_FILE = "turns.jsonl";
@@ -233,6 +240,27 @@ async function pathExists(
     }
     throw cause;
   }
+}
+
+// A symlinked directory would put spills outside the repository, and git.add
+// would stage it as a link without its outputs.
+async function requireToolOutputDirectoryIfPresent(
+  runtime: StorageRuntime,
+  fullPath: string,
+): Promise<boolean> {
+  let entry: FileSystemStat;
+  try {
+    entry = await runtime.fs.lstat(fullPath);
+  } catch (cause) {
+    if (hasCode(cause) && cause.code === "ENOENT") {
+      return false;
+    }
+    throw cause;
+  }
+  if (!entry.isDirectory()) {
+    throw new Error(`${TOOL_OUTPUT_DIR} is not a directory: ${fullPath}`);
+  }
+  return true;
 }
 
 function encodeJsonlLines(records: readonly unknown[]): string {
@@ -516,23 +544,22 @@ export class IsogitStore
         }
       }
 
+      const pathsToAdd = [...stagedFilepaths];
       const blobsDir = this.runtime.path.join(this.dir, TOOL_OUTPUT_DIR);
-      if (await pathExists(this.runtime, blobsDir)) {
-        const entries = await this.runtime.fs.readdir(blobsDir);
-        for (const entry of entries) {
-          stagedFilepaths.push(`${TOOL_OUTPUT_DIR}/${entry}`);
-        }
+      if (await requireToolOutputDirectoryIfPresent(this.runtime, blobsDir)) {
+        pathsToAdd.push(TOOL_OUTPUT_DIR);
       }
+
+      const rollbackIndex = await createIndexRollback(this.runtime, this.dir, [
+        ...stagedFilepaths,
+        TOOL_OUTPUT_DIR,
+      ]);
 
       let oid: string;
       try {
-        for (const filepath of stagedFilepaths) {
-          await git.add({
-            fs: this.runtime.fs.git,
-            dir: this.dir,
-            filepath,
-          });
-        }
+        await withListingFailures(this.runtime.fs.git, (fs) =>
+          git.add({ fs, dir: this.dir, filepath: pathsToAdd, parallel: false }),
+        );
 
         oid = await commitDurably(this.runtime, this.dir, {
           message: options.message,
@@ -541,15 +568,13 @@ export class IsogitStore
         });
       } catch (cause) {
         try {
-          await restoreIndexAfterFailedCommit(
-            this.runtime,
-            this.dir,
-            stagedFilepaths,
-          );
+          await rollbackIndex(cause);
         } catch (resetCause) {
-          throw new Error("Could not restore the context index after failure", {
-            cause: new AggregateError([cause, resetCause]),
-          });
+          const detail = cause instanceof Error ? cause.message : String(cause);
+          throw new Error(
+            `Could not restore the context index after failure: ${detail}`,
+            { cause: new AggregateError([cause, resetCause]) },
+          );
         }
         throw cause;
       }
@@ -617,7 +642,9 @@ export class IsogitStore
     const safeKey = sanitizeCallId(key);
     const filename = `${safeKey}${blobExtensionFor(contentType)}`;
     const dirPath = this.runtime.path.join(this.dir, TOOL_OUTPUT_DIR);
-    await this.runtime.fs.mkdir(dirPath, { recursive: true });
+    if (!(await requireToolOutputDirectoryIfPresent(this.runtime, dirPath))) {
+      await this.runtime.fs.mkdir(dirPath, { recursive: true });
+    }
     await this.runtime.fs.writeFile(
       this.runtime.path.join(dirPath, filename),
       bytes,
@@ -627,6 +654,7 @@ export class IsogitStore
   async readBlob(key: string, _signal?: AbortSignal): Promise<Uint8Array> {
     const safeKey = sanitizeCallId(key);
     const dirPath = this.runtime.path.join(this.dir, TOOL_OUTPUT_DIR);
+    await requireToolOutputDirectoryIfPresent(this.runtime, dirPath);
     let entries: string[];
     try {
       entries = await this.runtime.fs.readdir(dirPath);
