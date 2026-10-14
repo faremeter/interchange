@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -14,6 +14,36 @@ import { withRepoDirLock } from "./repo-lock";
 import { normalizeRuntime } from "./runtime";
 
 const tempDirs: string[] = [];
+
+async function entryIn(
+  dir: string,
+  tree: ReturnType<typeof git.STAGE>,
+  filepath: string,
+) {
+  const [entry] = await git.walk({
+    fs,
+    dir,
+    trees: [tree],
+    map: async (walked, [found]) =>
+      walked === filepath && found !== null && found !== undefined
+        ? { oid: await found.oid(), mode: await found.mode() }
+        : undefined,
+  });
+  return entry;
+}
+
+async function stagedMtime(dir: string, filepath: string) {
+  const [mtime] = await git.walk({
+    fs,
+    dir,
+    trees: [git.STAGE()],
+    map: async (walked, [found]) =>
+      walked === filepath && found !== null && found !== undefined
+        ? (await found.stat()).mtimeSeconds
+        : undefined,
+  });
+  return mtime;
+}
 
 afterEach(async () => {
   await Promise.all(
@@ -108,7 +138,7 @@ test.each([
       await expect(
         rollback(new Error("injected checkpoint failure")),
       ).rejects.toMatchObject({
-        errors: [...recoveryErrors, { errors: [flushError] }],
+        errors: [...recoveryErrors, flushError],
       });
     });
     expect(injected).toBe(true);
@@ -284,4 +314,139 @@ test("rollback resets a nested checkpoint path and nothing beside it", async () 
     "state/beside",
     "state/checkpoint/committed",
   ]);
+});
+
+test("rollback keeps HEAD's mode for an executable and a symlink", async () => {
+  const dir = await tempDir();
+  const store = await createIsogitStore(dir);
+  const blobsDir = path.join(dir, "tool-output");
+  await fs.promises.mkdir(blobsDir);
+  await fs.promises.writeFile(path.join(blobsDir, "tool"), "#!/bin/sh\n");
+  await fs.promises.chmod(path.join(blobsDir, "tool"), 0o755);
+  await fs.promises.writeFile(path.join(blobsDir, "target"), "target");
+  await fs.promises.symlink("target", path.join(blobsDir, "link"));
+  const checkpoint = await store.commit({ message: "Executable and link" });
+  await fs.promises.writeFile(
+    path.join(blobsDir, "tool"),
+    "#!/bin/sh\nexit 1\n",
+  );
+  await fs.promises.unlink(path.join(blobsDir, "link"));
+  await fs.promises.symlink("elsewhere", path.join(blobsDir, "link"));
+  await git.add({
+    fs,
+    dir,
+    filepath: ["tool-output/tool", "tool-output/link"],
+  });
+
+  const runtime = normalizeRuntime(createNodeIsogitRuntime());
+  await withRepoDirLock(runtime, dir, async () => {
+    const rollback = await createIndexRollback(runtime, dir, ["tool-output"]);
+    await rollback(new Error("injected checkpoint failure"));
+  });
+  for (const [filepath, mode] of [
+    ["tool-output/tool", 0o100755],
+    ["tool-output/link", 0o120000],
+  ] as const) {
+    const head = await entryIn(
+      dir,
+      git.TREE({ ref: checkpoint.hash }),
+      filepath,
+    );
+    expect(head?.mode).toBe(mode);
+    expect(await entryIn(dir, git.STAGE(), filepath)).toMatchObject({
+      oid: head?.oid,
+      mode,
+    });
+  }
+});
+
+test("rollback rewrites an unreadable working file's entry with zeroed stats", async () => {
+  const dir = await tempDir();
+  const store = await createIsogitStore(dir);
+  await store.writeBlob("output", new Uint8Array([1]));
+  const checkpoint = await store.commit({ message: "Committed output" });
+  const outputPath = path.join(dir, "tool-output", "output");
+  expect(await stagedMtime(dir, "tool-output/output")).not.toBe(0);
+
+  let armed = false;
+  const runtime = normalizeRuntime({
+    ...createNodeIsogitRuntime(),
+    fs: {
+      promises: {
+        ...fs.promises,
+        async readFile(...args: Parameters<typeof fs.promises.readFile>) {
+          if (armed && args[0] === outputPath) {
+            throw Object.assign(new Error("injected read failure"), {
+              code: "EACCES",
+            });
+          }
+          return fs.promises.readFile(...args);
+        },
+      },
+    },
+  });
+  await withRepoDirLock(runtime, dir, async () => {
+    const rollback = await createIndexRollback(runtime, dir, ["tool-output"]);
+    armed = true;
+    await rollback(new Error("injected checkpoint failure"));
+  });
+  const head = await entryIn(
+    dir,
+    git.TREE({ ref: checkpoint.hash }),
+    "tool-output/output",
+  );
+  expect(await entryIn(dir, git.STAGE(), "tool-output/output")).toEqual(head);
+  expect(await stagedMtime(dir, "tool-output/output")).toBe(0);
+});
+
+test("rollback reports a repair whose index read fails", async () => {
+  const dir = await tempDir();
+  const store = await createIsogitStore(dir);
+  await store.writeBlob("output", new Uint8Array([1]));
+  await store.commit({ message: "Committed output" });
+  await store.writeBlob("output", new Uint8Array([2]));
+  await git.add({ fs, dir, filepath: "tool-output/output" });
+  const indexPath = path.join(dir, ".git", "index");
+  const indexBefore = await fs.promises.readFile(indexPath);
+
+  let repairing = false;
+  const runtime = normalizeRuntime({
+    ...createNodeIsogitRuntime(),
+    fs: {
+      promises: {
+        ...fs.promises,
+        async readFile(...args: Parameters<typeof fs.promises.readFile>) {
+          if (repairing && args[0] === indexPath) {
+            throw Object.assign(new Error("injected index read failure"), {
+              code: "EIO",
+            });
+          }
+          return fs.promises.readFile(...args);
+        },
+      },
+    },
+  });
+  const updateIndex = git.updateIndex.bind(git);
+  const repair = spyOn(git, "updateIndex").mockImplementation(async (args) => {
+    repairing = true;
+    return updateIndex(args);
+  });
+  try {
+    await withRepoDirLock(runtime, dir, async () => {
+      const rollback = await createIndexRollback(runtime, dir, ["tool-output"]);
+      await expect(
+        rollback(new Error("injected checkpoint failure")),
+      ).rejects.toMatchObject({
+        errors: [
+          expect.objectContaining({
+            message: expect.stringContaining("Index file is empty"),
+          }),
+        ],
+      });
+    });
+  } finally {
+    repair.mockRestore();
+  }
+  expect(repairing).toBe(true);
+  expect(await fs.promises.readFile(indexPath)).toEqual(indexBefore);
 });

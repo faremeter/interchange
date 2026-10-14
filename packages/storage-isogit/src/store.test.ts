@@ -1398,8 +1398,20 @@ describe("audit and error durability retries", () => {
       },
     });
     const store = await storage.createIsogitStore(dir);
+    const committedTurns: ConversationTurn[] = [
+      {
+        role: "user",
+        content: [{ type: "text", text: "first" }],
+        timestamp: 1,
+      },
+    ];
+    await store.writeTurns(committedTurns);
     await store.writeBlob("committed", new Uint8Array([1]));
     await store.commit({ message: "Committed output" });
+    await store.writeTurns([
+      ...committedTurns,
+      { role: "user", content: [{ type: "text", text: "next" }], timestamp: 2 },
+    ]);
     await store.writeBlob("never-checkpointed", new Uint8Array([2]));
 
     armed = true;
@@ -1409,6 +1421,7 @@ describe("audit and error durability retries", () => {
     failRefReads = false;
     await store.commitErrors([makeErrorRecord()]);
     const errorHead = await git.resolveRef({ fs, dir, ref: "HEAD" });
+    expect(await store.readAt(errorHead)).toEqual(committedTurns);
     await expect(
       git.readBlob({
         fs,

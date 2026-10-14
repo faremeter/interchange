@@ -133,11 +133,11 @@ async function writeIndex(
  * Capture HEAD and the index before a checkpoint stages `paths`, and return
  * the rollback for a failed checkpoint. The rollback resets index entries
  * under `paths` to the HEAD the failure left visible, which also discards
- * staging there from before the checkpoint, and restores the rest of the
- * index only when HEAD did not move. The caller holds the repository lock
- * throughout and passes the failure that stopped the checkpoint; any failure
- * other than UncertainRefPublicationError is taken to mean the ref was never
- * written.
+ * staging there from before the checkpoint, or throws naming what it could
+ * not repair. It restores the rest of the index only when HEAD did not move.
+ * The caller holds the repository lock throughout and passes the failure
+ * that stopped the checkpoint; any failure other than
+ * UncertainRefPublicationError is taken to mean the ref was never written.
  */
 export async function createIndexRollback(
   runtime: StorageRuntime,
@@ -155,7 +155,10 @@ export async function createIndexRollback(
 
   return async (failure) => {
     const failures: unknown[] = [];
-    const changed: string[] = [];
+    const repairs: {
+      filepath: string;
+      headEntry: { oid: string; mode: number } | null;
+    }[] = [];
     const unexamined: string[] = [];
     try {
       let head = headBefore;
@@ -218,12 +221,18 @@ export async function createIndexRollback(
           const committedType = await committed?.type();
           const stagedType = await staged?.type();
           if (committedType !== "blob" && stagedType !== "blob") return;
+          const headEntry =
+            committedType === "blob" &&
+            committed !== null &&
+            committed !== undefined
+              ? { oid: await committed.oid(), mode: await committed.mode() }
+              : null;
           if (
             committedType !== stagedType ||
-            (await committed?.oid()) !== (await staged?.oid()) ||
-            (await committed?.mode()) !== (await staged?.mode())
+            headEntry?.oid !== (await staged?.oid()) ||
+            headEntry?.mode !== (await staged?.mode())
           ) {
-            changed.push(filepath);
+            repairs.push({ filepath, headEntry });
             return;
           }
           // The entry already matches HEAD. Without a working file there are
@@ -256,13 +265,12 @@ export async function createIndexRollback(
               (await git.hashBlob({ object: content })).oid !==
                 (await staged?.oid())
             ) {
-              changed.push(filepath);
+              repairs.push({ filepath, headEntry });
             }
           } catch {
-            // An unreadable working file cannot be compared. resetIndex
-            // restores HEAD's entry with zeroed stats; it does not report
-            // the read error.
-            changed.push(filepath);
+            // An unreadable working file cannot be compared, so rewrite the
+            // entry with zeroed stats to make the next comparison read it.
+            repairs.push({ filepath, headEntry });
           }
         },
       });
@@ -277,8 +285,33 @@ export async function createIndexRollback(
         ),
       );
     }
+    // Write HEAD's entry as the walk read it, with zeroed stats. resetIndex
+    // would read HEAD and its tree again and turn a failed read into a
+    // silent deletion.
+    for (const { filepath, headEntry } of repairs) {
+      try {
+        await (headEntry === null
+          ? git.updateIndex({
+              fs: runtime.fs.git,
+              dir,
+              filepath,
+              remove: true,
+              force: true,
+            })
+          : git.updateIndex({
+              fs: runtime.fs.git,
+              dir,
+              filepath,
+              oid: headEntry.oid,
+              mode: headEntry.mode,
+              add: true,
+            }));
+      } catch (cause) {
+        failures.push(cause);
+      }
+    }
     try {
-      await restoreIndexAfterFailedCommit(runtime, dir, changed);
+      await flushRuntime(runtime);
     } catch (cause) {
       failures.push(cause);
     }
