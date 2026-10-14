@@ -84,6 +84,11 @@ type ReleaseResult =
   | "cleanup_exhausted"
   | "cleanup_disconnected"
   | "cleanup_failed";
+type ReleaseStoppedCleanupResult =
+  | "released"
+  | "not_found"
+  | "not_stopped"
+  | "generation_mismatch";
 // `request` is an explicit caller waiting on the answer, so it reads Git even
 // while the sweep is backing off; `stop` and `sweep` respect the backoff, and
 // only `sweep` leaves young rows to the receive that wrote them.
@@ -98,6 +103,7 @@ export type WorkflowLifecycleServiceDeps = {
     | "getRetentionCandidates"
     | "holdsAllocatedBinding"
     | "fenceAllocation"
+    | "retireAllocation"
   >;
   runReader: WorkflowRunReader;
   historyReceives: WorkflowHistoryReceiveTracker;
@@ -405,6 +411,7 @@ export function createWorkflowLifecycleService({
           ? null
           : {
               id: allocation.id,
+              generation: allocation.generation,
               status: allocation.status,
               failureCode: allocation.failureCode ?? null,
               failureMessage: allocation.failureMessage ?? null,
@@ -459,6 +466,27 @@ export function createWorkflowLifecycleService({
       },
     );
     return result ?? "not_found";
+  }
+
+  async function releaseStoppedCleanup(
+    tenantId: string,
+    runId: string,
+    generation: number,
+    releasedBy: string,
+  ): Promise<ReleaseStoppedCleanupResult> {
+    const result = await allocations.releaseStoppedCleanup({
+      tenantId,
+      anchorRunId: runId,
+      generation,
+      releasedBy,
+      now: now(),
+    });
+    if (result.kind === "released")
+      retentionRouter.retireAllocation({
+        allocationId: result.allocation.id,
+        generation: result.allocation.generation,
+      });
+    return result.kind === "already_released" ? "released" : result.kind;
   }
 
   async function beginCancellation(
@@ -963,7 +991,13 @@ export function createWorkflowLifecycleService({
     return true;
   }
 
-  return { getStatus, releaseCapacity, requestCancellation, reconcileNext };
+  return {
+    getStatus,
+    releaseCapacity,
+    releaseStoppedCleanup,
+    requestCancellation,
+    reconcileNext,
+  };
 }
 
 export type WorkflowLifecycleService = ReturnType<

@@ -151,7 +151,9 @@ cannot stop a disconnected process. Expiry records `destroy_failed` with
 `sidecar_cleanup_disconnect_timeout`; automatic cleanup resumes only if the
 sidecar reconnects. If the sidecar has been destroyed, operator recovery is
 required. Exhausted retries, permanent provider rejection, `provisioner_unavailable`,
-and `sidecar_cleanup_preparation_timeout` require operator recovery. Where cleanup
+and `sidecar_cleanup_preparation_timeout` require operator recovery: after
+confirming removal outside the Hub, `POST .../capacity/recover` releases the
+allocation on the caller's word. Where cleanup
 remains, its binding allows inventory reports without restoring workflow routes.
 Removal is confirmed by an undeploy acknowledgement
 or by provider destruction that guarantees the worker and its restorable state
@@ -292,6 +294,14 @@ automatic cleanup resumes only if the sidecar reconnects. If the sidecar has bee
 destroyed, operator recovery is required. Exhausted retries, permanent provider
 rejection, `provisioner_unavailable`, and `sidecar_cleanup_preparation_timeout`
 require operator recovery.
+`POST /api/tenants/:tenantId/workflows/runs/:runId/capacity/recover` releases a
+`destroy_failed` allocation once removal is confirmed outside the Hub. It takes
+the allocation `generation` from the lifecycle status, requires the `recover`
+action on the run, which only the owner role holds by default, and returns `204`,
+also when it repeats a release it already made.
+The Hub does not verify removal; the allocation records the caller and the
+stopped cleanup's reason as `sidecar_cleanup_operator_released`. An allocation
+whose cleanup has not stopped, or whose generation changed, returns `409`.
 `DELETE /api/tenants/:tenantId/workflows/runs/:runId` requests
 cancellation of a live run and returns `202`; its cancellation retention
 policy then applies.

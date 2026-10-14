@@ -69,6 +69,9 @@ export const SIDECAR_CLEANUP_DISCONNECT_TIMEOUT_FAILURE_CODE =
   "sidecar_cleanup_disconnect_timeout";
 export const SIDECAR_CLEANUP_PREPARATION_TIMEOUT_FAILURE_CODE =
   "sidecar_cleanup_preparation_timeout";
+// Records that a person, not cleanup, confirmed the copy and provider hold are gone.
+export const SIDECAR_CLEANUP_OPERATOR_RELEASED_FAILURE_CODE =
+  "sidecar_cleanup_operator_released";
 // Codes that stopped cleanup itself. A completed release clears them, so an
 // allocation keeps a workflow failure only if failed cleanup never replaced it;
 // the runs record their own failure either way.
@@ -281,6 +284,22 @@ export type MarkSidecarReleasedArgs = {
   readonly expectedLeaseId?: string;
   readonly now?: Date;
 };
+
+export type ReleaseStoppedSidecarCleanupArgs = {
+  readonly tenantId: string;
+  readonly anchorRunId: string;
+  readonly generation: number;
+  /** The principal that confirmed the copy and provider hold are gone. */
+  readonly releasedBy: string;
+  readonly now?: Date;
+};
+
+export type ReleaseStoppedSidecarCleanupResult =
+  | { readonly kind: "released"; readonly allocation: SidecarAllocation }
+  | { readonly kind: "already_released" }
+  | { readonly kind: "not_found" }
+  | { readonly kind: "not_stopped" }
+  | { readonly kind: "generation_mismatch" };
 
 export type MarkSidecarConnectionReadyArgs = {
   readonly allocationId: string;
@@ -590,6 +609,23 @@ function buildSidecarAllocationStore(
       createdAt: args.now,
       updatedAt: args.now,
     });
+  }
+
+  // Lifecycle settles a pending cancellation and its dispatches together after
+  // accepted history is recovered. The release already fences delivery.
+  async function settleReleasedDispatches(
+    tx: DBExecutor,
+    anchorRunId: string,
+    now: Date | SQL,
+  ): Promise<void> {
+    if (await hasPendingCancellation(tx, anchorRunId)) return;
+    await workflowRunDispatchStore.abandonUnsettled(
+      anchorRunId,
+      "workflow_capacity_released",
+      "Workflow capacity was released before delivery could be confirmed",
+      now,
+      tx,
+    );
   }
 
   async function hasPendingCancellation(
@@ -1544,18 +1580,79 @@ function buildSidecarAllocationStore(
           .where(condition)
           .returning();
         if (updated === undefined) return null;
-
-        // Lifecycle settles a pending cancellation and its dispatches together
-        // after accepted history is recovered. The release already fences delivery.
-        if (!(await hasPendingCancellation(tx, updated.anchorRunId)))
-          await workflowRunDispatchStore.abandonUnsettled(
-            updated.anchorRunId,
-            "workflow_capacity_released",
-            "Workflow capacity was released before delivery could be confirmed",
-            now,
-            tx,
-          );
+        await settleReleasedDispatches(tx, updated.anchorRunId, now);
         return parseSidecarAllocationRow(updated);
+      });
+    },
+
+    /**
+     * Releases an allocation whose automatic cleanup stopped, on a principal's
+     * word that its copy and provider hold are gone. Nothing here verifies that;
+     * the caller owns the claim, and the row records who made it.
+     */
+    async releaseStoppedCleanup(
+      args: ReleaseStoppedSidecarCleanupArgs,
+    ): Promise<ReleaseStoppedSidecarCleanupResult> {
+      const now = databaseTimestamp(args.now);
+      return db.transaction(async (tx) => {
+        const owned = and(
+          eq(sidecarAllocation.anchorRunId, args.anchorRunId),
+          eq(sidecarAllocation.tenantId, args.tenantId),
+        );
+        const condition = and(
+          owned,
+          eq(sidecarAllocation.status, "destroy_failed"),
+          eq(sidecarAllocation.generation, args.generation),
+        );
+        const stopped = await lockAllocationWithSidecars(tx, condition);
+        if (stopped !== undefined) {
+          const [updated] = await tx
+            .update(sidecarAllocation)
+            .set({
+              status: "released",
+              deploymentCleanupConfirmed: true,
+              providerHoldReleased: true,
+              failureCode: SIDECAR_CLEANUP_OPERATOR_RELEASED_FAILURE_CODE,
+              failureMessage: `Released by ${args.releasedBy} after cleanup stopped with ${stopped.failureCode ?? "no recorded code"}: ${stopped.failureMessage ?? "no recorded message"}`,
+              nextAttemptAt: null,
+              reconciliationLeaseId: null,
+              reconciliationLeaseExpiresAt: null,
+              connectDeadline: null,
+              updatedAt: now,
+            })
+            .where(condition)
+            .returning();
+          if (updated === undefined)
+            throw new Error(
+              `Allocation ${stopped.id} changed while locked for release`,
+            );
+          await settleReleasedDispatches(tx, updated.anchorRunId, now);
+          return {
+            kind: "released",
+            allocation: parseSidecarAllocationRow(updated),
+          };
+        }
+        // Under read committed, this statement sees a release that a
+        // concurrent request committed while this one waited on the lock.
+        const [current] = await tx
+          .select({
+            status: sidecarAllocation.status,
+            generation: sidecarAllocation.generation,
+            failureCode: sidecarAllocation.failureCode,
+          })
+          .from(sidecarAllocation)
+          .where(owned);
+        if (current === undefined) return { kind: "not_found" };
+        if (current.generation !== args.generation)
+          return { kind: "generation_mismatch" };
+        // Released is terminal, so a repeated request finds the release
+        // already made.
+        if (
+          current.status === "released" &&
+          current.failureCode === SIDECAR_CLEANUP_OPERATOR_RELEASED_FAILURE_CODE
+        )
+          return { kind: "already_released" };
+        return { kind: "not_stopped" };
       });
     },
 

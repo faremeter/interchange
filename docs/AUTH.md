@@ -259,6 +259,7 @@ Actions are operation verbs:
 - `create` -- create new resources
 - `spend` -- financial operations
 - `manage` -- update/delete/configure
+- `recover` -- release a workflow run's capacity whose cleanup stopped, on the caller's word that its copy is gone; only the owner role holds it by default
 - `*` -- all actions
 
 ### Evaluation

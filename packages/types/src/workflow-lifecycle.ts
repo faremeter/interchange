@@ -89,10 +89,17 @@ export const WorkflowLifecycleResponse = type({
   capacityReleaseAt: "string | null",
   allocation: type({
     id: "string",
+    generation: "number",
     status: type.enumerated(...sidecarAllocationStatuses),
     failureCode: "string | null",
     failureMessage: "string | null",
   }).or("null"),
+});
+
+// Names the allocation generation the caller inspected, so a request based on
+// an outdated status cannot release a later binding.
+export const RecoverWorkflowCapacityRequest = type({
+  generation: "number.integer >= 0",
 });
 
 export type WorkflowLifecyclePolicyResolution =

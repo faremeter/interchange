@@ -1212,6 +1212,7 @@ function lifecycleService(
       allocation: null,
     }),
     releaseCapacity: async () => "pending",
+    releaseStoppedCleanup: async () => "released",
     requestCancellation: async () => "pending",
     reconcileNext: async () => false,
     ...overrides,
@@ -1303,6 +1304,87 @@ describe("workflow lifecycle endpoints", () => {
     expect(body).toContain(
       "If the sidecar has been destroyed, operator recovery is required",
     );
+  });
+
+  test("managing a run does not grant recovery of its stopped cleanup", async () => {
+    let called = false;
+    const app = createTestApp({
+      grants: [makeGrant({ action: "manage" })],
+      lifecycleService: lifecycleService({
+        releaseStoppedCleanup: async () => {
+          called = true;
+          return "released";
+        },
+      }),
+    });
+    const response = await app.request(`${runURL()}/capacity/recover`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ generation: 1 }),
+    });
+    expect(response.status).toBe(403);
+    expect(called).toBe(false);
+  });
+
+  test("recovery releases the inspected generation on the caller's word", async () => {
+    const calls: unknown[][] = [];
+    const app = createTestApp({
+      grants: [
+        makeGrant({ resource: `workflow-run:${RUN_ID}`, action: "recover" }),
+      ],
+      lifecycleService: lifecycleService({
+        releaseStoppedCleanup: async (...args) => {
+          calls.push(args);
+          return "released";
+        },
+      }),
+    });
+    const response = await app.request(`${runURL()}/capacity/recover`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ generation: 3 }),
+    });
+    expect(response.status).toBe(204);
+    expect(calls).toEqual([[TENANT_ID, RUN_ID, 3, PRINCIPAL_ID]]);
+  });
+
+  test.each([
+    ["not_stopped", 409],
+    ["generation_mismatch", 409],
+    ["not_found", 404],
+  ] as const)("recovery reports %s as %d", async (result, status) => {
+    const app = createTestApp({
+      grants: [makeGrant({ action: "recover" })],
+      lifecycleService: lifecycleService({
+        releaseStoppedCleanup: async () => result,
+      }),
+    });
+    const response = await app.request(`${runURL()}/capacity/recover`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ generation: 1 }),
+    });
+    expect(response.status).toBe(status);
+  });
+
+  test("recovery requires the inspected generation", async () => {
+    let called = false;
+    const app = createTestApp({
+      grants: [makeGrant({ action: "recover" })],
+      lifecycleService: lifecycleService({
+        releaseStoppedCleanup: async () => {
+          called = true;
+          return "released";
+        },
+      }),
+    });
+    const response = await app.request(`${runURL()}/capacity/recover`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(response.status).toBe(400);
+    expect(called).toBe(false);
   });
 
   test("read access can observe policy and deadlines without management access", async () => {

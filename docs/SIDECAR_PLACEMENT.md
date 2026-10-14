@@ -347,7 +347,10 @@ are not removed through the hello orphan-cleanup path. A copy whose removal or
 retained storage is confirmed does not occupy an active slot; the failed provider
 obligation remains recorded independently. Unconfirmed copies keep their active
 reservation. Both failures require operator recovery; there is no in-product
-action to retry cleanup or clear an unconfirmed reservation. Reconnects resume
+action to retry cleanup. After confirming outside the Hub that the copy and its
+provider hold are gone, a principal with the run's `recover` action releases the
+reservation through `POST /api/tenants/:tenantId/workflows/runs/:runId/capacity/recover`.
+The Hub does not verify that claim and records who made it. Reconnects resume
 disconnected waits immediately but preserve backoff after counted failures.
 If neither undeploy nor provider destruction stopped the copy, it may remain
 running without Hub routes until cleanup resumes after a disconnect timeout

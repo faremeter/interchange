@@ -27,6 +27,7 @@ import {
   SIDECAR_CLEANUP_RETRY_EXHAUSTED_FAILURE_CODE,
   SIDECAR_CLEANUP_DISCONNECT_TIMEOUT_FAILURE_CODE,
   SIDECAR_CLEANUP_PREPARATION_TIMEOUT_FAILURE_CODE,
+  SIDECAR_CLEANUP_OPERATOR_RELEASED_FAILURE_CODE,
   SidecarReuseRejectedError,
   type RetainedSidecarIncarnation,
 } from "@intx/db";
@@ -2825,6 +2826,63 @@ describe.skipIf(!harnessDbEnvAvailable())(
               })
               .where(eq(sidecarAllocation.id, removed));
             await store.markReleased({ allocationId: removed, generation: 1 });
+            expect(
+              await store.markAllocated({
+                allocationId: "alloc-last",
+                generation: 1,
+                sidecarId: "alloc-first-minted",
+              }),
+            ).toMatchObject({
+              status: "allocated",
+              sidecarId: "alloc-first-minted",
+            });
+          }
+
+          if (status === "destroy_failed") {
+            const stopped = others[0];
+            if (stopped === undefined)
+              throw new Error("Missing stopped allocation");
+            await h.db
+              .update(sidecarAllocation)
+              .set({
+                failureCode: SIDECAR_CLEANUP_RETRY_EXHAUSTED_FAILURE_CODE,
+                failureMessage: "Provider kept timing out",
+              })
+              .where(eq(sidecarAllocation.id, stopped));
+            const release = {
+              tenantId: TENANT_ID,
+              anchorRunId: `anchor-${stopped}`,
+              generation: 1,
+              releasedBy: "principal-operator",
+            };
+            expect(
+              await store.releaseStoppedCleanup({ ...release, generation: 2 }),
+            ).toEqual({ kind: "generation_mismatch" });
+            expect(
+              await store.releaseStoppedCleanup({
+                ...release,
+                anchorRunId: ANCHOR_RUN_ID,
+              }),
+            ).toEqual({ kind: "not_stopped" });
+            expect(
+              await store.releaseStoppedCleanup({
+                ...release,
+                tenantId: "tnt-other",
+              }),
+            ).toEqual({ kind: "not_found" });
+            expect(await store.releaseStoppedCleanup(release)).toMatchObject({
+              kind: "released",
+              allocation: {
+                status: "released",
+                deploymentCleanupConfirmed: true,
+                providerHoldReleased: true,
+                failureCode: SIDECAR_CLEANUP_OPERATOR_RELEASED_FAILURE_CODE,
+                failureMessage: `Released by principal-operator after cleanup stopped with ${SIDECAR_CLEANUP_RETRY_EXHAUSTED_FAILURE_CODE}: Provider kept timing out`,
+              },
+            });
+            expect(await store.releaseStoppedCleanup(release)).toEqual({
+              kind: "already_released",
+            });
             expect(
               await store.markAllocated({
                 allocationId: "alloc-last",

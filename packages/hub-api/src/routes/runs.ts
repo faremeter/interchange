@@ -23,6 +23,7 @@ import {
   OfferingDetail,
   SendMessage,
   MailResponse,
+  RecoverWorkflowCapacityRequest,
   paginatedSchema,
 } from "@intx/types";
 import {
@@ -674,7 +675,7 @@ export function createRunRoutes({
       tags: ["Runs"],
       summary: "Release workflow capacity",
       description:
-        "Durably requests release of a terminal top-level run's allocation. Poll the Location header for cleanup status. Stopped cleanup returns 409. After a cleanup disconnect timeout, automatic cleanup resumes only if the sidecar reconnects. If the sidecar has been destroyed, operator recovery is required. Exhausted retries, permanent provider rejections, `provisioner_unavailable`, and `sidecar_cleanup_preparation_timeout` require operator recovery. Reconnects and this request do not restart exhausted cleanup. Returns 503 while accepted run history cannot yet be reconciled; retry later.",
+        "Durably requests release of a terminal top-level run's allocation. Poll the Location header for cleanup status. Stopped cleanup returns 409. After a cleanup disconnect timeout, automatic cleanup resumes only if the sidecar reconnects. If the sidecar has been destroyed, operator recovery is required. Exhausted retries, permanent provider rejections, `provisioner_unavailable`, and `sidecar_cleanup_preparation_timeout` require operator recovery. Reconnects and this request do not restart exhausted cleanup. Once removal is confirmed outside the Hub, `POST .../capacity/recover` releases the allocation. Returns 503 while accepted run history cannot yet be reconciled; retry later.",
       responses: {
         202: { description: "Release requested" },
         204: { description: "Capacity already released or absent" },
@@ -740,6 +741,62 @@ export function createRunRoutes({
             `/api/tenants/${tenantId}/workflows/runs/${runId}/lifecycle`,
           );
           return c.body(null, 202);
+      }
+    },
+  );
+
+  app.post(
+    "/:runId/capacity/recover",
+    requireGrant(idResource("workflow-run", "runId"), "recover"),
+    describeRoute({
+      tags: ["Runs"],
+      summary: "Release capacity whose cleanup stopped",
+      description:
+        "Releases a `destroy_failed` allocation on the caller's word that its deployment copy and provider hold are gone. The Hub does not verify this. Use it only after confirming removal outside the Hub, since a copy that is still running keeps using the sidecar while the Hub places other work there. Send the allocation generation read from the lifecycle status. Requires the `recover` action on the run, which only the owner role holds by default. Repeating a successful request returns 204. The allocation keeps `sidecar_cleanup_operator_released` with the caller and the stopped cleanup's reason as its failure record.",
+      responses: {
+        204: { description: "Capacity released" },
+        404: jsonResponse("Run or allocation not found", ErrorResponse),
+        409: jsonResponse(
+          "Cleanup has not stopped, or the allocation generation changed",
+          ErrorResponse,
+        ),
+        503: jsonResponse(
+          "Workflow lifecycle service unavailable",
+          ErrorResponse,
+        ),
+      },
+    }),
+    validator("json", RecoverWorkflowCapacityRequest),
+    async (c) => {
+      if (lifecycleService === null)
+        return errorResponse(
+          c,
+          "unavailable",
+          "Workflow lifecycle service unavailable",
+        );
+      const result = await lifecycleService.releaseStoppedCleanup(
+        c.get("tenant").id,
+        c.req.param("runId"),
+        c.req.valid("json").generation,
+        c.get("principal").id,
+      );
+      switch (result) {
+        case "not_found":
+          return errorResponse(c, "not_found", "Run or allocation not found");
+        case "not_stopped":
+          return errorResponse(
+            c,
+            "conflict",
+            "Only an allocation whose automatic cleanup stopped can be recovered",
+          );
+        case "generation_mismatch":
+          return errorResponse(
+            c,
+            "conflict",
+            "The allocation generation changed; read the lifecycle status again",
+          );
+        case "released":
+          return c.body(null, 204);
       }
     },
   );
