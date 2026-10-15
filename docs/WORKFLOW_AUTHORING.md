@@ -72,13 +72,14 @@ Where it lives today: `loadWorkflowLoopFnsFromClosure` and
 **3.** An absent `interchange.loops` or `interchange.actions` field fails
 CLOSED. It composes to a registry that throws on any lookup. This is the
 opposite of `interchange.directors`, which resolves by id prefix: a director
-id is `<package-name>/<local-name>`, so a step naming
-`alice-coding-director/coding` loads the `interchange.directors` module of
-the package laid out under `node_modules/<package-name>`. A direct dep
-(workspace member or pinned registry dep -- both lay out under
-`node_modules/` identically) lands there, and a published tarball that
-bundles its own `node_modules` also places packages there, falling back to
-the built-in registry when no step names a custom director. A director id
+id is `<package-name>/<local-name>`. A prefix matching the workflow
+package's own name loads the workflow package's own `interchange.directors`
+module; any other legal prefix loads the module of the package laid out
+under `node_modules/<package-name>`. A direct dep (workspace member or
+pinned registry dep -- both lay out under `node_modules/` identically)
+lands there, and a published tarball that bundles its own `node_modules`
+also places packages there. When no step names a custom director, the
+built-in registry is used. A director id
 whose slot cannot be resolved, or that carries no package prefix, is
 unresolvable and fails the probe closed. The id prefix is an npm package
 name, not a path: `.` / `..` segments and extra slashes beyond a scope
