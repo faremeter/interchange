@@ -314,7 +314,7 @@ export function nextSchedulable(
     }
     const primitive = def.steps[stepId];
     if (!primitive) continue;
-    if (!areDepsResolved(def, primitive, state)) continue;
+    if (!areDepsResolved(def, primitive, state, inFlight)) continue;
     out.push(primitive);
   }
   return out;
@@ -324,10 +324,14 @@ function areDepsResolved(
   def: WorkflowDefinition,
   primitive: Primitive,
   state: RunState,
+  inFlight: ReadonlySet<string>,
 ): boolean {
   const after = primitive.after;
   if (after === undefined || after.length === 0) return true;
   for (const dep of after) {
+    // A completion can be readable before its write acknowledgement returns.
+    // The live runner publishes its output before leaving inFlight.
+    if (inFlight.has(dep)) return false;
     const depStep = state.steps.get(dep);
     if (!depStep) return false;
     if (!isTerminalStepPhase(depStep.phase)) return false;
