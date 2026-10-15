@@ -40,6 +40,65 @@ function makeAgent(id: string) {
 }
 
 describe("resume mid-map", () => {
+  test("an item's completion rides in the next commit, not one of its own", async () => {
+    const def = defineWorkflow({
+      id: "map-buffered-items",
+      trigger: { type: "manual" },
+      steps: {
+        m: map({
+          over: { literal: [{ x: 0 }, { x: 1 }, { x: 2 }] },
+          step: step({ agent: makeAgent("inner") }),
+        }),
+      },
+    });
+    const clock = () => new Date();
+    const inner = createInMemoryRepoStore();
+    const batches: (readonly WorkflowEvent[])[] = [];
+    const repoStore: typeof inner = {
+      ...inner,
+      async append(runId, event) {
+        batches.push([event]);
+        await inner.append(runId, event);
+      },
+      async appendBatch(runId, events) {
+        batches.push(events);
+        await inner.appendBatch(runId, events);
+      },
+    };
+    const env: WorkflowRuntimeEnv = {
+      repoStore,
+      scheduler: createInMemoryScheduler({ repoStore, clock }),
+      signalChannel: createInMemorySignalChannel(),
+      blobs: createInMemoryBlobSubstrate(),
+      directors: createDefaultDirectorRegistry(),
+      authorize: async () => ({
+        effect: "allow",
+        matchingGrants: [],
+        resolvedBy: null,
+      }),
+      invokeStep: async ({ input }) => ({ output: { processed: input } }),
+      spawnChild: async () => createTerminalChildHandle("completed"),
+      clock,
+      newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
+      drain: createNoopDrainController(def),
+      hasUpstreamSignalResolver: true,
+    };
+
+    const result = await runtimeRun(def, env).complete;
+
+    expect(result.terminalStatus).toBe("completed");
+    const itemCompletions = result.events.filter(
+      (e) => e.kind === "StepCompleted" && e.stepId !== "m",
+    );
+    expect(itemCompletions).toHaveLength(3);
+    expect(
+      batches.filter((batch) => {
+        const last = batch.at(-1);
+        return last?.kind === "StepCompleted" && last.stepId !== "m";
+      }),
+    ).toEqual([]);
+  });
+
   test("a seed log that stops after one inner item fails the run", async () => {
     const def = defineWorkflow({
       id: "midmap-resume",

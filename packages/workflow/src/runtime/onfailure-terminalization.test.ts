@@ -26,7 +26,7 @@ import {
   type WorkflowRun,
   type WorkflowRuntimeEnv,
 } from "@intx/workflow";
-import { bufferedEvents } from "./commit-chain";
+import { bufferedEvents, commit } from "./commit-chain";
 import { createTerminalChildHandle } from "./suspendable-child-handle";
 
 import { holdFirstUntilSecond } from "./skip-race.test-helpers";
@@ -417,6 +417,59 @@ describe("onFailure success-terminalization failures do not route", () => {
 
     expect(res.terminalStatus).toBe("completed");
     expect(unitInvocations).toBe(2);
+  });
+
+  test("cancellation while preparing a retry neither retries nor invokes the failure handler", async () => {
+    const def = defineWorkflow({
+      id: "cancel-retry-preparation",
+      trigger: { type: "manual" },
+      steps: {
+        unit: step({
+          agent: agent("unit"),
+          onFailure: "rescue",
+          retry: { maxAttempts: 2, initialBackoffMs: 0 },
+        }),
+        rescue: rescueStep(),
+      },
+    });
+    const { env } = buildEnv(def);
+    const invoked: (string | undefined)[] = [];
+    env.invokeStep = async (request) => {
+      invoked.push(request.authzContext.stepId);
+      throw new Error("temporary failure");
+    };
+    const runId = "cancel-retry-preparation";
+    const cancellation = Promise.withResolvers<undefined>();
+    env.newId = (prefix) => {
+      // A cancel committed while the runner prepares its retry queues on the
+      // run's commit chain ahead of the retry batch, after the runner's
+      // earlier cancellation check. It must still win that race.
+      if (prefix === "timer") {
+        void commit(env, runId, {
+          kind: "CancelRequested",
+          seq: 0,
+          at: new Date().toISOString(),
+          reason: "cancel before retry",
+          origin: "self",
+        })
+          .then(() => run.applyCommittedCancellation())
+          .then(() => cancellation.resolve(undefined), cancellation.reject);
+      }
+      return `${prefix}-${crypto.randomUUID()}`;
+    };
+    const run = runtimeRun(def, env, { runId });
+    const [result] = await Promise.all([run.complete, cancellation.promise]);
+
+    expect(result.terminalStatus).toBe("cancelled");
+    expect(invoked).toEqual(["unit"]);
+    expect(
+      result.events.some(
+        (event) =>
+          event.kind === "TimerSet" ||
+          event.kind === "AttemptScheduled" ||
+          event.kind === "TimerFired",
+      ),
+    ).toBe(false);
   });
 
   test("an unrouted failure whose handler branch cannot be skipped fails the run without the handler", async () => {
