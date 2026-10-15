@@ -149,6 +149,12 @@ describe("nextSchedulable onFailure handler", () => {
     expect(offeredIds(unitSettledBy(unitFailed("rescue")))).toContain("rescue");
   });
 
+  test("holds a routed handler until its live unit publishes the failure output", () => {
+    const state = unitSettledBy(unitFailed("rescue"));
+    expect(nextSchedulable(routing, state, new Set(["unit"]))).toEqual([]);
+    expect(offeredIds(state)).toContain("rescue");
+  });
+
   test("holds the handler of a unit whose failure did not route", () => {
     expect(offeredIds(unitSettledBy(unitFailed()))).toEqual(["normal"]);
   });
