@@ -520,9 +520,11 @@ async function settleThrownBody(
 // write into the per-runId buffer. The buffer is flushed in one
 // `appendBatch` at the next segment boundary -- a suspension (`flush`
 // before the run parks) or completion (`commitDurable` on the terminal
-// event). A synchronous single-step run buffers RunStarted ->
-// StepStarted -> StepCompleted and flushes all of them together with
-// the terminal RunCompleted in ONE commit.
+// event). A run of coordination steps buffers its whole segment and
+// flushes it together with the terminal RunCompleted in ONE commit; an
+// agent step's or action's StepStarted and StepCompleted each close a
+// commit of their own, except a map item's completion, which waits for
+// the next one.
 function commit(
   env: WorkflowRuntimeEnv,
   runId: string,
@@ -550,10 +552,12 @@ function commitFrom(
 // terminal is on disk -- and the supervisor's terminal-write sniff
 // fires -- the moment the commit resolves, for the control-plane
 // `cancel` whose `CancelRequested` must persist immediately, and for
-// the agent-invoke barrier in `runStep` (the agent step's `StepStarted`
-// is flushed durably before `env.invokeStep` runs, so a crash
-// mid-invocation leaves a durable marker the recovery path settles as a
-// terminal failure rather than re-invoking the non-idempotent agent).
+// the invocation barriers in `runStep` and `runAction` (the step's
+// `StepStarted` is flushed durably before the agent or handler runs, so
+// a crash mid-invocation leaves a durable marker the recovery path
+// settles as a terminal failure rather than re-invoking it, and, outside
+// a map, its success `StepCompleted` is flushed as soon as it lands, so a
+// crash after the work finished is not settled as one mid-invocation).
 // The terminal event being the last blob in the merge keeps the
 // workflow-run kind handler's terminal-lock satisfied.
 function commitDurable(
@@ -1466,7 +1470,15 @@ async function runPrimitive(
 ): Promise<unknown> {
   switch (primitive.kind) {
     case "step":
-      return runStep(definition, env, runId, primitive, selectorCtx, abort);
+      return runStep(
+        definition,
+        env,
+        runId,
+        primitive,
+        selectorCtx,
+        abort,
+        "durable",
+      );
     case "action":
       return runAction(definition, env, runId, primitive, selectorCtx, abort);
     case "loop":
@@ -1721,6 +1733,7 @@ async function runStep(
   step: StepPrimitive,
   selectorCtx: SelectorContext,
   abort: AbortSignal,
+  completion: "durable" | "buffered",
 ): Promise<unknown> {
   // Re-apply the retry/budget cross-field guard here as a defensive
   // re-check, at the runtime's single read point for both fields, rather
@@ -2030,17 +2043,14 @@ async function runStep(
             abort,
           );
         }
-        let after = await reloadState(env, runId);
-        const completed: WorkflowEvent = {
-          kind: "StepCompleted",
-          seq: after.lastSeq + 1,
-          at: env.clock().toISOString(),
-          stepId: step.id,
+        await commitInvocationCompleted(
+          env,
+          runId,
+          step.id,
           attempt,
-          output: { ref: outputRef },
-        };
-        after = await commit(env, runId, completed);
-        void after;
+          outputRef,
+          completion,
+        );
       } catch (termCause) {
         throw new SuccessTerminalizationError(termCause);
       }
@@ -2322,7 +2332,19 @@ async function runAction(
           abort,
         );
       }
-      await emitStepCompletedWithValue(env, runId, primitive.id, result.output);
+      const { ref: outputRef } = await env.blobs.recordOutput(
+        primitive.id,
+        1,
+        result.output,
+      );
+      await commitInvocationCompleted(
+        env,
+        runId,
+        primitive.id,
+        1,
+        outputRef,
+        "durable",
+      );
     } catch (termCause) {
       throw new SuccessTerminalizationError(termCause);
     }
@@ -5068,6 +5090,8 @@ async function runMap(
         ? { retry: primitive.retry }
         : {}),
     };
+    // Resume cannot continue a map still in flight, so an item's completion
+    // stays buffered: writing it durably would buy nothing.
     const output = await runStep(
       definition,
       env,
@@ -5075,6 +5099,7 @@ async function runMap(
       scopedStep,
       itemCtx,
       abort,
+      "buffered",
     );
     outputs.push(output);
   }
@@ -5328,6 +5353,32 @@ async function emitStepCompleted(
   };
   state = await commit(env, runId, completed);
   void state;
+}
+
+// The success terminal of an agent step or action. Durable unless the caller
+// buffers it: a buffered completion lost to a crash leaves the step in-flight,
+// and resume settles work that already ran as a crash mid-invocation, routing
+// it to its onFailure handler.
+async function commitInvocationCompleted(
+  env: WorkflowRuntimeEnv,
+  runId: string,
+  stepId: string,
+  attempt: number,
+  ref: string,
+  completion: "durable" | "buffered",
+): Promise<void> {
+  const state = await reloadState(env, runId);
+  const completed: WorkflowEvent = {
+    kind: "StepCompleted",
+    seq: state.lastSeq + 1,
+    at: env.clock().toISOString(),
+    stepId,
+    attempt,
+    output: { ref },
+  };
+  await (completion === "durable"
+    ? commitDurable(env, runId, completed)
+    : commit(env, runId, completed));
 }
 
 /**

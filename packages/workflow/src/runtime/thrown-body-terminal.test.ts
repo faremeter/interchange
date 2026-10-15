@@ -4,13 +4,12 @@
 // buffer. The fold throws `non-monotonic sequence`, and the run's
 // `complete` promise fulfills failed with that message on the `RunFailed`.
 //
-// The injection is the fourth read whose durable log ends in
-// `SignalAwaited`. The first is the reload before the sibling is numbered.
-// The second is the gate checking its log once its wait has started. The
-// third is the read inside the sibling's numbering, before the sibling is
-// pushed; injecting on any of them lets the sibling take the next sequence,
-// so nothing collides. The in-memory store returns its live log array, so
-// the read copies the log before appending the injected event.
+// The sibling is a child workflow because its completion is buffered; an
+// agent step's or an action's is written durably and never waits there.
+// The injection is the first read while the sibling's `StepCompleted` is
+// buffered. Injecting on an earlier read lets the sibling take the next
+// sequence, so nothing collides. The in-memory store returns its live log
+// array, so the read copies the log before appending the injected event.
 
 import { describe, expect, test } from "bun:test";
 
@@ -44,6 +43,28 @@ const collided = defineWorkflow({
     sibling: action({ handler: "sibling" }),
   },
 });
+
+const childSibling: Primitive = {
+  kind: "childWorkflow",
+  id: "",
+  definition: { ref: "child-ref" },
+  drainBehavior: "cancel",
+};
+
+const collidedChild = defineWorkflow({
+  id: "collided-child-signal",
+  trigger: { type: "manual" },
+  steps: {
+    gate: awaitSignal({ name: "approve" }),
+    sibling: childSibling,
+  },
+});
+
+function siblingCompletionBuffered(runId: string): boolean {
+  return bufferedEvents(runId).some(
+    (event) => event.kind === "StepCompleted" && event.stepId === "sibling",
+  );
+}
 
 const gateOnly = defineWorkflow({
   id: "gate-only",
@@ -114,15 +135,17 @@ describe("a thrown run body", () => {
   test("records RunFailed when a buffered sibling collides with an outside signal", async () => {
     const inner = createInMemoryRepoStore();
     const parked = whenKindAppended(inner, "SignalAwaited");
-    let awaitedReads = 0;
     const repoStore: RepoStore = {
       ...parked.repoStore,
       async read(runId) {
         const events = [...(await inner.read(runId))];
         const last = events.at(-1);
-        if (last?.kind !== "SignalAwaited") return events;
-        awaitedReads += 1;
-        if (awaitedReads !== 4) return events;
+        if (last === undefined || !siblingCompletionBuffered(runId)) {
+          return events;
+        }
+        if (events.some((event) => event.kind === "SignalReceived")) {
+          return events;
+        }
         const injected: WorkflowEvent = {
           kind: "SignalReceived",
           seq: last.seq + 1,
@@ -135,22 +158,21 @@ describe("a thrown run body", () => {
         return [...events, injected];
       },
     };
-    const invokeAction: ActionInvoker = async ({ handler }) => {
-      if (handler === "sibling") {
-        await parked.happened;
-        return { output: { done: true } };
-      }
-      return { output: null };
-    };
     const runId = "run-thrown-body";
     const result = await runtimeRun(
-      collided,
-      buildEnv(
-        collided,
-        repoStore,
-        createInMemorySignalChannel(),
-        invokeAction,
-      ),
+      collidedChild,
+      {
+        ...buildEnv(
+          collidedChild,
+          repoStore,
+          createInMemorySignalChannel(),
+          async () => ({ output: null }),
+        ),
+        spawnChild: async () => {
+          await parked.happened;
+          return createTerminalChildHandle("completed");
+        },
+      },
       { runId },
     ).complete;
 
@@ -421,15 +443,17 @@ describe("a thrown run body", () => {
   test("records RunCancelled when a cancel lands on the RunFailed append", async () => {
     const inner = createInMemoryRepoStore();
     const parked = whenKindAppended(inner, "SignalAwaited");
-    let awaitedReads = 0;
     const repoStore: RepoStore = {
       ...parked.repoStore,
       async read(runId) {
         const events = [...(await inner.read(runId))];
         const last = events.at(-1);
-        if (last?.kind !== "SignalAwaited") return events;
-        awaitedReads += 1;
-        if (awaitedReads !== 4) return events;
+        if (last === undefined || !siblingCompletionBuffered(runId)) {
+          return events;
+        }
+        if (events.some((event) => event.kind === "SignalReceived")) {
+          return events;
+        }
         const injected: WorkflowEvent = {
           kind: "SignalReceived",
           seq: last.seq + 1,
@@ -456,22 +480,21 @@ describe("a thrown run body", () => {
         await parked.repoStore.appendBatch(runId, events);
       },
     };
-    const invokeAction: ActionInvoker = async ({ handler }) => {
-      if (handler === "sibling") {
-        await parked.happened;
-        return { output: { done: true } };
-      }
-      return { output: null };
-    };
     const runId = "run-cancel-during-run-failed";
     const result = await runtimeRun(
-      collided,
-      buildEnv(
-        collided,
-        repoStore,
-        createInMemorySignalChannel(),
-        invokeAction,
-      ),
+      collidedChild,
+      {
+        ...buildEnv(
+          collidedChild,
+          repoStore,
+          createInMemorySignalChannel(),
+          async () => ({ output: null }),
+        ),
+        spawnChild: async () => {
+          await parked.happened;
+          return createTerminalChildHandle("completed");
+        },
+      },
       { runId },
     ).complete;
 
