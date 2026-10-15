@@ -1,16 +1,16 @@
-// A sibling can buffer StepCompleted after the gate has parked. The host
-// flushes that buffer before a signal or a timer takes a sequence number.
-// When the flush throws, the batch is gone and the parked step is still
-// waiting, so the run has to reject with the flush error. The durable
-// prefix stays as the store left it: no StepCompleted and no terminal
-// event.
+// A sibling child workflow can buffer its completion after the gate has
+// parked; an agent step's or an action's completion is written durably and
+// never waits there. The host flushes that buffer before a signal or a
+// timer takes a sequence number. When the flush throws, the batch is gone
+// and the parked step is still waiting, so the run has to reject with the
+// flush error. The durable prefix stays as the store left it: no sibling
+// completion and no terminal event.
 
 import { describe, expect, test } from "bun:test";
 
 import { createDefaultDirectorRegistry } from "@intx/agent";
 
 import {
-  action,
   awaitSignal,
   createInMemoryBlobSubstrate,
   createInMemoryRepoStore,
@@ -20,7 +20,7 @@ import {
   defineWorkflow,
   runtimeRun,
   sleep,
-  type ActionInvoker,
+  type Primitive,
   type RepoStore,
   type WorkflowDefinition,
   type WorkflowEvent,
@@ -30,12 +30,19 @@ import {
 import { whenRunNextBuffers, withRunCommitBarrier } from "./commit-chain";
 import { createTerminalChildHandle } from "./suspendable-child-handle";
 
+const childSibling: Primitive = {
+  kind: "childWorkflow",
+  id: "",
+  definition: { ref: "child-ref" },
+  drainBehavior: "cancel",
+};
+
 const parkedSignal = defineWorkflow({
   id: "parked-signal-flush",
   trigger: { type: "manual" },
   steps: {
     gate: awaitSignal({ name: "approve" }),
-    sibling: action({ handler: "sibling" }),
+    sibling: childSibling,
   },
 });
 
@@ -44,7 +51,7 @@ const parkedTimer = defineWorkflow({
   trigger: { type: "manual" },
   steps: {
     nap: sleep({ duration: 60_000 }),
-    sibling: action({ handler: "sibling" }),
+    sibling: childSibling,
   },
 });
 
@@ -76,15 +83,19 @@ function whenKindAppended(
   };
 }
 
-function rejectStepCompleted(inner: RepoStore, boom: Error): RepoStore {
+function isSiblingCompletion(event: WorkflowEvent): boolean {
+  return event.kind === "ChildCompleted" || event.kind === "StepCompleted";
+}
+
+function rejectSiblingCompletion(inner: RepoStore, boom: Error): RepoStore {
   return {
     ...inner,
     async append(runId, event) {
-      if (event.kind === "StepCompleted") throw boom;
+      if (isSiblingCompletion(event)) throw boom;
       await inner.append(runId, event);
     },
     async appendBatch(runId, events) {
-      if (events.some((event) => event.kind === "StepCompleted")) throw boom;
+      if (events.some(isSiblingCompletion)) throw boom;
       await inner.appendBatch(runId, events);
     },
   };
@@ -93,7 +104,7 @@ function rejectStepCompleted(inner: RepoStore, boom: Error): RepoStore {
 function buildEnv(
   def: WorkflowDefinition,
   repoStore: RepoStore,
-  invokeAction: ActionInvoker,
+  spawnChild: WorkflowRuntimeEnv["spawnChild"],
   scheduler: WorkflowRuntimeEnv["scheduler"],
 ): WorkflowRuntimeEnv {
   return {
@@ -108,8 +119,7 @@ function buildEnv(
       resolvedBy: null,
     }),
     invokeStep: async () => ({ output: null }),
-    invokeAction,
-    spawnChild: async () => createTerminalChildHandle("completed"),
+    spawnChild,
     clock: () => new Date(0),
     newId: (prefix) => `${prefix}-parked-flush`,
     drain: createNoopDrainController(def),
@@ -127,16 +137,16 @@ async function flushWhileParked(
 ): Promise<void> {
   const inner = createInMemoryRepoStore();
   const parked = whenKindAppended(inner, parkKind);
-  const repoStore = rejectStepCompleted(parked.repoStore, boom);
+  const repoStore = rejectSiblingCompletion(parked.repoStore, boom);
   const buffered = Promise.withResolvers<undefined>();
-  const invokeAction: ActionInvoker = async () => {
+  const spawnChild: WorkflowRuntimeEnv["spawnChild"] = async () => {
     await parked.happened;
     buffered.resolve(whenRunNextBuffers(runId).then(() => undefined));
-    return { output: { done: true } };
+    return createTerminalChildHandle("completed");
   };
   const complete = runtimeRun(
     def,
-    buildEnv(def, repoStore, invokeAction, scheduler(repoStore)),
+    buildEnv(def, repoStore, spawnChild, scheduler(repoStore)),
     { runId },
   ).complete;
   const outcome = complete.then(
@@ -147,7 +157,7 @@ async function flushWhileParked(
   await expect(write(repoStore)).rejects.toBe(boom);
   await expect(outcome).resolves.toBe(boom);
   const durable = await inner.read(runId);
-  expect(durable.some((event) => event.kind === "StepCompleted")).toBe(false);
+  expect(durable.some(isSiblingCompletion)).toBe(false);
   expect(durable.some((event) => event.kind === "RunFailed")).toBe(false);
   expect(durable.some((event) => event.kind === "RunCancelled")).toBe(false);
   expect(
