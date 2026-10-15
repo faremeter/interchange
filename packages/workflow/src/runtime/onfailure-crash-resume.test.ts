@@ -7,12 +7,16 @@
 // The crash is modeled by slicing the runtime's OWN durably-emitted log at the
 // after-routed-StepFailed / before-handler window and re-driving from that
 // prefix, so the emitter and the resume path are proven against each other.
+//
+// A unit whose work finished before the host died must not route at all: its
+// StepCompleted has to be durable before the next save point.
 
 import { describe, test, expect } from "bun:test";
 
 import { createDefaultDirectorRegistry, defineAgent } from "@intx/agent";
 
 import {
+  action,
   createInMemoryBlobSubstrate,
   createInMemoryRepoStore,
   createInMemoryScheduler,
@@ -21,6 +25,8 @@ import {
   defineWorkflow,
   runtimeRun,
   step,
+  type ActionInvoker,
+  type RepoStore,
   type StepInvoker,
   type WorkflowDefinition,
   type WorkflowEvent,
@@ -81,6 +87,49 @@ const def = defineWorkflow({
     normal: step({ agent: agent("normal"), after: ["unit"] }),
   },
 });
+
+const actionDef = defineWorkflow({
+  id: "onfailure-resume-action",
+  trigger: { type: "manual" },
+  steps: {
+    unit: action({ handler: "unit", onFailure: "rescue" }),
+    rescue: action({ handler: "rescue", after: ["unit"] }),
+    normal: action({ handler: "normal", after: ["unit"] }),
+  },
+});
+
+class HostDied extends Error {
+  constructor() {
+    super("host died before the next save point");
+    this.name = "HostDied";
+  }
+}
+
+// The host dies at the first write that would land anything after the unit's
+// StepCompleted: the save point a buffered completion waits for.
+function diesAfterUnitCompletes(inner: RepoStore): RepoStore {
+  let completed = false;
+  function admit(events: readonly WorkflowEvent[]): void {
+    if (completed) throw new HostDied();
+    const at = events.findIndex(
+      (e) => e.kind === "StepCompleted" && e.stepId === "unit",
+    );
+    if (at === -1) return;
+    if (at !== events.length - 1) throw new HostDied();
+    completed = true;
+  }
+  return {
+    ...inner,
+    async append(runId, event) {
+      admit([event]);
+      await inner.append(runId, event);
+    },
+    async appendBatch(runId, events) {
+      admit(events);
+      await inner.appendBatch(runId, events);
+    },
+  };
+}
 
 describe("onFailure route crash-resume", () => {
   test("a routed unit's sentinel is reconstructed so the handler resolves on resume", async () => {
@@ -199,5 +248,81 @@ describe("onFailure route crash-resume", () => {
     );
     expect(routed?.routedTo).toBe("rescue");
     expect(routed?.error.code).toBe("crash-mid-invocation");
+  });
+
+  test("a unit that finished before the host died does not route on resume", async () => {
+    const inner = createInMemoryRepoStore();
+    const live = buildEnv(def, async () => ({ output: { done: true } }));
+    await expect(
+      runtimeRun(
+        def,
+        { ...live.env, repoStore: diesAfterUnitCompletes(inner) },
+        { runId: "run-finished", triggerPayload: null },
+      ).complete,
+    ).rejects.toBeInstanceOf(HostDied);
+
+    const durable = await inner.read("run-finished");
+    expect(
+      durable.some((e) => e.kind === "StepCompleted" && e.stepId === "unit"),
+    ).toBe(true);
+
+    const invoked: string[] = [];
+    const resume = buildEnv(def, async (req) => {
+      invoked.push(req.agent.id);
+      return { output: null };
+    });
+    const resumedRes = await runtimeRun(def, resume.env, {
+      runId: "run-finished",
+      resumeFromEvents: durable,
+    }).complete;
+
+    expect(resumedRes.terminalStatus).toBe("completed");
+    expect(invoked).toEqual(["normal"]);
+    expect(
+      resumedRes.events.some(
+        (e) => e.kind === "StepFailed" && e.stepId === "unit",
+      ),
+    ).toBe(false);
+  });
+
+  test("an action that finished before the host died does not route on resume", async () => {
+    const inner = createInMemoryRepoStore();
+    const live = buildEnv(actionDef, async () => ({ output: null }));
+    await expect(
+      runtimeRun(
+        actionDef,
+        {
+          ...live.env,
+          repoStore: diesAfterUnitCompletes(inner),
+          invokeAction: async () => ({ output: { done: true } }),
+        },
+        { runId: "run-action-finished", triggerPayload: null },
+      ).complete,
+    ).rejects.toBeInstanceOf(HostDied);
+
+    const durable = await inner.read("run-action-finished");
+    expect(
+      durable.some((e) => e.kind === "StepCompleted" && e.stepId === "unit"),
+    ).toBe(true);
+
+    const invoked: string[] = [];
+    const invokeAction: ActionInvoker = async ({ handler }) => {
+      invoked.push(handler);
+      return { output: null };
+    };
+    const resume = buildEnv(actionDef, async () => ({ output: null }));
+    const resumedRes = await runtimeRun(
+      actionDef,
+      { ...resume.env, invokeAction },
+      { runId: "run-action-finished", resumeFromEvents: durable },
+    ).complete;
+
+    expect(resumedRes.terminalStatus).toBe("completed");
+    expect(invoked).toEqual(["normal"]);
+    expect(
+      resumedRes.events.some(
+        (e) => e.kind === "StepFailed" && e.stepId === "unit",
+      ),
+    ).toBe(false);
   });
 });
