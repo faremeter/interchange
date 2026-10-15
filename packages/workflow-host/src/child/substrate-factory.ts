@@ -1434,7 +1434,6 @@ async function writeChildRunGrants(args: {
 export function createSidecarRunChild(
   deps: SidecarRunChildDeps,
 ): RunChildWorkflow {
-  const directors = deps.directors;
   const clock = deps.clock ?? defaultClock;
   const newId = deps.newId ?? defaultNewId;
   // No `controlPlanePrincipal`: an in-process child tears down through the
@@ -1480,7 +1479,6 @@ export function createSidecarRunChild(
       definition: rewrittenDefinition,
     } = await buildChildRunEnv({
       deps,
-      directors,
       clock,
       newId,
       repoStore,
@@ -1560,7 +1558,6 @@ export function createSidecarRunChild(
 export function createSidecarSpawnSuspendableChild(
   deps: SidecarRunChildDeps,
 ): RunSuspendableChild {
-  const directors = deps.directors;
   const clock = deps.clock ?? defaultClock;
   const newId = deps.newId ?? defaultNewId;
   // No `controlPlanePrincipal`: an in-process body tears down through the shared
@@ -1600,7 +1597,6 @@ export function createSidecarSpawnSuspendableChild(
       definition: rewrittenDefinition,
     } = await buildChildRunEnv({
       deps,
-      directors,
       clock,
       newId,
       repoStore,
@@ -1672,12 +1668,11 @@ export function createSidecarSpawnSuspendableChild(
  */
 async function capAndPersistChildGrants(args: {
   deps: SidecarRunChildDeps;
-  directors: DirectorRegistry;
   definition: WorkflowDefinition;
   childRunId: string;
   parentRunId: string;
 }): Promise<readonly unknown[]> {
-  const { deps, directors, definition, childRunId, parentRunId } = args;
+  const { deps, definition, childRunId, parentRunId } = args;
   const existingChildGrants = await readRunGrants({
     repoStore: deps.substrate,
     anchorRunId: deps.workflowRunRepoId.id,
@@ -1703,12 +1698,12 @@ async function capAndPersistChildGrants(args: {
         });
   const declaredResources = deps.collectDeclaredResources(
     definition,
-    directors,
+    deps.directors,
     pluginDefs,
   );
   const credentialConsumers = deps.collectDeclaredCredentialConsumers(
     definition,
-    directors,
+    deps.directors,
     pluginDefs,
   );
   const childGrants = deps.filterGrantsToDeclaredResources(
@@ -1738,7 +1733,6 @@ async function capAndPersistChildGrants(args: {
  */
 async function buildChildRunEnv(args: {
   deps: SidecarRunChildDeps;
-  directors: DirectorRegistry;
   clock: () => Date;
   newId: (prefix: string) => string;
   repoStore: ReturnType<typeof createWorkflowRunRepoStore>;
@@ -1777,7 +1771,6 @@ async function buildChildRunEnv(args: {
 }> {
   const {
     deps,
-    directors,
     clock,
     newId,
     repoStore,
@@ -1847,7 +1840,6 @@ async function buildChildRunEnv(args: {
   // inline form, so the cap keeps a grandchild's declared resources.
   const childGrants = await capAndPersistChildGrants({
     deps,
-    directors,
     definition,
     childRunId,
     parentRunId,
@@ -2033,7 +2025,7 @@ async function buildChildRunEnv(args: {
     scheduler: deps.scheduler,
     signalChannel,
     blobs,
-    directors,
+    directors: deps.directors,
     authorize,
     invokeStep,
     spawnChild,
@@ -2078,7 +2070,6 @@ async function buildChildRunEnv(args: {
         // iteration appends its first event.
         await capAndPersistChildGrants({
           deps,
-          directors,
           definition: preRewriteBody,
           childRunId: loopInput.childRunId,
           parentRunId: loopInput.parentRunId,
@@ -2820,7 +2811,6 @@ export function createSidecarSubstrateFactory(
       }) => {
         await capAndPersistChildGrants({
           deps: childRunDeps,
-          directors: childRunDeps.directors,
           definition,
           childRunId,
           parentRunId,
