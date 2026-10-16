@@ -1,6 +1,6 @@
 import { describe, test, expect } from "bun:test";
 
-import { validateNamespacedId } from "./namespace";
+import { isOwnedDirectorId, validateNamespacedId } from "./namespace";
 
 describe("validateNamespacedId", () => {
   test("accepts scoped ids with three segments", () => {
@@ -58,5 +58,22 @@ describe("validateNamespacedId", () => {
 
   test("error message includes the JSON-encoded offending id", () => {
     expect(() => validateNamespacedId("bad id")).toThrow(/"bad id"/);
+  });
+});
+
+describe("isOwnedDirectorId", () => {
+  test("accepts an id under the shipping package name", () => {
+    expect(isOwnedDirectorId("@fixture/pkg/coding", "@fixture/pkg")).toBe(true);
+    expect(isOwnedDirectorId("unscoped/planner", "unscoped")).toBe(true);
+  });
+
+  test("rejects an id outside the shipping package name", () => {
+    expect(isOwnedDirectorId("@fixture/other/coding", "@fixture/pkg")).toBe(
+      false,
+    );
+    expect(isOwnedDirectorId("@fixture/pkg", "@fixture/pkg")).toBe(false);
+    expect(isOwnedDirectorId("@fixture/pkg-extra/coding", "@fixture/pkg")).toBe(
+      false,
+    );
   });
 });

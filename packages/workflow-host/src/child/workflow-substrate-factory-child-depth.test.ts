@@ -23,7 +23,7 @@ import path from "node:path";
 
 import { generateKeyPair } from "@intx/crypto";
 import type { KeyPair } from "@intx/types/runtime";
-import { defineAgent } from "@intx/agent";
+import { defineAgent, createDefaultDirectorRegistry } from "@intx/agent";
 import {
   builtinCredentialProviders,
   createCredentialProviderRegistry,
@@ -273,6 +273,7 @@ describe("createSidecarRunChild spawn-depth ceiling", () => {
       collectDeclaredCredentialConsumers: () => new Set<string>(),
       filterGrantsToDeclaredResources: (parentGrants: readonly unknown[]) =>
         parentGrants,
+      directors: createDefaultDirectorRegistry(),
     });
 
     // Run the top of the chain at depth 0 with the ceiling lowered to 2.
