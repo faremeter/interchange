@@ -11,7 +11,7 @@
 //     registry -- proving a respawned child (whose live store is unbuilt) still
 //     recovers the snapshot.
 
-import { describe, test, expect } from "bun:test";
+import { afterAll, describe, test, expect } from "bun:test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -68,8 +68,18 @@ function pendingApproval(
   };
 }
 
+const tempDirs: string[] = [];
+
+afterAll(async () => {
+  for (const dir of tempDirs.splice(0)) {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 async function makeTempDir(): Promise<string> {
-  return fs.mkdtemp(path.join(os.tmpdir(), "parked-approval-"));
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "parked-approval-"));
+  tempDirs.push(dir);
+  return dir;
 }
 
 const testSigner = (payload: string): Promise<string> =>
