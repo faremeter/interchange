@@ -38,7 +38,8 @@ Public surface:
   — cap a spawned child's inherited grants at what the child body
   declares. The resource collector walks declared grant strings. The
   consumer collector returns `toolConsumer(factory.id)` for each factory
-  the pre-rewrite body instantiates. The filter removes a
+  the pre-rewrite body instantiates and `actionConsumer(handler)` for each
+  action it runs that declares credentials. The filter removes a
   non-credential `allow` only when its pattern covers none of the
   declared set, removes a `credential:` `allow` unless `conditions.tool`
   equals one of those consumers, and keeps every `deny` and `ask`.

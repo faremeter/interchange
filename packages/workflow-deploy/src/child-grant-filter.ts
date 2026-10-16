@@ -7,8 +7,9 @@
 // parent-held `effect:` grant or a bare-name `tool:` collision the child body
 // never declared would authorize a capability the child was never written to
 // use. A `credential:` allow is gated by its `{ tool }` condition: it survives
-// when that condition equals the consumer of a factory the child body
-// instantiates, and an unconditioned or unmatched credential allow is dropped.
+// when that condition equals a consumer the child body runs (a tool factory it
+// instantiates, or an action it runs that declares credentials), and an
+// unconditioned or unmatched credential allow is dropped.
 // The parent stays the ceiling (a child can never exceed it); the child body's
 // declared capability set is the shape it is narrowed to -- the same "a run's
 // authority is bounded by its declared capabilities" model the top level
@@ -50,9 +51,10 @@ export function collectDeclaredResources(
 }
 
 /**
- * Consumer identities for the tool factories the child body instantiates.
- * Same pre-rewrite definition as {@link collectDeclaredResources}: a `{ ref }`
- * body is skipped, and an inline nested body's factories are included.
+ * Consumer identities the child body runs: its tool factories and its actions
+ * that declare credentials. Same pre-rewrite definition as
+ * {@link collectDeclaredResources}: a `{ ref }` body is skipped, and an inline
+ * nested body's consumers are included.
  */
 export function collectDeclaredCredentialConsumers(
   definition: WorkflowDefinition,
@@ -79,7 +81,7 @@ export function collectDeclaredCredentialConsumers(
  *    only when `conditions.tool` is a string equal to one of
  *    `credentialConsumers`. The comparison is exact. An unconditioned
  *    credential allow, a non-string `{ tool }` value, and a condition that
- *    names a factory the child does not instantiate are dropped. This branch
+ *    names a consumer the child does not run are dropped. This branch
  *    does not fall through to the resource-pattern test.
  *  - Every other `allow` is kept only when its resource PATTERN covers at
  *    least one resource the child body declares (via `matchPattern`, so a

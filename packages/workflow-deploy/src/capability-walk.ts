@@ -61,7 +61,7 @@ import {
   toolApprovalEffect,
   UnknownDirectorIdError,
 } from "@intx/agent/authoring";
-import { toolConsumer } from "@intx/authz";
+import { actionConsumer, toolConsumer } from "@intx/authz";
 import type { GrantEffect } from "@intx/types";
 import {
   EXECUTABLE_STEP_DESCENT,
@@ -172,10 +172,11 @@ export function walkCapabilities(
 }
 
 /**
- * Consumer identities (`toolConsumer(factory.id)`) for every tool factory
- * the definition instantiates, including factories that appear only inside
- * an inline nested body. This is the credential-cap input. It is not part
- * of `CapabilityWalkResult`: those strings are not operator-facing grants.
+ * Consumer identities the definition runs, including those that appear only
+ * inside an inline nested body: `toolConsumer(factory.id)` for every tool
+ * factory, and `actionConsumer(handler)` for every action that declares
+ * credentials. This is the credential-cap input. It is not part of
+ * `CapabilityWalkResult`: those strings are not operator-facing grants.
  * Plugin names are absent. A factory with an empty `definitions` array is
  * still present, because the source arm keys Gate 2 on the factory id.
  */
@@ -212,7 +213,7 @@ function walkDefinition(
     // routes the step and any nested bodies it carries through one dispatch,
     // so an approval covers every agent, action, and effect the step can run.
     // The consumer set is the same object the nested visit writes into, then
-    // unioned here, so a factory that exists only on an inline body survives.
+    // unioned here, so a consumer that exists only on an inline body survives.
     const collected = emptyGrantSet();
     collectPrimitiveGrants(
       primitive,
@@ -310,8 +311,8 @@ function collectPrimitiveGrants(
 
 /**
  * Union the grants a single primitive declares in its own right -- its agent's
- * grants and its action's `effect:<cap>` grants -- into `collected`, without
- * descending into anything it nests.
+ * grants and its action's `effect:<cap>` grants -- and the credential consumers
+ * it runs into `collected`, without descending into anything it nests.
  */
 function collectOwnGrants(
   primitive: WorkflowDefinition["steps"][string],
@@ -326,6 +327,13 @@ function collectOwnGrants(
   }
   for (const grant of collectActionGrants(primitive)) {
     collected.grants.add(grant);
+  }
+  // Unlike a tool factory, which counts even with empty `definitions`
+  // because the source arm keys Gate 2 on its id, an action counts only when
+  // it carries a `credentials` field: that list is its declared credential
+  // surface, so an action without the field consumes nothing.
+  if (primitive.kind === "action" && primitive.credentials !== undefined) {
+    collected.credentialConsumers.add(actionConsumer(primitive.handler));
   }
 }
 
