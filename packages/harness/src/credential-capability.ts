@@ -1,5 +1,5 @@
-// The consumer-gated `credentials` capability: the sub-registry a tool queries
-// by its declared handle to obtain a mediated credential. It is the runtime
+// The consumer-gated `credentials` capability: the sub-registry a consumer (a
+// tool package or an action handler) queries by its declared handle to obtain a mediated credential. It is the runtime
 // gate that enforces the `{ tool }` condition on a materialized
 // `credential:{id}` / `use` grant -- the check the launch-time grant
 // materialization sets up but does not itself evaluate.
@@ -43,12 +43,12 @@ export interface ResolvedCredentialBinding {
 }
 
 /**
- * Reconcile a tool package's declared credential handles (its C5 `interchange.
- * credentials`) against the handles a binding actually resolved for it. A
- * declared handle with no binding is a launch-blocking misconfiguration -- the
- * tool needs a credential the definition never bound -- so this fails the launch
- * loudly rather than letting the gap surface as a resolve-time throw at the
- * tool's first use. It is the throw-on-missing of `resolve`, pulled earlier to
+ * Reconcile a consumer's declared credential handles (a tool package's C5
+ * `interchange.credentials`, or an action's `credentials`) against the handles
+ * a binding actually resolved for it. A declared handle with no binding is a
+ * launch-blocking misconfiguration -- the consumer needs a credential the
+ * definition never bound -- so this fails the launch loudly rather than letting
+ * the gap surface as a resolve-time throw at the consumer's first use. It is the throw-on-missing of `resolve`, pulled earlier to
  * launch where the whole set is known.
  */
 export function reconcileDeclaredCredentials(
@@ -68,12 +68,12 @@ export function reconcileDeclaredCredentials(
 
 export interface CredentialCapabilityDeps {
   /**
-   * The consumer identity of the tool package this capability serves
-   * (`tool:<package>`, from `toolConsumer`). Gate 2 checks each grant's
+   * The consumer identity this capability serves (`tool:<package>` from
+   * `toolConsumer`, or `action:<handler>` from `actionConsumer`). Gate 2 checks each grant's
    * `{ tool }` condition against this value; an empty identity fails closed.
    */
   consumer: string;
-  /** Resolved bindings keyed by the handle the tool declared. */
+  /** Resolved bindings keyed by the handle the consumer declared. */
   bindings: ReadonlyMap<string, ResolvedCredentialBinding>;
   /** The registry that shapes a credential into a mediated handle. */
   providers: CredentialProviderRegistry;
@@ -82,7 +82,7 @@ export interface CredentialCapabilityDeps {
 }
 
 /**
- * Build the consumer-gated `credentials` capability for one tool package.
+ * Build the consumer-gated `credentials` capability for one consumer.
  *
  * `resolve(handle)` fails closed at every step: an unbound handle throws; a
  * handle the consumer is not authorized to use throws (Gate 2 -- the same

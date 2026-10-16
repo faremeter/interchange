@@ -93,9 +93,7 @@ Where it lives today: `PackageJSON`, `packages/types/src/package-json.ts`
 **5.** A deployed action handler is a BARE MODULE EXPORT. It receives exactly
 `(input, ctx, signal)` and nothing else: no closure over host configuration.
 The one injected service is `ctx.credentials`, the handler's consumer-scoped
-credentials capability. The deployed workflow host delivers no credential to
-action handlers, so a deployed action that declares credentials fails before
-its handler runs. Any other per-deployment configuration it needs must
+credentials capability. Any other per-deployment configuration it needs must
 arrive through its `input` selector, which in practice means the author
 threads it from the trigger payload.
 

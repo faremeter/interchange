@@ -46,6 +46,7 @@ import { waitUntil } from "@intx/types/testing";
 import {
   computeLiveDefinitionHash,
   createTerminalChildHandle,
+  unavailableActionCredentials,
 } from "@intx/workflow";
 import {
   createDefaultDirectorRegistry,
@@ -558,6 +559,7 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
         workflowRunRef: WORKFLOW_RUN_REF,
         principal,
         invokeStep,
+        actionCredentials: () => unavailableActionCredentials,
         spawnChild: async () => createTerminalChildHandle("completed"),
         scheduler: { scheduleIn: () => () => undefined },
         evaluateGrants: async () => ({

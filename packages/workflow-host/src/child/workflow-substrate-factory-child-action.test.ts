@@ -19,7 +19,7 @@ import path from "node:path";
 
 import { generateKeyPair } from "@intx/crypto";
 import type { KeyPair } from "@intx/types/runtime";
-import { evaluateGrants } from "@intx/authz";
+import { actionConsumer, evaluateGrants } from "@intx/authz";
 import type { GrantRule } from "@intx/authz";
 import {
   builtinCredentialProviders,
@@ -37,6 +37,8 @@ import type {
 } from "@intx/hub-sessions";
 import {
   action,
+  escalation,
+  loop,
   createInMemoryScheduler,
   createInMemoryRepoStore,
   defineWorkflow,
@@ -71,6 +73,12 @@ const OTHER_RESOURCE = `effect:${OTHER_CAPABILITY}`;
 const ALLOW_BODY_ID = "body-allow";
 const DENY_BODY_ID = "body-deny";
 const CHILD_BODY_ID = "child-allow";
+const CREDENTIAL_BODY_ID = "body-credential";
+const CREDENTIAL_LOOP_BODY_ID = "body-credential-loop";
+const CREDENTIAL_LOOP_ITERATION_ID = "body-credential-loop-iteration";
+const CREDENTIAL_HANDLE = "api-token";
+const CREDENTIAL_ID = "cred-child-action";
+const RESOLVE_CONSUMER = actionConsumer("resolveToken");
 
 const ACTIONS_SOURCE = `
 import { writeFile } from "node:fs/promises";
@@ -92,6 +100,31 @@ export async function ship(input, ctx) {
       return { shipped: true };
     },
   });
+}
+
+export async function resolveToken(input, ctx) {
+  const marker = input.marker;
+  const capability = input.capability;
+  if (typeof marker !== "string" || typeof capability !== "string") {
+    throw new Error("resolveToken input needs marker and capability strings");
+  }
+  const handle = await ctx.credentials.resolve("api-token");
+  return ctx.perform({
+    effectId: "resolve-once",
+    capability,
+    run: async () => {
+      await writeFile(marker, handle.kind);
+      return { kind: handle.kind };
+    },
+  });
+}
+
+export function once(_output, currentInput) {
+  return currentInput.pass === 0;
+}
+
+export function next(_output, currentInput) {
+  return { ...currentInput, pass: currentInput.pass + 1 };
 }
 `;
 
@@ -131,7 +164,7 @@ async function writeClosure(): Promise<string> {
       {
         name: "@fixture/child-action",
         version: "1.0.0",
-        interchange: { actions: "./actions.js" },
+        interchange: { actions: "./actions.js", loops: "./actions.js" },
       },
       null,
       2,
@@ -253,6 +286,9 @@ function makeDeps(
       [ALLOW_BODY_ID]: {},
       [DENY_BODY_ID]: {},
       [CHILD_BODY_ID]: {},
+      [CREDENTIAL_BODY_ID]: {},
+      [CREDENTIAL_LOOP_BODY_ID]: {},
+      [CREDENTIAL_LOOP_ITERATION_ID]: {},
     },
     credentialProviders: createCredentialProviderRegistry(
       builtinCredentialProviders(),
@@ -412,6 +448,257 @@ describe("spawned body action steps", () => {
         () => undefined,
       ),
     ).rejects.toThrow(/deps\.closurePackageDir is missing/);
+    await expect(fs.promises.access(marker)).rejects.toThrow();
+  });
+});
+
+// A body action that declares the `api-token` credential and resolves it.
+function credentialActionStep() {
+  return action({
+    handler: "resolveToken",
+    input: { from: "trigger.payload" },
+    effect: { requires: [SHIP_CAPABILITY] },
+    credentials: [CREDENTIAL_HANDLE],
+  });
+}
+
+function credentialBody(): WorkflowDefinition {
+  return defineWorkflow({
+    id: CREDENTIAL_BODY_ID,
+    trigger: { type: "manual" },
+    steps: { fetch: credentialActionStep() },
+  });
+}
+
+// The same action one rung down, inside a loop the spawned body runs once.
+function credentialLoopBody(): WorkflowDefinition {
+  return defineWorkflow({
+    id: CREDENTIAL_LOOP_BODY_ID,
+    trigger: { type: "manual" },
+    steps: {
+      rework: loop({
+        body: defineWorkflow({
+          id: CREDENTIAL_LOOP_ITERATION_ID,
+          trigger: { type: "manual" },
+          steps: {
+            fetch: action({
+              handler: "resolveToken",
+              input: { from: "trigger.payload" },
+              effect: { requires: [SHIP_CAPABILITY] },
+              credentials: [CREDENTIAL_HANDLE],
+            }),
+          },
+        }),
+        while: "once",
+        carry: "next",
+        input: { from: "trigger.payload" },
+        maxIterations: 2,
+        onExhausted: "exhausted",
+      }),
+      exhausted: escalation({ to: "operator", after: ["rework"] }),
+    },
+  });
+}
+
+function credentialUseGrant(consumer: string): GrantRule {
+  return {
+    id: `grant-use-${consumer}`,
+    resource: `credential:${CREDENTIAL_ID}`,
+    action: "use",
+    effect: "allow",
+    origin: "system",
+    conditions: { tool: consumer },
+    expiresAt: null,
+    roleId: null,
+    principalId: null,
+  };
+}
+
+// The run's live material cell: one http credential bound to the handler.
+function credentialCell() {
+  return {
+    current: {
+      bindings: [
+        {
+          handle: CREDENTIAL_HANDLE,
+          credentialId: CREDENTIAL_ID,
+          consumer: RESOLVE_CONSUMER,
+        },
+      ],
+      materials: [
+        {
+          credentialId: CREDENTIAL_ID,
+          providerKey: "http",
+          origin: "https://api.example.com",
+          secret: "sk-child-action",
+        },
+      ],
+    },
+  };
+}
+
+// The cap a real body run applies: an effect allow survives when the body
+// declares it, and a credential allow when its `{ tool }` condition names a
+// consumer the body runs.
+function credentialDeps(
+  substrate: ReturnType<typeof createRepoStore>,
+  consumers: ReadonlySet<string> = new Set([RESOLVE_CONSUMER]),
+): Parameters<typeof createSidecarRunChild>[0] {
+  return {
+    ...makeDeps(substrate, closurePackageDir),
+    collectDeclaredCredentialConsumers: () => consumers,
+    filterGrantsToDeclaredResources: (parentGrants, declared) =>
+      parentGrants.filter((grantRule) => {
+        if (
+          typeof grantRule === "object" &&
+          grantRule !== null &&
+          "resource" in grantRule &&
+          typeof grantRule.resource === "string" &&
+          grantRule.resource.startsWith("credential:")
+        ) {
+          return (
+            "conditions" in grantRule &&
+            typeof grantRule.conditions === "object" &&
+            grantRule.conditions !== null &&
+            "tool" in grantRule.conditions &&
+            typeof grantRule.conditions.tool === "string" &&
+            consumers.has(grantRule.conditions.tool)
+          );
+        }
+        return keepInheritedGrant(grantRule, declared);
+      }),
+  };
+}
+
+function spawnInput(
+  definition: WorkflowDefinition,
+  childRunId: string,
+  parentRunId: string,
+  marker: string,
+) {
+  return {
+    definition,
+    definitionRef: REF,
+    childRunId,
+    input: { marker, capability: SHIP_CAPABILITY, pass: 0 },
+    parentRunId,
+    parentStepId: "section",
+    signal: new AbortController().signal,
+    depth: 0,
+    maxChildSpawnDepth: 32,
+  };
+}
+
+describe("spawned body action credentials", () => {
+  test("an onTrigger body action resolves its declared credential through the capped grants", async () => {
+    const substrate = await makeSubstrate("child-action-cred-");
+    const parentRunId = "run-parent-cred";
+    await seedRunGrants(substrate, parentRunId, [
+      grant(SHIP_RESOURCE),
+      credentialUseGrant(RESOLVE_CONSUMER),
+    ]);
+    const marker = await markerPath();
+    const spawn = createSidecarSpawnSuspendableChild(credentialDeps(substrate));
+
+    const handle = await spawn(
+      spawnInput(credentialBody(), "run-body-cred", parentRunId, marker),
+      () => undefined,
+      credentialCell(),
+    );
+
+    const terminal = await handle.next();
+    if (terminal.kind !== "terminal") throw new Error("expected a terminal");
+    expect(terminal.terminalStatus).toBe("completed");
+    expect(await fs.promises.readFile(marker, "utf8")).toBe("http");
+  });
+
+  test("a childWorkflow body action resolves its declared credential", async () => {
+    const substrate = await makeSubstrate("child-action-cred-child-");
+    const parentRunId = "run-parent-cred-child";
+    await seedRunGrants(substrate, parentRunId, [
+      grant(SHIP_RESOURCE),
+      credentialUseGrant(RESOLVE_CONSUMER),
+    ]);
+    const marker = await markerPath();
+    const runChild = createSidecarRunChild(credentialDeps(substrate));
+
+    const result = await runChild(
+      {
+        ...spawnInput(credentialBody(), "run-child-cred", parentRunId, marker),
+        parentStepId: "spawn",
+        depth: 1,
+      },
+      () => undefined,
+      credentialCell(),
+    );
+
+    const event = await result.next();
+    if (event.kind !== "terminal") throw new Error("expected a terminal");
+    expect(event.terminalStatus).toBe("completed");
+    expect(await fs.promises.readFile(marker, "utf8")).toBe("http");
+  });
+
+  test("an action inside a loop in a spawned body resolves through the inherited invoker", async () => {
+    const substrate = await makeSubstrate("child-action-cred-loop-");
+    const parentRunId = "run-parent-cred-loop";
+    await seedRunGrants(substrate, parentRunId, [
+      grant(SHIP_RESOURCE),
+      credentialUseGrant(RESOLVE_CONSUMER),
+    ]);
+    const marker = await markerPath();
+    const spawn = createSidecarSpawnSuspendableChild(credentialDeps(substrate));
+
+    const handle = await spawn(
+      spawnInput(
+        credentialLoopBody(),
+        "run-body-cred-loop",
+        parentRunId,
+        marker,
+      ),
+      () => undefined,
+      credentialCell(),
+    );
+
+    const terminal = await handle.next();
+    if (terminal.kind !== "terminal") throw new Error("expected a terminal");
+    expect(terminal.terminalStatus).toBe("completed");
+    expect(await fs.promises.readFile(marker, "utf8")).toBe("http");
+  });
+
+  test("a credential grant the cap drops leaves the resolve closed", async () => {
+    // The parent grant names this handler, so only the cap can withhold it:
+    // the body's declared consumer set leaves the handler out, so the cap
+    // drops the grant from the child's run grants and Gate 2 refuses.
+    const substrate = await makeSubstrate("child-action-cred-deny-");
+    const parentRunId = "run-parent-cred-deny";
+    await seedRunGrants(substrate, parentRunId, [
+      grant(SHIP_RESOURCE),
+      credentialUseGrant(RESOLVE_CONSUMER),
+    ]);
+    const marker = await markerPath();
+    const childRunId = "run-body-cred-deny";
+    const spawn = createSidecarSpawnSuspendableChild(
+      credentialDeps(substrate, new Set()),
+    );
+
+    const handle = await spawn(
+      spawnInput(credentialBody(), childRunId, parentRunId, marker),
+      () => undefined,
+      credentialCell(),
+    );
+
+    const terminal = await handle.next();
+    if (terminal.kind !== "terminal") throw new Error("expected a terminal");
+    expect(terminal.terminalStatus).toBe("failed");
+    const events: readonly WorkflowEvent[] =
+      await reader(substrate).read(childRunId);
+    const stepFailed = events.find((event) => event.kind === "StepFailed");
+    if (stepFailed === undefined || stepFailed.kind !== "StepFailed") {
+      throw new Error(`body run ${childRunId} has no StepFailed event`);
+    }
+    expect(stepFailed.error.message).toContain(
+      `consumer ${RESOLVE_CONSUMER} is not authorized to use credential ${CREDENTIAL_ID}`,
+    );
     await expect(fs.promises.access(marker)).rejects.toThrow();
   });
 });

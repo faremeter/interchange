@@ -321,9 +321,12 @@ The contract is intentionally narrow:
    only the keys the host listed in
    `RunWorkflowChildFromProcessEnvOpts.substrateConfigKeys`. The
    factory returns `RunWorkflowChildBindings`: substrate `RepoStore`,
-   principal, per-deployment repo ids, scheduler, step invoker, child
-   spawner, grant evaluator. The factory consumes the typed struct,
-   never `NodeJS.ProcessEnv` directly. Each spawner declares
+   principal, per-deployment repo ids, scheduler, step invoker, action
+   credentials factory, child spawner, grant evaluator. The action
+   credentials binding turns the run's credential wiring into the
+   factory that builds each action handler's `ctx.credentials`. The
+   factory consumes the typed struct, never `NodeJS.ProcessEnv`
+   directly. Each spawner declares
    `hasUpstreamSignalResolver` on the runtime env it builds: `true`
    for a run an answer can reach -- the deployment's own addressable
    run, a suspendable body whose container relays a decision back

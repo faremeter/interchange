@@ -15,7 +15,12 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+import { actionConsumer } from "@intx/authz";
 import { generateKeyPair } from "@intx/crypto";
+import {
+  builtinCredentialProviders,
+  createCredentialProviderRegistry,
+} from "@intx/harness";
 import { base64Encode, hexEncode } from "@intx/types";
 import type { Principal, RepoId, RepoStore } from "@intx/hub-sessions";
 import {
@@ -30,6 +35,7 @@ import {
 import {
   computeLiveDefinitionHash,
   createTerminalChildHandle,
+  unavailableActionCredentials,
 } from "@intx/workflow";
 import {
   createMemoryFrameStream,
@@ -43,6 +49,7 @@ import {
   generateHmacKey,
   receiveControlChannel,
 } from "../ipc/index";
+import { createActionCredentialsFactory } from "./action-credentials";
 import { parseSpawnTimeEnv, runWorkflowChild } from "./index";
 
 const REF = "refs/heads/main";
@@ -338,6 +345,7 @@ function buildBindings(baseDir: string): RunWorkflowChildBindings {
     workflowRunRef: REF,
     principal: { kind: "supervisor" } as Principal,
     invokeStep: async () => ({ output: null }),
+    actionCredentials: () => unavailableActionCredentials,
     spawnChild: async () => createTerminalChildHandle("completed"),
     scheduler: { scheduleIn: () => () => undefined },
     evaluateGrants: async () => ({
@@ -669,5 +677,160 @@ describe("source-ref run child", () => {
     supervisorToChild.close();
     const result = await runPromise;
     expect(result.resumedRunIds).toEqual(["run-live"]);
+  }, 30000);
+
+  test("a top-level action resolves its declared credential through the run's wiring", async () => {
+    const baseDir = await makeTempDir("srcref-action-cred-base-");
+    const runId = `srcref-action-cred-run-${generateChannelId()}`;
+    const markerDir = await makeTempDir("srcref-action-cred-marker-");
+    const marker = path.join(markerDir, "marker");
+    const consumer = actionConsumer("resolveToken");
+
+    // A closure whose workflow is one action that declares `api-token`, and
+    // whose actions module is the same entry.
+    const packageDir = await makeTempDir("srcref-action-cred-pkg-");
+    const definition = {
+      id: "srcref-action-cred",
+      triggers: [{ type: "manual" }],
+      steps: {
+        fetch: {
+          kind: "action",
+          id: "fetch",
+          handler: "resolveToken",
+          drainBehavior: "cancel",
+          input: { literal: { marker } },
+          credentials: ["api-token"],
+        },
+      },
+      stepOrder: ["fetch"],
+    };
+    await fsp.writeFile(
+      path.join(packageDir, "package.json"),
+      JSON.stringify({
+        name: "@fixture/srcref-action-cred",
+        version: "1.0.0",
+        interchange: { workflow: "workflow.mjs", actions: "workflow.mjs" },
+      }),
+      "utf8",
+    );
+    await fsp.writeFile(
+      path.join(packageDir, "workflow.mjs"),
+      `import { writeFile } from "node:fs/promises";
+export const workflow = ${JSON.stringify(definition)};
+export async function resolveToken(input, ctx) {
+  const handle = await ctx.credentials.resolve("api-token");
+  await writeFile(input.marker, handle.kind);
+  return handle.kind;
+}
+`,
+      "utf8",
+    );
+    const live = await loadWorkflowDefinitionFromClosure({ packageDir });
+    const approvedHash = await computeLiveDefinitionHash(live);
+
+    const supervisorKeyPair = await generateKeyPair();
+    const channelId = generateChannelId();
+    const hmacKey = generateHmacKey();
+    const supervisorToChild = createMemoryNdjsonStream();
+    const childToSupervisor = createMemoryNdjsonStream();
+    const eventStream = createMemoryFrameStream();
+    const env = parseSpawnTimeEnv(
+      makeSourceRefEnv({
+        channelId,
+        hmacKeyHex: hexEncode(hmacKey),
+        hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
+        definitionHash: approvedHash,
+        closurePackageDir: packageDir,
+      }),
+    );
+    const bindings: RunWorkflowChildBindings = {
+      ...buildBindings(baseDir),
+      actionCredentials: (wiring) =>
+        createActionCredentialsFactory({
+          materialCell: wiring.materialRef,
+          resolveStepGrants: wiring.resolveStepGrants,
+          providers: createCredentialProviderRegistry(
+            builtinCredentialProviders(),
+          ),
+        }),
+      initialCredentialMaterial: {
+        bindings: [{ handle: "api-token", credentialId: "cred-1", consumer }],
+        materials: [
+          {
+            credentialId: "cred-1",
+            providerKey: "http",
+            origin: "https://api.example.com",
+            secret: "sk-top-level",
+          },
+        ],
+      },
+      initialCredentialsSnapshot: {
+        steps: [
+          {
+            stepId: "fetch",
+            address: "deployment-x-fetch@example.com",
+            grants: [
+              {
+                id: "grant-use",
+                resource: "credential:cred-1",
+                action: "use",
+                effect: "allow",
+                origin: "system",
+                conditions: { tool: consumer },
+                expiresAt: null,
+                roleId: null,
+                principalId: null,
+              },
+            ],
+            contentHash: "deadbeef",
+          },
+        ],
+      },
+    };
+
+    const supervisorSender = createControlChannelSender({
+      privateKeySeed: supervisorKeyPair.privateKey,
+      channelId,
+      writer: supervisorToChild.writer,
+    });
+    const runPromise = runWorkflowChild({
+      env,
+      controlReader: supervisorToChild.reader,
+      controlWriter: childToSupervisor.writer,
+      eventWriter: eventStream.writer,
+      bindings,
+    });
+    const recvIter = receiveControlChannel({
+      publicKey: { bootstrapFromReady: true },
+      channelId,
+      reader: childToSupervisor.reader,
+      onCrash: (reason) => {
+        throw new Error(`unexpected control channel crash: ${reason}`);
+      },
+    });
+
+    await supervisorSender.send({
+      type: "trigger.fire",
+      data: {
+        runId,
+        messageId: "msg-1",
+        receivedAt: 1,
+        payload: { content: "run the action", attachments: [] },
+      },
+    });
+    for await (const payload of recvIter) {
+      if (payload.type === "terminal.event" && payload.data.runId === runId) {
+        break;
+      }
+    }
+
+    expect(await fsp.readFile(marker, "utf8")).toBe("http");
+
+    await supervisorSender.send({
+      type: "shutdown",
+      data: { reason: "test done" },
+    });
+    supervisorToChild.close();
+    await runPromise;
   }, 30000);
 });
