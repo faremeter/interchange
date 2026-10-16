@@ -288,4 +288,9 @@ export type {
   ValidatePushResult,
   WriteResult,
 } from "./repo-store";
-export { createRepoStore, subscribeKind, UserPrincipal } from "./repo-store";
+export {
+  createRepoStore,
+  isPlainPathSegment,
+  subscribeKind,
+  UserPrincipal,
+} from "./repo-store";

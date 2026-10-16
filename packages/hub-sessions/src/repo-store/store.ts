@@ -35,7 +35,7 @@ import type {
   WriteTreeDeltaArgs,
   WriteTreePreservingPrefixArgs,
 } from "./types";
-import { SAFE_REPO_ID } from "./types";
+import { isPlainPathSegment, SAFE_REPO_ID } from "./types";
 
 const DEFAULT_SUBSCRIBE_BUFFER_LIMIT = 1024;
 const DEFINITION_REF_NAMESPACE = `${HUB_REF_NAMESPACE}/workflow-definitions`;
@@ -96,6 +96,13 @@ async function withRepoLock<T>(
     }
     releaseFn();
   }
+}
+
+// A write names each path as plain relative segments. A prefix keeps its
+// trailing slash.
+function isPlainRelativePath(p: string, isPrefix: boolean): boolean {
+  const body = isPrefix && p.endsWith("/") ? p.slice(0, -1) : p;
+  return body.split("/").every(isPlainPathSegment);
 }
 
 export type CreateRepoStoreConfig = {
@@ -447,10 +454,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
 
   function validateClearPrefix(clearPrefix: string): void {
     const malformed =
-      clearPrefix.length === 0 ||
-      !clearPrefix.endsWith("/") ||
-      clearPrefix.startsWith("/") ||
-      clearPrefix.split("/").includes("..");
+      !clearPrefix.endsWith("/") || !isPlainRelativePath(clearPrefix, true);
     if (malformed) {
       throw new Error(`clear_prefix_invalid: ${clearPrefix}`);
     }
@@ -458,15 +462,9 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
 
   // Validate a delta write path. A put is always a file (no trailing
   // slash); a delete is either an exact file or a subtree prefix
-  // (trailing slash allowed). Both reject empties, absolute paths, and
-  // any `..` traversal segment.
+  // (trailing slash allowed).
   function validateDeltaPath(p: string, isDelete: boolean): void {
-    const malformed =
-      p.length === 0 ||
-      p.startsWith("/") ||
-      p.split("/").includes("..") ||
-      (!isDelete && p.endsWith("/"));
-    if (malformed) {
+    if (!isPlainRelativePath(p, isDelete)) {
       throw new Error(`delta_path_invalid: ${JSON.stringify(p)}`);
     }
   }
@@ -1501,6 +1499,11 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     changedPathPrefixes: ReadonlySet<string> | undefined;
     message: string;
   } {
+    for (const filepath of Object.keys(content.files)) {
+      if (!isPlainRelativePath(filepath, false)) {
+        throw new Error(`tree_path_invalid: ${JSON.stringify(filepath)}`);
+      }
+    }
     if (content.clearPrefix !== undefined) {
       validateClearPrefix(content.clearPrefix);
       return {
