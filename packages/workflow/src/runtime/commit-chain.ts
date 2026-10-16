@@ -267,6 +267,22 @@ export async function commitBuffered(
   });
 }
 
+// Validate the events `build` returns for `fresh` in order, each at the next
+// seq. A rejection throws before the caller buffers any of them.
+function applyBuilt(
+  fresh: RunState,
+  build: (fresh: RunState) => readonly WorkflowEvent[],
+): { state: RunState; events: WorkflowEvent[] } {
+  let state = fresh;
+  const events: WorkflowEvent[] = [];
+  for (const event of build(fresh)) {
+    const adjusted: WorkflowEvent = { ...event, seq: state.lastSeq + 1 };
+    state = applyEvent(state, adjusted);
+    events.push(adjusted);
+  }
+  return { state, events };
+}
+
 /**
  * Like `commitBuffered`, but the caller builds the events from the
  * canonical state inside the lock, so it can base a write on state no
@@ -280,16 +296,31 @@ export async function commitBufferedFrom(
   build: (fresh: RunState) => readonly WorkflowEvent[],
 ): Promise<RunState> {
   return followChain(runId, async () => {
-    let state = await readStateWithPending(env, runId);
-    const adjusted: WorkflowEvent[] = [];
-    for (const event of build(state)) {
-      const adjustedEvent: WorkflowEvent = { ...event, seq: state.lastSeq + 1 };
-      state = applyEvent(state, adjustedEvent);
-      adjusted.push(adjustedEvent);
-    }
-    if (adjusted.length === 0) return state;
-    getBuffer(runId).push(...adjusted);
+    const fresh = await readStateWithPending(env, runId);
+    const { state, events } = applyBuilt(fresh, build);
+    if (events.length === 0) return state;
+    getBuffer(runId).push(...events);
     wake(bufferWaiters, runId);
+    return state;
+  });
+}
+
+/**
+ * Like `commitBufferedFrom`, but immediate like `commit`: the pending
+ * buffer and the built events land in ONE durable `appendBatch` in the
+ * same chain turn. None of the events is ever buffered on its own, so no
+ * other writer's flush can carry part of them to disk.
+ */
+export async function commitFrom(
+  env: CommitEnv,
+  runId: string,
+  build: (fresh: RunState) => readonly WorkflowEvent[],
+): Promise<RunState> {
+  return followChain(runId, async () => {
+    const fresh = await readStateWithPending(env, runId);
+    const { state, events } = applyBuilt(fresh, build);
+    getBuffer(runId).push(...events);
+    await flushBuffer(env, runId);
     return state;
   });
 }
