@@ -13,9 +13,16 @@ import {
   type BaseEnv,
   type ToolDeclaration,
 } from "@intx/agent";
-import { evaluateGrants, toolConsumer } from "@intx/authz";
+import { actionConsumer, evaluateGrants, toolConsumer } from "@intx/authz";
 import type { GrantRule } from "@intx/authz";
-import { defineWorkflow, onTrigger, step } from "@intx/workflow";
+import {
+  action,
+  childWorkflow,
+  defineWorkflow,
+  loop,
+  onTrigger,
+  step,
+} from "@intx/workflow";
 
 import {
   collectDeclaredCredentialConsumers,
@@ -417,5 +424,126 @@ describe("collectDeclaredCredentialConsumers", () => {
     expect(consumers.has(pluginName)).toBe(false);
     expect(declared.has("tool:lsp")).toBe(true);
     expect(declared.has(`tool:${FACTORY_ID}`)).toBe(false);
+  });
+});
+
+describe("action credential consumers", () => {
+  const directors = createDefaultDirectorRegistry();
+  const pluginDefs = new Map<string, readonly ToolDeclaration[]>();
+  const PUSH = actionConsumer("push");
+
+  function consumersOf(workflow: ReturnType<typeof defineWorkflow>) {
+    return collectDeclaredCredentialConsumers(workflow, directors, pluginDefs);
+  }
+
+  function actionBody(id: string, credentials?: readonly string[]) {
+    return defineWorkflow({
+      id,
+      trigger: { type: "manual" },
+      steps: {
+        push: action({
+          handler: "push",
+          ...(credentials !== undefined ? { credentials } : {}),
+        }),
+      },
+    });
+  }
+
+  test("counts a top-level action that declares credentials", () => {
+    expect(consumersOf(actionBody("wf", ["github"])).has(PUSH)).toBe(true);
+  });
+
+  test("does not count an action that declares no credentials", () => {
+    expect(consumersOf(actionBody("wf")).size).toBe(0);
+  });
+
+  test("counts a declaring action inside a loop, onTrigger, and childWorkflow body", () => {
+    const bodies = {
+      loop: defineWorkflow({
+        id: "wf-loop",
+        trigger: { type: "manual" },
+        steps: {
+          rework: loop({
+            body: actionBody("loop-body", ["github"]),
+            while: "cont",
+            carry: "next",
+            maxIterations: 2,
+            onExhausted: "done",
+          }),
+          done: action({ handler: "done", after: ["rework"] }),
+        },
+      }),
+      onTrigger: defineWorkflow({
+        id: "wf-section",
+        steps: {
+          section: onTrigger({
+            on: { type: "mail", to: "s@x.example" },
+            body: actionBody("section-body", ["github"]),
+          }),
+        },
+      }),
+      childWorkflow: defineWorkflow({
+        id: "wf-child",
+        trigger: { type: "manual" },
+        steps: {
+          spawn: childWorkflow({
+            definition: actionBody("child-body", ["github"]),
+          }),
+        },
+      }),
+    };
+    for (const [kind, workflow] of Object.entries(bodies)) {
+      expect({ kind, counted: consumersOf(workflow).has(PUSH) }).toEqual({
+        kind,
+        counted: true,
+      });
+    }
+  });
+
+  test("a tool factory and an action handler with one name are two consumers", () => {
+    const workflow = defineWorkflow({
+      id: "wf-same-name",
+      trigger: { type: "manual" },
+      steps: {
+        work: step({
+          agent: defineAgent({
+            id: "ag",
+            systemPrompt: "s",
+            tools: [factory("acme/push", [])],
+            capabilities: [],
+            inference: { sources: [{ provider: "anthropic", model: "m" }] },
+          }),
+        }),
+        push: action({
+          handler: "acme/push",
+          credentials: ["github"],
+          after: ["work"],
+        }),
+      },
+    });
+    const consumers = consumersOf(workflow);
+    expect(consumers.has(toolConsumer("acme/push"))).toBe(true);
+    expect(consumers.has(actionConsumer("acme/push"))).toBe(true);
+    expect(consumers.size).toBe(2);
+  });
+
+  test("the cap keeps an action's credential allow only for a body that runs that handler", () => {
+    const allow = useGrant("credential:cred-1", { tool: PUSH });
+    const runsPush = consumersOf(actionBody("runs-push", ["github"]));
+    const runsOther = consumersOf(
+      defineWorkflow({
+        id: "runs-other",
+        trigger: { type: "manual" },
+        steps: {
+          release: action({ handler: "release", credentials: ["github"] }),
+        },
+      }),
+    );
+    expect(
+      filterGrantsToDeclaredResources([allow], new Set(), runsPush),
+    ).toEqual([allow]);
+    expect(
+      filterGrantsToDeclaredResources([allow], new Set(), runsOther),
+    ).toEqual([]);
   });
 });
