@@ -22,10 +22,10 @@ import {
 import type { GrantRule } from "@intx/authz";
 import {
   buildCredentialCapabilities,
-  type HostCredentialCapability,
   type StepCredentialWiring,
 } from "@intx/harness";
 import { getLogger } from "@intx/log";
+import type { HostCredentialCapability } from "@intx/types";
 import type { ToolCredentialDeclaration } from "@intx/types/package-json";
 import {
   layerRuntimeCapabilities,

@@ -115,3 +115,13 @@ export interface CredentialProvider {
 export interface CredentialCapability {
   resolve(handle: string): Promise<MediatedCredential>;
 }
+
+/**
+ * A `CredentialCapability` plus a host-only `dispose`. The consumer sees only
+ * `resolve`; the host runs `dispose` on teardown to release every handle shaped
+ * through this capability (an http handle holds nothing; a future key-file /
+ * socket handle would).
+ */
+export interface HostCredentialCapability extends CredentialCapability {
+  dispose(): Promise<void>;
+}

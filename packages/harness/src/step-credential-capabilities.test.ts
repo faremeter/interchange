@@ -5,7 +5,10 @@ import type { CredentialDelivery } from "@intx/types/credential-delivery";
 import type { ToolCredentialDeclaration } from "@intx/types/package-json";
 
 import { createCredentialProviderRegistry } from "./credential-providers";
-import { buildCredentialCapabilities } from "./step-credential-capabilities";
+import {
+  buildConsumerCredentialCapability,
+  buildCredentialCapabilities,
+} from "./step-credential-capabilities";
 
 // A provider that records every shape context it is handed, so a test can
 // reach the `readCurrentMaterial` closure a shaped handle reads through.
@@ -54,6 +57,34 @@ function fac(
 }
 
 const ORIGIN = "https://api.example.com";
+
+// A one-credential delivery that binds `handle` to each named consumer.
+function deliveryFor(
+  providerKey: string,
+  bound: readonly { consumer: string; handle: string }[],
+): { current: CredentialDelivery } {
+  return {
+    current: {
+      bindings: bound.map(({ consumer, handle }) => ({
+        handle,
+        credentialId: "c1",
+        consumer,
+      })),
+      materials: [
+        { credentialId: "c1", providerKey, origin: ORIGIN, secret: "sk-1" },
+      ],
+    },
+  };
+}
+
+function useGrant(consumer: string): GrantRule {
+  return grant({
+    resource: "credential:c1",
+    action: "use",
+    effect: "allow",
+    conditions: { tool: consumer },
+  });
+}
 
 describe("buildCredentialCapabilities", () => {
   test("a credential granted to one package cannot be resolved by another (confused deputy)", async () => {
@@ -347,5 +378,111 @@ describe("buildCredentialCapabilities", () => {
         providers: createCredentialProviderRegistry([track.provider]),
       }),
     ).toThrow(/resolveGrants must not be called/);
+  });
+});
+
+describe("buildCredentialCapabilities grants reads", () => {
+  test("a step reads its grants once, whatever the package order", () => {
+    const track = trackingProvider();
+    const cell = deliveryFor(track.provider.key, [
+      { consumer: toolConsumer("@intx/pkg-a"), handle: "cred" },
+      { consumer: toolConsumer("@intx/pkg-b"), handle: "cred" },
+    ]);
+    const packages = ["@intx/pkg-none", "@intx/pkg-a", "@intx/pkg-b"];
+    const rotations = packages.map((_unused, i) => [
+      ...packages.slice(i),
+      ...packages.slice(0, i),
+    ]);
+    for (const order of rotations) {
+      let reads = 0;
+      const caps = buildCredentialCapabilities(
+        order.map((name) => fac(name, [])),
+        {
+          materialCell: cell,
+          resolveGrants: () => {
+            reads += 1;
+            return [];
+          },
+          providers: createCredentialProviderRegistry([track.provider]),
+        },
+      );
+      expect([...caps.keys()].sort()).toEqual(["@intx/pkg-a", "@intx/pkg-b"]);
+      expect(reads).toBe(1);
+    }
+  });
+});
+
+describe("buildConsumerCredentialCapability", () => {
+  const consumer = toolConsumer("@intx/pkg-a");
+
+  test("a bound and granted consumer resolves its handle", async () => {
+    const track = trackingProvider();
+    const capability = buildConsumerCredentialCapability(consumer, [], {
+      materialCell: deliveryFor(track.provider.key, [
+        { consumer, handle: "cred" },
+      ]),
+      resolveGrants: () => [useGrant(consumer)],
+      providers: createCredentialProviderRegistry([track.provider]),
+    });
+    if (capability === undefined) throw new Error("expected a capability");
+    await expect(capability.resolve("cred")).resolves.toMatchObject({
+      kind: "http",
+    });
+    expect(track.shapes[0]?.readCurrentMaterial()).toEqual({ secret: "sk-1" });
+  });
+
+  test("a declared handle no binding resolves throws at build", () => {
+    const track = trackingProvider();
+    expect(() =>
+      buildConsumerCredentialCapability(consumer, [{ handle: "needed" }], {
+        materialCell: deliveryFor(track.provider.key, []),
+        resolveGrants: () => [],
+        providers: createCredentialProviderRegistry([track.provider]),
+      }),
+    ).toThrow(
+      /declares credential handle\(s\) that no binding resolves: needed/,
+    );
+  });
+
+  test("a consumer with no declarations and no bindings gets no capability and reads no grants", () => {
+    const track = trackingProvider();
+    const capability = buildConsumerCredentialCapability(consumer, [], {
+      materialCell: deliveryFor(track.provider.key, [
+        { consumer: toolConsumer("@intx/pkg-other"), handle: "cred" },
+      ]),
+      resolveGrants: () => {
+        throw new Error("resolveGrants must not be called");
+      },
+      providers: createCredentialProviderRegistry([track.provider]),
+    });
+    expect(capability).toBeUndefined();
+  });
+
+  test("each call reads the grants it is given and caches nothing", async () => {
+    const track = trackingProvider();
+    const wiring = (grants: readonly GrantRule[]) => ({
+      materialCell: deliveryFor(track.provider.key, [
+        { consumer, handle: "cred" },
+      ]),
+      resolveGrants: () => grants,
+      providers: createCredentialProviderRegistry([track.provider]),
+    });
+    const granted = buildConsumerCredentialCapability(
+      consumer,
+      [],
+      wiring([useGrant(consumer)]),
+    );
+    const ungranted = buildConsumerCredentialCapability(
+      consumer,
+      [],
+      wiring([]),
+    );
+    if (granted === undefined || ungranted === undefined) {
+      throw new Error("expected a capability for both calls");
+    }
+    await expect(granted.resolve("cred")).resolves.toMatchObject({
+      kind: "http",
+    });
+    await expect(ungranted.resolve("cred")).rejects.toThrow(/not authorized/);
   });
 });

@@ -27,11 +27,11 @@ export {
 } from "./credential-capability";
 export type {
   CredentialCapabilityDeps,
-  HostCredentialCapability,
   ResolvedCredentialBinding,
 } from "./credential-capability";
 
 export {
+  buildConsumerCredentialCapability,
   buildCredentialCapabilities,
   createInferenceCredentialResolver,
 } from "./step-credential-capabilities";
