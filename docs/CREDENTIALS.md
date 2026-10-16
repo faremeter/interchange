@@ -98,7 +98,7 @@ The check runs at install and approve, not when a deployment respawns, so a depl
 
 ## Resolution at Launch Time
 
-The control plane resolves each **credential binding** at launch by the algorithm below, materializes the resulting authorization grant, and delivers the resolved secret to the harness (step 7). The harness gates use at runtime through a per-consumer capability that enforces the materialized grant's consumer scope: each tool package receives a capability scoped to its own consumer identity, so one package's grant cannot authorize another's resolve. General provider/scope requirement resolution outside the binding mechanism is not yet built.
+The control plane resolves each **credential binding** at launch by the algorithm below, materializes the resulting authorization grant, and delivers the resolved secret to the harness (step 7). The harness gates use at runtime through a per-consumer capability that enforces the materialized grant's consumer scope: each tool package and each action handler receives a capability scoped to its own consumer identity, so one consumer's grant cannot authorize another's resolve. General provider/scope requirement resolution outside the binding mechanism is not yet built.
 
 When the control plane launches an agent into a harness, it processes each credential binding:
 
@@ -113,6 +113,10 @@ When the control plane launches an agent into a harness, it processes each crede
 Step 5 is the ownership boundary: a tenant's own credentials are usable by ownership, with no personal grant to hold. Principal-owned credential use — whether owner-delegated or invoker-_brought_ (an invoker supplying their own credential material for an allowed provider) — remains Planned / Not Yet Implemented.
 
 The whole tool-credential rail is exercised end-to-end by `tests/workflow-deploy/single-step-credential-tool.test.ts`: a real credential-consuming tool package is pinned into a deployed step, its credential delivered on the deploy frame (and, in a second case, over the live rotation push), resolved through the per-consumer capability, and used to authenticate an http request to a mock origin — asserting the exact delivered secret arrives as a bearer, that a rotated secret supersedes it, and that a run lacking the `credential:{id}` / `use` grant fails the resolve closed so nothing reaches the origin.
+
+The action-credential rail is exercised end-to-end by `tests/workflow-deploy/action-step-credential.test.ts`. A top-level action, an action inside a childWorkflow body and an action inside a top-level loop body each resolve their declared handle and authenticate to a mock origin with the exact delivered secret. The test also asserts that deploy stamps each binding with `action:<handler>`, that each body run's grants keep only the use grant for the body's own handler, that a handler no binding names cannot resolve the handle, that a run without the use grant fails closed, and that deploy refuses a declared handle with no binding.
+
+The per-handler consumer is a least-privilege limit, not an isolation boundary. All action handlers of a deployment run in one workflow process and one module scope, so a handler that is hostile can reach state that another handler holds. The capability keeps a correct handler to the handles its own bindings name, and deploy holds those bindings to the handles that the handler's steps declare. It does not contain a handler that is hostile.
 
 ### Credential-Use Authorization
 
