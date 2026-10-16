@@ -17,6 +17,7 @@ import {
   createInMemorySignalChannel,
   createNoopDrainController,
   defineWorkflow,
+  gate,
   runtimeRun,
   step,
   type Primitive,
@@ -133,6 +134,58 @@ describe("onFailure action / childWorkflow routing", () => {
     expect(invoked).not.toContain("normal");
     expect(routedTo(await repoStore.read("r"), "unit")).toBe("rescue");
   });
+
+  test.each(["action", "childWorkflow"])(
+    "a failing %s whose handler a branch skipped keeps its normal dependents",
+    async (kind) => {
+      // `w0` sits in the gate's untaken branch, so the gate's skip takes the
+      // handler before `hold` lets the action run.
+      const def = defineWorkflow({
+        id: "act-skipped-handler",
+        trigger: { type: "manual" },
+        steps: {
+          pick: gate({
+            when: { from: "trigger.payload" },
+            then: "keep",
+            else: "w0",
+          }),
+          keep: step({ agent: agent("keep"), after: ["pick"] }),
+          w0: step({ agent: agent("w0"), after: ["pick"] }),
+          hold: step({ agent: agent("hold"), after: ["pick"] }),
+          unit:
+            kind === "action"
+              ? action({ handler: "do", after: ["hold"], onFailure: "rescue" })
+              : { ...cwUnit(), after: ["hold"] },
+          rescue: step({ agent: agent("rescue"), after: ["unit", "w0"] }),
+          normal: step({
+            agent: agent("normal"),
+            after: ["unit"],
+            input: { from: "trigger.payload" },
+          }),
+        },
+      });
+      const invoked: string[] = [];
+      const { env, repoStore } = buildEnv(def, {
+        spawnChild: async () => createTerminalChildHandle("failed"),
+        invokeAction: async () => {
+          throw new Error("action boom");
+        },
+      });
+      env.invokeStep = async (req) => {
+        invoked.push(req.agent.id);
+        return { output: null };
+      };
+      const res = await runtimeRun(def, env, {
+        runId: "r",
+        triggerPayload: true,
+      }).complete;
+
+      expect(res.terminalStatus).toBe("failed");
+      expect(invoked).not.toContain("rescue");
+      expect(invoked).toContain("normal");
+      expect(routedTo(await repoStore.read("r"), "unit")).toBeUndefined();
+    },
+  );
 
   test("a failed child routes to its handler and the run completes", async () => {
     const invoked: string[] = [];
