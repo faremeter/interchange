@@ -916,10 +916,11 @@ async function executeRunBody(
   // exhaustion, so a crash mid-invocation is the same "run the fallback"
   // case. The onFailure resume reconciliation below observes the `routed`
   // phase, prunes its normal dependents, and reconstructs its sentinel. A unit
-  // with no `onFailure` stays a bare fatal `StepFailed`, and the post-loop
-  // `hasFailedStep` path commits `RunFailed`. (`isCrashedInvocationStep`
-  // matches only `step`/`action`; a crashed `childWorkflow` is a host-owned
-  // recovery surface handled elsewhere.)
+  // with no `onFailure`, or whose handler a branch already skipped, stays a
+  // bare fatal `StepFailed`, and the post-loop `hasFailedStep` path commits
+  // `RunFailed`. (`isCrashedInvocationStep` matches only `step`/`action`; a
+  // crashed `childWorkflow` is a host-owned recovery surface handled
+  // elsewhere.)
   for (const { stepId, attempt } of crashedInFlight) {
     const primitive = definition.steps[stepId];
     const onFailure =
@@ -927,20 +928,23 @@ async function executeRunBody(
       (primitive.kind === "step" || primitive.kind === "action")
         ? primitive.onFailure
         : undefined;
-    const failed: WorkflowEvent = {
-      kind: "StepFailed",
-      seq: state.lastSeq + 1,
-      at: env.clock().toISOString(),
-      stepId,
-      attempt,
-      error: {
-        message: `step ${stepId} crashed mid-invocation; the invoked primitive is non-deterministic and unrecorded, so it is not re-invoked (at-most-once)`,
-        code: "crash-mid-invocation",
+    state = await commitDurableFrom(env, runId, (fresh) => [
+      {
+        kind: "StepFailed",
+        seq: fresh.lastSeq + 1,
+        at: env.clock().toISOString(),
+        stepId,
+        attempt,
+        error: {
+          message: `step ${stepId} crashed mid-invocation; the invoked primitive is non-deterministic and unrecorded, so it is not re-invoked (at-most-once)`,
+          code: "crash-mid-invocation",
+        },
+        retriesExhausted: true,
+        ...(onFailure !== undefined && canRouteTo(fresh, onFailure)
+          ? { routedTo: onFailure }
+          : {}),
       },
-      retriesExhausted: true,
-      ...(onFailure !== undefined ? { routedTo: onFailure } : {}),
-    };
-    state = await commitDurable(env, runId, failed);
+    ]);
   }
 
   // Issue RunStarted only if the state machine has not seen it.
@@ -1005,16 +1009,14 @@ async function executeRunBody(
   // reads `steps.<unit>.output.error.message`. Rebuild it from the routed
   // StepFailed's reduced error so the selector resolves the same value it saw
   // before the crash. The pass also completes the branch prune for each routed
-  // onFailure unit. That prune is idempotent: the durable log is a prefix and a
-  // route writes its prune BEFORE its terminal, so a durable terminal already
-  // carries its skips and `emitSkipClosure` re-emits nothing. A completed unit
+  // onFailure unit. A live route writes its prune with its terminal, so its
+  // skips are already present. Crash classification above writes the routed
+  // failure first; this pass completes its prune before scheduling. A completed unit
   // needs no pass: a success writes its prune in the same batch as its
   // StepCompleted, and a unit a branch skipped is completed too, so pruning
   // there would skip a handler the branch kept, such as a gate's pick. A
-  // route's skips can land without its terminal. The unit then resumes as a
-  // crash mid-invocation that routes to the same handler, or, as a child
-  // workflow, reattaches its failed child and routes again, so the skips still
-  // match. Skip the pass unless the run is `running` -- a cancelling/terminal
+  // prune left by an interrupted recovery is completed idempotently. Skip the
+  // pass unless the run is `running` -- a cancelling/terminal
   // resume is owned by the drive loop's settlement, and a skip StepStarted
   // would throw against a non-running run.
   if (state.phase === "running") {
@@ -1659,43 +1661,21 @@ async function runPrimitiveSafe(
           !abort.aborted &&
           !(cause instanceof SuccessTerminalizationError)
         ) {
-          await pruneAroundRoute(
-            definition,
+          state = await commitFrom(
             env,
             runId,
-            primitive.id,
-            onFailure,
-            "routed",
-            abort,
+            await buildFailureTerminal(
+              definition,
+              env,
+              runId,
+              primitive.id,
+              onFailure,
+              stepState.currentAttempt,
+              message,
+            ),
           );
-          state = await reloadState(env, runId);
-          // Cancellation wins over routing: a cancel that landed across the
-          // prune's awaits settles the unit `cancelled` rather than routed,
-          // mirroring the cancelling arm above and the step failure route.
-          if (state.phase === "cancelling") {
-            const propagated: WorkflowEvent = {
-              kind: "CancelPropagated",
-              seq: state.lastSeq + 1,
-              at: env.clock().toISOString(),
-              stepId: primitive.id,
-            };
-            state = await commit(env, runId, propagated);
-            void state;
-            throw cause;
-          }
-          const routed: WorkflowEvent = {
-            kind: "StepFailed",
-            seq: state.lastSeq + 1,
-            at: env.clock().toISOString(),
-            stepId: primitive.id,
-            attempt: stepState.currentAttempt,
-            error: { message },
-            retriesExhausted: true,
-            routedTo: onFailure,
-          };
-          state = await commit(env, runId, routed);
-          void state;
           await flushParkedChildWorkflowFailure(env, runId, primitive.kind);
+          if (state.steps.get(primitive.id)?.phase !== "routed") throw cause;
           return { failed: true, stepId: primitive.id, error: { message } };
         }
         const failed: WorkflowEvent = {
@@ -2115,50 +2095,27 @@ async function runStep(
       const stopped = abort.aborted;
       if (exhausted && !stopped && step.onFailure !== undefined) {
         // Route the permanent failure to the handler instead of failing the
-        // run. Prune the unit's normal dependents FIRST -- while the unit is
-        // still in-flight -- then land the unit `routed` with a single
-        // StepFailed{routedTo} (never a failed->routed promotion). The
+        // run. The route decision, normal-branch skips, and StepFailed land
+        // together, so a handler skipped during preparation cannot leave the
+        // normal branch pruned for a failure that never routed. The
         // returned sentinel becomes the unit's own output in the in-process
         // stepOutputs (via the drive loop's `.then`), so the handler reads
         // steps.<unit>.output.error.message. There is no StepCompleted for a
         // routed unit, so that output is live-path only.
-        await pruneAroundRoute(
-          definition,
+        after = await commitFrom(
           env,
           runId,
-          step.id,
-          step.onFailure,
-          "routed",
-          abort,
+          await buildFailureTerminal(
+            definition,
+            env,
+            runId,
+            step.id,
+            step.onFailure,
+            attempt,
+            message,
+          ),
         );
-        after = await reloadState(env, runId);
-        // Cancellation wins over routing, mirroring the cancelling guard
-        // above: if the run started cancelling across the prune's awaits,
-        // settle the unit `cancelled` rather than land a routed failure whose
-        // (pruned) handler branch the cancel sweep will never service.
-        if (after.phase === "cancelling") {
-          const propagated: WorkflowEvent = {
-            kind: "CancelPropagated",
-            seq: after.lastSeq + 1,
-            at: env.clock().toISOString(),
-            stepId: step.id,
-          };
-          after = await commit(env, runId, propagated);
-          void after;
-          throw cause;
-        }
-        const routed: WorkflowEvent = {
-          kind: "StepFailed",
-          seq: after.lastSeq + 1,
-          at: env.clock().toISOString(),
-          stepId: step.id,
-          attempt,
-          error: { message },
-          retriesExhausted: true,
-          routedTo: step.onFailure,
-        };
-        after = await commit(env, runId, routed);
-        void after;
+        if (after.steps.get(step.id)?.phase !== "routed") throw cause;
         return { failed: true, stepId: step.id, error: { message } };
       }
       const final = exhausted || stopped;
@@ -4885,19 +4842,16 @@ async function routeLoopOutcome(
 }
 
 /**
- * Prune around an onFailure route, the mirror of `routeLoopOutcome`. A unit
- * carrying `onFailure` settles on both outcomes, so both prune the not-taken
- * side: a routed failure prunes the unit's normal after-dependents and spares
- * the handler branch; a success, or a failure that did not route, prunes the
- * handler branch and spares the normal dependents. A diamond-join reachable
- * from the spared side stays live (the `collectBranchClosure` guard). A route
- * runs this BEFORE it commits the unit's terminal event, so the unit is still
- * in-flight while the skips land -- the scheduler offers none of the unit's
- * direct dependents until it is terminal, and `emitSkipClosure`'s leaf-first
- * order covers the deeper members. A success commits the same skips together
- * with its terminal instead (`buildSuccessTerminal`). A failure that did not
- * route runs it after its terminal, which is safe because the scheduler never
- * offers a handler off such a unit.
+ * Prune around an onFailure unit whose terminal is already written, the mirror
+ * of `routeLoopOutcome`. A routed failure prunes the unit's normal
+ * after-dependents and spares the handler branch; a failure that did not route
+ * prunes the handler branch and spares the normal dependents. A diamond-join
+ * reachable from the spared side stays live (the `collectBranchClosure` guard).
+ * A live outcome writes the same skips with its terminal instead
+ * (`recordHandlerSkips`). This covers the resume pass, which completes a routed
+ * unit's prune before it schedules anything, and a failure that did not route,
+ * which is safe to prune after its terminal because the scheduler never offers
+ * a handler off such a unit.
  */
 async function pruneAroundRoute(
   definition: WorkflowDefinition,
@@ -5292,7 +5246,9 @@ async function emitSkipClosure(
     // to the cancel sweep.
     const skip = await recordSkipSentinels(env, snapshot, skipId, sentinel);
     if (skip === null) continue;
-    await commitFrom(env, runId, (fresh) => skipEvents(env, fresh, skip));
+    await commitFrom(env, runId, (fresh) =>
+      skipEvents(env, definition, fresh, skip),
+    );
   }
 }
 
@@ -5318,24 +5274,67 @@ async function recordSkipSentinels(
   return { stepId, inputRef, outputRef };
 }
 
+// The unit that routed its failure to `handlerId`, if one has.
+function unitRoutedTo(
+  definition: WorkflowDefinition,
+  state: RunState,
+  handlerId: string,
+): string | undefined {
+  for (const [unitId, unit] of Object.entries(definition.steps)) {
+    if (
+      onFailureOf(unit) === handlerId &&
+      state.steps.get(unitId)?.phase === "routed"
+    ) {
+      return unitId;
+    }
+  }
+  return undefined;
+}
+
+// A unit routes its failure only to a handler that has not settled. A branch
+// that does not hold the unit can skip the handler before the unit fails, and
+// a failure routed there would go unhandled while the run completes, so it
+// lands unrouted and fails the run instead.
+function canRouteTo(state: RunState, handlerId: string): boolean {
+  return state.steps.get(handlerId) === undefined;
+}
+
 // The events that skip one closure member, built from the state its commit
 // sees. The step is written only while it has still not started: a prune that
 // shares the step may have skipped it since, and then it is left alone.
+// A branch that does not hold a unit can also reach the unit's handler after
+// the unit routed there. Nothing else would handle that failure, so the
+// handler fails instead of being skipped, and the run fails with it.
 function skipEvents(
   env: WorkflowRuntimeEnv,
+  definition: WorkflowDefinition,
   fresh: RunState,
   skip: SkipWrite,
 ): WorkflowEvent[] {
   const current = fresh.steps.get(skip.stepId)?.phase;
   const at = env.clock().toISOString();
-  const completion = (seq: number): WorkflowEvent => ({
-    kind: "StepCompleted",
-    seq,
-    at,
-    stepId: skip.stepId,
-    attempt: 1,
-    output: { ref: skip.outputRef },
-  });
+  const routedUnit = unitRoutedTo(definition, fresh, skip.stepId);
+  const completion = (seq: number): WorkflowEvent =>
+    routedUnit === undefined
+      ? {
+          kind: "StepCompleted",
+          seq,
+          at,
+          stepId: skip.stepId,
+          attempt: 1,
+          output: { ref: skip.outputRef },
+        }
+      : {
+          kind: "StepFailed",
+          seq,
+          at,
+          stepId: skip.stepId,
+          attempt: 1,
+          error: {
+            message: `${routedUnit} routed its failure to ${skip.stepId}, but a branch skipped ${skip.stepId} before it ran, so nothing handled the failure`,
+          },
+          retriesExhausted: true,
+        };
   if (current !== undefined) return [];
   return [
     {
@@ -5348,6 +5347,86 @@ function skipEvents(
     },
     completion(fresh.lastSeq + 2),
   ];
+}
+
+async function recordHandlerSkips(
+  definition: WorkflowDefinition,
+  env: WorkflowRuntimeEnv,
+  runId: string,
+  unitId: string,
+  handlerId: string,
+  settled: "routed" | "completed",
+): Promise<SkipWrite[]> {
+  const snapshot = await reloadState(env, runId);
+  if (
+    snapshot.phase !== "running" ||
+    (settled === "routed" && !canRouteTo(snapshot, handlerId))
+  ) {
+    return [];
+  }
+  const { toSkip, sentinel } = onFailurePrune(
+    definition,
+    unitId,
+    handlerId,
+    settled,
+  );
+  const skips: SkipWrite[] = [];
+  for (const skipId of leafFirstOrder(definition, toSkip)) {
+    const skip = await recordSkipSentinels(env, snapshot, skipId, sentinel);
+    if (skip !== null) skips.push(skip);
+  }
+  return skips;
+}
+
+// Blob recording can yield to another branch's skip or to cancellation.
+// Decide the route under the commit lock, and only include its skips if the
+// handler is still available. No partially pruned route becomes observable.
+async function buildFailureTerminal(
+  definition: WorkflowDefinition,
+  env: WorkflowRuntimeEnv,
+  runId: string,
+  unitId: string,
+  handlerId: string,
+  attempt: number,
+  message: string,
+): Promise<(fresh: RunState) => WorkflowEvent[]> {
+  const skips = await recordHandlerSkips(
+    definition,
+    env,
+    runId,
+    unitId,
+    handlerId,
+    "routed",
+  );
+  return (fresh) => {
+    const at = env.clock().toISOString();
+    if (fresh.phase === "cancelling") {
+      return [
+        {
+          kind: "CancelPropagated",
+          seq: fresh.lastSeq + 1,
+          at,
+          stepId: unitId,
+        },
+      ];
+    }
+    const routed = canRouteTo(fresh, handlerId);
+    return [
+      ...(routed
+        ? skips.flatMap((skip) => skipEvents(env, definition, fresh, skip))
+        : []),
+      {
+        kind: "StepFailed",
+        seq: fresh.lastSeq + 1,
+        at,
+        stepId: unitId,
+        attempt,
+        error: { message },
+        retriesExhausted: true,
+        ...(routed ? { routedTo: handlerId } : {}),
+      },
+    ];
+  };
 }
 
 /**
@@ -5369,22 +5448,17 @@ async function buildSuccessTerminal(
   attempt: number,
   outputRef: string,
 ): Promise<(fresh: RunState) => WorkflowEvent[]> {
-  const skips: SkipWrite[] = [];
-  if (onFailure !== undefined) {
-    const snapshot = await reloadState(env, runId);
-    if (snapshot.phase === "running") {
-      const { toSkip, sentinel } = onFailurePrune(
-        definition,
-        unitId,
-        onFailure,
-        "completed",
-      );
-      for (const skipId of leafFirstOrder(definition, toSkip)) {
-        const skip = await recordSkipSentinels(env, snapshot, skipId, sentinel);
-        if (skip !== null) skips.push(skip);
-      }
-    }
-  }
+  const skips =
+    onFailure === undefined
+      ? []
+      : await recordHandlerSkips(
+          definition,
+          env,
+          runId,
+          unitId,
+          onFailure,
+          "completed",
+        );
   return (fresh) => {
     const completed: WorkflowEvent = {
       kind: "StepCompleted",
@@ -5396,7 +5470,7 @@ async function buildSuccessTerminal(
     };
     if (fresh.phase !== "running") return [completed];
     return [
-      ...skips.flatMap((skip) => skipEvents(env, fresh, skip)),
+      ...skips.flatMap((skip) => skipEvents(env, definition, fresh, skip)),
       completed,
     ];
   };
