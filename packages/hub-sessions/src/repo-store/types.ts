@@ -49,6 +49,23 @@ export type UserPrincipal = typeof UserPrincipal.infer;
 export const SAFE_REPO_ID = /^[a-zA-Z0-9_-]+$/;
 
 /**
+ * Whether one segment of a write path is a plain name. An empty, `.` or `..`
+ * segment lands somewhere else on disk than in the commit, `.git` in any case
+ * reaches repository metadata, a NUL cannot be stored, and isomorphic-git
+ * refuses to read back a tree with a backslash in an entry name.
+ */
+export function isPlainPathSegment(segment: string): boolean {
+  return (
+    segment !== "" &&
+    segment !== "." &&
+    segment !== ".." &&
+    segment.toLowerCase() !== ".git" &&
+    !segment.includes("\\") &&
+    !segment.includes("\0")
+  );
+}
+
+/**
  * Principal is a discriminated-union extension point. The substrate
  * requires only the `kind` discriminant; concrete principal shapes live
  * in kind-handler packages and are narrowed via `principal.kind === "..."`
@@ -142,16 +159,18 @@ export type RefEntry = {
 export type TreeContent = {
   /**
    * Map of repo-relative path to file contents. Each entry is written
-   * to the working tree and staged before commit.
+   * to the working tree and staged before commit. A path with a segment
+   * that fails `isPlainPathSegment`, which includes a leading `/`, rejects
+   * the write.
    */
   files: Record<string, string | Uint8Array>;
   /**
    * Optional directory-subtree prefix to clear before staging. When
    * set, every tracked path beginning with this prefix is removed
    * from the git index and the corresponding directory on disk is
-   * deleted before `files` is written. Must end with `/` and must
-   * not contain `..` or absolute path components. When unset,
-   * writeTree is purely additive.
+   * deleted before `files` is written. Must end with `/`, and every
+   * segment must pass `isPlainPathSegment`. When unset, writeTree is
+   * purely additive.
    */
   clearPrefix?: string;
   /** Commit message for the resulting commit. */
@@ -171,7 +190,7 @@ export type WriteTreePreservingPrefixArgs = {
   /**
    * Directory-subtree prefix whose existing blobs are surfaced to
    * `merge` and then replaced wholesale by its return value. Must end
-   * with `/` and must not contain `..` or absolute path components.
+   * with `/`, and every segment must pass `isPlainPathSegment`.
    */
   preservePrefix: string;
   /**
