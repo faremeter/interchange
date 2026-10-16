@@ -1062,8 +1062,9 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     };
   }
 
-  // Read a tree's child entries as a name->oid map. Returns null when
-  // the path is absent or is not a tree under `rootTreeOid`, so the
+  // Read a tree's child entries as a map from name to mode and oid, so a
+  // change to an entry's mode alone still counts as a change. Returns null
+  // when the path is absent or is not a tree under `rootTreeOid`, so the
   // diff below treats "subtree gained/lost" uniformly with "subtree
   // changed".
   async function readTreeEntryMap(
@@ -1074,7 +1075,9 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     const oid = await resolveTreeOid(reads, rootTreeOid, relPath, "tree");
     if (oid === null) return null;
     const out = new Map<string, string>();
-    for (const e of (await reads.readTree(oid)).entries) out.set(e.path, e.oid);
+    for (const e of (await reads.readTree(oid)).entries) {
+      out.set(e.path, `${e.mode} ${e.oid}`);
+    }
     return out;
   }
 
@@ -1136,13 +1139,13 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   // relative to its parent, as repo-root-relative POSIX prefixes ending
   // in `/`. Git is content-addressed: a subtree whose object id is
   // unchanged between the two commits is byte-identical, so the diff
-  // only descends into entries whose oid differs. Top-level entries that
-  // differ are emitted as `<name>/`; the `runs/` subtree is descended
-  // one level further so a per-run handler can scope to the exact
-  // `runs/<runId>/` directories that changed rather than re-validating
-  // every run. `parentTreeOid === null` (no readable parent) means the
-  // substrate cannot bound the change set, so it returns `undefined`
-  // and the handler validates the whole tree.
+  // only descends into entries whose mode or oid differs. Top-level
+  // entries that differ are emitted as `<name>/`; the `runs/` subtree is
+  // descended one level further so a per-run handler can scope to the
+  // exact `runs/<runId>/` directories that changed rather than
+  // re-validating every run. `parentTreeOid === null` (no readable
+  // parent) means the substrate cannot bound the change set, so it
+  // returns `undefined` and the handler validates the whole tree.
   async function computeChangedPathPrefixes(
     reads: ObjectReads,
     treeOid: string,

@@ -1390,6 +1390,100 @@ describe("RepoStore", () => {
     expect(await rejectStore.resolveRef(principal, repoId, REF)).toBeNull();
   });
 
+  test("receivePack scopes a commit that changes only an entry's mode to that entry", async () => {
+    const sourceDir = await makeTempDir("repo-store-mode-source-");
+    const sourceHandler = createTestHandler();
+    const sourceStore = createRepoStore({
+      dataDir: sourceDir,
+      signingKey,
+      handlers: { "agent-state": sourceHandler },
+      authorize: allowAll,
+    });
+    const seen: (string[] | undefined)[] = [];
+    const recordingHandler: KindHandler = {
+      ...createTestHandler(),
+      validatePush({ changedPathPrefixes }) {
+        seen.push(
+          changedPathPrefixes === undefined
+            ? undefined
+            : [...changedPathPrefixes].sort(),
+        );
+        return { ok: true };
+      },
+    };
+    const targetStore = createRepoStore({
+      dataDir: await makeTempDir("repo-store-mode-target-"),
+      signingKey,
+      handlers: { "agent-state": recordingHandler },
+      authorize: allowAll,
+    });
+    const dir = path.join(sourceDir, sourceHandler.directoryPrefix, repoId.id);
+    const push = async (expectedOldSha: string | null): Promise<string> => {
+      const { pack, commitSha } = await sourceStore.createPack(
+        principal,
+        repoId,
+        REF,
+      );
+      await targetStore.receivePack(
+        principal,
+        repoId,
+        REF,
+        pack,
+        commitSha,
+        expectedOldSha,
+      );
+      return commitSha;
+    };
+    const setMode = async (
+      treeOid: string,
+      segments: readonly string[],
+      mode: string,
+    ): Promise<string> => {
+      const { tree } = await git.readTree({ fs, dir, oid: treeOid });
+      const [name, ...rest] = segments;
+      const entries = await Promise.all(
+        tree.map(async (entry) => {
+          if (entry.path !== name) return entry;
+          if (rest.length === 0) return { ...entry, mode };
+          return { ...entry, oid: await setMode(entry.oid, rest, mode) };
+        }),
+      );
+      return git.writeTree({ fs, dir, tree: entries });
+    };
+    // Commit the source tip's tree with `filepath`'s entry set to `mode`, as
+    // a child of `parent`.
+    const commitWithMode = async (
+      filepath: string,
+      mode: string,
+      parent: string,
+    ): Promise<void> => {
+      const tip = await git.resolveRef({ fs, dir, ref: REF });
+      const { commit } = await git.readCommit({ fs, dir, oid: tip });
+      const sha = await git.writeCommit({
+        fs,
+        dir,
+        commit: {
+          tree: await setMode(commit.tree, filepath.split("/"), mode),
+          parent: [parent],
+          message: "change mode",
+          author: commit.author,
+          committer: commit.committer,
+        },
+      });
+      await git.writeRef({ fs, dir, ref: REF, value: sha, force: true });
+    };
+
+    await sourceStore.writeTree(principal, repoId, REF, {
+      files: { "top.txt": "top" },
+      message: "write",
+    });
+    const base = await push(null);
+    await commitWithMode("top.txt", "100755", base);
+    await push(base);
+
+    expect(seen.slice(1)).toEqual([["top.txt/"]]);
+  });
+
   // Build a pack carrying one commit whose root tree holds a single symlink or
   // submodule entry, and receivePack it into a fresh store. Returns the store
   // and the receivePack promise so the caller can assert rejection + a
