@@ -27,6 +27,7 @@ import type {
   CredentialMaterial,
   CredentialMaterialResolver,
   CredentialMaterialSource,
+  HostCredentialCapability,
 } from "@intx/types";
 import type { GrantRule } from "@intx/types/authz";
 import type { ToolCredentialDeclaration } from "@intx/types/package-json";
@@ -35,7 +36,6 @@ import type { CredentialDelivery } from "@intx/types/credential-delivery";
 import {
   createCredentialCapability,
   reconcileDeclaredCredentials,
-  type HostCredentialCapability,
   type ResolvedCredentialBinding,
 } from "./credential-capability";
 import type { CredentialProviderRegistry } from "./credential-providers";
@@ -99,40 +99,63 @@ export function buildCredentialCapabilities(
   // needs a capability -- a step with no credential-consuming package never
   // reads them (see StepCredentialWiring.resolveGrants).
   let grants: readonly GrantRule[] | undefined;
+  const stepWiring: StepCredentialWiring = {
+    ...wiring,
+    resolveGrants: () => (grants ??= wiring.resolveGrants()),
+  };
 
   for (const stf of factories) {
     if (seenPackages.has(stf.packageName)) continue;
     seenPackages.add(stf.packageName);
 
-    const consumer = toolConsumer(stf.packageName);
-    const bindings = buildConsumerBindings(consumer, wiring.materialCell);
-
-    // Fail the launch closed if the package declares a handle no binding
-    // resolves for it -- the tool needs a credential the definition never
-    // bound. Checked against THIS consumer's bound set only (invariant 2).
-    reconcileDeclaredCredentials(
-      consumer,
+    const capability = buildConsumerCredentialCapability(
+      toolConsumer(stf.packageName),
       stf.declaredCredentials,
-      new Set(bindings.keys()),
+      stepWiring,
     );
-
-    if (stf.declaredCredentials.length === 0 && bindings.size === 0) {
-      continue;
+    if (capability !== undefined) {
+      byPackage.set(stf.packageName, capability);
     }
-
-    grants ??= wiring.resolveGrants();
-    byPackage.set(
-      stf.packageName,
-      createCredentialCapability({
-        consumer,
-        bindings,
-        providers: wiring.providers,
-        grants: [...grants],
-      }),
-    );
   }
 
   return byPackage;
+}
+
+/**
+ * Build the credential capability for one consumer identity, from the bindings
+ * the live delivery addresses to that consumer.
+ *
+ * Returns `undefined` when the consumer declares no credential and the delivery
+ * binds none to it: there is nothing to resolve, so no capability is built and
+ * the grants are never read. A consumer that declares a handle always has a
+ * binding here, because the reconcile below throws first when one is missing.
+ *
+ * Otherwise the grants are read once for this call and the capability is
+ * returned. Nothing is cached across calls, so a caller that builds a
+ * capability per invocation reads that invocation's grants.
+ */
+export function buildConsumerCredentialCapability(
+  consumer: string,
+  declared: readonly ToolCredentialDeclaration[],
+  wiring: StepCredentialWiring,
+): HostCredentialCapability | undefined {
+  const bindings = buildConsumerBindings(consumer, wiring.materialCell);
+
+  // Fail the launch closed if the consumer declares a handle no binding
+  // resolves for it -- it needs a credential the definition never bound.
+  // Checked against THIS consumer's bound set only (invariant 2).
+  reconcileDeclaredCredentials(consumer, declared, new Set(bindings.keys()));
+
+  if (declared.length === 0 && bindings.size === 0) {
+    return undefined;
+  }
+
+  return createCredentialCapability({
+    consumer,
+    bindings,
+    providers: wiring.providers,
+    grants: [...wiring.resolveGrants()],
+  });
 }
 
 /**

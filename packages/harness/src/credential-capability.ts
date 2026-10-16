@@ -16,8 +16,8 @@ import {
   type GrantRule,
 } from "@intx/authz";
 import type {
-  CredentialCapability,
   CredentialMaterialSource,
+  HostCredentialCapability,
   MediatedCredential,
 } from "@intx/types";
 import type { ToolCredentialDeclaration } from "@intx/types/package-json";
@@ -79,16 +79,6 @@ export interface CredentialCapabilityDeps {
   providers: CredentialProviderRegistry;
   /** The grants in effect for this deploy (the consumer's run grants). */
   grants: GrantRule[];
-}
-
-/**
- * A `CredentialCapability` plus a host-only `dispose`. The tool sees only
- * `resolve`; the host runs `dispose` on teardown to release every handle shaped
- * through this capability (an http handle holds nothing; a future key-file /
- * socket handle would).
- */
-export interface HostCredentialCapability extends CredentialCapability {
-  dispose(): Promise<void>;
 }
 
 /**
