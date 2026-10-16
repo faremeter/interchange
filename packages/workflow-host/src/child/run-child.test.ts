@@ -8,6 +8,7 @@ import { base64Encode, hexEncode } from "@intx/types";
 import {
   computeLiveDefinitionHash,
   createTerminalChildHandle,
+  unavailableActionCredentials,
 } from "@intx/workflow";
 import { loadWorkflowDefinitionFromClosure } from "@intx/workflow-host";
 import type { ApprovalSnapshot, KeyPair } from "@intx/types/runtime";
@@ -381,6 +382,7 @@ function buildBindings(opts: {
     workflowRunRef: "refs/heads/main",
     principal,
     invokeStep: async () => ({ output: null }),
+    actionCredentials: () => unavailableActionCredentials,
     spawnChild: async () => createTerminalChildHandle("completed"),
     scheduler: {
       scheduleIn: () => () => undefined,
@@ -2025,6 +2027,7 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
       workflowRunRef: "refs/heads/main",
       principal,
       invokeStep,
+      actionCredentials: () => unavailableActionCredentials,
       spawnChild: async () => createTerminalChildHandle("completed"),
       scheduler: { scheduleIn: () => () => undefined },
       evaluateGrants: async () => ({
@@ -2214,6 +2217,7 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
       workflowRunRef: "refs/heads/main",
       principal,
       invokeStep,
+      actionCredentials: () => unavailableActionCredentials,
       spawnChild: async () => createTerminalChildHandle("completed"),
       scheduler: { scheduleIn: () => () => undefined },
       evaluateGrants: async () => ({

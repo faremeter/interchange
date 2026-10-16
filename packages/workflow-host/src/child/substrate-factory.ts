@@ -134,6 +134,11 @@ import {
   loadWorkflowPluginFactoriesFromClosure,
   loadWorkflowPluginToolDefinitionsFromClosure,
 } from "../workflow-definition-loader";
+import {
+  createActionCredentialsFactory,
+  stepGrantsResolver,
+  type SidecarStepCredentialContext,
+} from "./action-credentials";
 import type { SubstrateFactory, SubstrateFactoryEnv } from "./from-process-env";
 import { createMailboxWatchRegistry } from "./mailbox-watch-registry";
 import type { ChildOutboundMailBridge } from "./outbound-mail-bridge";
@@ -142,6 +147,7 @@ import { createProxyWorkflowRunRepoStore } from "./proxy-repo-store";
 import {
   createCredentialsBackedAuthorize,
   eagerlyResolveActionHandlers,
+  type CredentialWiring,
   type CredentialsSnapshotRef,
   type GrantEvaluator,
   type RunWorkflowChildBindings,
@@ -878,25 +884,6 @@ async function materializeSourcePluginFactories(
  * being papered over with a stub: the single-step path now always runs
  * a real agent against real storage.
  */
-/**
- * The per-run credential inputs a build resolves the step's `credentials`
- * wiring from. The live material cell and the grants resolver ride in from the
- * run child (per-run state); the provider registry is sidecar-static and
- * combined in at the invoke-step boundary. Absent when no credential material
- * was threaded, which leaves the step's inference reader and tool credentials
- * unwired.
- */
-interface SidecarStepCredentialContext {
-  readonly materialCell: CredentialMaterialCell;
-  /**
-   * The step's grants, resolved live by base step id. The credentials
-   * snapshot types them `unknown[]`; this factory casts to `GrantRule[]`
-   * where `evaluateGrants` reads them.
-   */
-  readonly resolveStepGrants: (stepId: string) => readonly unknown[];
-  readonly providers: CredentialProviderRegistry;
-}
-
 export function createSidecarStepBuildEnv(
   deps: SidecarStepBuildEnvDeps,
 ): (
@@ -1192,9 +1179,7 @@ export function createSidecarStepBuildEnv(
       );
       attachStepCredentialWiring(env, {
         materialCell: credentialContext.materialCell,
-        resolveGrants: () =>
-          // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- resolveStepGrants returns unknown[]; evaluateGrants reads GrantRule
-          credentialContext.resolveStepGrants(stepId) as readonly GrantRule[],
+        resolveGrants: stepGrantsResolver(credentialContext, stepId),
         providers: credentialContext.providers,
       });
     }
@@ -1970,11 +1955,12 @@ async function buildChildRunEnv(args: {
   // Assemble the per-step credential context from the run's live material cell
   // (threaded in from the parent) when one is present, so the child's inference
   // resolves its source secret by `credentialId` against the parent's current
-  // delivery. Every spawned child's steps are tool-bearing, so the context
-  // resolves the child's capped grants (mirroring the top level's snapshot
-  // lookup) and carries the sidecar-static providers for the tool `credentials`
-  // capability. Absent when no material was threaded (a non-sidecar executor),
-  // which leaves the child's inference reader unset.
+  // delivery. Every spawned child's steps are tool-bearing and may run
+  // actions, so the context resolves the child's capped grants (mirroring the
+  // top level's snapshot lookup) and carries the sidecar-static providers for
+  // the tool and action `credentials` capabilities. Absent when no material was
+  // threaded (a non-sidecar executor), which leaves the child's inference
+  // reader unset and gives action handlers no credential source.
   const childCredentialContext: SidecarStepCredentialContext | undefined =
     materialCell === undefined
       ? undefined
@@ -2013,13 +1999,17 @@ async function buildChildRunEnv(args: {
   let invokeAction: ReturnType<typeof createDefaultActionInvoker> | undefined;
   if (actionResolver !== undefined) {
     effects = createInMemoryEffectLedger();
-    // This host threads no credential source to action handlers, so an
-    // action that declares credentials fails before its handler runs.
+    // An action handler resolves its declared handles against the run's live
+    // material and this body's capped grants. With no material threaded (a
+    // non-sidecar executor) there is no credential source, so an action that
+    // declares credentials fails before its handler runs.
     invokeAction = createDefaultActionInvoker(
       authorize,
       effects,
       actionResolver,
-      unavailableActionCredentials,
+      childCredentialContext === undefined
+        ? unavailableActionCredentials
+        : createActionCredentialsFactory(childCredentialContext),
     );
   }
   const env: WorkflowRuntimeEnv = {
@@ -2410,6 +2400,16 @@ export function createSidecarSubstrateFactory(
     const credentialProviders = createCredentialProviderRegistry(
       builtinCredentialProviders(),
     );
+    // The run's credential wiring combined with the sidecar-static providers:
+    // the context both a step's tool capabilities and an action handler's
+    // capability are built from.
+    const runCredentialContext = (
+      wiring: CredentialWiring,
+    ): SidecarStepCredentialContext => ({
+      materialCell: wiring.materialRef,
+      resolveStepGrants: wiring.resolveStepGrants,
+      providers: credentialProviders,
+    });
 
     // Spawned-child step build env (INTR-310). Every spawned child's steps --
     // a childWorkflow child's and an onTrigger section body's alike -- run real,
@@ -2597,11 +2597,11 @@ export function createSidecarSubstrateFactory(
         // complete credential context and the agentFactory can assemble each
         // bundle's consumer-scoped `credentials` capability.
         buildEnv: (buildReq) =>
-          buildStepEnv(buildReq, sourcesRef, {
-            materialCell: credentialWiring.materialRef,
-            resolveStepGrants: credentialWiring.resolveStepGrants,
-            providers: credentialProviders,
-          }),
+          buildStepEnv(
+            buildReq,
+            sourcesRef,
+            runCredentialContext(credentialWiring),
+          ),
         agentFactory: stepAgentFactory,
         onEvent,
         sourcesRef,
@@ -2775,6 +2775,8 @@ export function createSidecarSubstrateFactory(
       workflowRunRef: validated.WORKFLOW_RUN_REF,
       principal,
       invokeStep,
+      actionCredentials: (wiring) =>
+        createActionCredentialsFactory(runCredentialContext(wiring)),
       initialSources: stepInferenceSources,
       runChild,
       runSuspendableChild,

@@ -62,7 +62,7 @@ export interface StepCredentialWiring {
   /**
    * Resolves the step's grants for Gate 2. A thunk rather than a resolved
    * array, so the grants are read only when a capability is actually built: a
-   * step with no credential-consuming package never touches them. This matters
+   * step with no credential consumer never touches them. This matters
    * on the resume path -- a run resumed by self-discovery does not pass through
    * the pre-trigger grants barrier, so the credentials snapshot a Gate-2 read
    * needs may not be present yet; a toolless resume must not fault on that.

@@ -70,6 +70,7 @@ import {
 import type { AuthzCallResult } from "@intx/inference";
 
 import type {
+  ActionCredentialsFactory,
   ActionHandler,
   RunResult,
   RuntimeWorkflowRun,
@@ -93,7 +94,6 @@ import {
   createLoopIterationHandle,
   emptyState,
   runtimeRun,
-  unavailableActionCredentials,
 } from "@intx/workflow";
 
 import {
@@ -299,11 +299,12 @@ export type DrainController = WorkflowHostDrainController;
  * only reads it through to the adapter.
  */
 /**
- * Per-run credential inputs the top-level step invoker carries to the
- * substrate: the live material cell the control channel writes each delivery
- * into, and a resolver for a step's grants (which the substrate gates
+ * Per-run credential inputs the top-level step and action invokers carry to
+ * the substrate: the live material cell the control channel writes each
+ * delivery into, and a resolver for a step's grants (which the substrate gates
  * credential use against). The substrate combines these with its own static
- * provider registry to assemble each tool bundle's `credentials` capability.
+ * provider registry to assemble each tool bundle's and each action handler's
+ * `credentials` capability.
  *
  * Grants are typed `readonly unknown[]` here: this package owns no grant
  * grammar (the credentials snapshot's grants are `unknown[]` throughout), so
@@ -356,6 +357,13 @@ export interface RunWorkflowChildBindings {
    * with the host's per-step env builder; tests inject a stub.
    */
   invokeStep: ChildStepInvoker;
+  /**
+   * Builds the action credentials factory for a run from the run's credential
+   * wiring. The host combines the wiring with its provider registry, so an
+   * action handler resolves its declared handles against the run's live
+   * material and the action step's grants.
+   */
+  actionCredentials: (wiring: CredentialWiring) => ActionCredentialsFactory;
   /**
    * Terminal child-spawn callback the runtime body invokes for a
    * `childWorkflow` primitive when the deployment embeds NO inline child
@@ -662,7 +670,7 @@ export async function runWorkflowChild(
       const snapshot = credentialsRef.current;
       if (snapshot === null) {
         throw new Error(
-          `workflow-child credential wiring: no credentials snapshot for step ${stepId}; a tool-bearing step cannot resolve its grants before the run carries any`,
+          `workflow-child credential wiring: no credentials snapshot for step ${stepId}; a step that uses credentials cannot resolve its grants before the run carries any`,
         );
       }
       const entry = snapshot.steps.find(
@@ -1946,13 +1954,11 @@ function buildRuntimeEnv(args: {
   // still dedups a handler that performs the same effect twice.
   const effects = createInMemoryEffectLedger();
   env.effects = effects;
-  // This host threads no credential source to action handlers, so an action
-  // that declares credentials fails before its handler runs.
   env.invokeAction = createDefaultActionInvoker(
     args.authorize,
     effects,
     args.actionResolver,
-    unavailableActionCredentials,
+    args.bindings.actionCredentials(args.credentialWiring),
   );
   return env;
 }
