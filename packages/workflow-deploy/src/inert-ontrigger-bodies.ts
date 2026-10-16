@@ -440,6 +440,50 @@ export function readInertStepInference(
   return { isAgent: false, preference: null };
 }
 
+// The agent surface the tool-factory reader reads, typing only the factory ids.
+const AgentWithToolFactories = type({
+  toolFactories: type({ id: "string" }).array(),
+});
+const StepWithToolFactories = type({
+  kind: "'step'",
+  agent: AgentWithToolFactories,
+});
+const MapWithToolFactories = type({
+  kind: "'map'",
+  step: { agent: AgentWithToolFactories },
+});
+
+/**
+ * The tool factory ids a frozen inert step's agent instantiates: a `step`
+ * carries the agent directly, a `map` carries it on its inner step, and any
+ * other primitive has none. A `step`/`map` that fails the agent shape is a
+ * malformed projection and throws, prefixed with `context`.
+ */
+export function readInertStepToolFactoryIds(
+  stepValue: unknown,
+  context: string,
+  stepId: string,
+): readonly string[] {
+  const asStep = StepWithToolFactories(stepValue);
+  if (!(asStep instanceof type.errors)) {
+    return asStep.agent.toolFactories.map((factory) => factory.id);
+  }
+  const asMap = MapWithToolFactories(stepValue);
+  if (!(asMap instanceof type.errors)) {
+    return asMap.step.agent.toolFactories.map((factory) => factory.id);
+  }
+  const kind = StepKind(stepValue);
+  if (
+    !(kind instanceof type.errors) &&
+    (kind.kind === "step" || kind.kind === "map")
+  ) {
+    throw new Error(
+      `${context}step ${stepId} is a ${kind.kind} primitive but carries no valid agent.toolFactories`,
+    );
+  }
+  return [];
+}
+
 /**
  * Lift one inline body out of an enclosing projection: validate it, override its
  * id to `inlineBodyRef(enclosingId, stepId)` (the ref the sidecar stages

@@ -84,6 +84,18 @@ A binding names exactly one consumer:
 
 The condition key is `tool` for both kinds. The prefix of the value names the kind, so a tool package and an action handler with the same name never share a grant.
 
+An action declares the handles its handler may resolve: `action({ handler, credentials: [handle, ...] })`. The declaration is part of the approved projection and its hash. The bindings for one handler may name only the union of the handles its action steps declare.
+
+Bindings belong on the root definition; deploy resolves no other. When a definition is installed and approved, the hub's probe gate refuses it, before any credential is resolved, if:
+
+- an action declares a handle that no root binding names for its handler;
+- a nested body (a `loop`, `childWorkflow`, or `onTrigger` body, at any depth) carries `credentialBindings`;
+- a `package` binding names no tool factory the workflow runs, or an `action` binding names no action handler that declares credentials;
+- an `action` binding names a handle its handler does not declare;
+- two bindings name the same consumer and handle.
+
+The check runs at install and approve, not when a deployment respawns, so a deployment approved earlier keeps running.
+
 ## Resolution at Launch Time
 
 The control plane resolves each **credential binding** at launch by the algorithm below, materializes the resulting authorization grant, and delivers the resolved secret to the harness (step 7). The harness gates use at runtime through a per-consumer capability that enforces the materialized grant's consumer scope: each tool package receives a capability scoped to its own consumer identity, so one package's grant cannot authorize another's resolve. General provider/scope requirement resolution outside the binding mechanism is not yet built.
