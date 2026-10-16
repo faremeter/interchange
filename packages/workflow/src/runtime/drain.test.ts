@@ -16,6 +16,7 @@ import { describe, test, expect } from "bun:test";
 import { createDefaultDirectorRegistry, defineAgent } from "@intx/agent";
 
 import {
+  action,
   awaitSignal,
   childWorkflow,
   defineWorkflow,
@@ -454,6 +455,88 @@ describe("observation point #1: main loop entry", () => {
     await env.signalChannel.deliver("go", null);
     const result = await run.complete;
     expect(result.terminalStatus).toBe("completed");
+  });
+
+  test("a drained step on its last attempt does not run its onFailure handler", async () => {
+    const def = defineWorkflow({
+      id: "drain-step-onfailure",
+      trigger: { type: "manual" },
+      steps: {
+        unit: step({
+          agent: makeAgent("unit"),
+          drainBehavior: "cancel",
+          onFailure: "rescue",
+        }),
+        // Drain leaves a wait-mode handler running, so a route would run it.
+        rescue: step({
+          agent: makeAgent("rescue"),
+          after: ["unit"],
+          drainBehavior: "wait",
+        }),
+      },
+    });
+    const drain = createControllableDrain(def);
+    const started = Promise.withResolvers<undefined>();
+    const invoked: string[] = [];
+    const invokeStep: StepInvoker = ({ agent, signal }) => {
+      invoked.push(agent.id);
+      if (agent.id !== "unit") return Promise.resolve({ output: null });
+      started.resolve(undefined);
+      return new Promise((_resolve, reject) => {
+        signal.addEventListener("abort", () => {
+          reject(new Error("aborted"));
+        });
+      });
+    };
+    const env = buildEnv(def, invokeStep, drain);
+    const run = runtimeRun(def, env);
+    await started.promise;
+    drain.trigger();
+    const result = await run.complete;
+    expect(result.terminalStatus).toBe("failed");
+    expect(invoked).toEqual(["unit"]);
+  });
+
+  test("a drained action does not run its onFailure handler", async () => {
+    const def = defineWorkflow({
+      id: "drain-action-onfailure",
+      trigger: { type: "manual" },
+      steps: {
+        unit: action({ handler: "do", onFailure: "rescue" }),
+        rescue: step({
+          agent: makeAgent("rescue"),
+          after: ["unit"],
+          drainBehavior: "wait",
+        }),
+      },
+    });
+    const drain = createControllableDrain(def);
+    const started = Promise.withResolvers<undefined>();
+    const invoked: string[] = [];
+    const env: WorkflowRuntimeEnv = {
+      ...buildEnv(
+        def,
+        ({ agent }) => {
+          invoked.push(agent.id);
+          return Promise.resolve({ output: null });
+        },
+        drain,
+      ),
+      invokeAction: ({ signal }) => {
+        started.resolve(undefined);
+        return new Promise((_resolve, reject) => {
+          signal.addEventListener("abort", () => {
+            reject(new Error("aborted"));
+          });
+        });
+      },
+    };
+    const run = runtimeRun(def, env);
+    await started.promise;
+    drain.trigger();
+    const result = await run.complete;
+    expect(result.terminalStatus).toBe("failed");
+    expect(invoked).toEqual([]);
   });
 });
 
