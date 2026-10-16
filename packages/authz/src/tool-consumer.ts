@@ -3,7 +3,12 @@
 // Restricts a grant to a specific credential consumer. The grant's
 // conditions object should contain:
 //
-//   { tool: "tool:<handle>" }   // or a reserved built-in consumer identity
+//   { tool: "tool:<package>" }   // a tool package
+//   { tool: "action:<handler>" } // a workflow action handler
+//   { tool: "<built-in id>" }    // a reserved built-in consumer identity
+//
+// The condition key is `tool` for every consumer kind; the prefix of the value
+// names the kind.
 //
 // The evaluator returns true only when ctx.consumer is a non-empty identity
 // that exactly matches the configured value. An absent (empty) consumer fails
@@ -13,19 +18,41 @@
 // value is a misconfiguration and throws, mirroring the fail-loud shape of the
 // other evaluators rather than silently withholding.
 
+import type { CredentialBinding } from "@intx/types";
+
 import type { ConditionEvaluator, ConditionRegistry } from "./types";
 
 /**
  * Build the consumer identity for a tool package. This is the value stamped
  * onto a `credential:{id}` / `use` grant's `{ tool }` condition at launch, and
  * the identical string the runtime gate supplies as `ctx.consumer` when a tool
- * in that package uses the credential. Launch and gate MUST derive it the same
- * way, so both import this one builder rather than inlining the format. The
- * granularity is package-level: every tool in a package shares one consumer
- * identity.
+ * in that package uses the credential. Launch and gate MUST derive a consumer
+ * identity the same way, through the builders in this module, rather than
+ * inline the format. The granularity is package-level: every tool in a package
+ * shares one consumer identity.
  */
 export function toolConsumer(packageName: string): string {
   return `tool:${packageName}`;
+}
+
+/**
+ * Build the consumer identity for a workflow action handler, keyed by the
+ * handler's export name. The `action:` prefix keeps it disjoint from every
+ * tool consumer, so a tool package and an action handler with the same name
+ * never share a grant. Every action step that runs the handler shares one
+ * consumer identity.
+ */
+export function actionConsumer(handler: string): string {
+  return `action:${handler}`;
+}
+
+/**
+ * The consumer identity a credential binding names: its tool package or its
+ * action handler.
+ */
+export function credentialBindingConsumer(binding: CredentialBinding): string {
+  if (binding.package !== undefined) return toolConsumer(binding.package);
+  return actionConsumer(binding.action);
 }
 
 /**

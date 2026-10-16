@@ -374,6 +374,34 @@ describe("wire validator preserves credentialBindings", () => {
     }
     expect(validated.credentialBindings).toEqual([binding]);
   });
+
+  test("a projected action binding survives WorkflowProjectionDefinition validation", () => {
+    const binding = {
+      action: "pushRelease",
+      handle: "api_key",
+      provider: "openai",
+      locator: "tenant",
+    } as const;
+    const projection = projectLiveToInert(
+      defineWorkflow({
+        id: "wf_main",
+        trigger: { type: "mail", to: "wf@acme.test" },
+        steps: {
+          main: step({
+            agent: mkAgent([alphaTool], baseCapabilities, [OPENAI]),
+          }),
+        },
+        credentialBindings: [binding],
+      }),
+    );
+    const validated = WorkflowProjectionDefinition(projection);
+    if (validated instanceof type.errors) {
+      throw new Error(
+        `projection failed the wire schema: ${validated.summary}`,
+      );
+    }
+    expect(validated.credentialBindings).toEqual([binding]);
+  });
 });
 
 // ---------------------------------------------------------------------------

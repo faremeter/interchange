@@ -1886,7 +1886,7 @@ export const InferenceSource = type({
   // Reference into the run's credential-material cell. The provider's secret
   // (formerly an inline `apiKey`) is resolved from that cell by `credentialId`
   // at call time, so the source config carries no secret and the child never
-  // holds the key inline. The same cell backs tool credentials.
+  // holds the key inline. The same cell backs binding credentials.
   credentialId: "string",
   model: "string",
   "defaults?": InferenceSourceDefaults,

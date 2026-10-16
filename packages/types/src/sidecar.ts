@@ -774,11 +774,12 @@ export const AgentDeployWorkflow = type({
   // re-verified closure. Optional: only a deploy that carries an inline onTrigger
   // section or childWorkflow child populates it.
   "referencedDefinitions?": WorkflowProjectionWithSources.array(),
-  // Initial credential material for the deployment's tools, decrypted hub-side
-  // and delivered on the deploy frame so it is resident before any step runs
-  // (closing the race where a tool resolves a credential before a push lands).
-  // Run-global: a credential's secret is stored once, keyed by credentialId.
-  // Optional -- a deploy whose definition binds no credentials omits it.
+  // Initial credential material for the deployment's binding consumers and
+  // inference sources, decrypted hub-side and delivered on the deploy frame so
+  // it is resident before any step runs (closing the race where a tool resolves
+  // a credential before a push lands). Run-global: a credential's secret is
+  // stored once, keyed by credentialId. Optional -- a deploy whose definition
+  // binds no credentials omits it.
   "credentials?": CredentialDelivery,
   // The source-ref pin (`source` + frozen `closure`) the sidecar re-materializes
   // and evaluates the pinned code from. Required: source-ref is the only deploy

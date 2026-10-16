@@ -7,8 +7,10 @@ import {
   test,
 } from "bun:test";
 
+import { createNoopCredentialCipher } from "@intx/crypto";
 import {
   AmbiguousCredentialError,
+  buildCredentialDelivery,
   resolveCredentialById,
   resolveCredentialByName,
   resolveCredentialRequirement,
@@ -567,6 +569,165 @@ describe.skipIf(!harnessDbEnvAvailable())(
           null,
         );
         expect(got?.credential.id).toBe("cred_root");
+      });
+    });
+
+    describe("buildCredentialDelivery", () => {
+      const GITHUB_ORIGIN = "https://api.github.com";
+
+      async function seedGithub(opts: { apiBaseUrl: string | null }) {
+        await seedTenants(h.db, [{ id: "tnt_leaf" }]);
+        await seedProvider(h.db, {
+          id: "prv_gh",
+          tenantId: "tnt_leaf",
+          name: "github",
+          plugin: "http",
+          ...(opts.apiBaseUrl !== null ? { apiBaseUrl: opts.apiBaseUrl } : {}),
+        });
+      }
+
+      function deliver(
+        bindings: Parameters<typeof buildCredentialDelivery>[0]["bindings"],
+      ) {
+        return buildCredentialDelivery({
+          db: h.db,
+          tenantId: "tnt_leaf",
+          bindings,
+          creatorPrincipalId: null,
+          invokerPrincipalId: null,
+          credentialCipher: createNoopCredentialCipher(),
+        });
+      }
+
+      test("a tool binding and an action binding each name their consumer, and one material backs both", async () => {
+        await seedGithub({ apiBaseUrl: GITHUB_ORIGIN });
+        await seedCredential(h.db, {
+          id: "cred_gh",
+          tenantId: "tnt_leaf",
+          providerId: "prv_gh",
+          name: "gh",
+          secret: "sk-gh",
+        });
+
+        const result = await deliver([
+          {
+            package: "@acme/tools",
+            handle: "gh",
+            provider: "github",
+            locator: "tenant",
+          },
+          {
+            action: "pushRelease",
+            handle: "gh",
+            provider: "github",
+            locator: "tenant",
+          },
+        ]);
+
+        expect(result).toEqual({
+          ok: true,
+          delivery: {
+            bindings: [
+              {
+                handle: "gh",
+                credentialId: "cred_gh",
+                consumer: "tool:@acme/tools",
+              },
+              {
+                handle: "gh",
+                credentialId: "cred_gh",
+                consumer: "action:pushRelease",
+              },
+            ],
+            materials: [
+              {
+                credentialId: "cred_gh",
+                providerKey: "http",
+                origin: GITHUB_ORIGIN,
+                secret: "sk-gh",
+              },
+            ],
+          },
+        });
+      });
+
+      test("an unresolved binding names its consumer", async () => {
+        await seedGithub({ apiBaseUrl: GITHUB_ORIGIN });
+        const result = await deliver([
+          {
+            action: "pushRelease",
+            handle: "gh",
+            provider: "github",
+            locator: "tenant",
+          },
+        ]);
+        expect(result.ok).toBe(false);
+        if (result.ok) throw new Error("unreachable");
+        expect(result.reason.code).toBe("unresolved");
+        expect(result.reason.binding).toEqual({
+          provider: "github",
+          consumer: "action:pushRelease",
+          handle: "gh",
+        });
+        expect(result.reason.message).toContain(
+          "(consumer action:pushRelease, handle gh)",
+        );
+      });
+
+      test("a provider with no API origin names the consumer", async () => {
+        await seedGithub({ apiBaseUrl: null });
+        await seedCredential(h.db, {
+          id: "cred_gh",
+          tenantId: "tnt_leaf",
+          providerId: "prv_gh",
+          name: "gh",
+        });
+        const result = await deliver([
+          {
+            action: "pushRelease",
+            handle: "gh",
+            provider: "github",
+            locator: "tenant",
+          },
+        ]);
+        expect(result.ok).toBe(false);
+        if (result.ok) throw new Error("unreachable");
+        expect(result.reason.code).toBe("no_origin");
+        expect(result.reason.binding.consumer).toBe("action:pushRelease");
+        expect(result.reason.message).toContain(
+          "(consumer action:pushRelease, handle gh)",
+        );
+      });
+
+      test("an ambiguous binding names its consumer", async () => {
+        await seedGithub({ apiBaseUrl: GITHUB_ORIGIN });
+        await seedCredential(h.db, {
+          id: "cred_gh_1",
+          tenantId: "tnt_leaf",
+          providerId: "prv_gh",
+          name: "gh-1",
+        });
+        await seedCredential(h.db, {
+          id: "cred_gh_2",
+          tenantId: "tnt_leaf",
+          providerId: "prv_gh",
+          name: "gh-2",
+        });
+        const result = await deliver([
+          {
+            package: "@acme/tools",
+            handle: "gh",
+            provider: "github",
+            locator: "tenant",
+          },
+        ]);
+        expect(result.ok).toBe(false);
+        if (result.ok) throw new Error("unreachable");
+        expect(result.reason.code).toBe("ambiguous");
+        expect(result.reason.binding.consumer).toBe("tool:@acme/tools");
+        expect(result.reason.message).toContain(
+          "(consumer tool:@acme/tools, handle gh)",
+        );
       });
     });
   },

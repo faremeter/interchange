@@ -137,7 +137,7 @@ export interface BaseEnv {
 
   /**
    * Resolves an inference source's credential secret by `credentialId` from the
-   * run's credential-material cell at send time -- the same cell tool
+   * run's credential-material cell at send time -- the same cell binding
    * credentials resolve from, so the source config carries no inline secret.
    *
    * Optional at this boundary only to spare callers whose inference never

@@ -529,9 +529,9 @@ export type CreateSidecarWorkflowSupervisorOpts = {
   /** Deployment id baked into principal claims and address derivation. */
   runId: string;
   /**
-   * Decrypted credential material for the deployment's tools (from the deploy
-   * frame). Delivered to the child on the pre-trigger barrier. Absent when the
-   * deployment binds no credentials.
+   * Decrypted credential material for the deployment's binding consumers and
+   * inference sources (from the deploy frame). Delivered to the child on the
+   * pre-trigger barrier. Absent when the deployment binds no credentials.
    */
   credentialDelivery?: CredentialDelivery;
   /**
@@ -1678,11 +1678,12 @@ export function createSidecarDeployRouter<
      */
     bodySources: WorkflowRunRecord["bodySources"];
     /**
-     * The run's unified credential-material cell (inference + tool secrets, plus
-     * tool bindings). Persisted sealed in the record and delivered to the child
-     * on the pre-trigger barrier; the child resolves both its inference sources
-     * and its tools from it by `credentialId`. `undefined` when the deployment
-     * binds no credentials and its sources need none.
+     * The run's unified credential-material cell (inference + binding secrets,
+     * plus credential bindings). Persisted sealed in the record and delivered
+     * to the child on the pre-trigger barrier; the child resolves both its
+     * inference sources and its binding consumers from it by `credentialId`.
+     * `undefined` when the deployment binds no credentials and its sources need
+     * none.
      */
     credentials: CredentialDelivery | undefined;
     /**
@@ -2533,8 +2534,9 @@ export function createSidecarDeployRouter<
         definition: effectiveDefinition,
         sources: projection.sources,
         bodySources: buildBodySourcesMap(projection.referencedDefinitions),
-        // The hub's unified credential-material cell (inference + tool secrets);
-        // persisted sealed in the record and delivered on the barrier.
+        // The hub's unified credential-material cell (inference + binding
+        // secrets); persisted sealed in the record and delivered on the
+        // barrier.
         credentials: projection.credentials,
         approvedWireHash: projection.approvedWireHash,
         sessionId: frame.config.sessionId,

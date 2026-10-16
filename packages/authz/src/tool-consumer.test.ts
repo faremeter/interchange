@@ -3,6 +3,9 @@ import { describe, test, expect } from "bun:test";
 import { evaluateGrants } from "./evaluate";
 import {
   CREDENTIAL_USE_CONDITIONS,
+  actionConsumer,
+  credentialBindingConsumer,
+  toolConsumer,
   toolConsumerEvaluator,
 } from "./tool-consumer";
 import type { ConditionContext, GrantRule } from "./types";
@@ -54,6 +57,35 @@ describe("toolConsumerEvaluator", () => {
 
   test("throws on a non-string condition value", () => {
     expect(() => toolConsumerEvaluator(123, ctx(REACTOR))).toThrow();
+  });
+});
+
+describe("consumer identities", () => {
+  const base = { handle: "gh", provider: "github", locator: "tenant" } as const;
+
+  test("a tool binding names its package's tool consumer", () => {
+    expect(
+      credentialBindingConsumer({ ...base, package: "@intx/tools-github" }),
+    ).toBe("tool:@intx/tools-github");
+  });
+
+  test("an action binding names its handler's action consumer", () => {
+    expect(credentialBindingConsumer({ ...base, action: "pushRelease" })).toBe(
+      "action:pushRelease",
+    );
+  });
+
+  test("a tool package and an action handler with one name stay disjoint", () => {
+    expect(actionConsumer("deploy")).not.toBe(toolConsumer("deploy"));
+  });
+
+  test("an action consumer's grant does not authorize the same-named tool", () => {
+    expect(
+      toolConsumerEvaluator(
+        actionConsumer("deploy"),
+        ctx(toolConsumer("deploy")),
+      ),
+    ).toBe(false);
   });
 });
 

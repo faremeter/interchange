@@ -88,11 +88,12 @@ const workflowRunRecordBase = {
     },
   },
   // The run's credential-material cell: the ONE at-rest home for every secret,
-  // inference and tool alike. `bindings` and each material's `credentialId`/
+  // inference and binding alike. `bindings` and each material's `credentialId`/
   // `providerKey`/`origin` ride in the clear; only each material's `secret` is
-  // sealed under the sidecar cipher (see `transformDeliveryMaterials`). Optional:
-  // a deployment that binds no credentials and whose sources need none carries
-  // none. Restored + re-delivered to the child on the pre-trigger barrier.
+  // sealed under the sidecar cipher (see `transformDeliveryMaterials`).
+  // Optional: a deployment that binds no credentials and whose sources need
+  // none carries none. Restored + re-delivered to the child on the pre-trigger
+  // barrier.
   "credentials?": CredentialDelivery,
   "sessionId?": "string > 0",
   "hubPublicKey?": "string > 0",
@@ -217,10 +218,11 @@ async function transformDeliveryMaterials(
  * child is spawned, so a crash mid-spawn leaves a record the boot scan
  * re-drives. Idempotent: it overwrites any existing record for the same run.
  *
- * Every credential secret in the run's `credentials` cell -- inference and tool
- * alike -- is sealed under the sidecar `cipher` before it touches disk, so the
- * record carries ciphertext (version 2). The `sources`/`bodySources` config is
- * non-secret (each references a credential by id) and rides in the clear.
+ * Every credential secret in the run's `credentials` cell -- inference and
+ * binding alike -- is sealed under the sidecar `cipher` before it touches disk,
+ * so the record carries ciphertext (version 2). The `sources`/`bodySources`
+ * config is non-secret (each references a credential by id) and rides in the
+ * clear.
  */
 export async function writeWorkflowRunRecord(
   dataDir: string,

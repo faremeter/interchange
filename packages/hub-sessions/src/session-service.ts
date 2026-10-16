@@ -529,15 +529,15 @@ function isAssetDeployArgs(
  * freeze.
  *
  * Credential MATERIAL rides ONE `CredentialDelivery` delivered to the child on
- * the frame, unioned from three rails and deduped by credentialId: tool bindings
- * (grant-scoped, resolved here via `buildCredentialDelivery`); every top-level
- * inference source; and every inline body step's inference source. Both inference
- * rails are resolved HERE from the DB under the tenant-ownership authority
- * (`resolveInferenceMaterials`), so the deploy is self-contained -- no caller
- * pre-supplies material, and a spawned body child finds its secret in the cell.
- * The merge is a post-authz union of already-cleared material (tool material is
- * grant-scoped, inference material is tenant-ownership-scoped), never a shared
- * authz check.
+ * the frame, unioned from three rails and deduped by credentialId: credential
+ * bindings (grant-scoped, resolved here via `buildCredentialDelivery`); every
+ * top-level inference source; and every inline body step's inference source.
+ * Both inference rails are resolved HERE from the DB under the tenant-ownership
+ * authority (`resolveInferenceMaterials`), so the deploy is self-contained --
+ * no caller pre-supplies material, and a spawned body child finds its secret in
+ * the cell. The merge is a post-authz union of already-cleared material
+ * (binding material is grant-scoped, inference material is
+ * tenant-ownership-scoped), never a shared authz check.
  * Credential GRANT enforcement is a SEPARATE layer: the `credential:{id}` /
  * `use` grant the runtime gate checks is minted per-run by run-grant
  * materialization into `runs/<runId>/grants.json`, not carried on this frame --
@@ -663,7 +663,8 @@ async function prepareSourceRefDeploy(
 
   // Assemble the ONE credential delivery. Its `materials` cover three rails, each
   // authorized upstream on its own terms, deduped by credentialId into one cell:
-  //   - tool bindings, grant-scoped through `buildCredentialDelivery` above;
+  //   - credential bindings, grant-scoped through `buildCredentialDelivery`
+  //     above;
   //   - the inference source pinned to each top-level step that can actually
   //     invoke inference, tenant-owned;
   //   - the same for each inline body step (onTrigger/childWorkflow bodies
@@ -678,10 +679,11 @@ async function prepareSourceRefDeploy(
   // authority, so this deploy is self-contained: a direct deploy (a test) that
   // seeds the credentials in the DB -- rather than pre-supplying material -- still
   // fills the cell, and a spawned body finds its secret rather than failing closed
-  // at resolve time. Precedence on a shared credentialId is tool material first
-  // (grant-scoped), then the inference material (tenant-ownership-scoped): the
-  // first material for an id wins. Inference sources carry NO binding descriptor
-  // -- they reference their credential by id directly.
+  // at resolve time. Precedence on a shared credentialId is binding material
+  // first (grant-scoped), then the inference material
+  // (tenant-ownership-scoped): the first material for an id wins. Inference
+  // sources carry NO binding descriptor -- they reference their credential by
+  // id directly.
   const materials = new Map<string, CredentialMaterialEntry>();
   for (const material of credentials?.materials ?? []) {
     materials.set(material.credentialId, material);
@@ -735,10 +737,10 @@ async function prepareSourceRefDeploy(
       }
     }
   }
-  // A delivery with tool bindings always carries their material, so an empty map
-  // means no rail contributed anything -- send no delivery. (Tool bindings never
-  // produce a descriptor without a material, so bindings-without-materials cannot
-  // occur.)
+  // A delivery with credential bindings always carries their material, so an
+  // empty map means no rail contributed anything -- send no delivery.
+  // (Credential bindings never produce a descriptor without a material, so
+  // bindings-without-materials cannot occur.)
   const credentialDelivery: CredentialDelivery | undefined =
     materials.size > 0
       ? {

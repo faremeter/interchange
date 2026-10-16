@@ -479,11 +479,12 @@ export interface RunWorkflowChildBindings {
    */
   initialSources?: Record<string, InferenceSource[]>;
   /**
-   * Bootstrap credential material for the deployment's tools, decrypted
-   * hub-side and delivered on the deploy frame so it is resident before any
-   * step runs. Seeds the mutable `credentialMaterialRef` the gated capability
-   * reads. Absent when the deployment binds no credentials; a later
-   * `credentials-updated` control frame refreshes it on rotation.
+   * Bootstrap credential material for the deployment's binding consumers and
+   * inference sources, decrypted hub-side and delivered on the deploy frame so
+   * it is resident before any step runs. Seeds the mutable
+   * `credentialMaterialRef` the gated capability reads. Absent when the
+   * deployment binds no credentials; a later `credentials-updated` control
+   * frame refreshes it on rotation.
    */
   initialCredentialMaterial?: CredentialDelivery;
   /**

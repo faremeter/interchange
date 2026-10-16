@@ -1,6 +1,6 @@
 import { eq, and, isNull } from "drizzle-orm";
 
-import { toolConsumer } from "@intx/authz";
+import { credentialBindingConsumer } from "@intx/authz";
 import { credentialAad } from "@intx/types";
 import type { CredentialBinding, CredentialCipher } from "@intx/types";
 import type {
@@ -284,8 +284,8 @@ type CredentialRequirement = {
 /**
  * Resolves a credential matching an agent definition requirement.
  * Used at agent launch time by the control plane to satisfy a definition's
- * tool and integration credentials (inference sources resolve through the
- * catalog, not this path).
+ * credential bindings (inference sources resolve through the catalog, not this
+ * path).
  */
 export async function resolveCredentialRequirement(
   db: DB["db"],
@@ -366,14 +366,14 @@ export async function resolveCredentialRequirement(
  */
 export type CredentialDeliveryFailure = {
   code: "unresolved" | "no_origin" | "ambiguous";
-  binding: { provider: string; package: string; handle: string };
+  binding: { provider: string; consumer: string; handle: string };
   message: string;
 };
 
 /**
  * Outcome of `buildCredentialDelivery`. `ok: true` carries the material +
- * descriptors delivered to the tools; `delivery` is `undefined` when there are
- * no bindings. `ok: false` carries the first launch-blocking configuration
+ * descriptors delivered to its consumers; `delivery` is `undefined` when there
+ * are no bindings. `ok: false` carries the first launch-blocking configuration
  * failure for the caller to map to a fail-closed response.
  */
 export type BuildCredentialDeliveryResult =
@@ -385,7 +385,7 @@ export type BuildCredentialDeliveryResult =
 
 /**
  * Resolve a definition's credential bindings into the material + per-handle
- * descriptors delivered to its tools. Each credential's secret is decrypted
+ * descriptors delivered to its consumers. Each credential's secret is decrypted
  * once, keyed by credentialId (a credential backing several handles is
  * decrypted once).
  *
@@ -411,9 +411,10 @@ export async function buildCredentialDelivery(args: {
   const descriptors: CredentialBindingDescriptor[] = [];
 
   for (const binding of args.bindings) {
+    const consumer = credentialBindingConsumer(binding);
     const context = {
       provider: binding.provider,
-      package: binding.package,
+      consumer,
       handle: binding.handle,
     };
 
@@ -440,7 +441,7 @@ export async function buildCredentialDelivery(args: {
         reason: {
           code: "ambiguous",
           binding: context,
-          message: `Ambiguous credential for the binding on provider ${binding.provider} (package ${binding.package}, handle ${binding.handle}): ${e.message}`,
+          message: `Ambiguous credential for the binding on provider ${binding.provider} (consumer ${consumer}, handle ${binding.handle}): ${e.message}`,
         },
       };
     }
@@ -451,15 +452,15 @@ export async function buildCredentialDelivery(args: {
         reason: {
           code: "unresolved",
           binding: context,
-          message: `No credential resolves the binding for provider ${binding.provider} (package ${binding.package}, handle ${binding.handle})`,
+          message: `No credential resolves the binding for provider ${binding.provider} (consumer ${consumer}, handle ${binding.handle})`,
         },
       };
     }
 
     // The credential is delivered as an origin-pinned http handle, so its
     // provider must declare an API origin. A provider without one (OAuth-login
-    // only) cannot back a tool credential; fail closed rather than deliver an
-    // un-pinnable secret.
+    // only) cannot back a credential binding; fail closed rather than deliver
+    // an un-pinnable secret.
     const providerOrigin = resolved.provider.apiBaseUrl;
     if (providerOrigin === null || providerOrigin === "") {
       return {
@@ -467,7 +468,7 @@ export async function buildCredentialDelivery(args: {
         reason: {
           code: "no_origin",
           binding: context,
-          message: `Provider ${binding.provider} has no API base URL; cannot deliver an origin-pinned credential (package ${binding.package}, handle ${binding.handle})`,
+          message: `Provider ${binding.provider} has no API base URL; cannot deliver an origin-pinned credential (consumer ${consumer}, handle ${binding.handle})`,
         },
       };
     }
@@ -482,7 +483,7 @@ export async function buildCredentialDelivery(args: {
     descriptors.push({
       handle: binding.handle,
       credentialId,
-      consumer: toolConsumer(binding.package),
+      consumer,
     });
     if (!materials.has(credentialId)) {
       // Decrypt at the single point of use. A decrypt failure propagates and

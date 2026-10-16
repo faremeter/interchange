@@ -160,14 +160,15 @@ async function buildSource(
   }
 
   // Authority to use a credential through a catalog provider is ownership
-  // within the tenant hierarchy -- the same rule the tool-binding path resolves
-  // (`source: "tenant"`). `resolveCredentialById` above already proved the
-  // credential is reachable in this tenant's ancestor chain, so a tenant-owned
-  // credential (`principalId IS NULL`) is authorized here by ownership alone,
-  // with no personal grant and no role grant consulted. This runs live on every
-  // launch and rotation, so a catalog edit that adds an eligible credential is
-  // picked up without re-materializing any grant. A principal-owned credential
-  // is not usable through a shared catalog provider; fail closed.
+  // within the tenant hierarchy -- the same rule the credential-binding path
+  // resolves (`source: "tenant"`). `resolveCredentialById` above already proved
+  // the credential is reachable in this tenant's ancestor chain, so a
+  // tenant-owned credential (`principalId IS NULL`) is authorized here by
+  // ownership alone, with no personal grant and no role grant consulted. This
+  // runs live on every launch and rotation, so a catalog edit that adds an
+  // eligible credential is picked up without re-materializing any grant. A
+  // principal-owned credential is not usable through a shared catalog provider;
+  // fail closed.
   if (credential.principalId !== null) {
     return {
       ok: false,

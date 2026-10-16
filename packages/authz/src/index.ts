@@ -7,6 +7,8 @@ export { patternSpecificity, grantSpecificity } from "./specificity";
 export { evaluateConditions } from "./conditions";
 export { timeWindowEvaluator } from "./time-window";
 export {
+  actionConsumer,
+  credentialBindingConsumer,
   toolConsumer,
   toolConsumerEvaluator,
   CREDENTIAL_USE_CONDITIONS,

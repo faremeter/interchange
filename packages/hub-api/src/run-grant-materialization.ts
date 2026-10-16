@@ -152,10 +152,10 @@ export function deriveRunRuntimeGrantRows(
 }
 
 /**
- * One system-origin `credential:{id}` / `use` row per distinct
- * `(credentialId, consumer)` on the anchor's resolved tool bindings. The
- * consumer string is copied onto `{ tool }` as deploy stored it. Inference
- * credentials are not in this list: they have no binding and no consumer.
+ * One system-origin `credential:{id}` / `use` row per distinct `(credentialId,
+ * consumer)` on the anchor's resolved credential bindings. The consumer string
+ * is copied onto `{ tool }` as deploy stored it. Inference credentials are not
+ * in this list: they have no binding and no consumer.
  */
 export function deriveCredentialUseGrantRows(args: {
   bindings: readonly { credentialId: string; consumer: string }[];
@@ -338,9 +338,9 @@ export type StageRunGrantsFromSnapshotArgs = {
    */
   grantRequirements: readonly GrantRequirement[];
   /**
-   * Resolved tool-binding descriptors from the anchor run. Each distinct
-   * `(credentialId, consumer)` becomes one system-origin credential-use
-   * grant. The caller passes an empty array when the anchor has no refs.
+   * Resolved credential-binding descriptors from the anchor run. Each distinct
+   * `(credentialId, consumer)` becomes one system-origin credential-use grant.
+   * The caller passes an empty array when the anchor has no refs.
    */
   credentialBindings: readonly { credentialId: string; consumer: string }[];
 };
