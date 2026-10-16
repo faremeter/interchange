@@ -513,6 +513,79 @@ describe("RepoStore", () => {
     expect(rootEntries).toContain("fresh");
   });
 
+  test("writeTree rejects a path that is not plain relative segments before writing anything", async () => {
+    const dataDir = await makeTempDir("repo-store-path-invalid-");
+    const handler = createTestHandler();
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": handler },
+      authorize: allowAll,
+    });
+    await store.initRepo(repoId);
+    const dir = path.join(dataDir, handler.directoryPrefix, repoId.id);
+    const first = await store.writeTree(principal, repoId, REF, {
+      files: { "deploy/a.md": "a" },
+      message: "first",
+    });
+
+    for (const bad of [
+      "deploy/../runs/x.json",
+      "deploy/./x.json",
+      "deploy//x.json",
+      "deploy/",
+      "/deploy/x.json",
+      "",
+      ".git/config",
+      "deploy/.Git/config",
+      "deploy\\x.json",
+      "deploy/x\0.json",
+    ]) {
+      for (const clear of [{}, { clearPrefix: "deploy/" }]) {
+        await expect(
+          store.writeTree(principal, repoId, REF, {
+            files: { "deploy/b.md": "b", [bad]: "{}" },
+            ...clear,
+            message: "bad path",
+          }),
+        ).rejects.toThrow(`tree_path_invalid: ${JSON.stringify(bad)}`);
+      }
+    }
+    for (const clearPrefix of [
+      "deploy/../",
+      "deploy/./",
+      "deploy//",
+      "/",
+      ".git/",
+      ".GIT/",
+      "deploy\\x/",
+      "deploy\0/",
+    ]) {
+      await expect(
+        store.writeTree(principal, repoId, REF, {
+          files: { "deploy/b.md": "b" },
+          clearPrefix,
+          message: "bad prefix",
+        }),
+      ).rejects.toThrow(`clear_prefix_invalid: ${clearPrefix}`);
+    }
+    for (const bad of ["deploy/./b.md", "deploy//b.md"]) {
+      await expect(
+        store.writeTreeDelta(principal, repoId, REF, {
+          changedPathPrefixes: new Set(["deploy/"]),
+          message: "bad delta",
+          computeDelta: async () => ({ puts: { [bad]: "b" }, deletes: [] }),
+        }),
+      ).rejects.toThrow(`delta_path_invalid: ${JSON.stringify(bad)}`);
+    }
+
+    expect(await store.resolveRef(principal, repoId, REF)).toBe(
+      first.commitSha,
+    );
+    expect(fs.existsSync(path.join(dir, "runs"))).toBe(false);
+    expect(fs.existsSync(path.join(dir, "deploy", "b.md"))).toBe(false);
+  });
+
   test("writeTree without clearPrefix is purely additive", async () => {
     const dataDir = await makeTempDir("repo-store-additive-");
     const handler = createTestHandler();

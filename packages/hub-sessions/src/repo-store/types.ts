@@ -142,7 +142,8 @@ export type RefEntry = {
 export type TreeContent = {
   /**
    * Map of repo-relative path to file contents. Each entry is written
-   * to the working tree and staged before commit.
+   * to the working tree and staged before commit. A path with an empty,
+   * `.` or `..` segment, or a leading `/`, rejects the write.
    */
   files: Record<string, string | Uint8Array>;
   /**
@@ -150,8 +151,8 @@ export type TreeContent = {
    * set, every tracked path beginning with this prefix is removed
    * from the git index and the corresponding directory on disk is
    * deleted before `files` is written. Must end with `/` and must
-   * not contain `..` or absolute path components. When unset,
-   * writeTree is purely additive.
+   * not contain an empty, `.` or `..` segment or a leading `/`. When
+   * unset, writeTree is purely additive.
    */
   clearPrefix?: string;
   /** Commit message for the resulting commit. */
@@ -171,7 +172,8 @@ export type WriteTreePreservingPrefixArgs = {
   /**
    * Directory-subtree prefix whose existing blobs are surfaced to
    * `merge` and then replaced wholesale by its return value. Must end
-   * with `/` and must not contain `..` or absolute path components.
+   * with `/` and must not contain an empty, `.` or `..` segment or a
+   * leading `/`.
    */
   preservePrefix: string;
   /**

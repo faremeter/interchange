@@ -96,6 +96,29 @@ async function withRepoLock<T>(
   }
 }
 
+// A write names each path as plain relative segments. The tree is spliced
+// segment by segment while the working tree resolves the same path with
+// `path.join`, so an empty, `.` or `..` segment would leave the file on disk
+// somewhere other than in the commit, and `..` would also climb out of any
+// prefix the path starts with. A `.git` segment, in any case since the file
+// system may fold it, would reach into the repository's own metadata. A
+// backslash or NUL names an entry git or the file system cannot hold. A prefix
+// keeps its trailing slash.
+function isPlainRelativePath(p: string, isPrefix: boolean): boolean {
+  const body = isPrefix && p.endsWith("/") ? p.slice(0, -1) : p;
+  return body
+    .split("/")
+    .every(
+      (segment) =>
+        segment !== "" &&
+        segment !== "." &&
+        segment !== ".." &&
+        segment.toLowerCase() !== ".git" &&
+        !segment.includes("\\") &&
+        !segment.includes("\0"),
+    );
+}
+
 export type CreateRepoStoreConfig = {
   dataDir: string;
   signingKey: SigningKey;
@@ -421,10 +444,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
 
   function validateClearPrefix(clearPrefix: string): void {
     const malformed =
-      clearPrefix.length === 0 ||
-      !clearPrefix.endsWith("/") ||
-      clearPrefix.startsWith("/") ||
-      clearPrefix.split("/").includes("..");
+      !clearPrefix.endsWith("/") || !isPlainRelativePath(clearPrefix, true);
     if (malformed) {
       throw new Error(`clear_prefix_invalid: ${clearPrefix}`);
     }
@@ -432,15 +452,9 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
 
   // Validate a delta write path. A put is always a file (no trailing
   // slash); a delete is either an exact file or a subtree prefix
-  // (trailing slash allowed). Both reject empties, absolute paths, and
-  // any `..` traversal segment.
+  // (trailing slash allowed).
   function validateDeltaPath(p: string, isDelete: boolean): void {
-    const malformed =
-      p.length === 0 ||
-      p.startsWith("/") ||
-      p.split("/").includes("..") ||
-      (!isDelete && p.endsWith("/"));
-    if (malformed) {
+    if (!isPlainRelativePath(p, isDelete)) {
       throw new Error(`delta_path_invalid: ${JSON.stringify(p)}`);
     }
   }
@@ -1475,6 +1489,11 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     changedPathPrefixes: ReadonlySet<string> | undefined;
     message: string;
   } {
+    for (const filepath of Object.keys(content.files)) {
+      if (!isPlainRelativePath(filepath, false)) {
+        throw new Error(`tree_path_invalid: ${JSON.stringify(filepath)}`);
+      }
+    }
     if (content.clearPrefix !== undefined) {
       validateClearPrefix(content.clearPrefix);
       return {
