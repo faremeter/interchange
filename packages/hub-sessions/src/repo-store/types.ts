@@ -296,7 +296,7 @@ export interface KindHandler {
    * prefixes (each ending in `/`) under which this commit could have
    * mutated tree entries -- for a `writeTree` carrying a `clearPrefix`,
    * the cleared prefix plus the directory of each file written outside
-   * it; for a received pack, the subtrees whose object differs
+   * it; for a received pack, the entries whose mode or object differs
    * from the parent commit. Every path the commit can have changed
    * relative to its parent is under one of these prefixes; any path
    * outside them is carried forward byte-identical by the substrate. It
