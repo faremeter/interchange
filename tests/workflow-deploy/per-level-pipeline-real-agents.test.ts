@@ -86,6 +86,7 @@ import {
   createTerminalChildHandle,
   action,
   createEffectContext,
+  unavailableCredentialCapability,
   createInMemoryBlobSubstrate,
   createInMemoryRepoStore,
   createInMemoryScheduler,
@@ -930,6 +931,7 @@ describe("per-level pipeline with real agents", () => {
         requires,
         authzContext,
         input,
+        credentials: unavailableCredentialCapability(handler),
       });
       const output = await ctx.perform({
         effectId: handler,

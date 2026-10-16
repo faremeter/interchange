@@ -93,6 +93,7 @@ import {
   createLoopIterationHandle,
   emptyState,
   runtimeRun,
+  unavailableActionCredentials,
 } from "@intx/workflow";
 
 import {
@@ -1945,10 +1946,13 @@ function buildRuntimeEnv(args: {
   // still dedups a handler that performs the same effect twice.
   const effects = createInMemoryEffectLedger();
   env.effects = effects;
+  // This host threads no credential source to action handlers, so an action
+  // that declares credentials fails before its handler runs.
   env.invokeAction = createDefaultActionInvoker(
     args.authorize,
     effects,
     args.actionResolver,
+    unavailableActionCredentials,
   );
   return env;
 }

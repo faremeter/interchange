@@ -26,6 +26,7 @@ import { createDefaultDirectorRegistry } from "@intx/agent";
 import {
   action,
   createEffectContext,
+  unavailableCredentialCapability,
   createInMemoryBlobSubstrate,
   createInMemoryRepoStore,
   createInMemoryScheduler,
@@ -129,6 +130,7 @@ function buildEnv(args: {
       requires,
       authzContext,
       input,
+      credentials: unavailableCredentialCapability(handler),
     });
     await ctx.perform({
       effectId: "touch",

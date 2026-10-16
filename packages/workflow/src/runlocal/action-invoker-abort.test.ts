@@ -17,9 +17,11 @@ import { describe, test, expect } from "bun:test";
 import { defineWorkflow, action } from "../definition/index";
 import type { WorkflowAuthorizeFn } from "../authorize-context";
 import { runtimeRun } from "../runtime/run";
+import type { ActionCredentialsFactory } from "../runtime/env";
 import {
   createDefaultActionInvoker,
   createInMemoryEffectLedger,
+  unavailableActionCredentials,
 } from "./run-local";
 import {
   abortOnDurableEvent,
@@ -43,6 +45,11 @@ describe("the default action invoker", () => {
   test("refuses a pre-aborted signal without resolving or running the handler", async () => {
     let resolverCalls = 0;
     let handlerCalls = 0;
+    let factoryCalls = 0;
+    const countingCredentials: ActionCredentialsFactory = (req) => {
+      factoryCalls += 1;
+      return unavailableActionCredentials(req);
+    };
     const invoke = createDefaultActionInvoker(
       allow,
       createInMemoryEffectLedger(),
@@ -53,6 +60,7 @@ describe("the default action invoker", () => {
           return null;
         };
       },
+      countingCredentials,
     );
 
     const ctrl = new AbortController();
@@ -69,9 +77,10 @@ describe("the default action invoker", () => {
       }),
     ).rejects.toThrow();
 
-    // Refused before construction, so neither the resolver nor the ledger-backed
-    // context was built.
+    // Refused before construction, so neither the resolver, the credentials
+    // capability, nor the ledger-backed context was built.
     expect(resolverCalls).toBe(0);
+    expect(factoryCalls).toBe(0);
     expect(handlerCalls).toBe(0);
   });
 
@@ -90,6 +99,7 @@ describe("the default action invoker", () => {
         sideEffects.push("charged the customer");
         return null;
       },
+      unavailableActionCredentials,
     );
 
     const run = runtimeRun(oneAction, env, {

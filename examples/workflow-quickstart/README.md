@@ -166,10 +166,11 @@ That independence is what makes the passes comparable.
 
 **`src/actions.ts`** is the action handler. A deployed handler is a bare
 module export: it receives exactly `(input, ctx, signal)` — no closure
-over host configuration, no injected services. Everything it needs
-arrives through `input`, which is why this workflow threads `outputPath`
-from the trigger payload all the way through the loop's carry state
-rather than reading it from the process.
+over host configuration. The one injected service is `ctx.credentials`,
+which this handler does not use. Everything else it needs arrives through
+`input`, which is why this workflow threads `outputPath` from the trigger
+payload all the way through the loop's carry state rather than reading it
+from the process.
 
 Three rules the runtime cannot enforce, and that the handler author
 owns:

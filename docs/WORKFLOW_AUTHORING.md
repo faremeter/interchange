@@ -91,10 +91,13 @@ Where it lives today: `PackageJSON`, `packages/types/src/package-json.ts`
 (the fixtures are `tests/workflow-deploy/fixtures/loop-*-workflow.ts`)
 
 **5.** A deployed action handler is a BARE MODULE EXPORT. It receives exactly
-`(input, ctx, signal)` and nothing else: no closure over host configuration,
-no injected services. Any per-deployment configuration it needs must arrive
-through its `input` selector, which in practice means the author threads it
-from the trigger payload.
+`(input, ctx, signal)` and nothing else: no closure over host configuration.
+The one injected service is `ctx.credentials`, the handler's consumer-scoped
+credentials capability. The deployed workflow host delivers no credential to
+action handlers, so a deployed action that declares credentials fails before
+its handler runs. Any other per-deployment configuration it needs must
+arrive through its `input` selector, which in practice means the author
+threads it from the trigger payload.
 
 Where it lives today: the `ActionHandler` doc comment,
 `packages/workflow/src/definition/primitives.ts`. The mechanism that makes
