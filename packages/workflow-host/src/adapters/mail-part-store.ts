@@ -18,6 +18,7 @@
 // path-component byte cap.
 
 import {
+  isPlainPathSegment,
   MAX_MAIL_PART_PATH_COMPONENT_BYTES,
   WORKFLOW_RUN_PARTS_DIR,
   WORKFLOW_RUN_RUNS_PREFIX,
@@ -76,11 +77,10 @@ function encodeMessageSegment(messageId: string): string {
       `mail part store: messageId ${JSON.stringify(messageId)} url-encodes to ${String(byteLength(encoded))} bytes, over the ${String(MAX_MAIL_PART_PATH_COMPONENT_BYTES)}-byte path-component limit`,
     );
   }
-  // `encodeURIComponent` leaves `.` unescaped, so "." or ".." would form a
-  // traversal segment; reject it where the messageId -> segment constraint is
-  // owned. An empty segment is unreachable for a non-empty messageId but is
-  // refused for the same reason.
-  if (encoded.length === 0 || encoded === "." || encoded === "..") {
+  // `encodeURIComponent` leaves `.` unescaped, so a messageId such as ".." or
+  // ".git" encodes to a segment the substrate refuses. Refusing it here makes
+  // that a rejection of this mail rather than a write failure to retry.
+  if (!isPlainPathSegment(encoded)) {
     throw new InvalidMailError(
       `mail part store: messageId ${JSON.stringify(messageId)} url-encodes to ${JSON.stringify(encoded)}, which is not a usable path segment`,
     );
