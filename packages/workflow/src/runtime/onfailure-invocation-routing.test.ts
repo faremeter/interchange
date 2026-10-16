@@ -17,6 +17,7 @@ import {
   createInMemorySignalChannel,
   createNoopDrainController,
   defineWorkflow,
+  gate,
   runtimeRun,
   step,
   type Primitive,
@@ -132,6 +133,43 @@ describe("onFailure action / childWorkflow routing", () => {
     expect(invoked).toContain("rescue");
     expect(invoked).not.toContain("normal");
     expect(routedTo(await repoStore.read("r"), "unit")).toBe("rescue");
+  });
+
+  test("a failing action whose handler a branch already skipped fails the run", async () => {
+    // `w0` sits in the gate's untaken branch, so the gate's skip takes the
+    // handler before `hold` lets the action run.
+    const def = defineWorkflow({
+      id: "act-skipped-handler",
+      trigger: { type: "manual" },
+      steps: {
+        pick: gate({
+          when: { from: "trigger.payload" },
+          then: "keep",
+          else: "w0",
+        }),
+        keep: step({ agent: agent("keep"), after: ["pick"] }),
+        w0: step({ agent: agent("w0"), after: ["pick"] }),
+        hold: step({ agent: agent("hold"), after: ["pick"] }),
+        unit: action({ handler: "do", after: ["hold"], onFailure: "rescue" }),
+        rescue: step({ agent: agent("rescue"), after: ["unit", "w0"] }),
+      },
+    });
+    const invoked: string[] = [];
+    const { env, repoStore } = buildEnv(def, {
+      invokeAction: async () => {
+        throw new Error("action boom");
+      },
+    });
+    env.invokeStep = async (req) => {
+      invoked.push(req.agent.id);
+      return { output: null };
+    };
+    const res = await runtimeRun(def, env, { runId: "r", triggerPayload: true })
+      .complete;
+
+    expect(res.terminalStatus).toBe("failed");
+    expect(invoked).not.toContain("rescue");
+    expect(routedTo(await repoStore.read("r"), "unit")).toBeUndefined();
   });
 
   test("a failed child routes to its handler and the run completes", async () => {

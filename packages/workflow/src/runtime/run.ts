@@ -914,10 +914,11 @@ async function executeRunBody(
   // exhaustion, so a crash mid-invocation is the same "run the fallback"
   // case. The onFailure resume reconciliation below observes the `routed`
   // phase, prunes its normal dependents, and reconstructs its sentinel. A unit
-  // with no `onFailure` stays a bare fatal `StepFailed`, and the post-loop
-  // `hasFailedStep` path commits `RunFailed`. (`isCrashedInvocationStep`
-  // matches only `step`/`action`; a crashed `childWorkflow` is a host-owned
-  // recovery surface handled elsewhere.)
+  // with no `onFailure`, or whose handler a branch already skipped, stays a
+  // bare fatal `StepFailed`, and the post-loop `hasFailedStep` path commits
+  // `RunFailed`. (`isCrashedInvocationStep` matches only `step`/`action`; a
+  // crashed `childWorkflow` is a host-owned recovery surface handled
+  // elsewhere.)
   for (const { stepId, attempt } of crashedInFlight) {
     const primitive = definition.steps[stepId];
     const onFailure =
@@ -925,20 +926,23 @@ async function executeRunBody(
       (primitive.kind === "step" || primitive.kind === "action")
         ? primitive.onFailure
         : undefined;
-    const failed: WorkflowEvent = {
-      kind: "StepFailed",
-      seq: state.lastSeq + 1,
-      at: env.clock().toISOString(),
-      stepId,
-      attempt,
-      error: {
-        message: `step ${stepId} crashed mid-invocation; the invoked primitive is non-deterministic and unrecorded, so it is not re-invoked (at-most-once)`,
-        code: "crash-mid-invocation",
+    state = await commitDurableFrom(env, runId, (fresh) => [
+      {
+        kind: "StepFailed",
+        seq: fresh.lastSeq + 1,
+        at: env.clock().toISOString(),
+        stepId,
+        attempt,
+        error: {
+          message: `step ${stepId} crashed mid-invocation; the invoked primitive is non-deterministic and unrecorded, so it is not re-invoked (at-most-once)`,
+          code: "crash-mid-invocation",
+        },
+        retriesExhausted: true,
+        ...(onFailure !== undefined && canRouteTo(fresh, onFailure)
+          ? { routedTo: onFailure }
+          : {}),
       },
-      retriesExhausted: true,
-      ...(onFailure !== undefined ? { routedTo: onFailure } : {}),
-    };
-    state = await commitDurable(env, runId, failed);
+    ]);
   }
 
   // Issue RunStarted only if the state machine has not seen it.
@@ -1679,19 +1683,21 @@ async function runPrimitiveSafe(
             void state;
             throw cause;
           }
-          const routed: WorkflowEvent = {
-            kind: "StepFailed",
-            seq: state.lastSeq + 1,
-            at: env.clock().toISOString(),
-            stepId: primitive.id,
-            attempt: stepState.currentAttempt,
-            error: { message },
-            retriesExhausted: true,
-            routedTo: onFailure,
-          };
-          state = await commit(env, runId, routed);
-          void state;
+          const attempt = stepState.currentAttempt;
+          state = await commitFrom(env, runId, (fresh) => [
+            {
+              kind: "StepFailed",
+              seq: fresh.lastSeq + 1,
+              at: env.clock().toISOString(),
+              stepId: primitive.id,
+              attempt,
+              error: { message },
+              retriesExhausted: true,
+              ...(canRouteTo(fresh, onFailure) ? { routedTo: onFailure } : {}),
+            },
+          ]);
           await flushParkedChildWorkflowFailure(env, runId, primitive.kind);
+          if (state.steps.get(primitive.id)?.phase !== "routed") throw cause;
           return { failed: true, stepId: primitive.id, error: { message } };
         }
         const failed: WorkflowEvent = {
@@ -2130,18 +2136,20 @@ async function runStep(
           void after;
           throw cause;
         }
-        const routed: WorkflowEvent = {
-          kind: "StepFailed",
-          seq: after.lastSeq + 1,
-          at: env.clock().toISOString(),
-          stepId: step.id,
-          attempt,
-          error: { message },
-          retriesExhausted: true,
-          routedTo: step.onFailure,
-        };
-        after = await commit(env, runId, routed);
-        void after;
+        const onFailure = step.onFailure;
+        after = await commitFrom(env, runId, (fresh) => [
+          {
+            kind: "StepFailed",
+            seq: fresh.lastSeq + 1,
+            at: env.clock().toISOString(),
+            stepId: step.id,
+            attempt,
+            error: { message },
+            retriesExhausted: true,
+            ...(canRouteTo(fresh, onFailure) ? { routedTo: onFailure } : {}),
+          },
+        ]);
+        if (after.steps.get(step.id)?.phase !== "routed") throw cause;
         return { failed: true, stepId: step.id, error: { message } };
       }
       const failed: WorkflowEvent = {
@@ -5266,7 +5274,9 @@ async function emitSkipClosure(
     // to the cancel sweep.
     const skip = await recordSkipSentinels(env, snapshot, skipId, sentinel);
     if (skip === null) continue;
-    await commitFrom(env, runId, (fresh) => skipEvents(env, fresh, skip));
+    await commitFrom(env, runId, (fresh) =>
+      skipEvents(env, definition, fresh, skip),
+    );
   }
 }
 
@@ -5296,24 +5306,73 @@ async function recordSkipSentinels(
   return { stepId, inputRef, outputRef };
 }
 
+// The unit that routed its failure to `handlerId`, if one has.
+function unitRoutedTo(
+  definition: WorkflowDefinition,
+  state: RunState,
+  handlerId: string,
+): string | undefined {
+  for (const [unitId, unit] of Object.entries(definition.steps)) {
+    const onFailure =
+      unit.kind === "step" ||
+      unit.kind === "action" ||
+      unit.kind === "childWorkflow"
+        ? unit.onFailure
+        : undefined;
+    if (
+      onFailure === handlerId &&
+      state.steps.get(unitId)?.phase === "routed"
+    ) {
+      return unitId;
+    }
+  }
+  return undefined;
+}
+
+// A unit routes its failure only to a handler that has not settled. A branch
+// that does not hold the unit can skip the handler before the unit fails, and
+// a failure routed there would go unhandled while the run completes, so it
+// lands unrouted and fails the run instead.
+function canRouteTo(state: RunState, handlerId: string): boolean {
+  return state.steps.get(handlerId) === undefined;
+}
+
 // The events that skip one closure member, built from the state its commit
 // sees. The step is written only while it is as the snapshot saw it: a prune
 // that shares the step may have skipped it since, and then it is left alone.
+// A branch that does not hold a unit can also reach the unit's handler after
+// the unit routed there. Nothing else would handle that failure, so the
+// handler fails instead of being skipped, and the run fails with it.
 function skipEvents(
   env: WorkflowRuntimeEnv,
+  definition: WorkflowDefinition,
   fresh: RunState,
   skip: SkipWrite,
 ): WorkflowEvent[] {
   const current = fresh.steps.get(skip.stepId)?.phase;
   const at = env.clock().toISOString();
-  const completion = (seq: number): WorkflowEvent => ({
-    kind: "StepCompleted",
-    seq,
-    at,
-    stepId: skip.stepId,
-    attempt: 1,
-    output: { ref: skip.outputRef },
-  });
+  const routedUnit = unitRoutedTo(definition, fresh, skip.stepId);
+  const completion = (seq: number): WorkflowEvent =>
+    routedUnit === undefined
+      ? {
+          kind: "StepCompleted",
+          seq,
+          at,
+          stepId: skip.stepId,
+          attempt: 1,
+          output: { ref: skip.outputRef },
+        }
+      : {
+          kind: "StepFailed",
+          seq,
+          at,
+          stepId: skip.stepId,
+          attempt: 1,
+          error: {
+            message: `${routedUnit} routed its failure to ${skip.stepId}, but a branch skipped ${skip.stepId} before it ran, so nothing handled the failure`,
+          },
+          retriesExhausted: true,
+        };
   if (skip.inputRef === null) {
     return current === "in-flight" ? [completion(fresh.lastSeq + 1)] : [];
   }
@@ -5377,7 +5436,7 @@ async function buildSuccessTerminal(
     };
     if (fresh.phase !== "running") return [completed];
     return [
-      ...skips.flatMap((skip) => skipEvents(env, fresh, skip)),
+      ...skips.flatMap((skip) => skipEvents(env, definition, fresh, skip)),
       completed,
     ];
   };

@@ -626,3 +626,239 @@ describe("onFailure handler shapes", () => {
     expect(invoked).toEqual(["rescue"]);
   });
 });
+
+// A branch that does not hold a unit can still skip the unit's handler, here
+// through `w0` in the gate's untaken branch. Whichever lands first, the skip
+// or the unit's failure, the failure must not go unhandled while the run
+// completes.
+describe("onFailure handler a branch skips", () => {
+  // `hold` waits on the gate, so the unit fails after the gate's skip.
+  const skipFirst = defineWorkflow({
+    id: "of-skip-first",
+    trigger: { type: "manual" },
+    steps: {
+      pick: gate({
+        when: { from: "trigger.payload.flagged" },
+        then: "keep",
+        else: "w0",
+      }),
+      keep: step({ agent: agent("keep"), after: ["pick"] }),
+      w0: step({ agent: agent("w0"), after: ["pick"] }),
+      hold: step({ agent: agent("hold"), after: ["pick"] }),
+      unit: step({
+        agent: agent("unit"),
+        after: ["hold"],
+        onFailure: "rescue",
+      }),
+      rescue: step({
+        agent: agent("rescue"),
+        after: ["unit", "w0"],
+        input: { from: "steps.unit.output" },
+      }),
+    },
+  });
+
+  const routeFirst = defineWorkflow({
+    id: "of-route-first",
+    trigger: { type: "manual" },
+    steps: {
+      pick: gate({
+        when: { from: "trigger.payload.flagged" },
+        then: "keep",
+        else: "w0",
+      }),
+      keep: step({ agent: agent("keep"), after: ["pick"] }),
+      w0: step({ agent: agent("w0"), after: ["pick"] }),
+      unit: step({ agent: agent("unit"), onFailure: "rescue" }),
+      rescue: step({
+        agent: agent("rescue"),
+        after: ["unit", "w0"],
+        input: { from: "steps.unit.output" },
+      }),
+    },
+  });
+
+  const triggerPayload = { flagged: true };
+
+  function failureOf(
+    log: readonly WorkflowEvent[],
+    stepId: string,
+  ): Extract<WorkflowEvent, { kind: "StepFailed" }> {
+    const failed = log.find(
+      (e): e is Extract<WorkflowEvent, { kind: "StepFailed" }> =>
+        e.kind === "StepFailed" && e.stepId === stepId,
+    );
+    if (!failed) throw new Error(`no StepFailed for ${stepId}`);
+    return failed;
+  }
+
+  test("a unit that fails after a branch skipped its handler fails the run", async () => {
+    const invoked: string[] = [];
+    const { env, repoStore } = buildEnv(skipFirst, {
+      invokeStep: async (req) => {
+        invoked.push(req.agent.id);
+        if (req.agent.id === "unit") throw new Error("unit boom");
+        return { output: null };
+      },
+    });
+    const res = await runtimeRun(skipFirst, env, { runId: "r", triggerPayload })
+      .complete;
+
+    expect(res.terminalStatus).toBe("failed");
+    expect(invoked).not.toContain("rescue");
+    expect(
+      failureOf(await repoStore.read("r"), "unit").routedTo,
+    ).toBeUndefined();
+  });
+
+  test("a unit that crashed after a branch skipped its handler fails the run on resume", async () => {
+    const live = buildEnv(skipFirst);
+    await runtimeRun(skipFirst, live.env, { runId: "r", triggerPayload })
+      .complete;
+    const emitted = await live.repoStore.read("r");
+    const unitStart = emitted.findIndex(
+      (e) => e.kind === "StepStarted" && e.stepId === "unit",
+    );
+    expect(unitStart).toBeGreaterThan(-1);
+    const window = emitted.slice(0, unitStart + 1);
+    expect(
+      window.some((e) => e.kind === "StepCompleted" && e.stepId === "rescue"),
+    ).toBe(true);
+
+    const invoked: string[] = [];
+    const resume = buildEnv(skipFirst, {
+      invokeStep: async (req) => {
+        invoked.push(req.agent.id);
+        return { output: null };
+      },
+    });
+    const res = await runtimeRun(skipFirst, resume.env, {
+      runId: "r",
+      triggerPayload,
+      resumeFromEvents: window,
+    }).complete;
+
+    expect(res.terminalStatus).toBe("failed");
+    expect(invoked).not.toContain("rescue");
+    expect(failureOf(await resume.repoStore.read("r"), "unit").routedTo).toBe(
+      undefined,
+    );
+  });
+
+  test("a branch that skips a handler after its unit routed there fails the handler and the run", async () => {
+    // The unit has already routed when the run resumes, and the gate has not
+    // run yet, so the gate's skip reaches the handler second.
+    const live = buildEnv(routeFirst);
+    await runtimeRun(routeFirst, live.env, { runId: "r", triggerPayload })
+      .complete;
+    const [runStarted] = await live.repoStore.read("r");
+    if (runStarted?.kind !== "RunStarted") throw new Error("no RunStarted");
+    const at = runStarted.at;
+    const window: WorkflowEvent[] = [
+      runStarted,
+      {
+        kind: "StepStarted",
+        seq: 2,
+        at,
+        stepId: "unit",
+        attempt: 1,
+        input: { ref: "inline:null" },
+      },
+      {
+        kind: "StepFailed",
+        seq: 3,
+        at,
+        stepId: "unit",
+        attempt: 1,
+        error: { message: "unit boom" },
+        retriesExhausted: true,
+        routedTo: "rescue",
+      },
+    ];
+
+    const invoked: string[] = [];
+    const resume = buildEnv(routeFirst, {
+      invokeStep: async (req) => {
+        invoked.push(req.agent.id);
+        return { output: null };
+      },
+    });
+    const res = await runtimeRun(routeFirst, resume.env, {
+      runId: "r",
+      triggerPayload,
+      resumeFromEvents: window,
+    }).complete;
+
+    expect(res.terminalStatus).toBe("failed");
+    expect(invoked).not.toContain("rescue");
+    expect(
+      failureOf(await resume.repoStore.read("r"), "rescue").error.message,
+    ).toMatch(/unit routed its failure to rescue, but a branch skipped rescue/);
+  });
+
+  // Two units may share a handler that waits on both. A success prunes it, so
+  // when one unit has routed there, the other's success would leave that
+  // failure unhandled.
+  test("a shared handler fails when one unit routed to it and the other succeeds", async () => {
+    const shared = defineWorkflow({
+      id: "of-shared-handler",
+      trigger: { type: "manual" },
+      steps: {
+        first: step({ agent: agent("first"), onFailure: "rescue" }),
+        second: step({ agent: agent("second"), onFailure: "rescue" }),
+        rescue: step({
+          agent: agent("rescue"),
+          after: ["first", "second"],
+          input: { from: "steps.first.output" },
+        }),
+      },
+    });
+    const live = buildEnv(shared);
+    await runtimeRun(shared, live.env, { runId: "r", triggerPayload: null })
+      .complete;
+    const [runStarted] = await live.repoStore.read("r");
+    if (runStarted?.kind !== "RunStarted") throw new Error("no RunStarted");
+    const at = runStarted.at;
+    // `first` has routed and `second` has not run, so its success comes second.
+    const window: WorkflowEvent[] = [
+      runStarted,
+      {
+        kind: "StepStarted",
+        seq: 2,
+        at,
+        stepId: "first",
+        attempt: 1,
+        input: { ref: "inline:null" },
+      },
+      {
+        kind: "StepFailed",
+        seq: 3,
+        at,
+        stepId: "first",
+        attempt: 1,
+        error: { message: "first boom" },
+        retriesExhausted: true,
+        routedTo: "rescue",
+      },
+    ];
+
+    const invoked: string[] = [];
+    const resume = buildEnv(shared, {
+      invokeStep: async (req) => {
+        invoked.push(req.agent.id);
+        return { output: null };
+      },
+    });
+    const res = await runtimeRun(shared, resume.env, {
+      runId: "r",
+      triggerPayload: null,
+      resumeFromEvents: window,
+    }).complete;
+
+    expect(res.terminalStatus).toBe("failed");
+    expect(invoked).toEqual(["second"]);
+    expect(
+      failureOf(await resume.repoStore.read("r"), "rescue").error.message,
+    ).toMatch(/first routed its failure to rescue/);
+  });
+});
