@@ -1006,21 +1006,18 @@ async function executeRunBody(
   // that same error. The loop below would otherwise treat the
   // rejection as a settled step and schedule the step again, or wait
   // forever on a sibling that is already parked. Remember the first
-  // error and rethrow it once every in-flight step has stopped.
+  // error and rethrow it; the loop stops every in-flight step before
+  // the error leaves it.
   let repoWriteFailure: unknown;
   // One waiter for the whole loop. A flush that already failed resolves
   // it immediately, so the next race observes it without a new registration.
   const flushFailed = whenRunFlushFails(runId);
-  async function throwRememberedWriteFailure(): Promise<void> {
+  function throwRememberedWriteFailure(): void {
     if (repoWriteFailure === undefined) {
       repoWriteFailure = flushFailureCause(runId);
     }
     const cause = repoWriteFailure;
     if (cause === undefined) return;
-    for (const controller of stepAborts.values()) {
-      if (!controller.signal.aborted) controller.abort();
-    }
-    await Promise.allSettled(stepPromises.values());
     throw cause;
   }
 
@@ -1028,130 +1025,142 @@ async function executeRunBody(
   // settle, repeat until done. Cancellation aborts every in-flight
   // executor; we still loop to commit `CancelPropagated` and the
   // terminal `RunCancelled`.
-  while (!isRunDone(definition, state)) {
-    await throwRememberedWriteFailure();
-    if (cancelController.signal.aborted && state.phase !== "cancelling") {
-      state = await reloadState(env, runId);
-    }
+  try {
+    while (!isRunDone(definition, state)) {
+      throwRememberedWriteFailure();
+      if (cancelController.signal.aborted && state.phase !== "cancelling") {
+        state = await reloadState(env, runId);
+      }
 
-    // Drain observation point #1: main loop entry. If drain has
-    // fired, abort every in-flight step whose declared behavior is
-    // `"cancel"`. The supervisor's drainTimeout accumulator on the
-    // host side ticks against these aborts; on expiry it commits a
-    // signed `CancelRequested{origin: "supervisor-drain"}` which
-    // the runtime body picks up via the existing cancel cascade.
-    if (env.drain.signal.aborted) {
-      for (const stepId of inFlight) {
-        if (shouldAbortForDrain(env.drain, stepId)) {
-          const ac = stepAborts.get(stepId);
-          if (ac !== undefined && !ac.signal.aborted) ac.abort();
+      // Drain observation point #1: main loop entry. If drain has
+      // fired, abort every in-flight step whose declared behavior is
+      // `"cancel"`. The supervisor's drainTimeout accumulator on the
+      // host side ticks against these aborts; on expiry it commits a
+      // signed `CancelRequested{origin: "supervisor-drain"}` which
+      // the runtime body picks up via the existing cancel cascade.
+      if (env.drain.signal.aborted) {
+        for (const stepId of inFlight) {
+          if (shouldAbortForDrain(env.drain, stepId)) {
+            const ac = stepAborts.get(stepId);
+            if (ac !== undefined && !ac.signal.aborted) ac.abort();
+          }
         }
       }
-    }
 
-    const ready = nextSchedulable(definition, state, inFlight);
-    for (const primitive of ready) {
-      inFlight.add(primitive.id);
-      const ctx: SelectorContext = {
-        trigger: { payload: options.triggerPayload },
-        steps: Object.fromEntries(
-          Object.entries(stepOutputs).map(([id, output]) => [id, { output }]),
-        ),
-      };
-      const stepLocalAbort = createStepAbort(
-        primitive.id,
-        cancelController.signal,
-        env.drain,
-      );
-      stepAborts.set(primitive.id, stepLocalAbort);
-      const promise = runPrimitiveSafe(
-        definition,
-        env,
-        runId,
-        primitive,
-        ctx,
-        stepLocalAbort.signal,
-        depth,
-        maxChildSpawnDepth,
-      )
-        .then((output) => {
-          stepOutputs[primitive.id] = output;
-        })
-        .catch((cause: unknown) => {
-          if (isRunFlushFailure(runId, cause)) {
-            if (repoWriteFailure === undefined) repoWriteFailure = cause;
-            return;
+      const ready = nextSchedulable(definition, state, inFlight);
+      for (const primitive of ready) {
+        inFlight.add(primitive.id);
+        const ctx: SelectorContext = {
+          trigger: { payload: options.triggerPayload },
+          steps: Object.fromEntries(
+            Object.entries(stepOutputs).map(([id, output]) => [id, { output }]),
+          ),
+        };
+        const stepLocalAbort = createStepAbort(
+          primitive.id,
+          cancelController.signal,
+          env.drain,
+        );
+        stepAborts.set(primitive.id, stepLocalAbort);
+        const promise = runPrimitiveSafe(
+          definition,
+          env,
+          runId,
+          primitive,
+          ctx,
+          stepLocalAbort.signal,
+          depth,
+          maxChildSpawnDepth,
+        )
+          .then((output) => {
+            stepOutputs[primitive.id] = output;
+          })
+          .catch((cause: unknown) => {
+            if (isRunFlushFailure(runId, cause)) {
+              if (repoWriteFailure === undefined) repoWriteFailure = cause;
+              return;
+            }
+            // Errors are committed as StepFailed inside the primitive
+            // runner; the main loop notices the failed phase on the
+            // next state reload.
+          })
+          .finally(() => {
+            inFlight.delete(primitive.id);
+            justSettled.add(primitive.id);
+            stepAborts.delete(primitive.id);
+          });
+        stepPromises.set(primitive.id, promise);
+      }
+
+      if (state.phase === "cancelling") {
+        state = await reloadState(env, runId);
+        for (const [stepId, stepState] of state.steps) {
+          if (
+            stepState.phase !== "in-flight" &&
+            stepState.phase !== "awaiting-signal" &&
+            stepState.phase !== "awaiting-timer"
+          ) {
+            continue;
           }
-          // Errors are committed as StepFailed inside the primitive
-          // runner; the main loop notices the failed phase on the
-          // next state reload.
-        })
-        .finally(() => {
-          inFlight.delete(primitive.id);
-          justSettled.add(primitive.id);
-          stepAborts.delete(primitive.id);
-        });
-      stepPromises.set(primitive.id, promise);
-    }
-
-    if (state.phase === "cancelling") {
-      state = await reloadState(env, runId);
-      for (const [stepId, stepState] of state.steps) {
-        if (
-          stepState.phase !== "in-flight" &&
-          stepState.phase !== "awaiting-signal" &&
-          stepState.phase !== "awaiting-timer"
-        ) {
-          continue;
+          const propagate: WorkflowEvent = {
+            kind: "CancelPropagated",
+            seq: state.lastSeq + 1,
+            at: env.clock().toISOString(),
+            stepId,
+          };
+          state = await commit(env, runId, propagate);
         }
-        const propagate: WorkflowEvent = {
-          kind: "CancelPropagated",
+        state = await emitChildCancelCascade(env, runId, state);
+        await Promise.allSettled(stepPromises.values());
+        const cancelled: WorkflowEvent = {
+          kind: "RunCancelled",
           seq: state.lastSeq + 1,
           at: env.clock().toISOString(),
-          stepId,
         };
-        state = await commit(env, runId, propagate);
+        state = await commitDurable(env, runId, cancelled);
+        break;
       }
-      state = await emitChildCancelCascade(env, runId, state);
-      await Promise.allSettled(stepPromises.values());
-      const cancelled: WorkflowEvent = {
-        kind: "RunCancelled",
-        seq: state.lastSeq + 1,
-        at: env.clock().toISOString(),
-      };
-      state = await commitDurable(env, runId, cancelled);
-      break;
-    }
 
-    if (stepPromises.size === 0) {
-      await throwRememberedWriteFailure();
-      if (ready.length === 0) {
-        throw new Error(
-          `workflow ${definition.id} run ${runId} stalled with no schedulable primitives`,
-        );
+      if (stepPromises.size === 0) {
+        throwRememberedWriteFailure();
+        if (ready.length === 0) {
+          throw new Error(
+            `workflow ${definition.id} run ${runId} stalled with no schedulable primitives`,
+          );
+        }
+        // Promises were scheduled this tick but already completed
+        // synchronously; reload state and continue.
+        state = await reloadState(env, runId);
+        throwRememberedWriteFailure();
+        continue;
       }
-      // Promises were scheduled this tick but already completed
-      // synchronously; reload state and continue.
+
+      // Wait for at least one in-flight primitive to settle. Step
+      // failures are already `StepFailed`. A parked step never settles,
+      // so the flush waiter is what wakes the loop when an external
+      // writer drops the buffer.
+      await Promise.race([
+        ...Array.from(stepPromises.values()).map((p) =>
+          p.catch(() => undefined),
+        ),
+        flushFailed,
+      ]);
+      throwRememberedWriteFailure();
       state = await reloadState(env, runId);
-      await throwRememberedWriteFailure();
-      continue;
+      throwRememberedWriteFailure();
+      for (const stepId of justSettled) {
+        stepPromises.delete(stepId);
+      }
+      justSettled.clear();
     }
-
-    // Wait for at least one in-flight primitive to settle. Step
-    // failures are already `StepFailed`. A parked step never settles,
-    // so the flush waiter is what wakes the loop when an external
-    // writer drops the buffer.
-    await Promise.race([
-      ...Array.from(stepPromises.values()).map((p) => p.catch(() => undefined)),
-      flushFailed,
-    ]);
-    await throwRememberedWriteFailure();
-    state = await reloadState(env, runId);
-    await throwRememberedWriteFailure();
-    for (const stepId of justSettled) {
-      stepPromises.delete(stepId);
+  } catch (cause) {
+    // Nothing supervises a step once the error leaves the loop, so each one
+    // still running is stopped before the run settles.
+    for (const controller of stepAborts.values()) {
+      if (!controller.signal.aborted) controller.abort();
     }
-    justSettled.clear();
+    await Promise.allSettled(stepPromises.values());
+    throw cause;
   }
 
   // If we exited the loop without a terminal phase, settle it. The

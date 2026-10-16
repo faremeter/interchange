@@ -33,6 +33,7 @@ import {
   type WorkflowEvent,
   type WorkflowRuntimeEnv,
 } from "@intx/workflow";
+import { bufferedEvents } from "./commit-chain";
 import { createTerminalChildHandle } from "./suspendable-child-handle";
 
 const collided = defineWorkflow({
@@ -162,6 +163,82 @@ describe("a thrown run body", () => {
     expect(last.error.message).toContain("non-monotonic sequence");
     const durable = await inner.read(runId);
     expect(durable.at(-1)?.kind).toBe("RunFailed");
+  });
+
+  test("stops a running sibling before it records RunFailed", async () => {
+    const def = defineWorkflow({
+      id: "thrown-body-sibling",
+      trigger: { type: "manual" },
+      steps: {
+        quick: action({ handler: "quick" }),
+        slow: action({ handler: "slow" }),
+      },
+    });
+    const inner = createInMemoryRepoStore();
+    // Once `quick`'s completion is committed, buffered or durable, the next
+    // read is the loop's reload, and it fails while `slow` is still running.
+    let readFailed = false;
+    let slowAborted = false;
+    let slowAbortedAtRunFailed: boolean | undefined;
+    const noteRunFailed = (events: readonly WorkflowEvent[]): void => {
+      if (events.some((event) => event.kind === "RunFailed")) {
+        slowAbortedAtRunFailed = slowAborted;
+      }
+    };
+    const repoStore: RepoStore = {
+      ...inner,
+      async read(runId) {
+        const events = await inner.read(runId);
+        const quickDone = [...events, ...bufferedEvents(runId)].some(
+          (event) => event.kind === "StepCompleted" && event.stepId === "quick",
+        );
+        if (quickDone && !readFailed) {
+          readFailed = true;
+          throw new Error("read failed");
+        }
+        return events;
+      },
+      async append(runId, event) {
+        noteRunFailed([event]);
+        await inner.append(runId, event);
+      },
+      async appendBatch(runId, events) {
+        noteRunFailed(events);
+        await inner.appendBatch(runId, events);
+      },
+    };
+    const slowStarted = Promise.withResolvers<undefined>();
+    const invokeAction: ActionInvoker = async (req) => {
+      if (req.handler === "quick") {
+        await slowStarted.promise;
+        return { output: null };
+      }
+      slowStarted.resolve(undefined);
+      return new Promise((_, reject) => {
+        req.signal.addEventListener(
+          "abort",
+          () => {
+            slowAborted = true;
+            reject(new Error("aborted"));
+          },
+          { once: true },
+        );
+      });
+    };
+
+    const result = await runtimeRun(
+      def,
+      buildEnv(def, repoStore, createInMemorySignalChannel(), invokeAction),
+      { runId: "run-thrown-sibling" },
+    ).complete;
+
+    expect(result.terminalStatus).toBe("failed");
+    const last = result.events.at(-1);
+    if (last?.kind !== "RunFailed") {
+      throw new Error("last event is not RunFailed");
+    }
+    expect(last.error.message).toContain("read failed");
+    expect(slowAbortedAtRunFailed).toBe(true);
   });
 
   test("an empty buffer still completes when the in-memory channel delivers", async () => {
