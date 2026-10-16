@@ -1,5 +1,5 @@
 import path from "node:path";
-import { detectResponseKind } from "@intx/types/content-type";
+import { sniffResponseKind } from "@intx/types/content-type";
 import {
   adapterForCatalogProvider,
   baseURLForCatalogProvider,
@@ -147,7 +147,6 @@ async function captureStep(args: {
   });
 
   const responseHeaders = headersToObject(response.headers);
-  const kind = detectResponseKind(response.headers);
 
   let captured: ResponseBody;
   let parsedForGenerator: unknown | null = null;
@@ -160,6 +159,10 @@ async function captureStep(args: {
   // value.
   const buf = await response.arrayBuffer();
   const bytes = new Uint8Array(buf);
+  // A capture only labels the bytes it writes, and a response the header
+  // cannot classify is exactly the quirk a capture exists to pin down for
+  // an adapter's classifyResponse hook, so the body decides the label.
+  const kind = sniffResponseKind(response.headers, bytes);
   const ok = response.status >= 200 && response.status < 300;
   if (!ok) {
     // A non-2xx response is an error payload, not a decodable turn. Persist its
