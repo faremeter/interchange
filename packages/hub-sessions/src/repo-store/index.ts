@@ -21,6 +21,7 @@ export type {
   WriteTreePreservingPrefixArgs,
 } from "./types";
 export {
+  isPlainPathSegment,
   NoBlobAtPathError,
   RepoRemovedDuringReceiveError,
   UserPrincipal,

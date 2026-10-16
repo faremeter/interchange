@@ -296,6 +296,7 @@ export type {
 } from "./repo-store";
 export {
   createRepoStore,
+  isPlainPathSegment,
   RepoRemovedDuringReceiveError,
   subscribeKind,
   UserPrincipal,

@@ -72,5 +72,6 @@ export type {
   InitRepoOpts,
   NewlyTerminalRun,
 } from "./repo-store/types";
+export { isPlainPathSegment } from "./repo-store/types";
 
 export { WORKFLOW_RUN_RESTORE_REFS } from "./workflow-run-restore";

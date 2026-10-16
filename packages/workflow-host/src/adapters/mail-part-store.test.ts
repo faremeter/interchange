@@ -254,9 +254,9 @@ describe("mail part store", () => {
     ).rejects.toThrow(/malformed ref/);
   });
 
-  test("rejects a messageId that url-encodes to a traversal segment", async () => {
+  test("rejects a messageId that url-encodes to a segment the substrate refuses", async () => {
     const { opts } = await makeStoreHandles("dep-dot", "dep-dot");
-    for (const messageId of [".", ".."]) {
+    for (const messageId of [".", "..", ".git", ".GIT"]) {
       await expect(
         commitMail(opts, messageId, {
           headers: headers(),
