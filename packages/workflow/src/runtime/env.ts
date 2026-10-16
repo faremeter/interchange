@@ -242,6 +242,8 @@ export interface ActionInvokeRequest {
   input: unknown;
   /** Capabilities the action declared it may exercise (its `effect.requires`). */
   requires: readonly string[];
+  /** Credential handles the action declared (its `credentials`). */
+  credentials: readonly string[];
   /** Workflow-runtime context for every authz call inside the handler. */
   authzContext: AuthorizeContext;
   /** Cancelled when the action is being torn down (timeout, cancellation). */

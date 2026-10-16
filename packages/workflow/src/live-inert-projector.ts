@@ -436,6 +436,9 @@ function projectAction(primitive: ActionPrimitive): ActionPrimitive {
     ...(primitive.onFailure !== undefined
       ? { onFailure: primitive.onFailure }
       : {}),
+    ...(primitive.credentials !== undefined
+      ? { credentials: [...primitive.credentials] }
+      : {}),
   };
 }
 

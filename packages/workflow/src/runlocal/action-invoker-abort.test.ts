@@ -63,6 +63,7 @@ describe("the default action invoker", () => {
         handler: "charge",
         input: null,
         requires: [],
+        credentials: [],
         authzContext: { stepId: "charge", attempt: 1, runId: "run-1" },
         signal: ctrl.signal,
       }),
