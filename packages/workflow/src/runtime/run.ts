@@ -1005,11 +1005,12 @@ async function executeRunBody(
   // reads `steps.<unit>.output.error.message`. Rebuild it from the routed
   // StepFailed's reduced error so the selector resolves the same value it saw
   // before the crash. The pass also completes the branch prune for each routed
-  // or completed onFailure unit. That prune is idempotent: the durable log is a
-  // prefix, a route writes its prune BEFORE its terminal, and a success writes
-  // its prune in the same batch as its StepCompleted, so a durable terminal
-  // already carries its skips and `emitSkipClosure` re-emits nothing; the pass
-  // keeps it so a unit whose prune is not durable is still completed here. A
+  // onFailure unit. That prune is idempotent: the durable log is a prefix and a
+  // route writes its prune BEFORE its terminal, so a durable terminal already
+  // carries its skips and `emitSkipClosure` re-emits nothing. A completed unit
+  // needs no pass: a success writes its prune in the same batch as its
+  // StepCompleted, and a unit a branch skipped is completed too, so pruning
+  // there would skip a handler the branch kept, such as a gate's pick. A
   // route's skips can land without its terminal. The unit then resumes as a
   // crash mid-invocation that routes to the same handler, or, as a child
   // workflow, reattaches its failed child and routes again, so the skips still
@@ -1020,18 +1021,7 @@ async function executeRunBody(
     for (const [stepId, primitive] of Object.entries(definition.steps)) {
       const onFailure = onFailureOf(primitive);
       if (onFailure === undefined) continue;
-      const phase = state.steps.get(stepId)?.phase;
-      if (phase === "completed") {
-        await pruneAroundRoute(
-          definition,
-          env,
-          runId,
-          stepId,
-          onFailure,
-          "completed",
-          cancelController.signal,
-        );
-      } else if (phase === "routed") {
+      if (state.steps.get(stepId)?.phase === "routed") {
         await pruneAroundRoute(
           definition,
           env,
@@ -4915,7 +4905,7 @@ async function pruneAroundRoute(
   runId: string,
   unitId: string,
   handlerId: string,
-  settled: "routed" | "completed" | "failed",
+  settled: "routed" | "failed",
   abort: AbortSignal,
 ): Promise<void> {
   const { toSkip, sentinel } = onFailurePrune(
