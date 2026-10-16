@@ -60,9 +60,12 @@ import {
 } from "@intx/workflow/definition";
 import {
   approvalSetFromItems,
+  checkCredentialBindings,
+  describeCredentialBindingViolation,
   inertNestedBodies,
   isApprovedGrantRequirement,
   type ApprovalSet,
+  type CredentialBindingViolation,
 } from "@intx/workflow-deploy";
 
 import {
@@ -124,7 +127,8 @@ export type PersistFrozenApprovalFn = (
  * tarball, a shipped hash that does not match the hub recompute
  * (tamper-evidence), advisory grants the operator did not approve, declared
  * grant requirements the operator did not approve, a trigger type the runtime
- * does not implement, and an executable step the grant walk left no record for.
+ * does not implement, credential bindings that cannot be delivered, and an
+ * executable step the grant walk left no record for.
  */
 export type ProbeGateResult =
   | {
@@ -171,6 +175,14 @@ export type ProbeGateResult =
       readonly reason: "unimplemented_trigger";
       /** The distinct reserved-but-unimplemented trigger types the projection declared. */
       readonly unimplementedTriggerTypes: readonly string[];
+    }
+  | {
+      readonly ok: false;
+      readonly reason: "credential_bindings_invalid";
+      /** Every credential binding problem, in walk order. */
+      readonly violations: readonly CredentialBindingViolation[];
+      /** One sentence per violation, joined. */
+      readonly message: string;
     }
   | {
       readonly ok: false;
@@ -235,6 +247,8 @@ export function describeProbeGateRefusal(refusal: ProbeGateRefusal): string {
       return `creator_requirements_unsupported_for_package_registry_tarball: a workflow from a package-registry tarball cannot declare creator-sourced grant requirements, because the hub does not know who published the package; declared: ${refusal.creatorGrantRequirements.map(describeGrantRequirement).join("; ")}`;
     case "unimplemented_trigger":
       return `unimplemented_trigger: ${refusal.unimplementedTriggerTypes.join(", ")}`;
+    case "credential_bindings_invalid":
+      return `credential_bindings_invalid: ${refusal.message}`;
     case "steps_without_grant_record":
       return `steps_without_grant_record: ${refusal.message}`;
     default: {
@@ -458,7 +472,8 @@ export type GateAndFreezeArgs = {
  * operator-approved. It also refuses a projection whose triggers include a
  * reserved-but-unimplemented type -- not a
  * security check, but the layer a pinned closure cannot carry a stale copy of,
- * so it is where a workflow that could only sit inert is caught -- and one
+ * so it is where a workflow that could only sit inert is caught -- one whose
+ * credential bindings cannot be delivered to a consumer it runs, and one
  * whose executable closure reaches a step the grant walk left no record for --
  * the layer holding both halves of the probe answer at once, and a presence
  * check on those records rather than a check that any record's contents are
@@ -517,6 +532,29 @@ export async function gateAndFreezeProbeResult(
       ok: false,
       reason: "unimplemented_trigger",
       unimplementedTriggerTypes,
+    };
+  }
+
+  // Refuse credential bindings that cannot be delivered: a binding on a nested
+  // body, a binding whose consumer the deployment never runs, a duplicate
+  // binding, and a declared action handle with no binding. Like the trigger
+  // check this is an author-definition error, so it runs before the operator
+  // checks below; an operator cannot approve it away. It runs here, at install
+  // and approve, over the projection the freeze hashes -- before any credential
+  // is resolved or decrypted. A deployment approved earlier is not re-checked
+  // when it respawns. Tool consumers are keyed on the source-ref factory id,
+  // the only lineage that delivers bindings today.
+  const credentialBindingViolations = checkCredentialBindings(
+    probeResult.projection,
+  );
+  if (credentialBindingViolations.length > 0) {
+    return {
+      ok: false,
+      reason: "credential_bindings_invalid",
+      violations: credentialBindingViolations,
+      message: credentialBindingViolations
+        .map(describeCredentialBindingViolation)
+        .join("; "),
     };
   }
 

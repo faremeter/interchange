@@ -51,6 +51,7 @@ function agentStep(): Record<string, unknown> {
     kind: "step",
     agent: {
       id: "ag",
+      toolFactories: [],
       modelSources: [{ provider: "anthropic", model: "claude-3" }],
     },
   };

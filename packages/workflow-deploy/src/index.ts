@@ -40,6 +40,11 @@ export {
   type ApprovalSource,
   type CapabilityApprovalGate,
 } from "./capability-approval";
+export {
+  checkCredentialBindings,
+  describeCredentialBindingViolation,
+  type CredentialBindingViolation,
+} from "./credential-binding-check";
 export { extractFoldedBody, type FoldedBody } from "./fold-synthesis";
 export {
   enumerateInertBodies,

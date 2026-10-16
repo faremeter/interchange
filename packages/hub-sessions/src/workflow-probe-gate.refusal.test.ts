@@ -71,6 +71,15 @@ describe("describeProbeGateRefusal", () => {
       },
       "steps_without_grant_record: step b has no record",
     ],
+    [
+      {
+        ok: false,
+        reason: "credential_bindings_invalid",
+        violations: [],
+        message: 'two bindings name action push and handle "github"',
+      },
+      'credential_bindings_invalid: two bindings name action push and handle "github"',
+    ],
   ];
 
   test.each(cases)("names the refusal and what it refused", (refusal, text) => {

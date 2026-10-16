@@ -71,6 +71,10 @@ const STEP_ID = "run";
 const WORKFLOW_RUN_REF = "refs/heads/main";
 
 const PACKAGE_NAME = "@wf/credential-skeleton";
+// The binding names this tool factory, which the agent runs, so the binding
+// names a consumer the deployment delivers to.
+const TOOL_FACTORY_ID = "@wf/credential-skeleton/probe";
+const TOOL_NAME = "probe";
 const PACKAGE_VERSION = "1.0.0";
 const WORKFLOW_ENTRY = "./workflow.mjs";
 
@@ -96,12 +100,21 @@ const repoRoot = path.resolve(import.meta.dir, "..", "..");
 
 const workflowEntrySource = `
 import { defineWorkflow, step } from "@intx/workflow/definition";
-import { defineAgent } from "@intx/agent";
+import { defineAgent, defineTool } from "@intx/agent";
+
+const probe = defineTool({
+  id: ${JSON.stringify(TOOL_FACTORY_ID)},
+  definitions: [{ name: ${JSON.stringify(TOOL_NAME)} }],
+  factory: () => ({
+    definitions: [],
+    run: async (call) => ({ callId: call.id, content: "" }),
+  }),
+});
 
 const agent = defineAgent({
   id: "credential-skeleton-agent",
   systemPrompt: "You are the credential-skeleton single-step agent.",
-  tools: [],
+  tools: [probe],
   capabilities: [],
   inference: {
     sources: [{ provider: "anthropic", model: "mock-model" }],
@@ -113,7 +126,7 @@ export const workflow = defineWorkflow({
   trigger: { type: "mail", to: ${JSON.stringify(deploymentMailAddress)} },
   credentialBindings: [
     {
-      package: ${JSON.stringify(PACKAGE_NAME)},
+      package: ${JSON.stringify(TOOL_FACTORY_ID)},
       handle: ${JSON.stringify(CREDENTIAL_HANDLE)},
       provider: ${JSON.stringify(PROVIDER_NAME)},
       name: ${JSON.stringify(CREDENTIAL_NAME)},
@@ -281,6 +294,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         "director:@intx/agent/default",
         `mail.address:${deploymentMailAddress}`,
         `mail.send:${DEPLOYMENT_DOMAIN}`,
+        `tool:${TOOL_NAME}`,
         `credential:${CREDENTIAL_HANDLE}`,
       ]);
 
