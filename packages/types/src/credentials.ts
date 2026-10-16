@@ -30,9 +30,10 @@ const CredType = type.enumerated(...credentialTypes);
 const CredStatus = type.enumerated(...credentialStatuses);
 const CredentialSourceType = type.enumerated(...credentialRequirementSources);
 
-// A credential binding on a workflow definition maps a tool package's declared
-// credential handle -- keyed `(package, handle)` against the tool-package
-// declaration -- to a concrete credential resolved fresh at launch. `locator`
+// A credential binding on a workflow definition maps one consumer's declared
+// credential handle to a concrete credential resolved fresh at launch. The
+// consumer is a tool package, keyed `(package, handle)`, or an action handler,
+// keyed `(action, handle)`; a binding names exactly one of the two. `locator`
 // is which credential namespace the name is resolved in; today only `tenant`
 // exists (a tenant-owned credential, authorized by ownership). A second locator
 // that resolves a principal-owned credential -- and the delegation authority
@@ -43,12 +44,9 @@ export type CredentialBindingLocator =
 
 const BindingLocator = type.enumerated(...credentialBindingLocators);
 
-export const CredentialBinding = type({
-  package: type("string").describe(
-    "The tool package the declared handle belongs to. On a source-ref workflow this field is the tool factory's bundle id. On a pinned package it is that package's name in the tool-package manifest's top level.",
-  ),
+const credentialBindingFields = {
   handle: ToolCredentialHandle.describe(
-    "The credential handle the tool package declared; unique within its package.",
+    "The credential handle the consumer declared; unique within its consumer.",
   ),
   provider: type("string").describe(
     "The provider the bound credential resolves against.",
@@ -59,6 +57,26 @@ export const CredentialBinding = type({
   locator: BindingLocator.describe(
     "Which credential namespace the binding resolves the credential in. `tenant` resolves a tenant-owned credential by provider/name through the tenant walk-up; its use is authorized by tenant ownership.",
   ),
+} as const;
+
+// Each branch forbids the other branch's key, so an object that names both
+// consumers fails validation instead of matching the first branch with the
+// extra key ignored. The forbidden key is typed `never`, which reports only
+// "never" for such an object. `undefined` reports a clearer message, but it
+// makes `toJsonSchema()` throw, and the API docs generator converts every
+// exported type.
+export const CredentialBinding = type({
+  package: type("string").describe(
+    "The tool package the declared handle belongs to: the tool factory's bundle id.",
+  ),
+  "action?": "never",
+  ...credentialBindingFields,
+}).or({
+  action: type("string > 0").describe(
+    "The action handler the declared handle belongs to: the handler's export name in the workflow's `interchange.actions` module.",
+  ),
+  "package?": "never",
+  ...credentialBindingFields,
 });
 export type CredentialBinding = typeof CredentialBinding.infer;
 

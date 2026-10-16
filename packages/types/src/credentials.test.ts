@@ -96,4 +96,35 @@ describe("CredentialBinding validator", () => {
       true,
     );
   });
+
+  const { package: _package, ...withoutConsumer } = wellFormed;
+
+  test("accepts an action binding", () => {
+    expect(
+      CredentialBinding({
+        ...withoutConsumer,
+        action: "pushRelease",
+      }) instanceof type.errors,
+    ).toBe(false);
+  });
+
+  test("rejects a binding that names both a package and an action", () => {
+    expect(
+      CredentialBinding({ ...wellFormed, action: "pushRelease" }) instanceof
+        type.errors,
+    ).toBe(true);
+  });
+
+  test("rejects a binding that names neither a package nor an action", () => {
+    expect(CredentialBinding(withoutConsumer) instanceof type.errors).toBe(
+      true,
+    );
+  });
+
+  test("rejects an empty action handler", () => {
+    expect(
+      CredentialBinding({ ...withoutConsumer, action: "" }) instanceof
+        type.errors,
+    ).toBe(true);
+  });
 });

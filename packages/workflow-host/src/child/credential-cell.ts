@@ -1,14 +1,15 @@
 // Merge semantics for the child's in-memory credential-material cell.
 //
 // The cell is fed by several INDEPENDENTLY-SCOPED producers: the deploy frame
-// (tool bindings plus the run's inference materials, frozen at deploy time and
-// re-asserted on every spawn and pre-trigger barrier), an inference rotation
-// (materials only, no binding), and a tool-grant push (tool bindings plus their
-// materials). Each producer carries only its own slice of the cell. A wholesale
-// swap would therefore let one producer evict another's credentials -- an
-// inference rotation would drop every tool binding, a barrier re-push would drop
-// a live-pushed tool credential. So a `credentials-updated` frame MERGES:
-// materials upsert by `credentialId`, bindings upsert by `(consumer, handle)`.
+// (credential bindings plus the run's inference materials, frozen at deploy
+// time and re-asserted on every spawn and pre-trigger barrier), an inference
+// rotation (materials only, no binding), and a credential-grant push
+// (credential bindings plus their materials). Each producer carries only its
+// own slice of the cell. A wholesale swap would therefore let one producer
+// evict another's credentials -- an inference rotation would drop every
+// credential binding, a barrier re-push would drop a live-pushed binding
+// credential. So a `credentials-updated` frame MERGES: materials upsert by
+// `credentialId`, bindings upsert by `(consumer, handle)`.
 //
 // Because omission no longer means "gone", revocation is EXPLICIT: a frame's
 // `revoke` list names the credentialIds to drop, and dropping one also drops

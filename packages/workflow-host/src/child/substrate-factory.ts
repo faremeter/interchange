@@ -1183,9 +1183,9 @@ export function createSidecarStepBuildEnv(
     // threaded, in which case a credential-consuming tool fails closed and loud
     // at its own `resolve("credentials")`.
     if (credentialContext !== undefined) {
-      // Inference resolves its source's secret from the SAME live cell tool
-      // credentials resolve from, by `credentialId`, so the step's sources carry
-      // no inline key and the child never holds the cipher key.
+      // Inference resolves its source's secret from the SAME live cell binding
+      // credentials resolve from, by `credentialId`, so the step's sources
+      // carry no inline key and the child never holds the cipher key.
       env.readCurrentMaterial = createInferenceCredentialResolver(
         credentialContext.materialCell,
       );

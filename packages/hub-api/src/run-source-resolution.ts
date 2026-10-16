@@ -21,7 +21,7 @@ export type DefinitionSourceResolution =
       sources: InferenceSource[];
       // The credential material backing the resolved chain, deduped by
       // `credentialId`. Forwarded to the deploy so it reaches the unified
-      // credential-material cell alongside any tool material.
+      // credential-material cell alongside any binding material.
       materials: CredentialMaterialEntry[];
       defaultSource: string;
     }

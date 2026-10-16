@@ -413,6 +413,12 @@ describe("parseWorkflowDefinitionRow", () => {
         provider: "github",
         locator: "tenant" as const,
       },
+      {
+        action: "pushRelease",
+        handle: "gh",
+        provider: "github",
+        locator: "tenant" as const,
+      },
     ];
     const parsed = parseWorkflowDefinitionRow(
       makeDefRow({ credentialBindings }),

@@ -368,10 +368,10 @@ export interface WorkflowSupervisorBindings {
     anchorRunId: string;
   }) => Promise<import("./credentials").CredentialsSnapshot>;
   /**
-   * Decrypted credential material for the deployment's tools, delivered to the
-   * child on the pre-trigger barrier alongside the grants. Absent when the
-   * deployment binds no credentials. A rotation flows through
-   * `deliverCredentials`, not this static binding.
+   * Decrypted credential material for the deployment's binding consumers and
+   * inference sources, delivered to the child on the pre-trigger barrier
+   * alongside the grants. Absent when the deployment binds no credentials. A
+   * rotation flows through `deliverCredentials`, not this static binding.
    */
   credentialDelivery?: import("@intx/types/credential-delivery").CredentialDelivery;
   /** Subprocess spawner the supervisor invokes per spawn. */

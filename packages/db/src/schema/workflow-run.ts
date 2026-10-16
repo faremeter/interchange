@@ -17,9 +17,9 @@ import { workflowDefinition } from "./workflow-definitions";
 // The non-secret projection of a deployment's credential delivery, persisted on
 // its anchor run so the reconnect resync can re-resolve current materials.
 // `credentialIds` is every credential the delivery references (inference
-// sources have no binding; tool handles do). `bindings` is the tool binding
-// descriptors (handle -> credentialId, plus the consumer allowed to use it).
-// Never holds a secret.
+// sources have no binding; bound handles do). `bindings` is the credential
+// binding descriptors (handle -> credentialId, plus the consumer allowed to use
+// it). Never holds a secret.
 export type WorkflowRunCredentialRefs = {
   credentialIds: string[];
   bindings: { handle: string; credentialId: string; consumer: string }[];
@@ -98,7 +98,7 @@ export const workflowRun = pgTable(
     kernelId: text("kernel_id"),
     modelPreferences: jsonb("model_preferences"),
     // The non-secret shape of the credential delivery this deployment resolved
-    // at deploy: the credentialIds it references and the tool binding
+    // at deploy: the credentialIds it references and the credential binding
     // descriptors. Set on a deployment anchor run; null for runs that carry no
     // credential delivery. Secrets are NEVER stored here -- only ids and
     // descriptors -- so the reconnect resync can re-resolve each id's CURRENT

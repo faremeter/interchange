@@ -78,7 +78,7 @@ async function readRawRecord(
   return parsed;
 }
 
-/** Build a credential-material cell (no tool bindings) from id -> secret. */
+/** Build a credential-material cell (no bindings) from id -> secret. */
 function deliveryOf(materials: Record<string, string>): CredentialDelivery {
   return {
     bindings: [],
