@@ -13,6 +13,7 @@
 // the ledger would dedup distinct effects against each other.
 
 import { canonicalizeForHash } from "@intx/agent";
+import type { CredentialCapability } from "@intx/types";
 
 import type {
   AuthorizeContext,
@@ -26,12 +27,14 @@ export interface EffectContextConfig {
   requires: readonly string[];
   authzContext: AuthorizeContext;
   input: unknown;
+  credentials: CredentialCapability;
 }
 
 export function createEffectContext(
   config: EffectContextConfig,
 ): EffectContext {
-  const { authorize, effects, requires, authzContext, input } = config;
+  const { authorize, effects, requires, authzContext, input, credentials } =
+    config;
   const allowed = new Set(requires);
   const { runId, stepId } = authzContext;
   if (runId === undefined || stepId === undefined) {
@@ -40,6 +43,7 @@ export function createEffectContext(
     );
   }
   return {
+    credentials,
     async perform({ effectId, capability, run }) {
       if (!allowed.has(capability)) {
         throw new Error(

@@ -5,6 +5,7 @@ import { describe, test, expect } from "bun:test";
 
 import {
   createEffectContext,
+  unavailableCredentialCapability,
   type EffectLedger,
   type WorkflowAuthorizeFn,
 } from "@intx/workflow";
@@ -45,6 +46,7 @@ describe("createEffectContext per-effect keying", () => {
       requires: ["git:clone", "shell:run"],
       authzContext: { runId: "r1", stepId: "s1", attempt: 1 },
       input: { repo: "x" },
+      credentials: unavailableCredentialCapability("test-action"),
     });
 
     const clone = await ctx.perform({
@@ -84,6 +86,7 @@ describe("createEffectContext per-effect keying", () => {
         requires: ["git:clone", "shell:run"],
         authzContext: { runId: "r1", stepId: "s1", attempt: 1 },
         input: { repo: "x" },
+        credentials: unavailableCredentialCapability("test-action"),
       });
       const clone = await ctx.perform({
         effectId: "clone",
@@ -124,6 +127,7 @@ describe("createEffectContext per-effect keying", () => {
         requires: ["git:commit"],
         authzContext: { runId: "r1", stepId: "s1", attempt: 1 },
         input,
+        credentials: unavailableCredentialCapability("test-action"),
       });
 
     await mk({ msg: "a" }).perform({
@@ -154,6 +158,7 @@ describe("createEffectContext fail-closed enforcement", () => {
       requires: ["git:commit"],
       authzContext: { runId: "r1", stepId: "s1", attempt: 1 },
       input: null,
+      credentials: unavailableCredentialCapability("test-action"),
     });
 
     await expect(
@@ -180,6 +185,7 @@ describe("createEffectContext fail-closed enforcement", () => {
         requires: ["git:commit"],
         authzContext: { runId: "r1", stepId: "s1", attempt: 1 },
         input: null,
+        credentials: unavailableCredentialCapability("test-action"),
       });
 
       await expect(

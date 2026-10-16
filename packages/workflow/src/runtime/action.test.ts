@@ -6,6 +6,7 @@ import { describe, test, expect } from "bun:test";
 import {
   action,
   createEffectContext,
+  unavailableCredentialCapability,
   defineWorkflow,
   runLocal,
   type ActionHandler,
@@ -46,6 +47,7 @@ function invokerFor(
       requires,
       authzContext,
       input,
+      credentials: unavailableCredentialCapability("test-action"),
     });
     return { output: await handler(input, ctx, signal) };
   };

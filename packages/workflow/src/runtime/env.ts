@@ -9,6 +9,10 @@
 
 import type { AgentDefinition, BaseEnv, DirectorRegistry } from "@intx/agent";
 import type {
+  CredentialCapability,
+  HostCredentialCapability,
+} from "@intx/types";
+import type {
   ApprovalSnapshot,
   ControlParkKind,
   PerCallInferenceOptions,
@@ -282,6 +286,12 @@ export interface EffectLedger {
  * refuses any `capability` not in the action's declared `requires` set,
  * calls `env.authorize` before the effect, and on a ledger hit returns
  * the recorded result without running `run`.
+ *
+ * `credentials` is the handler's consumer-scoped credentials capability. Its
+ * consumer is `action:<handler>`, so the scope is per handler, not per step.
+ * It resolves a handle bound to that consumer to an origin-pinned mediated
+ * credential, and fails closed for any other handle. Use the credential inside
+ * `perform`'s `run`, so the call goes through the effect grant and the ledger.
  */
 export interface EffectContext {
   perform(opts: {
@@ -289,7 +299,21 @@ export interface EffectContext {
     capability: string;
     run: () => Promise<unknown>;
   }): Promise<unknown>;
+  readonly credentials: CredentialCapability;
 }
+
+/**
+ * Builds the credentials capability for one action invocation. The action
+ * invoker calls it before the handler runs and disposes the capability when
+ * the handler settles. A factory that throws fails the action before any
+ * effect. The factory owns the consumer identity, the declared-versus-bound
+ * check, and the authorization gate.
+ */
+export type ActionCredentialsFactory = (req: {
+  readonly handler: string;
+  readonly credentials: readonly string[];
+  readonly authzContext: AuthorizeContext;
+}) => HostCredentialCapability;
 
 /**
  * Blob substrate. The default-threshold (1 MiB) spill is implemented

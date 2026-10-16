@@ -2,6 +2,8 @@ export {
   runLocal,
   createDefaultActionInvoker,
   createInMemoryEffectLedger,
+  unavailableActionCredentials,
+  unavailableCredentialCapability,
   createSpawnLoopIteration,
   type RunLocalOptions,
 } from "./run-local";

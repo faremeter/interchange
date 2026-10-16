@@ -278,9 +278,13 @@ export interface ActionPrimitive extends PrimitiveBase {
   /** See {@link StepPrimitive.onFailure}. */
   onFailure?: string;
   /**
-   * The credential handles this action declares. `action()` validates each
-   * handle's format and rejects a duplicate, and omits the field when the
-   * list is empty. The handles are part of the approved projection and the
+   * The credential handles this action declares for its handler. The scope
+   * is per handler: the handler may resolve through `ctx.credentials` any
+   * handle a step running that handler declares and a root binding names for
+   * it. Deploy refuses a declared handle with no binding, and a binding for a
+   * handle no such step declares. `action()` validates each handle's
+   * format and rejects a duplicate, and omits the field when the list is
+   * empty. The handles are part of the approved projection and the
    * definition hash, in the order the author wrote them.
    */
   credentials?: readonly string[];
@@ -295,12 +299,14 @@ export interface ActionPrimitive extends PrimitiveBase {
  *
  * A deployed handler is a BARE MODULE EXPORT of the module named by the
  * package's `interchange.actions` field, resolved by export name. It
- * receives exactly these three parameters and nothing else: no injected
- * services, and no opportunity to close over host configuration, because
- * nothing in the deployment constructs it. `ctx` carries one method,
- * `perform`. Per-deployment configuration must therefore arrive through
- * `input`, which in practice means the author selects it out of the
- * trigger payload via the action's {@link ActionPrimitive.input} selector.
+ * receives exactly these three parameters and nothing else, and has no
+ * opportunity to close over host configuration, because nothing in the
+ * deployment constructs it. `ctx` carries `perform` and one host service,
+ * the consumer-scoped `credentials` capability, which resolves the handles
+ * the action declares; use a resolved credential inside `perform`'s `run`.
+ * Per-deployment configuration must therefore arrive through `input`, which
+ * in practice means the author selects it out of the trigger payload via the
+ * action's {@link ActionPrimitive.input} selector.
  */
 export type ActionHandler = (
   input: unknown,

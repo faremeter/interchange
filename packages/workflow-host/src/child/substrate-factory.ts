@@ -86,6 +86,7 @@ import {
   emptyState,
   enumerateInlineLoopBodies,
   rewriteInlineChildWorkflowBodies,
+  unavailableActionCredentials,
   walkWorkflowSteps,
   LOOP_BODY_DESCENT,
   type ActionHandler,
@@ -2012,10 +2013,13 @@ async function buildChildRunEnv(args: {
   let invokeAction: ReturnType<typeof createDefaultActionInvoker> | undefined;
   if (actionResolver !== undefined) {
     effects = createInMemoryEffectLedger();
+    // This host threads no credential source to action handlers, so an
+    // action that declares credentials fails before its handler runs.
     invokeAction = createDefaultActionInvoker(
       authorize,
       effects,
       actionResolver,
+      unavailableActionCredentials,
     );
   }
   const env: WorkflowRuntimeEnv = {

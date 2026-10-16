@@ -8,9 +8,10 @@
 //
 // A deployed handler is a bare module export. It receives exactly
 // `(input, ctx, signal)` and nothing else: no closure over host
-// configuration, no injected services. Everything it needs has to arrive
-// through `input`, which is why this workflow threads `outputPath` all the
-// way from the trigger payload rather than reading it from the process.
+// configuration. The one injected service is `ctx.credentials`, which this
+// handler does not use. Everything else it needs has to arrive through
+// `input`, which is why this workflow threads `outputPath` all the way from
+// the trigger payload rather than reading it from the process.
 //
 // Three rules the runtime cannot enforce, and that a handler author owns:
 //

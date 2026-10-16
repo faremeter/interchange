@@ -30,6 +30,7 @@ import {
   createTerminalChildHandle,
   action,
   createEffectContext,
+  unavailableCredentialCapability,
   createInMemoryBlobSubstrate,
   createInMemoryRepoStore,
   createInMemoryScheduler,
@@ -211,6 +212,7 @@ function buildEnv(opts: {
       requires,
       authzContext,
       input,
+      credentials: unavailableCredentialCapability(handler),
     });
     const output = await ctx.perform({
       effectId: handler,

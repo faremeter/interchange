@@ -1,4 +1,5 @@
 export type {
+  ActionCredentialsFactory,
   ActionInvokeRequest,
   ActionInvokeResult,
   ActionInvoker,

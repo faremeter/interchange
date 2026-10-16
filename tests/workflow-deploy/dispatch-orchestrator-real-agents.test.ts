@@ -75,6 +75,7 @@ import {
   createTerminalChildHandle,
   action,
   createEffectContext,
+  unavailableCredentialCapability,
   createInMemoryBlobSubstrate,
   createInMemoryRepoStore,
   createInMemoryScheduler,
@@ -997,6 +998,7 @@ describe("dispatch orchestrator with real agents", () => {
         requires,
         authzContext,
         input,
+        credentials: unavailableCredentialCapability(handler),
       });
       const output = await ctx.perform({
         effectId: handler,
