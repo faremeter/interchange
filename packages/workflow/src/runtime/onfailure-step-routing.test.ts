@@ -592,4 +592,37 @@ describe("onFailure handler shapes", () => {
       settled: "failed",
     });
   });
+
+  // The gate's skip of the unit makes the unit read as completed, and a
+  // resume must not take that for a success that prunes the handler.
+  test("a resume after the gate picks the handler still runs it", async () => {
+    const triggerPayload = { flagged: true, task: "t" };
+    const live = buildEnv(gated);
+    const liveRes = await runtimeRun(gated, live.env, {
+      runId: "r",
+      triggerPayload,
+    }).complete;
+    expect(liveRes.terminalStatus).toBe("completed");
+    const emitted = await live.repoStore.read("r");
+    const handlerStart = emitted.findIndex(
+      (e) => e.kind === "StepStarted" && e.stepId === "rescue",
+    );
+    expect(handlerStart).toBeGreaterThan(-1);
+
+    const invoked: string[] = [];
+    const resume = buildEnv(gated, {
+      invokeStep: async (req) => {
+        invoked.push(req.agent.id);
+        return { output: null };
+      },
+    });
+    const res = await runtimeRun(gated, resume.env, {
+      runId: "r",
+      triggerPayload,
+      resumeFromEvents: emitted.slice(0, handlerStart),
+    }).complete;
+
+    expect(res.terminalStatus).toBe("completed");
+    expect(invoked).toEqual(["rescue"]);
+  });
 });
