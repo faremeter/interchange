@@ -22,6 +22,7 @@
 // carries its own.
 
 import type { AgentDefinition, BaseEnv } from "@intx/agent";
+import { ToolCredentialHandle } from "@intx/types/package-json";
 import type { Type } from "arktype";
 
 // Type-only import: an action handler's `ctx` parameter is the runtime's
@@ -276,6 +277,13 @@ export interface ActionPrimitive extends PrimitiveBase {
   drainBehavior?: DrainBehavior;
   /** See {@link StepPrimitive.onFailure}. */
   onFailure?: string;
+  /**
+   * The credential handles this action declares. `action()` validates each
+   * handle's format and rejects a duplicate, and omits the field when the
+   * list is empty. The handles are part of the approved projection and the
+   * definition hash, in the order the author wrote them.
+   */
+  credentials?: readonly string[];
 }
 
 /**
@@ -691,10 +699,27 @@ export interface ActionOpts {
   after?: readonly string[];
   /** See {@link StepPrimitive.onFailure}. */
   onFailure?: string;
+  /** See {@link ActionPrimitive.credentials}. */
+  credentials?: readonly string[];
 }
 
 export function action(opts: ActionOpts): ActionPrimitive {
   const drainBehavior: DrainBehavior = opts.drainBehavior ?? "cancel";
+  const credentials = opts.credentials ?? [];
+  const seen = new Set<string>();
+  for (const handle of credentials) {
+    if (!ToolCredentialHandle.allows(handle)) {
+      throw new Error(
+        `action ${JSON.stringify(opts.handler)} declares credential handle ${JSON.stringify(handle)}, which does not match ${ToolCredentialHandle.expression}`,
+      );
+    }
+    if (seen.has(handle)) {
+      throw new Error(
+        `action ${JSON.stringify(opts.handler)} declares credential handle ${JSON.stringify(handle)} more than once`,
+      );
+    }
+    seen.add(handle);
+  }
   return {
     kind: "action",
     id: "",
@@ -705,6 +730,7 @@ export function action(opts: ActionOpts): ActionPrimitive {
     ...(opts.timeout !== undefined ? { timeout: opts.timeout } : {}),
     ...(opts.after !== undefined ? { after: opts.after } : {}),
     ...(opts.onFailure !== undefined ? { onFailure: opts.onFailure } : {}),
+    ...(credentials.length > 0 ? { credentials } : {}),
   };
 }
 

@@ -2211,6 +2211,7 @@ async function runAction(
       handler: primitive.handler,
       input,
       requires: primitive.effect?.requires ?? [],
+      credentials: primitive.credentials ?? [],
       authzContext: { stepId: primitive.id, attempt: 1, runId },
       signal: actionAbort.signal,
     });

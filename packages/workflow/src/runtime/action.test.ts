@@ -201,3 +201,42 @@ describe("action primitive", () => {
     expect(second.outputs.act).toBe("sha-1");
   });
 });
+
+describe("action credential declarations", () => {
+  async function requestFor(credentials?: readonly string[]) {
+    const requests: Parameters<ActionInvoker>[0][] = [];
+    const invokeAction: ActionInvoker = async (request) => {
+      requests.push(request);
+      return { output: null };
+    };
+    const def = defineWorkflow({
+      id: "act-credentials",
+      trigger: { type: "manual" },
+      steps: {
+        push: action({
+          handler: "push",
+          ...(credentials !== undefined ? { credentials } : {}),
+        }),
+      },
+    });
+    const result = await runLocal(def, {
+      authorize: allowAll(),
+      invokeAction,
+      hasUpstreamSignalResolver: true,
+    }).complete;
+    expect(result.terminalStatus).toBe("completed");
+    expect(requests).toHaveLength(1);
+    return requests[0];
+  }
+
+  test("the invoker receives the declared handles", async () => {
+    expect((await requestFor(["github", "npm"]))?.credentials).toEqual([
+      "github",
+      "npm",
+    ]);
+  });
+
+  test("the invoker receives an empty list when none are declared", async () => {
+    expect((await requestFor())?.credentials).toEqual([]);
+  });
+});
