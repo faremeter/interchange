@@ -1,17 +1,20 @@
+// Pure POSIX path helpers, with `join` also checked against
+// `path.posix.join`.
+
 import { describe, expect, test } from "bun:test";
 import path from "node:path";
 
-import { browserPath } from "./browser-path";
+import { join, normalize, relative, resolve } from "./posix-path";
 
-describe("browserPath", () => {
+describe("posix-path", () => {
   test.each([
     [[], "."],
     [["/repo", ".git", "objects"], "/repo/.git/objects"],
     [["repo", "state", "..", "audit"], "repo/audit"],
     [["/", "repo", "//state"], "/repo/state"],
   ] as const)("join(%j)", (parts, expected) => {
-    expect(browserPath.join(...parts)).toBe(expected);
-    expect(browserPath.join(...parts)).toBe(path.posix.join(...parts));
+    expect(join(...parts)).toBe(expected);
+    expect(join(...parts)).toBe(path.posix.join(...parts));
   });
 
   test.each([
@@ -20,7 +23,7 @@ describe("browserPath", () => {
     ["/repo", "/repo", ""],
     ["repo", "other/file", "../other/file"],
   ])("relative(%s, %s)", (from, to, expected) => {
-    expect(browserPath.relative(from, to)).toBe(expected);
+    expect(relative(from, to)).toBe(expected);
   });
 
   test.each([
@@ -29,6 +32,20 @@ describe("browserPath", () => {
     ["/../../repo", "/repo"],
     ["", "/"],
   ])("resolve(%s)", (filepath, expected) => {
-    expect(browserPath.resolve(filepath)).toBe(expected);
+    expect(resolve(filepath)).toBe(expected);
+  });
+
+  test.each([
+    ["/x/", "/x"],
+    ["/x//y/./z", "/x/y/z"],
+    ["/..", "/"],
+    ["/a/../..", "/"],
+    ["a/../..", ".."],
+    ["../a", "../a"],
+    ["..foo", "..foo"],
+    ["./", "."],
+    ["", "."],
+  ])("normalize(%s)", (filepath, expected) => {
+    expect(normalize(filepath)).toBe(expected);
   });
 });
