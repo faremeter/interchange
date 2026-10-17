@@ -1290,19 +1290,14 @@ describe("audit and error durability retries", () => {
 
     indexWrites.writes = 0;
     armed = true;
-    const listingFailure = `Could not list ${blobsDir}: injected listing failure`;
     await expect(
       store.commit({ message: "Failed checkpoint" }),
     ).rejects.toMatchObject({
-      message: `Could not restore the context index after failure: ${listingFailure}`,
+      message:
+        "Could not restore the context index after failure: injected listing failure",
       cause: {
         errors: [
-          {
-            message: listingFailure,
-            errors: expect.arrayContaining([
-              expect.objectContaining({ code: "EIO" }),
-            ]),
-          },
+          expect.objectContaining({ code: "EIO" }),
           { errors: [expect.objectContaining({ code: "EIO" })] },
         ],
       },
@@ -1377,18 +1372,13 @@ describe("audit and error durability retries", () => {
     ).rejects.toMatchObject({
       cause: {
         errors: [
-          {
-            message: `Could not list ${blobsDir}: injected listing failure`,
+          expect.objectContaining({
+            code: "MultipleGitError",
             errors: [
+              expect.objectContaining({ code: "EACCES" }),
               expect.objectContaining({ code: "EIO" }),
-              expect.objectContaining({
-                errors: [
-                  expect.objectContaining({ code: "EACCES" }),
-                  expect.objectContaining({ code: "EIO" }),
-                ],
-              }),
             ],
-          },
+          }),
           { errors: [expect.objectContaining({ code: "EIO" })] },
         ],
       },
