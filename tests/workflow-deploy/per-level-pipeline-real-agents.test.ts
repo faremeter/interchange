@@ -926,6 +926,7 @@ describe("per-level pipeline with real agents", () => {
         throw new Error(`action ${handler} declared no effect capability`);
       }
       const ctx = createEffectContext({
+        handler,
         authorize: workflowAuthorize,
         effects,
         requires,

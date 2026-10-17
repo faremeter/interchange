@@ -70,6 +70,7 @@ export {
   type LoopFn,
   type LoopFnRegistry,
   type ParkedApprovalOp,
+  type PerformScope,
   type ReadParkedApprovalOps,
   type RepoStore,
   type RunResult,

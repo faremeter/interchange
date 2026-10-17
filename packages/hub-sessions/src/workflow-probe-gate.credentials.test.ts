@@ -40,7 +40,13 @@ async function probeFor(
       defineWorkflow({
         id: "wf-under-test",
         trigger: { type: "manual" },
-        steps: { push: action({ handler: "push", credentials: ["gh"] }) },
+        steps: {
+          push: action({
+            handler: "push",
+            credentials: ["gh"],
+            effect: { requires: ["call"] },
+          }),
+        },
         ...(credentialBindings.length > 0 ? { credentialBindings } : {}),
       }),
     ),

@@ -19,22 +19,33 @@ import type {
   AuthorizeContext,
   WorkflowAuthorizeFn,
 } from "../authorize-context";
+import { guardCredentialCapability } from "./credential-guard";
 import type { EffectContext, EffectLedger } from "./env";
 
 export interface EffectContextConfig {
+  /** The action handler ref, named in a refusal. */
+  handler: string;
   authorize: WorkflowAuthorizeFn;
   effects: EffectLedger;
   requires: readonly string[];
   authzContext: AuthorizeContext;
   input: unknown;
+  /** The invocation's credentials, handed to each `run` through its scope. */
   credentials: CredentialCapability;
 }
 
 export function createEffectContext(
   config: EffectContextConfig,
 ): EffectContext {
-  const { authorize, effects, requires, authzContext, input, credentials } =
-    config;
+  const {
+    handler,
+    authorize,
+    effects,
+    requires,
+    authzContext,
+    input,
+    credentials,
+  } = config;
   const allowed = new Set(requires);
   const { runId, stepId } = authzContext;
   if (runId === undefined || stepId === undefined) {
@@ -43,11 +54,10 @@ export function createEffectContext(
     );
   }
   return {
-    credentials,
     async perform({ effectId, capability, run }) {
       if (!allowed.has(capability)) {
         throw new Error(
-          `action effect uses capability ${capability} which is not in its declared requires set`,
+          `action ${handler} effect uses capability ${capability} which is not in its declared requires set`,
         );
       }
       // Fail closed: only an explicit allow proceeds. deny, ask, and a
@@ -72,7 +82,23 @@ export function createEffectContext(
       if (hit !== undefined) {
         return hit.output;
       }
-      const output = await run();
+      // The scope closes when `run` settles, before the record, so a handle
+      // the handler keeps cannot be used after the effect is recorded.
+      let open = true;
+      const scope = {
+        credentials: guardCredentialCapability(
+          credentials,
+          () => open,
+          (handle, verb) =>
+            `action ${handler} cannot ${verb} credential handle "${handle}" outside the run of its effect ${effectId}`,
+        ),
+      };
+      let output: unknown;
+      try {
+        output = await run(scope);
+      } finally {
+        open = false;
+      }
       await effects.record(effectKey, output);
       return output;
     },

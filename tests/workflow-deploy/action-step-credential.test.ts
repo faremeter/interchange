@@ -3,12 +3,11 @@
 // A source-ref workflow from `fixtures/action-credential-workflow.ts` binds one
 // tenant credential to two action handlers: `push` at top level, and
 // `pushChild` inside a childWorkflow body, and `pushLoop` inside a top-level
-// loop body. Deploy resolves the root bindings
-// against the DB-seeded provider and credential and stamps each binding with
-// its consumer, `action:<handler>`. Each handler resolves the handle through
-// `ctx.credentials` inside `perform` and fetches a path on the credential's
-// pinned origin, an in-process mock server that records the Authorization
-// header it sees.
+// loop body. Deploy resolves the root bindings against the DB-seeded provider
+// and credential and stamps each binding with its consumer, `action:<handler>`.
+// Each handler resolves the handle through the credentials `perform` gives its
+// `run`, and fetches a path on the credential's pinned origin, an in-process
+// mock server that records the Authorization header it sees.
 //
 // The proofs:
 //   - Positive: the exact seeded secret reaches the origin as a bearer from the

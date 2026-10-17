@@ -1332,6 +1332,7 @@ describe("action credentials projection and hash", () => {
       steps: {
         push: action({
           handler: "push",
+          effect: { requires: ["call"] },
           ...(credentials !== undefined ? { credentials } : {}),
         }),
       },
@@ -1367,7 +1368,13 @@ describe("action credentials projection and hash", () => {
       defineWorkflow({
         id,
         trigger: { type: "manual" },
-        steps: { push: action({ handler: "push", credentials: ["github"] }) },
+        steps: {
+          push: action({
+            handler: "push",
+            credentials: ["github"],
+            effect: { requires: ["call"] },
+          }),
+        },
       });
     const projection = projectLiveToInert(
       defineWorkflow({

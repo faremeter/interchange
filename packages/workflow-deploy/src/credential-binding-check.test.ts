@@ -103,7 +103,7 @@ describe("checkCredentialBindings accepts deliverable bindings", () => {
 
   test("an action binding for a declared handle at top level, in a loop body, and in a childWorkflow body", () => {
     const declaring = (handler: string) =>
-      action({ handler, credentials: ["gh"] });
+      action({ handler, credentials: ["gh"], effect: { requires: ["call"] } });
     expect(
       check(
         {
@@ -139,7 +139,11 @@ describe("checkCredentialBindings accepts deliverable bindings", () => {
       }),
     });
     const section = body("section-body", {
-      push: action({ handler: "push", credentials: ["gh"] }),
+      push: action({
+        handler: "push",
+        credentials: ["gh"],
+        effect: { requires: ["call"] },
+      }),
       rework: loop({
         body: loopBody,
         while: "cont",
@@ -166,10 +170,15 @@ describe("checkCredentialBindings accepts deliverable bindings", () => {
     expect(
       check(
         {
-          first: action({ handler: "push", credentials: ["gh"] }),
+          first: action({
+            handler: "push",
+            credentials: ["gh"],
+            effect: { requires: ["call"] },
+          }),
           second: action({
             handler: "push",
             credentials: ["gh", "npm"],
+            effect: { requires: ["call"] },
             after: ["first"],
           }),
         },
@@ -182,7 +191,16 @@ describe("checkCredentialBindings accepts deliverable bindings", () => {
 describe("checkCredentialBindings refuses undeliverable bindings", () => {
   test("a declared action handle with no binding", () => {
     expect(
-      check({ push: action({ handler: "push", credentials: ["gh"] }) }, []),
+      check(
+        {
+          push: action({
+            handler: "push",
+            credentials: ["gh"],
+            effect: { requires: ["call"] },
+          }),
+        },
+        [],
+      ),
     ).toEqual([
       { kind: "unbound_declared_handle", handler: "push", handle: "gh" },
     ]);
@@ -264,10 +282,16 @@ describe("checkCredentialBindings refuses undeliverable bindings", () => {
 
   test("an action binding for a handle the handler did not declare", () => {
     expect(
-      check({ push: action({ handler: "push", credentials: ["gh"] }) }, [
-        actionBinding("push", "gh"),
-        actionBinding("push", "npm"),
-      ]),
+      check(
+        {
+          push: action({
+            handler: "push",
+            credentials: ["gh"],
+            effect: { requires: ["call"] },
+          }),
+        },
+        [actionBinding("push", "gh"), actionBinding("push", "npm")],
+      ),
     ).toEqual([
       { kind: "undeclared_binding_handle", action: "push", handle: "npm" },
     ]);
@@ -275,10 +299,16 @@ describe("checkCredentialBindings refuses undeliverable bindings", () => {
 
   test("two bindings for one consumer and handle", () => {
     expect(
-      check({ push: action({ handler: "push", credentials: ["gh"] }) }, [
-        actionBinding("push"),
-        actionBinding("push"),
-      ]),
+      check(
+        {
+          push: action({
+            handler: "push",
+            credentials: ["gh"],
+            effect: { requires: ["call"] },
+          }),
+        },
+        [actionBinding("push"), actionBinding("push")],
+      ),
     ).toEqual([
       { kind: "duplicate_binding", consumer: "action push", handle: "gh" },
     ]);
@@ -287,7 +317,11 @@ describe("checkCredentialBindings refuses undeliverable bindings", () => {
   test("every violation is reported, not only the first", () => {
     const kinds = check(
       {
-        push: action({ handler: "push", credentials: ["gh"] }),
+        push: action({
+          handler: "push",
+          credentials: ["gh"],
+          effect: { requires: ["call"] },
+        }),
         work: agentStep([TOOL_ID]),
       },
       [toolBinding("@acme/tools/other"), actionBinding("release")],

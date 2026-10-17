@@ -25,6 +25,7 @@ import {
 } from "../ontrigger-bodies";
 import { runtimeRun, type RuntimeRunOptions } from "../runtime/run";
 import { createNoopDrainController } from "../runtime/drain";
+import { guardCredentialCapability } from "../runtime/credential-guard";
 import { createEffectContext } from "../runtime/effect-context";
 import { createLoopIterationHandle } from "../runtime/loop-iteration-handle";
 import { createSuspendableChildHandle } from "../runtime/suspendable-child-handle";
@@ -344,9 +345,10 @@ export function createDefaultActionInvoker(
       credentials,
       authzContext,
     });
-    // The handler sees only `resolve`; `dispose` stays with the invoker. The
-    // view refuses once disposal starts, so a handler that keeps it cannot
-    // shape a handle that nothing would dispose.
+    // The handler's `perform` scopes see only `resolve`; `dispose` stays with
+    // the invoker. The view, and every handle it returns, refuses once
+    // disposal starts, so a `perform` the handler left pending cannot shape a
+    // handle that nothing would dispose, or use one it already holds.
     let disposed = false;
     const dispose = (): Promise<void> => {
       disposed = true;
@@ -355,21 +357,18 @@ export function createDefaultActionInvoker(
     let output: unknown;
     try {
       const ctx = createEffectContext({
+        handler,
         authorize,
         effects,
         requires,
         authzContext,
         input,
-        credentials: {
-          resolve: (h) =>
-            disposed
-              ? Promise.reject(
-                  new Error(
-                    `action ${handler} cannot resolve credential handle "${h}": its credentials capability is disposed`,
-                  ),
-                )
-              : capability.resolve(h),
-        },
+        credentials: guardCredentialCapability(
+          capability,
+          () => !disposed,
+          (h, verb) =>
+            `action ${handler} cannot ${verb} credential handle "${h}": its credentials capability is disposed`,
+        ),
       });
       output = await fn(input, ctx, signal);
     } catch (handlerError) {

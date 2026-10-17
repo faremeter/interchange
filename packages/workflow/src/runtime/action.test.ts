@@ -42,6 +42,7 @@ function invokerFor(
 ): ActionInvoker {
   return async ({ input, requires, authzContext, signal }) => {
     const ctx = createEffectContext({
+      handler: "test-action",
       authorize,
       effects,
       requires,
@@ -217,6 +218,7 @@ describe("action credential declarations", () => {
       steps: {
         push: action({
           handler: "push",
+          effect: { requires: ["call"] },
           ...(credentials !== undefined ? { credentials } : {}),
         }),
       },

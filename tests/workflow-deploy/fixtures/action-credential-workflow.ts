@@ -2,16 +2,16 @@
 // credentials. The workflow runs three steps on one mail trigger:
 //
 //   - `push`: a top-level action that declares the credential handle, resolves
-//     it through `ctx.credentials` inside `perform`, and fetches a path on the
-//     credential's pinned origin.
+//     it through the credentials `perform` gives its `run`, and fetches a path
+//     on the credential's pinned origin.
 //   - `spawn`: a childWorkflow whose body runs `pushChild`, an action that does
 //     the same from inside the child run.
 //   - `rework`: a top-level loop whose body runs `pushLoop` once. A loop body
 //     runs as a spawned child, so it takes its grants through the child cap.
 //   - `release`: a top-level action that declares no credentials and tries to
-//     resolve the same handle. No binding names its handler, so the resolve
-//     fails. The handler returns the refusal message as its output, so the run
-//     completes and the test can read the message.
+//     resolve the same handle inside `perform`. No binding names its handler,
+//     so the resolve fails. The handler returns the refusal message as its
+//     output, so the run completes and the test can read the message.
 //
 // The entry module exports the handlers next to `workflow`. The deployment
 // points `interchange.actions` and `interchange.loops` at this same module.
@@ -120,6 +120,7 @@ export const workflow = defineWorkflow({
     loopDone: action({ handler: "loopDone", after: [${JSON.stringify(LOOP_STEP_ID)}] }),
     [${JSON.stringify(SCOPED_OUT_HANDLER)}]: action({
       handler: ${JSON.stringify(SCOPED_OUT_HANDLER)},
+      effect: { requires: [${JSON.stringify(CALL_CAPABILITY)}] },
     }),
   },
 });
@@ -128,8 +129,8 @@ async function fetchThroughHandle(ctx, effectId, path) {
   return ctx.perform({
     effectId,
     capability: ${JSON.stringify(CALL_CAPABILITY)},
-    run: async () => {
-      const mediated = await ctx.credentials.resolve(${JSON.stringify(ACTION_CREDENTIAL_HANDLE)});
+    run: async ({ credentials }) => {
+      const mediated = await credentials.resolve(${JSON.stringify(ACTION_CREDENTIAL_HANDLE)});
       if (mediated.kind !== "http") {
         throw new Error("expected an http mediated credential, got " + mediated.kind);
       }
@@ -165,8 +166,15 @@ export async function loopDone() {
 
 export async function ${SCOPED_OUT_HANDLER}(_input, ctx, _signal) {
   try {
-    const mediated = await ctx.credentials.resolve(${JSON.stringify(ACTION_CREDENTIAL_HANDLE)});
-    await mediated.fetch(${JSON.stringify(SCOPED_OUT_PATH)});
+    await ctx.perform({
+      effectId: "release-call",
+      capability: ${JSON.stringify(CALL_CAPABILITY)},
+      run: async ({ credentials }) => {
+        const mediated = await credentials.resolve(${JSON.stringify(ACTION_CREDENTIAL_HANDLE)});
+        await mediated.fetch(${JSON.stringify(SCOPED_OUT_PATH)});
+        return null;
+      },
+    });
     return { refused: null };
   } catch (err) {
     return { refused: err instanceof Error ? err.message : String(err) };

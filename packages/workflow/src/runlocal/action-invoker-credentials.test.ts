@@ -1,6 +1,7 @@
 // The default action invoker builds each action's credentials capability
-// before the handler runs, hands the handler a view that can only resolve, and
-// disposes the capability when the handler settles.
+// before the handler runs, hands each `perform` scope a view that can only
+// resolve, and disposes the capability when the handler settles. Every handle
+// the view returns refuses use once the invoker disposes.
 
 import { describe, test, expect } from "bun:test";
 
@@ -15,6 +16,7 @@ import type { ActionHandler } from "../definition/index";
 import type {
   ActionCredentialsFactory,
   ActionInvokeRequest,
+  EffectContext,
   EffectLedger,
 } from "../runtime/env";
 import {
@@ -100,6 +102,19 @@ function recordingFactory(opts: { disposeError?: Error } = {}): {
   };
 }
 
+// Run `use` inside one `perform` of the action's declared capability, with
+// the scope's credentials.
+function withCredentials<T>(
+  ctx: EffectContext,
+  use: (credentials: CredentialCapability) => Promise<T>,
+): Promise<unknown> {
+  return ctx.perform({
+    effectId: "release",
+    capability: "github.release",
+    run: ({ credentials }) => use(credentials),
+  });
+}
+
 function invokerFor(
   handler: ActionHandler,
   factory: ActionCredentialsFactory,
@@ -111,10 +126,14 @@ function invokerFor(
 describe("action credentials in the default invoker", () => {
   test("a handler resolves its declared handle through the factory's capability", async () => {
     const { factory, requests } = recordingFactory();
-    const invoke = invokerFor(async (_input, ctx) => {
-      const resolved = await ctx.credentials.resolve("github");
-      return resolved.kind;
-    }, factory);
+    const invoke = invokerFor(
+      async (_input, ctx) =>
+        withCredentials(
+          ctx,
+          async (credentials) => (await credentials.resolve("github")).kind,
+        ),
+      factory,
+    );
 
     await expect(invoke(request())).resolves.toEqual({ output: "http" });
     expect(requests).toEqual([
@@ -125,7 +144,8 @@ describe("action credentials in the default invoker", () => {
   test("the handler's view of the capability cannot dispose it", async () => {
     const { factory } = recordingFactory();
     const invoke = invokerFor(
-      async (_input, ctx) => Object.keys(ctx.credentials),
+      async (_input, ctx) =>
+        withCredentials(ctx, async (credentials) => Object.keys(credentials)),
       factory,
     );
     await expect(invoke(request())).resolves.toEqual({ output: ["resolve"] });
@@ -136,7 +156,9 @@ describe("action credentials in the default invoker", () => {
     const seen: number[] = [];
     await invokerFor(async (_input, ctx) => {
       seen.push(disposals.count);
-      await ctx.credentials.resolve("github");
+      await withCredentials(ctx, (credentials) =>
+        credentials.resolve("github"),
+      );
       seen.push(disposals.count);
       return "done";
     }, factory)(request());
@@ -165,17 +187,67 @@ describe("action credentials in the default invoker", () => {
     expect(disposals.count).toBe(1);
   });
 
-  test("a view kept past the invocation refuses to resolve", async () => {
+  test("a perform the handler leaves pending cannot resolve after the invocation", async () => {
     const { factory } = recordingFactory();
-    const kept: { view?: CredentialCapability } = {};
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let pending: Promise<unknown> | undefined;
     await invokerFor(async (_input, ctx) => {
-      kept.view = ctx.credentials;
+      pending = withCredentials(ctx, async (credentials) => {
+        await gate;
+        return credentials.resolve("github");
+      });
       return "done";
     }, factory)(request());
-    if (kept.view === undefined) throw new Error("the handler did not run");
-    await expect(kept.view.resolve("github")).rejects.toThrow(
+    release();
+    await expect(pending).rejects.toThrow(
       'action push cannot resolve credential handle "github": its credentials capability is disposed',
     );
+  });
+
+  test("a handle a pending perform holds refuses use after the invocation", async () => {
+    let fetches = 0;
+    const counted: MediatedCredential = {
+      kind: "http",
+      fetch: () => {
+        fetches += 1;
+        return Promise.resolve(new Response("ok"));
+      },
+      dispose() {
+        /* the fake handle holds nothing to release */
+      },
+    };
+    const factory: ActionCredentialsFactory = () => ({
+      resolve: () => Promise.resolve(counted),
+      dispose: () => Promise.resolve(),
+    });
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let holding: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      holding = resolve;
+    });
+    let pending: Promise<unknown> | undefined;
+    await invokerFor(async (_input, ctx) => {
+      pending = withCredentials(ctx, async (credentials) => {
+        const gh = await credentials.resolve("github");
+        holding();
+        await gate;
+        return gh.fetch("/late");
+      });
+      // Return once the pending run holds its handle.
+      await held;
+      return "done";
+    }, factory)(request());
+    release();
+    await expect(pending).rejects.toThrow(
+      'action push cannot use credential handle "github": its credentials capability is disposed',
+    );
+    expect(fetches).toBe(0);
   });
 
   test("a dispose failure after a successful handler fails the invocation", async () => {
@@ -259,7 +331,8 @@ describe("unavailableActionCredentials", () => {
 
   test("gives an action that declares none a capability that fails closed", async () => {
     const invoke = invokerFor(
-      async (_input, ctx) => ctx.credentials.resolve("github"),
+      async (_input, ctx) =>
+        withCredentials(ctx, (credentials) => credentials.resolve("github")),
       unavailableActionCredentials,
     );
     await expect(invoke(request({ credentials: [] }))).rejects.toThrow(
