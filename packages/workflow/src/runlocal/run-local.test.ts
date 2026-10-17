@@ -15,16 +15,26 @@
 // posture `createEffectContext` takes for an action effect, so an
 // authorization failure is observable locally instead of surfacing only after
 // deploy.
+//
+// An `actionCredentials` factory reaches every action the local run tree
+// executes: top level, loop bodies, and spawned children. Without one, an
+// action that declares credentials fails before its handler runs.
 
 import { describe, test, expect } from "bun:test";
 
 import { defineAgent } from "@intx/agent";
 
+import type { MediatedCredential } from "@intx/types";
 import {
+  action,
   childWorkflow,
   defineWorkflow,
+  loop,
   runLocal,
   step,
+  type ActionCredentialsFactory,
+  type ActionHandler,
+  type ActionInvoker,
   type StepInvoker,
   type WorkflowAuthorizeFn,
 } from "@intx/workflow";
@@ -152,5 +162,132 @@ describe("runLocal default step invoker authorization", () => {
     }).complete;
 
     expect(result.terminalStatus).toBe("completed");
+  });
+});
+
+describe("runLocal action credentials", () => {
+  const handle: MediatedCredential = {
+    kind: "http",
+    fetch: () => Promise.resolve(new Response("ok")),
+    dispose() {
+      /* the fake handle holds nothing to release */
+    },
+  };
+
+  // A factory that records which handler each invocation asked for.
+  function recordingFactory(): {
+    factory: ActionCredentialsFactory;
+    handlers: string[];
+  } {
+    const handlers: string[] = [];
+    return {
+      handlers,
+      factory: ({ handler }) => {
+        handlers.push(handler);
+        return {
+          resolve: () => Promise.resolve(handle),
+          dispose: () => Promise.resolve(),
+        };
+      },
+    };
+  }
+
+  // Resolve `gh` inside one `perform` and return the handle's kind.
+  const resolving: ActionHandler = (_input, ctx) =>
+    ctx.perform({
+      effectId: "resolve",
+      capability: "call",
+      run: async ({ credentials }) => (await credentials.resolve("gh")).kind,
+    });
+
+  const declaring = (handler: string, after?: readonly string[]) =>
+    action({
+      handler,
+      credentials: ["gh"],
+      effect: { requires: ["call"] },
+      ...(after !== undefined ? { after } : {}),
+    });
+
+  const tree = defineWorkflow({
+    id: "local-credentials-tree",
+    trigger: { type: "manual" },
+    steps: {
+      top: declaring("top"),
+      rework: loop({
+        body: defineWorkflow({
+          id: "local-credentials-loop-body",
+          trigger: { type: "manual" },
+          steps: { inLoop: declaring("inLoop") },
+        }),
+        while: "stop",
+        carry: "keep",
+        maxIterations: 2,
+        onExhausted: "done",
+      }),
+      done: action({ handler: "done", after: ["rework"] }),
+      spawn: childWorkflow({
+        definition: defineWorkflow({
+          id: "local-credentials-child",
+          trigger: { type: "manual" },
+          steps: { inChild: declaring("inChild") },
+        }),
+      }),
+    },
+  });
+
+  const options = {
+    authorize: allow,
+    hasUpstreamSignalResolver: true,
+    actionResolver: (ref: string): ActionHandler =>
+      ref === "done" ? async () => null : resolving,
+    loopFns: (ref: string) =>
+      ref === "stop"
+        ? () => false
+        : (_output: unknown, input: unknown) => input,
+  };
+
+  test("the factory builds credentials for top-level, loop-body and child actions", async () => {
+    const { factory, handlers } = recordingFactory();
+    const result = await runLocal(tree, {
+      ...options,
+      actionCredentials: factory,
+    }).complete;
+
+    expect(result.terminalStatus).toBe("completed");
+    // The loop converges, so its onExhausted target `done` is skipped.
+    expect([...handlers].sort()).toEqual(["inChild", "inLoop", "top"]);
+  });
+
+  test("without a factory, an action that declares credentials fails", async () => {
+    const result = await runLocal(
+      defineWorkflow({
+        id: "local-credentials-none",
+        trigger: { type: "manual" },
+        steps: { top: declaring("top") },
+      }),
+      options,
+    ).complete;
+
+    expect(result.terminalStatus).toBe("failed");
+    const failure = result.events.find((event) => event.kind === "StepFailed");
+    if (failure === undefined || failure.kind !== "StepFailed") {
+      throw new Error("expected the top step to fail");
+    }
+    expect(failure.error.message).toContain(
+      "action top declares credential handle(s) gh, but no credential source is configured",
+    );
+  });
+
+  test("a factory together with a custom action-runner is refused", () => {
+    const invokeAction: ActionInvoker = async () => ({ output: null });
+    expect(() =>
+      runLocal(tree, {
+        ...options,
+        invokeAction,
+        actionCredentials: recordingFactory().factory,
+      }),
+    ).toThrow(
+      "runLocal: actionCredentials applies only to the default action-runner",
+    );
   });
 });

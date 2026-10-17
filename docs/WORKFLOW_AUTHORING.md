@@ -184,13 +184,22 @@ Where it lives today: `runEscalation`,
 
 ## Step invocation
 
-**12.** `runLocal`'s DEFAULT `invokeStep` runs no inference at all. It calls
-the workflow `authorize` and returns `{ output: null }`. A step whose agent
-declares tools therefore never calls a tool under the default invoker. A
-local run of a tool-bearing workflow needs a caller-supplied `invokeStep`
-that constructs a real agent.
+**12.** `runLocal`'s defaults supply no external capability. Its DEFAULT
+`invokeStep` runs no inference at all. It calls the workflow `authorize` and
+returns `{ output: null }`. A step whose agent declares tools therefore never
+calls a tool under the default invoker. A local run of a tool-bearing
+workflow needs a caller-supplied `invokeStep` that constructs a real agent.
 
-Where it lives today: `createDefaultStepInvoker`,
+`runLocal` gives action handlers no credentials by default: an action that
+declares `credentials` fails before its handler runs. Pass
+`actionCredentials` to supply them. `createActionCredentialsFactory` from
+`@intx/harness` builds a factory over a material cell, a grants resolver and
+a provider registry, the same builder the deployed host uses. A
+`childWorkflow` child inherits the option. `runLocal` refuses the option
+together with a custom `invokeAction`, because a custom action-runner does
+not use it.
+
+Where it lives today: `createDefaultStepInvoker` and `RunLocalOptions`,
 `packages/workflow/src/runlocal/run-local.ts`
 
 **13.** The step invoker owns the step's OUTPUT SHAPE. Whatever it returns
