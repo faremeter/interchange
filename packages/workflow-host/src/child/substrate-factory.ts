@@ -42,7 +42,6 @@ import {
   type AdapterManifest,
   parseAdapterManifestEnv,
 } from "@intx/types/adapter-manifest";
-import { evaluateGrants } from "@intx/authz";
 import type { GrantRule } from "@intx/authz";
 import { createDependencies, type AdapterRegistry } from "@intx/inference";
 import { loadAdapterRegistry } from "@intx/inference/providers";
@@ -146,10 +145,14 @@ import type { LoadParkedApproval } from "./parked-correlations";
 import { createProxyWorkflowRunRepoStore } from "./proxy-repo-store";
 import {
   createCredentialsBackedAuthorize,
-  eagerlyResolveActionHandlers,
-  type CredentialWiring,
+  createGrantEvaluator,
+  resolveSnapshotStepGrants,
   type CredentialsSnapshotRef,
   type GrantEvaluator,
+} from "./credentials-backed-authorize";
+import {
+  eagerlyResolveActionHandlers,
+  type CredentialWiring,
   type RunWorkflowChildBindings,
   type SourcesSnapshotRef,
 } from "./run-child";
@@ -1966,17 +1969,13 @@ async function buildChildRunEnv(args: {
       ? undefined
       : {
           materialCell,
-          resolveStepGrants: (stepId) => {
-            const entry = credentialsSnapshot.steps.find(
-              (step) => step.stepId === baseStepId(stepId),
-            );
-            if (entry === undefined) {
-              throw new Error(
-                `sidecar child credential wiring: credentials snapshot has no entry for step ${baseStepId(stepId)}`,
-              );
-            }
-            return entry.grants;
-          },
+          resolveStepGrants: (stepId) =>
+            resolveSnapshotStepGrants(
+              credentialsSnapshot,
+              stepId,
+              (lookupStepId) =>
+                `sidecar child credential wiring: credentials snapshot has no entry for step ${lookupStepId}`,
+            ),
           providers: deps.credentialProviders,
         };
   // Per-step invocation seam. The runtime body invokes `env.invokeStep` with
@@ -2612,44 +2611,9 @@ export function createSidecarSubstrateFactory(
         ...(driveReplies !== undefined ? { driveReplies } : {}),
       })(req);
 
-    const evaluateGrantsAdapter: GrantEvaluator = async ({
-      resource,
-      action,
-      stepId,
-      grants,
-    }) => {
-      // Merge the step's pinned-tool floor grants (derived and recorded
-      // by the env builder from the step's materialized factories) under
-      // the credentials snapshot's grants. The floor supplies the
-      // `tool:<name>` authority a pinned tool never got from the hub's
-      // capability walk. It is ADDITIVE: `evaluateGrants` ranks by
-      // specificity then effect, so a declared `deny` (priority 2) still
-      // beats the derived `ask`/`allow` and an explicit denial is
-      // honored -- the floor only raises the minimum authority to the
-      // tool's static mark.
-      //
-      // A missing floor entry (`?? []`) contributes no rows: this can
-      // only ever fail MORE closed (a pinned tool the hub also did not
-      // grant stays denied, the pre-#68 behavior), never open a hole, so
-      // it is safe as an additive default. The floor is keyed by base
-      // step id, so a `map` iteration's scoped id resolves to its base
-      // step's floor.
-      const floor = toolMarkFloorByStep.get(baseStepId(stepId)) ?? [];
-      const result = await evaluateGrants(
-        // The credentials snapshot types `grants` as `readonly unknown[]`.
-        // This factory imports `GrantRule` from `@intx/authz` and casts
-        // at the boundary where `evaluateGrants` reads the rows.
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- credentialsSnapshot.steps[*].grants is typed unknown[]; evaluateGrants reads GrantRule
-        [...(grants as readonly GrantRule[]), ...floor],
-        resource,
-        action,
-      );
-      return {
-        effect: result.effect,
-        matchingGrants: [],
-        resolvedBy: null,
-      };
-    };
+    const evaluateGrantsAdapter: GrantEvaluator = createGrantEvaluator({
+      floorFor: (stepId) => toolMarkFloorByStep.get(stepId) ?? [],
+    });
 
     const childRunDeps: SidecarRunChildDeps = {
       substrate,
