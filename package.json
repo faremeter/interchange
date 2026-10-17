@@ -17,7 +17,7 @@
     "better-auth": "^1.4.18",
     "drizzle-orm": "^0.45.1",
     "hono": "^4.11.9",
-    "isomorphic-git": "^1.27.2",
+    "isomorphic-git": "^1.44.3",
     "postgres": "^3.4.8",
     "semver": "^7.7.2",
     "ssri": "^12.0.0",
