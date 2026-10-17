@@ -49,7 +49,7 @@ import {
   generateHmacKey,
   receiveControlChannel,
 } from "../ipc/index";
-import { createActionCredentialsFactory } from "./action-credentials";
+import { createSidecarActionCredentialsFactory } from "./action-credentials";
 import { parseSpawnTimeEnv, runWorkflowChild } from "./index";
 
 const REF = "refs/heads/main";
@@ -746,7 +746,7 @@ export async function resolveToken(input, ctx) {
     const bindings: RunWorkflowChildBindings = {
       ...buildBindings(baseDir),
       actionCredentials: (wiring) =>
-        createActionCredentialsFactory({
+        createSidecarActionCredentialsFactory({
           materialCell: wiring.materialRef,
           resolveStepGrants: wiring.resolveStepGrants,
           providers: createCredentialProviderRegistry(
