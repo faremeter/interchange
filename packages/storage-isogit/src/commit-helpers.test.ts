@@ -133,7 +133,7 @@ test.each([
       armed = true;
       const recoveryErrors = {
         "snapshot write": [recoveryError],
-        walk: [expect.objectContaining({ code: "NotFoundError" })],
+        walk: [recoveryError],
       }[failure];
       await expect(
         rollback(new Error("injected checkpoint failure")),
