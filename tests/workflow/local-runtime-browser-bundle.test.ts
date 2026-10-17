@@ -1,5 +1,6 @@
 // A browser caller can bundle the local runtime: `runLocal`, the real step
-// invoker, the harness credential capabilities and browser storage.
+// invoker, the harness credential capabilities and browser storage. This is
+// also the browser check for `@intx/storage-isogit/browser`.
 //
 // Bun's browser target does not fail on a Node builtin: it polyfills some
 // (`node:path`), silently stubs others (`node:fs`, `node:child_process`), and
