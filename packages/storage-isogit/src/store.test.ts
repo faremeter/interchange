@@ -1750,8 +1750,8 @@ describe("connector thread state", () => {
   test("a persisted suspendedCall survives commit and reload end-to-end", async () => {
     // End-to-end persistence check: write, commit, reload, compare. This
     // does not by itself pin the schema declaration (arktype passes
-    // undeclared keys through), so store.ts carries a compile-time guard
-    // that keeps `PendingOperationSchema.suspendedCall` load-bearing.
+    // undeclared keys through), so @intx/types carries a compile-time guard
+    // that keeps `PersistedPendingOperation.suspendedCall` load-bearing.
     const dir = await tempDir();
     const store = await createIsogitStore(dir);
 

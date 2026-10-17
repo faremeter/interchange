@@ -1,9 +1,8 @@
 import git from "isomorphic-git";
 import {
-  ApprovalSnapshot,
   ConversationTurn,
+  PersistedPendingOperation,
   TokenUsage,
-  ToolCall,
   TransformRecord,
   emptyTokenUsage,
   type AssistantTurn,
@@ -65,38 +64,8 @@ const ConnectorThreadStateSchema = type({
   "subject?": "string",
 });
 
-const PendingOperationSchema = type({
-  correlationId: "string",
-  kind: "'approval'",
-  registeredAt: "number",
-  gateId: "string",
-  "timeoutAt?": "number",
-  "suspendedCall?": ToolCall,
-  "approvalSnapshot?": ApprovalSnapshot,
-});
-
-// The persisted schema and the in-memory PendingOperation type are two
-// separate declarations kept in lockstep. arktype passes undeclared keys
-// through at runtime, so dropping `suspendedCall?` from the schema would not
-// surface as a runtime failure. Projecting the field off the schema's
-// inferred type makes the declaration load-bearing: the indexed access
-// errors under `tsc` if the schema stops carrying the field, and the return
-// annotation pins its persisted type to `ToolCall`.
-const _persistedSuspendedCall = (
-  op: typeof PendingOperationSchema.infer,
-): ToolCall | undefined => op.suspendedCall;
-void _persistedSuspendedCall;
-
-// Same lockstep guard for the approval snapshot: the persisted schema must
-// keep carrying `approvalSnapshot` so a rehydrated pending operation still
-// exposes it. The projection errors under `tsc` if the schema drops the field.
-const _persistedApprovalSnapshot = (
-  op: typeof PendingOperationSchema.infer,
-): ApprovalSnapshot | undefined => op.approvalSnapshot;
-void _persistedApprovalSnapshot;
-
 const MetadataSchema = type({
-  pendingOperations: PendingOperationSchema.array(),
+  pendingOperations: PersistedPendingOperation.array(),
   tokenUsage: TokenUsage,
   connectorState: type("null").or(ConnectorThreadStateSchema),
 });
