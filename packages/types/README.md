@@ -67,7 +67,8 @@ pull in the shapes they need:
   the structural workflow envelope validator used by definition loaders
   and the repository substrate.
 - `@intx/types/grant-snapshot` — `GrantWalkSnapshot`, the per-step grant
-  declarations and workflow grant requirements serialized for deployment.
+  declarations and workflow grant requirements serialized for deployment,
+  and `serializeGrantWalk`, which builds it from a capability walk.
 - `@intx/types/grant-wire` — grant-update wire frames pushed from
   the hub to the sidecar.
 - `@intx/types/tool-packages` — schemas for the tool-package

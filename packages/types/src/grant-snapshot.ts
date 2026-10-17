@@ -17,7 +17,7 @@
 
 import { type } from "arktype";
 
-import { grantEffects, GrantRequirement } from "./grants";
+import { grantEffects, GrantRequirement, type GrantEffect } from "./grants";
 
 const Effect = type.enumerated(...grantEffects);
 
@@ -35,3 +35,35 @@ export const GrantWalkSnapshot = type({
 });
 
 export type GrantWalkSnapshot = typeof GrantWalkSnapshot.infer;
+
+/**
+ * Serialize the un-flattened capability walk into a plain-data
+ * `GrantWalkSnapshot`: the per-step grant declarations (each step's grant
+ * strings plus its tool-grant `grantEffects` map, converted from the
+ * walk's `Map` to a plain object) and the definition's full, unfiltered
+ * `grantRequirements`. This preserves the per-step grouping and the effect
+ * data a flattened grant set discards. A definition that declares no
+ * requirements snapshots an empty list.
+ */
+export function serializeGrantWalk(
+  walk: {
+    readonly perStep: ReadonlyMap<
+      string,
+      {
+        readonly grants: readonly string[];
+        readonly grantEffects: ReadonlyMap<string, GrantEffect>;
+      }
+    >;
+  },
+  grantRequirements: readonly GrantRequirement[] | undefined,
+): GrantWalkSnapshot {
+  const perStep = [...walk.perStep].map(([stepId, declarations]) => ({
+    stepId,
+    grants: [...declarations.grants],
+    grantEffects: Object.fromEntries(declarations.grantEffects),
+  }));
+  return {
+    perStep,
+    grantRequirements: [...(grantRequirements ?? [])],
+  };
+}

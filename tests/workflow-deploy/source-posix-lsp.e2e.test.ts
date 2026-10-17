@@ -53,8 +53,6 @@ import {
 import { createNoopCredentialCipher } from "@intx/crypto";
 import { tenant as tenantTable } from "@intx/db/schema";
 import { loadFrozenGrantSnapshot } from "@intx/db";
-import type { GrantEffect, GrantWalkSnapshot } from "@intx/types";
-import type { WireGrantRule } from "@intx/types/grant-wire";
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
 import type { WorkflowDefinitionAssetSource } from "@intx/types/workflow-sources";
 import type { Packument, PackumentFetcher } from "@intx/tool-packaging";
@@ -87,6 +85,7 @@ import {
   waitForWorkflowRunComplete,
   type DeployFlowEnv,
 } from "../hub-agent/lib/deploy-flow-env";
+import { deriveWireRunGrants } from "./nested-tool-invoke-helpers";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const DEPLOYMENT_ID = generateId("workflowRun");
@@ -249,52 +248,6 @@ async function buildSelfContainedLspTarball(
 
 function sri(bytes: Uint8Array): string {
   return `sha512-${createHash("sha512").update(bytes).digest("base64")}`;
-}
-
-/**
- * Project the frozen grant-walk snapshot into the run's runtime `tool:` grant
- * rows the trigger delivers, mirroring the production
- * `deriveRunRuntimeGrantRows`/`runGrantToWire` tail (as the source-inline-tool
- * e2e does). Every walked tool grant -- posix's gated tools AND the plugin's
- * `tool:lsp` -- becomes one creator-origin `invoke` row with its snapshot
- * effect (ask winning over allow).
- */
-function deriveWireRunGrants(snapshot: GrantWalkSnapshot): WireGrantRule[] {
-  const effectByResource = new Map<string, GrantEffect>();
-  for (const step of snapshot.perStep) {
-    const grantEffects = new Map<string, GrantEffect>(
-      Object.entries(step.grantEffects),
-    );
-    for (const grant of step.grants) {
-      if (grant.startsWith("tool:")) {
-        const effect = grantEffects.get(grant);
-        if (effect === undefined) {
-          throw new Error(
-            `deriveWireRunGrants: tool grant ${JSON.stringify(grant)} has no grantEffects entry`,
-          );
-        }
-        const existing = effectByResource.get(grant);
-        if (existing === "ask" || effect === "ask") {
-          effectByResource.set(grant, "ask");
-        } else if (existing === undefined) {
-          effectByResource.set(grant, effect);
-        }
-      } else if (grant.startsWith("effect:") && !effectByResource.has(grant)) {
-        effectByResource.set(grant, "allow");
-      }
-    }
-  }
-  return [...effectByResource].map(([resource, effect]) => ({
-    id: `run-grant:${resource}`,
-    resource,
-    action: "invoke",
-    effect,
-    origin: "creator",
-    conditions: null,
-    expiresAt: null,
-    roleId: null,
-    principalId: null,
-  }));
 }
 
 let env: DeployFlowEnv;

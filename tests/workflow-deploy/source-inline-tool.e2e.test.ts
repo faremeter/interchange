@@ -36,8 +36,6 @@ import {
   type ApprovalSet,
 } from "@intx/workflow-deploy";
 import { loadFrozenGrantSnapshot } from "@intx/db";
-import type { GrantEffect, GrantWalkSnapshot } from "@intx/types";
-import type { WireGrantRule } from "@intx/types/grant-wire";
 import { tenant as tenantTable } from "@intx/db/schema";
 import {
   createTestDb,
@@ -64,53 +62,7 @@ import {
 } from "../hub-agent/lib/deploy-flow-env";
 import { MAIL_TOOL_NAME } from "./fixtures/mail-tool";
 import { singleStepMailToolEntry } from "./fixtures/single-step-mail-tool";
-
-/**
- * Project a frozen grant-walk snapshot into the run's runtime `tool:`/`effect:`
- * grant rows, in the `run.grants` wire shape the trigger delivers. Mirrors the
- * production `deriveRunRuntimeGrantRows`/`runGrantToWire` tail (not exported
- * from `@intx/hub-api`): one row per distinct grant across steps, tool effect
- * taken from the step's `grantEffects` with `ask` winning over `allow`, effect
- * grants always `allow`. The rows are principal-agnostic (`principalId: null`),
- * matched by resource + action at the child's grant evaluator.
- */
-function deriveWireRunGrants(snapshot: GrantWalkSnapshot): WireGrantRule[] {
-  const effectByResource = new Map<string, GrantEffect>();
-  for (const step of snapshot.perStep) {
-    const grantEffects = new Map<string, GrantEffect>(
-      Object.entries(step.grantEffects),
-    );
-    for (const grant of step.grants) {
-      if (grant.startsWith("tool:")) {
-        const effect = grantEffects.get(grant);
-        if (effect === undefined) {
-          throw new Error(
-            `deriveWireRunGrants: tool grant ${JSON.stringify(grant)} has no grantEffects entry`,
-          );
-        }
-        const existing = effectByResource.get(grant);
-        if (existing === "ask" || effect === "ask") {
-          effectByResource.set(grant, "ask");
-        } else if (existing === undefined) {
-          effectByResource.set(grant, effect);
-        }
-      } else if (grant.startsWith("effect:") && !effectByResource.has(grant)) {
-        effectByResource.set(grant, "allow");
-      }
-    }
-  }
-  return [...effectByResource].map(([resource, effect]) => ({
-    id: `run-grant:${resource}`,
-    resource,
-    action: "invoke",
-    effect,
-    origin: "creator",
-    conditions: null,
-    expiresAt: null,
-    roleId: null,
-    principalId: null,
-  }));
-}
+import { deriveWireRunGrants } from "./nested-tool-invoke-helpers";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const DEPLOYMENT_ID = "run_source-inline-tool-1";

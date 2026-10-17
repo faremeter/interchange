@@ -22,7 +22,15 @@ import {
 } from "@intx/workflow/definition";
 import { rewriteInlineChildWorkflowBodies } from "@intx/workflow";
 
-import { DuplicateWalkToolError, walkCapabilities } from "./capability-walk";
+import { serializeGrantWalk, type GrantEffect } from "@intx/types";
+
+import {
+  credentialUseGrantRules,
+  DuplicateWalkToolError,
+  runtimeGrantRules,
+  walkCapabilities,
+  type RuntimeGrantRule,
+} from "./capability-walk";
 
 // A synthetic mail factory that declares one tool, `mail_send`. The walk
 // keys `tool:` grants on each declared definition name (not on the
@@ -839,5 +847,118 @@ describe("walkCapabilities", () => {
     expect(() => walkCapabilities(workflow, registry)).toThrow(
       DuplicateWalkToolError,
     );
+  });
+});
+
+describe("grant-walk projections", () => {
+  const walk = {
+    perStep: new Map([
+      [
+        "fetch",
+        {
+          grants: ["tool:read", "tool:send", "effect:push", "director:d"],
+          grantEffects: new Map<string, GrantEffect>([
+            ["tool:read", "allow"],
+            ["tool:send", "allow"],
+          ]),
+        },
+      ],
+      [
+        "reply",
+        {
+          grants: ["tool:send", "effect:push", "mail.send:example.com"],
+          grantEffects: new Map<string, GrantEffect>([["tool:send", "ask"]]),
+        },
+      ],
+    ]),
+  };
+
+  test("serializeGrantWalk keeps each step's grants and effects as plain data", () => {
+    expect(serializeGrantWalk(walk, undefined)).toEqual({
+      perStep: [
+        {
+          stepId: "fetch",
+          grants: ["tool:read", "tool:send", "effect:push", "director:d"],
+          grantEffects: { "tool:read": "allow", "tool:send": "allow" },
+        },
+        {
+          stepId: "reply",
+          grants: ["tool:send", "effect:push", "mail.send:example.com"],
+          grantEffects: { "tool:send": "ask" },
+        },
+      ],
+      grantRequirements: [],
+    });
+  });
+
+  test("runtimeGrantRules keeps tool and effect grants once, with ask winning", () => {
+    const base = {
+      action: "invoke",
+      origin: "creator",
+      conditions: null,
+      expiresAt: null,
+    } as const;
+    expect(runtimeGrantRules(serializeGrantWalk(walk, undefined))).toEqual([
+      { ...base, resource: "tool:read", effect: "allow" },
+      { ...base, resource: "tool:send", effect: "ask" },
+      { ...base, resource: "effect:push", effect: "allow" },
+    ]);
+  });
+
+  test("runtimeGrantRules keeps ask when a later step allows the tool", () => {
+    expect(
+      runtimeGrantRules({
+        perStep: [
+          {
+            stepId: "a",
+            grants: ["tool:send"],
+            grantEffects: { "tool:send": "ask" },
+          },
+          {
+            stepId: "b",
+            grants: ["tool:send"],
+            grantEffects: { "tool:send": "allow" },
+          },
+        ],
+      }).map((rule) => rule.effect),
+    ).toEqual(["ask"]);
+  });
+
+  test("serializeGrantWalk copies the definition's grant requirements", () => {
+    const requirements = [
+      { resource: "secret:vault", action: "use", source: "creator" },
+    ] as const;
+    const snapshot = serializeGrantWalk(walk, requirements);
+    expect(snapshot.grantRequirements).toEqual([...requirements]);
+    expect(snapshot.grantRequirements).not.toBe(requirements);
+  });
+
+  test("runtimeGrantRules refuses a tool grant with no effect", () => {
+    expect(() =>
+      runtimeGrantRules({
+        perStep: [{ stepId: "s", grants: ["tool:read"], grantEffects: {} }],
+      }),
+    ).toThrow('tool grant "tool:read" has no grantEffects entry');
+  });
+
+  test("credentialUseGrantRules emits one conditioned rule per credential and consumer", () => {
+    const rule = (
+      credentialId: string,
+      consumer: string,
+    ): RuntimeGrantRule => ({
+      resource: `credential:${credentialId}`,
+      action: "use",
+      effect: "allow",
+      origin: "system",
+      conditions: { tool: consumer },
+      expiresAt: null,
+    });
+    expect(
+      credentialUseGrantRules([
+        { credentialId: "c1", consumer: "action:push" },
+        { credentialId: "c1", consumer: "action:push" },
+        { credentialId: "c1", consumer: "tool:probe" },
+      ]),
+    ).toEqual([rule("c1", "action:push"), rule("c1", "tool:probe")]);
   });
 });
