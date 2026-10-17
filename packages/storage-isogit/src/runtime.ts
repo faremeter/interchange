@@ -1,8 +1,5 @@
 import type { FsClient } from "isomorphic-git";
-import { getLogger } from "@intx/log";
 import { hasCode } from "@intx/types/has-code";
-
-const logger = getLogger(["interchange", "storage-isogit", "git"]);
 
 const textDecoder = new TextDecoder();
 
@@ -130,41 +127,6 @@ function wrapGitFs(
       symlink: operation("symlink"),
     },
   };
-}
-
-function isIndexPath(filepath: unknown): boolean {
-  return (
-    typeof filepath === "string" &&
-    (filepath === ".git/index" || filepath.endsWith("/.git/index"))
-  );
-}
-
-/**
- * isomorphic-git treats an index it fails to read, or one with no contents,
- * as empty, so one failed read could stage or commit a tree that drops every
- * other entry. Hand it empty bytes instead, which it rejects as a corrupt
- * index, and log the cause its error cannot carry.
- */
-function guardIndexReads(fs: FsClient): FsClient {
-  return wrapGitFs(fs, {
-    readFile: async (...args) => {
-      if (!isIndexPath(args[0])) return callFs(fs, "readFile", args);
-      let contents: unknown;
-      try {
-        contents = await callFs(fs, "readFile", args);
-      } catch (cause) {
-        if (hasCode(cause) && cause.code === "ENOENT") throw cause;
-        const detail = cause instanceof Error ? cause.message : String(cause);
-        logger.error`Could not read the Git index ${String(args[0])}: ${detail}`;
-        return new Uint8Array();
-      }
-      if (contents instanceof Uint8Array || contents instanceof ArrayBuffer) {
-        return contents;
-      }
-      logger.error`The Git index ${String(args[0])} has no readable contents`;
-      return new Uint8Array();
-    },
-  });
 }
 
 type ListingFailure = { path: unknown; cause: unknown };
@@ -366,7 +328,7 @@ function createStorageFileSystem(runtime: IsogitRuntime): StorageFileSystem {
   };
 
   return {
-    git: guardIndexReads(runtime.fs),
+    git: runtime.fs,
     access: async (filepath) => {
       await lstat(filepath);
     },
