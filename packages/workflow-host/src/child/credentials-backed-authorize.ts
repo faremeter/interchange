@@ -76,20 +76,20 @@ export function createCredentialsBackedAuthorize(
     const stepId = ctx?.stepId;
     if (stepId === undefined) {
       throw new Error(
-        "workflow-child authorize: missing stepId in AuthorizeContext; the runtime body must thread it through every step invocation",
+        "credentials-backed authorize: missing stepId in AuthorizeContext; the runtime body must thread it through every step invocation",
       );
     }
     const snapshot = ref.current;
     if (snapshot === null) {
       throw new Error(
-        "workflow-child authorize: no credentialsSnapshot active; the supervisor must push one before any step runs",
+        "credentials-backed authorize: no credentials snapshot is active; the host must set one before any step runs",
       );
     }
     const grants = resolveSnapshotStepGrants(
       snapshot,
       stepId,
       (lookupStepId) =>
-        `workflow-child authorize: credentialsSnapshot has no entry for stepId ${lookupStepId}${
+        `credentials-backed authorize: the credentials snapshot has no entry for step ${lookupStepId}${
           lookupStepId === stepId
             ? ""
             : ` (normalized from scoped invocation id ${stepId})`

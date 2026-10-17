@@ -666,6 +666,7 @@
         "@intx/storage-isogit": "workspace:*",
         "@intx/types": "workspace:*",
         "@intx/workflow": "workspace:*",
+        "@intx/workflow-deploy": "workspace:*",
         "arktype": "catalog:",
       },
     },
