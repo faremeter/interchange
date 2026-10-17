@@ -1375,6 +1375,40 @@ export type PendingOperation = {
 };
 
 /**
+ * Validator for a {@link PendingOperation} read back from an agent's durable
+ * state, by the agent's own store and by the Hub's copy of it.
+ */
+export const PersistedPendingOperation = type({
+  correlationId: "string",
+  kind: "'approval'",
+  registeredAt: "number",
+  gateId: "string",
+  "timeoutAt?": "number",
+  "suspendedCall?": ToolCall,
+  "approvalSnapshot?": ApprovalSnapshot,
+});
+
+// The persisted schema and the in-memory PendingOperation type are two
+// separate declarations kept in lockstep. arktype passes undeclared keys
+// through at runtime, so dropping `suspendedCall?` from the schema would not
+// surface as a runtime failure. Projecting the field off the schema's
+// inferred type makes the declaration load-bearing: the indexed access
+// errors under `tsc` if the schema stops carrying the field, and the return
+// annotation pins its persisted type to `ToolCall`.
+const _persistedSuspendedCall = (
+  op: typeof PersistedPendingOperation.infer,
+): ToolCall | undefined => op.suspendedCall;
+void _persistedSuspendedCall;
+
+// Same lockstep guard for the approval snapshot: the persisted schema must
+// keep carrying `approvalSnapshot` so a rehydrated pending operation still
+// exposes it. The projection errors under `tsc` if the schema drops the field.
+const _persistedApprovalSnapshot = (
+  op: typeof PersistedPendingOperation.infer,
+): ApprovalSnapshot | undefined => op.approvalSnapshot;
+void _persistedApprovalSnapshot;
+
+/**
  * Complete reactor state visible to the director decision function.
  *
  * `tokenUsage` is the cumulative usage across the session.
