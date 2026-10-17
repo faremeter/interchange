@@ -8,9 +8,9 @@
 // set the build path emits, otherwise a freshly-packed builtin would
 // be rejected for shape reasons the build did not anticipate.
 
-import path from "node:path";
-
 import { type } from "arktype";
+
+import { normalize } from "./posix-path";
 
 /**
  * A tool package's static declaration of one provider-backed credential it
@@ -90,9 +90,9 @@ export type PackageJSON = typeof PackageJSON.infer;
  * result does not depend on the host's separator or cwd.
  */
 export function isContainedEntryPath(entry: string): boolean {
-  if (path.posix.isAbsolute(entry)) {
+  if (entry.startsWith("/")) {
     return false;
   }
-  const normalized = path.posix.normalize(entry);
-  return normalized !== ".." && !normalized.startsWith(`..${path.posix.sep}`);
+  const normalized = normalize(entry);
+  return normalized !== ".." && !normalized.startsWith("../");
 }
