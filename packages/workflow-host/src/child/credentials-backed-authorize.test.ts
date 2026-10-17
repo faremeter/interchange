@@ -1,10 +1,13 @@
 import { describe, test, expect } from "bun:test";
 
+import type { GrantRule } from "@intx/authz";
+
 import {
   createCredentialsBackedAuthorize,
+  createGrantEvaluator,
   type CredentialsSnapshotRef,
   type GrantEvaluator,
-} from "./run-child";
+} from "./credentials-backed-authorize";
 
 // The credentials snapshot is keyed per base step. A `map` iteration runs
 // under a scoped step id `<base>[<index>]`, so the authorize closure resolves
@@ -99,5 +102,60 @@ describe("createCredentialsBackedAuthorize base-step grant resolution", () => {
     ).rejects.toThrow(
       /no entry for stepId other \(normalized from scoped invocation id other\[0\]\)/,
     );
+  });
+});
+
+describe("createGrantEvaluator", () => {
+  const rule = (resource: string, effect: GrantRule["effect"]): GrantRule => ({
+    id: `grant:${resource}:${effect}`,
+    resource,
+    action: "invoke",
+    effect,
+    origin: "creator",
+    conditions: null,
+    expiresAt: null,
+    roleId: null,
+    principalId: null,
+  });
+  const input = (stepId: string, grants: readonly GrantRule[]) => ({
+    resource: "tool:fetch",
+    action: "invoke",
+    stepId,
+    attempt: 1,
+    runId: "run-1",
+    grants,
+  });
+
+  test("evaluates the snapshot grants when the step has no floor", async () => {
+    const evaluate = createGrantEvaluator({ floorFor: () => [] });
+    await expect(
+      evaluate(input("work", [rule("tool:fetch", "allow")])),
+    ).resolves.toEqual({
+      effect: "allow",
+      matchingGrants: [],
+      resolvedBy: null,
+    });
+    await expect(evaluate(input("work", []))).resolves.toEqual({
+      effect: null,
+      matchingGrants: [],
+      resolvedBy: null,
+    });
+  });
+
+  test("adds the floor of the base step, and a declared deny still wins", async () => {
+    const asked: string[] = [];
+    const evaluate = createGrantEvaluator({
+      floorFor: (stepId) => {
+        asked.push(stepId);
+        return [rule("tool:fetch", "ask")];
+      },
+    });
+    await expect(evaluate(input("fan[2]", []))).resolves.toMatchObject({
+      effect: "ask",
+    });
+    await expect(
+      evaluate(input("fan[0]", [rule("tool:fetch", "deny")])),
+    ).resolves.toMatchObject({ effect: "deny" });
+    expect(asked).toEqual(["fan", "fan"]);
   });
 });

@@ -1,12 +1,16 @@
 export {
   createCredentialsBackedAuthorize,
+  createGrantEvaluator,
+  type CredentialsSnapshotRef,
+  type GrantEvaluator,
+} from "./credentials-backed-authorize";
+
+export {
   hashGrants,
   runWorkflowChild,
   type ChildStepInvoker,
-  type CredentialsSnapshotRef,
   type CredentialWiring,
   type DrainController,
-  type GrantEvaluator,
   type RunWorkflowChildBindings,
   type RunWorkflowChildOpts,
   type RunWorkflowChildResult,
