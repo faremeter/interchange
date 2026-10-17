@@ -190,6 +190,71 @@ returns `{ output: null }`. A step whose agent declares tools therefore never
 calls a tool under the default invoker. A local run of a tool-bearing
 workflow needs a caller-supplied `invokeStep` that constructs a real agent.
 
+To run a definition outside a sidecar the way a deployed source-ref run
+does, use the real step invoker from `@intx/workflow-host/local`:
+
+```ts
+const snapshotRef = {
+  current: createLocalCredentialsSnapshot({ definition, directors, delivery }),
+};
+const authorize = createCredentialsBackedAuthorize(
+  snapshotRef,
+  createGrantEvaluator({ floorFor: () => [] }),
+);
+const invokeStep = createWorkflowStepInvoker({
+  workflowAuthorize: authorize,
+  agentFactory: createToolBearingAgentFactory(),
+  buildEnv: async (req) => {
+    const stepId = req.authzContext.stepId;
+    if (stepId === undefined) throw new Error("step has no id");
+    const env = { ...stepEnvBase(stepId), capabilities };
+    attachStepTools(env, {
+      factories: req.agent.toolFactories.map((factory) => ({
+        packageName: factory.id,
+        declaredCredentials: [],
+        factory,
+      })),
+      pluginFactories: [],
+    });
+    attachStepCredentialWiring(env, {
+      materialCell,
+      resolveGrants: () => snapshotStepGrants(snapshotRef, stepId),
+      providers,
+    });
+    return env;
+  },
+});
+await runLocal(definition, {
+  authorize,
+  invokeStep,
+  hasUpstreamSignalResolver: false,
+}).complete;
+```
+
+- `createLocalCredentialsSnapshot` gives every step id the grants a
+  deployed run holds: the capability walk's `tool:` and `effect:` grants, a
+  `credential:` use grant for each binding in `delivery`, and any `grants`
+  the caller passes (a hub's requirement grants need hub state).
+- The step env base holds the inference sources, context storage
+  (`@intx/storage-isogit/browser` in a browser), an absolute `workdir`
+  (required when the host has no `process.cwd`), the directors, and `deps`
+  with the inference adapter's `fetch`. `capabilities` is the step's
+  `RuntimeCapabilities` (`createRuntimeCapabilities({})` from
+  `@intx/types/runtime-capabilities` is enough); the step tool builders layer
+  each tool's `credentials` capability onto it. `materialCell` holds the
+  `CredentialDelivery`, and `providers` is a credential provider registry,
+  such as `createHttpCredentialProvider` with an injected `fetch`.
+- Limits of a local run: a `childWorkflow` child authorizes against the
+  parent's full grant set, where a deployed child gets a narrower capped set.
+  An `ask` tool parks its step on an approval, but `runLocal` gives its
+  caller no way to learn the park's correlation id, so a local run cannot
+  answer the approval. With `hasUpstreamSignalResolver: false`, as above,
+  such a step fails at once. Pass `true` only when the caller answers an
+  `awaitSignal` gate by name through the run's `signal`; an `ask` tool in
+  that run waits for an answer that never comes.
+- Pass `pluginDefinitions` to `createLocalCredentialsSnapshot` when an agent
+  declares plugins; the walk refuses a plugin it has no declarations for.
+
 `runLocal` gives action handlers no credentials by default: an action that
 declares `credentials` fails before its handler runs. Pass
 `actionCredentials` to supply them. `createActionCredentialsFactory` from
@@ -200,7 +265,9 @@ together with a custom `invokeAction`, because a custom action-runner does
 not use it.
 
 Where it lives today: `createDefaultStepInvoker` and `RunLocalOptions`,
-`packages/workflow/src/runlocal/run-local.ts`
+`packages/workflow/src/runlocal/run-local.ts`; the local entry,
+`packages/workflow-host/src/local.ts` (exercised by
+`tests/workflow/run-local-real-step-invoker.test.ts`)
 
 **13.** The step invoker owns the step's OUTPUT SHAPE. Whatever it returns
 becomes the step's `output`, which is what downstream selectors read and what

@@ -14,15 +14,8 @@ import { join } from "node:path";
 
 import { type } from "arktype";
 
-import {
-  createAgent,
-  createDefaultDirectorRegistry,
-  defineAgent,
-  type BaseEnv,
-} from "@intx/agent";
-import { noopAuditStore } from "@intx/agent/testing";
+import { createAgent, defineAgent } from "@intx/agent";
 import { setupHarness, wire, type Harness } from "@intx/inference-testing";
-import { createIsogitStore } from "@intx/storage-isogit/node";
 import type { InferenceSource } from "@intx/types/runtime-core";
 import {
   defineWorkflow,
@@ -33,6 +26,8 @@ import {
   type WorkflowAuthorizeFn,
 } from "@intx/workflow";
 import { createWorkflowStepInvoker } from "@intx/workflow-host";
+
+import { driveUntilSettled, localStepEnvBase } from "./local-step-env";
 
 const MARKER = "you are the step-inference agent";
 
@@ -92,16 +87,8 @@ describe("step inference selector reaches the provider request", () => {
     });
     const invokeStep = createWorkflowStepInvoker({
       workflowAuthorize: allowAll,
-      buildEnv: async (): Promise<Omit<BaseEnv, "authorize">> => ({
-        sources: [source],
-        defaultSource: source.id,
-        storage: await createIsogitStore(join(baseDir, "ctx")),
-        workdir: join(baseDir, "workspace"),
-        audit: noopAuditStore(),
-        directors: createDefaultDirectorRegistry(),
-        readCurrentMaterial: () => ({ secret: "test-secret" }),
-        deps: harness.deps,
-      }),
+      buildEnv: () =>
+        localStepEnvBase({ baseDir, name: "answer", source, harness }),
       agentFactory: createAgent,
     });
 
@@ -132,17 +119,7 @@ describe("step inference selector reaches the provider request", () => {
       invokeStep,
     });
 
-    // `agent.send` parks until the harness serves the response stream on its
-    // virtual clock, so keep draining the harness until the run settles.
-    let settled = false;
-    const complete = run.complete.finally(() => {
-      settled = true;
-    });
-    while (!settled) {
-      await harness.run({ wallClockBudgetMs: 2000 });
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    }
-    const result = await complete;
+    const result = await driveUntilSettled(harness, run);
 
     const bodies = await Promise.all(
       harness.scenario
