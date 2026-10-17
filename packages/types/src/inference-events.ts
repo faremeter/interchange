@@ -587,7 +587,7 @@ export type InferenceEvent =
 // runtime, so a schema that dropped `approvalSnapshot` would not fail at
 // runtime. Projecting the field off each inferred shape makes it load-bearing:
 // `tsc` errors if either mirror stops carrying it, mirroring the
-// `_persistedSuspendedCall` guard in storage-isogit.
+// `_persistedSuspendedCall` guard in runtime-core.
 const _arkGateBlockedApprovalSnapshot = (
   data: Extract<
     typeof InferenceEvent.infer,
