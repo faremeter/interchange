@@ -33,7 +33,6 @@ import { maybeGCUnderLock, type GCPolicy } from "./gc";
 import {
   decodeUTF8,
   flushRuntime,
-  withListingFailures,
   type FileSystemStat,
   type StorageRuntime,
 } from "./runtime";
@@ -557,9 +556,12 @@ export class IsogitStore
 
       let oid: string;
       try {
-        await withListingFailures(this.runtime.fs.git, (fs) =>
-          git.add({ fs, dir: this.dir, filepath: pathsToAdd, parallel: false }),
-        );
+        await git.add({
+          fs: this.runtime.fs.git,
+          dir: this.dir,
+          filepath: pathsToAdd,
+          parallel: false,
+        });
 
         oid = await commitDurably(this.runtime, this.dir, {
           message: options.message,
