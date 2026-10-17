@@ -439,7 +439,8 @@ test("rollback reports a repair whose index read fails", async () => {
       ).rejects.toMatchObject({
         errors: [
           expect.objectContaining({
-            message: expect.stringContaining("Index file is empty"),
+            message: "injected index read failure",
+            code: "EIO",
           }),
         ],
       });
