@@ -135,7 +135,7 @@ import {
   loadWorkflowPluginToolDefinitionsFromClosure,
 } from "../workflow-definition-loader";
 import {
-  createActionCredentialsFactory,
+  createSidecarActionCredentialsFactory,
   stepGrantsResolver,
   type SidecarStepCredentialContext,
 } from "./action-credentials";
@@ -2009,7 +2009,7 @@ async function buildChildRunEnv(args: {
       actionResolver,
       childCredentialContext === undefined
         ? unavailableActionCredentials
-        : createActionCredentialsFactory(childCredentialContext),
+        : createSidecarActionCredentialsFactory(childCredentialContext),
     );
   }
   const env: WorkflowRuntimeEnv = {
@@ -2776,7 +2776,7 @@ export function createSidecarSubstrateFactory(
       principal,
       invokeStep,
       actionCredentials: (wiring) =>
-        createActionCredentialsFactory(runCredentialContext(wiring)),
+        createSidecarActionCredentialsFactory(runCredentialContext(wiring)),
       initialSources: stepInferenceSources,
       runChild,
       runSuspendableChild,

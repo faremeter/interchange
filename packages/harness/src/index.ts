@@ -40,6 +40,12 @@ export type {
   StepCredentialWiring,
 } from "./step-credential-capabilities";
 
+export { createActionCredentialsFactory } from "./action-credential-capability";
+export type {
+  ActionCredentialRequest,
+  ActionCredentialWiring,
+} from "./action-credential-capability";
+
 export {
   createConnectorRouter,
   NoActiveConnectorThreadError,

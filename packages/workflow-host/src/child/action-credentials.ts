@@ -1,13 +1,9 @@
 // The credentials capability a deployed action handler resolves its declared
-// handles through. Each invocation builds one capability for the handler's
-// consumer identity, `action:<handler>`, from the run's live material cell and
-// the action step's grants, through the same builder tool packages use. The
-// action invoker disposes it when the handler settles.
+// handles through, built by the harness action credentials factory over the
+// run child's live material cell and the action step's grants.
 
-import { actionConsumer } from "@intx/authz";
 import {
-  buildConsumerCredentialCapability,
-  createCredentialCapability,
+  createActionCredentialsFactory,
   type CredentialMaterialCell,
   type CredentialProviderRegistry,
 } from "@intx/harness";
@@ -47,50 +43,19 @@ export function stepGrantsResolver(
 }
 
 /**
- * Build the action credentials factory over a run's credential context.
- *
- * The capability is built per invocation, so each invocation reads its own
- * step's grants and the bindings in the cell at that moment, and the invoker
- * can dispose it without affecting the next invocation. The grants are read
- * only when the handler declares a handle or has a binding.
- *
- * The declared-versus-bound reconcile checks one direction: a declared handle
- * with no binding fails the build, before the handler runs. A binding for a
- * handle no action step with this handler declared is refused by the approval
- * gate. The capability serves every handle bound to `action:<handler>`, so
- * steps that share a handler share its handles.
+ * Build the action credentials factory over a run child's credential context,
+ * through the harness builder. The run id is not needed to find a step's
+ * grants: every step in a sidecar run child's credentials snapshot carries the
+ * same grants (the run's flat grant set, or a child run's capped set). A step
+ * id can repeat inside one context, for example a loop-body step and a body
+ * step, and the lookup still finds those grants.
  */
-export function createActionCredentialsFactory(
+export function createSidecarActionCredentialsFactory(
   context: SidecarStepCredentialContext,
 ): ActionCredentialsFactory {
-  return ({ handler, credentials, authzContext }) => {
-    const stepId = authzContext.stepId;
-    if (stepId === undefined) {
-      throw new Error(
-        `action ${handler} cannot build its credentials capability: the authz context carries no step id`,
-      );
-    }
-    const consumer = actionConsumer(handler);
-    const capability = buildConsumerCredentialCapability(
-      consumer,
-      credentials.map((handle) => ({ handle })),
-      {
-        materialCell: context.materialCell,
-        resolveGrants: stepGrantsResolver(context, stepId),
-        providers: context.providers,
-      },
-    );
-    // No declaration and no binding: there is nothing to resolve, so Gate 2
-    // never runs and empty grants are correct. `resolve` fails closed naming
-    // the consumer and the handle.
-    return (
-      capability ??
-      createCredentialCapability({
-        consumer,
-        bindings: new Map(),
-        providers: context.providers,
-        grants: [],
-      })
-    );
-  };
+  return createActionCredentialsFactory({
+    materialCell: context.materialCell,
+    resolveStepGrants: ({ stepId }) => stepGrantsResolver(context, stepId)(),
+    providers: context.providers,
+  });
 }
