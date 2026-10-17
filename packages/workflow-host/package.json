@@ -25,6 +25,11 @@
       "types": "./dist/child/program.d.ts",
       "default": "./dist/child/program.js"
     },
+    "./local": {
+      "intx-src": "./src/local.ts",
+      "types": "./dist/local.d.ts",
+      "default": "./dist/local.js"
+    },
     "./probe": {
       "intx-src": "./src/probe/index.ts",
       "types": "./dist/probe/index.d.ts",
@@ -50,6 +55,7 @@
     "@intx/storage-isogit": "workspace:*",
     "@intx/types": "workspace:*",
     "@intx/workflow": "workspace:*",
+    "@intx/workflow-deploy": "workspace:*",
     "arktype": "catalog:"
   },
   "files": [

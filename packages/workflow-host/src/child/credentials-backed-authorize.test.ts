@@ -100,7 +100,7 @@ describe("createCredentialsBackedAuthorize base-step grant resolution", () => {
         runId: "run-1",
       }),
     ).rejects.toThrow(
-      /no entry for stepId other \(normalized from scoped invocation id other\[0\]\)/,
+      /no entry for step other \(normalized from scoped invocation id other\[0\]\)/,
     );
   });
 });

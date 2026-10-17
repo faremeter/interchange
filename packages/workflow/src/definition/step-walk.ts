@@ -297,10 +297,10 @@ export function walkNestedWorkflowSteps(
  * consumer that must keep those apart walks with an explicit descent and reads
  * each entry's `tree` instead.
  *
- * Exported for consumers that want the id set alone. Nothing in this repository
- * calls it: the deploy gate needs each step's ancestor chain and the sidecar
- * needs a specific descent, so both walk directly rather than through this
- * convenience.
+ * Exported for consumers that want the id set alone, such as the local
+ * credentials snapshot in `@intx/workflow-host/local`. The deploy gate needs
+ * each step's ancestor chain and the sidecar needs a specific descent, so both
+ * walk directly rather than through this convenience.
  */
 export function executableStepIds(
   definition: WorkflowDefinition,
