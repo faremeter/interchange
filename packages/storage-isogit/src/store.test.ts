@@ -1139,57 +1139,80 @@ describe("audit and error durability retries", () => {
     },
   );
 
-  test("checkpoint recovery clears previously staged outputs and preserves unrelated staging", async () => {
-    const dir = await tempDir();
-    const store = await createIsogitStore(dir);
-    await store.writeBlob("old", new Uint8Array([1]));
-    await store.commit({ message: "Initial output" });
-    await store.writeBlob("pending", new Uint8Array([2]));
-    await fs.promises.writeFile(path.join(dir, "unrelated.txt"), "unrelated");
-    await git.add({
-      fs,
-      dir,
-      filepath: ["tool-output/pending", "unrelated.txt"],
-    });
+  test.each(["flush", "listing"] as const)(
+    "checkpoint recovery after a %s failure clears previously staged outputs and preserves unrelated staging",
+    async (failure) => {
+      const dir = await tempDir();
+      const store = await createIsogitStore(dir);
+      await store.writeBlob("old", new Uint8Array([1]));
+      await store.commit({ message: "Initial output" });
+      await store.writeBlob("pending", new Uint8Array([2]));
+      await fs.promises.writeFile(path.join(dir, "unrelated.txt"), "unrelated");
+      await git.add({
+        fs,
+        dir,
+        filepath: ["tool-output/pending", "unrelated.txt"],
+      });
 
-    let fail = false;
-    const storage = withFailingFlush(() => {
-      if (!fail) return;
-      fail = false;
-      throw new Error("injected checkpoint flush failure");
-    });
-    const reopened = await storage.createIsogitStore(dir);
-    fail = true;
-    await expect(
-      reopened.commit({ message: "Failed checkpoint" }),
-    ).rejects.toThrow("injected checkpoint flush failure");
-    await reopened.commitErrors([makeErrorRecord()]);
-    const errorHead = await git.resolveRef({ fs, dir, ref: "HEAD" });
-    await expect(
-      git.readBlob({
+      let fail = false;
+      const failureMessage = `injected checkpoint ${failure} failure`;
+      const storage = createIsogitStorage({
+        ...createNodeIsogitRuntime(),
+        fs: {
+          promises: {
+            ...fs.promises,
+            async readdir(...args: Parameters<typeof fs.promises.readdir>) {
+              if (
+                fail &&
+                failure === "listing" &&
+                args[0] === path.join(dir, "tool-output")
+              ) {
+                throw Object.assign(new Error(failureMessage), { code: "EIO" });
+              }
+              return fs.promises.readdir(...args);
+            },
+          },
+        },
+        async flush() {
+          if (!fail || failure !== "flush") return;
+          fail = false;
+          throw new Error(failureMessage);
+        },
+      });
+      const reopened = await storage.createIsogitStore(dir);
+      fail = true;
+      await expect(
+        reopened.commit({ message: "Failed checkpoint" }),
+      ).rejects.toThrow(failureMessage);
+      await reopened.commitErrors([makeErrorRecord()]);
+      const errorHead = await git.resolveRef({ fs, dir, ref: "HEAD" });
+      await expect(
+        git.readBlob({
+          fs,
+          dir,
+          oid: errorHead,
+          filepath: "tool-output/pending",
+        }),
+      ).rejects.toMatchObject({ code: "NotFoundError" });
+      const unrelated = await git.readBlob({
         fs,
         dir,
         oid: errorHead,
-        filepath: "tool-output/pending",
-      }),
-    ).rejects.toMatchObject({ code: "NotFoundError" });
-    const unrelated = await git.readBlob({
-      fs,
-      dir,
-      oid: errorHead,
-      filepath: "unrelated.txt",
-    });
-    expect(new TextDecoder().decode(unrelated.blob)).toBe("unrelated");
+        filepath: "unrelated.txt",
+      });
+      expect(new TextDecoder().decode(unrelated.blob)).toBe("unrelated");
 
-    const retried = await reopened.commit({ message: "Retry checkpoint" });
-    const pending = await git.readBlob({
-      fs,
-      dir,
-      oid: retried.hash,
-      filepath: "tool-output/pending",
-    });
-    expect(Array.from(pending.blob)).toEqual([2]);
-  });
+      fail = false;
+      const retried = await reopened.commit({ message: "Retry checkpoint" });
+      const pending = await git.readBlob({
+        fs,
+        dir,
+        oid: retried.hash,
+        filepath: "tool-output/pending",
+      });
+      expect(Array.from(pending.blob)).toEqual([2]);
+    },
+  );
 
   test("checkpoint recovery invalidates cached stats for same-sized overwrites", async () => {
     const dir = await tempDir();
@@ -1267,31 +1290,20 @@ describe("audit and error durability retries", () => {
 
     indexWrites.writes = 0;
     armed = true;
-    const listingFailure = `Could not list ${blobsDir}: injected listing failure`;
     await expect(
       store.commit({ message: "Failed checkpoint" }),
     ).rejects.toMatchObject({
-      message: `Could not restore the context index after failure: ${listingFailure}`,
+      message:
+        "Could not restore the context index after failure: injected listing failure",
       cause: {
         errors: [
-          {
-            message: listingFailure,
-            errors: [expect.objectContaining({ code: "EIO" })],
-          },
-          {
-            errors: [
-              expect.objectContaining({
-                message: expect.stringContaining(
-                  "Could not list 32 working files starting with tool-output/spill-0",
-                ),
-              }),
-            ],
-          },
+          expect.objectContaining({ code: "EIO" }),
+          { errors: [expect.objectContaining({ code: "EIO" })] },
         ],
       },
     });
     armed = false;
-    expect(indexWrites.writes).toBe(3);
+    expect(indexWrites.writes).toBe(1);
     expect(await git.resolveRef({ fs, dir, ref: "HEAD" })).toBe(head);
     const staged = await git.listFiles({ fs, dir });
     expect(staged).toContain("tool-output/spill-31");
@@ -1358,11 +1370,18 @@ describe("audit and error durability retries", () => {
     await expect(
       store.commit({ message: "Failed checkpoint" }),
     ).rejects.toMatchObject({
-      message: `Could not list ${blobsDir}: injected listing failure`,
-      errors: [
-        expect.objectContaining({ code: "EIO" }),
-        expect.objectContaining({ code: "NotFoundError" }),
-      ],
+      cause: {
+        errors: [
+          expect.objectContaining({
+            code: "MultipleGitError",
+            errors: [
+              expect.objectContaining({ code: "EACCES" }),
+              expect.objectContaining({ code: "EIO" }),
+            ],
+          }),
+          { errors: [expect.objectContaining({ code: "EIO" })] },
+        ],
+      },
     });
   });
 
@@ -1528,9 +1547,7 @@ describe("audit and error durability retries", () => {
     failFlush = true;
     await expect(
       store.commit({ message: "Failed checkpoint" }),
-    ).rejects.toThrow(
-      "HEAD's branch refs/heads/main exists but could not be read",
-    );
+    ).rejects.toThrow("injected ref read failure");
     failFlush = false;
     expect(await fs.promises.readFile(path.join(dir, ".git", "index"))).toEqual(
       indexBefore,
@@ -1546,6 +1563,29 @@ describe("audit and error durability retries", () => {
       filepath: "tool-output/committed",
     });
     expect(Array.from(blob)).toEqual([1]);
+  });
+
+  test("checkpoint fails before staging when HEAD's branch ref is empty", async () => {
+    const dir = await tempDir();
+    const refPath = path.join(dir, ".git", "refs", "heads", "main");
+    const store = await createIsogitStore(dir);
+    await store.writeBlob("committed", new Uint8Array([1]));
+    await store.commit({ message: "Committed output" });
+    await store.writeBlob("pending", new Uint8Array([2]));
+    const indexBefore = await fs.promises.readFile(
+      path.join(dir, ".git", "index"),
+    );
+
+    await fs.promises.writeFile(refPath, "");
+    await expect(
+      store.commit({ message: "Failed checkpoint" }),
+    ).rejects.toThrow(
+      "HEAD's branch refs/heads/main exists but could not be read",
+    );
+    expect(await fs.promises.readFile(path.join(dir, ".git", "index"))).toEqual(
+      indexBefore,
+    );
+    expect(await fs.promises.readFile(refPath, "utf8")).toBe("");
   });
 
   test("checkpoint rollback leaves an index that staging never wrote", async () => {

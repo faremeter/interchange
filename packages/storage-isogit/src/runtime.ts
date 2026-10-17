@@ -1,8 +1,5 @@
 import type { FsClient } from "isomorphic-git";
-import { getLogger } from "@intx/log";
 import { hasCode } from "@intx/types/has-code";
-
-const logger = getLogger(["interchange", "storage-isogit", "git"]);
 
 const textDecoder = new TextDecoder();
 
@@ -106,121 +103,6 @@ function callFs(
       }
     });
   });
-}
-
-type GitFsOperation = (...args: unknown[]) => Promise<unknown>;
-
-function wrapGitFs(
-  fs: FsClient,
-  replace: Partial<Record<FsMethod, GitFsOperation>>,
-): FsClient {
-  const operation = (method: FsMethod): GitFsOperation =>
-    replace[method] ?? (async (...args) => callFs(fs, method, args));
-  return {
-    promises: {
-      readFile: operation("readFile"),
-      writeFile: operation("writeFile"),
-      mkdir: operation("mkdir"),
-      rmdir: operation("rmdir"),
-      unlink: operation("unlink"),
-      stat: operation("stat"),
-      lstat: operation("lstat"),
-      readdir: operation("readdir"),
-      readlink: operation("readlink"),
-      symlink: operation("symlink"),
-    },
-  };
-}
-
-function isIndexPath(filepath: unknown): boolean {
-  return (
-    typeof filepath === "string" &&
-    (filepath === ".git/index" || filepath.endsWith("/.git/index"))
-  );
-}
-
-/**
- * isomorphic-git treats an index it fails to read, or one with no contents,
- * as empty, so one failed read could stage or commit a tree that drops every
- * other entry. Hand it empty bytes instead, which it rejects as a corrupt
- * index, and log the cause its error cannot carry.
- */
-function guardIndexReads(fs: FsClient): FsClient {
-  return wrapGitFs(fs, {
-    readFile: async (...args) => {
-      if (!isIndexPath(args[0])) return callFs(fs, "readFile", args);
-      let contents: unknown;
-      try {
-        contents = await callFs(fs, "readFile", args);
-      } catch (cause) {
-        if (hasCode(cause) && cause.code === "ENOENT") throw cause;
-        const detail = cause instanceof Error ? cause.message : String(cause);
-        logger.error`Could not read the Git index ${String(args[0])}: ${detail}`;
-        return new Uint8Array();
-      }
-      if (contents instanceof Uint8Array || contents instanceof ArrayBuffer) {
-        return contents;
-      }
-      logger.error`The Git index ${String(args[0])} has no readable contents`;
-      return new Uint8Array();
-    },
-  });
-}
-
-type ListingFailure = { path: unknown; cause: unknown };
-
-function listingError(
-  first: ListingFailure,
-  errors: readonly unknown[],
-): AggregateError {
-  const detail =
-    first.cause instanceof Error ? first.cause.message : String(first.cause);
-  return new AggregateError(
-    errors,
-    `Could not list ${String(first.path)}: ${detail}`,
-  );
-}
-
-/**
- * Run an isomorphic-git operation and fail it when a directory listing
- * fails. isomorphic-git turns every listing failure except ENOTDIR into an
- * empty listing, so staging a directory could otherwise skip its children
- * without an error.
- */
-export async function withListingFailures<T>(
-  fs: FsClient,
-  run: (fs: FsClient) => Promise<T>,
-): Promise<T> {
-  const failures: ListingFailure[] = [];
-  const client = wrapGitFs(fs, {
-    readdir: async (...args) => {
-      try {
-        return await callFs(fs, "readdir", args);
-      } catch (cause) {
-        if (!hasCode(cause) || cause.code !== "ENOTDIR") {
-          failures.push({ path: args[0], cause });
-        }
-        throw cause;
-      }
-    },
-  });
-
-  let result: T;
-  try {
-    result = await run(client);
-  } catch (cause) {
-    const first = failures[0];
-    if (first === undefined) throw cause;
-    throw listingError(first, [...failures.map((f) => f.cause), cause]);
-  }
-  const first = failures[0];
-  if (first !== undefined) {
-    throw listingError(
-      first,
-      failures.map((f) => f.cause),
-    );
-  }
-  return result;
 }
 
 function fileStat(value: unknown, method: FsMethod): FileSystemStat {
@@ -366,7 +248,7 @@ function createStorageFileSystem(runtime: IsogitRuntime): StorageFileSystem {
   };
 
   return {
-    git: guardIndexReads(runtime.fs),
+    git: runtime.fs,
     access: async (filepath) => {
       await lstat(filepath);
     },

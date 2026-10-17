@@ -1,4 +1,4 @@
-import git from "isomorphic-git";
+import git, { type WalkerIterate } from "isomorphic-git";
 
 import { hasCode } from "@intx/types/has-code";
 
@@ -76,8 +76,9 @@ async function readIfPresent(runtime: StorageRuntime, filepath: string) {
   }
 }
 
-// isomorphic-git reports a ref it fails to read as missing, so confirm an
-// unborn branch with reads that keep their errors before trusting it.
+// isomorphic-git reports a ref file that is empty or holds no oid, such as
+// one truncated by a full disk, as missing, so confirm an unborn branch with
+// reads of the ref files before trusting it.
 async function resolveHead(runtime: StorageRuntime, dir: string) {
   try {
     return await git.resolveRef({ fs: runtime.fs.git, dir, ref: "HEAD" });
@@ -152,6 +153,12 @@ export async function createIndexRollback(
       if (hasCode(cause) && cause.code === "ENOENT") return null;
       throw cause;
     });
+  const inScope = (filepath: string) =>
+    paths.some(
+      (prefix) => filepath === prefix || filepath.startsWith(`${prefix}/`),
+    );
+  const leadsIntoScope = (filepath: string) =>
+    paths.some((prefix) => prefix.startsWith(`${filepath}/`));
 
   return async (failure) => {
     const failures: unknown[] = [];
@@ -159,12 +166,22 @@ export async function createIndexRollback(
       filepath: string;
       headEntry: { oid: string; mode: number } | null;
     }[] = [];
-    const unexamined: string[] = [];
+    const unchanged = new Map<string, { oid: string; mode: number }>();
+    const iterate: WalkerIterate = async (walk, children) => {
+      for (const child of children) {
+        try {
+          await walk(child);
+        } catch (cause) {
+          failures.push(cause);
+        }
+      }
+      return [];
+    };
     try {
       let head = headBefore;
       if (failure instanceof UncertainRefPublicationError) {
-        // isomorphic-git reports a failed ref read as a missing ref, so only
-        // a HEAD matching one of the two possible outcomes is trusted.
+        // Only a HEAD matching one of the write's two possible outcomes is
+        // trusted.
         const visible = await resolveHead(runtime, dir);
         if (visible !== headBefore && visible !== failure.oid) {
           throw new Error(
@@ -185,38 +202,21 @@ export async function createIndexRollback(
         }
       }
 
-      // A saved index can contain interrupted staging or cache old file stats.
-      // Read working bytes explicitly: the Git stat cache can miss same-sized
-      // overwrites made within a second. Only changed entries need resetting.
+      // The snapshot may already contain interrupted staging. Determine its
+      // repairs from Git metadata before a working-directory error can stop
+      // traversal.
       await git.walk({
         fs: runtime.fs.git,
         dir,
         trees: [
           git.STAGE(),
-          git.WORKDIR(),
           ...(head === null ? [] : [git.TREE({ ref: head })]),
         ],
-        iterate: async (walk, children) => {
-          for (const child of children) {
-            try {
-              await walk(child);
-            } catch (cause) {
-              failures.push(cause);
-            }
-          }
-          return [];
-        },
-        map: async (filepath, [staged, working, committed]) => {
+        iterate,
+        map: async (filepath, [staged, committed]) => {
           if (filepath === ".") return;
-          if (
-            !paths.some(
-              (prefix) =>
-                filepath === prefix || filepath.startsWith(`${prefix}/`),
-            )
-          ) {
-            return paths.some((prefix) => prefix.startsWith(`${filepath}/`))
-              ? undefined
-              : null;
+          if (!inScope(filepath)) {
+            return leadsIntoScope(filepath) ? undefined : null;
           }
           const committedType = await committed?.type();
           const stagedType = await staged?.type();
@@ -233,37 +233,42 @@ export async function createIndexRollback(
             headEntry?.mode !== (await staged?.mode())
           ) {
             repairs.push({ filepath, headEntry });
-            return;
+          } else if (headEntry !== null) {
+            unchanged.set(filepath, headEntry);
           }
-          // The entry already matches HEAD. Without a working file there are
-          // no stale stats to invalidate, but isomorphic-git reports a failed
-          // directory listing as empty, which hides files that still exist.
-          // Report those rather than reset each one, since every reset
-          // rewrites the whole index.
-          if (working === null || working === undefined) {
-            try {
-              await runtime.fs.lstat(runtime.path.join(dir, filepath));
-              unexamined.push(filepath);
-            } catch (cause) {
-              if (
-                !hasCode(cause) ||
-                (cause.code !== "ENOENT" && cause.code !== "ENOTDIR")
-              ) {
-                unexamined.push(filepath);
-              }
-            }
-            return;
+        },
+      });
+
+      // Entries already matching HEAD can still cache stale file stats.
+      // Read their working bytes explicitly: same-sized overwrites within
+      // a second can fool the stat cache. Keep the repairs above even if
+      // this inspection fails.
+      await git.walk({
+        fs: runtime.fs.git,
+        dir,
+        trees: [git.WORKDIR()],
+        iterate,
+        map: async (filepath, [working]) => {
+          if (filepath === ".") return;
+          if (!inScope(filepath)) {
+            return leadsIntoScope(filepath) ? undefined : null;
           }
+          const headEntry = unchanged.get(filepath);
+          if (
+            headEntry === undefined ||
+            working === null ||
+            working === undefined
+          )
+            return;
           try {
             const content =
               (await working.type()) === "blob" &&
-              (await working.mode()) === (await staged?.mode())
+              (await working.mode()) === headEntry.mode
                 ? await working.content()
                 : undefined;
             if (
               content === undefined ||
-              (await git.hashBlob({ object: content })).oid !==
-                (await staged?.oid())
+              (await git.hashBlob({ object: content })).oid !== headEntry.oid
             ) {
               repairs.push({ filepath, headEntry });
             }
@@ -276,14 +281,6 @@ export async function createIndexRollback(
       });
     } catch (cause) {
       failures.push(cause);
-    }
-    const [firstUnexamined] = unexamined;
-    if (firstUnexamined !== undefined) {
-      failures.push(
-        new Error(
-          `Could not list ${String(unexamined.length)} working files starting with ${firstUnexamined}; their index stats may be stale`,
-        ),
-      );
     }
     // Write HEAD's entry as the walk read it, with zeroed stats. resetIndex
     // would read HEAD and its tree again and turn a failed read into a

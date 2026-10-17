@@ -191,13 +191,9 @@ test("flushes a new branch before publishing it through HEAD", async () => {
   ]);
 });
 
-test.each([
-  ["add", "a failed read"],
-  ["commit", "a failed read"],
-  ["commit", "no contents"],
-] as const)(
-  "git %s rejects an index with %s instead of reading it as empty",
-  async (operation, fault) => {
+test.each(["add", "commit"] as const)(
+  "git %s rejects an index it fails to read instead of reading it as empty",
+  async (operation) => {
     const dir = await tempDir();
     const indexPath = path.join(dir, ".git", "index");
     let armed = false;
@@ -206,7 +202,6 @@ test.each([
         ...fs.promises,
         async readFile(...args: Parameters<typeof fs.promises.readFile>) {
           if (armed && args[0] === indexPath) {
-            if (fault === "no contents") return undefined;
             throw Object.assign(new Error("injected index read failure"), {
               code: "EIO",
             });
@@ -232,7 +227,7 @@ test.each([
             message: "Checkpoint",
             author: { name: "test", email: "test@example.com" },
           }),
-    ).rejects.toThrow("Index file is empty");
+    ).rejects.toThrow("injected index read failure");
     armed = false;
     expect(await fs.promises.readFile(indexPath)).toEqual(indexBefore);
     expect(await git.resolveRef({ fs, dir, ref: "HEAD" })).toBe(head);
