@@ -29,7 +29,9 @@ Multi-entry exports:
 - `@intx/workflow/runlocal` — an in-memory adapter for tests. The
   scheduler, RepoStore, blob substrate, and spawn-child callback all
   exist purely in process memory so tests can drive the runtime
-  without a substrate.
+  without a substrate. Its `actionCredentials` option gives action
+  handlers mediated credentials; `createActionCredentialsFactory` from
+  `@intx/harness` builds one.
 
 For a production host (workflow-run repo backing, scheduler that
 honors wall-clock fire times, signal channel that observes commits,

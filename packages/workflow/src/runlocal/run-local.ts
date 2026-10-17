@@ -63,6 +63,17 @@ export interface RunLocalOptions extends RuntimeRunOptions {
    * ledger across a re-run construct the env directly instead.
    */
   invokeAction?: ActionInvoker;
+  /**
+   * Build each action invocation's credentials capability. The default is
+   * `unavailableActionCredentials`: an action that declares credentials fails
+   * before its handler runs, and any other action's `resolve` fails closed.
+   * `createActionCredentialsFactory` from `@intx/harness` builds one over a
+   * material cell, a grants resolver and a provider registry, the same builder
+   * the deployed host uses. A `childWorkflow` child inherits it. It applies
+   * only to the default action-runner, so passing it with `invokeAction` is
+   * refused.
+   */
+  actionCredentials?: ActionCredentialsFactory;
   /** Resolve an action `handler` ref to a handler function. */
   actionResolver?: (ref: string) => ActionHandler;
   /** Resolve a loop's `while`/`carry` refs to pure functions. */
@@ -129,6 +140,14 @@ function assembleRunLocalEnv(
   const authorize = options.authorize;
   const invokeStep: StepInvoker =
     options.invokeStep ?? createDefaultStepInvoker(authorize);
+  if (
+    options.invokeAction !== undefined &&
+    options.actionCredentials !== undefined
+  ) {
+    throw new Error(
+      "runLocal: actionCredentials applies only to the default action-runner; a custom invokeAction must build its own credentials",
+    );
+  }
   const effects = createInMemoryEffectLedger();
   const invokeAction: ActionInvoker =
     options.invokeAction ??
@@ -136,7 +155,7 @@ function assembleRunLocalEnv(
       authorize,
       effects,
       options.actionResolver,
-      unavailableActionCredentials,
+      options.actionCredentials ?? unavailableActionCredentials,
     );
   const clock = options.clock ?? defaultClock;
   const newId = options.newId ?? defaultNewId;
@@ -240,6 +259,7 @@ type InheritedChildOptions = Pick<
   | "authorize"
   | "invokeStep"
   | "invokeAction"
+  | "actionCredentials"
   | "actionResolver"
   | "loopFns"
   | "directors"
@@ -255,6 +275,9 @@ function inheritChildOptions(options: RunLocalOptions): InheritedChildOptions {
       : {}),
     ...(options.invokeAction !== undefined
       ? { invokeAction: options.invokeAction }
+      : {}),
+    ...(options.actionCredentials !== undefined
+      ? { actionCredentials: options.actionCredentials }
       : {}),
     ...(options.actionResolver !== undefined
       ? { actionResolver: options.actionResolver }
