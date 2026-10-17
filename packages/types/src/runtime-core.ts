@@ -779,7 +779,7 @@ export const APPROVAL_SNAPSHOT_MAX_BYTES = 131072;
  */
 export const BoundedApprovalSnapshot = ApprovalSnapshot.narrow(
   (snapshot, ctx) => {
-    const bytes = Buffer.byteLength(JSON.stringify(snapshot), "utf8");
+    const bytes = new TextEncoder().encode(JSON.stringify(snapshot)).length;
     return (
       bytes <= APPROVAL_SNAPSHOT_MAX_BYTES ||
       ctx.mustBe(`at most ${APPROVAL_SNAPSHOT_MAX_BYTES} bytes when serialized`)

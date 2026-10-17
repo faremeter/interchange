@@ -186,4 +186,14 @@ describe("isContainedEntryPath", () => {
   test("rejects a sibling that shares the root as a prefix", () => {
     expect(isContainedEntryPath("../pkg-sibling/index.js")).toBe(false);
   });
+
+  test("keeps the POSIX results at the edges", () => {
+    expect(isContainedEntryPath("")).toBe(true);
+    expect(isContainedEntryPath("./")).toBe(true);
+    expect(isContainedEntryPath("..foo")).toBe(true);
+    expect(isContainedEntryPath("..\\x")).toBe(true);
+    expect(isContainedEntryPath("../")).toBe(false);
+    expect(isContainedEntryPath("a/../..")).toBe(false);
+    expect(isContainedEntryPath("//a")).toBe(false);
+  });
 });
