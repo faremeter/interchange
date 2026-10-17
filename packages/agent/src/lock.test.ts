@@ -92,4 +92,34 @@ describe("acquireContextDirLock", () => {
       lock.release();
     }
   });
+
+  test("keys a trailing slash, a parent of the root, and an empty path as path.resolve does", () => {
+    for (const workdir of [
+      "/tmp/agent-lock-6/",
+      "/..",
+      "/tmp//agent-lock-7/./x",
+      "",
+    ]) {
+      const lock = acquireContextDirLock(workdir);
+      try {
+        expect(lock.path).toBe(resolve(workdir));
+      } finally {
+        lock.release();
+      }
+    }
+  });
+
+  test("refuses a relative workdir on a host with no working directory", () => {
+    const original = globalThis.process.cwd;
+    Reflect.deleteProperty(globalThis.process, "cwd");
+    try {
+      expect(() => acquireContextDirLock("relative-lock-no-cwd")).toThrow(
+        "is relative, and this host has no working directory",
+      );
+      const lock = acquireContextDirLock("/tmp/agent-lock-8");
+      lock.release();
+    } finally {
+      globalThis.process.cwd = original;
+    }
+  });
 });

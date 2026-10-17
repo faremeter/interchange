@@ -8,13 +8,19 @@
 //
 // This is a best-effort in-process check. It does not coordinate across OS
 // processes, and it compares lexically-resolved absolute paths — two paths
-// that point to the same directory through symlinks or `..`/`/./` segments
-// are normalized by `path.resolve`, but a hard link or a separately mounted
-// bind to the same inode will not be detected. Callers are responsible for
+// that differ only in `..`, `.` or repeated `/` segments, a trailing `/`, or
+// a relative spelling of the same absolute path are normalized to one key.
+// The normalization is lexical: a symlink, a hard link or a separately
+// mounted bind to the same directory is not detected, and `/link/..` keys as
+// `/` even when `/link` points elsewhere. Callers are responsible for
 // ensuring `env.workdir` matches the directory backing their `env.storage`
 // (see `BaseEnv.workdir` for the documented invariant).
+//
+// The key is computed without `node:path`, so the agent loads on a host with
+// no Node APIs. A relative workdir resolves against `process.cwd()` when the
+// host has one; a host without one must pass an absolute workdir.
 
-import { resolve } from "node:path";
+import { join, normalize } from "@intx/types/posix-path";
 
 const heldLocks = new Set<string>();
 
@@ -36,12 +42,31 @@ export type ContextDirLock = {
 };
 
 /**
+ * The absolute, normalized form of `workdir`: the lock key. A relative path
+ * resolves against `process.cwd()` when the host provides it, matching
+ * `path.resolve`, and is refused otherwise.
+ */
+function absoluteWorkdir(workdir: string): string {
+  if (workdir.startsWith("/")) {
+    return normalize(workdir);
+  }
+  const host: { process?: { cwd?: () => string } } = globalThis;
+  const cwd = host.process?.cwd?.();
+  if (cwd === undefined) {
+    throw new Error(
+      `workdir ${JSON.stringify(workdir)} is relative, and this host has no working directory to resolve it against; pass an absolute workdir`,
+    );
+  }
+  return join(cwd, workdir);
+}
+
+/**
  * Acquire the process-wide lock for `workdir`. Throws
  * `AgentContextLockError` if another agent already holds it. The
  * returned `release` is idempotent.
  */
 export function acquireContextDirLock(workdir: string): ContextDirLock {
-  const path = resolve(workdir);
+  const path = absoluteWorkdir(workdir);
   if (heldLocks.has(path)) {
     throw new AgentContextLockError(path);
   }
