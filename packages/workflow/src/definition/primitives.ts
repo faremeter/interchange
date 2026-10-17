@@ -279,11 +279,12 @@ export interface ActionPrimitive extends PrimitiveBase {
   onFailure?: string;
   /**
    * The credential handles this action declares for its handler. The scope
-   * is per handler: the handler may resolve through `ctx.credentials` any
+   * is per handler: inside `perform`'s `run`, the handler may resolve any
    * handle a step running that handler declares and a root binding names for
    * it. Deploy refuses a declared handle with no binding, and a binding for a
    * handle no such step declares. `action()` validates each handle's
-   * format and rejects a duplicate, and omits the field when the list is
+   * format and rejects a duplicate, rejects a non-empty list without an
+   * `effect.requires` capability, and omits the field when the list is
    * empty. The handles are part of the approved projection and the
    * definition hash, in the order the author wrote them.
    */
@@ -301,9 +302,10 @@ export interface ActionPrimitive extends PrimitiveBase {
  * package's `interchange.actions` field, resolved by export name. It
  * receives exactly these three parameters and nothing else, and has no
  * opportunity to close over host configuration, because nothing in the
- * deployment constructs it. `ctx` carries `perform` and one host service,
- * the consumer-scoped `credentials` capability, which resolves the handles
- * the action declares; use a resolved credential inside `perform`'s `run`.
+ * deployment constructs it. `ctx` carries `perform`, and `perform` gives each
+ * `run` the one host service: the consumer-scoped `credentials` capability,
+ * which resolves the handles the action declares and works only until that
+ * `run` settles.
  * Per-deployment configuration must therefore arrive through `input`, which
  * in practice means the author selects it out of the trigger payload via the
  * action's {@link ActionPrimitive.input} selector.
@@ -725,6 +727,14 @@ export function action(opts: ActionOpts): ActionPrimitive {
       );
     }
     seen.add(handle);
+  }
+  // Credentials resolve only inside `perform`'s `run`, and `perform` accepts
+  // only a capability the action requires. Without one, the declared handles
+  // could never be used.
+  if (credentials.length > 0 && (opts.effect?.requires.length ?? 0) === 0) {
+    throw new Error(
+      `action ${JSON.stringify(opts.handler)} declares credential handles but no effect.requires; its credentials resolve only inside perform, which needs a declared capability`,
+    );
   }
   return {
     kind: "action",

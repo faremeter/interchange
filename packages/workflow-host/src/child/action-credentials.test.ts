@@ -137,7 +137,7 @@ describe("action credentials through the default invoker", () => {
     resolvedBy: null,
   });
 
-  test("each invocation gets a fresh capability, disposed once, and a disposed view refuses", async () => {
+  test("each invocation gets a fresh capability, disposed once, and a closed scope refuses", async () => {
     const built = createSidecarActionCredentialsFactory(
       contextFor({
         cell: cellFor([{ handler: "push", handle: "github" }]),
@@ -162,29 +162,38 @@ describe("action credentials through the default invoker", () => {
     const invoke = createDefaultActionInvoker(
       allow,
       createInMemoryEffectLedger(),
-      () => async (_input, ctx) => {
-        views.push(ctx.credentials);
-        return (await ctx.credentials.resolve("github")).kind;
-      },
+      () => async (_input, ctx) =>
+        ctx.perform({
+          effectId: "resolve",
+          capability: "resolve",
+          run: async ({ credentials }) => {
+            views.push(credentials);
+            return (await credentials.resolve("github")).kind;
+          },
+        }),
       factory,
     );
     const invocation: ActionInvokeRequest = {
       handler: "push",
       input: null,
-      requires: [],
+      requires: ["resolve"],
       credentials: ["github"],
       authzContext: { stepId: "push", attempt: 1, runId: "run-1" },
       signal: new AbortController().signal,
     };
 
+    // A distinct input keys a distinct effect, so the second run is not a
+    // ledger hit and resolves again.
     await expect(invoke(invocation)).resolves.toEqual({ output: "http" });
-    await expect(invoke(invocation)).resolves.toEqual({ output: "http" });
+    await expect(invoke({ ...invocation, input: 2 })).resolves.toEqual({
+      output: "http",
+    });
     expect(views).toHaveLength(2);
     expect(capabilities).toHaveLength(2);
     expect(capabilities[0]).not.toBe(capabilities[1]);
     expect([...disposals.values()]).toEqual([1, 1]);
     await expect(views[0]?.resolve("github")).rejects.toThrow(
-      "its credentials capability is disposed",
+      "outside the run of its effect resolve",
     );
   });
 });

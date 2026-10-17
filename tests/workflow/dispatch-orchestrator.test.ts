@@ -677,6 +677,7 @@ function buildEnv(opts: {
       throw new Error(`action ${handler} declared no effect capability`);
     }
     const ctx = createEffectContext({
+      handler,
       authorize,
       effects,
       requires,

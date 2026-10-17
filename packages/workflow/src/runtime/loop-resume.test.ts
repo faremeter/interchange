@@ -130,6 +130,7 @@ function buildEnv(
   }) => {
     if (handler !== "echo") return { output: `ran:${handler}` };
     const ctx = createEffectContext({
+      handler,
       authorize,
       effects,
       requires,

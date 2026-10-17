@@ -443,6 +443,7 @@ describe("action credential consumers", () => {
       steps: {
         push: action({
           handler: "push",
+          effect: { requires: ["call"] },
           ...(credentials !== undefined ? { credentials } : {}),
         }),
       },
@@ -517,6 +518,7 @@ describe("action credential consumers", () => {
         push: action({
           handler: "acme/push",
           credentials: ["github"],
+          effect: { requires: ["call"] },
           after: ["work"],
         }),
       },
@@ -535,7 +537,11 @@ describe("action credential consumers", () => {
         id: "runs-other",
         trigger: { type: "manual" },
         steps: {
-          release: action({ handler: "release", credentials: ["github"] }),
+          release: action({
+            handler: "release",
+            credentials: ["github"],
+            effect: { requires: ["call"] },
+          }),
         },
       }),
     );

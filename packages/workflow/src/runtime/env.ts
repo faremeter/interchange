@@ -287,25 +287,39 @@ export interface EffectLedger {
  * calls `env.authorize` before the effect, and on a ledger hit returns
  * the recorded result without running `run`.
  *
- * `credentials` is the handler's consumer-scoped credentials capability. Its
- * consumer is `action:<handler>`, so the scope is per handler, not per step.
- * It resolves a handle bound to that consumer to an origin-pinned mediated
- * credential, and fails closed for any other handle. Use the credential inside
- * `perform`'s `run`, so the call goes through the effect grant and the ledger.
+ * `perform` passes `run` a {@link PerformScope} that carries the handler's
+ * credentials, so every authenticated call that `run` awaits is gated by the
+ * effect grant and recorded in the ledger. A call that `run` starts and does
+ * not await can finish after the record, so its result is not recorded. On a
+ * ledger hit `run` does not run, so a replay resolves no credential.
  */
 export interface EffectContext {
   perform(opts: {
     effectId: string;
     capability: string;
-    run: () => Promise<unknown>;
+    run: (scope: PerformScope) => Promise<unknown>;
   }): Promise<unknown>;
+}
+
+/**
+ * What `perform` gives one `run`. The scope opens when `run` starts and closes
+ * when `run` settles. After it closes, `credentials.resolve` rejects and every
+ * handle the scope returned refuses use. Each `perform` call has its own scope.
+ *
+ * `credentials` is the handler's consumer-scoped credentials capability. Its
+ * consumer is `action:<handler>`, so the scope of the bindings is per handler,
+ * not per step. It resolves a handle bound to that consumer to an
+ * origin-pinned mediated credential, and fails closed for any other handle.
+ */
+export interface PerformScope {
   readonly credentials: CredentialCapability;
 }
 
 /**
  * Builds the credentials capability for one action invocation. The action
  * invoker calls it before the handler runs and disposes the capability when
- * the handler settles. A factory that throws fails the action before any
+ * the handler settles. Each `perform` scope over it closes earlier, when its
+ * `run` settles. A factory that throws fails the action before any
  * effect. The factory owns the consumer identity, the declared-versus-bound
  * check, and the authorization gate.
  */

@@ -92,14 +92,14 @@ Where it lives today: `PackageJSON`, `packages/types/src/package-json.ts`
 
 **5.** A deployed action handler is a BARE MODULE EXPORT. It receives exactly
 `(input, ctx, signal)` and nothing else: no closure over host configuration.
-The one injected service is `ctx.credentials`, the handler's consumer-scoped
-credentials capability. Its consumer is `action:<handler>`. The action
-declares each handle it resolves in `credentials: [...]`, and a root
-`credentialBindings` entry with `action: "<handler>"` binds each declared
-handle. Deploy refuses a declared handle with no binding. Any other
-per-deployment configuration it needs must arrive through its `input`
-selector, which in practice means the author threads it from the trigger
-payload.
+The one injected service is the handler's consumer-scoped credentials
+capability, which `ctx.perform` gives each `run` as `{ credentials }`. Its
+consumer is `action:<handler>`. The action declares each handle it resolves
+in `credentials: [...]`, and a root `credentialBindings` entry with
+`action: "<handler>"` binds each declared handle. Deploy refuses a declared
+handle with no binding. Any other per-deployment configuration it needs must
+arrive through its `input` selector, which in practice means the author
+threads it from the trigger payload.
 
 Where it lives today: the `ActionHandler` doc comment,
 `packages/workflow/src/definition/primitives.ts`. The mechanism that makes
@@ -264,9 +264,14 @@ Where it lives today: `applyDefaultInput`,
 `effect.requires`, calls `env.authorize` before the effect, and on a ledger
 hit returns the recorded result WITHOUT a run of the effect. The capability
 string is the author's own vocabulary. The deploy-time walk turns each one
-into an `effect:<cap>` grant. Resolve a credential and use it inside
-`perform`'s `run`, so the authenticated call goes through the effect grant
-and the ledger.
+into an `effect:<cap>` grant. A handler gets its credentials only inside
+`run`, as `run: async ({ credentials }) => ...`, so every authenticated call
+that `run` awaits goes through the effect grant and the ledger. So `action()`
+refuses `credentials` without an `effect.requires` capability. The scope
+closes when `run` settles: after that, `credentials.resolve` rejects and every
+handle from the scope refuses use. A ledger hit does not call `run`, so a
+replay resolves no credential. This guards against an author mistake; it is
+not an isolation boundary, because a handler can still call `fetch` itself.
 
 Where it lives today: `EffectContext`,
 `packages/workflow/src/runtime/env.ts`
@@ -407,11 +412,12 @@ inherits that env through `createLoopIterationHandle`, so its action steps
 use the same invoker and ledger. A grandchild is a different env. An action
 there, including one the deployment establish pass does not check, is
 resolved when that grandchild's own `buildChildRunEnv` runs. A body action
-gets the same `ctx.credentials` as a top-level action, built from the run's
-live material. Bind the body's handler in the root `credentialBindings`:
-deploy resolves only root bindings and refuses bindings on a body. The child
-run's grants keep a credential use grant only for a consumer the body runs:
-a tool factory, or an action that declares `credentials`.
+gets the same credentials in `perform`'s `run` as a top-level action, built
+from the run's live material. Bind the body's handler in the root
+`credentialBindings`: deploy resolves only root bindings and refuses bindings
+on a body. The child run's grants keep a credential use grant only for a
+consumer the body runs: a tool factory, or an action that declares
+`credentials`.
 
 Where it lives today: `buildChildRunEnv`,
 `packages/workflow-host/src/child/substrate-factory.ts`;

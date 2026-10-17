@@ -207,6 +207,7 @@ function buildEnv(opts: {
     authzContext,
   }) => {
     const ctx = createEffectContext({
+      handler,
       authorize,
       effects,
       requires,

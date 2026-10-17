@@ -699,6 +699,7 @@ describe("source-ref run child", () => {
           handler: "resolveToken",
           drainBehavior: "cancel",
           input: { literal: { marker } },
+          effect: { requires: ["resolve"] },
           credentials: ["api-token"],
         },
       },
@@ -718,9 +719,15 @@ describe("source-ref run child", () => {
       `import { writeFile } from "node:fs/promises";
 export const workflow = ${JSON.stringify(definition)};
 export async function resolveToken(input, ctx) {
-  const handle = await ctx.credentials.resolve("api-token");
-  await writeFile(input.marker, handle.kind);
-  return handle.kind;
+  return ctx.perform({
+    effectId: "resolve-once",
+    capability: "resolve",
+    run: async ({ credentials }) => {
+      const handle = await credentials.resolve("api-token");
+      await writeFile(input.marker, handle.kind);
+      return handle.kind;
+    },
+  });
 }
 `,
       "utf8",
@@ -777,6 +784,17 @@ export async function resolveToken(input, ctx) {
                 effect: "allow",
                 origin: "system",
                 conditions: { tool: consumer },
+                expiresAt: null,
+                roleId: null,
+                principalId: null,
+              },
+              {
+                id: "grant-effect",
+                resource: "effect:resolve",
+                action: "invoke",
+                effect: "allow",
+                origin: "creator",
+                conditions: null,
                 expiresAt: null,
                 roleId: null,
                 principalId: null,

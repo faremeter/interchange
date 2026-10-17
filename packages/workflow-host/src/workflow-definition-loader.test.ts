@@ -3,8 +3,6 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { unavailableCredentialCapability } from "@intx/workflow";
-
 import {
   loadWorkflowActionHandlersFromClosure,
   loadWorkflowDefinitionFromClosure,
@@ -424,7 +422,6 @@ describe("loadWorkflowLoopFnsFromClosure", () => {
 describe("loadWorkflowActionHandlersFromClosure", () => {
   const dummyCtx = {
     perform: async () => undefined,
-    credentials: unavailableCredentialCapability("dummy"),
   };
 
   test("resolves an action handler by export name", async () => {

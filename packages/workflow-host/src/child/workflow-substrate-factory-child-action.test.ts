@@ -108,11 +108,11 @@ export async function resolveToken(input, ctx) {
   if (typeof marker !== "string" || typeof capability !== "string") {
     throw new Error("resolveToken input needs marker and capability strings");
   }
-  const handle = await ctx.credentials.resolve("api-token");
   return ctx.perform({
     effectId: "resolve-once",
     capability,
-    run: async () => {
+    run: async ({ credentials }) => {
+      const handle = await credentials.resolve("api-token");
       await writeFile(marker, handle.kind);
       return { kind: handle.kind };
     },
