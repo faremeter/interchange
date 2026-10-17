@@ -90,6 +90,11 @@
       "types": "./dist/hex.d.ts",
       "default": "./dist/hex.js"
     },
+    "./posix-path": {
+      "intx-src": "./src/posix-path.ts",
+      "types": "./dist/posix-path.d.ts",
+      "default": "./dist/posix-path.js"
+    },
     "./grant-snapshot": {
       "intx-src": "./src/grant-snapshot.ts",
       "types": "./dist/grant-snapshot.d.ts",
