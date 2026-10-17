@@ -62,7 +62,7 @@ import {
   UnknownDirectorIdError,
 } from "@intx/agent/authoring";
 import { actionConsumer, toolConsumer } from "@intx/authz";
-import type { GrantEffect } from "@intx/types";
+import type { GrantEffect, GrantOrigin, GrantWalkSnapshot } from "@intx/types";
 import {
   EXECUTABLE_STEP_DESCENT,
   walkNestedWorkflowSteps,
@@ -169,6 +169,113 @@ export function walkCapabilities(
     perStep: walked.perStep,
     unresolvedDirectors: Object.freeze([...walked.unresolved]),
   });
+}
+
+/**
+ * The fields of a grant rule a run's runtime authority needs, without the
+ * storage identity (id, tenant, principal, timestamps) a host adds.
+ */
+export type RuntimeGrantRule = {
+  readonly resource: string;
+  readonly action: string;
+  readonly effect: GrantEffect;
+  readonly origin: GrantOrigin;
+  readonly conditions: Record<string, unknown> | null;
+  readonly expiresAt: null;
+};
+
+const TOOL_GRANT_PREFIX = "tool:";
+const EFFECT_GRANT_PREFIX = "effect:";
+
+/**
+ * Project a grant-walk snapshot into a run's runtime grant rules -- the
+ * `tool:<name>` and `effect:<cap>` grants the runtime enforces fail-closed.
+ * Every distinct grant string across all steps becomes one creator-origin
+ * rule with `action: invoke`. Other walk grants (`capability:`, `director:`,
+ * `inference.source:`, `mail.*`) are not runtime grants and are dropped.
+ *
+ * Tool grants carry the effect the tool's static declaration requested (`ask`
+ * for approval-gated tools, `allow` otherwise) via each step's `grantEffects`
+ * record. A tool in more than one step is emitted once; when two steps disagree
+ * on its effect, `ask` wins over `allow` so an approval-gated declaration is
+ * never silently downgraded. A tool grant with no `grantEffects` entry throws:
+ * a defaulted `allow` would silently downgrade an `ask` tool.
+ *
+ * Effect grants are always `allow` -- the `effect.requires` set names the
+ * capability floor an action needs, with no per-effect ask/allow distinction,
+ * so they are NOT routed through the `grantEffects` record (which covers tool
+ * grants only). An `effect:<cap>` in more than one step is emitted once.
+ *
+ * The `tool:` rules carry the bare tool names the walk reads from inline
+ * `agent.toolFactories`. They authorize a source-ref tool, which runs under
+ * that name; a pinned tool runs as `<bundleId>:<name>` and takes its
+ * authority from the sidecar tool-mark floor instead.
+ */
+export function runtimeGrantRules(
+  snapshot: Pick<GrantWalkSnapshot, "perStep">,
+): RuntimeGrantRule[] {
+  const effectByResource = new Map<string, GrantEffect>();
+  for (const step of snapshot.perStep) {
+    const grantEffects = new Map<string, GrantEffect>(
+      Object.entries(step.grantEffects),
+    );
+    for (const grant of step.grants) {
+      if (grant.startsWith(TOOL_GRANT_PREFIX)) {
+        const effect = grantEffects.get(grant);
+        if (effect === undefined) {
+          throw new Error(
+            `runtimeGrantRules: tool grant ${JSON.stringify(grant)} has no grantEffects entry; the grant-walk snapshot must carry an effect for every tool grant`,
+          );
+        }
+        const existing = effectByResource.get(grant);
+        if (existing === "ask" || effect === "ask") {
+          effectByResource.set(grant, "ask");
+        } else if (existing === undefined) {
+          effectByResource.set(grant, effect);
+        }
+      } else if (grant.startsWith(EFFECT_GRANT_PREFIX)) {
+        if (!effectByResource.has(grant)) {
+          effectByResource.set(grant, "allow");
+        }
+      }
+    }
+  }
+  return [...effectByResource].map(([resource, effect]) => ({
+    resource,
+    action: "invoke",
+    effect,
+    origin: "creator",
+    conditions: null,
+    expiresAt: null,
+  }));
+}
+
+/**
+ * One system-origin `credential:{id}` / `use` rule per distinct
+ * `(credentialId, consumer)` on a run's resolved credential bindings. The
+ * consumer string is copied onto `{ tool }`, the condition Gate 2 checks.
+ * Inference credentials are not in this list: they have no binding and no
+ * consumer.
+ */
+export function credentialUseGrantRules(
+  bindings: readonly { credentialId: string; consumer: string }[],
+): RuntimeGrantRule[] {
+  const seen = new Set<string>();
+  const rules: RuntimeGrantRule[] = [];
+  for (const binding of bindings) {
+    const key = `${binding.credentialId}\0${binding.consumer}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    rules.push({
+      resource: `credential:${binding.credentialId}`,
+      action: "use",
+      effect: "allow",
+      origin: "system",
+      conditions: { tool: binding.consumer },
+      expiresAt: null,
+    });
+  }
+  return rules;
 }
 
 /**

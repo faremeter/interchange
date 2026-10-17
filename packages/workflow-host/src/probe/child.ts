@@ -1,4 +1,4 @@
-import type { GrantRequirement, GrantWalkSnapshot } from "@intx/types";
+import { serializeGrantWalk } from "@intx/types/grant-snapshot";
 import { hexEncode } from "@intx/types/hex";
 import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import {
@@ -107,10 +107,7 @@ async function computeProbePayload(
     ok: true,
     projection,
     grants: collectDeploymentGrants(walk),
-    grantWalkSnapshot: buildGrantWalkSnapshot(
-      walk,
-      definition.grantRequirements,
-    ),
+    grantWalkSnapshot: serializeGrantWalk(walk, definition.grantRequirements),
     wireHash,
   };
 }
@@ -128,30 +125,6 @@ function collectDeploymentGrants(walk: ReturnType<WalkCapabilities>): string[] {
     }
   }
   return [...grants].sort();
-}
-
-/**
- * Serialize the un-flattened capability walk into a plain-data
- * `GrantWalkSnapshot`: the per-step grant declarations (each step's grant
- * strings plus its tool-grant `grantEffects` map, converted from the
- * walk's `Map` to a plain object) and the definition's full, unfiltered
- * `grantRequirements`. Unlike `collectDeploymentGrants`, this preserves
- * the per-step grouping and the effect data the flattened set discards.
- * A definition that declares no requirements snapshots an empty list.
- */
-function buildGrantWalkSnapshot(
-  walk: ReturnType<WalkCapabilities>,
-  grantRequirements: readonly GrantRequirement[] | undefined,
-): GrantWalkSnapshot {
-  const perStep = [...walk.perStep].map(([stepId, declarations]) => ({
-    stepId,
-    grants: [...declarations.grants],
-    grantEffects: Object.fromEntries(declarations.grantEffects),
-  }));
-  return {
-    perStep,
-    grantRequirements: [...(grantRequirements ?? [])],
-  };
 }
 
 function defaultStdoutWriteLine(line: string): Promise<void> {

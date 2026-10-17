@@ -41,14 +41,17 @@ import {
 import type { GrantStore, GrantRule } from "@intx/types/authz";
 import {
   isSidecarAllocationDispatchable,
-  type GrantEffect,
   type GrantRequirement,
   type GrantWalkSnapshot,
 } from "@intx/types";
 import { RunGrantsFrame } from "@intx/types/sidecar";
 import { ToolDefinition } from "@intx/types/runtime";
 import { type MailTriggeredRunGrantsResult } from "@intx/hub-sessions";
-import { deriveRunPrincipalId, generateId } from "@intx/hub-common";
+import {
+  credentialUseGrantRules,
+  runtimeGrantRules,
+} from "@intx/workflow-deploy/capabilities";
+import { deriveRunPrincipalId } from "@intx/hub-common";
 
 import {
   makeGrantRow,
@@ -56,38 +59,12 @@ import {
   type MaterializedGrantRow,
 } from "./grant-materialization";
 
-// The `tool:<name>` rows carry BARE tool names: the walk reads inline
-// `agent.toolFactories`, which have no bundle context. A workflow child gates
-// each tool call on `tool:<call.name>`, and every runnable step tool is a
-// pinned package the loader namespaces to `<bundleId>:<name>`, so the child
-// queries `tool:<bundleId>:<name>`. These bare rows therefore never address a
-// pinned tool's runtime gate; they are inert against a pinned call. A pinned
-// tool's authority (including its `ask` mark) is supplied instead by the
-// sidecar tool-mark floor (`deriveToolMarkFloorGrants`), derived from the
-// loaded factory's already-namespaced definitions. The `effect:<cap>` rows are
-// different: an action's EffectContext authorizes the bare `effect:<cap>` on
-// both sides, so those rows ARE name-matched and operative at run time.
 const TOOL_GRANT_PREFIX = "tool:";
-const EFFECT_GRANT_PREFIX = "effect:";
 
 /**
- * Project the frozen grant-walk snapshot into the run's runtime grant rows --
- * the `tool:<name>` and `effect:<cap>` grants the runtime enforces fail-closed.
- * Every distinct grant string across all steps becomes one creator-origin
- * `grant` row with `action: invoke`. The run's runtime authority is
- * definition-pure for the deployment's stable top-level run, so the snapshot
- * alone determines it.
- *
- * Tool grants carry the effect the tool's static declaration requested (`ask`
- * for approval-gated tools, `allow` otherwise) via each step's `grantEffects`
- * record. A tool in more than one step is emitted once; when two steps disagree
- * on its effect, `ask` wins over `allow` so an approval-gated declaration is
- * never silently downgraded.
- *
- * Effect grants are always `allow` -- the `effect.requires` set names the
- * capability floor an action needs, with no per-effect ask/allow distinction,
- * so they are NOT routed through the `grantEffects` record (which covers tool
- * grants only). An `effect:<cap>` in more than one step is emitted once.
+ * Project the frozen grant-walk snapshot into the run's runtime grant rows:
+ * the rules `runtimeGrantRules` derives, stored as the run principal's
+ * creator-origin grants.
  */
 export function deriveRunRuntimeGrantRows(
   snapshot: GrantWalkSnapshot,
@@ -95,60 +72,9 @@ export function deriveRunRuntimeGrantRows(
   runPrincipalId: string,
   now: Date,
 ): MaterializedGrantRow[] {
-  const effectByResource = new Map<string, GrantEffect>();
-  for (const step of snapshot.perStep) {
-    // The snapshot serializes each step's tool-grant-to-effect map as a plain
-    // object; rehydrate it to a `Map` so the lookup below matches the walk's
-    // original access pattern.
-    const grantEffects = new Map<string, GrantEffect>(
-      Object.entries(step.grantEffects),
-    );
-    for (const grant of step.grants) {
-      if (grant.startsWith(TOOL_GRANT_PREFIX)) {
-        // Every `tool:` grant the snapshot emits carries a `grantEffects`
-        // entry (the tool-mark floor: `ask` for an approval-gated tool,
-        // `allow` otherwise). A missing entry means the snapshot's `grants`
-        // and `grantEffects` maps have diverged -- a defaulted `allow`
-        // here would silently DOWNGRADE an `ask` tool below its floor,
-        // defeating the approval gate. Fail loudly instead.
-        const effect = grantEffects.get(grant);
-        if (effect === undefined) {
-          throw new Error(
-            `deriveRunRuntimeGrantRows: tool grant ${JSON.stringify(grant)} has no grantEffects entry; the grant-walk snapshot must carry an effect for every tool grant`,
-          );
-        }
-        const existing = effectByResource.get(grant);
-        if (existing === "ask" || effect === "ask") {
-          effectByResource.set(grant, "ask");
-        } else if (existing === undefined) {
-          effectByResource.set(grant, effect);
-        }
-      } else if (grant.startsWith(EFFECT_GRANT_PREFIX)) {
-        // Effect grants are always allow; a repeat across steps is idempotent.
-        if (!effectByResource.has(grant)) {
-          effectByResource.set(grant, "allow");
-        }
-      }
-    }
-  }
-
-  const rows: MaterializedGrantRow[] = [];
-  for (const [resource, effect] of effectByResource) {
-    rows.push({
-      id: generateId("grant"),
-      tenantId,
-      principalId: runPrincipalId,
-      resource,
-      action: "invoke",
-      effect,
-      conditions: null,
-      origin: "creator",
-      expiresAt: null,
-      createdAt: now,
-      updatedAt: now,
-    });
-  }
-  return rows;
+  return runtimeGrantRules(snapshot).map((rule) =>
+    makeGrantRow({ tenantId, principalId: runPrincipalId, ...rule, now }),
+  );
 }
 
 /**
@@ -163,27 +89,14 @@ export function deriveCredentialUseGrantRows(args: {
   runPrincipalId: string;
   now: Date;
 }): MaterializedGrantRow[] {
-  const seen = new Set<string>();
-  const rows: MaterializedGrantRow[] = [];
-  for (const binding of args.bindings) {
-    const key = `${binding.credentialId}\0${binding.consumer}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    rows.push(
-      makeGrantRow({
-        tenantId: args.tenantId,
-        principalId: args.runPrincipalId,
-        resource: `credential:${binding.credentialId}`,
-        action: "use",
-        effect: "allow",
-        conditions: { tool: binding.consumer },
-        origin: "system",
-        expiresAt: null,
-        now: args.now,
-      }),
-    );
-  }
-  return rows;
+  return credentialUseGrantRules(args.bindings).map((rule) =>
+    makeGrantRow({
+      tenantId: args.tenantId,
+      principalId: args.runPrincipalId,
+      ...rule,
+      now: args.now,
+    }),
+  );
 }
 
 /**
