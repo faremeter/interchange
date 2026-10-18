@@ -26,6 +26,11 @@ export const sidecar = pgTable("sidecar", {
   // also set it on every sidecar then hosting nothing current, some of which
   // may still have been running.
   retiredAt: timestamp("retired_at", { withTimezone: true }),
+  // Set when its provisioner ended the reconnect window of this sidecar's
+  // work, so that work gets none again, even after a Hub restart.
+  reconnectWindowEndedAt: timestamp("reconnect_window_ended_at", {
+    withTimezone: true,
+  }),
   status: text("status", {
     enum: ["online", "offline", "error"],
   })

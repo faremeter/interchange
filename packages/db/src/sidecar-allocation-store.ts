@@ -24,7 +24,10 @@ import { createWorkflowPendingProjectionStore } from "./workflow-pending-project
 import {
   assertSidecarHasRoom,
   assertSidecarReusable,
+  type AllocationConnectionCheck,
   lockSidecars,
+  type ProvisionerSidecarRetirement,
+  retireProvisionerSidecar,
   retireSidecar,
   type SidecarAllocationStoreOptions,
   type SidecarProvisionerBinding,
@@ -417,27 +420,48 @@ function databaseTimestamp(override?: Date) {
   return override ?? sql`now()`;
 }
 
+function deadlineTimestamp(now?: Date) {
+  return now === undefined
+    ? sql`now()`
+    : sql`${sql.param(now, sidecarAllocation.connectDeadline)}::timestamp`;
+}
+
 // When a sidecar that lost its connection at `now` has stayed away for as
 // long as its allocation allows.
 function disconnectDeadline(now?: Date) {
-  const start =
-    now === undefined
-      ? sql`now()`
-      : sql`${sql.param(now, sidecarAllocation.connectDeadline)}::timestamp`;
-  return sql`${start} + ${sidecarAllocation.maxDisconnectedMs} * interval '1 millisecond'`;
+  return sql`${deadlineTimestamp(now)} + ${sidecarAllocation.maxDisconnectedMs} * interval '1 millisecond'`;
 }
 
 // The disconnect limit covers a deployment once its first deploy completed;
-// until then a lost sidecar gets only the first-connect window.
+// until then a lost sidecar gets only the first-connect window. Work on a
+// sidecar whose provisioner ended its reconnect window gets no window at all.
 function reconnectDeadline(
   args: MarkSidecarConnectionLostArgs,
   beforeFirstDeploy: SQL,
 ) {
-  return sql`case when exists (select 1 from ${workflowRun} where ${workflowRun.id} = ${sidecarAllocation.anchorRunId} and ${workflowRun.publicKey} is not null) then ${disconnectDeadline(args.now)} else ${beforeFirstDeploy} end`;
+  return sql`case when exists (select 1 from ${sidecar} where ${sidecar.id} = ${sidecarAllocation.sidecarId} and ${sidecar.reconnectWindowEndedAt} is not null) then ${deadlineTimestamp(args.now)} when exists (select 1 from ${workflowRun} where ${workflowRun.id} = ${sidecarAllocation.anchorRunId} and ${workflowRun.publicKey} is not null) then ${disconnectDeadline(args.now)} else ${beforeFirstDeploy} end`;
 }
 
 function firstConnectDeadline(args: MarkSidecarConnectionLostArgs) {
   return sql`${sql.param(args.firstConnectDeadline, sidecarAllocation.connectDeadline)}::timestamp`;
+}
+
+// A report that ends the sidecar's reconnect window holds its row until it
+// commits. Waiting for it lets the deadline written next see that report.
+async function shareAllocationSidecar(tx: DBExecutor, allocationId: string) {
+  await tx
+    .select({ id: sidecar.id })
+    .from(sidecar)
+    .where(
+      inArray(
+        sidecar.id,
+        tx
+          .select({ sidecarId: sidecarAllocation.sidecarId })
+          .from(sidecarAllocation)
+          .where(eq(sidecarAllocation.id, allocationId)),
+      ),
+    )
+    .for("share");
 }
 
 function leaseCondition(expectedLeaseId?: string) {
@@ -1367,6 +1391,25 @@ function buildSidecarAllocationStore(
       );
     },
 
+    /** See `retireProvisionerSidecar`. */
+    async retireProvisionerSidecar(args: {
+      readonly sidecarId: string;
+      readonly binding: SidecarProvisionerBinding;
+      readonly endReconnectWindow: boolean;
+      readonly isConnected: AllocationConnectionCheck;
+      readonly now?: Date;
+    }): Promise<ProvisionerSidecarRetirement | null> {
+      return db.transaction((tx) =>
+        retireProvisionerSidecar(tx, {
+          sidecarId: args.sidecarId,
+          binding: args.binding,
+          endReconnectWindow: args.endReconnectWindow,
+          isConnected: args.isConnected,
+          now: databaseTimestamp(args.now),
+        }),
+      );
+    },
+
     async confirmProviderRelease(args: {
       readonly allocationId: string;
       readonly generation: number;
@@ -1993,25 +2036,30 @@ function buildSidecarAllocationStore(
         args,
         firstConnectDeadline(args),
       );
-      const [updated] = await db
-        .update(sidecarAllocation)
-        .set({
-          connectDeadline,
-          nextAttemptAt: connectDeadline,
-          reconciliationLeaseId: null,
-          reconciliationLeaseExpiresAt: null,
-          updatedAt: databaseTimestamp(args.now),
-        })
-        .where(
-          and(
-            eq(sidecarAllocation.id, args.allocationId),
-            eq(sidecarAllocation.status, "allocated"),
-            eq(sidecarAllocation.generation, args.generation),
-            eq(sidecarAllocation.ensureAcceptedGeneration, args.generation),
-          ),
-        )
-        .returning();
-      return updated === undefined ? null : parseSidecarAllocationRow(updated);
+      return db.transaction(async (tx) => {
+        await shareAllocationSidecar(tx, args.allocationId);
+        const [updated] = await tx
+          .update(sidecarAllocation)
+          .set({
+            connectDeadline,
+            nextAttemptAt: connectDeadline,
+            reconciliationLeaseId: null,
+            reconciliationLeaseExpiresAt: null,
+            updatedAt: databaseTimestamp(args.now),
+          })
+          .where(
+            and(
+              eq(sidecarAllocation.id, args.allocationId),
+              eq(sidecarAllocation.status, "allocated"),
+              eq(sidecarAllocation.generation, args.generation),
+              eq(sidecarAllocation.ensureAcceptedGeneration, args.generation),
+            ),
+          )
+          .returning();
+        return updated === undefined
+          ? null
+          : parseSidecarAllocationRow(updated);
+      });
     },
 
     // No sidecar could connect while the Hub was down, so every generation gets
@@ -2024,25 +2072,30 @@ function buildSidecarAllocationStore(
         args,
         sql`greatest(${sidecarAllocation.connectDeadline}, ${firstConnectDeadline(args)})`,
       );
-      const [updated] = await db
-        .update(sidecarAllocation)
-        .set({
-          connectDeadline,
-          nextAttemptAt: connectDeadline,
-          reconciliationLeaseId: null,
-          reconciliationLeaseExpiresAt: null,
-          updatedAt: databaseTimestamp(args.now),
-        })
-        .where(
-          and(
-            eq(sidecarAllocation.id, args.allocationId),
-            eq(sidecarAllocation.status, "allocated"),
-            eq(sidecarAllocation.generation, args.generation),
-            eq(sidecarAllocation.ensureAcceptedGeneration, args.generation),
-          ),
-        )
-        .returning();
-      return updated === undefined ? null : parseSidecarAllocationRow(updated);
+      return db.transaction(async (tx) => {
+        await shareAllocationSidecar(tx, args.allocationId);
+        const [updated] = await tx
+          .update(sidecarAllocation)
+          .set({
+            connectDeadline,
+            nextAttemptAt: connectDeadline,
+            reconciliationLeaseId: null,
+            reconciliationLeaseExpiresAt: null,
+            updatedAt: databaseTimestamp(args.now),
+          })
+          .where(
+            and(
+              eq(sidecarAllocation.id, args.allocationId),
+              eq(sidecarAllocation.status, "allocated"),
+              eq(sidecarAllocation.generation, args.generation),
+              eq(sidecarAllocation.ensureAcceptedGeneration, args.generation),
+            ),
+          )
+          .returning();
+        return updated === undefined
+          ? null
+          : parseSidecarAllocationRow(updated);
+      });
     },
 
     async scheduleReconnectIfUnscheduled(
@@ -2052,26 +2105,31 @@ function buildSidecarAllocationStore(
         args,
         firstConnectDeadline(args),
       );
-      const [updated] = await db
-        .update(sidecarAllocation)
-        .set({
-          connectDeadline: sql`coalesce(${sidecarAllocation.connectDeadline}, ${connectDeadline})`,
-          nextAttemptAt: sql`coalesce(${sidecarAllocation.connectDeadline}, ${connectDeadline})`,
-          updatedAt: databaseTimestamp(args.now),
-        })
-        .where(
-          and(
-            eq(sidecarAllocation.id, args.allocationId),
-            eq(sidecarAllocation.status, "allocated"),
-            eq(sidecarAllocation.generation, args.generation),
-            eq(sidecarAllocation.ensureAcceptedGeneration, args.generation),
-            isNull(sidecarAllocation.nextAttemptAt),
-            isNull(sidecarAllocation.reconciliationLeaseId),
-            isNull(sidecarAllocation.reconciliationLeaseExpiresAt),
-          ),
-        )
-        .returning();
-      return updated === undefined ? null : parseSidecarAllocationRow(updated);
+      return db.transaction(async (tx) => {
+        await shareAllocationSidecar(tx, args.allocationId);
+        const [updated] = await tx
+          .update(sidecarAllocation)
+          .set({
+            connectDeadline: sql`coalesce(${sidecarAllocation.connectDeadline}, ${connectDeadline})`,
+            nextAttemptAt: sql`coalesce(${sidecarAllocation.connectDeadline}, ${connectDeadline})`,
+            updatedAt: databaseTimestamp(args.now),
+          })
+          .where(
+            and(
+              eq(sidecarAllocation.id, args.allocationId),
+              eq(sidecarAllocation.status, "allocated"),
+              eq(sidecarAllocation.generation, args.generation),
+              eq(sidecarAllocation.ensureAcceptedGeneration, args.generation),
+              isNull(sidecarAllocation.nextAttemptAt),
+              isNull(sidecarAllocation.reconciliationLeaseId),
+              isNull(sidecarAllocation.reconciliationLeaseExpiresAt),
+            ),
+          )
+          .returning();
+        return updated === undefined
+          ? null
+          : parseSidecarAllocationRow(updated);
+      });
     },
 
     async parkReconciliation(

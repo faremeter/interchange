@@ -99,18 +99,44 @@ sidecar cleanup path available. The provisioner keeps its holds durably, since
 the Hub never re-announces them after a restart.
 
 The Hub retires a sidecar identity once it learns that no sidecar runs with
-it: its `ensure` was rejected, or a `destroy` confirmed cleanup. A retired
-identity takes no new work, but work still on it keeps reconnecting, so work
-on a sidecar a provisioner wrongly reported gone is not cut off. Once neither
-current work nor a cleanup obligation is left on it, the Hub refuses its next
-handshake: it asks the sidecar to undeploy everything it reports and closes
-the socket. Only new handshakes are refused; a connection already open stays
-open, idle, until it closes. The Hub learns of no other end. A sidecar the
-provisioner stops later, after answering its last `destroy` with
-`cleanup: required`, keeps a valid token, as does a reused sidecar the Hub
-never recorded before it destroyed the work by the identity it offered. Such a
-token opens only an idle connection, which gets work only if a provisioner
-places work on that sidecar again.
+it: its `ensure` was rejected, a `destroy` confirmed cleanup, or its
+provisioner reported it stopped. A retired identity takes no new work, but
+work still on it keeps reconnecting, so work on a sidecar a provisioner wrongly
+reported gone is not cut off. Once neither current work nor a cleanup
+obligation is left on it, the Hub refuses its next handshake: it asks the
+sidecar to undeploy everything it reports and closes the socket. Only new
+handshakes are refused; a connection already open stays open, idle, until it
+closes.
+
+A provisioner reports a stopped sidecar through the optional `attach` hook:
+the Hub calls `attach` once at start with a host whose `sidecarStopped`
+retires a sidecar minted for that provisioner's current binding and answers
+`not_owned`, which is final, for any other. A provisioner reports a sidecar it
+stops later, after answering its last `destroy` with `cleanup: required`, and
+a reused sidecar it stopped whose placement the Hub never recorded, since the
+`destroy` named the identity the Hub offered. A thrown `sidecarStopped` is
+transient, so the provisioner keeps the report durably, like its holds, and
+retries it, also after a Hub restart. Without a report, such a sidecar keeps a
+valid token, which opens only an idle connection that gets work only if a
+provisioner places work on that sidecar again. The same holds for a sidecar
+minted under a binding the provisioner no longer has: it cannot report it, but
+reuse already refuses it because the binding differs.
+
+A report leaves work still on the sidecar alone by default: disconnected work
+keeps its reconnect window, since the provisioner may bring the sidecar back
+elsewhere. A provisioner that knows the work will not come back on that
+sidecar passes `endReconnectWindow`. The Hub records that on the sidecar and
+ends the reconnect window of its disconnected work at once, handing it to the
+usual connection loss path, which today replaces a parked run and fails an
+active one. Work that disconnects later, and work a Hub restart would
+otherwise give a fresh window, gets no window either. Work still connected to
+the sidecar contradicts the report; the Hub logs it and leaves that work
+running until it disconnects. `endReconnectWindow` covers allocations only,
+since a probe needs no help: one still waiting for its sidecar fails when its
+first-connect window ends, and one already running fails as soon as its
+connection drops. The Hub attaches provisioners only after its startup has
+scheduled every allocation's reconnect, so a report retried at startup sees
+work connected before the restart as disconnected.
 
 A provisioner's declared guarantees, such as `isolation:workload`, must still
 hold for work that shares a sidecar. The stock sidecar does not isolate the

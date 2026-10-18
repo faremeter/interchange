@@ -3,6 +3,7 @@ ALTER TABLE "sidecar" ADD COLUMN "provisioner_api_version" integer;--> statement
 ALTER TABLE "sidecar" ADD COLUMN "provisioner_binding_fingerprint" text;--> statement-breakpoint
 ALTER TABLE "sidecar" ADD COLUMN "adapter_manifest_digest" text;--> statement-breakpoint
 ALTER TABLE "sidecar" ADD COLUMN "retired_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "sidecar" ADD COLUMN "reconnect_window_ended_at" timestamp with time zone;--> statement-breakpoint
 UPDATE "sidecar" SET
 	"provisioner_id" = "placed"."provisioner_id",
 	"provisioner_api_version" = "placed"."provisioner_api_version",

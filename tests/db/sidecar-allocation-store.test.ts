@@ -3057,6 +3057,237 @@ describe.skipIf(!harnessDbEnvAvailable())(
         });
       });
 
+      test("retires only a reported sidecar minted for the reporting binding", async () => {
+        const store = await bindFirstGeneration("alloc-first", ANCHOR_RUN_ID);
+        const binding = {
+          provisionerId: "ec2-spot",
+          provisionerApiVersion: 2 as const,
+          provisionerBindingFingerprint: "ec2-spot:test",
+        };
+        const retiredAt = async () =>
+          (
+            await h.db.query.sidecar.findFirst({
+              columns: { retiredAt: true },
+              where: eq(sidecar.id, "alloc-first-minted"),
+            })
+          )?.retiredAt;
+
+        expect(
+          await store.retireProvisionerSidecar({
+            sidecarId: "alloc-first-minted",
+            binding: {
+              ...binding,
+              provisionerBindingFingerprint: "ec2-spot:other",
+            },
+            endReconnectWindow: false,
+            isConnected: () => false,
+          }),
+        ).toBeNull();
+        expect(
+          await store.retireProvisionerSidecar({
+            sidecarId: "unknown-sidecar",
+            binding,
+            endReconnectWindow: false,
+            isConnected: () => false,
+          }),
+        ).toBeNull();
+        expect(await retiredAt()).toBeNull();
+
+        const report = {
+          sidecarId: "alloc-first-minted",
+          binding,
+          endReconnectWindow: false,
+          isConnected: () => false,
+        };
+        expect(await store.retireProvisionerSidecar(report)).toEqual({
+          connectedAllocationIds: [],
+        });
+        const first = await retiredAt();
+        expect(first).toBeInstanceOf(Date);
+        // A repeated report succeeds and keeps the first retirement.
+        expect(await store.retireProvisionerSidecar(report)).toEqual({
+          connectedAllocationIds: [],
+        });
+        expect(await retiredAt()).toEqual(first);
+      });
+
+      test("ends the reconnect window of the sidecar's work only when the report ends it", async () => {
+        await seedAnchor("anchor-live");
+        await seedAnchor("anchor-unrecorded");
+        const store = await bindFirstGeneration("alloc-lost", ANCHOR_RUN_ID);
+        await store.markAllocated({
+          allocationId: "alloc-lost",
+          generation: 1,
+        });
+        for (const [allocationId, anchorRunId] of [
+          ["alloc-live", "anchor-live"],
+          ["alloc-unrecorded", "anchor-unrecorded"],
+        ] as const) {
+          await bindFirstGeneration(allocationId, anchorRunId);
+          await store.markAllocated({
+            allocationId,
+            generation: 1,
+            sidecarId: "alloc-lost-minted",
+          });
+        }
+        await h.db
+          .update(sidecarAllocation)
+          .set({
+            reconciliationLeaseId: "lease-waiting",
+            reconciliationLeaseExpiresAt: new Date(Date.now() + 60_000),
+          })
+          .where(eq(sidecarAllocation.id, "alloc-lost"));
+        // Connected but still initializing, so it keeps its deadline.
+        await h.db
+          .update(sidecarAllocation)
+          .set({
+            initializationLeaseId: "lease-initializing",
+            reconciliationLeaseId: "lease-initializing",
+            reconciliationLeaseExpiresAt: new Date(Date.now() + 60_000),
+          })
+          .where(eq(sidecarAllocation.id, "alloc-live"));
+        // Its connection dropped before the Hub recorded the disconnect.
+        await h.db
+          .update(sidecarAllocation)
+          .set({ connectDeadline: null, nextAttemptAt: null })
+          .where(eq(sidecarAllocation.id, "alloc-unrecorded"));
+        const report = {
+          sidecarId: "alloc-lost-minted",
+          binding: {
+            provisionerId: "ec2-spot",
+            provisionerApiVersion: 2 as const,
+            provisionerBindingFingerprint: "ec2-spot:test",
+          },
+          isConnected: ({ allocationId }: { allocationId: string }) =>
+            allocationId === "alloc-live",
+        };
+        const waitingDeadline = (await store.findById("alloc-lost"))
+          ?.connectDeadline;
+        const liveBefore = await store.findById("alloc-live");
+
+        expect(
+          await store.retireProvisionerSidecar({
+            ...report,
+            endReconnectWindow: false,
+          }),
+        ).toEqual({ connectedAllocationIds: ["alloc-live"] });
+        expect(await store.findById("alloc-lost")).toMatchObject({
+          connectDeadline: waitingDeadline,
+          reconciliationLeaseId: "lease-waiting",
+        });
+        const reconnectWindowEndedAt = async () =>
+          (
+            await h.db.query.sidecar.findFirst({
+              columns: { reconnectWindowEndedAt: true },
+              where: eq(sidecar.id, "alloc-lost-minted"),
+            })
+          )?.reconnectWindowEndedAt;
+        expect(await reconnectWindowEndedAt()).toBeNull();
+
+        const reportedAt = new Date();
+        expect(
+          await store.retireProvisionerSidecar({
+            ...report,
+            endReconnectWindow: true,
+            now: reportedAt,
+          }),
+        ).toEqual({ connectedAllocationIds: ["alloc-live"] });
+        expect(await reconnectWindowEndedAt()).toEqual(reportedAt);
+        for (const allocationId of ["alloc-lost", "alloc-unrecorded"]) {
+          const ended = await store.findById(allocationId);
+          expect(ended).toMatchObject({
+            status: "allocated",
+            connectDeadline: reportedAt,
+            nextAttemptAt: reportedAt,
+          });
+          expect(ended?.reconciliationLeaseId).toBeUndefined();
+        }
+        expect(await store.findById("alloc-live")).toEqual(liveBefore);
+
+        // A Hub restart keeps that work's deadline due, and work that
+        // disconnects only later gets no reconnect window either.
+        const startedAt = new Date(reportedAt.getTime() + 1_000);
+        expect(
+          (
+            await store.scheduleReconnectAfterHubStart({
+              allocationId: "alloc-lost",
+              generation: 1,
+              now: startedAt,
+              firstConnectDeadline: new Date(startedAt.getTime() + 120_000),
+            })
+          )?.connectDeadline,
+        ).toEqual(startedAt);
+        const lostAt = new Date(startedAt.getTime() + 1_000);
+        expect(
+          (
+            await store.markConnectionLost({
+              allocationId: "alloc-live",
+              generation: 1,
+              now: lostAt,
+              firstConnectDeadline: new Date(lostAt.getTime() + 120_000),
+            })
+          )?.connectDeadline,
+        ).toEqual(lostAt);
+      });
+
+      test("a disconnect recorded while the report commits sees the ended window", async () => {
+        const store = await bindFirstGeneration("alloc-racing", ANCHOR_RUN_ID);
+        await store.markAllocated({
+          allocationId: "alloc-racing",
+          generation: 1,
+        });
+        await h.db
+          .update(sidecarAllocation)
+          .set({ connectDeadline: null, nextAttemptAt: null })
+          .where(eq(sidecarAllocation.id, "alloc-racing"));
+        const locked = Promise.withResolvers<number>();
+        const release = Promise.withResolvers<undefined>();
+        const reportedAt = new Date();
+        // Holds the sidecar row the way an open report does.
+        const report = h.db.transaction(async (tx) => {
+          const [backend] = await tx.execute(
+            sql`select pg_backend_pid() as pid`,
+          );
+          const pid = backend?.["pid"];
+          if (typeof pid !== "number") throw new Error("Missing backend PID");
+          await tx
+            .select({ id: sidecar.id })
+            .from(sidecar)
+            .where(eq(sidecar.id, "alloc-racing-minted"))
+            .for("update");
+          await tx
+            .update(sidecar)
+            .set({ reconnectWindowEndedAt: reportedAt })
+            .where(eq(sidecar.id, "alloc-racing-minted"));
+          locked.resolve(pid);
+          await release.promise;
+        });
+        const reportPid = await locked.promise;
+        const lostAt = new Date(reportedAt.getTime() + 1_000);
+        const disconnected = store.markConnectionLost({
+          allocationId: "alloc-racing",
+          generation: 1,
+          now: lostAt,
+          firstConnectDeadline: new Date(lostAt.getTime() + 120_000),
+        });
+        try {
+          // Postgres signals no lock wait, so poll for it; a disconnect
+          // that never blocks is a hang for the lane timeout to fail.
+          for (;;) {
+            const [waiting] = await h.db.execute(
+              sql`select pid from pg_stat_activity where ${reportPid} = any(pg_blocking_pids(pid))`,
+            );
+            if (typeof waiting?.["pid"] === "number") break;
+            await new Promise((resolve) => setTimeout(resolve, 1));
+          }
+        } finally {
+          release.resolve(undefined);
+          await report;
+        }
+
+        expect((await disconnected)?.connectDeadline).toEqual(lostAt);
+      });
+
       test("rejects a sidecar recorded before its adapter manifest was", async () => {
         await seedAnchor("anchor-second");
         const store = await bindFirstGeneration("alloc-first", ANCHOR_RUN_ID);

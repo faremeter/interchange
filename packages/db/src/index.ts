@@ -114,6 +114,9 @@ export {
   type RetainedSidecarIncarnation,
   type SidecarInventory,
   type SidecarAllocationStoreOptions,
+  type AllocationConnectionCheck,
+  type ProvisionerSidecarRetirement,
+  type SidecarProvisionerBinding,
 } from "./sidecar-reuse";
 export {
   createWorkflowProbeStore,
