@@ -74,9 +74,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
       now = new Date();
       await seedTenants(h.db, [{ id: TENANT }]);
-      await h.db
-        .insert(sidecar)
-        .values({ id: SIDECAR, tokenHashSha256: await sha256(TOKEN) });
+      await h.db.insert(sidecar).values({
+        id: SIDECAR,
+        tokenHashSha256: await sha256(TOKEN),
+        provisionerId: "test",
+        provisionerApiVersion: 2,
+        provisionerBindingFingerprint: "test:v1",
+        adapterManifestDigest: NO_MANIFEST_DIGEST,
+      });
     });
     afterEach(async () => {
       for (const router of routers.splice(0))
@@ -313,6 +318,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await h.db.insert(sidecar).values({
         id: "candidate-sidecar",
         tokenHashSha256: await sha256("candidate"),
+        provisionerId: "test",
+        provisionerApiVersion: 2,
+        provisionerBindingFingerprint: "test:v1",
+        adapterManifestDigest: NO_MANIFEST_DIGEST,
       });
       await h.db.insert(sidecarAllocation).values(
         runs.map((anchorRunId, i) => ({

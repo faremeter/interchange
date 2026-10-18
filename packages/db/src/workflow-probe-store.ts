@@ -5,7 +5,11 @@ import type { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
 
 import type { DB, DBExecutor } from "./client";
 import { sidecar, workflowProbe, type WorkflowProbeStatus } from "./schema";
-import { assertSidecarReusable, lockSidecars } from "./sidecar-reuse";
+import {
+  assertSidecarReusable,
+  lockSidecars,
+  retireSidecar,
+} from "./sidecar-reuse";
 
 type DBHandle = DB["db"];
 type WorkflowProbeResult = Omit<WorkflowProbeResultFrame, "type" | "requestId">;
@@ -113,7 +117,14 @@ export function createWorkflowProbeStore(db: DBHandle) {
       const bind = async (executor: DBExecutor) => {
         const updatedAt = timestamp(args.now);
         const [probe] = await executor
-          .select({ status: workflowProbe.status })
+          .select({
+            status: workflowProbe.status,
+            provisionerId: workflowProbe.provisionerId,
+            provisionerApiVersion: workflowProbe.provisionerApiVersion,
+            provisionerBindingFingerprint:
+              workflowProbe.provisionerBindingFingerprint,
+            adapterManifestDigest: workflowProbe.adapterManifestDigest,
+          })
           .from(workflowProbe)
           .where(eq(workflowProbe.id, args.probeId))
           .limit(1)
@@ -123,6 +134,10 @@ export function createWorkflowProbeStore(db: DBHandle) {
           id: args.sidecarId,
           url: null,
           tokenHashSha256: args.tokenHashSha256,
+          provisionerId: probe.provisionerId,
+          provisionerApiVersion: probe.provisionerApiVersion,
+          provisionerBindingFingerprint: probe.provisionerBindingFingerprint,
+          adapterManifestDigest: probe.adapterManifestDigest,
           status: "offline",
           createdAt: updatedAt,
           updatedAt,
@@ -180,7 +195,6 @@ export function createWorkflowProbeStore(db: DBHandle) {
                 probe.provisionerBindingFingerprint,
             },
             adapterManifestDigest: probe.adapterManifestDigest,
-            placing: { allocationId: probe.id },
           });
         }
         const [updated] = await tx
@@ -207,6 +221,19 @@ export function createWorkflowProbeStore(db: DBHandle) {
         }
         return updated;
       });
+    },
+
+    /** Records that no sidecar runs with `sidecarId`; see `retireSidecar`. */
+    async retireSidecar(args: {
+      sidecarId: string;
+      now?: Date;
+    }): Promise<void> {
+      await db.transaction((tx) =>
+        retireSidecar(tx, {
+          sidecarId: args.sidecarId,
+          now: timestamp(args.now),
+        }),
+      );
     },
 
     async recordResult(

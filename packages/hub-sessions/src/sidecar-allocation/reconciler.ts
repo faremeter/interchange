@@ -68,6 +68,7 @@ type AllocationStore = Pick<
   | "confirmProviderRelease"
   | "recordCleanupConnection"
   | "resumeCleanupAfterDisconnect"
+  | "retireSidecar"
   | "parkReconciliation"
   | "scheduleReconnectAfterHubStart"
   | "scheduleReconnectIfUnscheduled"
@@ -941,6 +942,8 @@ export function createSidecarAllocationReconciler({
       return;
     }
     if (result.kind === "rejected") {
+      // A rejected ensure started nothing.
+      await allocationStore.retireSidecar({ sidecarId, now: now() });
       if (!result.retryable) {
         const failed = await allocationStore.failWithoutInfrastructure({
           allocationId: allocation.id,
@@ -1533,6 +1536,10 @@ export function createSidecarAllocationReconciler({
       });
       return false;
     }
+    // Retire before recording the release: once both cleanup flags are set,
+    // no later pass reaches this point.
+    if (result.kind === "destroyed" && result.cleanup === "confirmed")
+      await allocationStore.retireSidecar({ sidecarId, now: now() });
     if (result.kind === "destroyed" && !cleanup.providerHoldReleased) {
       const target = {
         allocationId: allocation.id,

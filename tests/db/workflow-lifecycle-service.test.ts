@@ -161,9 +161,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
           capacityRetention: { completed: "0s", failed: "15m" },
         },
       });
-      await h.db
-        .insert(sidecar)
-        .values({ id: "sidecar", tokenHashSha256: new Uint8Array(32) });
+      await h.db.insert(sidecar).values({
+        id: "sidecar",
+        tokenHashSha256: new Uint8Array(32),
+        provisionerId: "test",
+        provisionerApiVersion: 2,
+        provisionerBindingFingerprint: "test:1",
+        adapterManifestDigest: MANIFEST_DIGEST,
+      });
       await h.db.insert(sidecarAllocation).values({
         id: allocationId,
         tenantId,
@@ -264,6 +269,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         tokenHashSha256: new Uint8Array(
           await crypto.subtle.digest("SHA-256", new TextEncoder().encode(id)),
         ),
+        provisionerId: "test",
+        provisionerApiVersion: 2,
+        provisionerBindingFingerprint: "test:1",
+        adapterManifestDigest: MANIFEST_DIGEST,
       });
       await h.db.insert(sidecarAllocation).values({
         id: `allocation_${id}`,
@@ -553,6 +562,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await h.db.insert(sidecar).values({
         id: "healthy-sidecar",
         tokenHashSha256: new Uint8Array(32).fill(1),
+        provisionerId: "test",
+        provisionerApiVersion: 2,
+        provisionerBindingFingerprint: "test:1",
+        adapterManifestDigest: MANIFEST_DIGEST,
       });
       const candidates: {
         allocationId: string;
@@ -961,6 +974,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await h.db.insert(sidecar).values({
         id: "candidate-sidecar",
         tokenHashSha256: new Uint8Array(32).fill(1),
+        provisionerId: "test",
+        provisionerApiVersion: 2,
+        provisionerBindingFingerprint: "test:1",
+        adapterManifestDigest: MANIFEST_DIGEST,
       });
       await h.db.insert(sidecarAllocation).values(
         otherRuns.map((anchorRunId, index) => ({

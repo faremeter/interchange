@@ -80,6 +80,8 @@ describe.skipIf(!harnessDbEnvAvailable())("sidecar ownership locking", () => {
         id,
         url: null,
         tokenHashSha256: new TextEncoder().encode(id),
+        ...BINDING,
+        adapterManifestDigest: MANIFEST_DIGEST,
       });
     }
   });
@@ -417,23 +419,54 @@ describe.skipIf(!harnessDbEnvAvailable())("sidecar ownership locking", () => {
           status: "fulfilled",
           value: { id: "holder" },
         });
-        if (placementFirst) {
-          expect(placement).toMatchObject({
-            status: "fulfilled",
-            value: { status: "allocated", sidecarId: SHARED_SIDECAR_ID },
-          });
-        } else {
-          expect(placement).toMatchObject({
-            status: "rejected",
-            reason: expect.any(SidecarReuseRejectedError),
-          });
-          expect(await store.findById("joining")).toMatchObject({
-            status: "provisioning",
-            sidecarId: "sidecar-offered",
-          });
-        }
+        expect(placement).toMatchObject({
+          status: "fulfilled",
+          value: { status: "allocated", sidecarId: SHARED_SIDECAR_ID },
+        });
       });
     }
+  }
+
+  for (const placementFirst of [true, false]) {
+    test(`retirement serializes with placement (placement first: ${String(placementFirst)})`, async () => {
+      await seedAllocation("holder", "allocated");
+      await seedAllocation("joining", "provisioning", "sidecar-offered");
+      const store = createSidecarAllocationStore(h.db, {
+        getSidecarInventory: () => ({
+          capacity: DEFAULT_SIDECAR_CAPACITY,
+          retainedIncarnations: [],
+        }),
+      });
+      const place = () =>
+        store.markAllocated({
+          allocationId: "joining",
+          generation: 1,
+          sidecarId: SHARED_SIDECAR_ID,
+        });
+      const retire = () =>
+        store.retireSidecar({ sidecarId: SHARED_SIDECAR_ID });
+      const results = placementFirst
+        ? await runInLockOrder(place, retire)
+        : await runInLockOrder(retire, place);
+      expect(results[placementFirst ? 1 : 0]).toMatchObject({
+        status: "fulfilled",
+      });
+      if (placementFirst) {
+        expect(results[0]).toMatchObject({
+          status: "fulfilled",
+          value: { status: "allocated", sidecarId: SHARED_SIDECAR_ID },
+        });
+      } else {
+        expect(results[1]).toMatchObject({
+          status: "rejected",
+          reason: expect.any(SidecarReuseRejectedError),
+        });
+        expect(await store.findById("joining")).toMatchObject({
+          status: "provisioning",
+          sidecarId: "sidecar-offered",
+        });
+      }
+    });
   }
 
   for (const placementFirst of [true, false]) {
@@ -462,14 +495,10 @@ describe.skipIf(!harnessDbEnvAvailable())("sidecar ownership locking", () => {
         status: "fulfilled",
         value: { status: "succeeded" },
       });
-      expect(results[placementFirst ? 0 : 1]).toMatchObject(
-        placementFirst
-          ? { status: "fulfilled", value: { sidecarId: SHARED_SIDECAR_ID } }
-          : {
-              status: "rejected",
-              reason: expect.any(SidecarReuseRejectedError),
-            },
-      );
+      expect(results[placementFirst ? 0 : 1]).toMatchObject({
+        status: "fulfilled",
+        value: { sidecarId: SHARED_SIDECAR_ID },
+      });
     });
   }
 

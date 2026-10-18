@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp } from "drizzle-orm/pg-core";
+import { integer, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 
 import { bytea } from "./column-types";
 
@@ -11,6 +11,21 @@ export const sidecar = pgTable("sidecar", {
   // WebSocket handshake and matched against this column. Only the digest
   // is stored; the raw token is never persisted.
   tokenHashSha256: bytea("token_hash_sha256").notNull().unique(),
+  // The provisioner binding that minted this identity and the adapter
+  // manifest its ensure carried. Reuse matches them, including on a sidecar
+  // that hosts nothing.
+  provisionerId: text("provisioner_id").notNull(),
+  provisionerApiVersion: integer("provisioner_api_version")
+    .$type<2>()
+    .notNull(),
+  provisionerBindingFingerprint: text(
+    "provisioner_binding_fingerprint",
+  ).notNull(),
+  adapterManifestDigest: text("adapter_manifest_digest").notNull(),
+  // Set once the Hub knows no sidecar runs with this identity. Migration 0110
+  // also set it on every sidecar then hosting nothing current, some of which
+  // may still have been running.
+  retiredAt: timestamp("retired_at", { withTimezone: true }),
   status: text("status", {
     enum: ["online", "offline", "error"],
   })

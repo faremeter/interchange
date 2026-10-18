@@ -25,7 +25,9 @@ import {
   assertSidecarHasRoom,
   assertSidecarReusable,
   lockSidecars,
+  retireSidecar,
   type SidecarAllocationStoreOptions,
+  type SidecarProvisionerBinding,
 } from "./sidecar-reuse";
 import { createWorkflowRunDispatchStore } from "./workflow-run-dispatch-store";
 import { canExecuteWorkflowRun } from "./workflow-lifecycle-policy";
@@ -349,6 +351,18 @@ type InitializationArgs = {
   readonly signal: AbortSignal;
 };
 
+function allocationBinding(
+  row: SidecarAllocationRow,
+): SidecarProvisionerBinding {
+  return {
+    provisionerId: row.provisionerId,
+    provisionerApiVersion: SidecarProvisionerApiVersion.assert(
+      row.provisionerApiVersion,
+    ),
+    provisionerBindingFingerprint: row.provisionerBindingFingerprint,
+  };
+}
+
 function parseSidecarAllocationRow(
   row: SidecarAllocationRow,
 ): SidecarAllocation {
@@ -598,6 +612,8 @@ function buildSidecarAllocationStore(
     args: {
       sidecarId: string;
       tokenHashSha256: Uint8Array;
+      binding: SidecarProvisionerBinding;
+      adapterManifestDigest: string;
       now: Date | ReturnType<typeof sql>;
     },
   ): Promise<void> {
@@ -605,6 +621,8 @@ function buildSidecarAllocationStore(
       id: args.sidecarId,
       url: null,
       tokenHashSha256: args.tokenHashSha256,
+      ...args.binding,
+      adapterManifestDigest: args.adapterManifestDigest,
       status: "offline",
       createdAt: args.now,
       updatedAt: args.now,
@@ -891,7 +909,16 @@ function buildSidecarAllocationStore(
     args: CreateAdoptedSidecarAllocationArgs,
   ): Promise<SidecarAllocation> {
     // Adopting a probe places a deployment on its sidecar, so it is held to
-    // the same room check as a placement through `markAllocated`.
+    // the same reuse and room checks as a placement through `markAllocated`.
+    await assertSidecarReusable(tx, {
+      sidecarId: args.sidecarId,
+      binding: {
+        provisionerId: args.provisionerId,
+        provisionerApiVersion: args.provisionerApiVersion,
+        provisionerBindingFingerprint: args.provisionerBindingFingerprint,
+      },
+      adapterManifestDigest: args.adapterManifestDigest,
+    });
     await assertSidecarHasRoom(tx, {
       ...options,
       sidecarId: args.sidecarId,
@@ -1104,6 +1131,8 @@ function buildSidecarAllocationStore(
         await insertSidecarIdentity(tx, {
           sidecarId: args.sidecarId,
           tokenHashSha256: args.tokenHashSha256,
+          binding: allocationBinding(allocation),
+          adapterManifestDigest: args.adapterManifestDigest,
           now,
         });
         const [updated] = await tx
@@ -1160,6 +1189,8 @@ function buildSidecarAllocationStore(
         await insertSidecarIdentity(tx, {
           sidecarId: args.sidecarId,
           tokenHashSha256: args.tokenHashSha256,
+          binding: allocationBinding(allocation),
+          adapterManifestDigest: args.adapterManifestDigest,
           now,
         });
         const [updated] = await tx
@@ -1223,16 +1254,8 @@ function buildSidecarAllocationStore(
         if (reusedSidecarId !== undefined) {
           await assertSidecarReusable(tx, {
             sidecarId: reusedSidecarId,
-            binding: {
-              provisionerId: allocation.provisionerId,
-              provisionerApiVersion: SidecarProvisionerApiVersion.assert(
-                allocation.provisionerApiVersion,
-              ),
-              provisionerBindingFingerprint:
-                allocation.provisionerBindingFingerprint,
-            },
+            binding: allocationBinding(allocation),
             adapterManifestDigest: allocation.adapterManifestDigest,
-            placing: { allocationId: allocation.id },
           });
           await assertSidecarHasRoom(tx, {
             ...options,
@@ -1329,6 +1352,19 @@ function buildSidecarAllocationStore(
         )
         .returning({ id: sidecarAllocation.id });
       return updated !== undefined;
+    },
+
+    /** Records that no sidecar runs with `sidecarId`; see `retireSidecar`. */
+    async retireSidecar(args: {
+      readonly sidecarId: string;
+      readonly now?: Date;
+    }): Promise<void> {
+      await db.transaction((tx) =>
+        retireSidecar(tx, {
+          sidecarId: args.sidecarId,
+          now: databaseTimestamp(args.now),
+        }),
+      );
     },
 
     async confirmProviderRelease(args: {

@@ -2672,6 +2672,33 @@ describe.skipIf(!harnessDbEnvAvailable())(
         },
       );
 
+      test("refuses to adopt a probe's sidecar once it was retired", async () => {
+        const store = await bindFirstGeneration("alloc-first", ANCHOR_RUN_ID);
+        await store.markAllocated({
+          allocationId: "alloc-first",
+          generation: 1,
+        });
+        await store.retireSidecar({ sidecarId: "alloc-first-minted" });
+        await seedAnchor("anchor-adopted");
+
+        await expect(
+          store.createAdopted({
+            id: "probe-adopted",
+            anchorRunId: "anchor-adopted",
+            tenantId: TENANT_ID,
+            provisionerId: "ec2-spot",
+            provisionerApiVersion: 2,
+            provisionerBindingFingerprint: "ec2-spot:test",
+            adapterManifestDigest: MANIFEST_DIGEST,
+            maxDisconnectedMs: 900_000,
+            sidecarId: "alloc-first-minted",
+            generation: 1,
+            connectDeadline: new Date(Date.now() + 60_000),
+          }),
+        ).rejects.toThrow("it was retired");
+        expect(await store.findById("probe-adopted")).toBeNull();
+      });
+
       test("probe adoption uses the active slot freed by a retained copy", async () => {
         await fillActiveSlots();
         await seedAnchor("anchor-adopted");
@@ -2741,28 +2768,28 @@ describe.skipIf(!harnessDbEnvAvailable())(
         ).toEqual(["alloc-first-minted", "alloc-first-minted"]);
       });
 
-      test("rejects a sidecar that hosts no current work", async () => {
+      test("places an allocation on a sidecar that hosts nothing", async () => {
         await seedAnchor("anchor-second");
         const store = await bindFirstGeneration("alloc-first", ANCHOR_RUN_ID);
-        await store.failWithoutInfrastructure({
+        await store.markAllocated({
           allocationId: "alloc-first",
-          expectedStatus: "provisioning",
-          expectedGeneration: 1,
-          code: "ensure_rejected",
-          message: "No capacity",
+          generation: 1,
         });
+        await h.db
+          .update(sidecarAllocation)
+          .set({ status: "released" })
+          .where(eq(sidecarAllocation.id, "alloc-first"));
         await bindFirstGeneration("alloc-second", "anchor-second");
 
-        await expect(
-          store.markAllocated({
+        expect(
+          await store.markAllocated({
             allocationId: "alloc-second",
             generation: 1,
             sidecarId: "alloc-first-minted",
           }),
-        ).rejects.toBeInstanceOf(SidecarReuseRejectedError);
-        expect(await store.findById("alloc-second")).toMatchObject({
-          status: "provisioning",
-          sidecarId: "alloc-second-minted",
+        ).toMatchObject({
+          status: "allocated",
+          sidecarId: "alloc-first-minted",
         });
       });
 
@@ -2980,7 +3007,57 @@ describe.skipIf(!harnessDbEnvAvailable())(
         });
       });
 
-      test("rejects a sidecar whose allocation predates recording the adapter manifest", async () => {
+      test("retires an identity whose ensure was rejected and refuses to reuse it", async () => {
+        await seedAnchor("anchor-second");
+        const store = await bindFirstGeneration("alloc-first", ANCHOR_RUN_ID);
+        await store.retireSidecar({ sidecarId: "alloc-first-minted" });
+        await store.failWithoutInfrastructure({
+          allocationId: "alloc-first",
+          expectedStatus: "provisioning",
+          expectedGeneration: 1,
+          code: "ensure_rejected",
+          message: "No capacity",
+        });
+        await bindFirstGeneration("alloc-second", "anchor-second");
+
+        await expect(
+          store.markAllocated({
+            allocationId: "alloc-second",
+            generation: 1,
+            sidecarId: "alloc-first-minted",
+          }),
+        ).rejects.toThrow("it was retired");
+        expect(await store.findById("alloc-second")).toMatchObject({
+          status: "provisioning",
+          sidecarId: "alloc-second-minted",
+        });
+      });
+
+      test("refuses to reuse a retired sidecar that other work still uses", async () => {
+        await seedAnchor("anchor-second");
+        await seedAnchor("anchor-third");
+        const store = await bindFirstGeneration("alloc-first", ANCHOR_RUN_ID);
+        await store.markAllocated({
+          allocationId: "alloc-first",
+          generation: 1,
+        });
+        await store.retireSidecar({ sidecarId: "alloc-first-minted" });
+        await bindFirstGeneration("alloc-second", "anchor-second");
+
+        await expect(
+          store.markAllocated({
+            allocationId: "alloc-second",
+            generation: 1,
+            sidecarId: "alloc-first-minted",
+          }),
+        ).rejects.toThrow("it was retired");
+        expect(await store.findById("alloc-first")).toMatchObject({
+          status: "allocated",
+          sidecarId: "alloc-first-minted",
+        });
+      });
+
+      test("rejects a sidecar recorded before its adapter manifest was", async () => {
         await seedAnchor("anchor-second");
         const store = await bindFirstGeneration("alloc-first", ANCHOR_RUN_ID);
         await store.markAllocated({
@@ -2988,9 +3065,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
           generation: 1,
         });
         await h.db
-          .update(sidecarAllocation)
+          .update(sidecar)
           .set({ adapterManifestDigest: "unrecorded" })
-          .where(eq(sidecarAllocation.id, "alloc-first"));
+          .where(eq(sidecar.id, "alloc-first-minted"));
         await bindFirstGeneration("alloc-second", "anchor-second");
 
         await expect(
@@ -3982,6 +4059,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         await h.db.insert(sidecar).values({
           id,
           tokenHashSha256: new Uint8Array(32).fill(index),
+          provisionerId: "test",
+          provisionerApiVersion: 2,
+          provisionerBindingFingerprint: "test:v1",
+          adapterManifestDigest: MANIFEST_DIGEST,
         });
         await store.createAdopted({
           id,
@@ -5589,15 +5670,15 @@ describe.skipIf(!harnessDbEnvAvailable())(
           adapterManifestDigest: MANIFEST_DIGEST,
           connectDeadline: new Date(0),
         });
-        // Capacity left for operator cleanup hosts no current work, so no
-        // provisioner can hand it to another deployment.
-        await expect(
-          store.markAllocated({
+        // Capacity left for operator cleanup still counts against the
+        // sidecar, but whether it takes new work is the provisioner's call.
+        expect(
+          await store.markAllocated({
             allocationId: "alloc-other",
             generation: 1,
             sidecarId: "sidecar-destroy",
           }),
-        ).rejects.toBeInstanceOf(SidecarReuseRejectedError);
+        ).toMatchObject({ status: "allocated", sidecarId: "sidecar-destroy" });
       });
     }
 
