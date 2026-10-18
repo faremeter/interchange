@@ -697,11 +697,12 @@ export type SidecarAllocationRouter = {
 /**
  * Resolves the credentials a sidecar presents on the handshake to the
  * verified sidecar, or `null` when they are not recognized. A sidecar that
- * hosts nothing current still resolves, so its handshake can undeploy what it
- * reports before turning it away. The claimed `sidecarId` is an
- * unauthenticated hint; the authenticator derives the trusted identity from
- * the `token` and the returned `sidecarId` is what the router keys connection
- * state off of. What the sidecar hosts is read through
+ * hosts nothing current still resolves and stays connected, idle, after its
+ * handshake undeploys what it reports. A retired one resolves marked
+ * `retired`, and its handshake undeploys what it reports and closes. The
+ * claimed `sidecarId` is an unauthenticated hint; the authenticator derives
+ * the trusted identity from the `token` and the returned `sidecarId` is what
+ * the router keys connection state off of. What the sidecar hosts is read through
  * `resolveSidecarBindings` once the handshake has claimed the sidecar.
  */
 export type SidecarAuthenticator = (claim: {
@@ -1765,14 +1766,18 @@ export function createSidecarRouter(
         // the socket, and the sidecar registers again on a new one. One that
         // fails after it is only reported, since registering again would meet
         // the same failure and resend the sidecar's pending mail each time.
-        return authenticateHandshake(ws, frame, (sidecarId) =>
-          handleRegistration(
-            ws,
-            sidecarId,
-            incarnations,
-            cachedSenderAddresses,
-            frame.capacity,
-          ),
+        return authenticateHandshake(
+          ws,
+          frame,
+          (sidecarId) =>
+            handleRegistration(
+              ws,
+              sidecarId,
+              incarnations,
+              cachedSenderAddresses,
+              frame.capacity,
+            ),
+          (sidecarId) => undeployRetired(ws, sidecarId, incarnations),
         ).catch((err: unknown) => {
           const message = err instanceof Error ? err.message : String(err);
           if (welcomedSockets.has(ws)) {
@@ -1960,6 +1965,7 @@ export function createSidecarRouter(
     ws: WsHandle,
     frame: { type: string; sidecarId: string; token: string },
     run: (sidecarId: string) => Promise<void>,
+    retired: (sidecarId: string) => void,
   ): Promise<void> {
     let credentials: SidecarCredentials | null;
     try {
@@ -1978,6 +1984,12 @@ export function createSidecarRouter(
       return;
     }
     const sidecarId = credentials.sidecarId;
+    if (credentials.retired === true) {
+      logger.warn`Rejected ${frame.type} from sidecar ${sidecarId}: its identity is retired`;
+      retired(sidecarId);
+      ws.close();
+      return;
+    }
     if (sidecarId !== frame.sidecarId) {
       logger.warn`Sidecar ${frame.type} claimed id ${frame.sidecarId} but token verifies as ${sidecarId}; keying off the verified id`;
     }
@@ -2085,8 +2097,7 @@ export function createSidecarRouter(
   // socket did not already hold at the same generation and kind. A binding it
   // already holds that way keeps its entry: readiness and routing checks read
   // the entry, await its validation, and treat a replaced entry as a changed
-  // connection, so a sync that changes nothing must not replace it. The socket
-  // stays open even when nothing attaches -- the caller decides. A newer
+  // connection, so a sync that changes nothing must not replace it. A newer
   // generation attaches at once even while the sidecar is still tearing an
   // older one of the same deployment down: every frame names its generation,
   // so nothing the older one still sends is credited to the newer one.
@@ -2121,7 +2132,6 @@ export function createSidecarRouter(
       );
       if (next === undefined || next.generation !== held.generation) {
         detachBinding(ws, allocationId, "Its binding is no longer current", {
-          keepOpen: true,
           undeploy: next?.kind !== "cleanup",
         });
       }
@@ -2159,19 +2169,13 @@ export function createSidecarRouter(
 
   // Remove one binding from its connection: drop its routes and in-flight
   // work and report the lost routes. Unless cleanup owns removal, also tell the
-  // sidecar to undeploy it. The socket closes once it hosts nothing current,
-  // unless the caller is preserving it to attach another binding.
+  // sidecar to undeploy it. The socket stays open when nothing is left: whether
+  // an idle sidecar keeps running is its provisioner's decision.
   function detachBinding(
     ws: WsHandle,
     allocationId: string,
     reason: string,
-    {
-      keepOpen = false,
-      undeploy,
-    }: {
-      keepOpen?: boolean;
-      undeploy: boolean;
-    },
+    { undeploy }: { undeploy: boolean },
   ): void {
     const conn = connections.get(ws);
     const binding = conn?.bindings.get(allocationId);
@@ -2255,10 +2259,26 @@ export function createSidecarRouter(
         allocated,
       });
     }
-    if (!keepOpen && !hostsWork(conn)) {
-      handleClose(ws);
-      ws.close();
-    }
+  }
+
+  // Nothing a retired sidecar reports is the Hub's any more, yet it may still
+  // run some of it, and none of its handshakes gets further than this.
+  function undeployRetired(
+    ws: WsHandle,
+    sidecarId: string,
+    incarnations: readonly HostedIncarnation[],
+  ): void {
+    const retired = {
+      sidecarId,
+      undeploying: new Map<string, UndeployInFlight>(),
+      send(frame: HubFrame) {
+        ws.send(JSON.stringify(frame));
+      },
+    };
+    for (const incarnation of incarnations)
+      sendUndeploy(retired, incarnation, "The sidecar's identity is retired", {
+        waitable: false,
+      });
   }
 
   // Only a later deploy of the address on this connection waits on the
@@ -2367,10 +2387,6 @@ export function createSidecarRouter(
     }
   }
 
-  function hostsWork(conn: SidecarConnection): boolean {
-    return conn.bindings.size > 0;
-  }
-
   async function announceAttached(
     ws: WsHandle,
     bindings: readonly SidecarAuthIdentity[],
@@ -2432,31 +2448,6 @@ export function createSidecarRouter(
       ws.close();
       return null;
     }
-    if (bindings.length === 0) {
-      logger.warn`Rejected registration from sidecar ${sidecarId}: it hosts nothing current`;
-      // Nothing it reports is the Hub's any more, yet it may still be running
-      // some of it, and no later handshake of a sidecar hosting nothing gets
-      // further than this.
-      const rejected = {
-        sidecarId,
-        undeploying: new Map<string, UndeployInFlight>(),
-        send(frame: HubFrame) {
-          ws.send(JSON.stringify(frame));
-        },
-      };
-      for (const incarnation of incarnations) {
-        sendUndeploy(
-          rejected,
-          incarnation,
-          "The sidecar hosts nothing current for the Hub",
-          { waitable: false },
-        );
-      }
-      handleClose(ws);
-      ws.close();
-      return null;
-    }
-
     // A reported incarnation takes its route back only when it is live, it is
     // the generation of a binding current for this sidecar, that deployment's
     // first deploy has completed, and its run has not ended. A stopped one of
@@ -2606,16 +2597,6 @@ export function createSidecarRouter(
     let claimHeld: boolean;
     try {
       hosted = await readHostedWork(ws, sidecarId, existing, incarnations);
-      // Every binding the read saw advanced or was released while it ran.
-      // Work placed on the sidecar meanwhile is only in a newer read, so take
-      // one rather than turn the sidecar away.
-      if (
-        hosted !== null &&
-        !hosted.bindings.some(isFencedAsCurrent) &&
-        sidecarClaims.get(sidecarId) === ws
-      ) {
-        hosted = await readHostedWork(ws, sidecarId, existing, incarnations);
-      }
     } finally {
       claimHeld = sidecarClaims.get(sidecarId) === ws;
       if (claimHeld) sidecarClaims.delete(sidecarId);
@@ -2732,22 +2713,6 @@ export function createSidecarRouter(
       )
         noteReportedStop(binding, error);
     }
-    if (!hostsWork(conn)) {
-      logger.warn`Rejected sidecar ${sidecarId}: none of its bindings is fenced as current`;
-      for (const [address, binding] of [...reclaimed, ...retained]) {
-        if (getCleanupFence(binding) !== undefined) continue;
-        sendUndeploy(
-          conn,
-          { address, generation: binding.generation },
-          "The deployment is not current on this sidecar",
-          { waitable: false },
-        );
-      }
-      handleClose(ws);
-      ws.close();
-      return;
-    }
-
     const newlyRoutedAddresses = new Set<string>();
     const routed: { address: string; generation: number }[] = [];
     for (const [address, binding] of reclaimed) {
@@ -2827,7 +2792,10 @@ export function createSidecarRouter(
         logger.warn`${stopping ? "Stop" : "Retention"} remains unconfirmed after reconnect for ${binding.allocationId}: ${cause instanceof Error ? cause.message : String(cause)}`;
       });
     }
-    logger.info`Provisioned sidecar ${sidecarId} registered for ${attached.map((binding) => `${binding.kind} ${binding.allocationId} generation ${String(binding.generation)}`).join(", ")}`;
+    if (attached.length === 0)
+      logger.info`Provisioned sidecar ${sidecarId} registered hosting nothing`;
+    else
+      logger.info`Provisioned sidecar ${sidecarId} registered for ${attached.map((binding) => `${binding.kind} ${binding.allocationId} generation ${String(binding.generation)}`).join(", ")}`;
     // Replay can wait on database admission without delaying connection readiness.
     // Newly attached cleanup bindings can wake pending attempts. Repeated
     // hellos on this socket must not bypass the normal retry backoff.
@@ -2955,12 +2923,6 @@ export function createSidecarRouter(
       if (connections.get(ws) !== conn) return;
       // A snapshot must not undo a fence or retirement published during its read.
       const { added } = attachBindings(ws, conn, bindings, before);
-      if (!hostsWork(conn)) {
-        logger.info`Sidecar ${sidecarId} hosts nothing current; closing its connection`;
-        handleClose(ws);
-        ws.close();
-        return;
-      }
       await announceAttached(ws, added);
     });
   }
@@ -4209,10 +4171,7 @@ export function createSidecarRouter(
         current.ws,
         allocationId,
         `Generation ${String(generation)} superseded it`,
-        {
-          keepOpen: cleanupCurrent && current.identity.kind !== "probe",
-          undeploy: !cleanupCurrent,
-        },
+        { undeploy: !cleanupCurrent },
       );
       if (
         cleanupCurrent &&
@@ -4221,8 +4180,7 @@ export function createSidecarRouter(
       ) {
         // Keep the control binding while the reconciler releases the provider
         // hold. It carries no workflow routes, and cleanup still revalidates
-        // the durable generation before sending. Retirement can now close
-        // this connection even if provider failure prevents a later sync.
+        // the durable generation before sending.
         attachBindings(current.ws, conn, [
           ...conn.bindings.values(),
           { ...current.identity, kind: "cleanup", generation },

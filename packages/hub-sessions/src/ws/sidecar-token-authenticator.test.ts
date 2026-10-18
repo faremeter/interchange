@@ -11,6 +11,7 @@ import {
 type SidecarRow = {
   id: string;
   tokenHashSha256: Uint8Array;
+  retiredAt: Date | null;
 };
 
 type MockDBOpts = {
@@ -123,6 +124,7 @@ describe("createSidecarTokenAuthenticator", () => {
         sidecar: {
           id: "sc-1",
           tokenHashSha256: await sha256(token),
+          retiredAt: null,
         },
       }),
     });
@@ -152,6 +154,7 @@ describe("createSidecarTokenAuthenticator", () => {
         sidecar: {
           id: "sc-real",
           tokenHashSha256: await sha256(token),
+          retiredAt: null,
         },
       }),
     });
@@ -192,6 +195,7 @@ describe("createSidecarTokenAuthenticator", () => {
         sidecar: {
           id: "sc-allocated",
           tokenHashSha256: await sha256(token),
+          retiredAt: null,
         },
         allocation: {
           id: "alloc-1",
@@ -368,6 +372,7 @@ describe("createSidecarTokenAuthenticator", () => {
         sidecar: {
           id: "sc-replaced",
           tokenHashSha256: await sha256(token),
+          retiredAt: null,
         },
         allocation: null,
       }),
@@ -384,6 +389,7 @@ describe("createSidecarTokenAuthenticator", () => {
         sidecar: {
           id: "sc-probe",
           tokenHashSha256: await sha256(token),
+          retiredAt: null,
         },
         probe: {
           id: "probe-1",
@@ -416,6 +422,7 @@ describe("createSidecarTokenAuthenticator", () => {
         sidecar: {
           id: "sc-shared",
           tokenHashSha256: await sha256(token),
+          retiredAt: null,
         },
         allocation: {
           id: "alloc-1",

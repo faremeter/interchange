@@ -133,7 +133,7 @@ describe("SidecarRouter allocation connection lifecycle", () => {
     expect(throwingWs.closed).toBe(true);
   });
 
-  test("undeploys everything a sidecar hosting nothing current reports, then closes", async () => {
+  test("undeploys everything a sidecar hosting nothing current reports and keeps it connected", async () => {
     const router = createSidecarRouter({
       withExecutableWorkflowRun: async (_target, send) => send(),
       authenticateSidecar: async ({ sidecarId }) => ({ sidecarId }),
@@ -155,7 +155,7 @@ describe("SidecarRouter allocation connection lifecycle", () => {
     );
     await tick();
 
-    expect(ws.closed).toBe(true);
+    expect(ws.closed).toBe(false);
     expect(parsedFrames(ws)).toEqual([
       expect.objectContaining({
         type: "agent.undeploy",
@@ -167,8 +167,13 @@ describe("SidecarRouter allocation connection lifecycle", () => {
         agentAddress: "run_starting@example.test",
         generation: 1,
       }),
+      { type: "welcome", routed: [] },
     ]);
-    expect(router.getConnectedSidecars()).toEqual([]);
+    expect(router.getConnectedSidecars()).toEqual(["sc-idle"]);
+    expect(router.getSidecarInventory("sc-idle")).toEqual({
+      capacity: expect.anything(),
+      retainedIncarnations: [],
+    });
   });
 
   test("keys the connection by authenticated rather than claimed identity", async () => {

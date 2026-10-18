@@ -642,9 +642,9 @@ describe("SidecarRouter retention accounting", () => {
       target(first),
     ]);
     router.retireAllocation(target(cleanup));
-    expect(
-      router.getSidecarInventory(SIDECAR)?.retainedIncarnations,
-    ).toBeUndefined();
+    expect(router.getSidecarInventory(SIDECAR)?.retainedIncarnations).toEqual(
+      [],
+    );
   });
 
   test("a stale retention acknowledgement cannot free a replacement's reservation", async () => {
@@ -1468,7 +1468,7 @@ describe("SidecarRouter allocation cleanup", () => {
     },
   );
 
-  test("retiring a release fence before binding sync closes its cleanup connection", async () => {
+  test("retiring a release fence before binding sync leaves its connection idle", async () => {
     const { router } = createSharedRouter([first]);
     const ws = await connectForCleanup(router, [first.workflowRunAddress]);
     router.fenceAllocation(cleanup.allocationId, cleanup.generation, {
@@ -1477,7 +1477,8 @@ describe("SidecarRouter allocation cleanup", () => {
     expect(ws.closed).toBe(false);
     expect(router.getRoutableAddresses()).toEqual([]);
     router.retireAllocation(target(cleanup));
-    expect(ws.closed).toBe(true);
+    expect(ws.closed).toBe(false);
+    expect(router.getCleanupConnection(target(cleanup))).toBeUndefined();
     expect(framesOfType(ws, "agent.undeploy")).toEqual([]);
   });
 
@@ -1543,7 +1544,8 @@ describe("SidecarRouter allocation cleanup", () => {
     );
     expect(await pending).toBeUndefined();
     router.retireAllocation(target(cleanup));
-    expect(ws.closed).toBe(true);
+    expect(ws.closed).toBe(false);
+    expect(router.getCleanupConnection(target(cleanup))).toBeUndefined();
   });
 
   test.each(["error", "disconnect", "abort", "timeout"] as const)(
@@ -1659,7 +1661,7 @@ describe("SidecarRouter allocation cleanup", () => {
       JSON.stringify({ ...frame, type: "agent.undeploy.ack" }),
     );
     expect(await pending).toBeInstanceOf(Error);
-    expect(ws.closed).toBe(true);
+    expect(ws.closed).toBe(false);
   });
 });
 
@@ -1775,13 +1777,13 @@ describe("SidecarRouter shared sidecars", () => {
     ]);
   });
 
-  test("retiring the last allocation closes the socket", async () => {
+  test("retiring the last allocation keeps the socket open", async () => {
     const { router } = createSharedRouter([first]);
     const ws = await reconnect(router, [first.workflowRunAddress]);
 
     router.retireAllocation(target(first));
 
-    expect(ws.closed).toBe(true);
+    expect(ws.closed).toBe(false);
     expect(framesOfType(ws, "agent.undeploy")).toEqual([
       {
         type: "agent.undeploy",
@@ -1791,7 +1793,22 @@ describe("SidecarRouter shared sidecars", () => {
         reason: "It was released",
       },
     ]);
-    expect(router.getConnectedSidecars()).toEqual([]);
+    expect(router.getConnectedSidecars()).toEqual([SIDECAR]);
+    expect(router.getRoutableAddresses()).toEqual([]);
+  });
+
+  test("work placed on an idle sidecar attaches without a reconnect", async () => {
+    const { router, hosted } = createSharedRouter([first]);
+    const ws = await reconnect(router, [first.workflowRunAddress]);
+    hosted.bindings = [];
+    router.retireAllocation(target(first));
+
+    hosted.bindings = [second];
+    router.fenceAllocation(second.allocationId, second.generation);
+    await router.syncSidecar(SIDECAR);
+
+    expect(ws.closed).toBe(false);
+    expect(await router.isAllocatedSidecarReady(target(second))).toBe(true);
   });
 
   test("closing the socket reports every allocation it hosted", async () => {
@@ -2165,7 +2182,10 @@ describe("SidecarRouter shared sidecars", () => {
         reason: "The deployment is not current on this sidecar",
       },
     ]);
-    expect(ws.closed).toBe(true);
+    expect(ws.closed).toBe(false);
+    expect(framesOfType(ws, "welcome")).toEqual([
+      { type: "welcome", routed: [] },
+    ]);
   });
 
   test("a sidecar reconnecting on a new socket takes every allocation along", async () => {
@@ -2679,7 +2699,7 @@ describe("SidecarRouter work placed while a shared sidecar connects", () => {
     expect(await router.isAllocatedSidecarReady(target(first))).toBe(true);
   });
 
-  test("a registration whose read went stale reads again", async () => {
+  test("a registration whose read went stale attaches work placed meanwhile", async () => {
     const validated = Promise.withResolvers<boolean>();
     let holdValidation = false;
     const { router, hosted } = createSharedRouter([first], {
@@ -2711,7 +2731,7 @@ describe("SidecarRouter work placed while a shared sidecar connects", () => {
         requestId: expect.any(String),
         agentAddress: first.workflowRunAddress,
         generation: 1,
-        reason: "The Hub does not keep this incarnation on this sidecar",
+        reason: "The deployment is not current on this sidecar",
       },
     ]);
   });

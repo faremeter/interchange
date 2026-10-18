@@ -174,7 +174,7 @@ async function waitForFrame(
 }
 
 describe("SidecarRouter allocation routing", () => {
-  test("rejects a worker whose allocation generation is not fenced", async () => {
+  test("does not attach an allocation generation that is not fenced", async () => {
     const router = createSidecarRouter({
       withExecutableWorkflowRun: async (_target, send) => send(),
       ...sidecarAuth(() => [identity]),
@@ -182,8 +182,38 @@ describe("SidecarRouter allocation routing", () => {
     });
     const ws = await connect(router);
 
+    expect(ws.closed).toBe(false);
+    expect(router.getConnectedSidecars()).toEqual([identity.sidecarId]);
+    expect(
+      router.holdsAllocatedBinding({
+        allocationId: identity.allocationId,
+        generation: identity.generation,
+      }),
+    ).toBe(false);
+    expect(lastFrame(ws)).toEqual({ type: "welcome", routed: [] });
+  });
+
+  test("undeploys what a retired sidecar reports and closes its handshake", async () => {
+    const router = createSidecarRouter({
+      withExecutableWorkflowRun: async (_target, send) => send(),
+      authenticateSidecar: async ({ sidecarId }) => ({
+        sidecarId,
+        retired: true,
+      }),
+      resolveSidecarBindings: async () => [],
+      validateSidecarIdentity: async () => true,
+    });
+    const ws = await connect(router, [identity.workflowRunAddress]);
+
     expect(ws.closed).toBe(true);
     expect(router.getConnectedSidecars()).toEqual([]);
+    expect(framesOf(ws, "agent.undeploy")).toMatchObject([
+      {
+        agentAddress: identity.workflowRunAddress,
+        generation: identity.generation,
+      },
+    ]);
+    expect(framesOf(ws, "welcome")).toEqual([]);
   });
 
   test("routes only the allocation's own address", async () => {
@@ -632,12 +662,13 @@ describe("SidecarRouter allocation routing", () => {
     expect(signals[0]).not.toHaveProperty("correlationId");
   });
 
-  test("advancing the fence disconnects and rejects the old generation", async () => {
+  test("advancing the fence detaches and rejects the old generation", async () => {
     const router = createAllocatedRouter();
     const ws = await connect(router);
     router.fenceAllocation(identity.allocationId, 2);
 
-    expect(ws.closed).toBe(true);
+    expect(ws.closed).toBe(false);
+    expect(router.getRoutableAddresses()).toEqual([]);
     expect(await router.isAllocatedSidecarReady(target)).toBe(false);
   });
 });

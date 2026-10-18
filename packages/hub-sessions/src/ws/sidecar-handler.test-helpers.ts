@@ -32,7 +32,7 @@ export const TEST_CREDENTIALS: SidecarCredentials = {
 /**
  * Router authentication that verifies each claimed sidecar id as hosting the
  * bindings `lookup` returns for it. Like the production resolver, it accepts
- * a sidecar that hosts nothing, and the router turns that sidecar away.
+ * a sidecar that hosts nothing, and the router keeps that sidecar connected.
  */
 export function sidecarAuth(
   lookup: (sidecarId: string) => readonly SidecarAuthIdentity[],

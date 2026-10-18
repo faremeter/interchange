@@ -29,11 +29,11 @@ export type CreateSidecarTokenAuthenticatorDeps = {
  * per-sidecar hash stored on the `sidecar` table. The token is hashed with
  * SHA-256 and looked up by its digest; a matching row yields that row's id as
  * the verified identity, and `resolveBindings` reads what that sidecar
- * currently hosts. An unknown token resolves to `null` so the handshake is
- * rejected. A sidecar that hosts nothing current still resolves: the handshake
- * turns it away too, but first undeploys what it reports, since nothing else
- * would. The claimed `sidecarId` on the frame is ignored: identity is derived
- * from the token alone.
+ * currently hosts. An unknown token resolves to `null`; a retired one with
+ * neither current work nor cleanup left resolves marked `retired`. A sidecar
+ * that hosts nothing current still resolves and stays connected, idle, after
+ * its handshake undeploys what it reports. The claimed `sidecarId` on the
+ * frame is ignored: identity is derived from the token alone.
  */
 export function createSidecarCredentialResolver({
   db,
@@ -122,10 +122,14 @@ export function createSidecarCredentialResolver({
   async function resolve(token: string) {
     const tokenHash = await sha256(token);
     const row = await db.query.sidecar.findFirst({
-      columns: { id: true },
+      columns: { id: true, retiredAt: true },
       where: eq(sidecar.tokenHashSha256, tokenHash),
     });
-    return row === undefined ? null : { sidecarId: row.id };
+    if (row === undefined) return null;
+    // Work still current on a retired sidecar keeps its reconnects.
+    if (row.retiredAt !== null && (await resolveBindings(row.id)).length === 0)
+      return { sidecarId: row.id, retired: true as const };
+    return { sidecarId: row.id };
   }
 
   async function isCurrent(

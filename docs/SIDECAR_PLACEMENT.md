@@ -87,14 +87,30 @@ answers `ensure` with that sidecar's id instead of starting capacity for the
 identity the request carries. The Hub accepts that sidecar only when it was
 minted for the same provisioner binding, whether or not it still hosts other
 work, and has not been retired; otherwise it rejects the placement with
-`sidecar_reuse_rejected`. The Hub retires a sidecar identity once it learns
-that no sidecar runs with it: its `ensure` was rejected, or a `destroy`
-confirmed cleanup. The provisioner counts its holds on a sidecar, one per
-allocation id it answered with that sidecar, releases one per `destroy`, and
-stops the sidecar once none remain. That final shutdown must remove its restorable
-deployment state and report `cleanup: confirmed`; a provider returning
-`cleanup: required` must keep a sidecar cleanup path available. It keeps its holds
-durably, since the Hub never re-announces them after a restart.
+`sidecar_reuse_rejected`. The provisioner counts its holds on a sidecar, one
+per allocation id it answered with that sidecar, and releases one per
+`destroy`. When none remain, it decides whether the sidecar keeps running idle
+for later work or stops. The Hub keeps an idle sidecar connected and routes
+nothing to it. A provisioner that keeps it running answers `cleanup: required`,
+and the Hub removes the deployment over that connection. Stopping a sidecar in
+answer to a `destroy` must remove its restorable deployment state and report
+`cleanup: confirmed`; a provider returning `cleanup: required` must keep a
+sidecar cleanup path available. The provisioner keeps its holds durably, since
+the Hub never re-announces them after a restart.
+
+The Hub retires a sidecar identity once it learns that no sidecar runs with
+it: its `ensure` was rejected, or a `destroy` confirmed cleanup. A retired
+identity takes no new work, but work still on it keeps reconnecting, so work
+on a sidecar a provisioner wrongly reported gone is not cut off. Once neither
+current work nor a cleanup obligation is left on it, the Hub refuses its next
+handshake: it asks the sidecar to undeploy everything it reports and closes
+the socket. Only new handshakes are refused; a connection already open stays
+open, idle, until it closes. The Hub learns of no other end. A sidecar the
+provisioner stops later, after answering its last `destroy` with
+`cleanup: required`, keeps a valid token, as does a reused sidecar the Hub
+never recorded before it destroyed the work by the identity it offered. Such a
+token opens only an idle connection, which gets work only if a provisioner
+places work on that sidecar again.
 
 A provisioner's declared guarantees, such as `isolation:workload`, must still
 hold for work that shares a sidecar. The stock sidecar does not isolate the

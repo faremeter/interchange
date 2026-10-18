@@ -99,12 +99,13 @@ export type EnsureSidecarResult = typeof EnsureSidecarResult.infer;
 /**
  * Destruction fences older ensure calls and releases the provisioner's hold.
  * `cleanup: confirmed` additionally proves that the deployment's worker and
- * local state are gone and cannot return. A shared worker that remains needs
- * `cleanup: required`; the Hub reserves its slot until the sidecar acknowledges
- * removal. Retries must preserve this distinction, including after restarts.
- * Stopping the last worker must also remove its restorable deployment state
- * and confirm cleanup. A result requiring sidecar cleanup must leave that
- * cleanup path available; absence from a provider's in-memory map is not proof.
+ * local state are gone and cannot return. A worker that remains, shared or
+ * kept running idle, needs `cleanup: required`; the Hub reserves its slot
+ * until the sidecar acknowledges removal. Retries must preserve this
+ * distinction, including after restarts. Stopping a worker in answer to a
+ * destroy must also remove its restorable deployment state and confirm
+ * cleanup. A result requiring sidecar cleanup must leave that cleanup path
+ * available; absence from a provider's in-memory map is not proof.
  * A non-retryable rejection of an outstanding hold release stops automatic cleanup
  * and leaves the provider obligation and cleanup binding for operator recovery.
  * A copy holds an active slot until removal or its transfer to retained storage
@@ -161,6 +162,11 @@ export type SidecarCredentialIdentity =
 /** The sidecar a bearer token verifies as. */
 export type SidecarCredentials = {
   readonly sidecarId: string;
+  /**
+   * The identity is retired with neither current work nor cleanup left. Its
+   * handshake undeploys what the sidecar reports and closes.
+   */
+  readonly retired?: true;
 };
 
 /**
@@ -195,7 +201,8 @@ export type SidecarIdentityUse =
 export interface SidecarCredentialResolver {
   /**
    * Resolves a bearer token to its sidecar, or null for an unknown token. A
-   * sidecar hosting nothing current still resolves.
+   * retired one with neither current work nor cleanup left resolves marked
+   * `retired`. A sidecar hosting nothing current still resolves.
    */
   resolve(token: string): Promise<SidecarCredentials | null>;
   /** The current bindings of a sidecar, empty when it hosts nothing. */
