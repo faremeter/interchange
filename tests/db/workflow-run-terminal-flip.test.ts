@@ -1072,9 +1072,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
         } as const;
         await store.repoStore.initRepo(repoId);
         await store.receiveWorkflowRunPack(repoId, pack, WFR_REF, tip);
-        await h.db
-          .insert(sidecar)
-          .values({ id: "stop-worker", tokenHashSha256: new Uint8Array(32) });
+        await h.db.insert(sidecar).values({
+          id: "stop-worker",
+          tokenHashSha256: new Uint8Array(32),
+          provisionerId: "test",
+          provisionerApiVersion: 2,
+          provisionerBindingFingerprint: "test:v1",
+          adapterManifestDigest: MANIFEST_DIGEST,
+        });
         await h.db.update(sidecarAllocation).set({ sidecarId: "stop-worker" });
         const lifecycle = createWorkflowLifecycleService({
           retentionRouter: {

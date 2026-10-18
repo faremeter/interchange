@@ -99,6 +99,7 @@ function fakeStore(overrides: Partial<AllocationStore> = {}): AllocationStore {
     confirmProviderRelease: async () => true,
     recordCleanupConnection: notUsed("recordCleanupConnection"),
     resumeCleanupAfterDisconnect: async () => false,
+    retireSidecar: async () => undefined,
     parkReconciliation: async () => true,
     scheduleReconnectAfterHubStart: notUsed("scheduleReconnectAfterHubStart"),
     scheduleReconnectIfUnscheduled: notUsed("scheduleReconnectIfUnscheduled"),
@@ -2187,6 +2188,10 @@ describe("createSidecarAllocationReconciler", () => {
         calls.push("released");
         return { ...row, status: "released" };
       },
+      // A sidecar the provider keeps running must stay reusable.
+      retireSidecar: async () => {
+        calls.push("retired");
+      },
     });
     const options = deps({
       store,
@@ -3570,6 +3575,8 @@ describe("createSidecarAllocationReconciler", () => {
       | Parameters<AllocationStore["failWithoutInfrastructure"]>[0]
       | undefined;
     const retired: [string, number][] = [];
+    const retiredIdentities: Parameters<AllocationStore["retireSidecar"]>[0][] =
+      [];
     const store = fakeStore({
       claimNextReconcilable: async () => {
         if (claimed) return null;
@@ -3580,6 +3587,9 @@ describe("createSidecarAllocationReconciler", () => {
       failWithoutInfrastructure: async (args) => {
         failed = args;
         return allocation({ status: "failed", generation: 1 });
+      },
+      retireSidecar: async (args) => {
+        retiredIdentities.push(args);
       },
     });
     const provisioner = testProvisioner({
@@ -3607,6 +3617,7 @@ describe("createSidecarAllocationReconciler", () => {
       now: NOW,
     });
     expect(retired).toEqual([["alloc-1", 1]]);
+    expect(retiredIdentities).toEqual([{ sidecarId: "sc-new", now: NOW }]);
   });
 
   test("retires a fence after releasing destroyed capacity", async () => {
@@ -3622,6 +3633,8 @@ describe("createSidecarAllocationReconciler", () => {
     });
     let claimed = false;
     const retired: [string, number][] = [];
+    const retiredIdentities: Parameters<AllocationStore["retireSidecar"]>[0][] =
+      [];
     const store = fakeStore({
       claimNextReconcilable: async () => {
         if (claimed) return null;
@@ -3629,6 +3642,9 @@ describe("createSidecarAllocationReconciler", () => {
         return releasing;
       },
       markReleased: async () => released,
+      retireSidecar: async (args) => {
+        retiredIdentities.push(args);
+      },
     });
     const reconciler = createSidecarAllocationReconciler(
       deps({ store, retired }),
@@ -3637,6 +3653,41 @@ describe("createSidecarAllocationReconciler", () => {
     await reconciler.reconcileNext();
 
     expect(retired).toEqual([["alloc-1", 2]]);
+    // The provider confirmed the sidecar gone.
+    expect(retiredIdentities).toEqual([{ sidecarId: "sc-old", now: NOW }]);
+  });
+
+  test("retires a confirmed sidecar before recording its provider release", async () => {
+    const releasing = allocation({
+      status: "releasing",
+      generation: 2,
+      sidecarId: "sc-old",
+      reconciliationLeaseId: "lease-1",
+      deploymentCleanupConfirmed: true,
+    });
+    let claimed = false;
+    const calls: string[] = [];
+    const store = fakeStore({
+      claimNextReconcilable: async () => {
+        if (claimed) return null;
+        claimed = true;
+        return releasing;
+      },
+      retireSidecar: async ({ sidecarId }) => {
+        calls.push(`retire ${sidecarId}`);
+      },
+      // Removal is already confirmed, so this write would end the retries.
+      confirmProviderRelease: async () => {
+        calls.push("provider release");
+        throw new Error("database unavailable");
+      },
+    });
+
+    await createSidecarAllocationReconciler(deps({ store }))
+      .reconcileNext()
+      .catch(() => undefined);
+
+    expect(calls).toEqual(["retire sc-old", "provider release"]);
   });
 
   for (const status of ["releasing", "replacing"] as const) {

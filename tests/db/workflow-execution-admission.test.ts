@@ -90,9 +90,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
         address: target.workflowRunAddress,
         status: "running",
       });
-      await h.db
-        .insert(sidecar)
-        .values({ id: target.sidecarId, tokenHashSha256: new Uint8Array(32) });
+      await h.db.insert(sidecar).values({
+        id: target.sidecarId,
+        tokenHashSha256: new Uint8Array(32),
+        provisionerId: "test",
+        provisionerApiVersion: 2,
+        provisionerBindingFingerprint: "test:1",
+        adapterManifestDigest: MANIFEST_DIGEST,
+      });
       await h.db.insert(sidecarAllocation).values({
         id: target.allocationId,
         tenantId: target.tenantId,

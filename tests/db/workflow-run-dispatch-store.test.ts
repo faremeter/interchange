@@ -65,6 +65,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await h.db.insert(sidecar).values({
         id: "sidecar-ack",
         tokenHashSha256: new Uint8Array([1, 2, 3]),
+        provisionerId: "ec2-spot",
+        provisionerApiVersion: 2,
+        provisionerBindingFingerprint: "ec2-spot:test",
+        adapterManifestDigest: MANIFEST_DIGEST,
         status: "online",
       });
       await h.db.insert(sidecarAllocation).values({
@@ -241,6 +245,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await h.db.insert(sidecar).values({
         id: "sidecar-other",
         tokenHashSha256: new Uint8Array([4, 5, 6]),
+        provisionerId: "ec2-spot",
+        provisionerApiVersion: 2,
+        provisionerBindingFingerprint: "ec2-spot:test",
+        adapterManifestDigest: MANIFEST_DIGEST,
         status: "online",
       });
       await h.db.insert(sidecarAllocation).values({

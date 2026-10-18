@@ -84,10 +84,12 @@ An omitted capability is unknown. It does not mean blocked. Provisioners decide
 internally whether to create, isolate, share, or reuse their backing capacity.
 To place a probe or deployment on a sidecar it already runs, a provisioner
 answers `ensure` with that sidecar's id instead of starting capacity for the
-identity the request carries. The Hub accepts that sidecar only while it still
-hosts another probe or allocation of the same provisioner binding, counting
-work being released or replaced, and otherwise rejects the placement with
-`sidecar_reuse_rejected`. It counts its holds on a sidecar, one per
+identity the request carries. The Hub accepts that sidecar only when it was
+minted for the same provisioner binding, whether or not it still hosts other
+work, and has not been retired; otherwise it rejects the placement with
+`sidecar_reuse_rejected`. The Hub retires a sidecar identity once it learns
+that no sidecar runs with it: its `ensure` was rejected, or a `destroy`
+confirmed cleanup. The provisioner counts its holds on a sidecar, one per
 allocation id it answered with that sidecar, releases one per `destroy`, and
 stops the sidecar once none remain. That final shutdown must remove its restorable
 deployment state and report `cleanup: confirmed`; a provider returning
@@ -196,12 +198,13 @@ A sidecar reads its adapter manifest only when it starts. A provisioner that
 answers `ensure` with a sidecar it already runs must return one that booted
 with the `adapterManifest` the request carries. This rule also applies when the
 provisioner retries an `ensure` for the same generation. The Hub records a
-digest of the manifest with each probe and allocation generation. It accepts a
-reused sidecar only when the work that the sidecar hosts has the same digest.
-Thus the Hub refuses reuse across a manifest change. A deployment that adopts
-its probe's sidecar needs no such check, because the same call created that
-probe under the same manifest. Work recorded before the Hub kept these digests
-never matches. A manifest change applies to new placements only: work that
+digest of the manifest with each probe and allocation generation and with each
+sidecar identity it mints. It accepts a reused sidecar only when the sidecar's
+digest matches the request's. Thus the Hub refuses reuse across a manifest
+change. A deployment that adopts its probe's sidecar goes through the same
+check, which it passes unless the sidecar was retired, because the same call
+created that probe under the same manifest. A sidecar
+recorded before the Hub kept these digests never matches. A manifest change applies to new placements only: work that
 runs stays on its sidecar.
 
 Work placed on a sidecar a provisioner already runs gets the same 2 minutes to

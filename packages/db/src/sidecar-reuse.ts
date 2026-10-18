@@ -1,9 +1,9 @@
-import { and, eq, inArray, ne, or } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne, or, type SQL } from "drizzle-orm";
 
 import type { SidecarCapacity } from "@intx/types/sidecar";
 
 import type { DBExecutor } from "./client";
-import { sidecar, sidecarAllocation, workflowProbe } from "./schema";
+import { sidecar, sidecarAllocation } from "./schema";
 
 /** A provisioner named a sidecar the Hub cannot place its work on. */
 export class SidecarReuseRejectedError extends Error {
@@ -64,16 +64,11 @@ export async function lockSidecars(
 
 /**
  * Asserts that a provisioner may place a probe or allocation on `sidecarId`.
- * The sidecar must still host other work of the same provisioner binding, so
- * a provisioner cannot claim another backend's sidecar. Work that is being
- * replaced or released counts while its hosting binding remains. Releasing
- * the provider's hold alone does not settle an unconfirmed deployment removal.
- * The sidecar must also have booted with the adapter manifest the placing
- * work's ensure carried, which the Hub knows only from a hosting row whose
- * digest equals `adapterManifestDigest`; a sidecar reads its manifest only at
- * start, so work never joins one that loaded another manifest.
- * Whether sharing suits the work is the provisioner's decision.
- * Locks the sidecar row so placements and removal of hosting bindings serialize.
+ * The sidecar must have been minted for the same provisioner binding, so a
+ * provisioner cannot claim another backend's sidecar, and for an ensure that
+ * carried the same adapter manifest: a sidecar reads its manifest only at
+ * start, so work never joins one that loaded another manifest. The sidecar
+ * may host nothing but must not be retired. Locks the sidecar row.
  */
 export async function assertSidecarReusable(
   tx: DBExecutor,
@@ -81,66 +76,60 @@ export async function assertSidecarReusable(
     readonly sidecarId: string;
     readonly binding: SidecarProvisionerBinding;
     readonly adapterManifestDigest: string;
-    readonly placing: { readonly allocationId: string };
   },
 ): Promise<void> {
-  const [row] = await lockSidecars(tx, [args.sidecarId]);
+  const [row] = await tx
+    .select({
+      provisionerId: sidecar.provisionerId,
+      provisionerApiVersion: sidecar.provisionerApiVersion,
+      provisionerBindingFingerprint: sidecar.provisionerBindingFingerprint,
+      adapterManifestDigest: sidecar.adapterManifestDigest,
+      retiredAt: sidecar.retiredAt,
+    })
+    .from(sidecar)
+    .where(eq(sidecar.id, args.sidecarId))
+    .for("update");
   if (row === undefined) {
     throw new SidecarReuseRejectedError(args.sidecarId, "it does not exist");
   }
-  const [hostedAllocation] = await tx
-    .select({ id: sidecarAllocation.id })
-    .from(sidecarAllocation)
-    .where(
-      and(
-        eq(sidecarAllocation.sidecarId, args.sidecarId),
-        ne(sidecarAllocation.id, args.placing.allocationId),
-        inArray(sidecarAllocation.status, [
-          "provisioning",
-          "allocated",
-          "replacing",
-          "releasing",
-        ]),
-        eq(sidecarAllocation.provisionerId, args.binding.provisionerId),
-        eq(
-          sidecarAllocation.provisionerApiVersion,
-          args.binding.provisionerApiVersion,
-        ),
-        eq(
-          sidecarAllocation.provisionerBindingFingerprint,
-          args.binding.provisionerBindingFingerprint,
-        ),
-        eq(sidecarAllocation.adapterManifestDigest, args.adapterManifestDigest),
-      ),
-    )
-    .limit(1);
-  if (hostedAllocation !== undefined) return;
-  const [hostedProbe] = await tx
-    .select({ id: workflowProbe.id })
-    .from(workflowProbe)
-    .where(
-      and(
-        eq(workflowProbe.sidecarId, args.sidecarId),
-        ne(workflowProbe.id, args.placing.allocationId),
-        inArray(workflowProbe.status, ["provisioning", "probing", "releasing"]),
-        eq(workflowProbe.provisionerId, args.binding.provisionerId),
-        eq(
-          workflowProbe.provisionerApiVersion,
-          args.binding.provisionerApiVersion,
-        ),
-        eq(
-          workflowProbe.provisionerBindingFingerprint,
-          args.binding.provisionerBindingFingerprint,
-        ),
-        eq(workflowProbe.adapterManifestDigest, args.adapterManifestDigest),
-      ),
-    )
-    .limit(1);
-  if (hostedProbe !== undefined) return;
-  throw new SidecarReuseRejectedError(
-    args.sidecarId,
-    `it hosts no current probe or allocation of provisioner ${args.binding.provisionerId} that booted with the same adapter manifest`,
-  );
+  if (row.retiredAt !== null) {
+    throw new SidecarReuseRejectedError(
+      args.sidecarId,
+      "it was retired: no sidecar runs with this identity",
+    );
+  }
+  if (
+    row.provisionerId !== args.binding.provisionerId ||
+    row.provisionerApiVersion !== args.binding.provisionerApiVersion ||
+    row.provisionerBindingFingerprint !==
+      args.binding.provisionerBindingFingerprint
+  ) {
+    throw new SidecarReuseRejectedError(
+      args.sidecarId,
+      `it was not started for provisioner ${args.binding.provisionerId} with the same binding`,
+    );
+  }
+  if (row.adapterManifestDigest !== args.adapterManifestDigest) {
+    throw new SidecarReuseRejectedError(
+      args.sidecarId,
+      "it booted with another adapter manifest",
+    );
+  }
+}
+
+/**
+ * Marks `sidecarId` as gone: reuse stops at once, its token once neither
+ * current work nor cleanup is left. Call it before the write that ends the
+ * caller's retries.
+ */
+export async function retireSidecar(
+  tx: DBExecutor,
+  args: { readonly sidecarId: string; readonly now: Date | SQL },
+): Promise<void> {
+  await tx
+    .update(sidecar)
+    .set({ retiredAt: args.now, updatedAt: args.now })
+    .where(and(eq(sidecar.id, args.sidecarId), isNull(sidecar.retiredAt)));
 }
 
 /**

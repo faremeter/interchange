@@ -764,6 +764,13 @@
       "when": 1791968762497,
       "tag": "0109_sidecar_provider_hold_release",
       "breakpoints": true
+    },
+    {
+      "idx": 110,
+      "version": "7",
+      "when": 1792341629593,
+      "tag": "0110_sidecar_provisioner_binding",
+      "breakpoints": true
     }
   ]
 }

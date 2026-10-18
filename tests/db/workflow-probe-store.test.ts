@@ -9,7 +9,7 @@ import {
 import { eq } from "drizzle-orm";
 
 import { createWorkflowProbeStore, SidecarReuseRejectedError } from "@intx/db";
-import { sidecar, sidecarAllocation, workflowProbe } from "@intx/db/schema";
+import { sidecar, sidecarAllocation } from "@intx/db/schema";
 import {
   createTestDb,
   harnessDbEnvAvailable,
@@ -86,6 +86,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: sidecarId,
         url: null,
         tokenHashSha256: new TextEncoder().encode(sidecarId),
+        provisionerId: "sandbox",
+        provisionerApiVersion: 2,
+        provisionerBindingFingerprint: "sandbox:test",
+        adapterManifestDigest,
       });
       await seedWorkflowRun(h.db, {
         id: `run-${sidecarId}`,
@@ -145,10 +149,28 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
     });
 
-    test("rejects a sidecar whose probe already finished", async () => {
+    test("places a probe on a sidecar whose probe already finished", async () => {
       const store = await bindProbe("probe-first");
       await store.markProbing({ probeId: "probe-first" });
       await store.transition("probe-first", ["probing"], "failed");
+      await bindProbe("probe-second");
+
+      expect(
+        await store.markProbing({
+          probeId: "probe-second",
+          sidecarId: "probe-first-minted",
+        }),
+      ).toMatchObject({
+        status: "probing",
+        sidecarId: "probe-first-minted",
+      });
+    });
+
+    test("rejects a sidecar its finished probe's destroy confirmed gone", async () => {
+      const store = await bindProbe("probe-first");
+      await store.markProbing({ probeId: "probe-first" });
+      await store.transition("probe-first", ["probing"], "failed");
+      await store.retireSidecar({ sidecarId: "probe-first-minted" });
       await bindProbe("probe-second");
 
       await expect(
@@ -156,11 +178,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           probeId: "probe-second",
           sidecarId: "probe-first-minted",
         }),
-      ).rejects.toBeInstanceOf(SidecarReuseRejectedError);
-      expect(await store.get("probe-second")).toMatchObject({
-        status: "provisioning",
-        sidecarId: "probe-second-minted",
-      });
+      ).rejects.toThrow("it was retired");
     });
 
     test("rejects a sidecar whose probe booted with another adapter manifest", async () => {
@@ -180,13 +198,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
     });
 
-    test("rejects a sidecar whose probe predates recording the adapter manifest", async () => {
+    test("rejects a sidecar recorded before its adapter manifest was", async () => {
       const store = await bindProbe("probe-first");
       await store.markProbing({ probeId: "probe-first" });
       await h.db
-        .update(workflowProbe)
+        .update(sidecar)
         .set({ adapterManifestDigest: "unrecorded" })
-        .where(eq(workflowProbe.id, "probe-first"));
+        .where(eq(sidecar.id, "probe-first-minted"));
       await bindProbe("probe-second");
 
       await expect(

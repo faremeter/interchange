@@ -74,10 +74,11 @@ export type SidecarOperationFailure = typeof SidecarOperationFailure.infer;
  * Acceptance means the requested infrastructure exists, not that it is ready.
  * `sidecarId` names a sidecar this provisioner started for earlier work that
  * now also hosts this generation; omit it when the request's own identity is
- * used. The Hub accepts only a sidecar that still hosts another probe or
- * allocation of the same provisioner binding, including one whose release or
- * replacement has not yet destroyed it. A deployment also needs the sidecar to
- * have fewer active reservations than the capacity it advertised in hello. Copies
+ * used. The Hub accepts only a sidecar minted for the same provisioner binding
+ * and adapter manifest that is not retired, whether or not it still hosts
+ * other work. A rejected ensure, or a destroy that confirms cleanup, retires
+ * the identity. A deployment also needs the sidecar to have fewer active
+ * reservations than the capacity it advertised in hello. Copies
  * with confirmed removal or retained storage do not consume active capacity.
  * This is checked when an allocation is placed and when a deployment adopts
  * its probe's sidecar, not when the probe is placed.

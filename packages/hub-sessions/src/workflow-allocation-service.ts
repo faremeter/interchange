@@ -371,6 +371,8 @@ export function createWorkflowAllocationService({
           `Provisioner ${provisioner.id} rejected probe cleanup: ${destroyed.message}`,
         );
       }
+      if (destroyed.cleanup === "confirmed")
+        await probeStore.retireSidecar({ sidecarId, now: now() });
       allocationRouter.detachAllocation({
         allocationId: releasing.id,
         generation: releasing.generation,
@@ -677,6 +679,8 @@ export function createWorkflowAllocationService({
         ),
       );
       if (ensured.kind === "rejected") {
+        // A rejected ensure started nothing.
+        await probeStore.retireSidecar({ sidecarId, now: now() });
         throw new WorkflowProvisioningError(ensured.code, ensured.message);
       }
       const probing = await probeStore.markProbing({

@@ -16,6 +16,7 @@ import {
   SidecarInventoryUnavailableError,
 } from "@intx/db";
 import {
+  sidecar,
   workflowDefinition,
   workflowProbe,
   workflowRun,
@@ -1395,6 +1396,191 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "ios-worker",
         adapterManifestDigest: await adapterManifestDigest(ADAPTER_MANIFEST),
       });
+      // The probe's destroy confirmed its sidecar gone.
+      expect(
+        await h.db.query.sidecar.findFirst({
+          columns: { retiredAt: true },
+          where: eq(sidecar.id, "sc-probe-released"),
+        }),
+      ).toEqual({ retiredAt: expect.any(Date) });
+    });
+
+    test("retires the identity of a probe whose ensure was rejected", async () => {
+      const ensureCalls: unknown[] = [];
+      const sandbox: SidecarProvisioner = {
+        ...makeProvisioner({ id: "sandbox", ensureCalls, destroyCalls: [] }),
+        async ensure(request) {
+          ensureCalls.push(request);
+          return {
+            kind: "rejected",
+            code: "quota_disabled",
+            message: "Provisioning is disabled for this account",
+            retryable: false,
+          };
+        },
+      };
+      const service = createWorkflowAllocationService({
+        db: h.db,
+        ...sharedPluginPools([sandbox]),
+        preparedDeployer: {
+          installAndApproveWorkflowSource: () => {
+            throw new Error("a rejected probe installs nothing");
+          },
+          deployPreparedCodeSourcedWorkflow: async () => {
+            throw new Error("a rejected probe deploys nothing");
+          },
+        },
+        credentialCipher: CIPHER,
+        allocationRouter: {
+          getSidecarInventory: () => undefined,
+          waitForSidecarInventory: async () => undefined,
+          fenceAllocation: () => undefined,
+          retireAllocation: () => undefined,
+          waitForAllocatedSidecar: async () => undefined,
+          sendProbeToAllocation: async () => probeResult(),
+          isAllocatedWorkflowActive: async () => false,
+          reportedDeploymentFailure: () => undefined,
+          stoppedDeploymentHistory: async () => undefined,
+          detachAllocation: () => undefined,
+          syncSidecar: async () => undefined,
+        },
+        hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
+        defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
+        adapterManifest: ADAPTER_MANIFEST,
+        createAllocationId: () => "sal-probe-rejected",
+        createSidecarId: () => "sc-probe-rejected",
+        createToken: () => "probe-token",
+      });
+
+      await expect(
+        service.prepareProvisionedDeployment(prepareArgs("run-probe-rejected")),
+      ).rejects.toThrow("Provisioning is disabled");
+
+      expect(ensureCalls).toHaveLength(1);
+      expect(
+        await h.db.query.sidecar.findFirst({
+          columns: { retiredAt: true },
+          where: eq(sidecar.id, "sc-probe-rejected"),
+        }),
+      ).toEqual({ retiredAt: expect.any(Date) });
+    });
+
+    test("retires a probe's sidecar before the probe is recorded finished", async () => {
+      const sandbox: SidecarProvisioner = {
+        ...makeProvisioner({
+          id: "sandbox",
+          ensureCalls: [],
+          destroyCalls: [],
+        }),
+        async destroy() {
+          // Another process finishes the probe while this cleanup runs, so
+          // recording the finish fails here.
+          await h.db
+            .update(workflowProbe)
+            .set({ status: "failed" })
+            .where(eq(workflowProbe.id, "sal-probe-raced"));
+          return { kind: "destroyed", cleanup: "confirmed" };
+        },
+      };
+      const service = createWorkflowAllocationService({
+        db: h.db,
+        ...sharedPluginPools([sandbox]),
+        preparedDeployer: {
+          installAndApproveWorkflowSource: () => {
+            throw new Error("install failed");
+          },
+          deployPreparedCodeSourcedWorkflow: async () => {
+            throw new Error("a failed probe deploys nothing");
+          },
+        },
+        credentialCipher: CIPHER,
+        allocationRouter: {
+          getSidecarInventory: () => undefined,
+          waitForSidecarInventory: async () => undefined,
+          fenceAllocation: () => undefined,
+          retireAllocation: () => undefined,
+          waitForAllocatedSidecar: async () => undefined,
+          sendProbeToAllocation: async () => probeResult(),
+          isAllocatedWorkflowActive: async () => false,
+          reportedDeploymentFailure: () => undefined,
+          stoppedDeploymentHistory: async () => undefined,
+          detachAllocation: () => undefined,
+          syncSidecar: async () => undefined,
+        },
+        hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
+        defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
+        adapterManifest: ADAPTER_MANIFEST,
+        createAllocationId: () => "sal-probe-raced",
+        createSidecarId: () => "sc-probe-raced",
+        createToken: () => "probe-token",
+      });
+
+      await expect(
+        service.prepareProvisionedDeployment(prepareArgs("run-probe-raced")),
+      ).rejects.toThrow("install failed");
+
+      expect(
+        await h.db.query.sidecar.findFirst({
+          columns: { retiredAt: true },
+          where: eq(sidecar.id, "sc-probe-raced"),
+        }),
+      ).toEqual({ retiredAt: expect.any(Date) });
+    });
+
+    test("keeps a probe's sidecar reusable when its destroy keeps it running", async () => {
+      const sandbox: SidecarProvisioner = {
+        ...makeProvisioner({
+          id: "sandbox",
+          ensureCalls: [],
+          destroyCalls: [],
+        }),
+        async destroy() {
+          return { kind: "destroyed", cleanup: "required" };
+        },
+      };
+      const service = createWorkflowAllocationService({
+        db: h.db,
+        ...sharedPluginPools([sandbox]),
+        preparedDeployer: {
+          installAndApproveWorkflowSource: () => {
+            throw new Error("install failed");
+          },
+          deployPreparedCodeSourcedWorkflow: async () => {
+            throw new Error("a failed probe deploys nothing");
+          },
+        },
+        credentialCipher: CIPHER,
+        allocationRouter: {
+          getSidecarInventory: () => undefined,
+          waitForSidecarInventory: async () => undefined,
+          fenceAllocation: () => undefined,
+          retireAllocation: () => undefined,
+          waitForAllocatedSidecar: async () => undefined,
+          sendProbeToAllocation: async () => probeResult(),
+          isAllocatedWorkflowActive: async () => false,
+          reportedDeploymentFailure: () => undefined,
+          stoppedDeploymentHistory: async () => undefined,
+          detachAllocation: () => undefined,
+          syncSidecar: async () => undefined,
+        },
+        hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
+        defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
+        adapterManifest: ADAPTER_MANIFEST,
+        createAllocationId: () => "sal-probe-kept",
+        createSidecarId: () => "sc-probe-kept",
+        createToken: () => "probe-token",
+      });
+
+      await expect(
+        service.prepareProvisionedDeployment(prepareArgs("run-probe-kept")),
+      ).rejects.toThrow("install failed");
+
+      expect(
+        await h.db.query.sidecar.findFirst({
+          columns: { retiredAt: true },
+          where: eq(sidecar.id, "sc-probe-kept"),
+        }),
+      ).toEqual({ retiredAt: null });
     });
 
     test("selects probe capacity with Hub-configured capability rules", async () => {

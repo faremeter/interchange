@@ -86,6 +86,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: opts.id,
         url: "ws://dev-sidecar",
         tokenHashSha256: await sha256(opts.token),
+        provisionerId: "test",
+        provisionerApiVersion: 2,
+        provisionerBindingFingerprint: "test:v1",
+        adapterManifestDigest: MANIFEST_DIGEST,
       });
       if (opts.allocated !== false) {
         await seedWorkflowRun(h.db, {
