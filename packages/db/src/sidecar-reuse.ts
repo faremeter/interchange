@@ -132,6 +132,105 @@ export async function retireSidecar(
     .where(and(eq(sidecar.id, args.sidecarId), isNull(sidecar.retiredAt)));
 }
 
+/** What the Hub saw of a reported sidecar's work when it retired it. */
+export type ProvisionerSidecarRetirement = {
+  /** Allocated work on the sidecar still connected, which the report contradicts. */
+  readonly connectedAllocationIds: readonly string[];
+};
+
+/** Whether this Hub holds a live connection for the allocation's generation. */
+export type AllocationConnectionCheck = (target: {
+  readonly allocationId: string;
+  readonly generation: number;
+}) => boolean;
+
+/**
+ * Retires a sidecar its provisioner reports stopped. Returns null, retiring
+ * nothing, when no sidecar with that id was minted for `binding`. With
+ * `endReconnectWindow`, it also records that the sidecar's work gets no
+ * reconnect window: its allocated work without a live connection reaches its
+ * connection deadline now, and work that disconnects later gets none either.
+ */
+export async function retireProvisionerSidecar(
+  tx: DBExecutor,
+  args: {
+    readonly sidecarId: string;
+    readonly binding: SidecarProvisionerBinding;
+    readonly endReconnectWindow: boolean;
+    readonly isConnected: AllocationConnectionCheck;
+    readonly now: Date | SQL;
+  },
+): Promise<ProvisionerSidecarRetirement | null> {
+  const [owned] = await tx
+    .select({ id: sidecar.id })
+    .from(sidecar)
+    .where(
+      and(
+        eq(sidecar.id, args.sidecarId),
+        eq(sidecar.provisionerId, args.binding.provisionerId),
+        eq(sidecar.provisionerApiVersion, args.binding.provisionerApiVersion),
+        eq(
+          sidecar.provisionerBindingFingerprint,
+          args.binding.provisionerBindingFingerprint,
+        ),
+      ),
+    )
+    .for("update");
+  if (owned === undefined) return null;
+  await retireSidecar(tx, { sidecarId: args.sidecarId, now: args.now });
+  const allocated = await tx
+    .select({
+      allocationId: sidecarAllocation.id,
+      generation: sidecarAllocation.generation,
+    })
+    .from(sidecarAllocation)
+    .where(
+      and(
+        eq(sidecarAllocation.sidecarId, args.sidecarId),
+        eq(sidecarAllocation.status, "allocated"),
+        eq(
+          sidecarAllocation.ensureAcceptedGeneration,
+          sidecarAllocation.generation,
+        ),
+      ),
+    )
+    .for("update");
+  // The deadline cannot tell: work still initializing keeps one while
+  // connected, and a drop the Hub has not recorded yet has none.
+  const connectedAllocationIds: string[] = [];
+  const disconnectedAllocationIds: string[] = [];
+  for (const target of allocated)
+    (args.isConnected(target)
+      ? connectedAllocationIds
+      : disconnectedAllocationIds
+    ).push(target.allocationId);
+  if (args.endReconnectWindow) {
+    await tx
+      .update(sidecar)
+      .set({ reconnectWindowEndedAt: args.now, updatedAt: args.now })
+      .where(
+        and(
+          eq(sidecar.id, args.sidecarId),
+          isNull(sidecar.reconnectWindowEndedAt),
+        ),
+      );
+    // Dropping the lease stops a reconciler still waiting on the old
+    // deadline, like a lost connection does.
+    if (disconnectedAllocationIds.length > 0)
+      await tx
+        .update(sidecarAllocation)
+        .set({
+          connectDeadline: args.now,
+          nextAttemptAt: args.now,
+          reconciliationLeaseId: null,
+          reconciliationLeaseExpiresAt: null,
+          updatedAt: args.now,
+        })
+        .where(inArray(sidecarAllocation.id, disconnectedAllocationIds));
+  }
+  return { connectedAllocationIds };
+}
+
 /**
  * Locks the sidecar so placements serialize, counting every reservation
  * except cleanup confirmed removed or an incarnation durably retained.

@@ -117,12 +117,50 @@ export const DestroySidecarResult = type({
 }).or(SidecarOperationFailure);
 export type DestroySidecarResult = typeof DestroySidecarResult.infer;
 
+/**
+ * `not_owned` is final: the Hub minted no sidecar with that id for this
+ * provisioner's current binding.
+ */
+export type SidecarStoppedResult =
+  | { readonly kind: "retired" }
+  | { readonly kind: "not_owned" };
+
+/**
+ * `endReconnectWindow` stops the Hub waiting for the sidecar's work to
+ * reconnect: its allocations get no reconnect window, now or after a later
+ * disconnect, and go to its connection loss handling at once. Without it,
+ * that work keeps its reconnect window, in case the provisioner brings the
+ * sidecar back elsewhere. Work still connected runs until it disconnects;
+ * probes are not touched.
+ */
+export const SidecarStoppedOptions = type({
+  "endReconnectWindow?": "boolean",
+});
+export type SidecarStoppedOptions = typeof SidecarStoppedOptions.infer;
+
+/** Calls the Hub offers a provisioner through `attach`. */
+export interface SidecarProvisionerHost {
+  /**
+   * Reports that a sidecar this provisioner started under its current binding
+   * is gone for good, such as an idle sidecar it stopped after its last
+   * destroy. The Hub retires the identity. Idempotent. A throw is transient:
+   * keep the report durably and retry it, also after a Hub restart. Invalid
+   * arguments also throw, and retrying them never succeeds.
+   */
+  sidecarStopped(
+    sidecarId: string,
+    options?: SidecarStoppedOptions,
+  ): Promise<SidecarStoppedResult>;
+}
+
 export interface SidecarProvisioner {
   readonly id: string;
   readonly apiVersion: 2;
   /** Stable, non-secret identity for the backend configuration. */
   readonly bindingFingerprint: string;
   readonly capabilities: readonly SidecarCapabilityDeclaration[];
+  /** Called once when the Hub starts, with the calls it offers. */
+  attach?(host: SidecarProvisionerHost): void;
   /**
    * Converges infrastructure for this generation. Implementations must be
    * idempotent and reject generations older than one they have observed.

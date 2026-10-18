@@ -118,7 +118,8 @@ describe.skipIf(!harnessDbEnvAvailable())("migration 0110 backfill", () => {
       DROP COLUMN "provisioner_api_version",
       DROP COLUMN "provisioner_binding_fingerprint",
       DROP COLUMN "adapter_manifest_digest",
-      DROP COLUMN "retired_at"`),
+      DROP COLUMN "retired_at",
+      DROP COLUMN "reconnect_window_ended_at"`),
     );
     for (const statement of MIGRATION_SQL.split("--> statement-breakpoint"))
       await h.db.execute(sql.raw(statement));

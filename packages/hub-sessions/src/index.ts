@@ -102,6 +102,7 @@ export {
 } from "./credential-push";
 export {
   adapterManifestDigest,
+  attachSidecarProvisioners,
   chooseFirstSidecarProvisioner,
   createSidecarPluginRegistry,
   createSidecarAllocationReconciler,
@@ -118,6 +119,9 @@ export {
   type SidecarPluginRegistry,
   type SidecarProvisioner,
   type SidecarProvisionerChooser,
+  type SidecarProvisionerHost,
+  type SidecarStoppedOptions,
+  type SidecarStoppedResult,
   type SidecarAllocationReconciler,
   type SidecarAllocationReconcilerDeps,
   type SidecarReconciliationContext,

@@ -2435,6 +2435,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "reconnect_window_ended_at": {
+          "name": "reconnect_window_ended_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
         "status": {
           "name": "status",
           "type": "text",
