@@ -266,6 +266,75 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(await resolver.resolveBindings("sc-replaced")).toEqual([]);
     });
 
+    test("authenticates a retired sidecar until no current work is left on it", async () => {
+      const token = "retired-shared-secret";
+      const hosted = await seedSidecar({ id: "sc-retired-shared", token });
+      await h.db
+        .update(sidecar)
+        .set({ retiredAt: new Date() })
+        .where(eq(sidecar.id, "sc-retired-shared"));
+      const authenticate = createSidecarTokenAuthenticator({ db: h.db });
+
+      expect(
+        await authenticate({ sidecarId: "sc-retired-shared", token }),
+      ).toEqual({ sidecarId: "sc-retired-shared" });
+
+      await h.db
+        .update(sidecarAllocation)
+        .set({ status: "released" })
+        .where(eq(sidecarAllocation.id, hosted.allocationId));
+      expect(
+        await authenticate({ sidecarId: "sc-retired-shared", token }),
+      ).toEqual({ sidecarId: "sc-retired-shared", retired: true });
+    });
+
+    test("authenticates a retired sidecar while only cleanup is left on it", async () => {
+      const token = "retired-cleanup-secret";
+      const hosted = await seedSidecar({ id: "sc-retired-cleanup", token });
+      await h.db
+        .update(sidecar)
+        .set({ retiredAt: new Date() })
+        .where(eq(sidecar.id, "sc-retired-cleanup"));
+      const authenticate = createSidecarTokenAuthenticator({ db: h.db });
+
+      for (const status of [
+        "releasing",
+        "replacing",
+        "destroy_failed",
+      ] as const) {
+        await h.db
+          .update(sidecarAllocation)
+          .set({ status })
+          .where(eq(sidecarAllocation.id, hosted.allocationId));
+        expect(
+          await authenticate({ sidecarId: "sc-retired-cleanup", token }),
+        ).toEqual({ sidecarId: "sc-retired-cleanup" });
+      }
+
+      await h.db
+        .update(sidecarAllocation)
+        .set({ status: "released" })
+        .where(eq(sidecarAllocation.id, hosted.allocationId));
+      expect(
+        await authenticate({ sidecarId: "sc-retired-cleanup", token }),
+      ).toEqual({ sidecarId: "sc-retired-cleanup", retired: true });
+    });
+
+    test("marks the token of a retired identity with nothing left retired", async () => {
+      const token = "retired-secret";
+      await seedSidecar({ id: "sc-retired", token, allocated: false });
+      await h.db
+        .update(sidecar)
+        .set({ retiredAt: new Date() })
+        .where(eq(sidecar.id, "sc-retired"));
+      const authenticate = createSidecarTokenAuthenticator({ db: h.db });
+
+      expect(await authenticate({ sidecarId: "sc-retired", token })).toEqual({
+        sidecarId: "sc-retired",
+        retired: true,
+      });
+    });
+
     test("derives identity from the token, not a spoofed claimed sidecarId", async () => {
       const token = "sidecar-secret";
       await seedSidecar({ id: "sc-real", token });
