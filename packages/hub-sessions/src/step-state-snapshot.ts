@@ -22,10 +22,12 @@ const HUB_PRINCIPAL = { kind: "hub" } as const;
 /**
  * Export an agent step's state as last committed to the Hub's copy of a
  * deployment's workflow-run history. `runId` is the deployment's top-level
- * run. Pending operations are left out, since their correlation ids only mean
- * something inside the run that registered them. The deployment's mailbox
- * `uidNext` rides along as `mailboxUidNext`, bounding the mailbox UIDs the
- * turns can name. Returns `null` when the step has no committed state.
+ * run. A step that has no state of its own yet exports the seed its
+ * deployment imported for it. Pending operations are left out, since their
+ * correlation ids only mean something inside the run that registered them.
+ * The deployment's mailbox `uidNext` rides along as `mailboxUidNext`,
+ * bounding the mailbox UIDs the turns can name. Returns `null` when the step
+ * has neither committed state nor a seed.
  */
 export async function readStepStateSnapshot(args: {
   repoStore: Pick<RepoStore, "openCommittedReads">;
@@ -47,18 +49,21 @@ export async function readStepStateSnapshot(args: {
     ),
     label,
   );
-  if (state === null) return null;
-  const snapshot = StepStateSnapshot({
-    version: 1,
-    turns: state.turns,
-    tokenUsage: state.tokenUsage,
-    connectorState: state.connectorState,
-  });
+  const snapshot =
+    state === null
+      ? await readCommittedStepStateSeed(reads, args.runId, args.stepId)
+      : StepStateSnapshot({
+          version: 1,
+          turns: state.turns,
+          tokenUsage: state.tokenUsage,
+          connectorState: state.connectorState,
+        });
   if (snapshot instanceof type.errors) {
     throw new Error(
       `step state for ${label} is not a valid snapshot: ${snapshot.summary}`,
     );
   }
+  if (snapshot === null) return null;
   const mailboxUidNext = await readCommittedMailboxUidNext(reads);
   if (mailboxUidNext === null) return snapshot;
   const exported = StepStateSnapshot({ ...snapshot, mailboxUidNext });
