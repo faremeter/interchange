@@ -28,11 +28,12 @@
 // without a new turn is still durable. Compaction every CHECKPOINT_INTERVAL
 // boundaries (K = 64, i.e. once the live WAL reaches K entries) folds the
 // WAL into a fresh checkpoint carrying the freshest metadata and truncates
-// the WAL, so between checkpoints the WAL holds at most K entries and
-// per-boundary durable cost is ~O(1) amortized. K is a constant here; the
-// design flags it as measurement-tunable. Restore reconstructs through the
-// same format module, so it rebuilds the exact turn list and metadata the
-// mirror committed.
+// the WAL, so per-boundary durable cost is ~O(1) amortized. A fold that
+// fails is retried at the next boundary, so the WAL can outgrow K until one
+// lands (see MAX_UNCOMPACTED_WAL). K is a constant here; the design flags it
+// as measurement-tunable. Restore reconstructs through the same format
+// module, so it rebuilds the exact turn list and metadata the mirror
+// committed.
 //
 // Substrate-merge constraint (load-bearing, design §4 "Substrate-merge
 // note"). `writeTreePreservingPrefix`'s `merge` callback receives only
@@ -133,11 +134,22 @@ const logger = getLogger(["sidecar", "workflow-child", "conversation-state"]);
 
 /**
  * Compaction interval: fold the WAL into a fresh checkpoint once it holds
- * this many turns since the last checkpoint. Bounds the WAL tail (and so
- * the restore-replay length) between checkpoints. Measurement-tunable
- * (design §6, open question 4); D1 fixes it at 64.
+ * this many entries, one per mirror boundary, since the last checkpoint.
+ * Bounds the WAL tail (and so the restore-replay length) between
+ * checkpoints. Measurement-tunable (design §6, open question 4); D1 fixes
+ * it at 64.
  */
 const CHECKPOINT_INTERVAL = 64;
+
+/**
+ * How long the WAL may grow while compaction keeps failing. A failed
+ * compaction loses nothing -- the boundary's WAL entry is already committed
+ * -- so the mirror retries it at the next boundary instead of failing the
+ * turn. At this length every retry since the interval has failed, so the
+ * next boundary folds instead of appending, and its turn fails if that fold
+ * does, rather than grow the restore replay without bound.
+ */
+const MAX_UNCOMPACTED_WAL = 2 * CHECKPOINT_INTERVAL;
 
 export interface DurableConversationStoreOpts {
   /**
@@ -460,8 +472,26 @@ export async function createDurableConversationStore(
       mirroredTurnCount = reconstructed?.totalTurns ?? 0;
     }
 
-    // ONE WAL entry per mirror boundary, UNCONDITIONALLY -- even when no new
-    // turns were added since the last mirror. The entry carries the
+    const uncompactedBefore = mirroredBoundaryCount - checkpointBoundarySeq;
+    if (uncompactedBefore >= MAX_UNCOMPACTED_WAL) {
+      const folded = turns.slice();
+      const boundarySeq = mirroredBoundaryCount + 1;
+      try {
+        await writeCheckpoint(boundarySeq, folded, metadata);
+      } catch (cause) {
+        throw new Error(
+          `sidecar conversation-state: compacting ${statePrefix} failed with ${String(uncompactedBefore)} WAL entries uncompacted`,
+          { cause },
+        );
+      }
+      mirroredBoundaryCount = boundarySeq;
+      checkpointBoundarySeq = boundarySeq;
+      mirroredTurnCount = folded.length;
+      return;
+    }
+
+    // Past the fold above, ONE WAL entry per mirror boundary -- even when no
+    // new turns were added since the last mirror. The entry carries the
     // 0-or-more new turns plus the freshest metadata snapshot, so a
     // turnless-but-metadata-mutating boundary (e.g. a throwing send that
     // still advanced tokenUsage/pendingOperations, since onRunBoundary runs
@@ -485,13 +515,18 @@ export async function createDurableConversationStore(
     // replay length): fold the full conversation into a fresh checkpoint
     // with the freshest metadata and truncate the WAL. Amortizes the
     // unavoidable O(N) full rewrite to O(N/K) per boundary.
-    if (mirroredBoundaryCount - checkpointBoundarySeq >= CHECKPOINT_INTERVAL) {
-      await writeCheckpoint(
-        mirroredBoundaryCount,
-        turns.slice(0, mirroredTurnCount),
-        metadata,
-      );
-      checkpointBoundarySeq = mirroredBoundaryCount;
+    const uncompacted = mirroredBoundaryCount - checkpointBoundarySeq;
+    if (uncompacted >= CHECKPOINT_INTERVAL) {
+      try {
+        await writeCheckpoint(
+          mirroredBoundaryCount,
+          turns.slice(0, mirroredTurnCount),
+          metadata,
+        );
+        checkpointBoundarySeq = mirroredBoundaryCount;
+      } catch (cause) {
+        logger.warn`conversation checkpoint for ${opts.stepId} failed at boundary ${String(mirroredBoundaryCount)}; retrying at the next boundary: ${cause instanceof Error ? cause.message : String(cause)}`;
+      }
     }
   }
 

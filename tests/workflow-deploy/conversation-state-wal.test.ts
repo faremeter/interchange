@@ -360,6 +360,120 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
     }
   });
 
+  describe("a failing compaction", () => {
+    function storeFailingCheckpoints(
+      failures: number,
+    ): Promise<DurableConversationStore> {
+      let remaining = failures;
+      const writeTreePreservingPrefix: RepoStore["writeTreePreservingPrefix"] =
+        (principal, repoId, ref, args) => {
+          if (!args.preservePrefix.includes("/wal/") && remaining > 0) {
+            remaining -= 1;
+            return Promise.reject(new Error("checkpoint write refused"));
+          }
+          return h.substrate.writeTreePreservingPrefix(
+            principal,
+            repoId,
+            ref,
+            args,
+          );
+        };
+      const substrate = new Proxy(h.substrate, {
+        get(target, prop, receiver): unknown {
+          if (prop === "writeTreePreservingPrefix") {
+            return writeTreePreservingPrefix;
+          }
+          return Reflect.get(target, prop, receiver);
+        },
+      });
+      return createDurableConversationStore({
+        localStoreDir: localDir,
+        signer: h.signer,
+        substrate,
+        workflowRunRepoId: h.workflowRunRepoId,
+        workflowRunRef: WORKFLOW_RUN_REF,
+        principal: PRINCIPAL,
+        runId: RUN_ID,
+        stepId: STEP_ID,
+      });
+    }
+
+    test("keeps the boundary and compacts at the next one", async () => {
+      const store = await storeFailingCheckpoints(1);
+      let turns: ConversationTurn[] = [];
+      for (let i = 0; i < CHECKPOINT_INTERVAL; i += 1) {
+        turns = await pushAndMirror(store, turns, [userTurn(`t${String(i)}`)], {
+          tokenUsageInput: i,
+        });
+      }
+      expect(countWalEntries(h.stateDir)).toBe(CHECKPOINT_INTERVAL);
+      expect(fs.existsSync(path.join(h.stateDir, "checkpoint.meta.json"))).toBe(
+        false,
+      );
+
+      turns = await pushAndMirror(store, turns, [userTurn("next")], {
+        tokenUsageInput: CHECKPOINT_INTERVAL,
+      });
+      expect(countWalEntries(h.stateDir)).toBe(0);
+      expect(readCheckpointMeta(h.stateDir)).toMatchObject({
+        checkpointSeq: CHECKPOINT_INTERVAL + 1,
+        turnCount: CHECKPOINT_INTERVAL + 1,
+      });
+      expect(
+        (await reconstructDurableConversation(h.stateDir, STEP_ID))?.turns,
+      ).toEqual(turns);
+    });
+
+    test("fails the turn whose fold fails once the WAL holds twice the interval, appending nothing", async () => {
+      const store = await storeFailingCheckpoints(Number.POSITIVE_INFINITY);
+      const limit = 2 * CHECKPOINT_INTERVAL;
+      let turns: ConversationTurn[] = [];
+      for (let i = 0; i < limit; i += 1) {
+        turns = await pushAndMirror(store, turns, [userTurn(`t${String(i)}`)], {
+          tokenUsageInput: i,
+        });
+      }
+      expect(countWalEntries(h.stateDir)).toBe(limit);
+
+      await store.storage.writeTurns([...turns, userTurn("last")]);
+      await store.storage.commit({ message: "turn" });
+      await expect(store.mirrorToSubstrate()).rejects.toThrow(
+        `failed with ${String(limit)} WAL entries uncompacted`,
+      );
+      expect(countWalEntries(h.stateDir)).toBe(limit);
+      expect(
+        (await reconstructDurableConversation(h.stateDir, STEP_ID))?.turns,
+      ).toEqual(turns);
+    });
+
+    test("commits the next turn as a fold once the WAL holds twice the interval", async () => {
+      const limit = 2 * CHECKPOINT_INTERVAL;
+      // Every compaction from the interval up to the cap fails.
+      const store = await storeFailingCheckpoints(
+        limit - CHECKPOINT_INTERVAL + 1,
+      );
+      let turns: ConversationTurn[] = [];
+      for (let i = 0; i < limit; i += 1) {
+        turns = await pushAndMirror(store, turns, [userTurn(`t${String(i)}`)], {
+          tokenUsageInput: i,
+        });
+      }
+      expect(countWalEntries(h.stateDir)).toBe(limit);
+
+      turns = await pushAndMirror(store, turns, [userTurn("last")], {
+        tokenUsageInput: limit,
+      });
+      expect(countWalEntries(h.stateDir)).toBe(0);
+      expect(readCheckpointMeta(h.stateDir)).toMatchObject({
+        checkpointSeq: limit + 1,
+        turnCount: limit + 1,
+      });
+      expect(
+        (await reconstructDurableConversation(h.stateDir, STEP_ID))?.turns,
+      ).toEqual(turns);
+    });
+  });
+
   test("restore reconstructs the EXACT turn list and metadata across checkpoint + WAL tail", async () => {
     const store = await makeStore(h, localDir);
 
