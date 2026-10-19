@@ -169,23 +169,33 @@ export async function repoDiskUsage(
   };
 }
 
+/** Hub-owned refs that keep commits alive without showing up as branches. */
+export const HUB_REF_NAMESPACE = "refs/interchange";
+
 /**
- * Resolve every local branch ref of the repo at `dir` to its tip SHA.
+ * Resolve every local branch ref and Hub-owned ref of the repo at `dir` to its
+ * tip SHA.
  *
  * Agent repos carry two diverging heads (`refs/heads/main` and
  * `refs/heads/deploy`); GC must union reachability across all of them, so it
- * enumerates them here rather than assuming a single ref. No tags or other
- * ref namespaces are created in these repos, so listing branches is
- * complete.
+ * enumerates them here rather than assuming a single ref. Besides the
+ * Hub-owned refs under `refs/interchange`, no tags or other ref namespaces are
+ * created in these repos, so this listing is complete.
  */
 export async function listRepoRefs(
   runtime: StorageRuntime,
   dir: string,
 ): Promise<{ ref: string; oid: string }[]> {
-  const branches = await git.listBranches({ fs: runtime.fs.git, dir });
+  const [branches, hubRefs] = await Promise.all([
+    git.listBranches({ fs: runtime.fs.git, dir }),
+    git.listRefs({ fs: runtime.fs.git, dir, filepath: HUB_REF_NAMESPACE }),
+  ]);
+  const names = [
+    ...branches.map((branch) => `refs/heads/${branch}`),
+    ...hubRefs.map((name) => `${HUB_REF_NAMESPACE}/${name}`),
+  ];
   const refs: { ref: string; oid: string }[] = [];
-  for (const branch of branches) {
-    const ref = `refs/heads/${branch}`;
+  for (const ref of names) {
     const oid = await git.resolveRef({ fs: runtime.fs.git, dir, ref });
     refs.push({ ref, oid });
   }

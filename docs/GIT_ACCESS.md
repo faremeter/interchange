@@ -250,7 +250,7 @@ The hub returns `403` with one of the `git_token` error codes when the request a
 - `code: "principal_not_found"` — the token's principal no longer exists in the target tenant. The user was probably removed from the tenant.
 - `code: "principal_suspended"` — the principal exists but its membership status is not `active`.
 
-A `403` from the substrate authz layer (rather than the bearer middleware) carries the standard `forbidden` envelope and reflects that the token's `resource`/`refPattern`/`actions` claims do not cover the requested operation, or that the underlying principal does not hold a matching grant. Tokens and grants compose: both must allow the operation. See `docs/AUTH.md` for the full grant model.
+A `403` from the substrate authz layer (rather than the bearer middleware) carries the standard `forbidden` envelope and reflects that the token's `resource`/`refPattern`/`actions` claims do not cover the requested operation, or that the underlying principal does not hold a matching grant. Tokens and grants compose: both must allow the operation. See `docs/AUTH.md` for the full grant model. Independent of any token, the hub refuses a push to a ref under `refs/interchange/` or to a ref name containing non-ASCII characters; only the hub writes those.
 
 ### `401` vs `403` distinction
 

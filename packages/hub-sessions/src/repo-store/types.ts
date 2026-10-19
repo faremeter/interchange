@@ -463,6 +463,7 @@ export interface RepoStore {
     principal: Principal,
     repoId: RepoId,
     ref: string,
+    pinned?: { commitSha: string; retain: boolean },
   ): Promise<{ pack: Uint8Array; commitSha: string; ref: string }>;
   /**
    * Commit the "last shipped tip" for an incremental (`workflow-run`)
