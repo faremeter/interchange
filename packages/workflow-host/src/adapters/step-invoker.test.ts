@@ -880,6 +880,49 @@ describe("workflow-host StepInvoker adapter - cold settle hook", () => {
     };
   }
 
+  test("a close failure after a clean turn still settles and fails the step without a retry", async () => {
+    const stub = buildStubAgent();
+    let settled = 0;
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: allow,
+      buildEnv: async () => stubBuildEnv(),
+      agentFactory: async () => closeFails(stub),
+      onColdStepSettled: async () => {
+        settled += 1;
+      },
+    });
+
+    const pending = invoker(buildRequest({ input: "turn" }));
+    await Promise.resolve();
+    stub.resolveSend({ type: "reply", reply: "ok", turn: replyTurn });
+    const failure = await pending.then(
+      () => undefined,
+      (cause: unknown) => cause,
+    );
+
+    expect(settled).toBe(1);
+    expect(failure).toBeInstanceOf(StepOutcomeCommitError);
+    expect(failure).toHaveProperty(
+      "message",
+      "closing the step's agent failed after its turn: disposer boom",
+    );
+  });
+
+  test("a close failure after a clean turn fails the step without a retry when no settle hook is wired", async () => {
+    const stub = buildStubAgent();
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: allow,
+      buildEnv: async () => stubBuildEnv(),
+      agentFactory: async () => closeFails(stub),
+    });
+
+    const pending = invoker(buildRequest({ input: "turn" }));
+    await Promise.resolve();
+    stub.resolveSend({ type: "reply", reply: "ok", turn: replyTurn });
+
+    await expect(pending).rejects.toBeInstanceOf(StepOutcomeCommitError);
+  });
+
   test("a close failure while a send error unwinds still settles and surfaces the send error", async () => {
     const stub = buildStubAgent();
     let settled = 0;
