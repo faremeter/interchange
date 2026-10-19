@@ -157,8 +157,8 @@ export type InstallAndApproveWorkflowSourceParams = {
   pin?: string;
   /** The definition asset: a workflow source tree or package-registry tarball. */
   definitionAssetId: string;
-  /** The exact provisioned generation that executes the probe. */
-  allocationTarget: AllocatedSidecarTarget;
+  /** Called immediately before sending the probe. */
+  getProbeTarget(): Promise<AllocatedSidecarTarget>;
   /** Optional durable handoff invoked with the raw probe answer. */
   onProbeResult?: (result: WorkflowProbeResult) => Promise<void>;
 };
@@ -1415,15 +1415,14 @@ export function createSessionService(
       );
     }
     const dbHandle = db;
-    const allocationTarget = params.allocationTarget;
     const common = {
       entry: params.entry,
       assetId: params.definitionAssetId,
       approvals: { kind: "approve-probed" } as const,
       router: {
-        sendProbe: (args: SendProbeArgs) =>
+        sendProbe: async (args: SendProbeArgs) =>
           requireAllocationRouter().sendProbeToAllocation(
-            allocationTarget,
+            await params.getProbeTarget(),
             args,
           ),
       },

@@ -55,7 +55,7 @@ export function createProvisionedDeploymentStandIn(opts: {
           entry: args.entry,
           ...(args.pin !== undefined ? { pin: args.pin } : {}),
           definitionAssetId: args.definitionAssetId,
-          allocationTarget,
+          getProbeTarget: async () => allocationTarget,
         });
       if (!approved.approval.ok) {
         throw new Error(
