@@ -648,7 +648,7 @@ Body: WorkflowRollbackRequest
 ### POST /api/tenants/:tenantId/workflows/deployments
 Deploy a workflow
 
-Installs, probes, gates, and freezes a code-sourced workflow definition from its `source`/`entry`, then creates a pending provisioned deployment. Provisioning continues asynchronously; the response returns the deployment record.
+Installs, gates, and freezes a code-sourced workflow definition from its `source`/`entry`, reusing a validated probe for an unchanged source revision under the current internal probe cache version, then creates a pending provisioned deployment. Provisioning continues asynchronously; the response returns the deployment record.
 
 Body: unknown
 

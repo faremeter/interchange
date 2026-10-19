@@ -778,6 +778,13 @@
       "when": 1792580732936,
       "tag": "0111_launch_spec_grant_snapshot",
       "breakpoints": true
+    },
+    {
+      "idx": 112,
+      "version": "7",
+      "when": 1792580870067,
+      "tag": "0112_workflow_definition_artifacts",
+      "breakpoints": true
     }
   ]
 }

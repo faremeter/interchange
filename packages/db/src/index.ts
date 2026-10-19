@@ -127,6 +127,10 @@ export {
   type WorkflowProbeStore,
 } from "./workflow-probe-store";
 export {
+  createWorkflowDefinitionArtifactStore,
+  type WorkflowDefinitionArtifactStore,
+} from "./workflow-definition-artifact-store";
+export {
   createWorkflowDefinitionStore,
   loadDeploymentGrantSnapshot,
   resolveDefinitionIdForAsset,

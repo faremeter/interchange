@@ -13,6 +13,7 @@ import {
   createSidecarAllocationStore,
   createWorkflowProbeStore,
   createWorkflowRunLaunchSpecStore,
+  createWorkflowDefinitionArtifactStore,
   SidecarInventoryUnavailableError,
 } from "@intx/db";
 import {
@@ -28,6 +29,7 @@ import {
   createSidecarPluginRegistry,
   createSidecarRouter,
   createWorkflowAllocationService,
+  installAndApproveWorkflowDefinition,
   SessionLaunchError,
   type InstallAndApproveWorkflowSourceParams,
   type SidecarProvisioner,
@@ -37,7 +39,8 @@ import {
   type ResolvedWorkflowLifecyclePolicy,
   type SidecarCapabilityRule,
 } from "@intx/types";
-import type { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
+import type { WorkflowDefinitionAssetSource } from "@intx/types/workflow-sources";
+import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import {
   DEFAULT_SIDECAR_CAPACITY,
   DeploymentRejectedError,
@@ -82,7 +85,7 @@ const ADAPTER_MANIFEST = [
     export: "createAdapter",
   },
 ];
-const SOURCE: WorkflowDefinitionSource = {
+const SOURCE: WorkflowDefinitionAssetSource = {
   kind: "asset",
   assetId: ASSET_ID,
   package: {
@@ -245,6 +248,144 @@ describe.skipIf(!harnessDbEnvAvailable())(
         deployContent: { systemPrompt: "" },
       } as const;
     }
+
+    test.each([
+      "unchanged",
+      "provisioner",
+      "binding",
+      "adapter manifest",
+    ] as const)(
+      "a repeated definition reuses its probe with %s placement inputs",
+      async (changed) => {
+        const ensureCalls: unknown[] = [];
+        let probes = 0;
+        const result = {
+          ...probeResult(),
+          wireHash: await computeWireDefinitionHash(projection()),
+        };
+        function createService(variant: "baseline" | "changed") {
+          const differs = variant === "changed";
+          const provisioner = {
+            ...makeProvisioner({
+              id:
+                differs && changed === "provisioner"
+                  ? "cached-other"
+                  : "cached",
+              ensureCalls,
+              destroyCalls: [],
+            }),
+            bindingFingerprint:
+              differs && changed === "binding" ? "cached:v2" : "cached:v1",
+          };
+          return createWorkflowAllocationService({
+            db: h.db,
+            ...sharedPluginPools([provisioner]),
+            ...(differs && changed === "adapter manifest"
+              ? { adapterManifest: ADAPTER_MANIFEST }
+              : {}),
+            credentialCipher: CIPHER,
+            hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
+            defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
+            preparedDeployer: {
+              installAndApproveWorkflowSource: (params) =>
+                installAndApproveWorkflowDefinition({
+                  db: h.db,
+                  assetId: ASSET_ID,
+                  source: SOURCE,
+                  entry: params.entry,
+                  assetCommitSha: "1".repeat(40),
+                  approvals: { kind: "approve-probed" },
+                  reads: {
+                    readBlob: async () =>
+                      new TextEncoder().encode(
+                        JSON.stringify({
+                          name: "cached",
+                          version: "1.0.0",
+                          dependencies: {},
+                        }),
+                      ),
+                    listDir: async () => [],
+                    treeOid: async () => "2".repeat(40),
+                  },
+                  registryName: "npm",
+                  registryConfig: { url: "https://registry.example.test" },
+                  resolveAttachment: async () => ({
+                    pack: new Uint8Array(),
+                    ref: "refs/heads/main",
+                    commitSha: "1".repeat(40),
+                  }),
+                  router: {
+                    sendProbe: async () => {
+                      await params.getProbeTarget();
+                      probes++;
+                      return result;
+                    },
+                  },
+                  ...(params.onProbeResult !== undefined
+                    ? { onProbeResult: params.onProbeResult }
+                    : {}),
+                  cache: {
+                    tenantId: params.tenantId,
+                    store: createWorkflowDefinitionArtifactStore(h.db),
+                    registryKey: "npm",
+                    lease: { leaseMs: 60_000, renewMs: 15_000, waitMs: 10 },
+                  },
+                }),
+              deployPreparedCodeSourcedWorkflow: async () => {
+                throw new Error("Preparation must not deploy");
+              },
+            },
+            allocationRouter: {
+              getSidecarInventory: () => ({
+                capacity: DEFAULT_SIDECAR_CAPACITY,
+                retainedIncarnations: [],
+              }),
+              waitForSidecarInventory: async () => undefined,
+              fenceAllocation: () => undefined,
+              retireAllocation: () => undefined,
+              waitForAllocatedSidecar: async () => undefined,
+              sendProbeToAllocation: async () => result,
+              isAllocatedWorkflowActive: async () => false,
+              reportedDeploymentFailure: () => undefined,
+              stoppedDeploymentHistory: async () => undefined,
+              detachAllocation: () => undefined,
+              syncSidecar: async () => undefined,
+            },
+          });
+        }
+        const first = await createService(
+          "baseline",
+        ).prepareProvisionedDeployment(prepareArgs("run-cache-first"));
+        const second = await createService(
+          "changed",
+        ).prepareProvisionedDeployment(prepareArgs("run-cache-second"));
+        expect(probes).toBe(1);
+        expect(ensureCalls).toHaveLength(1);
+        expect(first.allocationId).not.toBe(second.allocationId);
+        expect(await h.db.select().from(workflowProbe)).toHaveLength(1);
+        const specs = createWorkflowRunLaunchSpecStore(h.db);
+        const firstSpec = await specs.get(first.anchorRunId);
+        const secondSpec = await specs.get(second.anchorRunId);
+        expect(firstSpec?.definitionArtifactId).toBeString();
+        expect(secondSpec?.definitionArtifactId).toBe(
+          firstSpec?.definitionArtifactId,
+        );
+        expect(
+          await createSidecarAllocationStore(h.db).findById(
+            second.allocationId,
+          ),
+        ).toMatchObject({
+          status: "pending",
+          provisionerId: changed === "provisioner" ? "cached-other" : "cached",
+          provisionerBindingFingerprint:
+            changed === "binding" ? "cached:v2" : "cached:v1",
+          adapterManifestDigest: await adapterManifestDigest(
+            changed === "adapter manifest" ? ADAPTER_MANIFEST : undefined,
+          ),
+        });
+        expect(secondSpec?.grantSnapshot).toEqual(result.grantWalkSnapshot);
+      },
+    );
 
     test("an install that fails before probing starts no probe capacity", async () => {
       const ensureCalls: unknown[] = [];

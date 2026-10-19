@@ -255,6 +255,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         package: { format: "source", commitSha: probed.commitSha },
       } as const;
       const approved = await service.installAndApproveWorkflowSource({
+        tenantId: TENANT_ID,
         source,
         entry: "./workflow.ts",
         definitionAssetId: ASSET_ID,
@@ -302,6 +303,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         package: { format: "tarball" },
       } as const;
       const approved = await service.installAndApproveWorkflowSource({
+        tenantId: TENANT_ID,
         source,
         entry: "./workflow.mjs",
         pin: "@wf/pinned@^1.0.0",
@@ -351,6 +353,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       } as const;
       const { assetCommitSha: _assetCommitSha, ...legacy } =
         await service.installAndApproveWorkflowSource({
+          tenantId: TENANT_ID,
           source,
           entry: "./workflow.ts",
           definitionAssetId: ASSET_ID,
@@ -392,6 +395,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       } as const;
       const { assetCommitSha: _assetCommitSha, ...legacy } =
         await service.installAndApproveWorkflowSource({
+          tenantId: TENANT_ID,
           source,
           entry: "./workflow.mjs",
           pin: "@wf/pinned@^1.0.0",
@@ -409,6 +413,46 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(
         captured.workflow?.assets?.map((asset) => asset.commitSha),
       ).toEqual([tip.commitSha]);
+    });
+
+    // A source install resolves its dependencies against the default registry,
+    // so the cache key must change with that registry's URL.
+    test("a cached source install probes again when the registry URL changes", async () => {
+      await seedAsset(h.db, {
+        id: ASSET_ID,
+        tenantId: TENANT_ID,
+        kind: "workflow",
+        name: "pinned",
+      });
+      const first = await createHarness();
+      const probed = await first.repoStore.writeTree(
+        HUB,
+        { kind: "workflow", id: ASSET_ID },
+        DEFAULT_ASSET_REF,
+        sourceTree("probed", "probed"),
+      );
+      const install = (service: ReturnType<typeof createSessionService>) =>
+        service.installAndApproveWorkflowSource({
+          tenantId: TENANT_ID,
+          source: {
+            kind: "asset",
+            assetId: ASSET_ID,
+            package: { format: "source", commitSha: probed.commitSha },
+          },
+          entry: "./workflow.ts",
+          definitionAssetId: ASSET_ID,
+          getProbeTarget: probeTarget,
+        });
+
+      const reused = await install(first.service);
+      expect((await install(first.service)).artifactId).toBe(reused.artifactId);
+      expect(first.probedAssets).toHaveLength(1);
+
+      const moved = await createHarness("https://moved-registry.test");
+      const reprobed = await install(moved.service);
+      expect(moved.probedAssets).toHaveLength(1);
+      expect(reprobed.artifactId).toBeDefined();
+      expect(reprobed.artifactId).not.toBe(reused.artifactId);
     });
   },
 );

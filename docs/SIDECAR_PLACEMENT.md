@@ -80,6 +80,17 @@ type SidecarCapabilityDeclaration = {
 };
 ```
 
+Asset-sourced workflow deployments automatically reuse validated probe results
+for the same pinned revision under the current `WORKFLOW_PROBE_CACHE_VERSION`.
+This internal constant in `workflow-probe-cache.ts` must be bumped when probe
+behavior or the stored result shape changes. It invalidates probe results while
+preserving the revision's frozen dependency resolution.
+
+Probe workers sharing the Hub's cache must use compatible evaluator code and
+environments; deployment configuration owns that requirement. Provisioner ids,
+binding fingerprints and adapter manifests do not partition the probe cache.
+The Hub still checks current placement policy for every deployment.
+
 An omitted capability is unknown. It does not mean blocked. Provisioners decide
 internally whether to create, isolate, share, or reuse their backing capacity.
 To place a probe or deployment on a sidecar it already runs, a provisioner

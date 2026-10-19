@@ -36,7 +36,10 @@ import {
 } from "@intx/hub-sessions";
 import type { InferenceSource } from "@intx/types/runtime";
 import type { WorkflowDefinitionAssetSource } from "@intx/types/workflow-sources";
-import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
+import {
+  deriveRunAddress,
+  deriveWorkflowRunRepoId,
+} from "@intx/workflow-deploy";
 import {
   createTestDb,
   harnessDbEnvAvailable,
@@ -181,6 +184,7 @@ let env: DeployFlowEnv;
 let h: TestDb;
 let scratchDir: string;
 let sessionService: SessionService & PreparedWorkflowDeployer;
+let publishedFiles: Record<string, Uint8Array>;
 
 describe.skipIf(!harnessDbEnvAvailable())(
   "a tarball-sourced workflow deploys through the real route and runs",
@@ -248,16 +252,16 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: SOURCE_ASSET_ID,
       };
       await env.hub.agentRepoStore.repoStore.initRepo(sourceRepoId);
+      publishedFiles = {
+        [`tarballs/${tarball.tarballFilename}`]: tarball.bytes,
+        [`tarballs/${creatorTarball.tarballFilename}`]: creatorTarball.bytes,
+      };
       await env.hub.agentRepoStore.repoStore.writeTree(
         HUB_PRINCIPAL,
         sourceRepoId,
         DEFAULT_ASSET_REF,
         {
-          files: {
-            [`tarballs/${tarball.tarballFilename}`]: tarball.bytes,
-            [`tarballs/${creatorTarball.tarballFilename}`]:
-              creatorTarball.bytes,
-          },
+          files: publishedFiles,
           message: "Publish the tarball-route workflow package",
         },
       );
@@ -427,6 +431,69 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
       expect(message).toContain("use on secret:vault (creator)");
       expect(observed.deployed).toBeUndefined();
+    });
+
+    // Runs last: it binds the sidecar identity to its own anchor and moves
+    // the registry asset to a new commit.
+    test("a cached install reuses its probe until the registry commit or pin changes", async () => {
+      const anchorRunId = "run_tarball_route_cache";
+      const target = env.hub.prepareAllocationIdentity(
+        anchorRunId,
+        deriveRunAddress({ runId: anchorRunId, domain: DEPLOYMENT_DOMAIN }),
+      );
+      let probeTargets = 0;
+      // Earlier route deploys cached the caret pin; use a fresh selector here.
+      const install = (pin = `${PACKAGE_NAME}@~${PACKAGE_VERSION}`) =>
+        sessionService.installAndApproveWorkflowSource({
+          tenantId: TENANT_ID,
+          source: {
+            kind: "asset",
+            assetId: SOURCE_ASSET_ID,
+            package: { format: "tarball" },
+          },
+          entry: WORKFLOW_ENTRY,
+          pin,
+          definitionAssetId: SOURCE_ASSET_ID,
+          getProbeTarget: async () => {
+            probeTargets++;
+            return target;
+          },
+        });
+      const first = await install();
+      const second = await install();
+      expect(probeTargets).toBe(1);
+      expect(first.artifactId).toBeDefined();
+      expect(second.artifactId).toBe(first.artifactId);
+      expect(second.assetCommitSha).toBe(first.assetCommitSha);
+
+      const extra = await buildWorkflowTarball(
+        scratchDir,
+        "@wf/tarball-route-extra",
+        workflowEntrySource,
+      );
+      await env.hub.agentRepoStore.repoStore.writeTree(
+        HUB_PRINCIPAL,
+        { kind: "package-registry", id: SOURCE_ASSET_ID },
+        DEFAULT_ASSET_REF,
+        {
+          files: {
+            ...publishedFiles,
+            [`tarballs/${extra.tarballFilename}`]: extra.bytes,
+          },
+          message: "Publish another package to the registry",
+        },
+      );
+      const third = await install();
+      expect(probeTargets).toBe(2);
+      expect(third.assetCommitSha).not.toBe(first.assetCommitSha);
+      expect(third.artifactId).toBeDefined();
+      expect(third.artifactId).not.toBe(first.artifactId);
+
+      // The pin is part of the revision, so an equivalent range probes again.
+      const exact = await install(`${PACKAGE_NAME}@${PACKAGE_VERSION}`);
+      expect(probeTargets).toBe(3);
+      expect(exact.assetCommitSha).toBe(third.assetCommitSha);
+      expect(exact.artifactId).not.toBe(third.artifactId);
     });
   },
 );
