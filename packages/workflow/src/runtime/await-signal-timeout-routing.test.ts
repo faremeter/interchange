@@ -22,6 +22,8 @@ import {
   defineWorkflow,
   runtimeRun,
   step,
+  type BlobSubstrate,
+  type DrainController,
   type SignalChannel,
   type StepInvoker,
   type WorkflowDefinition,
@@ -41,7 +43,12 @@ function agent(id: string) {
 
 function buildEnv(
   def: WorkflowDefinition,
-  opts: { invokeStep?: StepInvoker; signalChannel?: SignalChannel } = {},
+  opts: {
+    invokeStep?: StepInvoker;
+    signalChannel?: SignalChannel;
+    blobs?: BlobSubstrate;
+    drain?: DrainController;
+  } = {},
 ): {
   env: WorkflowRuntimeEnv;
   repoStore: ReturnType<typeof createInMemoryRepoStore>;
@@ -52,7 +59,7 @@ function buildEnv(
     repoStore,
     scheduler: createInMemoryScheduler({ repoStore, clock }),
     signalChannel: opts.signalChannel ?? createInMemorySignalChannel(),
-    blobs: createInMemoryBlobSubstrate(),
+    blobs: opts.blobs ?? createInMemoryBlobSubstrate(),
     directors: createDefaultDirectorRegistry(),
     authorize: async () => ({
       effect: "allow",
@@ -63,7 +70,7 @@ function buildEnv(
     spawnChild: async () => createTerminalChildHandle("completed"),
     clock,
     newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
-    drain: createNoopDrainController(def),
+    drain: opts.drain ?? createNoopDrainController(def),
     hasUpstreamSignalResolver: true,
   };
   return { env, repoStore };
@@ -190,5 +197,44 @@ describe("awaitSignal onTimeout routing", () => {
           /timed out/.test(e.error.message),
       ),
     ).toBe(true);
+  });
+
+  test("a drain that lands mid-prune still skips the whole normal branch", async () => {
+    // The run keeps running under a drain, so a normal dependent the prune
+    // left unskipped would be scheduled and invoked.
+    const def = defineWorkflow({
+      id: "to-drain-prune",
+      trigger: { type: "manual" },
+      steps: {
+        wait: awaitSignal({ name: "go", timeout: 1, onTimeout: "late" }),
+        late: step({ agent: agent("late"), after: ["wait"] }),
+        n1: step({ agent: agent("n1"), after: ["wait"] }),
+        n2: step({ agent: agent("n2"), after: ["wait"] }),
+      },
+    });
+    const drain = new AbortController();
+    const blobs = createInMemoryBlobSubstrate();
+    const invoked: string[] = [];
+    const { env } = buildEnv(def, {
+      invokeStep: async (req) => {
+        invoked.push(req.agent.id);
+        return { output: null };
+      },
+      blobs: {
+        ...blobs,
+        async recordOutput(stepId, attempt, value) {
+          // The first skip sentinel the prune records drains the run.
+          if (stepId === "n1.input" || stepId === "n2.input") drain.abort();
+          return blobs.recordOutput(stepId, attempt, value);
+        },
+      },
+      drain: { signal: drain.signal, behaviorFor: () => "cancel" },
+    });
+    await runtimeRun(def, env, { runId: "r", triggerPayload: null }).complete;
+
+    expect(drain.signal.aborted).toBe(true);
+    expect(invoked).toContain("late");
+    expect(invoked).not.toContain("n1");
+    expect(invoked).not.toContain("n2");
   });
 });
