@@ -162,9 +162,10 @@ export interface SignalChannel {
  * (tests). The callback's contract: invoke the agent's send-and-respond
  * loop with the materialized input, and return the captured
  * `AgentResult`. Any thrown error propagates as `StepFailed`. An invoker
- * whose agent ran but whose host could not commit the turn throws
- * `StepOutcomeCommitError`, which lands with retries exhausted and is never
- * retried or routed, since the step's work already happened.
+ * whose agent ran but whose host could not commit the turn or close the agent
+ * throws `StepOutcomeCommitError`, which lands with retries exhausted and is
+ * never retried or routed within its run, since the step's work already
+ * happened. A parent run handles the failed child run like any other.
  *
  * The callback receives the per-step `AuthorizeContext` so it can
  * build an `env.authorize` closure that delegates to the runtime's
