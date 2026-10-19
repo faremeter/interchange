@@ -31,7 +31,6 @@ import {
   ConversationTurn,
   PersistedPendingOperation,
   TokenUsage,
-  emptyTokenUsage,
   type PendingOperation,
 } from "@intx/types/runtime-core";
 
@@ -183,19 +182,14 @@ export async function reconstructStepState(
   const checkpoint = await readCheckpoint(reader, label);
   const baseBoundarySeq = checkpoint?.checkpointSeq ?? 0;
   const wal = await readWalTail(reader, label, baseBoundarySeq);
-  if (checkpoint === null && wal.length === 0) return null;
+  const metadata = wal.at(-1)?.metadata ?? checkpoint?.metadata;
+  if (metadata === undefined) return null;
 
   const turns: ConversationTurn[] = [...(checkpoint?.turns ?? [])];
-  let metadata: StepStateMetadata = checkpoint?.metadata ?? {
-    pendingOperations: [],
-    tokenUsage: emptyTokenUsage(),
-    connectorState: null,
-  };
   for (const entry of wal) {
     for (const turn of entry.turns) {
       turns.push(turn);
     }
-    metadata = entry.metadata;
   }
   return {
     turns,
