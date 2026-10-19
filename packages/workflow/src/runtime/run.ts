@@ -5271,19 +5271,19 @@ function leafFirstOrder(
  * offers it -- this holds even for the resumable kinds (sleep/loop/onTrigger/
  * awaitSignal) that `nextSchedulable` offers while in-flight.
  *
- * A step already in the log is not re-started (idempotent replay); a step left
- * in-flight by a crash mid-prune is re-completed. That check is made in the
- * same chain commit as the write, so a step two prunes share -- a join below
- * two skipped handlers -- is skipped by whichever prune reaches it first and
- * left alone by the other. The prune bails only for a run that is no longer
- * `running` (a cancelling/terminal run, whose cancel sweep settles the closure
- * via CancelPropagated); it MUST complete for a drained-but-still-running run,
- * since a half-pruned branch would leave the not-taken side live once the unit
- * is terminal, whether the caller commits that terminal right after or, as an
- * onFailure prune does, already has. A cancel that lands mid-prune
- * makes the next StepStarted throw and propagate; a skipped step's
- * StepStarted and StepCompleted land in one commit, so no step is left
- * half-emitted.
+ * A step already in the log is left alone, whatever its phase: a skip lands in
+ * one commit, so a step the prune finds in flight is running, not half
+ * skipped. That check is made in the same chain commit as the write, so a step
+ * two prunes share -- a join below two skipped handlers -- is skipped by
+ * whichever prune reaches it first and left alone by the other. The prune
+ * bails only for a run that is no longer `running` (a cancelling/terminal run,
+ * whose cancel sweep settles the closure via CancelPropagated); it MUST
+ * complete for a drained-but-still-running run, since a half-pruned branch
+ * would leave the not-taken side live once the unit is terminal, whether the
+ * caller commits that terminal right after or, as an onFailure prune does,
+ * already has. A cancel that lands mid-prune makes the next
+ * StepStarted throw and propagate; a skipped step's StepStarted and
+ * StepCompleted land in one commit, so no step is left half-emitted.
  */
 async function emitSkipClosure(
   env: WorkflowRuntimeEnv,
@@ -5313,33 +5313,29 @@ async function emitSkipClosure(
 
 type SkipWrite = {
   stepId: string;
-  inputRef: string | null;
+  inputRef: string;
   outputRef: string;
 };
 
 // Record the sentinel blobs a skip of `stepId` commits, or return null when
-// `snapshot` shows the step already settled. A step the snapshot saw
-// in-flight, left by a crash mid-prune, only needs its completion, so it
-// records no input.
+// `snapshot` shows the step already started.
 async function recordSkipSentinels(
   env: WorkflowRuntimeEnv,
   snapshot: RunState,
   stepId: string,
   sentinel: unknown,
 ): Promise<SkipWrite | null> {
-  const phase = snapshot.steps.get(stepId)?.phase;
-  if (phase !== undefined && phase !== "in-flight") return null;
-  const inputRef =
-    phase === undefined
-      ? (await env.blobs.recordOutput(`${stepId}.input`, 1, sentinel)).ref
-      : null;
+  if (snapshot.steps.has(stepId)) return null;
+  const inputRef = (
+    await env.blobs.recordOutput(`${stepId}.input`, 1, sentinel)
+  ).ref;
   const outputRef = (await env.blobs.recordOutput(stepId, 1, sentinel)).ref;
   return { stepId, inputRef, outputRef };
 }
 
 // The events that skip one closure member, built from the state its commit
-// sees. The step is written only while it is as the snapshot saw it: a prune
-// that shares the step may have skipped it since, and then it is left alone.
+// sees. The step is written only while it has still not started: a prune that
+// shares the step may have skipped it since, and then it is left alone.
 function skipEvents(
   env: WorkflowRuntimeEnv,
   fresh: RunState,
@@ -5355,9 +5351,6 @@ function skipEvents(
     attempt: 1,
     output: { ref: skip.outputRef },
   });
-  if (skip.inputRef === null) {
-    return current === "in-flight" ? [completion(fresh.lastSeq + 1)] : [];
-  }
   if (current !== undefined) return [];
   return [
     {
