@@ -35,7 +35,6 @@ import {
   deriveRunAddress,
   type ApprovalSet,
 } from "@intx/workflow-deploy";
-import { loadFrozenGrantSnapshot } from "@intx/db";
 import { tenant as tenantTable } from "@intx/db/schema";
 import {
   createTestDb,
@@ -204,16 +203,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // assert the bare tool grant is present -- this is the property that
       // lets a source tool authorize with no floor (its runtime name is the
       // same bare `definition.name`).
-      if (!handle.approved.approval.ok) {
-        throw new Error("expected an approved definition");
-      }
-      const snapshot = await loadFrozenGrantSnapshot(
-        h.db,
-        handle.approved.approval.definitionId,
-      );
-      if (snapshot === null) {
-        throw new Error("expected a frozen grant snapshot for the definition");
-      }
+      const snapshot = handle.approved.grantSnapshot;
       const snapshotToolGrants = snapshot.perStep.flatMap((s) =>
         s.grants.filter((g) => g.startsWith("tool:")),
       );

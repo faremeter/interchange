@@ -26,11 +26,9 @@
 //      the definition's selector, and return the frozen approved grant set.
 //
 // The frozen approved set is the single source of truth for the definition's
-// grants: the deploy path materializes deploy grants as a SUBSET of it (never a
-// fresh walk), so a workflow can never acquire at deploy or run time a grant it
-// did not have frozen at approval. The wire hash is that freeze's anchor -- the
-// grant set is a deterministic projection of the exact content the hash
-// addresses, so pinning the hash pins the set.
+// grants: the deploy path materializes deploy grants as a SUBSET of it. The
+// snapshot records the capability walk, while the wire hash covers the inert
+// projection.
 
 import { type } from "arktype";
 import { and, eq } from "drizzle-orm";
@@ -90,11 +88,10 @@ const FROZEN_VERSION = "1";
 /**
  * The frozen record an approval writes: the definition's asset selector, the
  * approved wire hash (the freeze anchor), the approved surface, and the
- * grant-walk snapshot the run path materializes grants from. The approved
- * surface is a deterministic projection of the content the hash addresses and
- * rides the deploy hand-off in memory; the snapshot is persisted onto the
- * version row so a run derives its grants from the frozen walk without
- * re-reading and re-walking the workflow's `workflow.json`.
+ * grant-walk snapshot. The approved surface comes from the probe's capability
+ * walk, which the wire hash does not cover, and rides the deploy hand-off in
+ * memory; the snapshot is persisted onto the version row as the catalog
+ * approval. Runs read the copy frozen into their deployment's launch spec.
  *
  * `approvedGrants` carries both kinds of approved item: the walk's grant-shape
  * strings and the definition's declared grant requirements. The requirements
@@ -263,9 +260,9 @@ export function describeProbeGateRefusal(refusal: ProbeGateRefusal): string {
  * the selector-keyed ensure helper (a definition keyed by `(assetId,
  * wireHash)`) and writes the approved wire hash and the grant-walk snapshot onto
  * that definition's version row in one transaction. The grant SET is not written
- * to a version-row column -- the approved wire hash already pins the content the
- * grants project from -- so it travels with the returned frozen approval; the
- * snapshot is written because the run path reads it back to materialize grants.
+ * to a version-row column; it travels with the returned frozen approval. The
+ * version snapshot remains the catalog approval. New deployments retain their
+ * own immutable snapshot so another approval cannot change their grant shape.
  */
 export function createDbFrozenApprovalWriter(
   db: DBExecutor,
@@ -765,6 +762,7 @@ export type InstallAndApproveResult = {
   readonly approval: ProbeGateResult;
   readonly projection: WorkflowProjectionDefinition;
   readonly closure: ToolPackageManifest;
+  readonly grantSnapshot: GrantWalkSnapshot;
   readonly assetCommitSha?: string;
 };
 
@@ -838,6 +836,7 @@ export async function installAndApproveWorkflowDefinition(
     approval,
     projection: probeResult.projection,
     closure,
+    grantSnapshot: probeResult.grantWalkSnapshot,
     ...(args.assetCommitSha !== undefined
       ? { assetCommitSha: args.assetCommitSha }
       : {}),

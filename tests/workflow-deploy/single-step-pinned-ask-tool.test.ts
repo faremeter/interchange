@@ -32,7 +32,6 @@ import {
   deriveRunAddress,
   type ApprovalSet,
 } from "@intx/workflow-deploy";
-import { loadFrozenGrantSnapshot } from "@intx/db";
 import { tenant as tenantTable } from "@intx/db/schema";
 import {
   createTestDb,
@@ -186,16 +185,7 @@ describe.skipIf(!harnessDbEnvAvailable())("single-step ask-marked tool", () => {
     // `ask` effect -- this is what makes the tool call suspend rather than
     // run, and it originates from the tool's mark, not a hand-authored
     // constant.
-    if (!handle.approved.approval.ok) {
-      throw new Error("expected an approved definition");
-    }
-    const snapshot = await loadFrozenGrantSnapshot(
-      h.db,
-      handle.approved.approval.definitionId,
-    );
-    if (snapshot === null) {
-      throw new Error("expected a frozen grant snapshot for the definition");
-    }
+    const snapshot = handle.approved.grantSnapshot;
     const askEffect = snapshot.perStep
       .map((s) => s.grantEffects[`tool:${MAIL_TOOL_NAME}`])
       .find((effect) => effect !== undefined);

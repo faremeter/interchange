@@ -36,7 +36,7 @@ import {
   createPrincipalStore,
   createWorkflowRunStore,
   workflowRunExecutability,
-  loadFrozenGrantSnapshot,
+  loadDeploymentGrantSnapshot,
 } from "@intx/db";
 import type { GrantStore, GrantRule } from "@intx/types/authz";
 import {
@@ -646,18 +646,6 @@ export type MailTriggeredRunGrantsDeps = {
 };
 
 /**
- * A deployment's deploy-approved grant basis: the grant-walk snapshot frozen at
- * approval, from which the run's runtime `tool:`/`effect:` grants and its
- * declared requirements both derive. The snapshot is a pure function of the
- * approved definition content, keyed by the definition id, so it is read once
- * per deployment and cached; nothing here depends on a live re-read or re-walk
- * of the workflow's `workflow.json`.
- */
-type FrozenRunGrantBasis = {
-  readonly snapshot: GrantWalkSnapshot;
-};
-
-/**
  * Build the mail-triggered run-grants materializer the sidecar router's
  * `mail.outbound` handler invokes for each workflow-deployment recipient.
  *
@@ -689,18 +677,6 @@ export function createMailTriggeredRunGrantsMaterializer(
   agentAddress: string;
   runId: string;
 }) => Promise<MailTriggeredRunGrantsResult> {
-  // Closure-level cache of each deployment's deploy-approved snapshot, keyed by
-  // the workflow definition's identity. A definition id is content-addressed --
-  // keyed by `(assetId, wireHash)`, frozen at approval -- and the anchor run
-  // carries that id, so the key names the APPROVED definition content, not the
-  // mutable asset blob behind it. The first trigger of a deployment reads the
-  // frozen snapshot from the version row once and caches it here; every later
-  // trigger consumes the cached snapshot WITHOUT re-reading it. The hub never
-  // walks a live definition on this path: a rewritten asset blob under a stable
-  // asset id cannot change a run's grants, because runs bind to the frozen
-  // snapshot, never a live re-hydrate or re-walk.
-  const frozenBasisByDefinition = new Map<string, FrozenRunGrantBasis>();
-
   return async ({ agentAddress, runId }) => {
     const topLevelRun = alias(workflowRun, "mail_triggered_top_level_run");
     const [anchor] = await deps.db
@@ -761,7 +737,6 @@ export function createMailTriggeredRunGrantsMaterializer(
     const definitionAssetId = anchor.definitionAssetId;
     const tenantId = anchor.tenantId;
     const anchorRunId = anchor.anchorRunId;
-    const definitionId = anchor.definitionId;
 
     const committed = await loadCommittedRunGrants(deps.db, tenantId, runId);
     if (committed !== null) {
@@ -771,37 +746,26 @@ export function createMailTriggeredRunGrantsMaterializer(
       };
     }
 
-    let basis = frozenBasisByDefinition.get(definitionId);
-    if (basis === undefined) {
-      // First trigger of this deployment: read the frozen snapshot from the
-      // version row once, then cache it. The read never runs again for this
-      // definition id, and no live definition is ever walked here.
-      const snapshot = await loadFrozenGrantSnapshot(deps.db, definitionId);
-      if (snapshot === null) {
-        // The definition has no approved grant snapshot -- the "not yet
-        // approved" state, mirroring a null `approvedWireHash`. Fail closed
-        // rather than substitute an empty grant set, which would launch a run
-        // with no runtime authority.
-        throw new Error(
-          `mail-triggered run ${runId} for ${agentAddress}: definition ${definitionId} has no approved grant snapshot`,
-        );
-      }
-      basis = { snapshot };
-      frozenBasisByDefinition.set(definitionId, basis);
+    const snapshot = await loadDeploymentGrantSnapshot(deps.db, anchorRunId);
+    if (snapshot === null) {
+      // Fail closed rather than substitute an empty grant set, which would
+      // launch a run with no runtime authority.
+      throw new Error(
+        `mail-triggered run ${runId} for ${agentAddress}: deployment ${anchorRunId} has no approved grant snapshot`,
+      );
     }
 
     // Invoker-sourced requirements are not materialized on the mail path:
     // filter them out BEFORE staging rather than teaching the resolver a skip
     // mode, so the external route keeps resolving invoker grants.
-    const creatorRequirements = basis.snapshot.grantRequirements.filter(
+    const creatorRequirements = snapshot.grantRequirements.filter(
       (r) => r.source !== "invoker",
     );
 
     // Creator authority is resolved LIVE per run: the definition's grant SHAPE
     // is frozen in the snapshot, but which grants the creator currently holds
     // is not part of that shape and can change between triggers. This reads the
-    // asset row's creator column and the creator's grants -- not the snapshot
-    // -- so it is not the read the frozen basis eliminates.
+    // asset row's creator column and the creator's grants.
     const creatorPrincipalId = await loadAssetCreatorPrincipalId(
       deps.db,
       tenantId,
@@ -820,7 +784,7 @@ export function createMailTriggeredRunGrantsMaterializer(
     const runPrincipalId = await deriveRunPrincipalId(tenantId, runId);
     const now = new Date();
     const staged = await stageRunGrantsFromSnapshot({
-      snapshot: basis.snapshot,
+      snapshot,
       tenantId: tenantId,
       runPrincipalId,
       now,

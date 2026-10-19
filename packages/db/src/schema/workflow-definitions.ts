@@ -107,10 +107,10 @@ export const workflowDefinitionVersion = pgTable(
     // a legitimate state, so the column takes no NOT NULL constraint.
     approvedWireHash: text("approved_wire_hash"),
     // Serializable projection of the deploy-time capability walk, recorded
-    // at approval so a run materializes grants from it instead of re-reading
-    // and re-walking a workflow.json blob. Validated as GrantWalkSnapshot at
-    // parse time. Null before approval is a legitimate state, so the column
-    // takes no NOT NULL constraint.
+    // at approval. A later approval of the same definition overwrites it, so
+    // runs read the copy frozen into their deployment's launch spec instead.
+    // Validated as GrantWalkSnapshot at parse time. Null before approval is a
+    // legitimate state, so the column takes no NOT NULL constraint.
     grantSnapshot: jsonb("grant_snapshot"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },

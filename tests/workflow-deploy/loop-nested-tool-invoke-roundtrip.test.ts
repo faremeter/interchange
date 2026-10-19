@@ -38,7 +38,6 @@ import {
   type ApprovalSet,
 } from "@intx/workflow-deploy";
 import { loopBodyRunId } from "@intx/workflow";
-import { loadFrozenGrantSnapshot } from "@intx/db";
 import { tenant as tenantTable } from "@intx/db/schema";
 import {
   createTestDb,
@@ -249,16 +248,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // deriving them from the frozen snapshot here reproduces the delivery,
       // and keeps the grant the innermost body authorizes against sourced from
       // the probe walk rather than a hand-authored constant.
-      if (!handle.approved.approval.ok) {
-        throw new Error("expected an approved definition");
-      }
-      const snapshot = await loadFrozenGrantSnapshot(
-        h.db,
-        handle.approved.approval.definitionId,
-      );
-      if (snapshot === null) {
-        throw new Error("expected a frozen grant snapshot for the definition");
-      }
+      const snapshot = handle.approved.grantSnapshot;
       expect(
         snapshot.perStep.flatMap((s) =>
           s.grants.filter((g) => g.startsWith("tool:")),

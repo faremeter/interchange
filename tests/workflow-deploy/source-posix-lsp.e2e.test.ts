@@ -52,7 +52,6 @@ import {
 } from "@intx/hub-sessions";
 import { createNoopCredentialCipher } from "@intx/crypto";
 import { tenant as tenantTable } from "@intx/db/schema";
-import { loadFrozenGrantSnapshot } from "@intx/db";
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
 import type { WorkflowDefinitionAssetSource } from "@intx/types/workflow-sources";
 import type { Packument, PackumentFetcher } from "@intx/tool-packaging";
@@ -490,16 +489,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // the Tier-2 walk surfaced the plugin's static tool definition into the
       // approved grant surface. Absent it, the reactor would fail closed on the
       // `lsp` call. posix's own factory tools are present too (Option A).
-      if (!approved.approval.ok) {
-        throw new Error("posix-lsp e2e: expected an approved definition");
-      }
-      const snapshot = await loadFrozenGrantSnapshot(
-        h.db,
-        approved.approval.definitionId,
-      );
-      if (snapshot === null) {
-        throw new Error("posix-lsp e2e: expected a frozen grant snapshot");
-      }
+      const snapshot = approved.grantSnapshot;
       const snapshotToolGrants = snapshot.perStep.flatMap((s) =>
         s.grants.filter((g) => g.startsWith("tool:")),
       );

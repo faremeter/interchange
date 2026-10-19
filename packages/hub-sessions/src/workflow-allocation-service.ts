@@ -54,6 +54,7 @@ import {
 } from "./sidecar-allocation";
 import {
   SessionLaunchError,
+  type DeployPreparedCodeSourcedWorkflowParams,
   type DeployWorkflowDefinitionResult,
   type PreparedWorkflowDeployer,
 } from "./session-service";
@@ -477,6 +478,7 @@ export function createWorkflowAllocationService({
           deploymentDomain: request.deploymentDomain,
           sourceAuthorityPrincipalId: request.sourceAuthorityPrincipalId,
           frozenApprovalBundle,
+          grantSnapshot: approved.grantSnapshot,
           sourceOfferingIds: [...request.sourceOfferingIds],
           defaultSourceOfferingId: request.defaultSourceOfferingId,
           deployContent: request.deployContent,
@@ -896,7 +898,7 @@ export function createWorkflowAllocationService({
       // back into the gate's `ApprovalSet`, and the frozen definition id is the
       // anchor's own (set at prepare time from this freeze).
       const bundle = spec.frozenApprovalBundle;
-      const approved: InstallAndApproveResult = {
+      const approved: DeployPreparedCodeSourcedWorkflowParams["approved"] = {
         approval: {
           ok: true,
           definitionId: anchor.definitionId,

@@ -126,7 +126,7 @@ describe("triggerWorkflowRun definition asset lookup", () => {
         },
       ],
       [],
-      [{ grantSnapshot: { perStep: [], grantRequirements: [] } }],
+      [{ snapshot: { perStep: [], grantRequirements: [] } }],
     ];
     let selectIndex = 0;
     const dbQuery = {

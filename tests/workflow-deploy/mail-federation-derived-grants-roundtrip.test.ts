@@ -92,7 +92,7 @@ import {
   seedGrant,
   seedPrincipal,
   seedPrincipalKey,
-  seedWorkflowDefinitionVersion,
+  seedWorkflowRunLaunchSpec,
   tenantSlugFromId,
 } from "@intx/test-harness/seed";
 import { defineWorkflow, step, type WorkflowDefinition } from "@intx/workflow";
@@ -356,24 +356,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         name: opts.anchorRunId,
         assetId,
       });
-      // Freeze the deploy-approved grant-walk snapshot onto the version row: the
-      // trigger route materializes the run's grants from it, including the
-      // creator-sourced requirement resolved against the asset creator.
-      const walk = walkCapabilities(
-        bWorkflow(`wf_${opts.anchorRunId}`, address),
-        createDefaultDirectorRegistry(),
-      );
-      await seedWorkflowDefinitionVersion(h.db, {
-        definitionId: `wfd_${opts.anchorRunId}`,
-        grantSnapshot: {
-          perStep: [...walk.perStep].map(([stepId, decl]) => ({
-            stepId,
-            grants: [...decl.grants],
-            grantEffects: Object.fromEntries(decl.grantEffects),
-          })),
-          grantRequirements: [CREATOR_REQUIREMENT],
-        },
-      });
       await h.db.insert(workflowRunTable).values({
         id: opts.anchorRunId,
         tenantId: TENANT_ID,
@@ -387,11 +369,31 @@ describe.skipIf(!harnessDbEnvAvailable())(
         // that has recorded neither.
         publicKey: "test-public-key",
       });
+      // Freeze the deploy-approved grant-walk snapshot into the deployment's
+      // launch spec: the trigger route materializes the run's grants from it,
+      // including the creator-sourced requirement resolved against the asset
+      // creator.
+      const walk = walkCapabilities(
+        bWorkflow(`wf_${opts.anchorRunId}`, address),
+        createDefaultDirectorRegistry(),
+      );
+      await seedWorkflowRunLaunchSpec(h.db, {
+        anchorRunId: opts.anchorRunId,
+        sourceAuthorityPrincipalId: CREATOR_PRINCIPAL_ID,
+        grantSnapshot: {
+          perStep: [...walk.perStep].map(([stepId, decl]) => ({
+            stepId,
+            grants: [...decl.grants],
+            grantEffects: Object.fromEntries(decl.grantEffects),
+          })),
+          grantRequirements: [CREATOR_REQUIREMENT],
+        },
+      });
 
       await repoStore.initRepo({ kind: "workflow", id: assetId });
       // A workflow asset is a codebase: a package.json declaring an
       // interchange.workflow entry plus source files. The trigger route reads
-      // the run's grants from the frozen definition-version snapshot and the
+      // the run's grants from the deployment's launch-spec snapshot and the
       // asset row's creator, not the asset's tree, so a minimal valid codebase
       // seed is all the push boundary needs here.
       await assetService.populateAsset({

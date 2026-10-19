@@ -17,7 +17,6 @@ import {
   deriveRunAddress,
   type ApprovalSet,
 } from "@intx/workflow-deploy";
-import { loadFrozenGrantSnapshot } from "@intx/db";
 import { tenant as tenantTable } from "@intx/db/schema";
 import {
   createTestDb,
@@ -193,16 +192,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         sources: { [SECTION_ID]: [inferenceSource] },
       });
       expect(handle.publicKey).toBeTruthy();
-      if (!handle.approved.approval.ok) {
-        throw new Error("expected an approved definition");
-      }
-      const snapshot = await loadFrozenGrantSnapshot(
-        h.db,
-        handle.approved.approval.definitionId,
-      );
-      if (snapshot === null) {
-        throw new Error("expected a frozen grant snapshot for the definition");
-      }
+      const snapshot = handle.approved.grantSnapshot;
       // The body's effect is folded into the section step. The harness
       // delivers these rows itself; they are the same runtime grants the
       // mail materializer writes from this snapshot.

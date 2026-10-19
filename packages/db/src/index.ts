@@ -127,7 +127,7 @@ export {
 } from "./workflow-probe-store";
 export {
   createWorkflowDefinitionStore,
-  loadFrozenGrantSnapshot,
+  loadDeploymentGrantSnapshot,
   resolveDefinitionIdForAsset,
   type WorkflowDefinitionRollbackResult,
   type WorkflowDefinitionSelector,

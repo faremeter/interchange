@@ -104,6 +104,7 @@ import {
 import { credential, provider } from "@intx/db/schema";
 import { stopServerBounded } from "@intx/test-harness/bun-server";
 import type { TestDb } from "@intx/test-harness/db-harness";
+import { seedWorkflowRunLaunchSpec } from "@intx/test-harness/seed";
 
 import { bundleWorkflowEntry } from "./bundle-workflow-entry";
 
@@ -1855,6 +1856,12 @@ export type DeployWorkflowSourceForTestOpts = {
 
   /** The deployment's anchor run id. */
   anchorRunId: string;
+  /**
+   * Set when the test triggers through the real trigger route or mail
+   * materializer: the deployment gets a launch spec carrying the probe's
+   * grant snapshot under this principal, as a production deploy does.
+   */
+  sourceAuthorityPrincipalId?: string;
   /** The mail domain the run address lives under. Default `integration.interchange`. */
   deploymentDomain?: string;
   /** The deployment's mail address. Default `deriveRunAddress({ runId, domain })`. */
@@ -2136,6 +2143,13 @@ export async function deployWorkflowSourceForTest(
     // supplies its own.
     credentialCipher: opts.credentialCipher ?? createNoopCredentialCipher(),
   });
+  if (opts.sourceAuthorityPrincipalId !== undefined) {
+    await seedWorkflowRunLaunchSpec(opts.db, {
+      anchorRunId: opts.anchorRunId,
+      sourceAuthorityPrincipalId: opts.sourceAuthorityPrincipalId,
+      grantSnapshot: approved.grantSnapshot,
+    });
+  }
 
   const workflowRunRepoId: RepoId = {
     kind: "workflow-run",

@@ -15,16 +15,16 @@
 // deploy mail address is the run's own top-level `run_<id>@<domain>`
 // address. On the source path, tool authorization rides the frozen grant
 // snapshot: the probe's capability walk reads the source agent's inline tool
-// and emits a `tool:<name>` grant that the operator approves and the approve
-// step freezes onto the definition version row; the run's per-run grants
+// and emits a `tool:<name>` grant that the operator approves and the
+// deployment freezes into its launch spec; the run's per-run grants
 // (delivered on the trigger frame) authorize the tool call at run time.
 //
 // Assertions:
 //   (a) identity: the deploy-ack persisted the public key for the run
 //       mail address, and `isRunAddress` recognizes it -- every routable
 //       address now names one self-anchored run.
-//   (b) grants resolve: the frozen grant snapshot (`loadFrozenGrantSnapshot`,
-//       the source-path grant store) carries the granted tool's
+//   (b) grants resolve: the approval's grant snapshot (the copy a
+//       deployment freezes into its launch spec) carries the granted tool's
 //       `tool:<name>` grant. An empty snapshot here is the silent
 //       zero-grants failure this sub-step exists to prevent.
 //   (c) authorize round-trip: `evaluateGrants` (the exact evaluator the
@@ -54,7 +54,6 @@ import {
   deriveRunAddress,
   type ApprovalSet,
 } from "@intx/workflow-deploy";
-import { loadFrozenGrantSnapshot } from "@intx/db";
 import { tenant as tenantTable } from "@intx/db/schema";
 import {
   createTestDb,
@@ -254,16 +253,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // the source-path grant store -- and assert it carries the granted
       // tool's `tool:<name>` grant. An empty snapshot here is the silent
       // zero-grants failure this sub-step exists to prevent.
-      if (!handle.approved.approval.ok) {
-        throw new Error("expected an approved definition");
-      }
-      const snapshot = await loadFrozenGrantSnapshot(
-        h.db,
-        handle.approved.approval.definitionId,
-      );
-      if (snapshot === null) {
-        throw new Error("expected a frozen grant snapshot for the definition");
-      }
+      const snapshot = handle.approved.grantSnapshot;
       const snapshotToolGrants = snapshot.perStep.flatMap((s) =>
         s.grants.filter((g) => g.startsWith("tool:")),
       );

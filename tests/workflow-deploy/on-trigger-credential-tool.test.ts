@@ -14,7 +14,6 @@ import { sectionBodyRunId } from "@intx/workflow";
 
 import { toolConsumer } from "@intx/authz";
 import { createNoopCredentialCipher } from "@intx/crypto";
-import { loadFrozenGrantSnapshot } from "@intx/db";
 import { tenant as tenantTable } from "@intx/db/schema";
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
 import type { WireGrantRule } from "@intx/types/grant-wire";
@@ -231,16 +230,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         credentialCipher: createNoopCredentialCipher(),
       });
       expect(handle.publicKey).toBeTruthy();
-      if (!handle.approved.approval.ok) {
-        throw new Error("expected an approved definition");
-      }
-      const snapshot = await loadFrozenGrantSnapshot(
-        h.db,
-        handle.approved.approval.definitionId,
-      );
-      if (snapshot === null) {
-        throw new Error("expected a frozen grant snapshot for the definition");
-      }
+      const snapshot = handle.approved.grantSnapshot;
       expect(
         snapshot.perStep.flatMap((step) =>
           step.grants.filter((grant) => grant.startsWith("tool:")),

@@ -771,6 +771,13 @@
       "when": 1792341629593,
       "tag": "0110_sidecar_provisioner_binding",
       "breakpoints": true
+    },
+    {
+      "idx": 111,
+      "version": "7",
+      "when": 1792580732936,
+      "tag": "0111_launch_spec_grant_snapshot",
+      "breakpoints": true
     }
   ]
 }

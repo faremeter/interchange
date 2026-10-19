@@ -4,6 +4,7 @@ import {
   Capability,
   CredentialBinding,
   GrantRequirement,
+  GrantWalkSnapshot,
   grantEffects,
   grantOrigins,
   InvokerModelPreferences,
@@ -242,6 +243,10 @@ export function parseWorkflowRunLaunchSpecRow(
   return {
     ...row,
     frozenApprovalBundle: FrozenApprovalBundle.assert(row.frozenApprovalBundle),
+    grantSnapshot:
+      row.grantSnapshot === null
+        ? null
+        : GrantWalkSnapshot.assert(row.grantSnapshot),
     sourceOfferingIds,
     deployContent: JSONObject.assert(row.deployContent),
     toolPackagePins:

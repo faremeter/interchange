@@ -8,15 +8,10 @@ import {
   workflowDefinitionVersion,
 } from "./schema/workflow-definitions";
 import { parseWorkflowDefinitionRow } from "./parse-row";
+import { workflowRunLaunchSpec } from "./schema/workflow-run-launch-spec";
 
 type DBHandle = DB["db"];
 type ParsedWorkflowDefinition = ReturnType<typeof parseWorkflowDefinitionRow>;
-
-// The version `ensureWorkflowDefinitionForAsset` projects for a fresh
-// definition, and therefore the row the approval freeze stamps the grant
-// snapshot onto. Hand-coupled to the ensure helper's initial version; if that
-// helper ever projects a different version this must follow.
-const FROZEN_VERSION = "1";
 
 /**
  * The selector that keys a workflow definition's identity: the asset it
@@ -57,29 +52,20 @@ export async function resolveDefinitionIdForAsset(
 }
 
 /**
- * Read the deploy-approved grant-walk snapshot frozen onto a definition's
- * version row, validated as a `GrantWalkSnapshot` at this boundary. Returns
- * `null` when the version row is absent or its `grantSnapshot` column is still
- * `null` -- the "not yet approved" state, mirroring `approvedWireHash`. The
- * caller fails closed on `null`; it never substitutes an empty grant set.
+ * Read the immutable grant shape chosen by this deployment. Never falls back to
+ * the shared version row, which a later approval overwrites; `null` means the
+ * deployment has no snapshot and the caller fails closed.
  */
-export async function loadFrozenGrantSnapshot(
+export async function loadDeploymentGrantSnapshot(
   db: DBExecutor,
-  definitionId: string,
+  anchorRunId: string,
 ): Promise<GrantWalkSnapshot | null> {
-  const row = await db
-    .select({ grantSnapshot: workflowDefinitionVersion.grantSnapshot })
-    .from(workflowDefinitionVersion)
-    .where(
-      and(
-        eq(workflowDefinitionVersion.definitionId, definitionId),
-        eq(workflowDefinitionVersion.version, FROZEN_VERSION),
-      ),
-    )
-    .limit(1)
-    .then((rows) => rows[0]);
-  if (row === undefined || row.grantSnapshot === null) return null;
-  return GrantWalkSnapshot.assert(row.grantSnapshot);
+  const [row] = await db
+    .select({ snapshot: workflowRunLaunchSpec.grantSnapshot })
+    .from(workflowRunLaunchSpec)
+    .where(eq(workflowRunLaunchSpec.anchorRunId, anchorRunId))
+    .limit(1);
+  return row?.snapshot == null ? null : GrantWalkSnapshot.assert(row.snapshot);
 }
 
 export type WorkflowDefinitionRollbackResult =

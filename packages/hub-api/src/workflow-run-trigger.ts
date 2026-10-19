@@ -24,7 +24,7 @@ import {
 } from "@intx/db/schema";
 import type { DB, DBExecutor, PrincipalKeyStore } from "@intx/db";
 import {
-  loadFrozenGrantSnapshot,
+  loadDeploymentGrantSnapshot,
   resolveFrameSenderKey,
   WorkflowRunNotExecutableError,
 } from "@intx/db";
@@ -326,10 +326,9 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
       stagedGrantRows = [];
       stepGrants = committedRunGrants.stepGrants;
     } else {
-      // Read the deploy-approved grant-walk snapshot frozen at approval, keyed
-      // by the deployment's definition id. A null snapshot is the "not yet
-      // approved" state; fail closed rather than derive an empty grant set.
-      const snapshot = await loadFrozenGrantSnapshot(db, anchor.definitionId);
+      // Read this deployment's immutable grant shape; a missing snapshot
+      // cannot authorize an empty replacement.
+      const snapshot = await loadDeploymentGrantSnapshot(db, anchorRunId);
       if (snapshot === null) {
         return {
           ok: false,
@@ -337,7 +336,7 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
           body: {
             error: {
               code: "invalid_workflow",
-              message: `Workflow definition ${anchor.definitionId} has no approved grant snapshot`,
+              message: `Workflow deployment ${anchorRunId} has no approved grant snapshot`,
             },
           },
         };

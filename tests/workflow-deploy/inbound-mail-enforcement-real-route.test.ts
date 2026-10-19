@@ -217,6 +217,7 @@ async function deployEnforcementWorkflow(opts: {
     tenantId: TENANT_ID,
     definitionAssetId: opts.definitionAssetId,
     anchorRunId: opts.anchorRunId,
+    sourceAuthorityPrincipalId: CALLER_PRINCIPAL_ID,
     deploymentDomain: DEPLOYMENT_DOMAIN,
     agentAddress: opts.mailAddress,
     approvals: "approve-probed",
