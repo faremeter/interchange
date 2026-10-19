@@ -40,6 +40,7 @@ import {
   serializeStepStateWalEntry,
   stepStateWalEntryPath,
 } from "./step-state";
+import { MAILBOX_INDEX_VERSION } from "./mailbox-index";
 import { createRepoStore } from "./repo-store";
 import type { KindHandler, Principal, RepoId } from "./repo-store";
 import {
@@ -1954,10 +1955,44 @@ describe("workflowRunKindHandler.validatePush — mailbox subtree", () => {
     return tree;
   }
 
+  function mailboxIndex(
+    uidNext: number,
+    uidValidity = 1,
+    uids: readonly number[] = [],
+    expunged: readonly number[] = [],
+  ): string {
+    return JSON.stringify({
+      version: MAILBOX_INDEX_VERSION,
+      uidValidity,
+      uidNext,
+      highestModSeq: uids.length + expunged.length,
+      messages: uids.map((uid, i) => ({
+        uid,
+        modseq: i + 1,
+        flags: [],
+        envelope: {
+          messageId: `<${String(uid)}@example.com>`,
+          from: "sender@example.com",
+          to: ["agent@example.com"],
+          subject: "hello",
+          date: null,
+          inReplyTo: null,
+          references: [],
+          interchangeType: null,
+          interchangeCorrelationId: null,
+        },
+      })),
+      expunged: expunged.map((uid, i) => ({
+        uid,
+        modseq: uids.length + i + 1,
+      })),
+    });
+  }
+
   test("accepts a well-formed mailbox with an index and a message", async () => {
     const r = await validate(
       mailboxTree({
-        [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: JSON.stringify({ messages: [1] }),
+        [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: mailboxIndex(2),
         "1.eml": "raw-signed-message-bytes",
       }),
     );
@@ -1972,9 +2007,7 @@ describe("workflowRunKindHandler.validatePush — mailbox subtree", () => {
           0,
           "RunStarted",
         ),
-        [`${INBOX}/${WORKFLOW_RUN_MAILBOX_INDEX_FILE}`]: JSON.stringify({
-          messages: [1, 2],
-        }),
+        [`${INBOX}/${WORKFLOW_RUN_MAILBOX_INDEX_FILE}`]: mailboxIndex(3),
         [`${INBOX}/1.eml`]: "first",
         [`${INBOX}/2.eml`]: "second",
       },
@@ -1985,11 +2018,11 @@ describe("workflowRunKindHandler.validatePush — mailbox subtree", () => {
 
   test("accepts a mutated index alongside an immutable message", async () => {
     const prior = mailboxTree({
-      [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: JSON.stringify({ messages: [1] }),
+      [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: mailboxIndex(2),
       "1.eml": "raw-bytes",
     });
     const prospective = mailboxTree({
-      [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: JSON.stringify({ messages: [1, 2] }),
+      [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: mailboxIndex(3),
       "1.eml": "raw-bytes",
       "2.eml": "more-bytes",
     });
@@ -2089,12 +2122,12 @@ describe("workflowRunKindHandler.validatePush — mailbox subtree", () => {
     // dropped from the tree but survives in git history because a
     // workflow-run repo is never GC'd.
     const prior = mailboxTree({
-      [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: JSON.stringify({ messages: [1] }),
+      [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: mailboxIndex(2),
       "1.eml": "raw-bytes",
     });
     // Prospective keeps the index but drops the message blob.
     const prospective = mailboxTree({
-      [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: JSON.stringify({ messages: [] }),
+      [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: mailboxIndex(2),
     });
     const r = await validate(prospective, { priorFiles: prior });
     expect(r.ok).toBe(true);
@@ -2105,12 +2138,12 @@ describe("workflowRunKindHandler.validatePush — mailbox subtree", () => {
     // uid 2 must still be rejected -- expunge relaxes the deletion direction,
     // not the byte-equality of messages that stay.
     const prior = mailboxTree({
-      [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: JSON.stringify({ messages: [1, 2] }),
+      [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: mailboxIndex(3),
       "1.eml": "first",
       "2.eml": "second",
     });
     const prospective = mailboxTree({
-      [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: JSON.stringify({ messages: [2] }),
+      [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: mailboxIndex(3),
       "2.eml": "second-mutated",
     });
     const r = await validate(prospective, { priorFiles: prior });
@@ -2127,7 +2160,7 @@ describe("workflowRunKindHandler.validatePush — mailbox subtree", () => {
     // A real backing keeps index.json even after expunging every message, so
     // this rejects only the pathological whole-subtree drop.
     const prior = mailboxTree({
-      [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: JSON.stringify({ messages: [1] }),
+      [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: mailboxIndex(2),
       "1.eml": "raw-bytes",
     });
     const prospective = { [WORKFLOW_RUN_GITIGNORE_PATH]: "" };
@@ -2135,6 +2168,151 @@ describe("workflowRunKindHandler.validatePush — mailbox subtree", () => {
     expect(r.ok).toBe(false);
     if (r.ok) throw new Error("unreachable");
     expect(r.reason).toMatch(/the mailbox index must persist/);
+  });
+
+  test("rejects an index that does not parse", async () => {
+    const r = await validate(
+      mailboxTree({ [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: "{}" }),
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(
+      /mailbox index mailbox\/INBOX\/index\.json is not valid/,
+    );
+  });
+
+  test("rejects an index that lowers uidNext", async () => {
+    const r = await validate(
+      mailboxTree({ [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: mailboxIndex(2) }),
+      {
+        priorFiles: mailboxTree({
+          [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: mailboxIndex(5),
+        }),
+      },
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(/lowers uidNext from 5 to 2/);
+  });
+
+  test("rejects an index that adds a uid below the prior uidNext", async () => {
+    const r = await validate(
+      mailboxTree({
+        [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: mailboxIndex(6, 1, [1, 3]),
+      }),
+      {
+        priorFiles: mailboxTree({
+          [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: mailboxIndex(5, 1, [1]),
+        }),
+      },
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(/adds uid 3 below the prior uidNext 5/);
+  });
+
+  test("accepts an index that numbers the messages it adds from the prior uidNext", async () => {
+    const r = await validate(
+      mailboxTree({
+        [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: mailboxIndex(7, 1, [1, 5, 6]),
+      }),
+      {
+        priorFiles: mailboxTree({
+          [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: mailboxIndex(5, 1, [1, 2]),
+        }),
+      },
+    );
+    if (!r.ok) throw new Error(r.reason);
+  });
+
+  test("accepts an index that moves a message to its tombstones", async () => {
+    const r = await validate(
+      mailboxTree({
+        [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: mailboxIndex(5, 1, [1], [2]),
+      }),
+      {
+        priorFiles: mailboxTree({
+          [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: mailboxIndex(5, 1, [1, 2]),
+        }),
+      },
+    );
+    if (!r.ok) throw new Error(r.reason);
+  });
+
+  for (const { name, index, prior, reason } of [
+    {
+      name: "names a message at or past its own uidNext",
+      index: mailboxIndex(6, 1, [1, 50]),
+      prior: mailboxIndex(5, 1, [1]),
+      reason: /messages\[1\]\.uid must be a uid below uidNext 6 \(was 50\)/,
+    },
+    {
+      name: "is a first push naming a message past its own uidNext",
+      index: mailboxIndex(1, 1, [50]),
+      prior: null,
+      reason: /messages\[0\]\.uid must be a uid below uidNext 1 \(was 50\)/,
+    },
+    {
+      name: "names an expunged uid past its own uidNext",
+      index: mailboxIndex(6, 1, [1], [99]),
+      prior: mailboxIndex(5, 1, [1]),
+      reason: /expunged\[0\]\.uid must be a uid below uidNext 6 \(was 99\)/,
+    },
+    {
+      name: "repeats a new uid",
+      index: mailboxIndex(6, 1, [5, 5]),
+      prior: mailboxIndex(5),
+      reason: /messages\[1\]\.uid must be a uid no other entry holds \(was 5\)/,
+    },
+    {
+      name: "repeats a uid the prior index held",
+      index: mailboxIndex(51, 1, [1, 50, 50]),
+      prior: mailboxIndex(51, 1, [1, 50]),
+      reason:
+        /messages\[2\]\.uid must be a uid no other entry holds \(was 50\)/,
+    },
+    {
+      name: "holds a uid both live and expunged",
+      index: mailboxIndex(7, 1, [1, 5], [5]),
+      prior: mailboxIndex(5, 1, [1]),
+      reason: /expunged\[0\]\.uid must be a uid no other entry holds \(was 5\)/,
+    },
+    {
+      name: "names a fractional uid",
+      index: mailboxIndex(7, 1, [1, 5.5]),
+      prior: mailboxIndex(5, 1, [1]),
+      reason: /messages\[1\]\.uid must be an integer/,
+    },
+  ]) {
+    test(`rejects an index that ${name}`, async () => {
+      const r = await validate(
+        mailboxTree({ [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: index }),
+        prior === null
+          ? {}
+          : {
+              priorFiles: mailboxTree({
+                [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: prior,
+              }),
+            },
+      );
+      expect(r.ok).toBe(false);
+      if (r.ok) throw new Error("unreachable");
+      expect(r.reason).toMatch(reason);
+    });
+  }
+
+  test("rejects an index that changes uidValidity", async () => {
+    const r = await validate(
+      mailboxTree({ [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: mailboxIndex(5, 2) }),
+      {
+        priorFiles: mailboxTree({
+          [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: mailboxIndex(5, 1),
+        }),
+      },
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(/changes uidValidity from 1 to 2/);
   });
 });
 

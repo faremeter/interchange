@@ -37,7 +37,9 @@ const MailboxIndexEnvelope = type({
  * durable but external to the reading process, so it is parsed at the boundary
  * rather than trusted. `expunged` records the uid and the modseq at which each
  * message vanished so a QRESYNC `sync` can answer `vanished` since a client's
- * known modseq.
+ * known modseq. A uid names one message for the life of the mailbox, so no
+ * entry repeats one, and each is below `uidNext`: a reopened mailbox numbers
+ * from there.
  */
 export const MailboxIndex = type({
   version: `${MAILBOX_INDEX_VERSION}`,
@@ -45,15 +47,37 @@ export const MailboxIndex = type({
   uidNext: "number >= 1",
   highestModSeq: "number >= 0",
   messages: type({
-    uid: "number >= 1",
+    uid: "number.integer >= 1",
     modseq: "number >= 1",
     flags: "string[]",
     envelope: MailboxIndexEnvelope,
   }).array(),
   expunged: type({
-    uid: "number >= 1",
+    uid: "number.integer >= 1",
     modseq: "number >= 1",
   }).array(),
+}).narrow((index, ctx) => {
+  const seen = new Set<number>();
+  for (const list of ["messages", "expunged"] as const) {
+    for (const [position, { uid }] of index[list].entries()) {
+      if (uid >= index.uidNext) {
+        return ctx.reject({
+          expected: `a uid below uidNext ${String(index.uidNext)}`,
+          actual: String(uid),
+          relativePath: [list, position, "uid"],
+        });
+      }
+      if (seen.has(uid)) {
+        return ctx.reject({
+          expected: "a uid no other entry holds",
+          actual: String(uid),
+          relativePath: [list, position, "uid"],
+        });
+      }
+      seen.add(uid);
+    }
+  }
+  return true;
 });
 export type MailboxIndex = typeof MailboxIndex.infer;
 

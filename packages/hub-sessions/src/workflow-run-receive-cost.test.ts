@@ -21,6 +21,7 @@ import {
   WORKFLOW_RUN_PROCESSING_DIR,
   WORKFLOW_RUN_RUNS_PREFIX,
 } from "./workflow-run-kind";
+import { MAILBOX_INDEX_VERSION } from "./mailbox-index";
 import { createRepoStore } from "./repo-store";
 import type { Principal, RepoId } from "./repo-store";
 import {
@@ -142,7 +143,14 @@ async function manyRunsFixture(commits: number): Promise<PackFixture> {
       puts[`${MAILBOX_INBOX}/${String(uid)}.eml`] =
         `Subject: message ${String(uid)}\r\n\r\nbody\r\n`;
       puts[`${MAILBOX_INBOX}/${WORKFLOW_RUN_MAILBOX_INDEX_FILE}`] =
-        JSON.stringify({ uidValidity: 1, uidNext: uid + 1 });
+        JSON.stringify({
+          version: MAILBOX_INDEX_VERSION,
+          uidValidity: 1,
+          uidNext: uid + 1,
+          highestModSeq: 0,
+          messages: [],
+          expunged: [],
+        });
     }
     await fixture.commit({ puts, deletes });
   }
@@ -229,9 +237,9 @@ describe("workflow-run pack receive cost", () => {
         const cost = await receiveCost(fixture, n);
         // Per commit: two commit reads; the new trees on each changed
         // path, about four on average for this mix; and one blob for
-        // each new event, inbox entry and processing entry. A retained
-        // queue entry is parsed once per receive, and a retained message
-        // is proven unchanged by its blob OID.
+        // each new event, inbox entry, processing entry and mailbox
+        // index. A retained queue entry is parsed once per receive, and
+        // a retained message is proven unchanged by its blob OID.
         expect(cost.readCommit).toBeLessThanOrEqual(2 * n + 10);
         expect(cost.readTree).toBeLessThanOrEqual(4 * n + 20);
         expect(cost.readBlob).toBeLessThanOrEqual(2 * n + 10);

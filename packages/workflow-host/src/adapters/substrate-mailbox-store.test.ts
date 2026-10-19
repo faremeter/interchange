@@ -284,7 +284,7 @@ const COMMITTED_INDEX_VERSION = 1;
 /**
  * The committed `index.json`, validated only as far as its `version`.
  * Undeclared keys are ignored rather than deleted, so the parsed object still
- * carries every other index field for `rewriteIndexVersion` to spread.
+ * carries every other index field for `rewriteIndex` to spread.
  */
 const CommittedIndex = type({
   version: "number",
@@ -321,8 +321,11 @@ async function readCommittedIndex(handles: Handles) {
  * `<uid>.eml` carries forward by object id and the loader's blob-presence
  * check still passes.
  */
-async function rewriteIndexVersion(handles: Handles, version: number) {
-  const next = { ...(await readCommittedIndex(handles)), version };
+async function rewriteIndex(
+  handles: Handles,
+  changes: { version?: number; uidNext?: number },
+) {
+  const next = { ...(await readCommittedIndex(handles)), ...changes };
   const substrate = makeStore(handles.dataDir);
   await substrate.writeTreeDelta(handles.principal, handles.repoId, REF, {
     computeDelta: async () => ({
@@ -333,7 +336,7 @@ async function rewriteIndexVersion(handles: Handles, version: number) {
       deletes: [],
     }),
     changedPathPrefixes: new Set([MAILBOX_INBOX_PREFIX]),
-    message: "rewrite index.json version",
+    message: "rewrite index.json",
   });
 }
 
@@ -838,7 +841,7 @@ describe("substrate mailbox store", () => {
     // Rewriting with the version already committed changes nothing, so the
     // mailbox still loads. Without this arm a loader that refused every index
     // would satisfy the rejection arms below.
-    await rewriteIndexVersion(handles, COMMITTED_INDEX_VERSION);
+    await rewriteIndex(handles, { version: COMMITTED_INDEX_VERSION });
     const accepted = await openStore(handles);
     expect(accepted.messages.map((m) => m.uid)).toEqual([uid]);
     expect(accepted.find(uid)?.envelope.from).toBe("a@example.com");
@@ -849,10 +852,31 @@ describe("substrate mailbox store", () => {
       COMMITTED_INDEX_VERSION - 1,
       COMMITTED_INDEX_VERSION + 1,
     ]) {
-      await rewriteIndexVersion(handles, version);
+      await rewriteIndex(handles, { version });
       await expect(openStore(handles)).rejects.toThrow(
         /index\.json is not valid/,
       );
     }
+  });
+
+  test("the loader refuses an index with a uid at or past its uidNext", async () => {
+    const handles = await makeHandles("dep-index-uid-next");
+    const store = await openStore(handles);
+    const crypto = await senderCrypto();
+    const msg = await makeSignedMessage(crypto, {
+      from: "a@example.com",
+      to: ["run@dep.example.com"],
+      subject: "numbered",
+      messageId: generateMessageId("a@example.com"),
+      text: "numbered body",
+    });
+    const uid = store.append(msg.raw, msg.envelope, []);
+    await store.flush();
+
+    await rewriteIndex(handles, { uidNext: uid });
+
+    await expect(openStore(handles)).rejects.toThrow(
+      /must be a uid below uidNext/,
+    );
   });
 });
