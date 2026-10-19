@@ -303,7 +303,9 @@ The placement design describes capability-based provisioner selection. This sect
 
 `workflow_probe` owns only the probe operation: source, entry, optional pin, status, raw result, failure, and the temporary provisioner binding needed to clean up remote capacity. It does not store catalog offerings, session/domain data, deploy content, or a workflow launch specification.
 
-The Hub retains pinned workflow definition commits under
+Asset packs use the exact recorded commit. A launch specification written
+before that commit was recorded uses the commit its source names, or the
+branch tip for a tarball asset. The Hub retains those commits under
 `refs/interchange/workflow-definitions/<commit>`. Garbage collection treats
 `refs/interchange/` as roots, git clients never see it, and only the Hub may
 write to it. Only the Hub may write ref names with non-ASCII characters either,

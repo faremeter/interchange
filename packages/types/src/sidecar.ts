@@ -716,6 +716,7 @@ export const FrozenApprovalBundle = type({
   closure: ToolPackageManifest,
   approvedWireHash: "string > 0",
   approvedGrants: ApprovalItem.array(),
+  "assetCommitSha?": "string > 0",
 });
 export type FrozenApprovalBundle = typeof FrozenApprovalBundle.infer;
 

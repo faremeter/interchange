@@ -753,6 +753,76 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(anchorVisibleDuringDeploy).toBe(true);
     });
 
+    // The deploy reads its approval back from the launch spec, so the approved
+    // commit must survive that round trip.
+    test("deploys the approved asset commit stored in the launch spec", async () => {
+      const approvedCommit = "4".repeat(40);
+      const provisioner = makeProvisioner({
+        id: "pinned-commit",
+        ensureCalls: [],
+        destroyCalls: [],
+      });
+      let deployedCommit: string | undefined;
+      const service = createWorkflowAllocationService({
+        db: h.db,
+        ...sharedPluginPools([provisioner]),
+        preparedDeployer: {
+          installAndApproveWorkflowSource: async (params) => ({
+            ...(await freeze(params)),
+            assetCommitSha: approvedCommit,
+          }),
+          deployPreparedCodeSourcedWorkflow: async (params) => {
+            deployedCommit = params.approved.assetCommitSha;
+            return {
+              anchorRunId: params.anchorRunId,
+              deploymentAddress: params.agentAddress,
+              publicKey: "public-key",
+            };
+          },
+        },
+        credentialCipher: CIPHER,
+        allocationRouter: {
+          getSidecarInventory: () => ({
+            capacity: DEFAULT_SIDECAR_CAPACITY,
+            retainedIncarnations: [],
+          }),
+          waitForSidecarInventory: async () => undefined,
+          fenceAllocation: () => undefined,
+          retireAllocation: () => undefined,
+          waitForAllocatedSidecar: async () => undefined,
+          sendProbeToAllocation: async () => probeResult(),
+          isAllocatedWorkflowActive: async () => false,
+          reportedDeploymentFailure: () => undefined,
+          stoppedDeploymentHistory: async () => undefined,
+          detachAllocation: () => undefined,
+          syncSidecar: async () => undefined,
+        },
+        hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
+        defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
+        createAllocationId: () => "sal-pinned-commit",
+        createSidecarId: () => "sc-pinned-commit",
+        createToken: () => "pinned-commit-token",
+      });
+      const prepared = await service.prepareProvisionedDeployment(
+        prepareArgs("run-pinned-commit"),
+      );
+      const spec = await createWorkflowRunLaunchSpecStore(h.db).get(
+        prepared.anchorRunId,
+      );
+      expect(spec?.frozenApprovalBundle.assetCommitSha).toBe(approvedCommit);
+      const allocation = await createSidecarAllocationStore(
+        h.db,
+      ).findByAnchorRunId(prepared.anchorRunId);
+      if (allocation === null) throw new Error("expected adopted allocation");
+
+      await service.deployReadyAllocation(allocation, {
+        signal: new AbortController().signal,
+        leaseId: "initialization-test",
+      });
+
+      expect(deployedCommit).toBe(approvedCommit);
+    });
+
     test("tells a first deploy that failed before its frame was sent from an uncertain one", async () => {
       const provisioner = makeProvisioner({
         id: "first-deploy-failure",

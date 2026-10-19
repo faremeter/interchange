@@ -431,6 +431,9 @@ export function createWorkflowAllocationService({
       projection: approved.projection,
       closure: approved.closure,
       approvedWireHash: approved.approval.approvedWireHash,
+      ...(approved.assetCommitSha !== undefined
+        ? { assetCommitSha: approved.assetCommitSha }
+        : {}),
       approvedGrants: [
         ...approvalItemsFromSet(approved.approval.approvedSurface),
       ],
@@ -903,6 +906,9 @@ export function createWorkflowAllocationService({
         },
         projection: bundle.projection,
         closure: bundle.closure,
+        ...(bundle.assetCommitSha !== undefined
+          ? { assetCommitSha: bundle.assetCommitSha }
+          : {}),
       };
       // Re-resolve the inference chain from the catalog at launch time -- the
       // launch spec stores offering ids, never resolved sources, so a rotated
