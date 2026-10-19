@@ -126,6 +126,12 @@ function isPlainRelativePath(p: string, isPrefix: boolean): boolean {
   return body.split("/").every(isPlainPathSegment);
 }
 
+function isAbsentPathError(cause: unknown): boolean {
+  return (
+    hasCode(cause) && (cause.code === "ENOENT" || cause.code === "ENOTDIR")
+  );
+}
+
 export type CreateRepoStoreConfig = {
   dataDir: string;
   signingKey: SigningKey;
@@ -874,11 +880,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   ): Promise<RefEntry[]> {
     gateAccess(principal, repoId, "*", "resolveRef");
     const dir = repoDir(repoId);
-    const repoExists = await fs.promises
-      .stat(path.join(dir, ".git"))
-      .then(() => true)
-      .catch(() => false);
-    if (!repoExists) return [];
+    if (!(await repoHasGitDir(dir))) return [];
 
     const [branches, tags] = await Promise.all([
       git.listBranches({ fs, dir }),
@@ -892,13 +894,8 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
 
     const entries: RefEntry[] = [];
     for (const name of names) {
-      try {
-        const sha = await git.resolveRef({ fs, dir, ref: name });
-        entries.push({ name, sha });
-      } catch (err: unknown) {
-        if (hasCode(err) && err.code === "NotFoundError") continue;
-        throw err;
-      }
+      const sha = await resolveRefSha(dir, name);
+      if (sha !== null) entries.push({ name, sha });
     }
     return entries;
   }
@@ -909,11 +906,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   ): Promise<{ symbolicTarget: string; sha: string } | null> {
     gateAccess(principal, repoId, "*", "resolveRef");
     const dir = repoDir(repoId);
-    const repoExists = await fs.promises
-      .stat(path.join(dir, ".git"))
-      .then(() => true)
-      .catch(() => false);
-    if (!repoExists) return null;
+    if (!(await repoHasGitDir(dir))) return null;
 
     const symbolicTarget = await git.currentBranch({ fs, dir, fullname: true });
     if (symbolicTarget === undefined) return null;
@@ -924,6 +917,13 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     return { symbolicTarget, sha };
   }
 
+  // isomorphic-git reads an empty or malformed ref file as a missing ref, and
+  // it writes refs in place, so a crash mid-write can leave one. Its
+  // NotFoundError therefore only means "absent" once the ref is confirmed
+  // missing from both the loose ref file and packed-refs. A ref that is
+  // recorded gets one more resolve, which covers one written between the two
+  // reads; failing again, it throws rather than reading as a repo without
+  // that ref.
   async function resolveRefSha(
     dir: string,
     ref: string,
@@ -931,11 +931,41 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     try {
       return await git.resolveRef({ fs, dir, ref });
     } catch (err: unknown) {
-      if (hasCode(err) && err.code === "NotFoundError") {
-        return null;
-      }
-      throw err;
+      if (!hasCode(err) || err.code !== "NotFoundError") throw err;
     }
+    if (!(await isRefRecorded(dir, ref))) return null;
+    try {
+      return await git.resolveRef({ fs, dir, ref });
+    } catch (cause) {
+      throw new Error(`ref ${ref} in ${dir} exists but could not be read`, {
+        cause,
+      });
+    }
+  }
+
+  async function isRefRecorded(dir: string, ref: string): Promise<boolean> {
+    const gitDir = path.join(dir, ".git");
+    try {
+      const loose = await fs.promises.stat(
+        path.join(gitDir, ...ref.split("/")),
+      );
+      // A directory at the ref's path holds other refs (`<ref>/<name>`), so
+      // it records none under this name; the ref may still be packed.
+      if (loose.isFile()) return true;
+    } catch (cause) {
+      if (!isAbsentPathError(cause)) throw cause;
+    }
+    let packedRefs: string;
+    try {
+      packedRefs = await fs.promises.readFile(
+        path.join(gitDir, "packed-refs"),
+        "utf8",
+      );
+    } catch (cause) {
+      if (isAbsentPathError(cause)) return false;
+      throw cause;
+    }
+    return packedRefs.split("\n").some((line) => line.endsWith(` ${ref}`));
   }
 
   // Whether `commitSha` is `tipSha` or one of its first-parent
@@ -1893,11 +1923,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   ): Promise<Map<string, Uint8Array>> {
     const dir = repoDir(repoId);
     const out = new Map<string, Uint8Array>();
-    const repoExists = await fs.promises
-      .stat(path.join(dir, ".git"))
-      .then(() => true)
-      .catch(() => false);
-    if (!repoExists) return out;
+    if (!(await repoHasGitDir(dir))) return out;
     const commitSha = await resolveRefSha(dir, ref);
     if (commitSha === null) return out;
     const reads = dirReads(dir);
@@ -2742,10 +2768,13 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   }
 
   async function repoHasGitDir(dir: string): Promise<boolean> {
-    return fs.promises
-      .stat(path.join(dir, ".git"))
-      .then(() => true)
-      .catch(() => false);
+    try {
+      await fs.promises.stat(path.join(dir, ".git"));
+      return true;
+    } catch (cause) {
+      if (isAbsentPathError(cause)) return false;
+      throw cause;
+    }
   }
 
   async function openCommittedReads(
