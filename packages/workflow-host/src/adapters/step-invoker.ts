@@ -208,8 +208,9 @@ export interface WorkflowStepInvokerOpts {
    * commits before the tool disposers that can fail it run. A failure rejects
    * the step with a `StepOutcomeCommitError`, which the runtime neither
    * retries nor routes because the turn's work already happened, unless the
-   * step already failed, in which case it is logged. The warm path does not
-   * call it; its run-boundary hook commits the warm agent's state instead.
+   * step already failed, in which case it is logged. A close that fails after
+   * a turn that did not fail rejects the step the same way. The warm path does
+   * not call it; its run-boundary hook commits the warm agent's state instead.
    */
   onColdStepSettled?: (env: StepEnvBase) => Promise<void>;
   /**
@@ -366,10 +367,13 @@ async function invokeColdStep(
           if (closeFailure !== undefined) {
             logger.error`step invoker: ${describeStep(req)}: closing the step's agent failed before its settle failed: ${closeFailure.cause instanceof Error ? closeFailure.cause.message : String(closeFailure.cause)}`;
           }
-          throw new StepOutcomeCommitError(cause);
+          throw new StepOutcomeCommitError(cause, "commit");
         }
       }
-      if (closeFailure !== undefined) throw closeFailure.cause;
+      // The turn's work already happened, so a retry would repeat it.
+      if (closeFailure !== undefined) {
+        throw new StepOutcomeCommitError(closeFailure.cause, "close");
+      }
     },
     (cause) =>
       logger.error`step invoker: ${describeStep(req)}: closing or settling the step failed while unwinding a step error; surfacing the step error, cleanup failure: ${cause instanceof Error ? cause.message : String(cause)}`,
