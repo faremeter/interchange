@@ -625,6 +625,8 @@ export async function readColdParkedPendingOperations(args: {
   dataDir: string;
   substrate: RepoStore;
   workflowRunRepoId: RepoId;
+  workflowRunRef: string;
+  principal: Principal;
   runId: string;
   stepId: string;
   attempt: number;
@@ -751,6 +753,8 @@ export async function readColdParkedApprovalSnapshot(args: {
   dataDir: string;
   substrate: RepoStore;
   workflowRunRepoId: RepoId;
+  workflowRunRef: string;
+  principal: Principal;
   runId: string;
   stepId: string;
   attempt: number;
@@ -779,6 +783,8 @@ export async function readColdParkedApprovalSnapshot(args: {
 export async function readWarmParkedPendingOperations(args: {
   substrate: RepoStore;
   workflowRunRepoId: RepoId;
+  workflowRunRef: string;
+  principal: Principal;
   runId: string;
   stepId: string;
 }): Promise<PendingOperation[]> {
@@ -790,6 +796,8 @@ export async function readWarmParkedPendingOperations(args: {
 export async function readWarmParkedApprovalSnapshot(args: {
   substrate: RepoStore;
   workflowRunRepoId: RepoId;
+  workflowRunRef: string;
+  principal: Principal;
   runId: string;
   stepId: string;
   correlationId: string;
@@ -2971,6 +2979,8 @@ export function createSidecarSubstrateFactory(
         ? readWarmParkedApprovalSnapshot({
             substrate,
             workflowRunRepoId,
+            workflowRunRef: validated.WORKFLOW_RUN_REF,
+            principal,
             runId: warmRunId,
             stepId,
             correlationId,
@@ -2979,6 +2989,8 @@ export function createSidecarSubstrateFactory(
             dataDir: validated.SIDECAR_DATA_DIR,
             substrate,
             workflowRunRepoId,
+            workflowRunRef: validated.WORKFLOW_RUN_REF,
+            principal,
             runId,
             stepId,
             attempt,
@@ -3003,6 +3015,8 @@ export function createSidecarSubstrateFactory(
           ? await readWarmParkedPendingOperations({
               substrate,
               workflowRunRepoId,
+              workflowRunRef: validated.WORKFLOW_RUN_REF,
+              principal,
               runId: warmRunId,
               stepId,
             })
@@ -3010,6 +3024,8 @@ export function createSidecarSubstrateFactory(
               dataDir: validated.SIDECAR_DATA_DIR,
               substrate,
               workflowRunRepoId,
+              workflowRunRef: validated.WORKFLOW_RUN_REF,
+              principal,
               runId,
               stepId,
               attempt,
