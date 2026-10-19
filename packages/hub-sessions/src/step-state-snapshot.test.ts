@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { generateKeyPair } from "@intx/crypto";
+import type { StepStateSnapshot } from "@intx/types";
 import type {
   ConnectorThreadState,
   ConversationTurn,
@@ -26,6 +27,7 @@ import {
   WORKFLOW_RUN_MAILBOX_INBOX_DIR,
   WORKFLOW_RUN_MAILBOX_INDEX_FILE,
   WORKFLOW_RUN_MAILBOX_PREFIX,
+  workflowRunStepSeedPath,
   workflowRunStepStatePrefix,
 } from "./workflow-run-kind";
 
@@ -136,6 +138,40 @@ describe("readStepStateSnapshot", () => {
       stateFiles(workflowRunStepStatePrefix(RUN_ID, STEP_ID)),
     );
     expect(await read(store, "other-step")).toBeNull();
+  });
+
+  test("exports the seed of a step that has no state of its own yet", async () => {
+    const store = await createStore();
+    const seed: StepStateSnapshot = {
+      version: 1,
+      turns: [turn("imported")],
+      tokenUsage: USAGE,
+      connectorState: THREAD,
+    };
+    await commit(store, {
+      [workflowRunStepSeedPath(RUN_ID, STEP_ID)]: JSON.stringify(seed),
+    });
+
+    expect(await read(store)).toEqual(seed);
+  });
+
+  test("prefers the step's own state over its seed", async () => {
+    const store = await createStore();
+    await commit(store, {
+      [workflowRunStepSeedPath(RUN_ID, STEP_ID)]: JSON.stringify({
+        version: 1,
+        turns: [turn("imported")],
+        tokenUsage: USAGE,
+        connectorState: null,
+      }),
+      ...stateFiles(workflowRunStepStatePrefix(RUN_ID, STEP_ID)),
+    });
+
+    expect((await read(store))?.turns).toEqual([
+      turn("first"),
+      turn("second"),
+      turn("third"),
+    ]);
   });
 
   test("bounds the mailbox UIDs the turns can name by the mailbox's uidNext", async () => {
