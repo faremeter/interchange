@@ -539,6 +539,7 @@ describe.skipIf(!harnessHubEnvAvailable())(
         { step1: exported },
       );
       await waitFor(async () => (await b.readAnchor())?.publicKey != null);
+      expect(await b.exportStep1()).toEqual(exported);
       await b.sendMail(`Third turn ${IMPORT_THREE}.`);
       await waitFor(async () => (await b.inputParks()) >= 1);
 
