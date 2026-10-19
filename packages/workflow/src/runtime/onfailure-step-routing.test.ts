@@ -662,3 +662,63 @@ describe("onFailure handler shapes", () => {
     });
   });
 });
+
+describe("onFailure handler a branch skips", () => {
+  test("a branch that reaches a handler already running lets it finish", async () => {
+    // `unit` routes to `rescue`, which runs once g1's taken side `s` is done
+    // and g1 skipped `d`. g2 then skips `y`, whose closure reaches `d` and the
+    // running `rescue`: the handler must finish and keep its output.
+    const def = defineWorkflow({
+      id: "of-live-handler",
+      trigger: { type: "manual" },
+      steps: {
+        g1: gate({ when: { from: "trigger.payload" }, then: "s", else: "d" }),
+        s: step({ agent: agent("s"), after: ["g1"] }),
+        slow: step({ agent: agent("slow") }),
+        g2: gate({
+          after: ["slow"],
+          when: { from: "trigger.payload" },
+          then: "k",
+          else: "y",
+        }),
+        k: step({ agent: agent("k"), after: ["g2"] }),
+        y: step({ agent: agent("y"), after: ["g2"] }),
+        d: step({ agent: agent("d"), after: ["g1", "y"] }),
+        unit: step({ agent: agent("unit"), onFailure: "rescue" }),
+        rescue: step({
+          agent: agent("rescue"),
+          after: ["unit", "d", "s"],
+          input: { from: "trigger.payload" },
+        }),
+      },
+    });
+    const runId = "r";
+    const g2Done = (events: readonly WorkflowEvent[]) =>
+      events.some((e) => e.kind === "StepCompleted" && e.stepId === "g2");
+    const rescueStarted = Promise.withResolvers<undefined>();
+    const invoked: string[] = [];
+    const { env, repoStore } = buildEnv(def, {
+      invokeStep: async (req) => {
+        invoked.push(req.agent.id);
+        if (req.agent.id === "unit") throw new Error("unit boom");
+        if (req.agent.id === "slow") await rescueStarted.promise;
+        if (req.agent.id === "rescue") {
+          rescueStarted.resolve(undefined);
+          while (
+            !g2Done(bufferedEvents(runId)) &&
+            !g2Done(await repoStore.read(runId))
+          ) {
+            await whenRunNextBuffers(runId);
+          }
+        }
+        return { output: `${req.agent.id}-out` };
+      },
+    });
+    const res = await runtimeRun(def, env, { runId, triggerPayload: true })
+      .complete;
+
+    expect(invoked).toContain("rescue");
+    expect(res.terminalStatus).toBe("completed");
+    expect(res.outputs["rescue"]).toBe("rescue-out");
+  });
+});
