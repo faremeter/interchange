@@ -363,6 +363,60 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
     expect(reconstructed.pendingOperations).toEqual([pendingOp]);
   });
 
+  test("a mirror after a failed local checkpoint commits nothing until a later checkpoint completes", async () => {
+    const store = await makeStore(h, localDir);
+    const first = await pushAndMirror(store, [], [userTurn("one")], {
+      tokenUsageInput: 1,
+    });
+    const pendingOp: PendingOperation = {
+      correlationId: "corr-1",
+      kind: "approval",
+      registeredAt: 0,
+      gateId: "gate-1",
+    };
+    const metadata = {
+      pendingOperations: [pendingOp],
+      tokenUsage: tokenUsage(2),
+    };
+    const second = [...first, userTurn("two")];
+
+    // A directory where the manifest goes fails its write, so the checkpoint
+    // stops before the metadata that carries the pending approval, as the
+    // reactor's does.
+    const manifestPath = path.join(localDir, "manifest.jsonl");
+    await store.storage.writeTurns(second);
+    await fs.promises.mkdir(manifestPath);
+    await expect(store.storage.writeManifest([])).rejects.toThrow();
+    await fs.promises.rmdir(manifestPath);
+
+    await expect(store.mirrorToSubstrate()).rejects.toThrow(
+      /failed its last checkpoint/,
+    );
+    const unchanged = await readCommitted(h);
+    expect(unchanged?.turns).toEqual(first);
+    expect(unchanged?.pendingOperations).toEqual([]);
+
+    // A connector-state save commits the stale metadata again but does not
+    // complete the failed checkpoint.
+    await store.storage.writeMetadata({
+      pendingOperations: [],
+      tokenUsage: tokenUsage(1),
+    });
+    await store.storage.commit({ message: "connector state" });
+    await expect(store.mirrorToSubstrate()).rejects.toThrow(
+      /failed its last checkpoint/,
+    );
+
+    await store.storage.writeTurns(second);
+    await store.storage.writeManifest([]);
+    await store.storage.writeMetadata(metadata);
+    await store.storage.commit({ message: "turn" });
+    await store.mirrorToSubstrate();
+    const mirrored = await readCommitted(h);
+    expect(mirrored?.turns).toEqual(second);
+    expect(mirrored?.pendingOperations).toEqual([pendingOp]);
+  });
+
   test("writing N > K turns keeps the live WAL <= K and folds a checkpoint at K", async () => {
     const store = await makeStore(h, localDir);
 
