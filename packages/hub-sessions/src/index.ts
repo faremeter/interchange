@@ -251,6 +251,7 @@ export {
 export { MAILBOX_INDEX_VERSION, MailboxIndex } from "./mailbox-index";
 export {
   buildStepStateCheckpoint,
+  createCommittedStepStateReader,
   reconstructStepState,
   serializeStepStateWalEntry,
   stepStateWalBucket,
