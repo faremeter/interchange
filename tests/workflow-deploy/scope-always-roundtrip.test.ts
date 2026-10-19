@@ -648,6 +648,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         tenantId: TENANT_ID,
         definitionAssetId: DEFINITION_ASSET_ID,
         anchorRunId: DEPLOYMENT_ID,
+        sourceAuthorityPrincipalId: OPERATOR_PRINCIPAL_ID,
         deploymentDomain: DEPLOYMENT_DOMAIN,
         agentAddress: deploymentMailAddress,
         approvals: operatorApprovals,

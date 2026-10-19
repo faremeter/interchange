@@ -224,6 +224,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           projection: result.projection,
         },
         projection: result.projection,
+        grantSnapshot: result.grantWalkSnapshot,
         closure: { schemaVersion: "1" as const, topLevel: [], entries: [] },
       };
     }
@@ -687,6 +688,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       ).toMatchObject({
         sourceOfferingIds: [OFFERING_ID],
         frozenApprovalBundle: { source: SOURCE },
+        grantSnapshot: probeResult().grantWalkSnapshot,
       });
     });
 

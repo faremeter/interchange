@@ -30,6 +30,7 @@ import {
   seedGrant,
   seedPrincipal,
   seedTenants,
+  seedWorkflowRunLaunchSpec,
 } from "@intx/test-harness/seed";
 
 const TENANT = "tnt";
@@ -125,15 +126,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
     });
 
-    // Freeze a grant-walk snapshot onto the definition's version row, the way a
-    // deploy-time approval does. The mail materializer reads grants from here.
+    // Freeze a grant-walk snapshot into the deployment's launch spec, the way a
+    // deploy does. The mail materializer reads grants from here.
     async function seedFrozenSnapshot(grantSnapshot: GrantWalkSnapshot | null) {
-      await h.db.insert(workflowDefinitionVersion).values({
-        id: `wdv_${DEFINITION}`,
-        definitionId: DEFINITION,
-        version: "1",
-        status: "active",
-        approvedWireHash: HASH,
+      await seedWorkflowRunLaunchSpec(h.db, {
+        anchorRunId: DEPLOYMENT,
+        sourceAuthorityPrincipalId: CREATOR,
         grantSnapshot,
       });
     }
@@ -151,6 +149,74 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
       return materialize({ agentAddress: WORKFLOW_ADDRESS, runId });
     }
+
+    test("deployments of one definition keep their own frozen snapshots", async () => {
+      // Each deployment's launch spec holds the snapshot it was deployed with.
+      const second = "run_second";
+      await h.db.insert(workflowRun).values({
+        id: second,
+        tenantId: TENANT,
+        anchorRunId: second,
+        definitionId: DEFINITION,
+        address: "run_second@tenant.example",
+        status: "running",
+        publicKey: "test-public-key",
+      });
+      const writeSnapshot: GrantWalkSnapshot = {
+        ...snapshot("secret:vault"),
+        perStep: [
+          {
+            stepId: "work",
+            grants: ["tool:write_file"],
+            grantEffects: { "tool:write_file": "allow" },
+          },
+        ],
+      };
+      for (const [anchorRunId, grantSnapshot] of [
+        [DEPLOYMENT, snapshot("secret:vault")],
+        [second, writeSnapshot],
+      ] as const) {
+        await seedWorkflowRunLaunchSpec(h.db, {
+          anchorRunId,
+          sourceAuthorityPrincipalId: CREATOR,
+          grantSnapshot,
+        });
+      }
+      // One materializer, so a cache keyed by definition would serve the
+      // first deployment's snapshot to the second.
+      const materialize = createMailTriggeredRunGrantsMaterializer({
+        db: h.db,
+        principalKeyStore: createPrincipalKeyStore({
+          db: h.db,
+          cipher: createTestCredentialCipher(),
+        }),
+        grantStore: createGrantStore(h.db),
+      });
+      const runs = [
+        { address: WORKFLOW_ADDRESS, runId: RUN_ID },
+        { address: "run_second@tenant.example", runId: "<mail-run-2@t>" },
+      ];
+      const resources: string[][] = [];
+      for (const { address, runId } of runs) {
+        const result = await materialize({ agentAddress: address, runId });
+        if (result.outcome !== "materialized") {
+          throw new Error(`expected materialized, got ${result.outcome}`);
+        }
+        const [runPrincipal] = await h.db
+          .select()
+          .from(principal)
+          .where(eq(principal.refId, runId));
+        const grants = await h.db
+          .select()
+          .from(grant)
+          .where(eq(grant.principalId, runPrincipal?.id ?? ""));
+        resources.push(grants.map((g) => g.resource));
+      }
+      expect(resources[0]).toContain("tool:read_file");
+      expect(resources[0]).not.toContain("tool:write_file");
+      expect(resources[1]).toContain("tool:write_file");
+      expect(resources[1]).not.toContain("tool:read_file");
+    });
 
     test("derives a run's grants from the persisted snapshot and commits once", async () => {
       // A source-ref deployment persists no workflow.json blob; its run derives
@@ -262,27 +328,37 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(principals).toHaveLength(0);
     });
 
-    test("fails closed when the definition has no approved grant snapshot", async () => {
-      // The version row exists but its grant_snapshot column is null -- the
-      // "not yet approved" state. The materializer must raise rather than
-      // launch a run with an empty grant set.
-      await seedFrozenSnapshot(null);
-      await expect(materializeOnce(RUN_ID)).rejects.toThrow(
-        /no approved grant snapshot/,
-      );
+    test.each(["a null snapshot", "no launch spec"])(
+      "fails closed when the deployment has %s",
+      async (state) => {
+        // The shared version row carries a snapshot, but a later approval may
+        // have written it, so the materializer must not fall back to it.
+        await h.db.insert(workflowDefinitionVersion).values({
+          id: `wdv_${DEFINITION}`,
+          definitionId: DEFINITION,
+          version: "1",
+          status: "active",
+          approvedWireHash: HASH,
+          grantSnapshot: snapshot("secret:vault"),
+        });
+        if (state === "a null snapshot") await seedFrozenSnapshot(null);
+        await expect(materializeOnce(RUN_ID)).rejects.toThrow(
+          /no approved grant snapshot/,
+        );
 
-      // Nothing was reserved: no run principal, run row, or run grants.
-      const principals = await h.db
-        .select()
-        .from(principal)
-        .where(eq(principal.refId, RUN_ID));
-      expect(principals).toHaveLength(0);
-      const runs = await h.db
-        .select()
-        .from(workflowRun)
-        .where(eq(workflowRun.id, RUN_ID));
-      expect(runs).toHaveLength(0);
-    });
+        // Nothing was reserved: no run principal, run row, or run grants.
+        const principals = await h.db
+          .select()
+          .from(principal)
+          .where(eq(principal.refId, RUN_ID));
+        expect(principals).toHaveLength(0);
+        const runs = await h.db
+          .select()
+          .from(workflowRun)
+          .where(eq(workflowRun.id, RUN_ID));
+        expect(runs).toHaveLength(0);
+      },
+    );
 
     test("throws when the anchor run's definition has no asset", async () => {
       // A native workflow definition names its asset; a null asset leaves the

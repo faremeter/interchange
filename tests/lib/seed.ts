@@ -25,8 +25,8 @@ import {
   tenant,
   wallet,
   workflowDefinition,
-  workflowDefinitionVersion,
   workflowRun,
+  workflowRunLaunchSpec,
 } from "@intx/db/schema";
 
 type Db = DB["db"];
@@ -396,30 +396,30 @@ export async function seedWorkflowRun(
   });
 }
 
-export type SeedWorkflowDefinitionVersion = {
-  definitionId: string;
-  id?: string;
-  version?: string;
-  status?: "active" | "inactive" | "failed";
-  approvedWireHash?: string | null;
+export type SeedWorkflowRunLaunchSpec = {
+  anchorRunId: string;
+  sourceAuthorityPrincipalId: string;
   grantSnapshot: GrantWalkSnapshot | null;
 };
 
-// Freeze a grant-walk snapshot onto a definition's version row, the way a
-// deploy-time approval does. The mail-triggered materializer and the HTTP
-// trigger route both read the run's grants from this row, keyed by
-// (definitionId, version "1").
-export async function seedWorkflowDefinitionVersion(
+// Freeze a grant-walk snapshot into a deployment's launch spec, the way a
+// production deploy does. The mail-triggered materializer and the HTTP
+// trigger route both read the run's grants from it. The anchor run row must
+// already exist.
+export async function seedWorkflowRunLaunchSpec(
   db: Db,
-  v: SeedWorkflowDefinitionVersion,
+  s: SeedWorkflowRunLaunchSpec,
 ): Promise<void> {
-  await db.insert(workflowDefinitionVersion).values({
-    id: v.id ?? `wdv_${v.definitionId}`,
-    definitionId: v.definitionId,
-    version: v.version ?? "1",
-    status: v.status ?? "active",
-    approvedWireHash: v.approvedWireHash ?? "a".repeat(64),
-    grantSnapshot: v.grantSnapshot,
+  await db.insert(workflowRunLaunchSpec).values({
+    anchorRunId: s.anchorRunId,
+    sessionId: `ses_${s.anchorRunId}`,
+    deploymentDomain: "seed.example",
+    sourceAuthorityPrincipalId: s.sourceAuthorityPrincipalId,
+    frozenApprovalBundle: {},
+    grantSnapshot: s.grantSnapshot,
+    sourceOfferingIds: [],
+    defaultSourceOfferingId: "offering",
+    deployContent: {},
   });
 }
 

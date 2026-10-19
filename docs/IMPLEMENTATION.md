@@ -312,6 +312,12 @@ write to it. Only the Hub may write ref names with non-ASCII characters either,
 because a case-insensitive filesystem can fold one of them into this namespace.
 Retained commits are not expired automatically.
 
+Each launch specification freezes the grant snapshot from its deployment's
+probe. HTTP and mail triggers read that deployment's snapshot rather than a
+later definition approval. Older launch specifications receive their existing
+version snapshot during migration. A deployment with no snapshot cannot be
+triggered; triggers never read the shared version row.
+
 The deployment request stays open while the Hub matches tenant and Hub probe policy against its probe-provisioner list, passes every match to the configured probe chooser, and asks the selected provisioner to start probe capacity. Once the exact authenticated generation returns `workflow.probe.result`, the Hub freezes that result, matches the final capability policy against its separate deployment-provisioner list, and passes those matches to the deployment chooser. The default chooser selects the first match in registration order. If both choosers select the same binding, the Hub atomically creates the normal anchor run, frozen launch spec, and an allocated `sidecar_allocation` that adopts the connected capacity; the sidecar stays connected, and the reconciler's readiness check turns its probe binding into the allocation binding in place. Otherwise it destroys the probe capacity and creates a normal pending allocation for the selected binding. Only then does the deployment exist.
 
 A probe passes its own id as the opaque owner id to the same `ensure`/`destroy` lifecycle as an allocation. `destroy` must identify capacity from `(allocationId, generation, sidecarId)` alone. The optional `externalRef` is persisted only after `ensure` returns, so a Hub crash after capacity creation can require cleanup without it. Startup moves every active probe left by an interrupted request to durable `releasing` state. Provider destruction runs in the independent cleanup scheduler after startup; a slow or unavailable provisioner cannot hold the Hub startup path. The production Hub registers no infrastructure backend by default; the admin UI E2E harness injects a test-only `local-process` provisioner.

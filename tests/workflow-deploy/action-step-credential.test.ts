@@ -38,7 +38,6 @@ import { eq } from "drizzle-orm";
 
 import { actionConsumer } from "@intx/authz";
 import { createNoopCredentialCipher } from "@intx/crypto";
-import { loadFrozenGrantSnapshot } from "@intx/db";
 import { tenant as tenantTable, workflowRun } from "@intx/db/schema";
 import type { HarnessConfig } from "@intx/types/runtime";
 import type { WireGrantRule } from "@intx/types/grant-wire";
@@ -297,16 +296,7 @@ async function deploy(opts: {
     config,
     credentialCipher: createNoopCredentialCipher(),
   });
-  if (!handle.approved.approval.ok) {
-    throw new Error("expected an approved definition");
-  }
-  const snapshot = await loadFrozenGrantSnapshot(
-    h.db,
-    handle.approved.approval.definitionId,
-  );
-  if (snapshot === null) {
-    throw new Error("expected a frozen grant snapshot for the definition");
-  }
+  const snapshot = handle.approved.grantSnapshot;
   await waitFor(
     () => env.hub.router.getRoutableAddresses().includes(mailAddress),
     { diagnostics: env.sidecarDiagnostics },

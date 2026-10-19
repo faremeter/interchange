@@ -294,6 +294,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         tenantId: RECEIVER_TENANT_ID,
         definitionAssetId: RECEIVER_ASSET_ID,
         anchorRunId: RECEIVER_ID,
+        sourceAuthorityPrincipalId: RECEIVER_CREATOR_PRINCIPAL_ID,
         // Name the transport rather than letting it be inferred from which
         // sidecar happens to be connected: the receiver and the sender must
         // end up on DIFFERENT ones, and inference cannot guarantee that once
@@ -362,6 +363,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         tenantId: SENDER_TENANT_ID,
         definitionAssetId: SENDER_ASSET_ID,
         anchorRunId: SENDER_ID,
+        sourceAuthorityPrincipalId: SENDER_CREATOR_PRINCIPAL_ID,
         // The second sidecar, named. This is what makes the send remote to
         // the sender's own transport and so routes it through
         // deliverMailToRecipient -- the seam under test.

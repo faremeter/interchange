@@ -163,6 +163,9 @@ export type InstallAndApproveWorkflowSourceParams = {
   onProbeResult?: (result: WorkflowProbeResult) => Promise<void>;
 };
 
+// Deploys never read the grant snapshot; triggers read it from the launch spec.
+type DeployableApproval = Omit<InstallAndApproveResult, "grantSnapshot">;
+
 /**
  * Inputs to deploy a previously-frozen code-sourced approval bundle to a
  * dedicated allocation. Mirrors `DeployPreparedWorkflowDefinitionParams` for the
@@ -182,7 +185,7 @@ export type DeployPreparedCodeSourcedWorkflowParams = {
   /** Where the definition's bytes come from, rehydrated from the frozen bundle. */
   source: WorkflowDefinitionSource;
   /** The frozen approval bundle rehydrated from the launch spec. */
-  approved: InstallAndApproveResult;
+  approved: DeployableApproval;
   /** Harness config carrying the re-resolved per-step inference chain. */
   config: HarnessConfig;
   /** The exact allocation generation to deploy onto. */
@@ -467,7 +470,7 @@ export async function sendMultiStepDeployFrame(
  * ref that names where the definition's bytes are published.
  */
 type DeployCodeSourcedCommonArgs = DeployFrameCommonArgs & {
-  approved: InstallAndApproveResult;
+  approved: DeployableApproval;
   /**
    * The hub DB handle, the definition's OWN tenant, the deployment's anchor run
    * id, and the mail domain its run address lives under. REQUIRED: this function

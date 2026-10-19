@@ -39,7 +39,6 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
 import { toolConsumer } from "@intx/authz";
 import { createNoopCredentialCipher } from "@intx/crypto";
-import { loadFrozenGrantSnapshot } from "@intx/db";
 import { tenant as tenantTable } from "@intx/db/schema";
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
 import type { CredentialDelivery } from "@intx/types/credential-delivery";
@@ -339,16 +338,7 @@ async function deployProbeSource(opts: {
   });
   expect(handle.publicKey).toBeTruthy();
 
-  if (!handle.approved.approval.ok) {
-    throw new Error("expected an approved definition");
-  }
-  const snapshot = await loadFrozenGrantSnapshot(
-    h.db,
-    handle.approved.approval.definitionId,
-  );
-  if (snapshot === null) {
-    throw new Error("expected a frozen grant snapshot for the definition");
-  }
+  const snapshot = handle.approved.grantSnapshot;
   // The probe's capability walk emitted the bare `tool:probe` grant into the
   // frozen snapshot; assert it is present, then project it into the run grants
   // the trigger delivers -- the source path authorizes the tool call through

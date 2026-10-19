@@ -29,8 +29,8 @@ import {
   grant as grantTable,
   principal as principalTable,
   sidecarAllocation as sidecarAllocationTable,
-  workflowDefinitionVersion as workflowDefinitionVersionTable,
   workflowRun as workflowRunTable,
+  workflowRunLaunchSpec as workflowRunLaunchSpecTable,
 } from "@intx/db/schema";
 import {
   createDefaultDirectorRegistry,
@@ -315,9 +315,9 @@ type MockDBOpts = {
   topLevelRunStatus?: "running" | "completed" | "failed" | "cancelled" | null;
   cancellationRequestedAt?: Date;
   expiresAt?: Date;
-  // The deploy-approved grant-walk snapshot the trigger route reads from the
-  // definition's version row. `null` models the "not yet approved" state
-  // (fail-closed); `undefined` returns no version row (also fail-closed).
+  // The grant-walk snapshot the trigger route reads from the deployment's
+  // launch spec. `null` models a spec with no snapshot (fail-closed);
+  // `undefined` returns no launch spec (also fail-closed).
   grantSnapshot?: GrantWalkSnapshot | null;
   credentialRefs?: {
     credentialIds: string[];
@@ -374,10 +374,10 @@ function createMockDB(opts: MockDBOpts) {
                 },
               ];
         }
-        if (table === workflowDefinitionVersionTable) {
+        if (table === workflowRunLaunchSpecTable) {
           return opts.grantSnapshot === undefined
             ? []
-            : [{ grantSnapshot: opts.grantSnapshot }];
+            : [{ snapshot: opts.grantSnapshot }];
         }
         if (table !== workflowRunTable || opts.deploymentRow === undefined) {
           if (table === principalTable) {

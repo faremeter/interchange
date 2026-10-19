@@ -19,6 +19,7 @@ export const workflowRunLaunchSpec = pgTable("workflow_run_launch_spec", {
     .notNull()
     .references(() => principal.id, { onDelete: "restrict" }),
   frozenApprovalBundle: jsonb("frozen_approval_bundle").notNull(),
+  grantSnapshot: jsonb("grant_snapshot"),
   sourceOfferingIds: jsonb("source_offering_ids").notNull(),
   defaultSourceOfferingId: text("default_source_offering_id").notNull(),
   deployContent: jsonb("deploy_content").notNull(),

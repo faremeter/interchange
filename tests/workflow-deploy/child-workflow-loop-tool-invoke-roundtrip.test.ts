@@ -31,7 +31,6 @@ import {
   deriveRunAddress,
   type ApprovalSet,
 } from "@intx/workflow-deploy";
-import { loadFrozenGrantSnapshot } from "@intx/db";
 import { tenant as tenantTable } from "@intx/db/schema";
 import {
   createTestDb,
@@ -222,16 +221,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // production route it does not materialize the rows itself. The child's
       // own grants are then capped from these at spawn, and the loop iteration
       // inherits the child's.
-      if (!handle.approved.approval.ok) {
-        throw new Error("expected an approved definition");
-      }
-      const snapshot = await loadFrozenGrantSnapshot(
-        h.db,
-        handle.approved.approval.definitionId,
-      );
-      if (snapshot === null) {
-        throw new Error("expected a frozen grant snapshot for the definition");
-      }
+      const snapshot = handle.approved.grantSnapshot;
       expect(
         snapshot.perStep.flatMap((s) =>
           s.grants.filter((g) => g.startsWith("tool:")),

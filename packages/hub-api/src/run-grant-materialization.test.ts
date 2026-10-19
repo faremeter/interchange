@@ -4,9 +4,11 @@ import { createInMemoryGrantStore, toolConsumer } from "@intx/authz";
 import type { GrantRule } from "@intx/types/authz";
 import type { GrantWalkSnapshot } from "@intx/types";
 import {
+  grant as grantTable,
+  principal as principalTable,
   sidecarAllocation as sidecarAllocationTable,
-  workflowDefinitionVersion as workflowDefinitionVersionTable,
   workflowRun as workflowRunTable,
+  workflowRunLaunchSpec as workflowRunLaunchSpecTable,
 } from "@intx/db/schema";
 import type { PrincipalKeyStore } from "@intx/db";
 
@@ -16,6 +18,7 @@ import {
   credentialResolutionUnrecorded,
   deriveCredentialUseGrantRows,
   grantRowsWithLockedCredentialResolution,
+  type CommittedRunGrants,
 } from "./run-grant-materialization";
 
 // This suite exercises grant materialization, not key minting. The key store is
@@ -69,12 +72,9 @@ function invokerOnlySnapshot(): GrantWalkSnapshot {
   };
 }
 
-// A DB stand-in for the deployment lookup, the frozen-snapshot read, and the
-// first-run reservation. It reports no pre-existing run principal, so each test
-// exercises the winning reservation path. The frozen snapshot is served from
-// the `workflow_definition_version` row read; `snapshotReads` counts how many
-// times that row is actually read, so a stable count across triggers proves the
-// materializer caches the snapshot rather than re-reading it per run.
+// A DB stand-in for deployment lookup, the launch-spec snapshot, and run-grant
+// reservation. Unless supplied, committed grants are absent so tests exercise
+// first-time materialization.
 type CredentialRefs = {
   credentialIds: string[];
   bindings: { handle: string; credentialId: string; consumer: string }[];
@@ -87,6 +87,7 @@ function mockDb(opts: {
   assetRow: unknown;
   grantSnapshot: GrantWalkSnapshot | null;
   snapshotReads?: { count: number };
+  committedGrants?: CommittedRunGrants;
   topLevelRunStatus?: "running" | "completed" | "failed" | "cancelled" | null;
   lockedRunStatus?: "running" | "completed" | "failed" | "cancelled";
   anchorCancellationRequestedAt?: Date;
@@ -121,10 +122,14 @@ function mockDb(opts: {
           ]
         : [{ status: "running" }];
     }
-    if (table === workflowDefinitionVersionTable) {
+    if (table === workflowRunLaunchSpecTable) {
       if (opts.snapshotReads) opts.snapshotReads.count += 1;
-      return [{ grantSnapshot: opts.grantSnapshot }];
+      return [{ snapshot: opts.grantSnapshot }];
     }
+    if (table === principalTable && opts.committedGrants !== undefined) {
+      return [{ id: opts.committedGrants.runPrincipalId }];
+    }
+    if (table === grantTable) return opts.committedGrants?.stepGrants ?? [];
     return [];
   }
   const select = () => ({
@@ -140,6 +145,7 @@ function mockDb(opts: {
           return chain;
         },
         where: () => ({
+          orderBy: () => Promise.resolve(rows(table, joined)),
           limit: () => {
             const selected =
               table === sidecarAllocationTable
@@ -733,9 +739,9 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
     expect(result).toEqual({ outcome: "notReady" });
   });
 
-  test("fails closed when the definition has no approved grant snapshot", async () => {
-    // A null `grant_snapshot` column is the "not yet approved" state. The
-    // materializer must raise rather than launch a run with an empty grant set.
+  test("fails closed when the deployment has no grant snapshot", async () => {
+    // The materializer must raise rather than launch a run with an empty grant
+    // set.
     const materialize = createMailTriggeredRunGrantsMaterializer({
       db: mockDb({ deploymentRow, assetRow, grantSnapshot: null }),
       principalKeyStore: stubPrincipalKeyStore,
@@ -751,39 +757,35 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
   });
 });
 
-describe("createMailTriggeredRunGrantsMaterializer frozen basis", () => {
-  test("reads the frozen snapshot once and caches it per definition", async () => {
+describe("createMailTriggeredRunGrantsMaterializer committed grants", () => {
+  test("reuses committed grants without reading the frozen snapshot", async () => {
     const reads = { count: 0 };
+    const committedGrants = {
+      runPrincipalId: "prn_run",
+      stepGrants: [
+        { ...creatorGrant(), id: "grant-run-vault", principalId: "prn_run" },
+      ],
+    };
     const materialize = createMailTriggeredRunGrantsMaterializer({
       db: mockDb({
         deploymentRow,
         assetRow,
-        grantSnapshot: snapshot(),
+        grantSnapshot: null,
         snapshotReads: reads,
+        committedGrants,
       }),
       principalKeyStore: stubPrincipalKeyStore,
-      grantStore: createInMemoryGrantStore([creatorGrant()]),
+      grantStore: createInMemoryGrantStore([]),
     });
 
-    const first = await materialize({
+    const result = await materialize({
       agentAddress: WORKFLOW_ADDRESS,
       runId: RUN_ID,
     });
-    if (first.outcome !== "materialized") {
-      throw new Error(`expected materialized, got ${first.outcome}`);
-    }
-    // The first trigger reads the frozen snapshot exactly once.
-    expect(reads.count).toBe(1);
-
-    // A second trigger of the SAME deployment consumes the closure-cached
-    // snapshot: the version row is never read again.
-    const second = await materialize({
-      agentAddress: WORKFLOW_ADDRESS,
-      runId: RUN_ID,
+    expect(result).toEqual({
+      outcome: "materialized",
+      stepGrants: committedGrants.stepGrants,
     });
-    if (second.outcome !== "materialized") {
-      throw new Error(`expected materialized, got ${second.outcome}`);
-    }
-    expect(reads.count).toBe(1);
+    expect(reads.count).toBe(0);
   });
 });
