@@ -60,6 +60,7 @@ export {
 
 export {
   buildStepStateCheckpoint,
+  createCommittedStepStateReader,
   reconstructStepState,
   serializeStepStateWalEntry,
   stepStateWalBucket,
