@@ -249,7 +249,8 @@ export interface DurableConversationStore {
    * Commit the local store's new turn(s) to the substrate as O(1) WAL
    * appends, folding into a fresh checkpoint when the WAL reaches the
    * compaction interval. Called synchronously at the run boundary (after
-   * the agent's send settles). A write failure surfaces.
+   * the agent's send settles). A write failure surfaces, and so does a
+   * mirror attempted while the local store's last checkpoint has failed.
    */
   mirrorToSubstrate(): Promise<void>;
   /**
@@ -591,6 +592,14 @@ export async function createDurableConversationStore(
   }
 
   async function runMirror(): Promise<void> {
+    // After a failed local checkpoint the files lag the agent's state, and
+    // mirroring them would commit that older state as this boundary's.
+    if (baseStorage.hasFailedCheckpoint()) {
+      throw new Error(
+        `sidecar conversation-state: the local store for ${opts.stepId} failed its last checkpoint, so its state cannot be mirrored`,
+      );
+    }
+
     // Slice the new turns from the reactor's in-memory array (retained
     // by the local single-writer store at the last writeTurns) instead
     // of re-reading and re-parsing the whole turns.jsonl every

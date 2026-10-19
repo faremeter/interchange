@@ -1920,6 +1920,36 @@ describe("metadata and turns writes", () => {
       (await fs.promises.readdir(dir)).filter((name) => name.endsWith(".tmp")),
     ).toEqual([]);
   });
+
+  test("a checkpoint stopped by a failed write stays failed until a later checkpoint completes", async () => {
+    const dir = await tempDir();
+    const store = await createIsogitStore(dir);
+    const metadata = { pendingOperations: [], tokenUsage: ZERO_USAGE };
+    expect(store.hasFailedCheckpoint()).toBe(false);
+
+    // A directory where the manifest goes fails its write, and the writer
+    // stops before the metadata, as the reactor does.
+    const manifestPath = path.join(dir, "manifest.jsonl");
+    await store.writeTurns([userTurn("one")]);
+    await fs.promises.mkdir(manifestPath);
+    await expect(store.writeManifest([])).rejects.toThrow();
+    expect(store.hasFailedCheckpoint()).toBe(true);
+    await fs.promises.rmdir(manifestPath);
+
+    // A metadata save outside a checkpoint does not complete the failed one.
+    await store.writeMetadata(metadata);
+    await store.commit({ message: "connector state" });
+    expect(store.hasFailedCheckpoint()).toBe(true);
+
+    // The next checkpoint clears it only once it commits.
+    await store.writeTurns([userTurn("one")]);
+    expect(store.hasFailedCheckpoint()).toBe(true);
+    await store.writeManifest([]);
+    await store.writeMetadata(metadata);
+    expect(store.hasFailedCheckpoint()).toBe(true);
+    await store.commit({ message: "turn" });
+    expect(store.hasFailedCheckpoint()).toBe(false);
+  });
 });
 
 describe("commit signing", () => {
