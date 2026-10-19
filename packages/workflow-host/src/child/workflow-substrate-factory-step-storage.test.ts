@@ -507,6 +507,8 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
     const committed = await readStepState({
       substrate,
       workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
+      workflowRunRef: WORKFLOW_RUN_REF,
+      principal: PRINCIPAL,
       runId: "run-1",
       stepId: STEP_ID,
     });
@@ -533,6 +535,8 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
     const committed = await readStepState({
       substrate,
       workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
+      workflowRunRef: WORKFLOW_RUN_REF,
+      principal: PRINCIPAL,
       runId: "run-1",
       stepId: STEP_ID,
     });

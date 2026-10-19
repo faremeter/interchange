@@ -129,16 +129,17 @@ import { createConnectorRouter } from "@intx/harness";
 import type { ConnectorReplyParts, RouteDecision } from "@intx/harness";
 import { createIsogitStore } from "@intx/storage-isogit/node";
 import type {
+  CommittedReads,
   Principal,
   ReconstructedStepState,
   RepoId,
   RepoStore,
   StepStateContent,
   StepStateMetadata,
-  StepStateReader,
 } from "@intx/hub-sessions/substrate";
 import {
   buildStepStateCheckpoint,
+  createCommittedStepStateReader,
   readCommittedStepStateSeed,
   reconstructStepState,
   serializeStepStateWalEntry,
@@ -147,7 +148,6 @@ import {
   stepStateWalEntryPath,
   workflowRunStepStatePrefix,
 } from "@intx/hub-sessions/substrate";
-import type { StepStateSnapshot } from "@intx/types/step-state-snapshot";
 import type {
   AuditStore,
   ContextStore,
@@ -156,7 +156,6 @@ import type {
 } from "@intx/types/runtime-core";
 import { emptyTokenUsage } from "@intx/types/runtime-core";
 
-import { isErrnoNotFound } from "./supervisor/credentials";
 import { conversationStateRoot } from "./conversation-state-root";
 
 const logger = getLogger(["sidecar", "workflow-child", "conversation-state"]);
@@ -380,13 +379,23 @@ export async function createDurableConversationStore(
     return serializeStateOp(() => runReplySent(receipt));
   }
 
+  function openCommittedReads(): Promise<CommittedReads | null> {
+    return opts.substrate.openCommittedReads(
+      opts.principal,
+      opts.workflowRunRepoId,
+      opts.workflowRunRef,
+    );
+  }
+
   /**
    * The committed state this store continues, or `null` to start over. An
    * attempt continues only state stamped with its own attempt; state from an
    * earlier attempt is replaced by this attempt's first mirror.
    */
-  async function readOwnState(): Promise<ReconstructedStepState | null> {
-    const committed = await readCommittedState();
+  async function readOwnState(
+    reads: CommittedReads | null,
+  ): Promise<ReconstructedStepState | null> {
+    const committed = await readCommittedState(reads);
     if (committed === null || opts.lifetime.kind === "deployment") {
       return committed;
     }
@@ -401,11 +410,11 @@ export async function createDurableConversationStore(
     return null;
   }
 
-  function readCommittedState(): Promise<ReconstructedStepState | null> {
-    return reconstructDurableConversation(
-      path.join(opts.substrate.getRepoDir(opts.workflowRunRepoId), statePrefix),
-      opts.stepId,
-    );
+  async function readCommittedState(
+    reads: CommittedReads | null,
+  ): Promise<ReconstructedStepState | null> {
+    if (reads === null) return null;
+    return reconstructCommitted(reads, statePrefix, opts.stepId);
   }
 
   async function runRestore(): Promise<boolean> {
@@ -417,7 +426,8 @@ export async function createDurableConversationStore(
     // that ordering guarantee is ever weakened. The counts reflect the
     // substrate state they were read from, which is durable independent of
     // the local-store commit.
-    const reconstructed = await readOwnState();
+    const reads = await openCommittedReads();
+    const reconstructed = await readOwnState(reads);
     if (reconstructed !== null) {
       mirroredBoundaryCount = reconstructed.boundaryCount;
       mirroredTurnCount = reconstructed.totalTurns;
@@ -456,7 +466,10 @@ export async function createDurableConversationStore(
       );
       return true;
     }
-    const seed = await readSeed();
+    const seed =
+      reads === null
+        ? null
+        : await readCommittedStepStateSeed(reads, opts.runId, opts.stepId);
     if (seed === null) {
       // Only a deployment-lifetime store gets here holding turns, and they
       // are in no commit: a crash beat the first mirror. Kept, the next
@@ -503,17 +516,6 @@ export async function createDurableConversationStore(
     });
     await baseStorage.writeTurns(state.turns);
     await baseStorage.commit({ message });
-  }
-
-  async function readSeed(): Promise<StepStateSnapshot | null> {
-    const reads = await opts.substrate.openCommittedReads(
-      opts.principal,
-      opts.workflowRunRepoId,
-      opts.workflowRunRef,
-    );
-    return reads === null
-      ? null
-      : readCommittedStepStateSeed(reads, opts.runId, opts.stepId);
   }
 
   /**
@@ -612,7 +614,7 @@ export async function createDurableConversationStore(
     // counts from the substrate so the append starts at the right boundary
     // seq and never re-commits boundaries the substrate already holds.
     if (mirroredBoundaryCount === null) {
-      const reconstructed = await readOwnState();
+      const reconstructed = await readOwnState(await openCommittedReads());
       checkpointBoundarySeq = reconstructed?.checkpointBoundarySeq ?? 0;
       mirroredBoundaryCount = reconstructed?.boundaryCount ?? 0;
       mirroredTurnCount = reconstructed?.totalTurns ?? 0;
@@ -855,40 +857,57 @@ export function createDurableConversationRegistry(
   return { acquire, get };
 }
 
-/**
- * Read a step's committed state from its state directory in the substrate
- * working tree, without writing. Returns `null` when the step has none.
- */
-export function readStepState(args: {
+type CommittedStepStateArgs = {
   substrate: RepoStore;
   workflowRunRepoId: RepoId;
+  workflowRunRef: string;
+  principal: Principal;
   runId: string;
   stepId: string;
-}): Promise<ReconstructedStepState | null> {
-  return reconstructDurableConversation(
-    path.join(
-      args.substrate.getRepoDir(args.workflowRunRepoId),
-      workflowRunStepStatePrefix(args.runId, args.stepId),
-    ),
+};
+
+/**
+ * Read a step's committed state from its state directory, without writing.
+ * Returns `null` when the step has none.
+ */
+export async function readStepState(
+  args: CommittedStepStateArgs,
+): Promise<ReconstructedStepState | null> {
+  const reads = await openStepStateReads(args);
+  if (reads === null) return null;
+  return reconstructCommitted(
+    reads,
+    workflowRunStepStatePrefix(args.runId, args.stepId),
     args.stepId,
   );
 }
 
+function openStepStateReads(
+  args: CommittedStepStateArgs,
+): Promise<CommittedReads | null> {
+  return args.substrate.openCommittedReads(
+    args.principal,
+    args.workflowRunRepoId,
+    args.workflowRunRef,
+  );
+}
+
 /**
- * Reconstruct a conversation from a step-state directory in a substrate
- * working tree. Pure read -- no inference, no commit. Returns `null` when
- * neither a checkpoint nor any WAL exists (the genuine first-ever run) and
- * throws on a damaged durable copy; see `reconstructStepState`.
- *
- * Exported so a reader (durability test, recovery audit) reconstructs the
- * conversation through the SAME code path the warm agent's restore uses,
- * rather than re-deriving the WAL/checkpoint fold independently.
+ * Reconstruct the step state under `stateDir` from a committed tree; see
+ * `reconstructStepState`. Step state is always read from a commit, never from
+ * the working tree the substrate materializes: a write removes and rewrites
+ * its prefix in the working tree before it commits, so a crash in between, or
+ * a commit that fails, leaves a working tree that matches no commit.
  */
-export function reconstructDurableConversation(
+function reconstructCommitted(
+  reads: CommittedReads,
   stateDir: string,
   label: string,
 ): Promise<ReconstructedStepState | null> {
-  return reconstructStepState(createDirStepStateReader(stateDir), label);
+  return reconstructStepState(
+    createCommittedStepStateReader(reads, stateDir),
+    label,
+  );
 }
 
 /**
@@ -918,25 +937,4 @@ export function isLocalStateCurrent(
     (turn, index) =>
       JSON.stringify(turn) === JSON.stringify(local.turns[index]),
   );
-}
-
-function createDirStepStateReader(stateDir: string): StepStateReader {
-  return {
-    async readFile(relPath) {
-      try {
-        return await fs.promises.readFile(path.join(stateDir, relPath), "utf8");
-      } catch (cause) {
-        if (isErrnoNotFound(cause)) return null;
-        throw cause;
-      }
-    },
-    async listDir(relPath) {
-      try {
-        return await fs.promises.readdir(path.join(stateDir, relPath));
-      } catch (cause) {
-        if (isErrnoNotFound(cause)) return null;
-        throw cause;
-      }
-    },
-  };
 }
