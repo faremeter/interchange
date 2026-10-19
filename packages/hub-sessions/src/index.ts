@@ -225,6 +225,7 @@ export {
   WORKFLOW_RUN_CONSUMED_DIR,
   WORKFLOW_RUN_WATERMARK_FILE,
   DEFAULT_CONSUMED_RETENTION_MS,
+  workflowRunStepSeedPath,
   workflowRunStepStatePrefix,
   type ClaimCheckEnvelope,
   type ConsumedEnvelope,
@@ -245,7 +246,10 @@ export {
   type WorkflowRunWorkflowProcessPrincipal,
   type WorkflowRunSupervisorPrincipal,
 } from "./workflow-run-kind";
-export { readStepStateSnapshot } from "./step-state-snapshot";
+export {
+  readCommittedStepStateSeed,
+  readStepStateSnapshot,
+} from "./step-state-snapshot";
 export {
   buildStepStateCheckpoint,
   reconstructStepState,

@@ -18,7 +18,10 @@ import {
   serializeStepStateWalEntry,
   stepStateWalEntryPath,
 } from "./step-state";
-import { readStepStateSnapshot } from "./step-state-snapshot";
+import {
+  parseStepStateSeed,
+  readStepStateSnapshot,
+} from "./step-state-snapshot";
 import { workflowRunStepStatePrefix } from "./workflow-run-kind";
 
 const REF = "refs/heads/main";
@@ -128,5 +131,14 @@ describe("readStepStateSnapshot", () => {
       stateFiles(workflowRunStepStatePrefix(RUN_ID, STEP_ID)),
     );
     expect(await read(store, "other-step")).toBeNull();
+  });
+
+  test("refuses a seed that is not a valid snapshot", () => {
+    expect(() => parseStepStateSeed("not json", "seed.json")).toThrow(
+      /seed\.json is not valid JSON/,
+    );
+    expect(() =>
+      parseStepStateSeed(JSON.stringify({ version: 1 }), "seed.json"),
+    ).toThrow(/seed\.json is not a valid snapshot/);
   });
 });

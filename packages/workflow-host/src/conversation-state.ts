@@ -33,6 +33,15 @@
 // replaced under it: the workflow-run pack restorer refuses Hub history that
 // would move a branch the host already holds.
 //
+// A step can carry a seed: a snapshot the Hub commits beside its state
+// directory for the step to start from. A restore that finds no state of
+// the store's own starts from the seed instead, and the first mirror
+// commits the seeded turns as the step's own state. That covers a step's
+// first turn and a retried attempt starting over alike, so a retry starts
+// over from the seed, not from nothing. A restore that finds neither, and
+// no current attempt lead, starts the step with no conversation: the
+// committed history, not the local store, decides what the agent continues.
+//
 // The conversation is committed in the step-state format that
 // `@intx/hub-sessions/substrate` defines: a compacted checkpoint plus an
 // append-only, bucket-sharded WAL keyed by mirror boundary, so each
@@ -130,6 +139,7 @@ import type {
 } from "@intx/hub-sessions/substrate";
 import {
   buildStepStateCheckpoint,
+  readCommittedStepStateSeed,
   reconstructStepState,
   serializeStepStateWalEntry,
   stepStateWalBucket,
@@ -137,12 +147,14 @@ import {
   stepStateWalEntryPath,
   workflowRunStepStatePrefix,
 } from "@intx/hub-sessions/substrate";
+import type { StepStateSnapshot } from "@intx/types/step-state-snapshot";
 import type {
   AuditStore,
   ContextStore,
   InboundMessage,
   SendReceipt,
 } from "@intx/types/runtime-core";
+import { emptyTokenUsage } from "@intx/types/runtime-core";
 
 import { isErrnoNotFound } from "./supervisor/credentials";
 import { conversationStateRoot } from "./conversation-state-root";
@@ -224,13 +236,14 @@ export interface DurableConversationStore {
    * Pull the prior conversation from the substrate (checkpoint + WAL-tail
    * replay) into the local store so the agent's reactor `load()` sees it.
    * An attempt-scoped store whose local store is still current keeps it
-   * instead (see `isLocalStateCurrent`). Called
+   * instead (see `isLocalStateCurrent`). Otherwise a step with no state of
+   * its own starts from its seed, when there is one, and with no
+   * conversation when there is none, whatever its local store held. Called
    * before the agent is built (lazy first build and respawn rebuild).
-   * Returns `true` when state was found and applied, `false` when none
-   * exists (the genuine first-ever run). A read that finds a checkpoint or
-   * WAL but cannot parse/replay it throws -- a corrupt
-   * durable copy is a correctness failure that must not silently start the
-   * agent fresh.
+   * Returns `false` only when the step starts with no conversation. A read
+   * that finds a checkpoint, WAL, or seed but cannot parse/replay it throws
+   * -- a corrupt durable copy is a correctness failure that must not
+   * silently start the agent fresh.
    */
   restoreFromSubstrate(): Promise<boolean>;
   /**
@@ -299,9 +312,9 @@ export async function createDurableConversationStore(
   // Set when the next mirror folds the whole conversation into a fresh
   // checkpoint instead of appending a WAL entry: the substrate holds an
   // earlier attempt's state, which the fold drops in the same commit, or the
-  // store holds turns none of its commits do yet -- a local copy's that
-  // resumed before its first mirror -- which would otherwise sit in one WAL
-  // entry that every later append to its bucket carries along.
+  // store holds turns none of its commits do yet -- a seed's, or a local
+  // copy's that resumed before its first mirror -- which would otherwise sit
+  // in one WAL entry that every later append to its bucket carries along.
   let foldNextMirror = false;
 
   // The number of mirror boundaries already durably committed (the
@@ -443,7 +456,30 @@ export async function createDurableConversationStore(
       );
       return true;
     }
-    return false;
+    const seed = await readSeed();
+    if (seed === null) {
+      // Only a deployment-lifetime store gets here holding turns, and they
+      // are in no commit: a crash beat the first mirror. Kept, the next
+      // mirror would commit them into the step's history.
+      await loadIntoLocalStore(
+        {
+          turns: [],
+          pendingOperations: [],
+          tokenUsage: emptyTokenUsage(),
+          connectorState: null,
+        },
+        `start ${opts.stepId} with no conversation`,
+      );
+      return false;
+    }
+    // The seed's turns are not yet the step's own state, so the first
+    // mirror commits them along with the step's first turn.
+    await loadIntoLocalStore(
+      { ...seed, pendingOperations: [] },
+      `start ${opts.stepId} from its seed`,
+    );
+    foldNextMirror = true;
+    return true;
   }
 
   /**
@@ -467,6 +503,17 @@ export async function createDurableConversationStore(
     });
     await baseStorage.writeTurns(state.turns);
     await baseStorage.commit({ message });
+  }
+
+  async function readSeed(): Promise<StepStateSnapshot | null> {
+    const reads = await opts.substrate.openCommittedReads(
+      opts.principal,
+      opts.workflowRunRepoId,
+      opts.workflowRunRef,
+    );
+    return reads === null
+      ? null
+      : readCommittedStepStateSeed(reads, opts.runId, opts.stepId);
   }
 
   /**
