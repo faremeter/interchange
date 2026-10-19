@@ -19,6 +19,7 @@ export {
   gate,
   loop,
   map,
+  onFailureOf,
   onTrigger,
   sleep,
   step,
