@@ -176,6 +176,7 @@ import { type } from "arktype";
 import { getLogger } from "@intx/log";
 import { StepStateSnapshot } from "@intx/types/step-state-snapshot";
 import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy/addresses";
+import { parseMailboxIndex, type MailboxIndex } from "./mailbox-index";
 import {
   authorizeUserPrincipal,
   type AuthorizeFn,
@@ -2335,11 +2336,14 @@ function makeListingOidResolver(
  *
  * `events` holds the summary of each valid event blob. `queueEntries`
  * holds the inbox and processing entries whose envelope is valid; the
- * checks read nothing from a valid envelope.
+ * checks read nothing from a valid envelope. `mailboxIndexes` holds each
+ * valid mailbox index by its blob OID alone, since the index has one
+ * path, so a changed index's prior version is not read again.
  */
 type ParseCache = {
   events: Map<string, EventSummary>;
   queueEntries: Set<string>;
+  mailboxIndexes: Map<string, MailboxIndex>;
 };
 
 const parseCaches = new WeakMap<object, ParseCache>();
@@ -2347,7 +2351,11 @@ const parseCaches = new WeakMap<object, ParseCache>();
 function parseCacheFor(validationScope: object): ParseCache {
   let cache = parseCaches.get(validationScope);
   if (cache === undefined) {
-    cache = { events: new Map(), queueEntries: new Set() };
+    cache = {
+      events: new Map(),
+      queueEntries: new Set(),
+      mailboxIndexes: new Map(),
+    };
     parseCaches.set(validationScope, cache);
   }
   return cache;
@@ -2898,9 +2906,12 @@ async function enumerateMailboxInbox(
  */
 async function validateMailboxSubtree(
   listDir: (path: string) => Promise<string[]>,
+  readBlob: (path: string) => Promise<Uint8Array>,
   priorListDir: (path: string) => Promise<string[]>,
+  priorReadBlob: (path: string) => Promise<Uint8Array | null>,
   prospectiveListing: TreeListing,
   priorListing: TreeListing,
+  cache: ParseCache,
 ): Promise<ValidatePushResult> {
   const prospective = await enumerateMailboxInbox(listDir);
   if (!prospective.ok) return prospective;
@@ -2928,7 +2939,119 @@ async function validateMailboxSubtree(
       reason: `mailbox ${WORKFLOW_RUN_MAILBOX_PREFIX}/${WORKFLOW_RUN_MAILBOX_INBOX_DIR}/${WORKFLOW_RUN_MAILBOX_INDEX_FILE} present in the prior tree is missing from the prospective tree; the mailbox index must persist so uidValidity/uidNext continuity holds across reopens`,
     };
   }
+  if (prospective.indexPresent) {
+    return checkMailboxIndexContinuity(
+      readBlob,
+      prior.indexPresent ? priorReadBlob : null,
+      prospectiveListing,
+      priorListing,
+      cache,
+    );
+  }
   return { ok: true };
+}
+
+/**
+ * Hold a changed `index.json` to its format, to the prior index's
+ * `uidValidity` and at least its `uidNext`, and to numbering each message it
+ * adds from that `uidNext`: a replacement host reopens the mailbox from it,
+ * so a malformed index breaks the mailbox, and a uid it reissues would name a
+ * different message than the one the uid named before.
+ */
+async function checkMailboxIndexContinuity(
+  readBlob: (path: string) => Promise<Uint8Array>,
+  priorReadBlob: ((path: string) => Promise<Uint8Array | null>) | null,
+  prospectiveListing: TreeListing,
+  priorListing: TreeListing,
+  cache: ParseCache,
+): Promise<ValidatePushResult> {
+  const indexPath = `${WORKFLOW_RUN_MAILBOX_PREFIX}/${WORKFLOW_RUN_MAILBOX_INBOX_DIR}/${WORKFLOW_RUN_MAILBOX_INDEX_FILE}`;
+  const oid = await blobOidAt(prospectiveListing, indexPath);
+  const priorOid =
+    priorReadBlob === null ? null : await blobOidAt(priorListing, indexPath);
+  if (oid !== null && oid === priorOid) return { ok: true };
+  const parsed = await parseMailboxIndexCached(
+    oid,
+    () => readBlob(indexPath),
+    `mailbox index ${indexPath}`,
+    cache,
+  );
+  if (!parsed.ok) return parsed;
+  const index = parsed.index;
+  if (priorReadBlob === null || priorOid === null) return { ok: true };
+  const priorParsed = await parseMailboxIndexCached(
+    priorOid,
+    async () => {
+      const bytes = await priorReadBlob(indexPath);
+      if (bytes === null) {
+        throw new Error(
+          `prior mailbox index ${indexPath} was listed but its bytes could not be read`,
+        );
+      }
+      return bytes;
+    },
+    `prior mailbox index ${indexPath}`,
+    cache,
+  );
+  if (!priorParsed.ok) {
+    return {
+      ok: false,
+      reason: `prior tree's mailbox subtree is structurally invalid: ${priorParsed.reason}`,
+    };
+  }
+  const prior = priorParsed.index;
+  if (index.uidValidity !== prior.uidValidity) {
+    return {
+      ok: false,
+      reason: `mailbox index ${indexPath} changes uidValidity from ${String(prior.uidValidity)} to ${String(index.uidValidity)}; a mailbox keeps the uidValidity its uids were issued under`,
+    };
+  }
+  if (index.uidNext < prior.uidNext) {
+    return {
+      ok: false,
+      reason: `mailbox index ${indexPath} lowers uidNext from ${String(prior.uidNext)} to ${String(index.uidNext)}; a mailbox never reissues a uid`,
+    };
+  }
+  const priorUids = new Set(prior.messages.map((message) => message.uid));
+  const reissued = index.messages.find(
+    (message) => !priorUids.has(message.uid) && message.uid < prior.uidNext,
+  );
+  if (reissued !== undefined) {
+    return {
+      ok: false,
+      reason: `mailbox index ${indexPath} adds uid ${String(reissued.uid)} below the prior uidNext ${String(prior.uidNext)}; a mailbox never reissues a uid`,
+    };
+  }
+  return { ok: true };
+}
+
+/**
+ * Parse a mailbox index through the scope's cache. A pack receive checks
+ * each changed index against its prior version, which an earlier commit
+ * of the receive carried, so the cache reads and parses each version
+ * once. An index that is not a blob has no OID to key on, and its read
+ * fails. A failed parse is not cached: it rejects the push.
+ */
+async function parseMailboxIndexCached(
+  oid: string | null,
+  read: () => Promise<Uint8Array>,
+  label: string,
+  cache: ParseCache,
+): Promise<{ ok: true; index: MailboxIndex } | { ok: false; reason: string }> {
+  const hit = oid === null ? undefined : cache.mailboxIndexes.get(oid);
+  if (hit !== undefined) return { ok: true, index: hit };
+  const text = new TextDecoder().decode(await read());
+  let index: MailboxIndex;
+  try {
+    index = parseMailboxIndex(text, label);
+  } catch (cause) {
+    return {
+      ok: false,
+      reason: cause instanceof Error ? cause.message : String(cause),
+    };
+  }
+  if (oid !== null) cache.mailboxIndexes.set(oid, index);
+  return { ok: true, index };
 }
 
 export const workflowRunKindHandler: KindHandler = {
@@ -3030,9 +3153,12 @@ export const workflowRunKindHandler: KindHandler = {
       // mailbox is not).
       const mailboxCheck = await validateMailboxSubtree(
         listDir,
+        readBlob,
         priorListDir,
+        priorReadBlob,
         prospectiveListing,
         priorListing,
+        cache,
       );
       if (!mailboxCheck.ok) {
         logger.debug`workflow-run validatePush rejected ${repoId.kind}/${repoId.id} on ${ref}: ${mailboxCheck.reason}`;
