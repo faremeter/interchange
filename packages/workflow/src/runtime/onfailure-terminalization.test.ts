@@ -306,7 +306,7 @@ describe("onFailure success-terminalization failures do not route", () => {
     env.invokeStep = async (req) => {
       invoked.push(req.authzContext.stepId);
       if (req.authzContext.stepId === "unit") {
-        throw new StepOutcomeCommitError(new Error("push blip"));
+        throw new StepOutcomeCommitError(new Error("push blip"), "commit");
       }
       return { output: null };
     };

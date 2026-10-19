@@ -58,17 +58,23 @@ export class EphemeralResumeSeedError extends Error {
 }
 
 /**
- * Thrown by a step invoker whose step did its work but whose outcome the host
- * could not make durable: committing the turn failed after the agent's send
- * settled, so neither its output nor its park is recorded. The work already
- * happened, so the runtime lands the step as a failure with its retries
- * exhausted and neither retries nor routes it, the same as when recording a
- * completed step's output fails.
+ * Thrown by a step invoker whose step did its work but whose outcome the run
+ * must not record: committing the turn failed after the agent's send settled,
+ * or closing the agent failed after it. The work already happened, so the
+ * runtime records neither the step's output nor its park, lands it as a
+ * failure with its retries exhausted, and neither retries nor routes it, the
+ * same as when recording a completed step's output fails.
  */
 export class StepOutcomeCommitError extends Error {
-  constructor(cause: unknown) {
+  constructor(cause: unknown, failed: "commit" | "close") {
+    // A close can fail after the turn committed, so its message must not
+    // claim the commit failed.
+    const what =
+      failed === "commit"
+        ? "the step's outcome could not be committed"
+        : "closing the step's agent failed after its turn";
     super(
-      `the step's outcome could not be committed: ${cause instanceof Error ? cause.message : String(cause)}`,
+      `${what}: ${cause instanceof Error ? cause.message : String(cause)}`,
       { cause },
     );
     this.name = "StepOutcomeCommitError";
