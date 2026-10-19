@@ -5249,17 +5249,18 @@ function leafFirstOrder(
 
 /**
  * Emit the skip sentinels for a branch-prune closure, the shared body of
- * every route-to-handler prune (gate, loop, onFailure). Completes the closure
- * LEAF-FIRST: a skipped step is completed only after every skipped step that
- * depends on it. This closes a scheduling race -- while the container/unit is
- * in-flight the scheduler offers none of its direct dependents, but a skipped
- * INTERMEDIATE that completed before its skipped dependent was settled would
- * unblock that dependent, and the drive loop (woken by an unrelated sibling
- * settling) could schedule it. Leaf-first means a skipped step's dependents
- * are already terminal when it completes, and while a step is briefly
- * in-flight its dependencies are not yet terminal, so `areDepsResolved` never
- * offers it -- this holds even for the resumable kinds (sleep/loop/onTrigger/
- * awaitSignal) that `nextSchedulable` offers while in-flight.
+ * every route-to-handler prune (gate, loop, await-signal timeout, onFailure).
+ * Completes the closure LEAF-FIRST: a skipped step is completed only after
+ * every skipped step that depends on it. This closes a scheduling race --
+ * while the container/unit is in-flight the scheduler offers none of its
+ * direct dependents, but a skipped INTERMEDIATE that completed before its
+ * skipped dependent was settled would unblock that dependent, and the drive
+ * loop (woken by an unrelated sibling settling) could schedule it. Leaf-first
+ * means a skipped step's dependents are already terminal when it completes,
+ * and while a step is briefly in-flight its dependencies are not yet terminal,
+ * so `areDepsResolved` never offers it -- this holds even for the resumable
+ * kinds (sleep/loop/onTrigger/awaitSignal) that `nextSchedulable` offers while
+ * in-flight.
  *
  * A step already in the log is left alone, whatever its phase: a skip lands in
  * one commit, so a step the prune finds in flight is running, not half
@@ -6360,21 +6361,12 @@ async function completeAwaitSignalOutcome(
   const notSelected = result.timedOut ? normalDependents : [onTimeoutTarget];
   const selected = result.timedOut ? [onTimeoutTarget] : normalDependents;
   const toSkip = collectBranchClosure(definition, notSelected, selected);
-  const skipState = await reloadState(env, runId);
-  for (const skipId of toSkip) {
-    if (abort.aborted) break;
-    // A resumed routing pass skips a sentinel already committed (mirrors
-    // routeLoopOutcome); a timed gate crashed mid-routing is otherwise the
-    // pre-existing RuntimeResumeUnsupportedError window, inherited unchanged.
-    if (skipState.steps.has(skipId)) continue;
-    const sentinel = {
-      skipped: true,
-      gateId: primitive.id,
-      timedOut: result.timedOut,
-    };
-    await emitStepStartedWithValue(env, runId, skipId, sentinel);
-    await emitStepCompletedWithValue(env, runId, skipId, sentinel);
-  }
+  const sentinel = {
+    skipped: true,
+    gateId: primitive.id,
+    timedOut: result.timedOut,
+  };
+  await emitSkipClosure(env, runId, definition, toSkip, sentinel, abort);
   const output = result.timedOut ? { timedOut: true } : result.payload;
   await emitStepCompletedWithValue(env, runId, primitive.id, output);
   return output;
