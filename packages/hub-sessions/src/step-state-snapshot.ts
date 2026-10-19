@@ -2,13 +2,15 @@ import { type } from "arktype";
 
 import { StepStateSnapshot } from "@intx/types/step-state-snapshot";
 
-import type { RepoId, RepoStore } from "./repo-store/types";
+import type { CommittedReads, RepoId, RepoStore } from "./repo-store/types";
 import {
   createCommittedStepStateReader,
   reconstructStepState,
 } from "./step-state";
 import {
   WORKFLOW_RUN_REF,
+  WORKFLOW_RUN_STEP_SEED_FILE,
+  workflowRunStepSeedPath,
   workflowRunStepStatePrefix,
 } from "./workflow-run-kind";
 
@@ -54,4 +56,51 @@ export async function readStepStateSnapshot(args: {
     );
   }
   return snapshot;
+}
+
+/**
+ * Parse a step's seed (`WORKFLOW_RUN_STEP_SEED_FILE`), read from
+ * `seedPath`. A seed that is not a valid snapshot throws: starting the step
+ * without it would lose the state it holds silently.
+ */
+export function parseStepStateSeed(
+  raw: string,
+  seedPath: string,
+): StepStateSnapshot {
+  let body: unknown;
+  try {
+    body = JSON.parse(raw);
+  } catch (cause) {
+    throw new Error(`step seed ${seedPath} is not valid JSON`, { cause });
+  }
+  const seed = StepStateSnapshot(body);
+  if (seed instanceof type.errors) {
+    throw new Error(
+      `step seed ${seedPath} is not a valid snapshot: ${seed.summary}`,
+    );
+  }
+  return seed;
+}
+
+/**
+ * Read a step's seed from a committed tree, or `null` when the step has
+ * none. A seed that is not a valid snapshot throws.
+ */
+export async function readCommittedStepStateSeed(
+  reads: CommittedReads,
+  runId: string,
+  stepId: string,
+): Promise<StepStateSnapshot | null> {
+  const seedPath = workflowRunStepSeedPath(runId, stepId);
+  const stepDir = seedPath.slice(0, seedPath.lastIndexOf("/"));
+  const entry = (await reads.listDir(stepDir)).find(
+    (candidate) =>
+      candidate.name === WORKFLOW_RUN_STEP_SEED_FILE &&
+      candidate.type === "blob",
+  );
+  if (entry === undefined) return null;
+  return parseStepStateSeed(
+    new TextDecoder().decode(await reads.readBlobByOid(entry.oid)),
+    seedPath,
+  );
 }

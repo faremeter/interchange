@@ -41,6 +41,7 @@ import {
   createRepoStore,
   workflowRunKindHandler,
   WORKFLOW_RUN_GITIGNORE_PATH,
+  workflowRunStepSeedPath,
   workflowRunStepStatePrefix,
 } from "@intx/hub-sessions";
 import { userTurn } from "@intx/inference-testing";
@@ -98,6 +99,7 @@ function readCheckpointMeta(stateDir: string): {
 
 interface Harness {
   baseDir: string;
+  signingKey: KeyPair;
   substrate: RepoStore;
   workflowRunRepoId: RepoId;
   signer: (payload: string) => Promise<string>;
@@ -136,7 +138,33 @@ async function makeHarness(): Promise<Harness> {
     substrate.getRepoDir(workflowRunRepoId),
     workflowRunStepStatePrefix(RUN_ID, STEP_ID),
   );
-  return { baseDir, substrate, workflowRunRepoId, signer, stateDir };
+  return {
+    baseDir,
+    signingKey,
+    substrate,
+    workflowRunRepoId,
+    signer,
+    stateDir,
+  };
+}
+
+/**
+ * A second substrate over the harness repo that skips push validation, to
+ * commit damage the validated substrate refuses, as a corrupted object store
+ * would present it.
+ */
+function unvalidatedSubstrate(h: Harness): RepoStore {
+  return createRepoStore({
+    dataDir: h.baseDir,
+    signingKey: h.signingKey,
+    handlers: {
+      "workflow-run": {
+        ...workflowRunKindHandler,
+        validatePush: async () => ({ ok: true }),
+      },
+    },
+    authorize: () => ({ allowed: true }),
+  });
 }
 
 async function makeStore(
@@ -545,6 +573,30 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
     expect(await store.restoreFromSubstrate()).toBe(false);
     const loaded = await store.storage.load();
     expect(loaded.turns).toEqual([]);
+  });
+
+  test("a restore with neither committed state nor a seed drops a conversation only the local store holds", async () => {
+    // The agent's first turn reached its local store, and the host died
+    // before the run-boundary mirror committed it.
+    const crashed = await makeStore(h, localDir);
+    await crashed.storage.writeTurns([userTurn("never committed")]);
+    await crashed.storage.writeMetadata({
+      pendingOperations: [],
+      tokenUsage: tokenUsage(5),
+    });
+    await crashed.storage.commit({ message: "turn" });
+
+    const respawned = await makeStore(h, localDir);
+    expect(await respawned.restoreFromSubstrate()).toBe(false);
+    const loaded = await respawned.storage.load();
+    expect(loaded.turns).toEqual([]);
+    expect(loaded.tokenUsage).toEqual(tokenUsage(0));
+
+    await pushAndMirror(respawned, [], [userTurn("first committed")], {
+      tokenUsageInput: 1,
+    });
+    const committed = await reconstructDurableConversation(h.stateDir, STEP_ID);
+    expect(committed?.turns).toEqual([userTurn("first committed")]);
   });
 
   test("a corrupt WAL entry throws on reconstruction (no silent fresh start)", async () => {
@@ -987,5 +1039,293 @@ describe("durable conversation store attempt-scoped local store", () => {
     const resumed = await makeStore(h, localDir, attemptOne);
     await resumed.restoreFromSubstrate();
     expect((await resumed.storage.load()).turns).toEqual(committedTurns);
+  });
+
+  test("a seeded attempt whose first turn crashed before its mirror resumes from its local store, not the seed", async () => {
+    const seedTurns = [userTurn("imported question")];
+    await h.substrate.writeTree(
+      { kind: "hub" },
+      h.workflowRunRepoId,
+      WORKFLOW_RUN_REF,
+      {
+        files: {
+          [workflowRunStepSeedPath(RUN_ID, STEP_ID)]: JSON.stringify({
+            version: 1,
+            turns: seedTurns,
+            tokenUsage: tokenUsage(11),
+            connectorState: null,
+          }),
+        },
+        message: "write the step's seed",
+      },
+    );
+    const parked: PendingOperation = {
+      correlationId: "corr-seeded",
+      kind: "approval",
+      registeredAt: 0,
+      gateId: "gate-corr-seeded",
+    };
+    const crashed = await makeStore(h, localDir, attemptOne);
+    await crashed.restoreFromSubstrate();
+    const localTurns = [...seedTurns, userTurn("asked")];
+    await crashed.storage.writeTurns(localTurns);
+    await crashed.storage.writeMetadata({
+      pendingOperations: [parked],
+      tokenUsage: tokenUsage(12),
+    });
+    await crashed.storage.commit({ message: "suspend" });
+    expect(
+      await reconstructDurableConversation(h.stateDir, STEP_ID),
+    ).toBeNull();
+
+    const resumed = await makeStore(h, localDir, attemptOne);
+    await resumed.restoreFromSubstrate();
+    const loaded = await resumed.storage.load();
+    expect(loaded.turns).toEqual(localTurns);
+    expect(loaded.pendingOperations).toEqual([parked]);
+  });
+
+  test("a seeded attempt resumed from its local store folds its first mirror into a checkpoint", async () => {
+    const seedTurns = [userTurn("imported question")];
+    await h.substrate.writeTree(
+      { kind: "hub" },
+      h.workflowRunRepoId,
+      WORKFLOW_RUN_REF,
+      {
+        files: {
+          [workflowRunStepSeedPath(RUN_ID, STEP_ID)]: JSON.stringify({
+            version: 1,
+            turns: seedTurns,
+            tokenUsage: tokenUsage(11),
+            connectorState: null,
+          }),
+        },
+        message: "write the step's seed",
+      },
+    );
+    const crashed = await makeStore(h, localDir, attemptOne);
+    await crashed.restoreFromSubstrate();
+    const localTurns = [...seedTurns, userTurn("asked")];
+    await crashed.storage.writeTurns(localTurns);
+    await crashed.storage.writeMetadata({
+      pendingOperations: [],
+      tokenUsage: tokenUsage(12),
+    });
+    await crashed.storage.commit({ message: "turn" });
+    expect(
+      await reconstructDurableConversation(h.stateDir, STEP_ID),
+    ).toBeNull();
+
+    const resumed = await makeStore(h, localDir, attemptOne);
+    await resumed.restoreFromSubstrate();
+    const all = await pushAndMirror(resumed, localTurns, [userTurn("next")], {
+      tokenUsageInput: 13,
+    });
+
+    expect(
+      (await reconstructDurableConversation(h.stateDir, STEP_ID))?.turns,
+    ).toEqual(all);
+    // The local copy carries the seed's turns, so they land in a checkpoint,
+    // not in a WAL entry that every later append to its bucket would carry
+    // along.
+    expect(readCheckpointMeta(h.stateDir).checkpointSeq).toBe(1);
+    expect(
+      fs.existsSync(path.join(walBucketDir(h.stateDir, 0), "0.json")),
+    ).toBe(false);
+  });
+});
+
+describe("durable conversation store with a seed", () => {
+  let h: Harness;
+  const seed = {
+    version: 1 as const,
+    turns: [
+      userTurn("imported question"),
+      {
+        role: "assistant" as const,
+        content: [{ type: "text" as const, text: "imported answer" }],
+        model: "stub-model",
+        timestamp: 1,
+      },
+    ],
+    tokenUsage: tokenUsage(11),
+    connectorState: null,
+  };
+  const seedPath = workflowRunStepSeedPath(RUN_ID, STEP_ID);
+
+  beforeEach(async () => {
+    h = await makeHarness();
+    await h.substrate.writeTree(
+      { kind: "hub" },
+      h.workflowRunRepoId,
+      WORKFLOW_RUN_REF,
+      {
+        files: { [seedPath]: JSON.stringify(seed) },
+        message: "write the step's seed",
+      },
+    );
+  });
+
+  afterEach(async () => {
+    await fs.promises.rm(h.baseDir, { recursive: true, force: true });
+  });
+
+  test("a step with no state of its own starts from its seed and commits it with its first turn", async () => {
+    const store = await makeStore(h, path.join(h.baseDir, "local"));
+    expect(await store.restoreFromSubstrate()).toBe(true);
+    const loaded = await store.storage.load();
+    expect(loaded.turns).toEqual(seed.turns);
+    expect(loaded.tokenUsage).toEqual(seed.tokenUsage);
+    expect(loaded.connectorState).toEqual(seed.connectorState);
+    expect(loaded.pendingOperations).toEqual([]);
+
+    await pushAndMirror(store, loaded.turns, [userTurn("next")], {
+      tokenUsageInput: 12,
+    });
+    const committed = await reconstructDurableConversation(h.stateDir, STEP_ID);
+    expect(committed?.turns).toEqual([...seed.turns, userTurn("next")]);
+    expect(committed?.connectorState).toEqual(seed.connectorState);
+
+    // The seeded turns land in a checkpoint with the first turn, not in a WAL
+    // entry that every later append to its bucket would carry along.
+    expect(readCheckpointMeta(h.stateDir)).toMatchObject({
+      checkpointSeq: 1,
+      turnCount: seed.turns.length + 1,
+    });
+    expect(
+      fs.existsSync(path.join(walBucketDir(h.stateDir, 0), "0.json")),
+    ).toBe(false);
+  });
+
+  test("a seeded first fold that fails is retried by the next mirror", async () => {
+    let refused = false;
+    const substrate = new Proxy(h.substrate, {
+      get(target, prop, receiver): unknown {
+        if (prop === "writeTreePreservingPrefix") {
+          const write: RepoStore["writeTreePreservingPrefix"] = (
+            principal,
+            repoId,
+            ref,
+            args,
+          ) => {
+            if (!refused && !args.preservePrefix.includes("/wal/")) {
+              refused = true;
+              return Promise.reject(new Error("fold refused"));
+            }
+            return target.writeTreePreservingPrefix(
+              principal,
+              repoId,
+              ref,
+              args,
+            );
+          };
+          return write;
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const store = await createDurableConversationStore({
+      localStoreDir: path.join(h.baseDir, "local"),
+      signer: h.signer,
+      substrate,
+      workflowRunRepoId: h.workflowRunRepoId,
+      workflowRunRef: WORKFLOW_RUN_REF,
+      principal: PRINCIPAL,
+      runId: RUN_ID,
+      stepId: STEP_ID,
+      lifetime: { kind: "attempt", attempt: 1 },
+    });
+    await store.restoreFromSubstrate();
+
+    const one = [...seed.turns, userTurn("one")];
+    await store.storage.writeTurns(one);
+    await store.storage.writeMetadata({
+      pendingOperations: [],
+      tokenUsage: tokenUsage(12),
+    });
+    await store.storage.commit({ message: "turn" });
+    await expect(store.mirrorToSubstrate()).rejects.toThrow(/fold refused/);
+    expect(
+      await reconstructDurableConversation(h.stateDir, STEP_ID),
+    ).toBeNull();
+
+    const two = await pushAndMirror(store, one, [userTurn("two")], {
+      tokenUsageInput: 13,
+    });
+    const committed = await reconstructDurableConversation(h.stateDir, STEP_ID);
+    expect(committed?.turns).toEqual(two);
+    expect(committed?.attempt).toBe(1);
+    // The retry folds again, so the seeded turns still land in a checkpoint
+    // rather than in one WAL entry.
+    expect(readCheckpointMeta(h.stateDir)).toMatchObject({
+      checkpointSeq: 1,
+      turnCount: two.length,
+    });
+    expect(
+      fs.existsSync(path.join(walBucketDir(h.stateDir, 0), "0.json")),
+    ).toBe(false);
+  });
+
+  test("a step's own state wins over its seed", async () => {
+    const first = await makeStore(h, path.join(h.baseDir, "first"));
+    await first.restoreFromSubstrate();
+    await pushAndMirror(first, seed.turns, [userTurn("own turn")], {
+      tokenUsageInput: 12,
+    });
+
+    const respawned = await makeStore(h, path.join(h.baseDir, "respawned"));
+    expect(await respawned.restoreFromSubstrate()).toBe(true);
+    const loaded = await respawned.storage.load();
+    expect(loaded.turns).toEqual([...seed.turns, userTurn("own turn")]);
+    expect(loaded.tokenUsage).toEqual(tokenUsage(12));
+  });
+
+  test("a retried attempt starts over from the seed, not from the earlier attempt", async () => {
+    const attemptOne = await makeStore(h, path.join(h.baseDir, "attempt-1"), {
+      kind: "attempt",
+      attempt: 1,
+    });
+    await attemptOne.restoreFromSubstrate();
+    await pushAndMirror(attemptOne, seed.turns, [userTurn("attempt one")], {
+      tokenUsageInput: 12,
+    });
+
+    const attemptTwo = await makeStore(h, path.join(h.baseDir, "attempt-2"), {
+      kind: "attempt",
+      attempt: 2,
+    });
+    expect(await attemptTwo.restoreFromSubstrate()).toBe(true);
+    const loaded = await attemptTwo.storage.load();
+    expect(loaded.turns).toEqual(seed.turns);
+
+    await pushAndMirror(attemptTwo, loaded.turns, [userTurn("attempt two")], {
+      tokenUsageInput: 13,
+    });
+    const committed = await reconstructDurableConversation(h.stateDir, STEP_ID);
+    expect(committed?.turns).toEqual([...seed.turns, userTurn("attempt two")]);
+    expect(committed?.attempt).toBe(2);
+  });
+
+  test("a restore reads the committed seed, not the working tree's copy", async () => {
+    await fs.promises.writeFile(
+      path.join(h.substrate.getRepoDir(h.workflowRunRepoId), seedPath),
+      "not json",
+    );
+    const store = await makeStore(h, path.join(h.baseDir, "local"));
+    expect(await store.restoreFromSubstrate()).toBe(true);
+    expect((await store.storage.load()).turns).toEqual(seed.turns);
+  });
+
+  test("a damaged seed fails the restore instead of starting the step without it", async () => {
+    await unvalidatedSubstrate(h).writeTree(
+      { kind: "hub" },
+      h.workflowRunRepoId,
+      WORKFLOW_RUN_REF,
+      { files: { [seedPath]: "not json" }, message: "damage the seed" },
+    );
+    const store = await makeStore(h, path.join(h.baseDir, "local"));
+    await expect(store.restoreFromSubstrate()).rejects.toThrow(
+      /is not valid JSON/,
+    );
   });
 });
