@@ -305,6 +305,13 @@ export interface DurableMirrorReads {
     tokenUsage: TokenUsage;
     connectorState: ConnectorThreadState | null;
   }>;
+  /**
+   * Whether the last checkpoint failed, so the files may not hold the state
+   * it was saving. A checkpoint runs from `writeTurns` through `commit`; a
+   * write it skipped after an earlier failure counts. The next checkpoint
+   * that completes clears it.
+   */
+  hasFailedCheckpoint(): boolean;
 }
 
 export class IsogitStore
@@ -316,6 +323,9 @@ export class IsogitStore
   private readonly gcPolicy: GCPolicy | undefined;
   private pendingConnectorState: ConnectorThreadState | null = null;
   private lastTurns: ConversationTurn[] = [];
+  // `retrying` is a checkpoint opened after a failed one: until it completes,
+  // the files can still hold the failed checkpoint's partial state.
+  private checkpoint: "open" | "retrying" | "complete" | "failed" = "complete";
 
   constructor(
     runtime: StorageRuntime,
@@ -482,7 +492,7 @@ export class IsogitStore
     options: { message: string },
     _signal?: AbortSignal,
   ): Promise<ContextCommit> {
-    return withRepoDirLock(this.runtime, this.dir, async () => {
+    const committed = withRepoDirLock(this.runtime, this.dir, async () => {
       const tracked = [
         TURNS_FILE,
         PROMPT_FILE,
@@ -540,6 +550,11 @@ export class IsogitStore
       await this.maybeGC();
       return described;
     });
+    const commit = await this.checkpointStep(committed);
+    if (this.checkpoint === "open" || this.checkpoint === "retrying") {
+      this.checkpoint = "complete";
+    }
+    return commit;
   }
 
   private async describeHead(
@@ -655,9 +670,11 @@ export class IsogitStore
     records: TransformRecordType[],
     _signal?: AbortSignal,
   ): Promise<void> {
-    await this.runtime.fs.writeFile(
-      this.runtime.path.join(this.dir, MANIFEST_FILE),
-      encodeJsonlLines(records),
+    await this.checkpointStep(
+      this.runtime.fs.writeFile(
+        this.runtime.path.join(this.dir, MANIFEST_FILE),
+        encodeJsonlLines(records),
+      ),
     );
   }
 
@@ -665,7 +682,13 @@ export class IsogitStore
     turns: ConversationTurn[],
     _signal?: AbortSignal,
   ): Promise<void> {
-    await this.writeFileAtomically(TURNS_FILE, encodeJsonlLines(turns));
+    this.checkpoint =
+      this.checkpoint === "failed" || this.checkpoint === "retrying"
+        ? "retrying"
+        : "open";
+    await this.checkpointStep(
+      this.writeFileAtomically(TURNS_FILE, encodeJsonlLines(turns)),
+    );
     // Advance the in-memory marker only after the durable write succeeds.
     // peekTurns must never surface an array that failed to persist -- a
     // write failure leaves it pointing at the last array that did.
@@ -674,6 +697,21 @@ export class IsogitStore
 
   peekTurns(): ConversationTurn[] {
     return this.lastTurns;
+  }
+
+  hasFailedCheckpoint(): boolean {
+    return this.checkpoint === "failed" || this.checkpoint === "retrying";
+  }
+
+  // A failed step leaves the checkpoint failed even when the writer stops
+  // there, so the files it skipped count too.
+  private async checkpointStep<T>(step: Promise<T>): Promise<T> {
+    try {
+      return await step;
+    } catch (cause) {
+      this.checkpoint = "failed";
+      throw cause;
+    }
   }
 
   /**
@@ -697,9 +735,8 @@ export class IsogitStore
       tokenUsage: metadata.tokenUsage,
       connectorState: this.pendingConnectorState,
     };
-    await this.writeFileAtomically(
-      METADATA_FILE,
-      JSON.stringify(payload, null, 2),
+    await this.checkpointStep(
+      this.writeFileAtomically(METADATA_FILE, JSON.stringify(payload, null, 2)),
     );
   }
 
