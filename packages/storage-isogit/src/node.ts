@@ -46,6 +46,7 @@ export {
   type IsogitRuntime,
   DEFAULT_PACK_MATERIALIZATION_LIMITS,
   type PackMaterializationLimits,
+  HUB_REF_NAMESPACE,
 } from "./index";
 
 export const runtime = createNodeIsogitRuntime();

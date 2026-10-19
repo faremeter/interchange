@@ -50,6 +50,7 @@ export type {
 export type { IsogitPath, IsogitRuntime } from "./runtime";
 export { writeTreeToDisk } from "./write-tree";
 export { indexPackIntoGitDir } from "./index-pack";
+export { HUB_REF_NAMESPACE } from "./repo-disk";
 export {
   DEFAULT_PACK_MATERIALIZATION_LIMITS,
   type PackMaterializationLimits,

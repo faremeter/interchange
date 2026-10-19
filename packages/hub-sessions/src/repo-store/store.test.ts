@@ -4,10 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import git from "isomorphic-git";
 import { generateKeyPair } from "@intx/crypto";
-import { collectReachableObjects } from "@intx/storage-isogit/node";
+import { collectReachableObjects, runGC } from "@intx/storage-isogit/node";
 import type { KeyPair } from "@intx/types/runtime";
 import { waitUntil } from "@intx/types/testing";
 import { createRepoStore } from "./store";
+import { workflowAuthorize, workflowKindHandler } from "../workflow-kind";
 import type {
   AuthorizeFn,
   KindHandler,
@@ -115,6 +116,320 @@ function asRefUpdated(event: unknown): RefUpdatedEvent {
 }
 
 describe("RepoStore", () => {
+  describe("retained workflow ref namespace", () => {
+    const definitionRepo: RepoId = { kind: "workflow", id: "definition" };
+    const hub: Principal = { kind: "hub" };
+    const content = {
+      files: {
+        "package.json": JSON.stringify({
+          name: "definition",
+          version: "1.0.0",
+          interchange: { workflow: "./workflow.ts" },
+        }),
+        "workflow.ts": "export const workflow = {};",
+      },
+      message: "workflow source",
+    };
+
+    async function fixture() {
+      const dataDir = await makeTempDir("repo-store-definition-namespace-");
+      const store = createRepoStore({
+        dataDir,
+        signingKey,
+        handlers: { workflow: workflowKindHandler },
+        authorize: workflowAuthorize,
+      });
+      const contributor = {
+        kind: "user",
+        principalId: "user-definition",
+        tenantId: "tenant-definition",
+        authz: {
+          effect: "allow",
+          resource: `asset:${definitionRepo.id}`,
+          grantVerb: "write",
+        },
+        tokenClaims: {
+          refPattern: "refs/**",
+          actions: ["writeTree", "receivePack"],
+          expiresAt: Number.MAX_SAFE_INTEGER,
+        },
+      };
+      await store.writeTree(hub, definitionRepo, REF, content);
+      const pack = await store.createPack(hub, definitionRepo, REF);
+      return { store, contributor, pack };
+    }
+
+    for (const ref of [
+      "refs/interchange",
+      "refs/interchange/workflow-definitions",
+      "refs/interchange/workflow-definitions/contributor",
+      "refs/INTERCHANGE",
+      "refs/Interchange/workflow-definitions/contributor",
+    ]) {
+      test.each(["writeTree", "receivePack"] as const)(
+        `rejects contributor %s to ${ref} before it can block retention`,
+        async (action) => {
+          const { store, contributor, pack } = await fixture();
+          expect(
+            workflowAuthorize(contributor, definitionRepo, ref, action),
+          ).toEqual({ allowed: true });
+          const writing =
+            action === "writeTree"
+              ? store.writeTree(contributor, definitionRepo, ref, content)
+              : store.receivePack(
+                  contributor,
+                  definitionRepo,
+                  ref,
+                  pack.pack,
+                  pack.commitSha,
+                  null,
+                );
+          await expect(writing).rejects.toThrow(
+            "authorize_denied: refs/interchange refs are Hub-owned",
+          );
+          expect(await store.resolveRef(hub, definitionRepo, ref)).toBeNull();
+          const retained = await store.createPack(hub, definitionRepo, REF, {
+            commitSha: pack.commitSha,
+            retain: true,
+          });
+          expect(retained.commitSha).toBe(pack.commitSha);
+        },
+      );
+    }
+
+    // APFS folds `ſ` to `s`, so `refſ/interchange` is the namespace on disk.
+    for (const ref of [
+      "refſ/interchange",
+      "refſ/interchange/workflow-definitions/contributor",
+      "refs/heads/ſ",
+    ]) {
+      test.each(["writeTree", "receivePack"] as const)(
+        `rejects contributor %s to non-ASCII ${ref}`,
+        async (action) => {
+          const { store, contributor: scoped, pack } = await fixture();
+          const contributor = {
+            ...scoped,
+            tokenClaims: { ...scoped.tokenClaims, refPattern: "**" },
+          };
+          expect(
+            workflowAuthorize(contributor, definitionRepo, ref, action),
+          ).toEqual({ allowed: true });
+          const writing =
+            action === "writeTree"
+              ? store.writeTree(contributor, definitionRepo, ref, content)
+              : store.receivePack(
+                  contributor,
+                  definitionRepo,
+                  ref,
+                  pack.pack,
+                  pack.commitSha,
+                  null,
+                );
+          await expect(writing).rejects.toThrow(
+            "authorize_denied: only the Hub may write non-ASCII ref names",
+          );
+          expect(await store.resolveRef(hub, definitionRepo, ref)).toBeNull();
+          const retained = await store.createPack(hub, definitionRepo, REF, {
+            commitSha: pack.commitSha,
+            retain: true,
+          });
+          expect(retained.commitSha).toBe(pack.commitSha);
+        },
+      );
+    }
+
+    test("allows a similarly named sibling ref", async () => {
+      const { store, contributor, pack } = await fixture();
+      const sibling = "refs/interchange-backup";
+      await store.receivePack(
+        contributor,
+        definitionRepo,
+        sibling,
+        pack.pack,
+        pack.commitSha,
+        null,
+      );
+      expect(await store.resolveRef(hub, definitionRepo, sibling)).toBe(
+        pack.commitSha,
+      );
+      const retained = await store.createPack(hub, definitionRepo, REF, {
+        commitSha: pack.commitSha,
+        retain: true,
+      });
+      expect(retained.commitSha).toBe(pack.commitSha);
+    });
+  });
+
+  describe("pinned definition packs", () => {
+    const hub: Principal = { kind: "hub" };
+    const definitionRepo: RepoId = { kind: "workflow", id: "definition" };
+    const retainedRef = (sha: string) =>
+      `refs/interchange/workflow-definitions/${sha}`;
+
+    async function fixture() {
+      const dataDir = await makeTempDir("repo-store-pinned-guards-");
+      const store = createRepoStore({
+        dataDir,
+        signingKey,
+        handlers: {
+          workflow: { ...createTestHandler(), kind: "workflow" },
+          "agent-state": createTestHandler(),
+        },
+        authorize: allowAll,
+      });
+      const { commitSha } = await store.writeTree(hub, definitionRepo, REF, {
+        files: { "workflow.ts": "export const workflow = {};" },
+        message: "workflow source",
+      });
+      return { store, commitSha };
+    }
+
+    test("rejects a non-hub principal and writes no retained ref", async () => {
+      const { store, commitSha } = await fixture();
+      await expect(
+        store.createPack(principal, definitionRepo, REF, {
+          commitSha,
+          retain: true,
+        }),
+      ).rejects.toThrow("Pinned definition packs require Hub access");
+      expect(
+        await store.resolveRef(hub, definitionRepo, retainedRef(commitSha)),
+      ).toBeNull();
+    });
+
+    test("rejects a repo that is not a definition asset", async () => {
+      const { store, commitSha } = await fixture();
+      await store.initRepo(repoId);
+      await expect(
+        store.createPack(hub, repoId, REF, { commitSha, retain: true }),
+      ).rejects.toThrow("Pinned definition packs require Hub access");
+    });
+
+    test.each(["../../heads/main", "HEAD", "A".repeat(40), "a".repeat(39)])(
+      "rejects the malformed commit %s",
+      async (commitSha) => {
+        const { store } = await fixture();
+        await expect(
+          store.createPack(hub, definitionRepo, REF, {
+            commitSha,
+            retain: true,
+          }),
+        ).rejects.toThrow("Invalid pinned definition commit");
+      },
+    );
+
+    test("refuses an unknown commit and writes no retained ref", async () => {
+      const { store } = await fixture();
+      const missing = "0123456789abcdef0123456789abcdef01234567";
+      await expect(
+        store.createPack(hub, definitionRepo, REF, {
+          commitSha: missing,
+          retain: true,
+        }),
+      ).rejects.toThrow();
+      expect(
+        await store.resolveRef(hub, definitionRepo, retainedRef(missing)),
+      ).toBeNull();
+    });
+
+    test("refuses a tree id and writes no retained ref", async () => {
+      const { store, commitSha } = await fixture();
+      const { commit } = await git.readCommit({
+        fs,
+        dir: store.getRepoDir(definitionRepo),
+        oid: commitSha,
+      });
+      await expect(
+        store.createPack(hub, definitionRepo, REF, {
+          commitSha: commit.tree,
+          retain: true,
+        }),
+      ).rejects.toThrow();
+      expect(
+        await store.resolveRef(hub, definitionRepo, retainedRef(commit.tree)),
+      ).toBeNull();
+    });
+  });
+
+  test("packs and retains the approved commit after the source branch advances", async () => {
+    const dataDir = await makeTempDir("repo-store-pinned-definition-");
+    const handler = { ...createTestHandler(), kind: "workflow" as const };
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { workflow: handler },
+      authorize: allowAll,
+    });
+    const definitionRepo: RepoId = { kind: "workflow", id: "definition" };
+    const hub: Principal = { kind: "hub" };
+    const first = await store.writeTree(hub, definitionRepo, REF, {
+      files: { "workflow.ts": "first" },
+      message: "first",
+    });
+    const second = await store.writeTree(hub, definitionRepo, REF, {
+      files: { "workflow.ts": "second" },
+      message: "second",
+    });
+    const pinned = await store.createPack(hub, definitionRepo, REF, {
+      commitSha: first.commitSha,
+      retain: true,
+    });
+    expect(pinned.commitSha).toBe(first.commitSha);
+    expect(pinned.ref).toBe(REF);
+    expect(await store.resolveRef(hub, definitionRepo, REF)).toBe(
+      second.commitSha,
+    );
+    expect(
+      await store.resolveRef(
+        hub,
+        definitionRepo,
+        `refs/interchange/workflow-definitions/${first.commitSha}`,
+      ),
+    ).toBe(first.commitSha);
+    await expect(
+      store.writeTree(
+        principal,
+        definitionRepo,
+        `refs/interchange/workflow-definitions/${first.commitSha}`,
+        {
+          files: { "workflow.ts": "replacement" },
+          message: "replace retained definition",
+        },
+      ),
+    ).rejects.toThrow("refs/interchange refs are Hub-owned");
+    expect(
+      (await store.listRefs(hub, definitionRepo)).map((entry) => entry.name),
+    ).toEqual(["refs/heads/main", REF]);
+    await runGC(store.getRepoDir(definitionRepo), { retention: "tip-only" });
+    const afterGC = await store.createPack(hub, definitionRepo, REF, {
+      commitSha: first.commitSha,
+      retain: true,
+    });
+    expect(afterGC.commitSha).toBe(first.commitSha);
+    const receiverDir = await makeTempDir("repo-store-pinned-receiver-");
+    const receiver = createRepoStore({
+      dataDir: receiverDir,
+      signingKey,
+      handlers: { workflow: handler },
+      authorize: allowAll,
+    });
+    await receiver.receivePack(
+      hub,
+      definitionRepo,
+      REF,
+      pinned.pack,
+      pinned.commitSha,
+      null,
+    );
+    const reads = await receiver.openCommittedReads(hub, definitionRepo, REF);
+    if (reads === null) throw new Error("Pinned commit missing from receiver");
+    const [entry] = await reads.listDir("");
+    if (entry === undefined) throw new Error("Pinned tree is empty");
+    expect(new TextDecoder().decode(await reads.readBlobByOid(entry.oid))).toBe(
+      "first",
+    );
+  });
+
   test("initRepo is idempotent", async () => {
     const dataDir = await makeTempDir("repo-store-init-");
     const handler = createTestHandler();

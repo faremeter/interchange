@@ -7,6 +7,7 @@ import {
   createDeployPack,
   receivePackObjects,
   collectReachableObjects,
+  HUB_REF_NAMESPACE,
   maybeGC,
   syncDirectoryDurable,
   syncRemovedPathDurable,
@@ -37,6 +38,7 @@ import type {
 import { SAFE_REPO_ID } from "./types";
 
 const DEFAULT_SUBSCRIBE_BUFFER_LIMIT = 1024;
+const DEFINITION_REF_NAMESPACE = `${HUB_REF_NAMESPACE}/workflow-definitions`;
 
 type SubscribeEntry = { seq: number; event: unknown };
 
@@ -413,6 +415,30 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     ref: string,
     action: RepoAction,
   ): void {
+    const nonHubWrite =
+      principal.kind !== "hub" &&
+      (action === "writeTree" || action === "receivePack");
+    // A case-insensitive filesystem also folds non-ASCII letters that
+    // toLowerCase keeps (APFS stores `refſ` as `refs`), so only ASCII names
+    // compare reliably against the Hub namespace below.
+    if (nonHubWrite && /[\u0080-\uffff]/.test(ref)) {
+      throw new Error(
+        "authorize_denied: only the Hub may write non-ASCII ref names",
+      );
+    }
+    // GC keeps these refs alive, and a loose ref at a namespace root would
+    // block all retained children. Compare case-insensitively: on a
+    // case-insensitive filesystem a differently cased ref is the same file.
+    const lowerRef = ref.toLowerCase();
+    if (
+      nonHubWrite &&
+      (lowerRef === HUB_REF_NAMESPACE ||
+        lowerRef.startsWith(`${HUB_REF_NAMESPACE}/`))
+    ) {
+      throw new Error(
+        `authorize_denied: ${HUB_REF_NAMESPACE} refs are Hub-owned`,
+      );
+    }
     const verdict = authorize(principal, repoId, ref, action);
     if (!verdict.allowed) {
       throw new Error(`authorize_denied: ${verdict.reason}`);
@@ -1838,8 +1864,39 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     principal: Principal,
     repoId: RepoId,
     ref: string,
+    pinned?: { commitSha: string; retain: boolean },
   ): Promise<{ pack: Uint8Array; commitSha: string; ref: string }> {
     gateAccess(principal, repoId, ref, "createPack");
+    if (pinned !== undefined) {
+      if (
+        principal.kind !== "hub" ||
+        (repoId.kind !== "workflow" && repoId.kind !== "package-registry")
+      ) {
+        throw new Error(
+          "Pinned definition packs require Hub access to a workflow or package-registry asset",
+        );
+      }
+      if (!/^[a-f0-9]{40}$/.test(pinned.commitSha))
+        throw new Error("Invalid pinned definition commit");
+      return withRepoLock(repoId, async () => {
+        const dir = repoDir(repoId);
+        await git.readCommit({ fs, dir, oid: pinned.commitSha });
+        if (pinned.retain) {
+          // This ref keeps approved source bytes reachable after a branch is
+          // replaced. Its name is its value, so retaining it is idempotent.
+          const retainedRef = `${DEFINITION_REF_NAMESPACE}/${pinned.commitSha}`;
+          await git.writeRef({
+            fs,
+            dir,
+            ref: retainedRef,
+            value: pinned.commitSha,
+            force: true,
+          });
+        }
+        const packed = await createDeployPack(dir, pinned.commitSha);
+        return { ...packed, ref };
+      });
+    }
     // `createDeployPack` packs only the tip commit + its tree, which
     // covers the deploy-pack shape every other kind ships (the
     // receiver starts from genesis and applies the tree wholesale).
