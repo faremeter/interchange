@@ -2,6 +2,7 @@ import { integer, jsonb, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 
 import { principal } from "./principals";
 import { workflowRun } from "./workflow-run";
+import { workflowDefinitionArtifact } from "./workflow-definition-artifacts";
 
 /**
  * Immutable inputs a generation's first deploy launches the workflow from.
@@ -19,6 +20,10 @@ export const workflowRunLaunchSpec = pgTable("workflow_run_launch_spec", {
     .notNull()
     .references(() => principal.id, { onDelete: "restrict" }),
   frozenApprovalBundle: jsonb("frozen_approval_bundle").notNull(),
+  definitionArtifactId: text("definition_artifact_id").references(
+    () => workflowDefinitionArtifact.id,
+    { onDelete: "restrict" },
+  ),
   grantSnapshot: jsonb("grant_snapshot"),
   sourceOfferingIds: jsonb("source_offering_ids").notNull(),
   defaultSourceOfferingId: text("default_source_offering_id").notNull(),

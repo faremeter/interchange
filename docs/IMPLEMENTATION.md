@@ -303,6 +303,42 @@ The placement design describes capability-based provisioner selection. This sect
 
 `workflow_probe` owns only the probe operation: source, entry, optional pin, status, raw result, failure, and the temporary provisioner binding needed to clean up remote capacity. It does not store catalog offerings, session/domain data, deploy content, or a workflow launch specification.
 
+`workflow_definition_revision` freezes the source asset commit, selected package,
+entry, and complete dependency manifest. Its selector includes the tenant,
+asset, source commit, entry, package pin, and registry identity. Dependency
+ranges resolve once for that revision. When a probe fails or is refused, the
+Hub deletes the revision unless an artifact row, pending or published, still
+references it, so the next deployment resolves the ranges again and probes the
+new manifest. A published artifact keeps its revision, and the closure a
+deployment ships is always read from the revision its artifact or claim holds.
+Changing the source revision or registry creates another revision; changing
+the internal probe cache version retains the frozen manifest and probes it
+again.
+
+`workflow_definition_artifact` stores the validated probe result for a revision.
+Its id hashes the revision id with the internal `WORKFLOW_PROBE_CACHE_VERSION`
+in `workflow-probe-cache.ts`. Asset-sourced deployments reuse these artifacts
+automatically. Bump the version when probe behavior or the stored result shape
+changes. A completed artifact is immutable. Pending artifacts use renewable
+database leases so concurrent Hub requests share a probe and a crashed owner
+can be replaced. Lease ownership is checked when publishing; failed and refused
+probes never publish a reusable result. A validated result that cannot be
+published still deploys, without an artifact reference. When an awaited probe
+fails, one waiting request takes over the claim and the others probe on their
+own instead of queueing behind it.
+
+A cache hit skips asset-pack delivery and probe provisioning, but still runs the
+current Hub validation and approval gate. The new deployment resolves current
+offerings, credentials, lifecycle and placement policy. Its launch specification
+references the artifact.
+
+Reuse assumes deterministic definition evaluation over the pinned code and
+compatible evaluator code and environments across probe workers. Provisioner
+configuration does not contribute to the cache key; deployment configuration
+must keep those workers compatible. The run child re-verifies its projection
+against the approved wire hash and refuses a mismatch. Registry-source installs
+do not use this cache; the HTTP deployment route accepts asset sources.
+
 Asset packs use the exact recorded commit. A launch specification written
 before that commit was recorded uses the commit its source names, or the
 branch tip for a tarball asset. The Hub retains those commits under
@@ -310,7 +346,7 @@ branch tip for a tarball asset. The Hub retains those commits under
 `refs/interchange/` as roots, git clients never see it, and only the Hub may
 write to it. Only the Hub may write ref names with non-ASCII characters either,
 because a case-insensitive filesystem can fold one of them into this namespace.
-Retained commits are not expired automatically.
+Retained commits and completed artifacts are not expired automatically.
 
 Each launch specification freezes the grant snapshot from its deployment's
 probe. HTTP and mail triggers read that deployment's snapshot rather than a
@@ -318,7 +354,7 @@ later definition approval. Older launch specifications receive their existing
 version snapshot during migration. A deployment with no snapshot cannot be
 triggered; triggers never read the shared version row.
 
-The deployment request stays open while the Hub matches tenant and Hub probe policy against its probe-provisioner list, passes every match to the configured probe chooser, and asks the selected provisioner to start probe capacity. Once the exact authenticated generation returns `workflow.probe.result`, the Hub freezes that result, matches the final capability policy against its separate deployment-provisioner list, and passes those matches to the deployment chooser. The default chooser selects the first match in registration order. If both choosers select the same binding, the Hub atomically creates the normal anchor run, frozen launch spec, and an allocated `sidecar_allocation` that adopts the connected capacity; the sidecar stays connected, and the reconciler's readiness check turns its probe binding into the allocation binding in place. Otherwise it destroys the probe capacity and creates a normal pending allocation for the selected binding. Only then does the deployment exist.
+Every deployment request matches tenant and Hub probe policy against the probe-provisioner list and passes every match to the configured probe chooser before the cache lookup, so a cache hit cannot bypass current probe policy. No match fails closed, even when a cached result exists. On a cache miss, the deployment request stays open while the selected provisioner starts probe capacity. Once the exact authenticated generation returns `workflow.probe.result`, the Hub freezes that result, matches the final capability policy against its separate deployment-provisioner list, and passes those matches to the deployment chooser. The default chooser selects the first match in registration order. If both choosers select the same binding, the Hub atomically creates the normal anchor run, frozen launch spec, and an allocated `sidecar_allocation` that adopts the connected capacity; the sidecar stays connected, and the reconciler's readiness check turns its probe binding into the allocation binding in place. Otherwise it destroys the probe capacity and creates a normal pending allocation for the selected binding. Only then does the deployment exist.
 
 A probe passes its own id as the opaque owner id to the same `ensure`/`destroy` lifecycle as an allocation. `destroy` must identify capacity from `(allocationId, generation, sidecarId)` alone. The optional `externalRef` is persisted only after `ensure` returns, so a Hub crash after capacity creation can require cleanup without it. Startup moves every active probe left by an interrupted request to durable `releasing` state. Provider destruction runs in the independent cleanup scheduler after startup; a slow or unavailable provisioner cannot hold the Hub startup path. The production Hub registers no infrastructure backend by default; the admin UI E2E harness injects a test-only `local-process` provisioner.
 

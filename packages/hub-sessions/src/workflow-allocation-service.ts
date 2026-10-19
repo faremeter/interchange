@@ -481,6 +481,7 @@ export function createWorkflowAllocationService({
           sourceAuthorityPrincipalId: request.sourceAuthorityPrincipalId,
           frozenApprovalBundle,
           grantSnapshot: approved.grantSnapshot,
+          definitionArtifactId: approved.artifactId ?? null,
           sourceOfferingIds: [...request.sourceOfferingIds],
           defaultSourceOfferingId: request.defaultSourceOfferingId,
           deployContent: request.deployContent,
@@ -737,6 +738,7 @@ export function createWorkflowAllocationService({
     try {
       let resultRecorded = false;
       const approved = await preparedDeployer.installAndApproveWorkflowSource({
+        tenantId: args.tenantId,
         source: args.source,
         entry: args.entry,
         ...(args.pin !== undefined ? { pin: args.pin } : {}),
@@ -756,7 +758,7 @@ export function createWorkflowAllocationService({
           resultRecorded = true;
         },
       });
-      if (!resultRecorded) {
+      if (probeHolder.current !== null && !resultRecorded) {
         throw new Error(
           "Workflow probe completed without persisting its result",
         );

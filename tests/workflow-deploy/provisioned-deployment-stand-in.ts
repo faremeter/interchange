@@ -51,6 +51,7 @@ export function createProvisionedDeploymentStandIn(opts: {
       );
       const approved =
         await opts.sessionService.installAndApproveWorkflowSource({
+          tenantId: args.tenantId,
           source,
           entry: args.entry,
           ...(args.pin !== undefined ? { pin: args.pin } : {}),

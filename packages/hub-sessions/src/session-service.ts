@@ -5,6 +5,7 @@ import { getLogger } from "@intx/log";
 import {
   buildCredentialDelivery,
   createSidecarAllocationStore,
+  createWorkflowDefinitionArtifactStore,
   listAssetsForTenant,
   resolveInferenceMaterials,
   type DB,
@@ -82,6 +83,7 @@ import {
   type InstallAndApproveArgs,
   type InstallAndApproveResult,
 } from "./workflow-probe-gate";
+import { DEFAULT_PROBE_LEASE_TIMING } from "./workflow-probe-cache";
 import { buildReferencedWorkflowSourcePins } from "./workflow-source-pins";
 import { workflowSourceRepoKind } from "./workflow-source-repo-kind";
 import type { SidecarReconciliationContext } from "./sidecar-allocation/operation";
@@ -146,6 +148,8 @@ export type DeployWorkflowDefinitionResult = {
  * with no re-probe.
  */
 export type InstallAndApproveWorkflowSourceParams = {
+  /** Tenant deploying the definition; scopes reusable probe results. */
+  tenantId: string;
   /** Where the definition's bytes come from at probe time. */
   source: WorkflowDefinitionSource;
   /** The `interchange.workflow` entry-module path the sidecar evaluates. */
@@ -157,14 +161,17 @@ export type InstallAndApproveWorkflowSourceParams = {
   pin?: string;
   /** The definition asset: a workflow source tree or package-registry tarball. */
   definitionAssetId: string;
-  /** Called immediately before sending the probe. */
+  /** Called only on a cache miss, immediately before sending the probe. */
   getProbeTarget(): Promise<AllocatedSidecarTarget>;
   /** Optional durable handoff invoked with the raw probe answer. */
   onProbeResult?: (result: WorkflowProbeResult) => Promise<void>;
 };
 
 // Deploys never read the grant snapshot; triggers read it from the launch spec.
-type DeployableApproval = Omit<InstallAndApproveResult, "grantSnapshot">;
+type DeployableApproval = Omit<
+  InstallAndApproveResult,
+  "grantSnapshot" | "artifactId"
+>;
 
 /**
  * Inputs to deploy a previously-frozen code-sourced approval bundle to a
@@ -1465,8 +1472,20 @@ export function createSessionService(
         repoId.kind,
         assetCommitSha,
       );
+      const registryName =
+        source.package.format === "source"
+          ? requireDefaultRegistryName()
+          : source.assetId;
+      const cache = {
+        tenantId: params.tenantId,
+        store: createWorkflowDefinitionArtifactStore(dbHandle),
+        lease: DEFAULT_PROBE_LEASE_TIMING,
+        registryKey:
+          source.package.format === "source"
+            ? `${registryName}:${requireRegistryConfig(registryName).url}`
+            : registryName,
+      };
       if (source.package.format === "source") {
-        const registryName = requireDefaultRegistryName();
         return {
           ...common,
           source,
@@ -1475,6 +1494,7 @@ export function createSessionService(
           registryConfig: requireRegistryConfig(registryName),
           resolveAttachment: pinnedAttachment,
           assetCommitSha,
+          cache,
         };
       }
       if (params.pin === undefined) {
@@ -1493,6 +1513,7 @@ export function createSessionService(
             .map((entry) => entry.name),
         resolveAttachment: pinnedAttachment,
         assetCommitSha,
+        cache,
       };
     }
     if (params.pin === undefined) {

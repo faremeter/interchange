@@ -26,3 +26,4 @@ export * from "./workflow-pending-projection";
 export * from "./workflow-run-launch-spec";
 export * from "./workflow-run-execution";
 export * from "./workflow-probe";
+export * from "./workflow-definition-artifacts";

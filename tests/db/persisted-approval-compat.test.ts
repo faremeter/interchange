@@ -34,6 +34,7 @@ function legacyRow(approvedGrants: unknown): LaunchSpecRow {
   return {
     anchorRunId: "run_legacy",
     schemaVersion: 1,
+    definitionArtifactId: null,
     grantSnapshot: null,
     sessionId: "sess_1",
     deploymentDomain: "deploy.example",

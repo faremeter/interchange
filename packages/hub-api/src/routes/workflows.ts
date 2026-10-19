@@ -252,7 +252,7 @@ export function createWorkflowRoutes({
       tags: ["Workflows"],
       summary: "Deploy a workflow",
       description:
-        "Installs, probes, gates, and freezes a code-sourced workflow definition from its `source`/`entry`, then creates a pending provisioned deployment. Provisioning continues asynchronously; the response returns the deployment record.",
+        "Installs, gates, and freezes a code-sourced workflow definition from its `source`/`entry`, reusing a validated probe for an unchanged source revision under the current internal probe cache version, then creates a pending provisioned deployment. Provisioning continues asynchronously; the response returns the deployment record.",
       responses: {
         201: jsonResponse(
           "Workflow deployment accepted for provisioning",
