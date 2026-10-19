@@ -1417,6 +1417,66 @@ function replySendResult(reply: string): SendResult {
   };
 }
 
+describe("workflow-host StepInvoker adapter - warm run boundary", () => {
+  const allow: WorkflowAuthorizeFn = async () => ({
+    effect: "allow",
+    matchingGrants: [],
+    resolvedBy: null,
+  });
+
+  test("a run-boundary failure after a clean turn fails the step without a retry", async () => {
+    const warmCache = createWarmAgentCache();
+    const stub = buildWarmStubAgent();
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: allow,
+      buildEnv: async () => stubBuildEnv(),
+      agentFactory: async () => stub.agent,
+      warmCache,
+      onRunBoundary: async () => {
+        throw new Error("mirror boom");
+      },
+    });
+
+    const failure = await invoker(buildRequest({ input: "turn" })).then(
+      () => undefined,
+      (cause: unknown) => cause,
+    );
+    expect(failure).toBeInstanceOf(StepOutcomeCommitError);
+    expect(failure).toHaveProperty(
+      "message",
+      expect.stringMatching(/mirror boom/),
+    );
+    await warmCache.evictAll("test teardown");
+  });
+
+  test("a run-boundary failure while a send error unwinds surfaces the send error", async () => {
+    const warmCache = createWarmAgentCache();
+    const stub = buildWarmStubAgent();
+    let boundaries = 0;
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: allow,
+      buildEnv: async () => stubBuildEnv(),
+      agentFactory: async () => ({
+        ...stub.agent,
+        async send(): Promise<SendResult> {
+          throw new Error("send boom");
+        },
+      }),
+      warmCache,
+      onRunBoundary: async () => {
+        boundaries += 1;
+        throw new Error("mirror boom");
+      },
+    });
+
+    await expect(invoker(buildRequest({ input: "turn" }))).rejects.toThrow(
+      /send boom/,
+    );
+    expect(boundaries).toBe(1);
+    await warmCache.evictAll("test teardown");
+  });
+});
+
 describe("workflow-host StepInvoker adapter - warm reply drain", () => {
   test("drives replies once over the agent lifetime stream and drains at eviction", async () => {
     const warmCache = createWarmAgentCache();
