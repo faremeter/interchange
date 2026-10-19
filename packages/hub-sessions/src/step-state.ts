@@ -28,9 +28,10 @@ import { type } from "arktype";
 
 import {
   ConnectorThreadState,
+  ConversationTurn,
+  PersistedPendingOperation,
   TokenUsage,
   emptyTokenUsage,
-  type ConversationTurn,
   type PendingOperation,
 } from "@intx/types/runtime-core";
 
@@ -40,7 +41,7 @@ export const STEP_STATE_WAL_DIR = "wal";
 export const STEP_STATE_WAL_BUCKET_SIZE = 128;
 
 const StepStateMetadata = type({
-  pendingOperations: "unknown[]",
+  pendingOperations: PersistedPendingOperation.array(),
   tokenUsage: TokenUsage,
   connectorState: ConnectorThreadState.or("null"),
 });
@@ -49,23 +50,23 @@ const StepStateMetadata = type({
 export type StepStateMetadata = typeof StepStateMetadata.infer;
 
 const CheckpointSnapshot = type({
-  turns: "unknown[]",
-  pendingOperations: "unknown[]",
+  turns: ConversationTurn.array(),
+  pendingOperations: PersistedPendingOperation.array(),
   tokenUsage: TokenUsage,
   connectorState: ConnectorThreadState.or("null"),
 });
 
 const CheckpointMeta = type({
-  checkpointSeq: "number",
-  turnCount: "number",
-  pendingOperations: "unknown[]",
+  checkpointSeq: "number.integer >= 0",
+  turnCount: "number.integer >= 0",
+  pendingOperations: PersistedPendingOperation.array(),
   tokenUsage: TokenUsage,
   connectorState: ConnectorThreadState.or("null"),
 });
 
 const WalEntry = type({
-  seq: "number",
-  turns: "unknown[]",
+  seq: "number.integer >= 0",
+  turns: ConversationTurn.array(),
   metadata: StepStateMetadata,
 });
 
@@ -184,7 +185,7 @@ export async function reconstructStepState(
   const wal = await readWalTail(reader, label, baseBoundarySeq);
   if (checkpoint === null && wal.length === 0) return null;
 
-  const turns: unknown[] = [...(checkpoint?.turns ?? [])];
+  const turns: ConversationTurn[] = [...(checkpoint?.turns ?? [])];
   let metadata: StepStateMetadata = checkpoint?.metadata ?? {
     pendingOperations: [],
     tokenUsage: emptyTokenUsage(),
@@ -197,12 +198,8 @@ export async function reconstructStepState(
     metadata = entry.metadata;
   }
   return {
-    // The reactor re-narrows turn and operation elements on load; the
-    // validators here enforce only the structural envelope.
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- envelope validated in the read helpers; turn element narrows live in the reactor on load
-    turns: turns as ConversationTurn[],
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- envelope validated in the read helpers; pending-operation element narrows live in the reactor on load
-    pendingOperations: metadata.pendingOperations as PendingOperation[],
+    turns,
+    pendingOperations: metadata.pendingOperations,
     tokenUsage: metadata.tokenUsage,
     connectorState: metadata.connectorState,
     totalTurns: turns.length,
@@ -220,7 +217,7 @@ async function readCheckpoint(
   reader: StepStateReader,
   label: string,
 ): Promise<{
-  turns: unknown[];
+  turns: ConversationTurn[];
   checkpointSeq: number;
   metadata: StepStateMetadata;
 } | null> {
@@ -274,12 +271,14 @@ async function readWalTail(
   reader: StepStateReader,
   label: string,
   fromSeq: number,
-): Promise<{ seq: number; turns: unknown[]; metadata: StepStateMetadata }[]> {
+): Promise<
+  { seq: number; turns: ConversationTurn[]; metadata: StepStateMetadata }[]
+> {
   const buckets = await reader.listDir(STEP_STATE_WAL_DIR);
   if (buckets === null) return [];
   const entries: {
     seq: number;
-    turns: unknown[];
+    turns: ConversationTurn[];
     metadata: StepStateMetadata;
   }[] = [];
   for (const bucket of buckets) {
