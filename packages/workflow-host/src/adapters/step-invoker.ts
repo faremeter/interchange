@@ -179,15 +179,15 @@ export interface WorkflowStepInvokerOpts {
   sourcesRef?: { current: Record<string, InferenceSource[]> };
   /**
    * Run-boundary hook for the warm path (design §3c durability). When
-   * supplied, the adapter awaits it in the warm path's `finally` -- once
-   * per message, after the agent's send settles (whether it completed,
-   * aborted, or rejected). The sidecar wires this to flush the warm
-   * agent's conversation snapshot to the durable workflow-run substrate,
-   * so the conversation survives a child respawn between this message
-   * and the next. Awaited (not fire-and-forget) so a respawn landing
-   * immediately after the reply cannot lose this message's turns; a
-   * flush failure surfaces by rejecting the step rather than silently
-   * dropping the durability write.
+   * supplied, the adapter awaits it once per message, after the agent's
+   * send settles (whether it completed, aborted, or rejected). The sidecar
+   * wires this to flush the warm agent's conversation snapshot to the
+   * durable workflow-run substrate, so the conversation survives a child
+   * respawn between this message and the next. Awaited (not
+   * fire-and-forget) so a respawn landing immediately after the reply
+   * cannot lose this message's turns. A flush failure rejects the step
+   * with a `StepOutcomeCommitError`, which the runtime neither retries nor
+   * routes, unless the step already failed, in which case it is logged.
    *
    * The `key` is the step identity (`authzContext.stepId`), the same key
    * the warm cache uses, so the hook resolves the right per-agent
@@ -492,53 +492,64 @@ async function invokeWarmStep(
   // resolves -- a snapshot taken after the send would miss this turn's reply.
   const replyDrive = warmCache.getReplyDrive(key);
   const replySeqBeforeSend = replyDrive !== null ? replyDrive.replySeq() : 0;
-  try {
-    const sendResult = await sendWithAbort(agent, req, {
-      closeOnAbort: false,
-      mailPartReader: opts.mailPartReader,
-      seedInbound:
-        seedInbound !== undefined
-          ? (message) => seedInbound(key, message)
-          : undefined,
-    });
-    const stepResult = stepResultFromSend(sendResult);
-    // Gate the step's return on THIS turn's reply being durably sent, so the
-    // run parks -- and the supervisor consumes the inbound mail -- only after
-    // the auto-reply reaches the transport. Only a reply turn produces a
-    // `connector.reply`; a suspended/gate turn produces none, so it must NOT
-    // await the barrier (that reply never arrives and the wait would hang).
-    // Fail the turn rather than return a step result claiming a reply that
-    // never went out. The mail is still consumed, because a replay would fail
-    // to compose the same reply again.
-    if (replyDrive !== null && sendResult.type === "reply") {
-      const settlement = await replyDrive.waitForReplyAfter(replySeqBeforeSend);
-      if (!settlement.ok) {
-        throw new Error(
-          `workflow step invoker: ${describeReplyFailure(settlement.cause)}; ` +
-            "failing the turn, so the inbound mail is consumed without a " +
-            "reply rather than replayed",
-          { cause: settlement.cause },
-        );
+  return runBodyThenCleanup(
+    async () => {
+      const sendResult = await sendWithAbort(agent, req, {
+        closeOnAbort: false,
+        mailPartReader: opts.mailPartReader,
+        seedInbound:
+          seedInbound !== undefined
+            ? (message) => seedInbound(key, message)
+            : undefined,
+      });
+      const stepResult = stepResultFromSend(sendResult);
+      // Gate the step's return on THIS turn's reply being durably sent, so the
+      // run parks -- and the supervisor consumes the inbound mail -- only after
+      // the auto-reply reaches the transport. Only a reply turn produces a
+      // `connector.reply`; a suspended/gate turn produces none, so it must NOT
+      // await the barrier (that reply never arrives and the wait would hang).
+      // Fail the turn rather than return a step result claiming a reply that
+      // never went out. The mail is still consumed, because a replay would fail
+      // to compose the same reply again.
+      if (replyDrive !== null && sendResult.type === "reply") {
+        const settlement =
+          await replyDrive.waitForReplyAfter(replySeqBeforeSend);
+        if (!settlement.ok) {
+          throw new Error(
+            `workflow step invoker: ${describeReplyFailure(settlement.cause)}; ` +
+              "failing the turn, so the inbound mail is consumed without a " +
+              "reply rather than replayed",
+            { cause: settlement.cause },
+          );
+        }
       }
-    }
-    return stepResult;
-  } finally {
-    // Do NOT close the agent or drain its forwarder: both span
-    // messages and are owned by the warm cache, torn down at eviction.
-    // Clear the per-message sink so an event emitted between this send
-    // and the next is dropped rather than delivered to this run's
-    // torn-down per-run channel.
-    warmCache.clearEventSink(key);
-    // Run-boundary durability flush (design §3c). Mirror the warm
-    // agent's conversation snapshot to the durable substrate once per
-    // message, after the send settles, so a respawn before the next
-    // message resumes from this message's turns. Awaited so the
-    // durability write completes (or surfaces its failure) before the
-    // step result is observed.
-    if (opts.onRunBoundary !== undefined) {
-      await opts.onRunBoundary(key);
-    }
-  }
+      return stepResult;
+    },
+    async () => {
+      // Do NOT close the agent or drain its forwarder: both span
+      // messages and are owned by the warm cache, torn down at eviction.
+      // Clear the per-message sink so an event emitted between this send
+      // and the next is dropped rather than delivered to this run's
+      // torn-down per-run channel.
+      warmCache.clearEventSink(key);
+      // Run-boundary durability flush (design §3c). Mirror the warm
+      // agent's conversation snapshot to the durable substrate once per
+      // message, after the send settles, so a respawn before the next
+      // message resumes from this message's turns. Awaited so the
+      // durability write completes (or surfaces its failure) before the
+      // step result is observed.
+      if (opts.onRunBoundary !== undefined) {
+        try {
+          await opts.onRunBoundary(key);
+        } catch (cause) {
+          // The turn's work already happened, so a retry would repeat it.
+          throw new StepOutcomeCommitError(cause, "commit");
+        }
+      }
+    },
+    (cause) =>
+      logger.error`step invoker: ${describeStep(req)}: mirroring the warm step's state failed while unwinding a step error; surfacing the step error, mirror failure: ${cause instanceof Error ? cause.message : String(cause)}`,
+  );
 }
 
 /**
