@@ -24,7 +24,7 @@
 // fresh host, `flushColdStepState` commits the turn, and a retried attempt
 // starts over rather than continuing an earlier attempt's conversation.
 
-import { describe, test, expect } from "bun:test";
+import { afterAll, describe, test, expect } from "bun:test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -181,8 +181,18 @@ function requestForRun(runId: string, attempt = 1): StepInvokeRequest {
   };
 }
 
+const tempDirs: string[] = [];
+
+afterAll(async () => {
+  for (const dir of tempDirs.splice(0)) {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 async function makeTempDir(): Promise<string> {
-  return fs.mkdtemp(path.join(os.tmpdir(), "sidecar-step-keying-"));
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "sidecar-step-keying-"));
+  tempDirs.push(dir);
+  return dir;
 }
 
 describe("createSidecarStepBuildEnv per-step scratch keying", () => {
