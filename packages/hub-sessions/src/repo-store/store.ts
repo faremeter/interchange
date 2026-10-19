@@ -856,18 +856,24 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   const GIT_MODE_SUBMODULE = "160000";
 
   // Walk a commit's tree and return the first entry whose mode is disallowed
-  // (a symlink or a submodule), or null when the tree is clean. This mirrors
-  // the materialization backstop in `writeTreeToDisk`, but at the PUSH boundary
-  // so a directory-escaping symlink (or a dangling gitlink) is refused at
-  // admission rather than only caught later at checkout. It reads trees only,
-  // never blobs; `seen` deduplicates shared subtree oids across the commits of
-  // one pack so a subtree is walked once.
-  async function findDisallowedTreeMode(
+  // (a symlink or a submodule) or whose name its tree repeats, or null when
+  // the tree is clean. This mirrors the materialization backstop in
+  // `writeTreeToDisk`, but at the PUSH boundary so a directory-escaping
+  // symlink (or a dangling gitlink) is refused at admission rather than only
+  // caught later at checkout. A repeated name is refused because the change
+  // scope keeps the last entry of a name while reads resolve the first, so
+  // a change to the first would escape validation. It reads trees only,
+  // never blobs; `seen` deduplicates shared subtree oids across the commits
+  // of one pack so a subtree is walked once.
+  async function findDisallowedTreeEntry(
     dir: string,
     treeOid: string,
     seen: Set<string>,
     prefix = "",
-  ): Promise<{ path: string; kind: "symlink" | "submodule" } | null> {
+  ): Promise<{
+    path: string;
+    kind: "symlink" | "submodule" | "duplicate entry";
+  } | null> {
     if (seen.has(treeOid)) return null;
     seen.add(treeOid);
     const { tree } = await git.readTree({
@@ -876,8 +882,13 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
       cache: cacheFor(dir),
       oid: treeOid,
     });
+    const names = new Set<string>();
     for (const entry of tree) {
       const entryPath = prefix === "" ? entry.path : `${prefix}/${entry.path}`;
+      if (names.has(entry.path)) {
+        return { path: entryPath, kind: "duplicate entry" };
+      }
+      names.add(entry.path);
       if (entry.mode === GIT_MODE_SYMLINK) {
         return { path: entryPath, kind: "symlink" };
       }
@@ -885,7 +896,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
         return { path: entryPath, kind: "submodule" };
       }
       if (entry.type === "tree") {
-        const nested = await findDisallowedTreeMode(
+        const nested = await findDisallowedTreeEntry(
           dir,
           entry.oid,
           seen,
@@ -1838,13 +1849,14 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
             );
             // Admission gate for EVERY kind, before the per-kind validatePush:
             // an asset tree carrying a symlink (which can escape its directory
-            // at checkout) or a submodule (a dangling gitlink the pack cannot
-            // reproduce) is refused here, so the ref never advances. No kind
-            // legitimately pushes either; `writeTreeToDisk` rejects both at
+            // at checkout), a submodule (a dangling gitlink the pack cannot
+            // reproduce) or a name its tree repeats is refused here, so the
+            // ref never advances. No kind legitimately pushes any of them;
+            // `writeTreeToDisk` rejects symlinks and submodules at
             // materialization as the defense-in-depth backstop. Per-commit, so
             // an intermediate commit that adds a symlink a later commit deletes
             // is still caught.
-            const disallowed = await findDisallowedTreeMode(
+            const disallowed = await findDisallowedTreeEntry(
               dir,
               parsed.tree,
               seenTreeOids,

@@ -1466,6 +1466,79 @@ describe("RepoStore", () => {
     expect(await store.resolveRef(principal, repoId, REF)).toBeNull();
   });
 
+  test("receivePack rejects a tree that names an entry twice and does not advance the ref", async () => {
+    const buildDir = await makeTempDir("duplicate-entry-build-");
+    await git.init({ fs, dir: buildDir, defaultBranch: "main" });
+    const blobOid = await git.writeBlob({
+      fs,
+      dir: buildDir,
+      blob: new TextEncoder().encode("read\n"),
+    });
+    const shadowTreeOid = await git.writeTree({
+      fs,
+      dir: buildDir,
+      tree: [{ mode: "100644", path: "inner", oid: blobOid, type: "blob" }],
+    });
+    const subTreeOid = await git.writeTree({
+      fs,
+      dir: buildDir,
+      tree: [
+        { mode: "100644", path: "dup", oid: blobOid, type: "blob" },
+        { mode: "040000", path: "dup", oid: shadowTreeOid, type: "tree" },
+      ],
+    });
+    const rootTreeOid = await git.writeTree({
+      fs,
+      dir: buildDir,
+      tree: [{ mode: "040000", path: "deep", oid: subTreeOid, type: "tree" }],
+    });
+    const commitSha = await git.writeCommit({
+      fs,
+      dir: buildDir,
+      commit: {
+        tree: rootTreeOid,
+        parent: [],
+        message: "duplicate",
+        author: {
+          name: "t",
+          email: "t@t.dev",
+          timestamp: 0,
+          timezoneOffset: 0,
+        },
+        committer: {
+          name: "t",
+          email: "t@t.dev",
+          timestamp: 0,
+          timezoneOffset: 0,
+        },
+      },
+    });
+    const { packfile } = await git.packObjects({
+      fs,
+      dir: buildDir,
+      oids: [commitSha, rootTreeOid, subTreeOid, shadowTreeOid, blobOid],
+    });
+    if (packfile === undefined) {
+      throw new Error("duplicate entry: packObjects returned no packfile");
+    }
+
+    const storeDir = await makeTempDir("duplicate-entry-store-");
+    const store = createRepoStore({
+      dataDir: storeDir,
+      signingKey,
+      handlers: { "agent-state": createTestHandler() },
+      authorize: allowAll,
+    });
+    // A file and a directory of one name sort apart in a tree, so the check
+    // cannot compare only neighbouring entries.
+    await expect(
+      store.receivePack(principal, repoId, REF, packfile, commitSha, null),
+    ).rejects.toThrow(
+      /^path_violation: duplicate entry at deep\/dup is not allowed/,
+    );
+    expect(await store.resolveRef(principal, repoId, REF)).toBeNull();
+  });
+
   test("receivePack admits a legitimate tree with an exec bit and a subtree", async () => {
     const buildDir = await makeTempDir("legit-push-build-");
     await git.init({ fs, dir: buildDir, defaultBranch: "main" });
