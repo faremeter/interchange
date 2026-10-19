@@ -176,6 +176,7 @@ import { type } from "arktype";
 import { getLogger } from "@intx/log";
 import { StepStateSnapshot } from "@intx/types/step-state-snapshot";
 import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy/addresses";
+import { parseMailboxIndex, type MailboxIndex } from "./mailbox-index";
 import {
   authorizeUserPrincipal,
   type AuthorizeFn,
@@ -2955,6 +2956,74 @@ async function validateMailboxSubtree(
     return {
       ok: false,
       reason: `mailbox ${WORKFLOW_RUN_MAILBOX_PREFIX}/${WORKFLOW_RUN_MAILBOX_INBOX_DIR}/${WORKFLOW_RUN_MAILBOX_INDEX_FILE} present in the prior tree is missing from the prospective tree; the mailbox index must persist so uidValidity/uidNext continuity holds across reopens`,
+    };
+  }
+  if (prospective.indexPresent) {
+    return checkMailboxIndexContinuity(
+      readBlob,
+      prior.indexPresent ? priorReadBlob : null,
+    );
+  }
+  return { ok: true };
+}
+
+/**
+ * Hold a changed `index.json` to its format, to the prior index's
+ * `uidValidity` and at least its `uidNext`, and to numbering each message it
+ * adds from that `uidNext`: a replacement host reopens the mailbox from it,
+ * so a malformed index breaks the mailbox, and a uid it reissues would name a
+ * different message than the one the uid named before.
+ */
+async function checkMailboxIndexContinuity(
+  readBlob: (path: string) => Promise<Uint8Array>,
+  priorReadBlob: ((path: string) => Promise<Uint8Array | null>) | null,
+): Promise<ValidatePushResult> {
+  const indexPath = `${WORKFLOW_RUN_MAILBOX_PREFIX}/${WORKFLOW_RUN_MAILBOX_INBOX_DIR}/${WORKFLOW_RUN_MAILBOX_INDEX_FILE}`;
+  const decoder = new TextDecoder();
+  const text = decoder.decode(await readBlob(indexPath));
+  const priorBytes =
+    priorReadBlob === null ? null : await priorReadBlob(indexPath);
+  const priorText = priorBytes === null ? null : decoder.decode(priorBytes);
+  if (text === priorText) return { ok: true };
+  let index: MailboxIndex;
+  try {
+    index = parseMailboxIndex(text, `mailbox index ${indexPath}`);
+  } catch (cause) {
+    return {
+      ok: false,
+      reason: cause instanceof Error ? cause.message : String(cause),
+    };
+  }
+  if (priorText === null) return { ok: true };
+  let prior: MailboxIndex;
+  try {
+    prior = parseMailboxIndex(priorText, `prior mailbox index ${indexPath}`);
+  } catch (cause) {
+    return {
+      ok: false,
+      reason: `prior tree's mailbox subtree is structurally invalid: ${cause instanceof Error ? cause.message : String(cause)}`,
+    };
+  }
+  if (index.uidValidity !== prior.uidValidity) {
+    return {
+      ok: false,
+      reason: `mailbox index ${indexPath} changes uidValidity from ${String(prior.uidValidity)} to ${String(index.uidValidity)}; a mailbox keeps the uidValidity its uids were issued under`,
+    };
+  }
+  if (index.uidNext < prior.uidNext) {
+    return {
+      ok: false,
+      reason: `mailbox index ${indexPath} lowers uidNext from ${String(prior.uidNext)} to ${String(index.uidNext)}; a mailbox never reissues a uid`,
+    };
+  }
+  const priorUids = new Set(prior.messages.map((message) => message.uid));
+  const reissued = index.messages.find(
+    (message) => !priorUids.has(message.uid) && message.uid < prior.uidNext,
+  );
+  if (reissued !== undefined) {
+    return {
+      ok: false,
+      reason: `mailbox index ${indexPath} adds uid ${String(reissued.uid)} below the prior uidNext ${String(prior.uidNext)}; a mailbox never reissues a uid`,
     };
   }
   return { ok: true };
