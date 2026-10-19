@@ -205,6 +205,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       params: InstallAndApproveWorkflowSourceParams,
       capabilities: readonly SidecarCapabilityRule[] = [],
     ) {
+      await params.getProbeTarget();
       const result = probeResult(capabilities);
       await params.onProbeResult?.(result);
       await h.db
@@ -244,6 +245,45 @@ describe.skipIf(!harnessDbEnvAvailable())(
         deployContent: { systemPrompt: "" },
       } as const;
     }
+
+    test("an install that fails before probing starts no probe capacity", async () => {
+      const ensureCalls: unknown[] = [];
+      const service = createWorkflowAllocationService({
+        db: h.db,
+        ...sharedPluginPools([
+          makeProvisioner({ id: "unprobed", ensureCalls, destroyCalls: [] }),
+        ]),
+        credentialCipher: CIPHER,
+        hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
+        defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
+        preparedDeployer: {
+          installAndApproveWorkflowSource: async () => {
+            throw new Error("closure did not resolve");
+          },
+          deployPreparedCodeSourcedWorkflow: async () => {
+            throw new Error("Preparation must not deploy");
+          },
+        },
+        allocationRouter: {
+          ...createSidecarRouter({
+            authenticateSidecar: async () => null,
+            validateSidecarIdentity: async () => false,
+            resolveSidecarBindings: async () => [],
+            withExecutableWorkflowRun: async (_target, send) => send(),
+          }),
+          fenceAllocation: () => undefined,
+          retireAllocation: () => undefined,
+          sendProbeToAllocation: async () => {
+            throw new Error("No probe may be sent");
+          },
+        },
+      });
+      await expect(
+        service.prepareProvisionedDeployment(prepareArgs("run-unprobed")),
+      ).rejects.toThrow("closure did not resolve");
+      expect(ensureCalls).toHaveLength(0);
+      expect(await h.db.select().from(workflowProbe)).toHaveLength(0);
+    });
 
     test.each(["synchronization", "readiness"])(
       "releases a probe when its connection deadline expires during %s",
@@ -288,7 +328,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
           db: h.db,
           ...sharedPluginPools([provisioner]),
           preparedDeployer: {
-            installAndApproveWorkflowSource: async () => {
+            installAndApproveWorkflowSource: async (params) => {
+              await params.getProbeTarget();
               installCalls += 1;
               throw new Error("A timed-out connection must not start probing");
             },
@@ -1495,7 +1536,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         db: h.db,
         ...sharedPluginPools([sandbox]),
         preparedDeployer: {
-          installAndApproveWorkflowSource: () => {
+          installAndApproveWorkflowSource: async (params) => {
+            await params.getProbeTarget();
             throw new Error("a rejected probe installs nothing");
           },
           deployPreparedCodeSourcedWorkflow: async () => {
@@ -1558,7 +1600,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         db: h.db,
         ...sharedPluginPools([sandbox]),
         preparedDeployer: {
-          installAndApproveWorkflowSource: () => {
+          installAndApproveWorkflowSource: async (params) => {
+            await params.getProbeTarget();
             throw new Error("install failed");
           },
           deployPreparedCodeSourcedWorkflow: async () => {
@@ -1614,7 +1657,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         db: h.db,
         ...sharedPluginPools([sandbox]),
         preparedDeployer: {
-          installAndApproveWorkflowSource: () => {
+          installAndApproveWorkflowSource: async (params) => {
+            await params.getProbeTarget();
             throw new Error("install failed");
           },
           deployPreparedCodeSourcedWorkflow: async () => {

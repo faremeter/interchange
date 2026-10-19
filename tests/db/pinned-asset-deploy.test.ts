@@ -228,7 +228,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       ).rejects.toThrow("Deploy frame captured");
     }
 
-    const probeTarget = { allocationId: "alloc-probe", generation: 1 };
+    const probeTarget = async () => ({
+      allocationId: "alloc-probe",
+      generation: 1,
+    });
 
     test("a branch replaced and collected between probe and deploy still ships the probed commit", async () => {
       await seedAsset(h.db, {
@@ -255,7 +258,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         source,
         entry: "./workflow.ts",
         definitionAssetId: ASSET_ID,
-        allocationTarget: probeTarget,
+        getProbeTarget: probeTarget,
       });
       expect(probedAssets).toEqual([probed.commitSha]);
 
@@ -303,7 +306,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         entry: "./workflow.mjs",
         pin: "@wf/pinned@^1.0.0",
         definitionAssetId: ASSET_ID,
-        allocationTarget: probeTarget,
+        getProbeTarget: probeTarget,
       });
       expect(probedAssets).toEqual([probed.commitSha]);
 
@@ -351,7 +354,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           source,
           entry: "./workflow.ts",
           definitionAssetId: ASSET_ID,
-          allocationTarget: probeTarget,
+          getProbeTarget: probeTarget,
         });
       await repoStore.writeTree(
         HUB,
@@ -393,7 +396,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           entry: "./workflow.mjs",
           pin: "@wf/pinned@^1.0.0",
           definitionAssetId: ASSET_ID,
-          allocationTarget: probeTarget,
+          getProbeTarget: probeTarget,
         });
       const tip = await repoStore.writeTree(
         HUB,
