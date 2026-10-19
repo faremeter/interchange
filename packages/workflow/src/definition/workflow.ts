@@ -24,6 +24,7 @@ import {
 
 import { normalizeSingularShorthand } from "./shorthand";
 import {
+  onFailureOf,
   type AwaitSignalPrimitive,
   type Primitive,
   type SleepPrimitive,
@@ -569,14 +570,8 @@ function straddlerOutputSelector(p: Primitive): Selector | undefined {
  */
 function validateOnFailureStraddlers(steps: Record<string, Primitive>): void {
   for (const [unitId, primitive] of Object.entries(steps)) {
-    const onFailure =
-      primitive.kind === "step" ||
-      primitive.kind === "action" ||
-      primitive.kind === "childWorkflow"
-        ? primitive.onFailure
-        : undefined;
-    if (onFailure === undefined) continue;
-    const handlerId = onFailure;
+    const handlerId = onFailureOf(primitive);
+    if (handlerId === undefined) continue;
 
     const unitDownstream = downstreamClosure(steps, [unitId]);
     for (const dep of steps[handlerId]?.after ?? []) {

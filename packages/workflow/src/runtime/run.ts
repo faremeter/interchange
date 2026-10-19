@@ -29,6 +29,7 @@ import type {
 import {
   downstreamClosure,
   hashDefinition,
+  onFailureOf,
   RUN_ID_PATTERN,
   stepTriggerBudget,
   validateRetryTriggerCombination,
@@ -948,12 +949,7 @@ async function executeRunBody(
   // skip StepStarted would throw against a non-running run.
   if (state.phase === "running") {
     for (const [stepId, primitive] of Object.entries(definition.steps)) {
-      const onFailure =
-        primitive.kind === "step" ||
-        primitive.kind === "action" ||
-        primitive.kind === "childWorkflow"
-          ? primitive.onFailure
-          : undefined;
+      const onFailure = onFailureOf(primitive);
       if (onFailure === undefined) continue;
       const phase = state.steps.get(stepId)?.phase;
       if (phase === "completed") {

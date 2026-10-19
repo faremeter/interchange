@@ -478,6 +478,15 @@ export type Primitive =
   | ChildWorkflowPrimitive
   | EscalationPrimitive;
 
+/** The handler a unit routes its failure to, when its kind can carry one. */
+export function onFailureOf(primitive: Primitive): string | undefined {
+  return primitive.kind === "step" ||
+    primitive.kind === "action" ||
+    primitive.kind === "childWorkflow"
+    ? primitive.onFailure
+    : undefined;
+}
+
 // =========================================================================
 // Constructors
 // =========================================================================
