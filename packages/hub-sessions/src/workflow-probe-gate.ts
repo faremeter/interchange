@@ -671,6 +671,7 @@ type InstallAndApproveCommonArgs = {
   readonly db: DBExecutor;
   /** Optional durable handoff invoked before the approval gate writes. */
   readonly onProbeResult?: (result: WorkflowProbeResult) => Promise<void>;
+  readonly assetCommitSha?: string;
 };
 
 /** Install a definition published to an npm registry. */
@@ -764,6 +765,7 @@ export type InstallAndApproveResult = {
   readonly approval: ProbeGateResult;
   readonly projection: WorkflowProjectionDefinition;
   readonly closure: ToolPackageManifest;
+  readonly assetCommitSha?: string;
 };
 
 /**
@@ -832,5 +834,12 @@ export async function installAndApproveWorkflowDefinition(
     persist: createDbFrozenApprovalWriter(args.db),
   });
 
-  return { approval, projection: probeResult.projection, closure };
+  return {
+    approval,
+    projection: probeResult.projection,
+    closure,
+    ...(args.assetCommitSha !== undefined
+      ? { assetCommitSha: args.assetCommitSha }
+      : {}),
+  };
 }

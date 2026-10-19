@@ -1374,12 +1374,13 @@ export function createSessionService(
 
   // Build the git-pack resolver a source/tarball asset arm delivers inline. The
   // pin names one backing asset, so the resolver binds that asset's repo (its
-  // kind fixed by the arm) and its default ref; a request for any OTHER asset id
-  // is a closure that reaches beyond its single backing asset and fails loud
-  // rather than silently packing the wrong repo.
+  // kind fixed by the arm) and packs the pinned commit; a request for any OTHER
+  // asset id is a closure that reaches beyond its single backing asset and fails
+  // loud rather than silently packing the wrong repo.
   function bindAssetAttachmentResolver(
     assetId: string,
     repoKind: RepoKind,
+    assetCommitSha: string,
   ): ResolveAssetAttachmentFn {
     return async (requestedAssetId) => {
       if (requestedAssetId !== assetId) {
@@ -1387,23 +1388,12 @@ export function createSessionService(
           `deployWorkflowFromSource: closure references asset ${requestedAssetId}, but only the pinned source asset ${assetId} is deliverable`,
         );
       }
-      const repoId: RepoId = { kind: repoKind, id: assetId };
-      const commitSha = await agentRepoStore.repoStore.resolveRef(
+      return agentRepoStore.repoStore.createPack(
         HUB_PRINCIPAL,
-        repoId,
+        { kind: repoKind, id: assetId },
         DEFAULT_ASSET_REF,
+        { commitSha: assetCommitSha, retain: true },
       );
-      if (commitSha === null) {
-        throw new Error(
-          `deployWorkflowFromSource: source asset ${assetId} has no commit on ${DEFAULT_ASSET_REF}`,
-        );
-      }
-      const { pack, ref } = await agentRepoStore.repoStore.createPack(
-        HUB_PRINCIPAL,
-        repoId,
-        DEFAULT_ASSET_REF,
-      );
-      return { pack, ref, commitSha };
     };
   }
 
@@ -1415,7 +1405,6 @@ export function createSessionService(
   // config and a pin. A `pin` missing where the arm requires it fails closed.
   async function buildInstallArgs(
     params: InstallAndApproveWorkflowSourceParams,
-    resolveAttachment: ResolveAssetAttachmentFn | null,
   ): Promise<InstallAndApproveArgs> {
     if (db === undefined) {
       throw new Error(
@@ -1443,31 +1432,47 @@ export function createSessionService(
     const source = params.source;
 
     if (source.kind === "asset") {
-      if (resolveAttachment === null) {
+      const repoId = {
+        kind: workflowSourceRepoKind(source),
+        id: source.assetId,
+      };
+      const assetCommitSha =
+        source.package.format === "source"
+          ? source.package.commitSha
+          : await agentRepoStore.repoStore.resolveRef(
+              HUB_PRINCIPAL,
+              repoId,
+              DEFAULT_ASSET_REF,
+            );
+      const committed =
+        assetCommitSha === null
+          ? null
+          : await agentRepoStore.repoStore.openCommittedReadsAtCommit(
+              HUB_PRINCIPAL,
+              repoId,
+              assetCommitSha,
+            );
+      if (committed === null || assetCommitSha === null) {
         throw new Error(
-          "deployWorkflowFromSource: an asset-sourced deploy requires an attachment resolver",
+          `Workflow source asset ${source.assetId} has no committed revision ${assetCommitSha ?? DEFAULT_ASSET_REF}`,
         );
       }
+      const reads = committedReadsToSourceTree(committed);
+      const pinnedAttachment = bindAssetAttachmentResolver(
+        source.assetId,
+        repoId.kind,
+        assetCommitSha,
+      );
       if (source.package.format === "source") {
-        const committed =
-          await agentRepoStore.repoStore.openCommittedReadsAtCommit(
-            HUB_PRINCIPAL,
-            { kind: workflowSourceRepoKind(source), id: source.assetId },
-            source.package.commitSha,
-          );
-        if (committed === null) {
-          throw new Error(
-            `deployWorkflowFromSource: source asset ${source.assetId} has no commit ${source.package.commitSha}`,
-          );
-        }
         const registryName = requireDefaultRegistryName();
         return {
           ...common,
           source,
-          reads: committedReadsToSourceTree(committed),
+          reads,
           registryName,
           registryConfig: requireRegistryConfig(registryName),
-          resolveAttachment,
+          resolveAttachment: pinnedAttachment,
+          assetCommitSha,
         };
       }
       if (params.pin === undefined) {
@@ -1475,22 +1480,17 @@ export function createSessionService(
           "deployWorkflowFromSource: an asset-tarball deploy requires a name@range pin",
         );
       }
-      if (assetService === undefined) {
-        throw new Error(
-          "deployWorkflowFromSource: an asset-tarball deploy requires an asset service to read the package blobs",
-        );
-      }
-      const tarballAssetId = source.assetId;
-      const tarballService = assetService;
       return {
         ...common,
         source,
         pin: params.pin,
-        readBlob: (path) =>
-          tarballService.readAssetBlob({ assetId: tarballAssetId, path }),
-        listBlobs: (dir) =>
-          tarballService.listAssetBlobs({ assetId: tarballAssetId, dir }),
-        resolveAttachment,
+        readBlob: reads.readBlob,
+        listBlobs: async (dir) =>
+          (await reads.listDir(dir))
+            .filter((entry) => entry.type === "blob")
+            .map((entry) => entry.name),
+        resolveAttachment: pinnedAttachment,
+        assetCommitSha,
       };
     }
     if (params.pin === undefined) {
@@ -1516,36 +1516,41 @@ export function createSessionService(
   }
 
   // Bind the pack resolver an asset arm delivers inline. An asset arm delivers
-  // its backing repo (its kind fixed by `package.format`); a registry arm
+  // its backing repo (its kind fixed by `package.format`) at the approved
+  // commit, so the deploy packs exactly what the probe read; a registry arm
   // fetches its tarballs over HTTP and delivers no asset, so it binds nothing.
-  // Both the install (probe) and the deploy rebind the SAME resolver from the
-  // source, so a prepared deploy reconstructs it from the frozen `source`.
-  function bindSourceAttachmentResolver(
+  async function bindSourceAttachmentResolver(
     source: WorkflowDefinitionSource,
-  ): ResolveAssetAttachmentFn | null {
-    return source.kind === "asset"
-      ? bindAssetAttachmentResolver(
-          source.assetId,
-          workflowSourceRepoKind(source),
-        )
-      : null;
+    assetCommitSha: string | undefined,
+  ): Promise<ResolveAssetAttachmentFn | null> {
+    if (source.kind !== "asset") return null;
+    const repoKind = workflowSourceRepoKind(source);
+    return bindAssetAttachmentResolver(
+      source.assetId,
+      repoKind,
+      assetCommitSha ?? (await legacyAssetCommit(source, repoKind)),
+    );
   }
 
-  // Install + probe + gate + freeze a code-sourced definition, returning the
-  // frozen bundle and the (asset-only) attachment resolver. The gate outcome is
-  // NOT asserted here: `deployWorkflowFromSource` and `installAndApproveWorkflowSource`
-  // each surface a non-approval as their own domain error. This is the common
-  // freeze used by direct tests and provisioned prepare runs.
-  async function prepareCodeSourcedApproval(
-    params: InstallAndApproveWorkflowSourceParams,
-  ): Promise<{
-    approved: InstallAndApproveResult;
-    resolveAttachment: ResolveAssetAttachmentFn | null;
-  }> {
-    const resolveAttachment = bindSourceAttachmentResolver(params.source);
-    const installArgs = await buildInstallArgs(params, resolveAttachment);
-    const approved = await installAndApproveWorkflowDefinition(installArgs);
-    return { approved, resolveAttachment };
+  // Launch specs written before the approved commit was recorded have none. A
+  // source asset names it in its source. A tarball asset was always packed
+  // from the branch tip, and its closure still pins each tarball by integrity.
+  async function legacyAssetCommit(
+    source: WorkflowDefinitionAssetSource,
+    repoKind: RepoKind,
+  ): Promise<string> {
+    if (source.package.format === "source") return source.package.commitSha;
+    const tip = await agentRepoStore.repoStore.resolveRef(
+      HUB_PRINCIPAL,
+      { kind: repoKind, id: source.assetId },
+      DEFAULT_ASSET_REF,
+    );
+    if (tip === null) {
+      throw new Error(
+        `deployPreparedCodeSourcedWorkflow: source asset ${source.assetId} has no commit on ${DEFAULT_ASSET_REF}`,
+      );
+    }
+    return tip;
   }
 
   // Freeze a code-sourced approval WITHOUT deploying it. The provisioned
@@ -1555,7 +1560,8 @@ export function createSessionService(
   async function installAndApproveWorkflowSource(
     params: InstallAndApproveWorkflowSourceParams,
   ): Promise<InstallAndApproveResult> {
-    const { approved } = await prepareCodeSourcedApproval(params);
+    const installArgs = await buildInstallArgs(params);
+    const approved = await installAndApproveWorkflowDefinition(installArgs);
     if (!approved.approval.ok) {
       throw new WorkflowDefinitionInvalidError(
         approved.projection.id,
@@ -1643,7 +1649,10 @@ export function createSessionService(
     }
     const allocationRouter = requireAllocationRouter();
     const source = params.source;
-    const resolveAttachment = bindSourceAttachmentResolver(source);
+    const resolveAttachment = await bindSourceAttachmentResolver(
+      source,
+      params.approved.assetCommitSha,
+    );
 
     // Re-pin every top-level step's inference source from the re-resolved chain
     // under the frozen approval -- the same pin the source-ref deploy computes.

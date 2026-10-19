@@ -93,20 +93,18 @@ export function createProvisionedDeploymentStandIn(opts: {
             `route-deploy test received unexpected asset ${requestedAssetId}`,
           );
         }
-        const commitSha =
-          await opts.env.hub.agentRepoStore.repoStore.resolveRef(
-            { kind: "hub" },
-            repoId,
-            DEFAULT_ASSET_REF,
+        const commitSha = approved.assetCommitSha;
+        if (commitSha === undefined) {
+          throw new Error(
+            `route-deploy source ${requestedAssetId} has no approved commit`,
           );
-        if (commitSha === null) {
-          throw new Error(`route-deploy source ${requestedAssetId} is empty`);
         }
         const { pack, ref } =
           await opts.env.hub.agentRepoStore.repoStore.createPack(
             { kind: "hub" },
             repoId,
             DEFAULT_ASSET_REF,
+            { commitSha, retain: true },
           );
         return { pack, ref, commitSha };
       };
