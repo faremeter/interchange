@@ -208,8 +208,9 @@ async function readPrefixEntries(
 /**
  * A substrate stub that persists `writeTreePreservingPrefix` to disk under
  * `getRepoDir`, so a durable-conversation mirror round-trips through the real
- * checkpoint/WAL layout the read reconstructs from. Any other method surfaces
- * as a precise failure.
+ * checkpoint/WAL layout the read reconstructs from. It keeps no git history,
+ * so it reports no committed tree and a restore finds no seed. Any other
+ * method surfaces as a precise failure.
  */
 function createStubSubstrate(baseDir: string): RepoStore {
   const repoDirFor = (repoId: RepoId): string =>
@@ -230,6 +231,9 @@ function createStubSubstrate(baseDir: string): RepoStore {
         await fs.writeFile(full, content);
       }
       return { commitSha: "deadbeefcafef00d", newlyTerminalRuns: [] };
+    },
+    async openCommittedReads() {
+      return null;
     },
   };
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; missing methods surface as a precise failure via the proxy
