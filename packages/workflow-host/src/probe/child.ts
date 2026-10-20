@@ -90,6 +90,7 @@ async function computeProbePayload(
   // resolves. Built-ins-only when the closure ships no `interchange.directors`.
   const directors = await loadWorkflowDirectorRegistryFromClosure({
     packageDir,
+    definition,
   });
   const walk = walkCapabilities(definition, directors, pluginToolDefinitions);
   // Fail closed on an unresolved director: the runtime does not re-gate
