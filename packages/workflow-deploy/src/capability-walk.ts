@@ -85,6 +85,7 @@ import type { GrantEffect, GrantOrigin, GrantWalkSnapshot } from "@intx/types";
 import type { MailAccept } from "@intx/types/mail-accept";
 import {
   EXECUTABLE_STEP_DESCENT,
+  extractAgent,
   walkNestedWorkflowSteps,
 } from "@intx/workflow/definition";
 import type { WorkflowDefinition } from "@intx/workflow/definition";
@@ -353,24 +354,6 @@ function emptyGrantSet(): GrantSet {
     effects: new Map(),
     credentialConsumers: new Set<string>(),
   };
-}
-
-/**
- * Project a primitive to its agent definition when it carries one.
- * `step` and `map` are the agent-carrying shapes today; other
- * primitives have no agent, so they receive only the trigger-derived
- * grant set.
- */
-function extractAgent(
-  primitive: WorkflowDefinition["steps"][string],
-): AgentDefinition<BaseEnv> | null {
-  if (primitive.kind === "step") {
-    return primitive.agent;
-  }
-  if (primitive.kind === "map") {
-    return primitive.step.agent;
-  }
-  return null;
 }
 
 /**
