@@ -404,6 +404,7 @@ export function createRunRoutes({
         tenantId: tenant.id,
         resource: `workflow-run:${resolvedRunId}`,
         action: "read",
+        consumer: c.get("consumer"),
       });
 
       if (!allowed) {

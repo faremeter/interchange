@@ -256,6 +256,16 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(await trustRows()).toHaveLength(0);
     });
 
+    test("a grant scoped to a run consumer does not authorize a session", async () => {
+      const [scoped] = grantsFor(["read"]);
+      if (scoped === undefined) throw new Error("expected one grant");
+      const app = await setup([
+        { ...scoped, conditions: { tool: "action:x" } },
+      ]);
+      const res = await app.request(`/api/tenants/${TENANT_ID}/federation`);
+      expect(res.status).toBe(403);
+    });
+
     test("an admin can establish and revoke a trust", async () => {
       const app = await setup(ADMIN);
       expect((await createTrust(app)).status).toBe(201);

@@ -35,6 +35,12 @@ export type AuthorizeGrantCheck = {
   tenantId: string;
   resource: string;
   action: string;
+  /**
+   * The run-token consumer, or `undefined` for a caller that is not one; see
+   * `TenantEnv`. Required so that no request-driven check can forget it: a
+   * check without the consumer would skip a `{tool}`-scoped deny grant.
+   */
+  consumer: string | undefined;
 };
 
 /**
@@ -53,6 +59,7 @@ export function createAuthorizeGrant({
     tenantId,
     resource,
     action,
+    consumer,
   }) {
     const result = await authorize(
       grantStore,
@@ -60,7 +67,10 @@ export function createAuthorizeGrant({
       tenantId,
       resource,
       action,
-      { registry: conditionRegistry },
+      {
+        registry: conditionRegistry,
+        ...(consumer !== undefined ? { consumer } : {}),
+      },
     );
     if (result.effect === "allow") return true;
 
@@ -71,6 +81,7 @@ export function createAuthorizeGrant({
         tenantId,
         resource,
         action,
+        consumer: consumer ?? null,
         effect: result.effect ?? "no_match",
         resolvedBy: result.resolvedBy?.id ?? null,
       },
@@ -100,6 +111,7 @@ export function createRequireGrant(deps: CreateRequireGrantDeps): RequireGrant {
         tenantId: c.get("tenant").id,
         resource: resolvedResource,
         action,
+        consumer: c.get("consumer"),
       });
       if (allowed) {
         await next();
@@ -149,6 +161,7 @@ export async function denyUnlessAssetGrant(args: {
     tenantId: args.c.get("tenant").id,
     resource: `asset:${args.assetId}`,
     action: "read",
+    consumer: args.c.get("consumer"),
   });
   if (allowed) return null;
   return errorResponse(
