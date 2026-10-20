@@ -274,6 +274,7 @@ List federation trust relationships
 Query: cursor?, limit?
 
 200: unknown -- Federation trusts
+403: ErrorResponse -- Insufficient grants
 
 ### POST /api/tenants/:tenantId/federation
 Establish federation trust
@@ -284,11 +285,13 @@ Body: CreateFederationTrust
 
 201: FederationTrust -- Trust established
 400: ErrorResponse -- Validation error
+403: ErrorResponse -- Insufficient grants
 
 ### DELETE /api/tenants/:tenantId/federation/:targetTenantId
 Revoke federation trust
 
 204: (no content) -- Trust revoked
+403: ErrorResponse -- Insufficient grants
 404: ErrorResponse -- Trust not found
 
 ## Principals

@@ -513,7 +513,7 @@ export function mountHubRoutes(
   app.route("/api/tenants/:tenantId", createObservabilityRoutes());
   app.route(
     "/api/tenants/:tenantId/federation",
-    createTenantFederationRoutes({ db }),
+    createTenantFederationRoutes({ db, requireGrant }),
   );
   app.route("/api/tenants/:tenantId/agents/:agentId", createAgentDataRoutes());
 
