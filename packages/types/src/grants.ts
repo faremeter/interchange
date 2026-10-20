@@ -79,6 +79,9 @@ export const GrantResponse = type({
 export const EvaluateRequest = type({
   resource: "string",
   action: "string",
+  "consumer?": type("string > 0").describe(
+    "The workflow consumer to evaluate as, such as `action:<handler>` or `tool:<package>`. A grant scoped to a consumer by a `{ tool }` condition matches only that consumer; without it, such a grant matches nothing.",
+  ),
 });
 
 export const MatchedGrant = type({

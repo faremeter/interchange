@@ -450,7 +450,7 @@ Revoke a grant
 ### POST /api/tenants/:tenantId/principals/:principalId/evaluate
 Evaluate grants for a principal
 
-Evaluates what would happen if a principal attempted an operation. Returns the resolved effect and all matching grants. Useful for debugging authorization.
+Evaluates what would happen if a principal attempted an operation. Returns the resolved effect and all matching grants. Useful for debugging authorization. Pass `consumer` to evaluate as a workflow run token's consumer, so grants scoped to that consumer match.
 
 Body: EvaluateRequest
 
@@ -1452,8 +1452,10 @@ Source: packages/types/src/credentials.ts
 Source: packages/types/src/common.ts
 
 ### EvaluateRequest
-`{ action: string, resource: string }`
+`{ action: string, resource: string, consumer?: string >= 1 }`
 Source: packages/types/src/grants.ts
+
+**consumer**: The workflow consumer to evaluate as, such as `action:<handler>` or `tool:<package>`. A grant scoped to a consumer by a `{ tool }` condition matches only that consumer; without it, such a grant matches nothing.
 
 ### EvaluateResult
 `{ effect: "allow" | "ask" | "deny", matchingGrants: { action: string, effect: "allow" | "ask" | "deny", id: string, origin: "creator" | "invoker" | "role" | "system", resource: string, specificity?: number }[] }`
