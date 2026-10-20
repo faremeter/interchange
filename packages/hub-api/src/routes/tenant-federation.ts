@@ -110,6 +110,8 @@ export function createTenantFederationRoutes({
         201: jsonResponse("Trust established", FederationTrust),
         400: jsonResponse("Validation error", ErrorResponse),
         403: jsonResponse("Insufficient grants", ErrorResponse),
+        404: jsonResponse("Target tenant not found", ErrorResponse),
+        409: jsonResponse("Trust relationship already exists", ErrorResponse),
       },
     }),
     requireGrant("federation:*", "create"),
