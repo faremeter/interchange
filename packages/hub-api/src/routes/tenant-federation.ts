@@ -12,6 +12,7 @@ import {
 } from "@intx/types";
 
 import type { TenantEnv } from "../context";
+import { idResource, type RequireGrant } from "../middleware/grant";
 import { errorResponse } from "../error-response";
 import { ts } from "../format";
 import { generateId } from "@intx/hub-common";
@@ -26,10 +27,12 @@ import { jsonResponse } from "../openapi";
 
 export type CreateTenantFederationRoutesDeps = {
   db: DB["db"];
+  requireGrant: RequireGrant;
 };
 
 export function createTenantFederationRoutes({
   db,
+  requireGrant,
 }: CreateTenantFederationRoutesDeps): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
 
@@ -44,8 +47,10 @@ export function createTenantFederationRoutes({
           "Federation trusts",
           paginatedSchema(FederationTrust),
         ),
+        403: jsonResponse("Insufficient grants", ErrorResponse),
       },
     }),
+    requireGrant("federation:*", "read"),
     async (c) => {
       const tenantCtx = c.get("tenant");
       const { limit, cursor } = parsePageParams({
@@ -104,8 +109,10 @@ export function createTenantFederationRoutes({
       responses: {
         201: jsonResponse("Trust established", FederationTrust),
         400: jsonResponse("Validation error", ErrorResponse),
+        403: jsonResponse("Insufficient grants", ErrorResponse),
       },
     }),
+    requireGrant("federation:*", "create"),
     validator("json", CreateFederationTrust),
     async (c) => {
       const tenantCtx = c.get("tenant");
@@ -162,9 +169,11 @@ export function createTenantFederationRoutes({
         204: {
           description: "Trust revoked",
         },
+        403: jsonResponse("Insufficient grants", ErrorResponse),
         404: jsonResponse("Trust not found", ErrorResponse),
       },
     }),
+    requireGrant(idResource("federation", "targetTenantId"), "manage"),
     async (c) => {
       const tenantCtx = c.get("tenant");
       const targetTenantId = c.req.param("targetTenantId");
