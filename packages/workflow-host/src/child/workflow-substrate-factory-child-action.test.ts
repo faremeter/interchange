@@ -19,6 +19,7 @@ import path from "node:path";
 
 import { generateKeyPair } from "@intx/crypto";
 import type { KeyPair } from "@intx/types/runtime";
+import { createDefaultDirectorRegistry } from "@intx/agent";
 import { actionConsumer, evaluateGrants } from "@intx/authz";
 import type { GrantRule } from "@intx/authz";
 import {
@@ -301,6 +302,7 @@ function makeDeps(
       parentGrants.filter((grantRule) =>
         keepInheritedGrant(grantRule, declared),
       ),
+    directors: createDefaultDirectorRegistry(),
   };
 }
 
