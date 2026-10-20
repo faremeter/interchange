@@ -14,6 +14,7 @@ import {
   createGrantStore,
   createApprovalStore,
   createPrincipalKeyStore,
+  createRunTokenStore,
   createSignalCorrelationStore,
 } from "@intx/db";
 import type { ConditionRegistry, GrantStore } from "@intx/types/authz";
@@ -80,6 +81,7 @@ import {
   createAgentStateReceivePackDeny,
 } from "./routes/agent-state-git";
 import { createGitTokenAuth } from "./middleware/git-token-auth";
+import { createRunTokenAuth } from "./middleware/run-token-auth";
 
 const log = getLogger(["hub", "app"]);
 
@@ -283,6 +285,17 @@ export function mountHubRoutes(
       createGitTokenAuth({ db }),
     );
   }
+
+  // A workflow run token authenticates as its run principal. It mounts ahead
+  // of resolveTenant, which then skips the session lookup, and it refuses
+  // every route outside its allow-list. Any other request passes through.
+  app.use(
+    "/api/tenants/:tenantId/*",
+    createRunTokenAuth({
+      db,
+      runTokenStore: createRunTokenStore({ db, cipher: credentialCipher }),
+    }),
+  );
 
   // Tenant-scoped middleware -- require auth + tenant membership for any
   // path under /api/tenants/:tenantId/*. Must be registered before routes
