@@ -6,7 +6,11 @@ import path from "node:path";
 import { defineAgent, UnknownDirectorIdError } from "@intx/agent";
 import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import {
+  childWorkflow,
   defineWorkflow,
+  loop,
+  onTrigger,
+  sleep,
   step,
   type Primitive,
   type WorkflowDefinition,
@@ -547,6 +551,52 @@ describe("loadWorkflowDirectorRegistryFromClosure", () => {
     expect(() => registry.resolve(registry.buildDefaultRef())).not.toThrow();
   });
 
+  const nestedBodies: Record<string, (body: WorkflowDefinition) => Primitive> =
+    {
+      loop: (body) =>
+        loop({
+          body,
+          while: "continue",
+          carry: "carry",
+          maxIterations: 1,
+          onExhausted: "done",
+        }),
+      childWorkflow: (body) => childWorkflow({ definition: body }),
+      onTrigger: (body) =>
+        onTrigger({ on: { type: "mail", to: "nested@example.com" }, body }),
+    };
+
+  for (const [kind, nest] of Object.entries(nestedBodies)) {
+    test(`resolves a director referenced only inside a ${kind} body`, async () => {
+      const id = "@fixture/director-pkg/nested";
+      const packageDir = await createClosureFixture({
+        workflowEntry: "./workflow.js",
+        entrySource: DEFAULT_EXPORT_ENTRY,
+        dependencies: [
+          {
+            name: "@fixture/director-pkg",
+            directorsEntry: "./directors.js",
+            directorsSource: dependencyDirectorEntry(id),
+          },
+        ],
+      });
+      const definition = defineWorkflow({
+        id: `nested-${kind}`,
+        steps: {
+          nested: nest(definitionNamingDirectors(id)),
+          done: sleep({ duration: 1, after: ["nested"] }),
+        },
+      });
+
+      const registry = await loadWorkflowDirectorRegistryFromClosure({
+        packageDir,
+        definition,
+      });
+
+      expect(registry.resolve({ id, config: {} }).id).toBe(id);
+    });
+  }
+
   test("composes the workflow package's own directors with a dependency's", async () => {
     const packageDir = await createClosureFixture({
       workflowEntry: "./workflow.js",
@@ -935,42 +985,12 @@ export const b = make("@fixture/director-pkg/b");
     ).toThrow(UnknownDirectorIdError);
   });
 
-  test("does not import a directors module reached by an absolute prefix", async () => {
+  test("rejects an absolute director package prefix", async () => {
     const packageDir = await createClosureFixture({
       workflowEntry: "./workflow.js",
       entrySource: DEFAULT_EXPORT_ENTRY,
     });
-    const escapedDir = await fs.mkdtemp(
-      path.join(os.tmpdir(), "escaped-abs-directors-"),
-    );
-    createdDirs.push(escapedDir);
-    await fs.writeFile(
-      path.join(escapedDir, "package.json"),
-      JSON.stringify(
-        {
-          name: "escaped-abs",
-          version: "1.0.0",
-          interchange: { directors: "./directors.js" },
-        },
-        null,
-        2,
-      ),
-    );
-    await fs.writeFile(
-      path.join(escapedDir, "directors.js"),
-      `throw new Error("escaped directors module must not be imported");\n`,
-    );
-
-    const directorId = `${escapedDir}/coding`;
-    // POSIX path.join discards the workflow root when a later segment is
-    // absolute; skip when this host would not actually escape.
-    if (
-      path.join(packageDir, "node_modules", escapedDir) !== escapedDir &&
-      path.join(packageDir, "node_modules", escapedDir, "package.json") !==
-        path.join(escapedDir, "package.json")
-    ) {
-      return;
-    }
+    const directorId = "/absolute/director/coding";
 
     const registry = await loadWorkflowDirectorRegistryFromClosure({
       packageDir,
