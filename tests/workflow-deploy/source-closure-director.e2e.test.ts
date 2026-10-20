@@ -7,11 +7,14 @@
 //    ships `@wf/director-lib/coding`. The agent's director ref resolves
 //    against the sibling member's module.
 //
+//  - CHILD: `@wf/app-child` references that sibling director only in a
+//    spawned child workflow, exercising child grant and registry wiring.
+//
 //  - EXTERNAL: `@wf/app-ext` depends on `wf-ext-director` served from an
 //    in-process npm registry (reached via `SIDECAR_TOOL_REGISTRIES`), whose
 //    tarball's `interchange.directors` module ships `wf-ext-director/coding`.
 //
-// Both prove the same thing end to end: the probe advertises
+// All prove the same thing end to end: the probe advertises
 // `director:<dep id>` for approval, the frozen closure carries the dep
 // package, the run-child's registry composes the dep's factory, and the
 // custom director (not the built-in default) produces the first inference
@@ -80,6 +83,15 @@ const memberAddress = deriveRunAddress({
   domain: DEPLOYMENT_DOMAIN,
 });
 
+const CHILD_PACKAGE_NAME = "@wf/app-child";
+const CHILD_WORKFLOW_ID = "wf_closure_director_child";
+const CHILD_STEP_ID = "spawn";
+const CHILD_DEPLOYMENT_ID = generateId("workflowRun");
+const childAddress = deriveRunAddress({
+  runId: CHILD_DEPLOYMENT_ID,
+  domain: DEPLOYMENT_DOMAIN,
+});
+
 const EXT_PACKAGE_NAME = "wf-ext-director";
 const EXT_PACKAGE_VERSION = "1.0.0";
 const EXT_TARBALL_PATH = `/${EXT_PACKAGE_NAME}/-/${EXT_PACKAGE_NAME}-${EXT_PACKAGE_VERSION}.tgz`;
@@ -107,17 +119,17 @@ const HUB_PRINCIPAL = { kind: "hub" } as const;
 
 const repoRoot = path.resolve(import.meta.dir, "..", "..");
 
-// A single-step agent workflow whose agent names a director ref by id; the
-// factory for that id lives in a dependency package's directors module, not
-// here.
+// The agent names a dependency's director, either at the top level or only
+// inside a spawned child.
 function entrySource(spec: {
   workflowId: string;
   stepId: string;
   address: string;
   directorId: string;
+  spawnChild?: boolean;
 }): string {
   return `
-import { defineWorkflow, step } from "@intx/workflow/definition";
+import { childWorkflow, defineWorkflow, step } from "@intx/workflow/definition";
 import { defineAgent } from "@intx/agent";
 
 const agent = defineAgent({
@@ -135,7 +147,16 @@ export const workflow = defineWorkflow({
   id: ${JSON.stringify(spec.workflowId)},
   trigger: { type: "mail", to: ${JSON.stringify(spec.address)} },
   steps: {
-    ${spec.stepId}: step({ agent }),
+    ${spec.stepId}: ${
+      spec.spawnChild
+        ? `childWorkflow({
+      definition: defineWorkflow({
+        id: ${JSON.stringify(`${spec.workflowId}-body`)},
+        steps: { work: step({ agent }) },
+      }),
+    })`
+        : "step({ agent })"
+    },
   },
 });
 `;
@@ -312,7 +333,7 @@ async function deployAndRun(spec: {
   stepId: string;
   anchorRunId: string;
   address: string;
-}): Promise<void> {
+}): Promise<string> {
   const source: WorkflowDefinitionAssetSource = {
     kind: "asset",
     assetId: SOURCE_ASSET_ID,
@@ -410,6 +431,7 @@ async function deployAndRun(spec: {
       `closure-director e2e: expected RunCompleted for ${spec.workflowId}, got ${terminal.type}: ${JSON.stringify(terminal.body)}\nevents: ${JSON.stringify(events)}\n${env.sidecarDiagnostics()}`,
     );
   }
+  return runId;
 }
 
 const approvalsFor = (address: string, directorId: string): ApprovalSet =>
@@ -466,6 +488,17 @@ describe.skipIf(!harnessDbEnvAvailable())(
           marker: MEMBER_DIRECTOR_MARKER,
         }),
         "member-directors",
+      );
+      const childWorkflowJs = await bundleModule(
+        scratchDir,
+        entrySource({
+          workflowId: CHILD_WORKFLOW_ID,
+          stepId: CHILD_STEP_ID,
+          address: childAddress,
+          directorId: MEMBER_DIRECTOR_ID,
+          spawnChild: true,
+        }),
+        "child-entry",
       );
       const extWorkflowJs = await bundleModule(
         scratchDir,
@@ -564,9 +597,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         },
       });
 
-      // Seed the monorepo: a private workspaces root plus three members --
-      // the director library and the two apps that consume a director
-      // through it (workspace-local) and through the external registry.
+      // Seed the director library and its top-level, child-workflow, and
+      // external-registry consumers in one source asset.
       await env.hub.agentRepoStore.repoStore.initRepo(sourceRepoId);
       const writeResult = await env.hub.agentRepoStore.repoStore.writeTree(
         HUB_PRINCIPAL,
@@ -596,6 +628,16 @@ describe.skipIf(!harnessDbEnvAvailable())(
               },
             }),
             "packages/app-member/workflow.mjs": memberWorkflowJs,
+            "packages/app-child/package.json": JSON.stringify({
+              name: CHILD_PACKAGE_NAME,
+              version: PACKAGE_VERSION,
+              type: "module",
+              interchange: { workflow: WORKFLOW_ENTRY },
+              dependencies: {
+                [MEMBER_LIB_PACKAGE_NAME]: "workspace:*",
+              },
+            }),
+            "packages/app-child/workflow.mjs": childWorkflowJs,
             "packages/app-ext/package.json": JSON.stringify({
               name: EXT_APP_PACKAGE_NAME,
               version: PACKAGE_VERSION,
@@ -653,6 +695,52 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
 
       const systemTexts = env.inference.requests.flatMap(systemBlockTexts);
+      expect(
+        systemTexts.some((text) => text.includes(MEMBER_DIRECTOR_MARKER)),
+      ).toBe(true);
+    }, 180_000);
+
+    test("a spawned child's only director reference resolves from the closure", async () => {
+      const installed = await installMember({
+        packageName: CHILD_PACKAGE_NAME,
+        approvals: approvalsFor(childAddress, MEMBER_DIRECTOR_ID),
+      });
+      expect(
+        installed.approval.approvedSurface.grants.has(
+          `director:${MEMBER_DIRECTOR_ID}`,
+        ),
+      ).toBe(true);
+
+      const firstRequest = env.inference.requests.length;
+      const runId = await deployAndRun({
+        approved: installed,
+        packageName: CHILD_PACKAGE_NAME,
+        workflowId: CHILD_WORKFLOW_ID,
+        stepId: CHILD_STEP_ID,
+        anchorRunId: CHILD_DEPLOYMENT_ID,
+        address: childAddress,
+      });
+      const events = await readWorkflowRunEvents(
+        env,
+        CHILD_DEPLOYMENT_ID,
+        runId,
+      );
+      const spawned = events.find((event) => event.type === "ChildSpawned");
+      const childRunId = spawned?.body["childRunId"];
+      if (typeof childRunId !== "string") {
+        throw new Error("closure-director e2e: no spawned child run id");
+      }
+      const childEvents = await readWorkflowRunEvents(
+        env,
+        CHILD_DEPLOYMENT_ID,
+        childRunId,
+      );
+      expect(childEvents.some((event) => event.type === "RunCompleted")).toBe(
+        true,
+      );
+      const systemTexts = env.inference.requests
+        .slice(firstRequest)
+        .flatMap(systemBlockTexts);
       expect(
         systemTexts.some((text) => text.includes(MEMBER_DIRECTOR_MARKER)),
       ).toBe(true);
