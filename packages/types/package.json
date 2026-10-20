@@ -135,6 +135,11 @@
       "types": "./dist/base64.d.ts",
       "default": "./dist/base64.js"
     },
+    "./base64url": {
+      "intx-src": "./src/base64url.ts",
+      "types": "./dist/base64url.d.ts",
+      "default": "./dist/base64url.js"
+    },
     "./signals": {
       "intx-src": "./src/signals.ts",
       "types": "./dist/signals.d.ts",
