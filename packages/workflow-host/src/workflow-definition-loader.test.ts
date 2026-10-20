@@ -3,11 +3,15 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
+
+import { loadVerifiedWorkflowDefinitionFromClosure } from "./child/verified-definition-loader";
 import {
   loadWorkflowActionHandlersFromClosure,
   loadWorkflowDefinitionFromClosure,
   loadWorkflowDirectorRegistryFromClosure,
   loadWorkflowLoopFnsFromClosure,
+  projectWorkflowDefinitionFromClosure,
 } from "./workflow-definition-loader";
 
 // The workflow package the fixture entry modules import
@@ -48,6 +52,8 @@ interface ClosureFixtureSpec {
   readonly actionsEntry?: string;
   /** Source of the actions module, written to `actionsEntry`'s path. */
   readonly actionsSource?: string;
+  /** A plugin package laid out as a direct dependency of the workflow. */
+  readonly plugin?: { readonly name: string; readonly toolsSource: string };
 }
 
 async function createClosureFixture(spec: ClosureFixtureSpec): Promise<string> {
@@ -114,6 +120,22 @@ async function createClosureFixture(spec: ClosureFixtureSpec): Promise<string> {
     const abs = path.join(packageDir, rel);
     await fs.mkdir(path.dirname(abs), { recursive: true });
     await fs.writeFile(abs, spec.actionsSource);
+  }
+  if (spec.plugin !== undefined) {
+    const pluginDir = path.join(packageDir, "node_modules", spec.plugin.name);
+    await fs.mkdir(pluginDir, { recursive: true });
+    await fs.writeFile(
+      path.join(pluginDir, "package.json"),
+      JSON.stringify({
+        name: spec.plugin.name,
+        version: "1.0.0",
+        interchange: { tools: "./tools.js" },
+      }),
+    );
+    await fs.writeFile(
+      path.join(pluginDir, "tools.js"),
+      spec.plugin.toolsSource,
+    );
   }
   return packageDir;
 }
@@ -483,5 +505,175 @@ describe("loadWorkflowActionHandlersFromClosure", () => {
     await expect(
       loadWorkflowActionHandlersFromClosure({ packageDir }),
     ).rejects.toThrow(/escapes the workflow package directory/);
+  });
+});
+
+const PLUGIN_NAME = "@fixture/lsp";
+
+const PLUGIN_WORKFLOW_ENTRY = `
+import { defineAgent } from "@intx/agent";
+import { defineWorkflow, step } from "@intx/workflow/definition";
+export default defineWorkflow({
+  id: "plugin-workflow",
+  steps: {
+    work: step({
+      agent: defineAgent({
+        id: "agent_work",
+        systemPrompt: "work",
+        tools: [],
+        plugins: [${JSON.stringify(PLUGIN_NAME)}],
+        capabilities: [],
+        inference: { sources: [{ provider: "openai", model: "gpt-4o" }] },
+      }),
+    }),
+  },
+});
+`;
+
+function pluginToolsSource(definitions: unknown[]): string {
+  return `
+import { definePlugin } from "@intx/agent";
+export const lsp = definePlugin({
+  id: "@fixture/lsp/plugin",
+  definitions: ${JSON.stringify(definitions)},
+  factory: () => ({}),
+});
+`;
+}
+
+async function createPluginClosure(definitions: unknown[]): Promise<string> {
+  return createClosureFixture({
+    workflowEntry: "./workflow.js",
+    entrySource: PLUGIN_WORKFLOW_ENTRY,
+    plugin: { name: PLUGIN_NAME, toolsSource: pluginToolsSource(definitions) },
+  });
+}
+
+async function closureWireHash(packageDir: string): Promise<string> {
+  const definition = await loadWorkflowDefinitionFromClosure({ packageDir });
+  return computeWireDefinitionHash(
+    await projectWorkflowDefinitionFromClosure({ packageDir, definition }),
+  );
+}
+
+describe("projectWorkflowDefinitionFromClosure", () => {
+  test("projects each declared plugin with the tools the closure's copy declares", async () => {
+    const packageDir = await createPluginClosure([
+      { name: "lsp" },
+      { name: "lsp_fix", approval: "ask" },
+    ]);
+    const definition = await loadWorkflowDefinitionFromClosure({ packageDir });
+
+    const projection = await projectWorkflowDefinitionFromClosure({
+      packageDir,
+      definition,
+    });
+
+    const work = projection.steps["work"];
+    if (work === undefined || work.kind !== "step") {
+      throw new Error("expected a projected `step` at key `work`");
+    }
+    expect(work.agent.plugins).toEqual([
+      {
+        name: PLUGIN_NAME,
+        definitions: [{ name: "lsp" }, { name: "lsp_fix", approval: "ask" }],
+      },
+    ]);
+  });
+
+  test("a plugin whose tools changed moves the wire hash", async () => {
+    const before = await createPluginClosure([{ name: "lsp" }]);
+    const after = await createPluginClosure([{ name: "lsp", approval: "ask" }]);
+
+    expect(await closureWireHash(after)).not.toBe(
+      await closureWireHash(before),
+    );
+  });
+
+  // Running deployments re-verify against the hash they were approved with,
+  // so a change that moves this value fails every deployment that declares a
+  // plugin. Update it only together with an upgrade note to redeploy them.
+  test("keeps the wire hash of a plugin definition stable", async () => {
+    const packageDir = await createPluginClosure([
+      { name: "lsp" },
+      { name: "lsp_fix", approval: "ask" },
+    ]);
+
+    expect(await closureWireHash(packageDir)).toBe(
+      "dc4b77c23b1e330bcc74873dce01089f370e1c4ae08a91759ee995e6a93ee329",
+    );
+  });
+});
+
+describe("loadVerifiedWorkflowDefinitionFromClosure", () => {
+  test("accepts a closure whose plugin tools match the approved hash", async () => {
+    const packageDir = await createPluginClosure([{ name: "lsp" }]);
+
+    const definition = await loadVerifiedWorkflowDefinitionFromClosure({
+      packageDir,
+      approvedHash: await closureWireHash(packageDir),
+    });
+
+    expect(definition.id).toBe("plugin-workflow");
+  });
+
+  test("routes the plugin tools import through importModule", async () => {
+    const packageDir = await createPluginClosure([{ name: "lsp" }]);
+    const imported: string[] = [];
+
+    await loadVerifiedWorkflowDefinitionFromClosure({
+      packageDir,
+      approvedHash: await closureWireHash(packageDir),
+      importModule: (url) => {
+        imported.push(url);
+        return import(url) as Promise<unknown>;
+      },
+    });
+
+    expect(imported.some((url) => url.endsWith("/tools.js"))).toBe(true);
+  });
+
+  test("refuses a closure whose plugin tools drifted from the approved hash", async () => {
+    const approved = await createPluginClosure([{ name: "lsp" }]);
+    const drifted = await createPluginClosure([
+      { name: "lsp" },
+      { name: "rm" },
+    ]);
+
+    await expect(
+      loadVerifiedWorkflowDefinitionFromClosure({
+        packageDir: drifted,
+        approvedHash: await closureWireHash(approved),
+      }),
+    ).rejects.toThrow(/does not match the approved hash/);
+  });
+
+  // Approvals made before plugin tools were hashed recorded each plugin by
+  // name only. No fallback accepts them; those workflows must be redeployed.
+  test("refuses a hash approved when plugins were hashed by name only", async () => {
+    const packageDir = await createPluginClosure([{ name: "lsp" }]);
+    const definition = await loadWorkflowDefinitionFromClosure({ packageDir });
+    const projection = await projectWorkflowDefinitionFromClosure({
+      packageDir,
+      definition,
+    });
+    const work = projection.steps["work"];
+    if (work === undefined || work.kind !== "step") {
+      throw new Error("expected a projected `step` at key `work`");
+    }
+    const nameOnlyHash = await computeWireDefinitionHash({
+      ...projection,
+      steps: {
+        ...projection.steps,
+        work: { ...work, agent: { ...work.agent, plugins: [PLUGIN_NAME] } },
+      },
+    });
+
+    await expect(
+      loadVerifiedWorkflowDefinitionFromClosure({
+        packageDir,
+        approvedHash: nameOnlyHash,
+      }),
+    ).rejects.toThrow(/does not match the approved hash/);
   });
 });

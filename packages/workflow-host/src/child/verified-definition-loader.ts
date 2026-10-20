@@ -3,10 +3,11 @@
 // A source-ref deployment's runnable definition is the evaluated pinned code
 // closure, not an on-disk `workflow.json`. `loadVerifiedWorkflowDefinitionFromClosure`
 // evaluates that closure to a live `WorkflowDefinition` and re-verifies it by
-// project-then-hash: it projects the live definition back to its inert form,
-// hashes it (`computeLiveDefinitionHash`), and refuses to return a definition
-// whose recompute does not match the hub-approved hash. A mismatch throws --
-// fail closed, no fallback and no coercion.
+// project-then-hash: it projects the live definition back to its inert form
+// (with each declared plugin's tools read from the same closure), hashes it,
+// and refuses to return a definition whose recompute does not match the
+// hub-approved hash. A mismatch throws -- fail closed, no fallback and no
+// coercion.
 //
 // The re-verify barrier is load-bearing because the approved hash arrives
 // OUT-OF-BAND from the bytes being checked (a signed spawn env the closure
@@ -18,10 +19,13 @@
 // hashes a different projection and never fires when the run log already carries
 // a `RunStarted`, so it is skipped on resume.
 
-import { computeLiveDefinitionHash } from "@intx/workflow";
+import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import type { WorkflowDefinition } from "@intx/workflow";
 
-import { loadWorkflowDefinitionFromClosure } from "../workflow-definition-loader";
+import {
+  loadWorkflowDefinitionFromClosure,
+  projectWorkflowDefinitionFromClosure,
+} from "../workflow-definition-loader";
 
 export interface LoadVerifiedWorkflowDefinitionFromClosureOpts {
   /**
@@ -39,8 +43,8 @@ export interface LoadVerifiedWorkflowDefinitionFromClosureOpts {
    */
   approvedHash: string;
   /**
-   * Test seam forwarded to `loadWorkflowDefinitionFromClosure` for the
-   * workflow entry's dynamic import. Production omits it and the entry is
+   * Test seam for the dynamic imports of the workflow entry and of each
+   * declared plugin's tools module. Production omits it and both are
    * imported natively.
    */
   importModule?: (importUrl: string) => Promise<unknown>;
@@ -52,8 +56,8 @@ export interface LoadVerifiedWorkflowDefinitionFromClosureOpts {
  * it. The inert projection is a non-executable approval surface, so the runtime
  * needs the live definition the closure evaluates to. The re-verify projects
  * that live definition back to its inert form and hashes it
- * (`computeLiveDefinitionHash`), matching the hub-approved wire hash by byte
- * equality; a divergent closure fails closed here and never runs.
+ * (`projectWorkflowDefinitionFromClosure`), matching the hub-approved wire
+ * hash by byte equality; a divergent closure fails closed here and never runs.
  */
 export async function loadVerifiedWorkflowDefinitionFromClosure(
   opts: LoadVerifiedWorkflowDefinitionFromClosureOpts,
@@ -64,7 +68,15 @@ export async function loadVerifiedWorkflowDefinitionFromClosure(
       ? { importModule: opts.importModule }
       : {}),
   });
-  const recomputed = await computeLiveDefinitionHash(definition);
+  const recomputed = await computeWireDefinitionHash(
+    await projectWorkflowDefinitionFromClosure({
+      packageDir: opts.packageDir,
+      definition,
+      ...(opts.importModule !== undefined
+        ? { importModule: opts.importModule }
+        : {}),
+    }),
+  );
   if (recomputed !== opts.approvedHash) {
     throw new Error(
       `workflow-host verified-definition loader: recomputed wire hash ${recomputed} for the source-ref closure at ${opts.packageDir} does not match the approved hash ${opts.approvedHash}; refusing to run a definition that no longer projects to the hub-approved content`,

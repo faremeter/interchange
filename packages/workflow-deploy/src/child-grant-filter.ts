@@ -17,11 +17,10 @@
 
 import type { DirectorRegistry } from "@intx/agent";
 import { matchPattern } from "@intx/authz";
-import type { WorkflowDefinition } from "@intx/workflow";
+import type { PluginToolDefinitions, WorkflowDefinition } from "@intx/workflow";
 import {
   collectCredentialConsumers,
   walkCapabilities,
-  type PluginToolDefinitions,
 } from "./capability-walk";
 
 /**

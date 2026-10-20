@@ -153,6 +153,8 @@ The `grantRequirements` field on a workflow definition is a grant requirements m
 
 A code-sourced workflow definition is approved by **content hash**, not by asset id. Approval computes `computeWireDefinitionHash` over the definition's **inert wire projection** (`projectLiveToInert` — tool factories reified to plain data, model sources canonicalized to `(provider, model)`, credentials stripped) and records that hash as the version's approved identity. The inert projection is a deliberately non-executable approval surface; the runtime evaluates the pinned code to the live definition and runs that.
 
+A declared plugin package projects as its name plus the tool declarations (name and approval mark) that the closure's copy of the package exports. The definition names only the package, so the probe, the sidecar and the run child each load those declarations from their closure before they project. A plugin version that adds a tool, drops a tool or changes a tool's approval mark therefore changes the wire hash, even when the workflow code is unchanged.
+
 ### The re-verify barrier
 
 At every definition **load boundary** — the top-level run (fresh, resumed, or restored), and each referenced-definition spawn — the loader recomputes the wire hash and refuses to proceed unless it matches the approved hash. A mismatch throws; there is no fallback. This catches a definition that diverged from what was approved (a redeploy/resume divergence, or a post-approval mutation of the on-disk asset that the substrate's hub-writes / sidecar-reads authorization does not itself cover for a direct filesystem write).

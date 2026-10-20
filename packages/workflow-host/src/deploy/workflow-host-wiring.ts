@@ -61,9 +61,10 @@ import {
   STEP_ID_PATTERN,
   type WorkflowDefinition,
 } from "@intx/workflow/definition";
-import { projectLiveToInert } from "@intx/workflow/projection";
-
-import { loadWorkflowDefinitionFromClosure } from "../workflow-definition-loader";
+import {
+  loadWorkflowDefinitionFromClosure,
+  projectWorkflowDefinitionFromClosure,
+} from "../workflow-definition-loader";
 import { readRunGrants, runGrantsPath } from "../run-grants";
 import {
   wrapHubTransportAsMailBus,
@@ -1663,9 +1664,10 @@ export function createSidecarDeployRouter<
     /**
      * The runnable definition, projected to its inert wire shape. Source-ref is
      * the only deploy lineage, so this is always the closure evaluation
-     * (`projectLiveToInert(applied.definition)`), NOT a frame-carried inline
-     * definition (the deploy frame carries none). Both the deploy path and the
-     * boot-time restore derive it the same way, from the materialized closure.
+     * (`projectWorkflowDefinitionFromClosure(applied)`), NOT a frame-carried
+     * inline definition (the deploy frame carries none). Both the deploy path
+     * and the boot-time restore derive it the same way, from the materialized
+     * closure.
      */
     definition: WorkflowProjectionDefinition;
     sources: NonNullable<AgentDeployFrame["workflow"]>["sources"];
@@ -2482,7 +2484,7 @@ export function createSidecarDeployRouter<
         projection.sourceRef,
       );
       const validatedDefinition = WorkflowProjectionDefinition(
-        projectLiveToInert(applied.definition),
+        await projectWorkflowDefinitionFromClosure(applied),
       );
       if (validatedDefinition instanceof type.errors) {
         throw new Error(
@@ -3005,7 +3007,7 @@ export function createSidecarDeployRouter<
             // the only lineage: re-materialize the pinned closure and evaluate
             // the pinned code to the live definition, then project it to the
             // inert wire shape -- the SAME computation the deploy path applies
-            // (`WorkflowProjectionDefinition(projectLiveToInert(...))`). The
+            // (`projectWorkflowDefinitionFromClosure(applied)`). The
             // closure IS the source of truth; no on-disk definition is read.
             // The helper reclaims the instance dir first, which is safe here
             // because the prior process (the only reader) is dead, each
@@ -3026,7 +3028,7 @@ export function createSidecarDeployRouter<
               record.sourceRef,
             );
             const validatedDefinition = WorkflowProjectionDefinition(
-              projectLiveToInert(applied.definition),
+              await projectWorkflowDefinitionFromClosure(applied),
             );
             if (validatedDefinition instanceof type.errors) {
               throw new Error(

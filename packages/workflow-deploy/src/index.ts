@@ -21,7 +21,6 @@ export {
   walkCapabilities,
   type CapabilityWalkResult,
   type GrantDeclarations,
-  type PluginToolDefinitions,
 } from "./capability-walk";
 export {
   collectDeclaredCredentialConsumers,

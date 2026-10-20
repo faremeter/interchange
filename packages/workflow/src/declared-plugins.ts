@@ -14,7 +14,19 @@
 // by-`ref` body is an independent asset with its own approval surface and
 // is not descended into here, matching the walk.
 
+import type { ToolDeclaration } from "@intx/agent";
+
 import type { Primitive, WorkflowDefinition } from "./definition/index";
+
+/**
+ * Static tool declarations each declared plugin package contributes, keyed by
+ * the package name an agent lists in `AgentDefinition.plugins`. The definition
+ * only names a plugin, so callers load these from the materialized closure.
+ */
+export type PluginToolDefinitions = ReadonlyMap<
+  string,
+  readonly ToolDeclaration[]
+>;
 
 /**
  * Collect the deduplicated union of every plugin-package name declared by

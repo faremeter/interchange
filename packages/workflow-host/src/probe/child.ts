@@ -70,7 +70,20 @@ async function computeProbePayload(
   walkCapabilities: WalkCapabilities,
 ): Promise<ProbeResultPayload> {
   const definition = await loadWorkflowDefinitionFromClosure({ packageDir });
-  const projection = projectLiveToInert(definition);
+  // Load the static tool `definitions` each declared plugin package
+  // contributes from the SAME closure, so the walk emits `tool:<name>`
+  // grants for plugin-contributed tools (Tier-2 governance). A plugin
+  // package reaches an agent only through `env.plugins`, so its tool grant
+  // surface is invisible to the walk otherwise -- the run-child would then
+  // load the plugin from the closure and the reactor would fail closed on
+  // an un-approved `tool:<name>`. The projection hashes the same
+  // declarations, so a plugin whose tools change gets a new wire hash.
+  const pluginToolDefinitions =
+    await loadWorkflowPluginToolDefinitionsFromClosure({
+      packageDir,
+      plugins: collectDeclaredPluginNames(definition),
+    });
+  const projection = projectLiveToInert(definition, pluginToolDefinitions);
   const wireHash = await computeWireDefinitionHash(projection);
   // Compose the director registry from the SAME closure the run-child will,
   // so the `director:<id>` grants advertised here match what the runtime
@@ -78,20 +91,6 @@ async function computeProbePayload(
   const directors = await loadWorkflowDirectorRegistryFromClosure({
     packageDir,
   });
-  // Load the static tool `definitions` each declared plugin package
-  // contributes from the SAME closure, so the walk emits `tool:<name>`
-  // grants for plugin-contributed tools (Tier-2 governance). A plugin
-  // package reaches an agent only through `env.plugins`, so its tool grant
-  // surface is invisible to the walk otherwise -- the run-child would then
-  // load the plugin from the closure and the reactor would fail closed on
-  // an un-approved `tool:<name>`. Loading here (over the frozen closure the
-  // run-child also materializes from) keeps the approved snapshot and the
-  // runtime plugin in lockstep.
-  const pluginToolDefinitions =
-    await loadWorkflowPluginToolDefinitionsFromClosure({
-      packageDir,
-      plugins: collectDeclaredPluginNames(definition),
-    });
   const walk = walkCapabilities(definition, directors, pluginToolDefinitions);
   // Fail closed on an unresolved director: the runtime does not re-gate
   // `director:<id>` against the approved grant set, so this advertisement is
