@@ -464,6 +464,16 @@ describe.skipIf(!harnessDbEnvAvailable())(
         );
       }
       expect(approved.projection.id).toBe("wf_posix_lsp");
+      // The approved hash covers the plugin's tools, not just its name.
+      expect(approved.projection.steps).toMatchObject({
+        [STEP_ID]: {
+          agent: {
+            plugins: [
+              { name: LSP_PACKAGE_NAME, definitions: [{ name: "lsp" }] },
+            ],
+          },
+        },
+      });
 
       // The closure carries the workflow package (source) and the plugin
       // package (registry entry with an integrity SRI).

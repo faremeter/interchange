@@ -59,6 +59,7 @@ import type {
   Trigger,
   WorkflowDefinition,
 } from "./definition/index";
+import type { PluginToolDefinitions } from "./declared-plugins";
 import { collectSidecarCapabilityRules } from "./sidecar-capabilities";
 
 // ---------------------------------------------------------------------------
@@ -82,6 +83,13 @@ export interface InertToolFactory {
   readonly definitions: readonly InertToolDeclaration[];
 }
 
+/** A plugin package an agent declares, with the tool declarations the
+ * closure's copy of that package contributes. */
+export interface InertPlugin {
+  readonly name: string;
+  readonly definitions: readonly InertToolDeclaration[];
+}
+
 /** A model source canonicalized to its `(provider, model)` identity.
  * Credential and per-source parameter material is deliberately excluded. */
 export interface InertModelSource {
@@ -100,12 +108,12 @@ export interface InertAgent {
   readonly capabilities: readonly string[];
   readonly toolFactories: readonly InertToolFactory[];
   /**
-   * Plugin-package names the agent declares (`AgentDefinition.plugins`).
-   * Part of the hashed grant surface: a plugin package contributes tool
-   * grants (via its static `definitions`) that the operator approves, so a
-   * tampered plugin set must move the wire hash and fail re-verify.
+   * The plugin packages the agent declares (`AgentDefinition.plugins`) and
+   * the tools each contributes. The tools are hashed, not just the names,
+   * because a new plugin version can add a tool, drop one, or change its
+   * approval mark without any change to the workflow code.
    */
-  readonly plugins?: readonly string[];
+  readonly plugins?: readonly InertPlugin[];
   readonly modelSources: readonly InertModelSource[];
   readonly tags?: Readonly<Record<string, string>>;
   readonly toolPackagePins?: readonly ToolPackagePin[];
@@ -233,13 +241,16 @@ export interface InertWorkflowDefinition {
 
 /**
  * Project a live `WorkflowDefinition` into its inert, pure-plain-data
- * needs-surface projection. Throws on any unreifiable step shape or
- * corrupted tool grant surface.
+ * needs-surface projection. `pluginTools` must carry every plugin package an
+ * agent declares, loaded from the closure the definition was evaluated from.
+ * Throws on any unreifiable step shape, corrupted tool grant surface, or
+ * declared plugin with no loaded tools.
  */
 export function projectLiveToInert(
   definition: WorkflowDefinition,
+  pluginTools: PluginToolDefinitions = new Map(),
 ): InertWorkflowDefinition {
-  return projectDefinition(definition);
+  return projectDefinition(definition, pluginTools);
 }
 
 /**
@@ -251,12 +262,14 @@ export function projectLiveToInert(
  */
 export async function computeLiveDefinitionHash(
   definition: WorkflowDefinition,
+  pluginTools: PluginToolDefinitions = new Map(),
 ): Promise<string> {
-  return computeWireDefinitionHash(projectLiveToInert(definition));
+  return computeWireDefinitionHash(projectLiveToInert(definition, pluginTools));
 }
 
 function projectDefinition(
   definition: WorkflowDefinition,
+  pluginTools: PluginToolDefinitions,
 ): InertWorkflowDefinition {
   const steps: Record<string, InertStep> = {};
   for (const stepId of definition.stepOrder) {
@@ -267,7 +280,7 @@ function projectDefinition(
           `but the steps record has no such entry`,
       );
     }
-    steps[stepId] = projectPrimitive(primitive);
+    steps[stepId] = projectPrimitive(primitive, pluginTools);
   }
   // Every step in the record must be reachable through stepOrder, else a
   // grant surface would silently drop out of the projection.
@@ -307,16 +320,19 @@ function projectDefinition(
   };
 }
 
-function projectPrimitive(primitive: Primitive): InertStep {
+function projectPrimitive(
+  primitive: Primitive,
+  pluginTools: PluginToolDefinitions,
+): InertStep {
   switch (primitive.kind) {
     case "step":
-      return projectStepPrimitive(primitive);
+      return projectStepPrimitive(primitive, pluginTools);
     case "map":
-      return projectMap(primitive);
+      return projectMap(primitive, pluginTools);
     case "loop":
-      return projectLoop(primitive);
+      return projectLoop(primitive, pluginTools);
     case "onTrigger":
-      return projectOnTrigger(primitive);
+      return projectOnTrigger(primitive, pluginTools);
     case "action":
       return projectAction(primitive);
     case "gate":
@@ -326,7 +342,7 @@ function projectPrimitive(primitive: Primitive): InertStep {
     case "sleep":
       return projectSleep(primitive);
     case "childWorkflow":
-      return projectChildWorkflow(primitive);
+      return projectChildWorkflow(primitive, pluginTools);
     case "escalation":
       return projectEscalation(primitive);
     default:
@@ -348,11 +364,14 @@ function assertUnreifiableStep(primitive: never): never {
   );
 }
 
-function projectStepPrimitive(step: StepPrimitive): InertStepStep {
+function projectStepPrimitive(
+  step: StepPrimitive,
+  pluginTools: PluginToolDefinitions,
+): InertStepStep {
   return {
     kind: "step",
     id: step.id,
-    agent: projectAgent(step.agent),
+    agent: projectAgent(step.agent, pluginTools),
     ...(step.after !== undefined ? { after: [...step.after] } : {}),
     ...(step.input !== undefined ? { input: step.input } : {}),
     ...(step.inference !== undefined ? { inference: step.inference } : {}),
@@ -368,22 +387,28 @@ function projectStepPrimitive(step: StepPrimitive): InertStepStep {
   };
 }
 
-function projectMap(primitive: MapPrimitive): InertMap {
+function projectMap(
+  primitive: MapPrimitive,
+  pluginTools: PluginToolDefinitions,
+): InertMap {
   return {
     kind: "map",
     id: primitive.id,
     over: primitive.over,
-    step: projectStepPrimitive(primitive.step),
+    step: projectStepPrimitive(primitive.step, pluginTools),
     ...(primitive.retry !== undefined ? { retry: primitive.retry } : {}),
     ...(primitive.after !== undefined ? { after: [...primitive.after] } : {}),
   };
 }
 
-function projectLoop(primitive: LoopPrimitive): InertLoop {
+function projectLoop(
+  primitive: LoopPrimitive,
+  pluginTools: PluginToolDefinitions,
+): InertLoop {
   return {
     kind: "loop",
     id: primitive.id,
-    body: projectDefinition(primitive.body),
+    body: projectDefinition(primitive.body, pluginTools),
     while: primitive.while,
     carry: primitive.carry,
     ...(primitive.input !== undefined ? { input: primitive.input } : {}),
@@ -399,10 +424,13 @@ function projectLoop(primitive: LoopPrimitive): InertLoop {
   };
 }
 
-function projectOnTrigger(primitive: OnTriggerPrimitive): InertOnTrigger {
+function projectOnTrigger(
+  primitive: OnTriggerPrimitive,
+  pluginTools: PluginToolDefinitions,
+): InertOnTrigger {
   const body: InertOnTriggerBody =
     "inline" in primitive.body
-      ? { inline: projectDefinition(primitive.body.inline) }
+      ? { inline: projectDefinition(primitive.body.inline, pluginTools) }
       : { ref: primitive.body.ref };
   return {
     kind: "onTrigger",
@@ -488,13 +516,14 @@ function projectSleep(primitive: SleepPrimitive): SleepPrimitive {
 
 function projectChildWorkflow(
   primitive: ChildWorkflowPrimitive,
+  pluginTools: PluginToolDefinitions,
 ): InertChildWorkflow {
   // Mirror `projectOnTrigger`: an inline child definition projects recursively
   // (its grant surface must survive the child->hub boundary just like the
   // parent's own steps), the internal `{ ref }` handle passes through.
   const definition: InertChildWorkflowBody =
     "inline" in primitive.definition
-      ? { inline: projectDefinition(primitive.definition.inline) }
+      ? { inline: projectDefinition(primitive.definition.inline, pluginTools) }
       : { ref: primitive.definition.ref };
   return {
     kind: "childWorkflow",
@@ -532,7 +561,10 @@ function projectEscalation(
 // operator's gated view. The grant-surface reification tests
 // (`live-inert-projector.test.ts`) lock the current field coverage; extend them
 // alongside any new grant-bearing field.
-function projectAgent(agent: AgentDefinition): InertAgent {
+function projectAgent(
+  agent: AgentDefinition,
+  pluginTools: PluginToolDefinitions,
+): InertAgent {
   return {
     id: agent.id,
     ...(agent.description !== undefined
@@ -542,7 +574,13 @@ function projectAgent(agent: AgentDefinition): InertAgent {
     ...(agent.director !== undefined ? { director: agent.director } : {}),
     capabilities: [...agent.capabilities],
     toolFactories: agent.toolFactories.map(projectToolFactory),
-    ...(agent.plugins !== undefined ? { plugins: [...agent.plugins] } : {}),
+    ...(agent.plugins !== undefined
+      ? {
+          plugins: agent.plugins.map((name) =>
+            projectPlugin(name, agent.id, pluginTools),
+          ),
+        }
+      : {}),
     modelSources: agent.inference.sources.map(projectModelSource),
     ...(agent.tags !== undefined ? { tags: { ...agent.tags } } : {}),
     ...(agent.toolPackagePins !== undefined
@@ -591,19 +629,40 @@ function projectToolFactory(
     id,
     requires: [...requires],
     definitions: definitions.map((declaration) =>
-      projectToolDeclaration(declaration, id),
+      projectToolDeclaration(declaration, `tool factory ${id}`),
+    ),
+  };
+}
+
+function projectPlugin(
+  name: string,
+  agentId: string,
+  pluginTools: PluginToolDefinitions,
+): InertPlugin {
+  const definitions = pluginTools.get(name);
+  if (definitions === undefined) {
+    throw new Error(
+      `live->inert projector: agent ${JSON.stringify(agentId)} declares ` +
+        `plugin ${JSON.stringify(name)} but no tool declarations were ` +
+        `loaded for it; its grant surface cannot be hashed`,
+    );
+  }
+  return {
+    name,
+    definitions: definitions.map((declaration) =>
+      projectToolDeclaration(declaration, `plugin ${name}`),
     ),
   };
 }
 
 function projectToolDeclaration(
   declaration: ToolDeclaration,
-  factoryId: string,
+  source: string,
 ): InertToolDeclaration {
   if (typeof declaration.name !== "string" || declaration.name.length === 0) {
     throw new Error(
-      `live->inert projector: tool factory ${factoryId} carries a ` +
-        `declaration with no name; the grant surface is corrupt`,
+      `live->inert projector: ${source} carries a declaration with no ` +
+        `name; the grant surface is corrupt`,
     );
   }
   return {

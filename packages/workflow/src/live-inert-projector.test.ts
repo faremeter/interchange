@@ -36,6 +36,7 @@ import {
 } from "@intx/types/wire-definition-hash";
 import type { InboundMailPolicy } from "@intx/types/inbound-mail-policy";
 
+import type { PluginToolDefinitions } from "./declared-plugins";
 import {
   computeLiveDefinitionHash,
   projectLiveToInert,
@@ -120,8 +121,28 @@ function baseWorkflow(): WorkflowDefinition {
   );
 }
 
-function mainStepOf(definition: WorkflowDefinition): InertStepStep {
-  const projection = projectLiveToInert(definition);
+const LSP_PLUGIN = "@intx/tools-lsp";
+const LSP_TOOLS: PluginToolDefinitions = new Map([
+  [LSP_PLUGIN, [{ name: "lsp" }]],
+]);
+
+/** The baseline agent plus one declared plugin package. */
+function mkPluginAgent(): AgentDefinition {
+  return defineAgent({
+    id: "agent_main",
+    systemPrompt: "main agent",
+    tools: [alphaTool, betaTool],
+    plugins: [LSP_PLUGIN],
+    capabilities: [...baseCapabilities],
+    inference: { sources: [OPENAI] },
+  });
+}
+
+function mainStepOf(
+  definition: WorkflowDefinition,
+  pluginTools?: PluginToolDefinitions,
+): InertStepStep {
+  const projection = projectLiveToInert(definition, pluginTools);
   const main = projection.steps["main"];
   if (main === undefined || main.kind !== "step") {
     throw new Error("expected a projected `step` at key `main`");
@@ -183,17 +204,23 @@ describe("grant-surface reification", () => {
     ]);
   });
 
-  test("projects the agent's declared plugin-package names", () => {
-    const agent = defineAgent({
-      id: "agent_main",
-      systemPrompt: "main agent",
-      tools: [],
-      plugins: ["@intx/tools-lsp"],
-      capabilities: [],
-      inference: { sources: [OPENAI] },
-    });
-    const main = mainStepOf(mkSingleStep(agent));
-    expect(main.agent.plugins).toEqual(["@intx/tools-lsp"]);
+  test("projects each declared plugin with the tools loaded for it", () => {
+    const tools: PluginToolDefinitions = new Map([
+      [LSP_PLUGIN, [{ name: "lsp" }, { name: "lsp_fix", approval: "ask" }]],
+    ]);
+    const main = mainStepOf(mkSingleStep(mkPluginAgent()), tools);
+    expect(main.agent.plugins).toEqual([
+      {
+        name: LSP_PLUGIN,
+        definitions: [{ name: "lsp" }, { name: "lsp_fix", approval: "ask" }],
+      },
+    ]);
+  });
+
+  test("throws when a declared plugin has no loaded tools", () => {
+    expect(() => projectLiveToInert(mkSingleStep(mkPluginAgent()))).toThrow(
+      /declares plugin "@intx\/tools-lsp" but no tool declarations were loaded/,
+    );
   });
 
   test("omits plugins from the projection when the agent declares none", () => {
@@ -226,10 +253,13 @@ describe("hash binds to the grant surface", () => {
 
   async function expectGrantMutation(
     mutated: WorkflowDefinition,
+    pluginTools?: PluginToolDefinitions,
   ): Promise<void> {
-    const mutatedBytes = canonicalJsonStringify(projectLiveToInert(mutated));
+    const mutatedBytes = canonicalJsonStringify(
+      projectLiveToInert(mutated, pluginTools),
+    );
     expect(mutatedBytes).not.toBe(baselineBytes);
-    expect(await computeLiveDefinitionHash(mutated)).not.toBe(
+    expect(await computeLiveDefinitionHash(mutated, pluginTools)).not.toBe(
       await computeLiveDefinitionHash(baselineWorkflow),
     );
   }
@@ -276,15 +306,7 @@ describe("hash binds to the grant surface", () => {
   test("adding a declared plugin package changes projection and hash", async () => {
     // A plugin package contributes tool grants the operator approves, so a
     // tampered plugin set must move the hashed surface and fail re-verify.
-    const withPlugin = defineAgent({
-      id: "agent_main",
-      systemPrompt: "main agent",
-      tools: [alphaTool, betaTool],
-      plugins: ["@intx/tools-lsp"],
-      capabilities: [...baseCapabilities],
-      inference: { sources: [OPENAI] },
-    });
-    await expectGrantMutation(mkSingleStep(withPlugin));
+    await expectGrantMutation(mkSingleStep(mkPluginAgent()), LSP_TOOLS);
   });
 
   test("adding a mail.send domain changes projection and hash", async () => {
@@ -332,6 +354,47 @@ describe("hash binds to the grant surface", () => {
           },
         ],
       }),
+    );
+  });
+});
+
+// A new plugin version can change its tools while the workflow code, and so
+// the declared plugin names, stay the same.
+describe("hash binds to each declared plugin's tools", () => {
+  const definition = mkSingleStep(mkPluginAgent());
+
+  async function expectPluginToolsMutation(
+    tools: readonly ToolDeclaration[],
+  ): Promise<void> {
+    const mutated: PluginToolDefinitions = new Map([[LSP_PLUGIN, tools]]);
+    expect(
+      canonicalJsonStringify(projectLiveToInert(definition, mutated)),
+    ).not.toBe(
+      canonicalJsonStringify(projectLiveToInert(definition, LSP_TOOLS)),
+    );
+    expect(await computeLiveDefinitionHash(definition, mutated)).not.toBe(
+      await computeLiveDefinitionHash(definition, LSP_TOOLS),
+    );
+  }
+
+  test("a plugin adding a tool changes projection and hash", async () => {
+    await expectPluginToolsMutation([{ name: "lsp" }, { name: "lsp_fix" }]);
+  });
+
+  test("a plugin dropping a tool changes projection and hash", async () => {
+    await expectPluginToolsMutation([]);
+  });
+
+  test("a plugin gating a tool behind approval changes projection and hash", async () => {
+    await expectPluginToolsMutation([{ name: "lsp", approval: "ask" }]);
+  });
+
+  test("the same plugin tools hash identically", async () => {
+    const reloaded: PluginToolDefinitions = new Map([
+      [LSP_PLUGIN, [{ name: "lsp" }]],
+    ]);
+    expect(await computeLiveDefinitionHash(definition, reloaded)).toBe(
+      await computeLiveDefinitionHash(definition, LSP_TOOLS),
     );
   });
 });
@@ -573,6 +636,33 @@ describe("nested grant surfaces are reified", () => {
     const bytes = canonicalJsonStringify(projectLiveToInert(loopWorkflow));
     expect(bytes).toContain("alpha_read");
     expect(bytes).toContain("alpha_write");
+  });
+
+  test("a loop body's plugin tools appear in the projection", () => {
+    const pluginLoop = defineWorkflow({
+      id: "wf_plugin_loop",
+      trigger: { type: "manual" },
+      steps: {
+        rework: loop({
+          body: defineWorkflow({
+            id: "body",
+            steps: { work: step({ agent: mkPluginAgent() }) },
+          }),
+          while: "loop.again",
+          carry: "loop.carry",
+          maxIterations: 3,
+          onExhausted: "done",
+        }),
+        done: step({
+          agent: mkAgent([], baseCapabilities, [OPENAI]),
+          after: ["rework"],
+        }),
+      },
+    });
+    const bytes = canonicalJsonStringify(
+      projectLiveToInert(pluginLoop, LSP_TOOLS),
+    );
+    expect(bytes).toContain(`{"definitions":[{"name":"lsp"}]`);
   });
 
   test("an inline onTrigger body's tool names appear in the projection", () => {

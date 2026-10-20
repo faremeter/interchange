@@ -5,7 +5,10 @@ export type {
 
 export * from "./state-machine/index";
 export * from "./definition/index";
-export { collectDeclaredPluginNames } from "./declared-plugins";
+export {
+  collectDeclaredPluginNames,
+  type PluginToolDefinitions,
+} from "./declared-plugins";
 export { inlineBodyRef } from "./inline-body-ref";
 export { collectSidecarCapabilityRules } from "./sidecar-capabilities";
 export {
@@ -30,6 +33,7 @@ export {
   type InertModelSource,
   type InertOnTrigger,
   type InertOnTriggerBody,
+  type InertPlugin,
   type InertStep,
   type InertStepStep,
   type InertToolDeclaration,

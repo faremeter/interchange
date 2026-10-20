@@ -36,6 +36,11 @@ import {
 import { PackageJSON, isContainedEntryPath } from "@intx/types/package-json";
 import { workflowDefinitionEnvelopeSchema } from "@intx/types/workflow-definition";
 import type { WorkflowDefinition } from "@intx/workflow/definition";
+import {
+  collectDeclaredPluginNames,
+  projectLiveToInert,
+  type InertWorkflowDefinition,
+} from "@intx/workflow/projection";
 import type { ActionHandler, LoopFn, LoopFnRegistry } from "@intx/workflow";
 
 const logger = getLogger(["workflow-host", "definition-loader"]);
@@ -473,6 +478,28 @@ export async function loadWorkflowPluginToolDefinitionsFromClosure(
     byPackage.set(pluginName, definitions);
   }
   return byPackage;
+}
+
+/**
+ * Project a definition evaluated from a materialized closure to its inert
+ * wire form. The projection hashes each declared plugin's tools, which live
+ * in the plugin package rather than the definition, so they are read from the
+ * same closure.
+ */
+export async function projectWorkflowDefinitionFromClosure(args: {
+  readonly packageDir: string;
+  readonly definition: WorkflowDefinition;
+  /** Test seam for dynamic import; see the definition loader's variant. */
+  readonly importModule?: (importUrl: string) => Promise<unknown>;
+}): Promise<InertWorkflowDefinition> {
+  const pluginTools = await loadWorkflowPluginToolDefinitionsFromClosure({
+    packageDir: args.packageDir,
+    plugins: collectDeclaredPluginNames(args.definition),
+    ...(args.importModule !== undefined
+      ? { importModule: args.importModule }
+      : {}),
+  });
+  return projectLiveToInert(args.definition, pluginTools);
 }
 
 async function loadPluginPackageFactories(args: {

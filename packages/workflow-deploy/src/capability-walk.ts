@@ -68,6 +68,7 @@ import {
   walkNestedWorkflowSteps,
 } from "@intx/workflow/definition";
 import type { WorkflowDefinition } from "@intx/workflow/definition";
+import type { PluginToolDefinitions } from "@intx/workflow/projection";
 
 /**
  * Grant declarations produced for a single workflow step. `grants`
@@ -102,22 +103,6 @@ export interface CapabilityWalkResult {
   readonly perStep: ReadonlyMap<string, GrantDeclarations>;
   readonly unresolvedDirectors: readonly string[];
 }
-
-/**
- * Static tool declarations a plugin package contributes, keyed by the
- * plugin-package name an agent names in `AgentDefinition.plugins`. A
- * plugin package contributes NO agent-visible tool factory (its tools reach
- * the agent through `env.plugins` at run time), so the walk cannot read the
- * plugin's tool grant surface off the definition alone. The caller (the
- * probe, over the materialized closure) loads each declared plugin's static
- * `definitions` and threads them here so the walk emits `tool:<name>` grants
- * for plugin-contributed tools alongside factory-contributed ones. Empty
- * when the walked closure declares no plugin package.
- */
-export type PluginToolDefinitions = ReadonlyMap<
-  string,
-  readonly ToolDeclaration[]
->;
 
 /**
  * Mutable accumulator threaded through the collectors while a single

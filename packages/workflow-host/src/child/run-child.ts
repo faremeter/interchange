@@ -633,8 +633,8 @@ export async function runWorkflowChild(
   // lineage: the inert projection is a non-executable approval surface (agents
   // carry `modelSources`/no `inference`, tool factories are plain data), so the
   // child EVALUATES the pinned code closure to a live definition and re-verifies
-  // by projecting it back to inert and hashing (`computeLiveDefinitionHash`)
-  // against `opts.env.definitionHash`; a divergent closure fails closed. The
+  // by projecting it back to inert and hashing it against
+  // `opts.env.definitionHash`; a divergent closure fails closed. The
   // load happens once before both the resume loop and the trigger loop, so the
   // same verified definition serves every fresh trigger AND every resume.
   //
