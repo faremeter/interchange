@@ -38,6 +38,11 @@ export {
   type CreatePrincipalKeyStoreDeps,
   type PrincipalKeyStore,
 } from "./principal-key-store";
+export {
+  createRunTokenStore,
+  deleteRunTokensForPrincipals,
+  type RunTokenStore,
+} from "./run-token-store";
 export { lookupLocalPrincipalSigner } from "./signer-identity";
 export {
   resolveSenderKey,
