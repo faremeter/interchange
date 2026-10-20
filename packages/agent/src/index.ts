@@ -55,7 +55,7 @@ export {
   createStaticCredentialResolver,
   createUnconfiguredCredentialResolver,
 } from "./credential-resolver";
-export { validateNamespacedId } from "./namespace";
+export { isOwnedDirectorId, validateNamespacedId } from "./namespace";
 export { CanonicalizationError, canonicalizeForHash } from "./canonicalize";
 export {
   type DefinedDirector,
