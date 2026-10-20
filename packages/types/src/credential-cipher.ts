@@ -53,3 +53,16 @@ export function credentialAad(id: string, column: string): string {
 export function principalKeyAad(id: string, column: string): string {
   return JSON.stringify(["principal-key", id, column]);
 }
+
+/**
+ * Build the additional-authenticated-data string binding a workflow run
+ * token's sealed plaintext to the `run_token` row and column it belongs to.
+ * Shares the AEAD primitive and encoding rules with `credentialAad` but uses a
+ * distinct `"run-token"` tag domain, so a run-token ciphertext is never
+ * interchangeable with a credential secret sealed under the same key. The mint
+ * (write) and delivery (read) sites MUST build the `aad` through this one
+ * function so the value matches.
+ */
+export function runTokenAad(id: string, column: string): string {
+  return JSON.stringify(["run-token", id, column]);
+}
