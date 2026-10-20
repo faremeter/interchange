@@ -286,6 +286,8 @@ Body: CreateFederationTrust
 201: FederationTrust -- Trust established
 400: ErrorResponse -- Validation error
 403: ErrorResponse -- Insufficient grants
+404: ErrorResponse -- Target tenant not found
+409: ErrorResponse -- Trust relationship already exists
 
 ### DELETE /api/tenants/:tenantId/federation/:targetTenantId
 Revoke federation trust
