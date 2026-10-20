@@ -841,8 +841,8 @@ export interface SidecarStepBuildEnvDeps {
   /**
    * Director registry each step env carries. Required: the source-ref lineage
    * supplies the closure-composed registry so a step agent's `director` ref
-   * resolves against a custom director shipped by a declared direct
-   * dependency of the workflow package. Tests pass
+   * resolves against a custom director shipped by the workflow package or
+   * a package in its node_modules slots. Tests pass
    * `createDefaultDirectorRegistry()` explicitly rather than inheriting a
    * silent built-ins fallback.
    */
@@ -2266,8 +2266,8 @@ export function createSidecarSubstrateFactory(
     // transport (its `watch` registers callbacks here, backing `mail_wait`) and
     // the child's control loop (which fires each `mailbox.notify` into it). The
     // registry rides out on the returned bindings so `runWorkflowChild` routes
-    // notifications to this same instance. Mail methods other than `send` ask
-    // the supervisor; this child does not open the mailbox to answer them.
+    // notifications to this same instance. Mail tools ask the supervisor
+    // through this bundle; this child does not open the mailbox to answer them.
     const mailboxWatchRegistry = createMailboxWatchRegistry();
     const transportInbound: SupervisorBackedTransportInbound = {
       watchRegistry: mailboxWatchRegistry,
@@ -2354,10 +2354,10 @@ export function createSidecarSubstrateFactory(
 
     // The step env's director registry is the closure-composed one, built
     // from the SAME frozen closure the run-child loads, so a step agent's
-    // `director` ref resolves to a custom director shipped by a declared
-    // dependency package. The loader resolves only the ids the definition
-    // references, so the verified definition is evaluated here too -- the
-    // import is ESM-cached, so the run-child's own verified load reuses the
+    // `director` ref resolves to a custom director shipped by the workflow
+    // package or a package in its node_modules slots. The loader resolves only
+    // the ids the definition references, so the verified definition is
+    // evaluated here too. The import is ESM-cached, so the run-child reuses the
     // module and only re-pays the project-then-hash check. A definition
     // whose hash no longer matches the approval therefore fails the lineage
     // build here, before any child spawns.

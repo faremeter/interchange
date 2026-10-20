@@ -260,15 +260,15 @@ function collectDirectorIds(definition: WorkflowDefinition): string[] {
  * slashes beyond a scope (`@scope/name` is the only multi-segment form) are
  * not a package prefix -- `path.join` would otherwise treat them as
  * traversal. A prefix equal to the workflow package's own name resolves to
- * the workflow package itself; any other legal prefix must be a direct
- * dependency laid out under `node_modules/<prefix>` (scoped: one extra
- * scope directory). After realpath, `package.json` `name` must equal the
- * prefix so a directory whose layout name and manifest name disagree cannot
- * register. `undefined` when the id fails `validateNamespacedId`, carries
- * no package prefix, fails the package-name grammar, is not a direct
- * `node_modules` child, no such dependency is laid out, or the slot cannot
- * be resolved as a package directory -- including when it is a file rather
- * than a directory (ENOTDIR), unreadable/inaccessible (EACCES/EPERM), or a
+ * the workflow package itself; any other legal prefix selects the package
+ * laid out under `node_modules/<prefix>` (scoped: one extra scope directory).
+ * After realpath, `package.json` `name` must equal the prefix so a directory
+ * whose layout name and manifest name disagree cannot register. `undefined`
+ * when the id fails `validateNamespacedId`, carries
+ * no package prefix, fails the package-name grammar, no such package slot
+ * is laid out, or the slot cannot be resolved as a package directory --
+ * including when it is a file rather than a directory (ENOTDIR),
+ * unreadable/inaccessible (EACCES/EPERM), or a
  * self-referential symlink (ELOOP / ENAMETOOLONG) -- either way the id stays
  * unregistered. Systemic failures like process-wide file descriptor
  * exhaustion (EMFILE/ENFILE) are not slot-local "cannot resolve" conditions:
@@ -277,9 +277,9 @@ function collectDirectorIds(definition: WorkflowDefinition): string[] {
  * The realpath targets `package.json`, not the directory: a bare scope dir
  * (`node_modules/@scope`) exists whenever any scoped dep does but is not a
  * package, and routing to it would fail on the missing manifest rather than
- * reading as "not a dependency". Containment is checked on the lookup path
- * under the workflow's `node_modules` (the symlink slot the materializer
- * lays out); the store copy the symlink points at lives outside that tree.
+ * reading as "not a dependency". The package-name grammar restricts lookup
+ * to the workflow's `node_modules/<prefix>` slot; the store copy the
+ * materializer's symlink points at lives outside that tree.
  */
 async function resolveDirectorPackageDir(
   workflowPackageDir: string,
@@ -298,15 +298,10 @@ async function resolveDirectorPackageDir(
 
   const workflowReal = await fs.realpath(workflowPackageDir);
   if (packageName === workflowPackageName) {
-    const pkgJson = await readPackageJSON(workflowReal);
-    if (pkgJson.name !== packageName) return undefined;
     return workflowReal;
   }
 
   const lookupDir = path.join(workflowReal, "node_modules", packageName);
-  if (!isDirectNodeModulesPackage(workflowReal, lookupDir, packageName)) {
-    return undefined;
-  }
   try {
     const manifest = await fs.realpath(path.join(lookupDir, "package.json"));
     const pkgDir = path.dirname(manifest);
@@ -346,29 +341,6 @@ function isPackageNameSegment(segment: string): boolean {
   return (
     segment !== "." && segment !== ".." && PACKAGE_NAME_SEGMENT.test(segment)
   );
-}
-
-// The lookup path -- not the store realpath the materializer's symlink
-// resolves to -- must be the workflow package's `node_modules/<name>` slot
-// (scoped: `node_modules/@scope/name`). `path.relative` catching `..` or
-// an absolute remainder is belt-and-braces on top of the package-name
-// grammar: a legal name cannot traverse, but a join bug still must not
-// import an escaped directory.
-function isDirectNodeModulesPackage(
-  workflowReal: string,
-  lookupDir: string,
-  packageName: string,
-): boolean {
-  const nodeModules = path.join(workflowReal, "node_modules");
-  const expected = path.join(nodeModules, packageName);
-  if (path.normalize(lookupDir) !== path.normalize(expected)) {
-    return false;
-  }
-  const rel = path.relative(nodeModules, lookupDir);
-  if (rel === "" || path.isAbsolute(rel)) return false;
-  const segments = rel.split(path.sep);
-  if (segments.includes("..") || segments.includes(".")) return false;
-  return segments.join("/") === packageName;
 }
 
 // Each of these errno codes means the dependency slot itself cannot be
