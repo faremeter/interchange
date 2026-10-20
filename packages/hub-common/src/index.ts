@@ -1,6 +1,7 @@
 export {
   generateId,
   deriveRunPrincipalId,
+  generateBearerSecret,
   PAT_PREFIX,
   SVC_PREFIX,
 } from "./ids";

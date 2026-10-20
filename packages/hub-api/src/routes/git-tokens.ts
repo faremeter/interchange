@@ -9,6 +9,7 @@ import { parseGitTokenRow } from "@intx/db";
 import type { DB } from "@intx/db";
 import {
   expandRepoActionAlias,
+  generateBearerSecret,
   generateId,
   glob,
   PAT_PREFIX,
@@ -17,7 +18,7 @@ import {
 } from "@intx/hub-common";
 import { getLogger } from "@intx/log";
 import type { RepoAction } from "@intx/types/repo";
-import { base64urlEncode, paginatedSchema, ErrorResponse } from "@intx/types";
+import { paginatedSchema, ErrorResponse } from "@intx/types";
 
 import { unauthorizedResponse, type AppEnv, type TenantEnv } from "../context";
 import { errorResponse } from "../error-response";
@@ -33,8 +34,6 @@ import {
 import { jsonResponse } from "../openapi";
 
 const log = getLogger(["hub", "git-token"]);
-
-const SECRET_BYTES = 32;
 
 /**
  * Minimum lifetime of a freshly minted token. The mint endpoint
@@ -165,15 +164,6 @@ class MintValidationError extends Error {
   }
 }
 
-function generateSecret(kind: "pat" | "svc"): string {
-  const prefix = kind === "pat" ? PAT_PREFIX : SVC_PREFIX;
-  const bytes = new Uint8Array(SECRET_BYTES);
-  // `crypto.getRandomValues` is the Web Crypto API and is exposed on
-  // the global `crypto` object in both Node and Bun.
-  crypto.getRandomValues(bytes);
-  return `${prefix}${base64urlEncode(bytes)}`;
-}
-
 /**
  * Validate that a ref pattern is a syntactically acceptable glob.
  * The simple-glob compiler does not throw on any input, so the only
@@ -250,7 +240,9 @@ export async function mintGitToken(
   const expiresAt = input.expiresAt;
 
   const id = generateId("gitToken");
-  const secret = generateSecret(input.kind);
+  const secret = generateBearerSecret(
+    input.kind === "pat" ? PAT_PREFIX : SVC_PREFIX,
+  );
   const tokenHashSha256 = await sha256(secret);
 
   await db.insert(gitToken).values({
