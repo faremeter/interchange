@@ -70,12 +70,28 @@ Where it lives today: `loadWorkflowLoopFnsFromClosure` and
 `packages/workflow-host/src/workflow-definition-loader.ts`
 
 **3.** An absent `interchange.loops` or `interchange.actions` field fails
-CLOSED. It composes to a registry that throws on any lookup. This is the
-opposite of `interchange.directors`, which falls back to the built-in
-registry. A workflow that declares a loop but ships no loops module therefore
-deploys, and then fails when its refs are resolved.
+CLOSED. It composes to a registry that throws on any lookup. A workflow that
+declares a loop but ships no loops module therefore deploys, and then fails
+when its refs are resolved. This is the opposite of `interchange.directors`:
+a step with no `director` uses the built-in registry, and a custom director
+id that does not resolve fails the deploy probe, not a later establish.
 
-Where it lives today: the same two loaders,
+A director id is `<package-name>/<local-name>`. A prefix matching the
+workflow package's own name loads the workflow package's own
+`interchange.directors` module; any other legal prefix loads the module of
+the package laid out under `node_modules/<package-name>`. A direct dep
+(workspace member or pinned registry dep -- both lay out under
+`node_modules/` identically) lands there, and a published tarball that
+bundles its own `node_modules` also places packages there. A director id
+whose slot cannot be resolved, or that carries no package prefix, is
+unresolvable. The id prefix is an npm package name, not a path: `.` / `..`
+segments and extra slashes beyond a scope cannot look up a package outside
+the workflow's own `node_modules`. A package's exported director ids must
+sit under its own name, so the approved `director:<id>` grant names the
+package whose code runs.
+
+Where it lives today: the same two loaders, plus
+`loadWorkflowDirectorRegistryFromClosure`,
 `packages/workflow-host/src/workflow-definition-loader.ts`
 
 **4.** Five of the `interchange.*` fields name a module -- `tools`,

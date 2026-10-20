@@ -87,9 +87,11 @@ async function computeProbePayload(
   const wireHash = await computeWireDefinitionHash(projection);
   // Compose the director registry from the SAME closure the run-child will,
   // so the `director:<id>` grants advertised here match what the runtime
-  // resolves. Built-ins-only when the closure ships no `interchange.directors`.
+  // resolves. Built-ins-only when no referenced director id resolves to a
+  // package shipping `interchange.directors`.
   const directors = await loadWorkflowDirectorRegistryFromClosure({
     packageDir,
+    definition,
   });
   const walk = walkCapabilities(definition, directors, pluginToolDefinitions);
   // Fail closed on an unresolved director: the runtime does not re-gate
