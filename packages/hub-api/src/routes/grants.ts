@@ -395,7 +395,7 @@ export function createEvaluateRoutes({
         tenantCtx.id,
         body.resource,
         body.action,
-        conditionRegistry,
+        { registry: conditionRegistry },
       );
 
       return c.json({

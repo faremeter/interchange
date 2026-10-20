@@ -24,6 +24,13 @@ export type EvalOptions = {
 };
 
 /**
+ * What `authorize` takes beyond the query: the condition registry, and the
+ * consumer a conditioned grant may be scoped to. The principal and tenant come
+ * from the positional arguments that also select the grants.
+ */
+export type AuthorizeOptions = Pick<EvalOptions, "registry" | "consumer">;
+
+/**
  * Evaluate grants against a resource/action query.
  *
  * This is the core evaluation logic, separated from grant collection
@@ -124,10 +131,12 @@ export async function authorize(
   tenantId: string,
   resource: string,
   action: string,
-  registry?: ConditionRegistry,
+  opts?: AuthorizeOptions,
 ): Promise<AuthzResult> {
   const grants = await store.collectGrants(principalId, tenantId);
-  const opts: EvalOptions = { principalId, tenantId };
-  if (registry) opts.registry = registry;
-  return evaluateGrants(grants, resource, action, opts);
+  return evaluateGrants(grants, resource, action, {
+    ...opts,
+    principalId,
+    tenantId,
+  });
 }

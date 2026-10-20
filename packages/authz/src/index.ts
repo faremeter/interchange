@@ -1,5 +1,5 @@
 export { authorize, evaluateGrants } from "./evaluate";
-export type { EvalOptions } from "./evaluate";
+export type { AuthorizeOptions, EvalOptions } from "./evaluate";
 export { authorizeAction } from "./authorize-action";
 export type { AuthorizeDecision } from "./authorize-action";
 export { matchPattern } from "./patterns";

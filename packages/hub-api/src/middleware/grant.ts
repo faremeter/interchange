@@ -60,7 +60,7 @@ export function createAuthorizeGrant({
       tenantId,
       resource,
       action,
-      conditionRegistry,
+      { registry: conditionRegistry },
     );
     if (result.effect === "allow") return true;
 
