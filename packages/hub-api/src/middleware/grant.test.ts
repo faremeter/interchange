@@ -8,7 +8,7 @@ import {
 } from "bun:test";
 import { Hono } from "hono";
 
-import { createInMemoryGrantStore } from "@intx/authz";
+import { createInMemoryGrantStore, toolConsumerEvaluator } from "@intx/authz";
 import { configureSync, getConfig } from "@intx/log";
 import type { GrantRule, GrantStore } from "@intx/types/authz";
 
@@ -96,6 +96,7 @@ const CHECK = {
   tenantId: TENANT_ID,
   resource: "widget:*",
   action: "read",
+  consumer: undefined,
 };
 
 describe("createAuthorizeGrant", () => {
@@ -116,6 +117,7 @@ describe("createAuthorizeGrant", () => {
         tenantId: TENANT_ID,
         resource: "widget:*",
         action: "read",
+        consumer: null,
         effect: "deny",
         resolvedBy: "grant-deny",
       },
@@ -179,5 +181,85 @@ describe("createRequireGrant", () => {
         message: "You do not have permission to perform this action",
       },
     });
+  });
+});
+
+describe("createRequireGrant with a consumer", () => {
+  const tenant: TenantRow = {
+    id: TENANT_ID,
+    name: "Tenant A",
+    slug: "a",
+    domain: "a.localhost",
+    parentId: null,
+    config: null,
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+  const principal: PrincipalRow = {
+    id: PRINCIPAL_ID,
+    tenantId: TENANT_ID,
+    kind: "workflow",
+    refId: "run_caller",
+    status: "active",
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+
+  function scopedGrant(tool: string | null): GrantRule {
+    return {
+      ...grant("allow"),
+      conditions: tool === null ? null : { tool },
+    };
+  }
+
+  function appWith(grants: GrantRule[], consumer: string | undefined) {
+    const requireGrant = createRequireGrant({
+      grantStore: createInMemoryGrantStore(grants),
+      conditionRegistry: { tool: toolConsumerEvaluator },
+    });
+    const app = new Hono<TenantEnv>();
+    app.use("*", async (c, next) => {
+      c.set("tenant", tenant);
+      c.set("principal", principal);
+      if (consumer !== undefined) c.set("consumer", consumer);
+      await next();
+    });
+    app.get("/", requireGrant("widget:*", "read"), (c) => c.text("ok"));
+    return app;
+  }
+
+  test("a grant scoped to the request's consumer allows it", async () => {
+    const app = appWith([scopedGrant("action:a")], "action:a");
+    expect((await app.request("/")).status).toBe(200);
+  });
+
+  test("a grant scoped to another consumer refuses it", async () => {
+    const app = appWith([scopedGrant("action:b")], "action:a");
+    expect((await app.request("/")).status).toBe(403);
+  });
+
+  test("a consumer-scoped grant refuses a request with no consumer", async () => {
+    const app = appWith([scopedGrant("action:a")], undefined);
+    expect((await app.request("/")).status).toBe(403);
+  });
+
+  test("a deny scoped to the request's consumer overrides an unscoped allow", async () => {
+    const deny: GrantRule = {
+      ...grant("deny"),
+      conditions: { tool: "action:a" },
+    };
+    expect(
+      (await appWith([scopedGrant(null), deny], "action:a").request("/"))
+        .status,
+    ).toBe(403);
+    expect(
+      (await appWith([scopedGrant(null), deny], "action:b").request("/"))
+        .status,
+    ).toBe(200);
+  });
+
+  test("a grant with no conditions allows every consumer", async () => {
+    const app = appWith([scopedGrant(null)], "action:a");
+    expect((await app.request("/")).status).toBe(200);
   });
 });

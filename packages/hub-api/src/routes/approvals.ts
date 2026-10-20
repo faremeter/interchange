@@ -140,6 +140,8 @@ export type ResolveApprovalRequest = {
   approvalId: string;
   tenantId: string;
   principalId: string;
+  /** The caller's run-token consumer, or `undefined`; see `TenantEnv`. */
+  consumer: string | undefined;
   status: "approved" | "rejected";
   scope?: "once" | "always";
   decisionPayload: ApprovalDecision;
@@ -204,6 +206,7 @@ export async function resolveApproval(
     tenantId: args.tenantId,
     resource: `approval:${approval.anchorRunId}`,
     action: "resolve",
+    consumer: args.consumer,
   });
   if (!allowed) {
     return { kind: "forbidden" };
@@ -437,6 +440,7 @@ export function createApprovalRoutes(
         tenantId: tenant.id,
         resource: "approval:*",
         action: "resolve",
+        consumer: c.get("consumer"),
       });
       if (!allowed) {
         return errorResponse(
@@ -508,6 +512,7 @@ export function createApprovalRoutes(
         tenantId: tenant.id,
         resource: `approval:${row.anchorRunId}`,
         action: "resolve",
+        consumer: c.get("consumer"),
       });
       if (!allowed) {
         return errorResponse(
@@ -556,6 +561,7 @@ export function createApprovalRoutes(
         approvalId,
         tenantId: tenant.id,
         principalId: principal.id,
+        consumer: c.get("consumer"),
         status: "approved",
         scope: body.scope,
         decisionPayload: { outcome: "approved" },
@@ -600,6 +606,7 @@ export function createApprovalRoutes(
         approvalId,
         tenantId: tenant.id,
         principalId: principal.id,
+        consumer: c.get("consumer"),
         status: "rejected",
         ...(body.scope !== undefined ? { scope: body.scope } : {}),
         decisionPayload: {

@@ -247,13 +247,19 @@ export function createWorkflowDefinitionRoutes({
       if (!revisionIds.includes(definitionId))
         return errorResponse(c, "not_found", "Definition not found");
       const principalId = c.get("principal").id;
+      const consumer = c.get("consumer");
       const grants = await grantStore.collectGrants(principalId, tenantId);
       for (const revisionId of revisionIds) {
         const decision = await authorizeAction(
           grants,
           `workflow-definition:${revisionId}`,
           "manage",
-          { registry: conditionRegistry, principalId, tenantId },
+          {
+            registry: conditionRegistry,
+            principalId,
+            tenantId,
+            ...(consumer !== undefined ? { consumer } : {}),
+          },
         );
         if (!decision.ok)
           return errorResponse(

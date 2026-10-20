@@ -145,6 +145,8 @@ export function createTenantRoutes({
           tenantId: parentId,
           resource: "tenant:*",
           action: "create",
+          // Tenant creation takes a user session, never a run token.
+          consumer: undefined,
         });
         if (!allowed) return forbiddenUnderParent(c);
       }

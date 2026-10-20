@@ -1,4 +1,4 @@
-import { timeWindowEvaluator } from "@intx/authz";
+import { timeWindowEvaluator, toolConsumerEvaluator } from "@intx/authz";
 import type { ConditionRegistry } from "@intx/types/authz";
 
 /**
@@ -9,4 +9,5 @@ import type { ConditionRegistry } from "@intx/types/authz";
 export const HUB_CONDITION_REGISTRY: Readonly<ConditionRegistry> =
   Object.freeze({
     time_window: timeWindowEvaluator,
+    tool: toolConsumerEvaluator,
   });
