@@ -814,7 +814,7 @@ describe("authorize with in-memory store", () => {
       "tnt_1",
       "agent:agt_abc",
       "read",
-      registry,
+      { registry },
     );
 
     expect(result.effect).toBe("allow");
@@ -860,14 +860,9 @@ describe("authorize with in-memory store", () => {
       }),
     ]);
 
-    await authorize(
-      store,
-      "prn_check",
-      "tnt_check",
-      "agent:*",
-      "read",
+    await authorize(store, "prn_check", "tnt_check", "agent:*", "read", {
       registry,
-    );
+    });
 
     expect(capturedPrincipal).toBe("prn_check");
     expect(capturedTenant).toBe("tnt_check");

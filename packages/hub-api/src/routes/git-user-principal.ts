@@ -56,7 +56,7 @@ export async function resolveAuthzVerdict(args: {
     args.tenantId,
     args.resource,
     grantVerb,
-    args.conditionRegistry,
+    { registry: args.conditionRegistry },
   );
   return {
     effect: verdict.effect === "allow" ? "allow" : "deny",
