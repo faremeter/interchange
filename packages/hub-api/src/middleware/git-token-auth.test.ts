@@ -327,6 +327,35 @@ describe("createGitTokenAuth", () => {
       expect(res.status).toBe(401);
       expect(queried).toBe(false);
     });
+
+    test("a workflow run token is refused on a git route without a lookup", async () => {
+      let queried = false;
+      const dbMock = {
+        query: {
+          gitToken: {
+            findFirst: async () => {
+              queried = true;
+              return undefined;
+            },
+          },
+          tenant: { findFirst: notImplemented("tenant.findFirst") },
+          principal: { findFirst: notImplemented("principal.findFirst") },
+        },
+      };
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- drizzle PgDatabase type cannot be structurally satisfied in tests
+      const db = dbMock as unknown as DB["db"];
+      const app = buildApp(db);
+      for (const authorization of [
+        "Bearer itx_run_secret",
+        basicAuthHeader("x-access-token", "itx_run_secret"),
+      ]) {
+        const res = await app.request("/tenants/ten_a/probe", {
+          headers: { authorization },
+        });
+        expect(res.status).toBe(401);
+      }
+      expect(queried).toBe(false);
+    });
   });
 
   describe("unknown token", () => {

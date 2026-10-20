@@ -82,7 +82,25 @@ Request to /api/me/...
   -> aggregate results across tenants, each tagged with tenantId
 ```
 
-Workflow-run requests follow the same flow. The principal is resolved by `(run_id, tenant_id)` rather than `(user_id, tenant_id)`. The run principal's materialized grants are evaluated against the requested operation.
+### Workflow run tokens
+
+A workflow run calls the tenant routes with a run token instead of a session. A run token is an opaque bearer of the form `itx_run_<base64url>`, held in the `run_token` table as a SHA-256 hash and as a copy sealed with the credential cipher. Each token belongs to one run principal and one consumer: a tool package (`tool:<package>`) or an action handler (`action:<handler>`).
+
+```
+Request to /api/tenants/:tenantId/... with Authorization: Bearer itx_run_...
+  -> hash the bearer, look up the run_token row; unknown -> 401
+  -> resolve the token's principal in the URL tenant; not there -> 403
+  -> if the principal is not active (the run ended), or is not a workflow principal: 401
+  -> if the route is not on the run-token allow-list: 403
+  -> set principal, tenant and the token's consumer; resolveTenant skips the session
+  -> evaluate the run principal's grants against the requested operation
+```
+
+A request with no run token, or with a git token, takes the session flow above unchanged.
+
+The token's consumer goes into authorization. A grant with a `{ "tool": "<consumer>" }` condition, allow or deny, applies only to requests from that consumer. A session or git token has no consumer, so such a grant never matches it. `POST /api/tenants/:tenantId/principals/:principalId/evaluate` accepts an optional `consumer` to show the decision a consumer's token gets.
+
+The allow-list (`RUN_TOKEN_ROUTES` in `@intx/hub-api`) limits a run token to reading runs, deployments, definitions and assets, deploying, signaling and stopping runs. Every other route refuses a run token whatever grants the run holds. A run therefore cannot resolve approvals, change grants, roles, principals, credentials, OAuth clients, tokens or federation trusts, send REST mail, or manage the tenant.
 
 ## Roles
 
