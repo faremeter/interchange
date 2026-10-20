@@ -34,7 +34,7 @@ export {
   type DefaultDirectorConfig,
 } from "./default-director";
 export { effectiveDirectorRef } from "./env-validation";
-export { validateNamespacedId } from "./namespace";
+export { isOwnedDirectorId, validateNamespacedId } from "./namespace";
 export type {
   AnnotatedDirectorFactory,
   DirectorRef,
