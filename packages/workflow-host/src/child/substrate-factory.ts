@@ -50,7 +50,6 @@ import type {
   DirectorRegistry,
   ToolDeclaration,
 } from "@intx/agent";
-import { createDefaultDirectorRegistry } from "@intx/agent";
 import {
   builtinCredentialProviders,
   createCredentialProviderRegistry,
@@ -840,13 +839,14 @@ export interface SidecarStepBuildEnvDeps {
   /** Pinned tool-package materialization. Unused when `sourceTools` is set. */
   materializeStepTools: MaterializeStepTools;
   /**
-   * Director registry each step env carries; defaults to the canonical
-   * built-ins. The source-ref lineage supplies the closure-composed
-   * registry so a step agent's `director` ref resolves against a custom
-   * director shipped by the workflow package or a package in its
-   * node_modules slots.
+   * Director registry each step env carries. Required: the source-ref lineage
+   * supplies the closure-composed registry so a step agent's `director` ref
+   * resolves against a custom director shipped by the workflow package or
+   * a package in its node_modules slots. Tests pass
+   * `createDefaultDirectorRegistry()` explicitly rather than inheriting a
+   * silent built-ins fallback.
    */
-  directors?: DirectorRegistry;
+  directors: DirectorRegistry;
 }
 
 /**
@@ -1155,7 +1155,7 @@ export function createSidecarStepBuildEnv(
       // scratch dir, so the two coincide.
       toolCwd: workdir,
       audit: storage,
-      directors: deps.directors ?? createDefaultDirectorRegistry(),
+      directors: deps.directors,
       // Resolve inference adapters through the child's boot-built
       // registry (built-ins + operator custom adapters), so a
       // custom-provider step source resolves in the child the same way
@@ -1308,8 +1308,8 @@ interface SidecarRunChildDeps {
    * material.
    */
   credentialProviders: CredentialProviderRegistry;
-  /** Director registry the child runtime uses; defaults to the canonical built-ins. */
-  directors?: DirectorRegistry;
+  /** Director registry the child runtime uses. Required; tests pass `createDefaultDirectorRegistry()` explicitly. */
+  directors: DirectorRegistry;
   /**
    * Sidecar-local directory of the materialized workflow-definition closure
    * (`env.spawn.closurePackageDir`), the source-ref lineage's only closure.
@@ -1421,7 +1421,6 @@ async function writeChildRunGrants(args: {
 export function createSidecarRunChild(
   deps: SidecarRunChildDeps,
 ): RunChildWorkflow {
-  const directors = deps.directors ?? createDefaultDirectorRegistry();
   const clock = deps.clock ?? defaultClock;
   const newId = deps.newId ?? defaultNewId;
   // No `controlPlanePrincipal`: an in-process child tears down through the
@@ -1467,7 +1466,6 @@ export function createSidecarRunChild(
       definition: rewrittenDefinition,
     } = await buildChildRunEnv({
       deps,
-      directors,
       clock,
       newId,
       repoStore,
@@ -1547,7 +1545,6 @@ export function createSidecarRunChild(
 export function createSidecarSpawnSuspendableChild(
   deps: SidecarRunChildDeps,
 ): RunSuspendableChild {
-  const directors = deps.directors ?? createDefaultDirectorRegistry();
   const clock = deps.clock ?? defaultClock;
   const newId = deps.newId ?? defaultNewId;
   // No `controlPlanePrincipal`: an in-process body tears down through the shared
@@ -1587,7 +1584,6 @@ export function createSidecarSpawnSuspendableChild(
       definition: rewrittenDefinition,
     } = await buildChildRunEnv({
       deps,
-      directors,
       clock,
       newId,
       repoStore,
@@ -1659,12 +1655,11 @@ export function createSidecarSpawnSuspendableChild(
  */
 async function capAndPersistChildGrants(args: {
   deps: SidecarRunChildDeps;
-  directors: ReturnType<typeof createDefaultDirectorRegistry>;
   definition: WorkflowDefinition;
   childRunId: string;
   parentRunId: string;
 }): Promise<readonly unknown[]> {
-  const { deps, directors, definition, childRunId, parentRunId } = args;
+  const { deps, definition, childRunId, parentRunId } = args;
   const existingChildGrants = await readRunGrants({
     repoStore: deps.substrate,
     anchorRunId: deps.workflowRunRepoId.id,
@@ -1690,12 +1685,12 @@ async function capAndPersistChildGrants(args: {
         });
   const declaredResources = deps.collectDeclaredResources(
     definition,
-    directors,
+    deps.directors,
     pluginDefs,
   );
   const credentialConsumers = deps.collectDeclaredCredentialConsumers(
     definition,
-    directors,
+    deps.directors,
     pluginDefs,
   );
   const childGrants = deps.filterGrantsToDeclaredResources(
@@ -1725,7 +1720,6 @@ async function capAndPersistChildGrants(args: {
  */
 async function buildChildRunEnv(args: {
   deps: SidecarRunChildDeps;
-  directors: ReturnType<typeof createDefaultDirectorRegistry>;
   clock: () => Date;
   newId: (prefix: string) => string;
   repoStore: ReturnType<typeof createWorkflowRunRepoStore>;
@@ -1764,7 +1758,6 @@ async function buildChildRunEnv(args: {
 }> {
   const {
     deps,
-    directors,
     clock,
     newId,
     repoStore,
@@ -1834,7 +1827,6 @@ async function buildChildRunEnv(args: {
   // inline form, so the cap keeps a grandchild's declared resources.
   const childGrants = await capAndPersistChildGrants({
     deps,
-    directors,
     definition,
     childRunId,
     parentRunId,
@@ -2024,7 +2016,7 @@ async function buildChildRunEnv(args: {
     scheduler: deps.scheduler,
     signalChannel,
     blobs,
-    directors,
+    directors: deps.directors,
     authorize,
     invokeStep,
     spawnChild,
@@ -2069,7 +2061,6 @@ async function buildChildRunEnv(args: {
         // iteration appends its first event.
         await capAndPersistChildGrants({
           deps,
-          directors,
           definition: preRewriteBody,
           childRunId: loopInput.childRunId,
           parentRunId: loopInput.parentRunId,
@@ -2787,7 +2778,6 @@ export function createSidecarSubstrateFactory(
       }) => {
         await capAndPersistChildGrants({
           deps: childRunDeps,
-          directors: childRunDeps.directors ?? createDefaultDirectorRegistry(),
           definition,
           childRunId,
           parentRunId,
