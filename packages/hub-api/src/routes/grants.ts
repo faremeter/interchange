@@ -367,7 +367,7 @@ export function createEvaluateRoutes({
       tags: ["Grants"],
       summary: "Evaluate grants for a principal",
       description:
-        "Evaluates what would happen if a principal attempted an operation. Returns the resolved effect and all matching grants. Useful for debugging authorization.",
+        "Evaluates what would happen if a principal attempted an operation. Returns the resolved effect and all matching grants. Useful for debugging authorization. Pass `consumer` to evaluate as a workflow run token's consumer, so grants scoped to that consumer match.",
       responses: {
         200: jsonResponse("Evaluation result", EvaluateResult),
         404: jsonResponse("Principal not found", ErrorResponse),
@@ -395,7 +395,10 @@ export function createEvaluateRoutes({
         tenantCtx.id,
         body.resource,
         body.action,
-        { registry: conditionRegistry },
+        {
+          registry: conditionRegistry,
+          ...(body.consumer !== undefined ? { consumer: body.consumer } : {}),
+        },
       );
 
       return c.json({
