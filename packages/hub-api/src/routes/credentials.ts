@@ -5,6 +5,7 @@ import { describeRoute, validator } from "hono-openapi";
 import { credential, grant as grantTable, provider } from "@intx/db/schema";
 import {
   getAncestorChain,
+  isReferencedRowViolation,
   resolveCredentialByName,
   parseCredentialRow,
 } from "@intx/db";
@@ -23,7 +24,6 @@ import type { TenantEnv } from "../context";
 import { errorResponse } from "../error-response";
 import { first, ts } from "../format";
 import { generateId } from "@intx/hub-common";
-import { isReferencedRowViolation } from "../pg-errors";
 import { idResource } from "../middleware/grant";
 import type { RequireGrant } from "../middleware/grant";
 import {

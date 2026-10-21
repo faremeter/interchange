@@ -3,7 +3,11 @@ import { Hono } from "hono";
 import { describeRoute, validator } from "hono-openapi";
 
 import { principal, principalRole, role, user } from "@intx/db/schema";
-import { createPrincipalStore, parsePrincipalRow } from "@intx/db";
+import {
+  createPrincipalStore,
+  isReferencedRowViolation,
+  parsePrincipalRow,
+} from "@intx/db";
 import type { DB, PrincipalKeyStore } from "@intx/db";
 import {
   PrincipalResponse,
@@ -15,7 +19,6 @@ import {
 
 import type { TenantEnv } from "../context";
 import { errorResponse } from "../error-response";
-import { isReferencedRowViolation } from "../pg-errors";
 import { findUserPrincipal } from "../principal-lookup";
 import { ts } from "../format";
 import { generateId } from "@intx/hub-common";

@@ -1,6 +1,6 @@
 import { describe, test, expect } from "bun:test";
 
-import { isReferencedRowViolation } from "./pg-errors";
+import { isReferencedRowViolation } from "./pg-error";
 
 describe("isReferencedRowViolation", () => {
   test("matches a restrict_violation (23001) nested on the cause chain", () => {

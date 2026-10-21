@@ -19,3 +19,14 @@ export function pgErrorCode(err: unknown): string | undefined {
   }
   return undefined;
 }
+
+// A referencing row prevents this delete: 23503 foreign_key_violation (the
+// default ON DELETE NO ACTION) or 23001 restrict_violation (ON DELETE
+// RESTRICT). A restrict foreign key raises 23001, not 23503, so both codes
+// count.
+const PG_RESTRICT_VIOLATION = "23001";
+
+export function isReferencedRowViolation(err: unknown): boolean {
+  const code = pgErrorCode(err);
+  return code === PG_FOREIGN_KEY_VIOLATION || code === PG_RESTRICT_VIOLATION;
+}
