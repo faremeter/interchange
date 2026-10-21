@@ -50,7 +50,7 @@ import {
 import type { TenantEnv } from "../context";
 import { errorResponse, tenantConfigErrorResponse } from "../error-response";
 import {
-  denyUnlessAssetGrant,
+  denyUnlessBodyGrant,
   idResource,
   type AuthorizeGrant,
   type RequireGrant,
@@ -296,10 +296,11 @@ export function createWorkflowRoutes({
       }
       const definitionAssetId = body.source.assetId;
 
-      const denied = await denyUnlessAssetGrant({
+      const denied = await denyUnlessBodyGrant({
         c,
         authorizeGrant,
-        assetId: definitionAssetId,
+        resource: `asset:${definitionAssetId}`,
+        action: "read",
       });
       if (denied !== null) {
         return denied;
