@@ -3,7 +3,7 @@ import { describe, test, expect } from "bun:test";
 import { createInMemoryGrantStore, toolConsumer } from "@intx/authz";
 import type { MailAcceptCoordinate } from "@intx/authz";
 import type { GrantRule } from "@intx/types/authz";
-import type { GrantWalkSnapshot } from "@intx/types";
+import { SELF_RUN_RESOURCE, type GrantWalkSnapshot } from "@intx/types";
 import {
   grant as grantTable,
   type LegacyMailAcceptRule,
@@ -22,9 +22,9 @@ import {
   deriveCredentialUseGrantRows,
   deriveMailAcceptGrantRows,
   grantRowsWithLockedCredentialResolution,
+  stageRunGrantsFromSnapshot,
   type CommittedRunGrants,
   type MailAcceptGrantContext,
-  stageRunGrantsFromSnapshot,
 } from "./run-grant-materialization";
 
 // This suite exercises grant materialization, not key minting. The key store is
@@ -260,6 +260,46 @@ function creatorGrant(): GrantRule {
     principalId: CREATOR_PRINCIPAL_ID,
   };
 }
+
+describe("stageRunGrantsFromSnapshot with the run's own resource", () => {
+  const STAGED_RUN_ID = "run_self";
+
+  function delegator(resource: string): GrantRule {
+    return { ...creatorGrant(), resource, action: "read" };
+  }
+
+  function stage(creatorGrants: GrantRule[]) {
+    return stageRunGrantsFromSnapshot({
+      snapshot: { perStep: [], grantRequirements: [] },
+      tenantId: TENANT_ID,
+      runId: STAGED_RUN_ID,
+      runPrincipalId: "prn_run",
+      now: new Date("2026-01-01"),
+      invokerPrincipalId: null,
+      assetId: ASSET_ID,
+      legacyMailAccept: null,
+      invokerGrants: [],
+      creatorGrants,
+      grantRequirements: [
+        { resource: SELF_RUN_RESOURCE, action: "read", source: "creator" },
+      ],
+      credentialBindings: [],
+    });
+  }
+
+  test("binds the placeholder to the run's own id", async () => {
+    const staged = await stage([delegator("workflow-run:*")]);
+    if (!staged.ok) throw new Error("expected the requirement to resolve");
+    expect(staged.grantRows.map((g) => g.resource)).toEqual([
+      `workflow-run:${STAGED_RUN_ID}`,
+    ]);
+  });
+
+  test("checks the delegator's authority over the run's own id", async () => {
+    const staged = await stage([delegator("workflow-run:run_other")]);
+    expect(staged.ok).toBe(false);
+  });
+});
 
 describe("deriveCredentialUseGrantRows", () => {
   test("stamps one row per credential that shares a consumer", () => {
@@ -1435,6 +1475,7 @@ describe("stageRunGrantsFromSnapshot for an HTTP launch", () => {
         grantRequirements: [],
       },
       tenantId: TENANT_ID,
+      runId: "run_http_launch",
       runPrincipalId: "prn_run",
       now: new Date("2026-01-01T00:00:00.000Z"),
       invokerPrincipalId: "prn_caller",

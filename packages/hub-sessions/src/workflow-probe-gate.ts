@@ -39,10 +39,12 @@ import { and, eq } from "drizzle-orm";
 
 import type { DBExecutor } from "@intx/db";
 import { workflowDefinitionVersion } from "@intx/db/schema";
-import type {
-  ApprovalItem,
-  GrantRequirement,
-  GrantWalkSnapshot,
+import {
+  misplacesSelfRunResource,
+  SELF_RUN_RESOURCE,
+  type ApprovalItem,
+  type GrantRequirement,
+  type GrantWalkSnapshot,
 } from "@intx/types";
 import type { PackumentFetcher, RegistryConfig } from "@intx/tool-packaging";
 import type { WorkflowProjectionDefinition } from "@intx/types/sidecar";
@@ -207,6 +209,12 @@ export type ProbeGateResult =
     }
   | {
       readonly ok: false;
+      readonly reason: "self_run_resource_misplaced";
+      /** Declared requirements that use `self` outside `SELF_RUN_RESOURCE`. */
+      readonly grantRequirements: readonly GrantRequirement[];
+    }
+  | {
+      readonly ok: false;
       readonly reason: "steps_without_grant_record";
       /** Every executable step the grant-walk snapshot accounts for nothing at. */
       readonly stepsWithoutGrantRecord: readonly StepWithoutGrantRecord[];
@@ -274,6 +282,8 @@ export function describeProbeGateRefusal(refusal: ProbeGateRefusal): string {
       return `mail_accept_markers_undeclared: the projection's mailAccept does not produce ${refusal.undeclaredMailAcceptMarkers.join(", ")}`;
     case "credential_bindings_invalid":
       return `credential_bindings_invalid: ${refusal.message}`;
+    case "self_run_resource_misplaced":
+      return `self_run_resource_misplaced: a requirement names its own run only as "${SELF_RUN_RESOURCE}"; declared: ${refusal.grantRequirements.map(describeGrantRequirement).join("; ")}`;
     case "steps_without_grant_record":
       return `steps_without_grant_record: ${refusal.message}`;
     default: {
@@ -644,6 +654,20 @@ export async function gateAndFreezeProbeResult(
       message: credentialBindingViolations
         .map(describeCredentialBindingViolation)
         .join("; "),
+    };
+  }
+
+  // A requirement that uses `self` anywhere but the whole run resource would
+  // be stored literally and match nothing. This is an author error, so it is
+  // refused before the operator checks, like the binding check above.
+  const misplacedSelf = probeResult.grantWalkSnapshot.grantRequirements.filter(
+    (requirement) => misplacesSelfRunResource(requirement.resource),
+  );
+  if (misplacedSelf.length > 0) {
+    return {
+      ok: false,
+      reason: "self_run_resource_misplaced",
+      grantRequirements: misplacedSelf,
     };
   }
 

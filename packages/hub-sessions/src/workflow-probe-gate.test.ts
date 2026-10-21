@@ -231,6 +231,40 @@ describe("gateAndFreezeProbeResult", () => {
     expect(result.unapprovedGrants).toEqual(["tool:escalate"]);
   });
 
+  test("refuses a requirement that uses self outside the run's own resource", async () => {
+    const base = await makeProbeResult();
+    const misplaced = {
+      resource: "agent:self",
+      action: "read",
+      source: "creator" as const,
+    };
+    const probeResult: WorkflowProbeResult = {
+      ...base,
+      grantWalkSnapshot: {
+        ...base.grantWalkSnapshot,
+        grantRequirements: [
+          { resource: "workflow-run:self", action: "read", source: "invoker" },
+          misplaced,
+        ],
+      },
+    };
+
+    const result = await gateAndFreezeProbeResult({
+      assetId: "asset-1",
+      source: DEFINITION_SOURCE,
+      probeResult,
+      approvals: { kind: "approve-probed" },
+      persist: persistMustNotRun,
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected rejection");
+    expect(result.reason).toBe("self_run_resource_misplaced");
+    if (result.reason !== "self_run_resource_misplaced")
+      throw new Error("wrong reason");
+    expect(result.grantRequirements).toEqual([misplaced]);
+  });
+
   test("approve-probed freezes exactly the probe's surface with no ApprovalSet to gate against", async () => {
     const probeResult = await makeProbeResult({
       grants: ["tool:fetch", "effect:log", "tool:escalate"],

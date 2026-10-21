@@ -49,6 +49,7 @@ import type {
 import {
   deriveWorkflowRunId,
   isSidecarAllocationDispatchable,
+  SELF_RUN_RESOURCE,
   type GrantRequirement,
   type GrantWalkSnapshot,
 } from "@intx/types";
@@ -417,6 +418,11 @@ export type StageRunGrantsFromSnapshotArgs = {
    */
   snapshot: GrantWalkSnapshot;
   tenantId: string;
+  /**
+   * The stable top-level run id the grants are for. A requirement on
+   * `SELF_RUN_RESOURCE` resolves to `workflow-run:<runId>`.
+   */
+  runId: string;
   runPrincipalId: string;
   now: Date;
   /**
@@ -506,10 +512,17 @@ export async function stageRunGrantsFromSnapshot(
     args.now,
   );
 
+  // The operator approved the literal placeholder; bind it to this run before
+  // the authority check, so the delegator must cover the concrete run id.
+  const grantRequirements = args.grantRequirements.map((req) =>
+    req.resource === SELF_RUN_RESOURCE
+      ? { ...req, resource: `workflow-run:${args.runId}` }
+      : req,
+  );
   const materialization = await resolveGrantMaterialization({
     tenantId: args.tenantId,
     targetPrincipalId: args.runPrincipalId,
-    grantRequirements: args.grantRequirements,
+    grantRequirements,
     adHocInvokerGrants: [],
     invokerGrants: args.invokerGrants,
     creatorGrants: args.creatorGrants,
@@ -1143,6 +1156,7 @@ export function createMailTriggeredRunGrantsMaterializer(
     const staged = await stageRunGrantsFromSnapshot({
       snapshot,
       tenantId: tenantId,
+      runId,
       runPrincipalId,
       now,
       // The authenticated mail sender is the run's invoker; the asset behind
