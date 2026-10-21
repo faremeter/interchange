@@ -1,13 +1,11 @@
-import { eq } from "drizzle-orm";
 import type { Context, MiddlewareHandler, Next } from "hono";
 
-import { tenant } from "@intx/db/schema";
 import type { DB } from "@intx/db";
 import { getLogger } from "@intx/log";
 
 import { unauthorizedResponse, type AppEnv, type TenantEnv } from "../context";
 import { errorResponse } from "../error-response";
-import { findUserPrincipal } from "../principal-lookup";
+import { resolveTenantPrincipal } from "../principal-lookup";
 
 const log = getLogger(["hub", "middleware", "tenant"]);
 
@@ -39,37 +37,35 @@ export function createResolveTenant({
       return errorResponse(c, "bad_request", "Missing tenantId");
     }
 
-    const tenantRow = await db.query.tenant.findFirst({
-      where: eq(tenant.id, tenantId),
-    });
-
-    if (!tenantRow) {
-      return errorResponse(c, "not_found", "Tenant not found");
-    }
-
-    const principalRow = await findUserPrincipal(db, {
+    const resolved = await resolveTenantPrincipal(db, {
       tenantId,
-      userId: user.id,
+      select: { userId: user.id },
     });
 
-    if (!principalRow) {
-      return errorResponse(c, "forbidden", "Not a member of this tenant");
+    switch (resolved.kind) {
+      case "tenant_not_found":
+        return errorResponse(c, "not_found", "Tenant not found");
+      case "principal_not_found":
+        return errorResponse(c, "forbidden", "Not a member of this tenant");
+      case "principal_inactive":
+        log.info(
+          "Principal {principalId} has status {status}, denying access",
+          {
+            principalId: resolved.principal.id,
+            status: resolved.principal.status,
+          },
+        );
+        return errorResponse(
+          c,
+          "forbidden",
+          "Your membership in this tenant is not active",
+        );
+      case "ok":
+        break;
     }
 
-    if (principalRow.status !== "active") {
-      log.info("Principal {principalId} has status {status}, denying access", {
-        principalId: principalRow.id,
-        status: principalRow.status,
-      });
-      return errorResponse(
-        c,
-        "forbidden",
-        "Your membership in this tenant is not active",
-      );
-    }
-
-    c.set("tenant", tenantRow);
-    c.set("principal", principalRow);
+    c.set("tenant", resolved.tenant);
+    c.set("principal", resolved.principal);
 
     await next();
   };

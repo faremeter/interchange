@@ -1,11 +1,11 @@
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { createMiddleware } from "hono/factory";
 import type { Context, Env, MiddlewareHandler } from "hono";
 
 import { sha256 } from "@intx/crypto";
 import type { DB } from "@intx/db";
 import { parseGitTokenRow } from "@intx/db";
-import { gitToken, principal, tenant } from "@intx/db/schema";
+import { gitToken } from "@intx/db/schema";
 import { PAT_PREFIX, SVC_PREFIX } from "@intx/hub-common";
 import { getLogger } from "@intx/log";
 import type { RepoAction } from "@intx/hub-sessions";
@@ -13,7 +13,7 @@ import { base64Decode } from "@intx/types";
 
 import type { AppEnv, PrincipalRow, TenantRow } from "../context";
 import { errorResponse } from "../error-response";
-import { findUserPrincipal } from "../principal-lookup";
+import { resolveTenantPrincipal } from "../principal-lookup";
 
 const log = getLogger(["hub", "git-token"]);
 
@@ -156,11 +156,15 @@ export function createGitTokenAuth({
       );
     }
 
-    const tenantRow = await db.query.tenant.findFirst({
-      where: eq(tenant.id, resolvedTenantId),
+    const resolved = await resolveTenantPrincipal(db, {
+      tenantId: resolvedTenantId,
+      select:
+        tokenRow.principalId !== null
+          ? { principalId: tokenRow.principalId }
+          : { userId: tokenRow.userId },
     });
 
-    if (!tenantRow) {
+    if (resolved.kind === "tenant_not_found") {
       log.info("git-token auth: tenant not found {tenantId}", {
         tenantId: resolvedTenantId,
       });
@@ -171,9 +175,7 @@ export function createGitTokenAuth({
       );
     }
 
-    const principalRow = await resolvePrincipal(db, tokenRow, resolvedTenantId);
-
-    if (!principalRow) {
+    if (resolved.kind === "principal_not_found") {
       log.info(
         "git-token auth: principal not found {tokenId} userId={userId} tenantId={tenantId}",
         {
@@ -189,16 +191,18 @@ export function createGitTokenAuth({
       );
     }
 
-    if (principalRow.status !== "active") {
+    if (resolved.kind === "principal_inactive") {
       log.info(
         "git-token auth: principal suspended {principalId} status={status}",
         {
-          principalId: principalRow.id,
-          status: principalRow.status,
+          principalId: resolved.principal.id,
+          status: resolved.principal.status,
         },
       );
       return forbidden(c, "principal_suspended", "Principal is not active");
     }
+
+    const { tenant: tenantRow, principal: principalRow } = resolved;
 
     log.info(
       "git-token auth: success {tokenId} principal={principalId} tenant={tenantId}",
@@ -270,28 +274,6 @@ function decodeBase64Utf8(input: string): string | null {
 
 function hasKnownPrefix(secret: string): boolean {
   return secret.startsWith(PAT_PREFIX) || secret.startsWith(SVC_PREFIX);
-}
-
-async function resolvePrincipal(
-  db: DB["db"],
-  tokenRow: ReturnType<typeof parseGitTokenRow>,
-  resolvedTenantId: string,
-): Promise<PrincipalRow | undefined> {
-  if (tokenRow.principalId !== null) {
-    // A service token's principal must belong to the request's tenant, as a
-    // personal token's does.
-    return await db.query.principal.findFirst({
-      where: and(
-        eq(principal.id, tokenRow.principalId),
-        eq(principal.tenantId, resolvedTenantId),
-      ),
-    });
-  }
-
-  return await findUserPrincipal(db, {
-    tenantId: resolvedTenantId,
-    userId: tokenRow.userId,
-  });
 }
 
 function unauthorized(c: Context, message: string): Response {
