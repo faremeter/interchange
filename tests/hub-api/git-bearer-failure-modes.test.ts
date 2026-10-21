@@ -17,7 +17,7 @@
 //      with the same Basic credential, asserting the JSON error body
 //      shape (`{ error: { code, message } }`).
 //
-// The four failure modes mirror the `forbidden(...)` branches in
+// The failure modes mirror the `forbidden(...)` branches in
 // `packages/hub-api/src/middleware/git-token-auth.ts`:
 //   - `token_expired`
 //   - `principal_suspended`
@@ -258,6 +258,43 @@ describe.skipIf(!harnessHubEnvAvailable())(
       );
       expect(probe.status).toBe(403);
       expect(probe.body.error.code).toBe("tenant_mismatch");
+    }, 90_000);
+
+    test("principal_not_found: svc token naming a principal of another tenant", async () => {
+      const hub = await startHubTracked();
+      const user = await signUpUser(hub.url);
+      const tenantA = await createTenant(hub.url, user, { slugPrefix: "a" });
+      const tenantB = await createTenant(hub.url, user, { slugPrefix: "b" });
+      const assetA = await createAsset(hub.url, user, tenantA);
+      const token = await mintTenantGitToken(hub.url, user, tenantA, {
+        refPattern: "**",
+        actions: ["can_read"],
+      });
+
+      // The mint API binds a svc token to a principal of its own tenant. Point
+      // the row at the same user's active principal in tenant B, a row the API
+      // cannot produce, to prove the principal lookup is tenant-scoped.
+      const sql = openSchemaSql(hub.schema);
+      try {
+        const rows = await sql<{ id: string }[]>`
+        select id from principal
+        where tenant_id = ${tenantB.tenantId} and kind = 'user'
+      `;
+        const principalB = rows[0]?.id;
+        if (principalB === undefined) {
+          throw new Error(`expected a user principal in ${tenantB.tenantId}`);
+        }
+        await sql`update git_token set principal_id = ${principalB} where id = ${token.tokenId}`;
+      } finally {
+        await sql.end();
+      }
+
+      const probe = await probeInfoRefs(
+        assetSmartHttpUrl(hub.url, assetA),
+        token.secret,
+      );
+      expect(probe.status).toBe(403);
+      expect(probe.body.error.code).toBe("principal_not_found");
     }, 90_000);
 
     test("principal_not_found: user B's PAT scoped to user A's tenant has no principal row", async () => {
