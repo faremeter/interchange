@@ -51,6 +51,7 @@ export function createHubSessionLookups(
     | "materializeMailTriggeredRunGrants"
     | "mintCorrespondentGrant"
     | "resyncCredentials"
+    | "loadRunCredentials"
     | "resolveSenderKey"
     | "resolveSenderKeyStrict"
     | "resolveSenderPrincipal"

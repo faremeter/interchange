@@ -16,6 +16,7 @@ import {
 } from "@intx/db/schema";
 import {
   pushCredentialReconcile,
+  type RunCredentialsLoader,
   pushSourceUpdates,
   type SidecarRouter,
 } from "@intx/hub-sessions";
@@ -88,6 +89,8 @@ function reconcilingRouter(captured: Reconciled[]): SidecarRouter {
     },
   } as unknown as SidecarRouter;
 }
+
+const noRunCredentials: RunCredentialsLoader = async () => null;
 
 describe.skipIf(!harnessDbEnvAvailable())(
   "credential source push run fan-out (real DB)",
@@ -240,6 +243,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         reconcilingRouter(captured),
         "dep_1@tnt.test",
         createNoopCredentialCipher(),
+        noRunCredentials,
       );
 
       expect(captured).toHaveLength(1);
@@ -279,6 +283,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         reconcilingRouter(captured),
         "dep_2@tnt.test",
         createNoopCredentialCipher(),
+        noRunCredentials,
       );
 
       expect(captured).toHaveLength(1);
@@ -305,9 +310,89 @@ describe.skipIf(!harnessDbEnvAvailable())(
         reconcilingRouter(captured),
         "dep_3@tnt.test",
         createNoopCredentialCipher(),
+        noRunCredentials,
       );
 
       expect(captured).toHaveLength(0);
+    });
+
+    test("reconcile restores the run's hub credentials after a reconnect", async () => {
+      await seedWorkflowRun(h.db, {
+        id: "dep_4",
+        tenantId: "tnt_root",
+        definitionId: "wfd_1",
+        anchorRunId: "dep_4",
+        address: "dep_4@tnt.test",
+        status: "running",
+        credentialRefs: {
+          credentialIds: [],
+          bindings: [],
+          hubConsumers: ["action:a"],
+        },
+      });
+      const loadedFor: string[] = [];
+      const captured: Reconciled[] = [];
+      await pushCredentialReconcile(
+        h.db,
+        reconcilingRouter(captured),
+        "dep_4@tnt.test",
+        createNoopCredentialCipher(),
+        async (runId) => {
+          loadedFor.push(runId);
+          return {
+            bindings: [
+              {
+                handle: "interchange.hub",
+                credentialId: "hub:action:a",
+                consumer: "action:a",
+              },
+            ],
+            materials: [
+              {
+                credentialId: "hub:action:a",
+                providerKey: "http",
+                origin: "https://hub.test",
+                secret: "itx_run_token",
+              },
+            ],
+          };
+        },
+      );
+
+      expect(loadedFor).toEqual(["dep_4"]);
+      expect(
+        captured[0]?.delivery.materials.map((m) => m.credentialId),
+      ).toEqual(["hub:action:a"]);
+      expect(captured[0]?.revoke).toBeUndefined();
+    });
+
+    test("reconcile does not revoke the hub credentials of a run that has no tokens yet", async () => {
+      await seedWorkflowRun(h.db, {
+        id: "dep_5",
+        tenantId: "tnt_root",
+        definitionId: "wfd_1",
+        anchorRunId: "dep_5",
+        address: "dep_5@tnt.test",
+        status: "running",
+        credentialRefs: {
+          credentialIds: [],
+          bindings: [],
+          hubConsumers: ["action:a"],
+        },
+      });
+      const captured: Reconciled[] = [];
+      await pushCredentialReconcile(
+        h.db,
+        reconcilingRouter(captured),
+        "dep_5@tnt.test",
+        createNoopCredentialCipher(),
+        noRunCredentials,
+      );
+
+      // The first trigger can still mint the tokens and deliver them on its
+      // barrier, so a revoke here could remove them after that delivery.
+      expect(captured[0]?.delivery.materials).toEqual([]);
+      expect(captured[0]?.revoke).toBeUndefined();
     });
   },
 );

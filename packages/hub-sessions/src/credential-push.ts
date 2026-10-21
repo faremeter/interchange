@@ -13,8 +13,9 @@
 //     so this needs no diff against a prior delivery.
 
 import { eq, and, inArray, isNull, isNotNull } from "drizzle-orm";
+import type { RunCredentialsLoader } from "./run-credentials";
 import { getLogger } from "@intx/log";
-import { workflowRun } from "@intx/db/schema";
+import { hubConsumersOf, workflowRun } from "@intx/db/schema";
 import {
   resolveInstanceModelSources,
   getDescendantTenants,
@@ -298,9 +299,13 @@ export async function pushCredentialRevoke(
  * deploy-time source (the new id is not in `credentialRefs`); a later source
  * push delivers that.
  *
+ * The run's hub credentials ride the same merge: its current run tokens when
+ * it has any, and nothing when it has none. They are not credential rows, so
+ * they never pass through the re-resolution.
+ *
  * No-op when the run persisted no credential refs (a folded run, or a
- * deployment with no credentials). Fire-and-forget from the reconnect handler:
- * it never rejects. A live-but-unresolvable credential (its provider vanished
+ * deployment with neither credentials nor hub consumers). Fire-and-forget
+ * from the reconnect handler: it never rejects. A live-but-unresolvable credential (its provider vanished
  * or has no API base URL) makes `reresolveCurrentMaterials` throw, which aborts
  * the WHOLE reconcile (logged, not sent) so a partial set with a spurious
  * revoke never lands. This is deliberately all-or-nothing: one misconfigured
@@ -313,11 +318,12 @@ export async function pushCredentialReconcile(
   sidecarRouter: Pick<SidecarRouter, "sendCredentialsUpdate">,
   agentAddress: string,
   credentialCipher: CredentialCipher,
+  loadRunCredentials: RunCredentialsLoader,
 ): Promise<void> {
   try {
     const run = await db.query.workflowRun.findFirst({
       where: eq(workflowRun.address, agentAddress),
-      columns: { credentialRefs: true },
+      columns: { id: true, credentialRefs: true },
     });
     if (run === undefined) return;
     const refs = run.credentialRefs;
@@ -337,7 +343,17 @@ export async function pushCredentialReconcile(
     const bindings = refs.bindings.filter((binding) =>
       resolvedIds.has(binding.credentialId),
     );
-    const delivery: CredentialDelivery = { bindings, materials };
+    // A run with no hub tokens gets nothing here, and no revoke either. The
+    // tokens may not exist yet: the first trigger can mint them and deliver
+    // them on its barrier after this read. A token the hub deleted is refused
+    // by the hub, so the material a revoke would remove is already inert.
+    const hubConsumers = hubConsumersOf(refs);
+    const hub =
+      hubConsumers.length > 0 ? await loadRunCredentials(run.id) : null;
+    const delivery: CredentialDelivery = {
+      bindings: [...bindings, ...(hub?.bindings ?? [])],
+      materials: [...materials, ...(hub?.materials ?? [])],
+    };
 
     await sidecarRouter.sendCredentialsUpdate(
       agentAddress,

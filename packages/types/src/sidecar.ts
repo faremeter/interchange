@@ -580,6 +580,13 @@ export const RunGrantsFrame = type({
   runId: "string",
   stepGrants: WireGrantRule.array(),
   "senderIdentities?": SenderIdentity.array(),
+  /**
+   * The run's hub credentials: one run token for each consumer that declares
+   * the reserved hub handle. It rides the grants barrier so every replay of
+   * the barrier carries it again; the sidecar merges it into the run's
+   * credential cell and never writes it with the grants.
+   */
+  "credentials?": CredentialDelivery,
 });
 export type RunGrantsFrame = typeof RunGrantsFrame.infer;
 

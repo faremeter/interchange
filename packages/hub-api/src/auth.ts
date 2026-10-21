@@ -2,9 +2,9 @@ import type { DB } from "@intx/db";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 
-export function createAuth(db: DB["db"]) {
+export function createAuth(db: DB["db"], baseURL: string) {
   return betterAuth({
-    baseURL: process.env["BETTER_AUTH_BASE_URL"] ?? "http://localhost:3000",
+    baseURL,
     database: drizzleAdapter(db, { provider: "pg" }),
     emailAndPassword: {
       enabled: true,

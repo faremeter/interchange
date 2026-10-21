@@ -623,6 +623,127 @@ describe("SidecarRouter allocation mail durability", () => {
     ]);
   });
 
+  describe("hub credentials on the run.grants barrier", () => {
+    const delivery = {
+      bindings: [
+        {
+          handle: "interchange.hub",
+          credentialId: "hub:action:a",
+          consumer: "action:a",
+        },
+      ],
+      materials: [
+        {
+          credentialId: "hub:action:a",
+          providerKey: "http",
+          origin: "https://hub.test",
+          secret: "itx_run_secret",
+        },
+      ],
+    };
+
+    function routerWithCredentials(loadedFor: string[]) {
+      return createAllocatedRouter({
+        mailAckRetryIntervalMs: 10_000,
+        mailHoldTTLMs: 60_000,
+        lookups: {
+          async loadRunCredentials(runId) {
+            loadedFor.push(runId);
+            return delivery;
+          },
+        },
+      });
+    }
+
+    test("the dispatched barrier and its reconnect replay both carry them", async () => {
+      const loadedFor: string[] = [];
+      const router = routerWithCredentials(loadedFor);
+      const first = await connectAllocated(router, [
+        TEST_IDENTITY.workflowRunAddress,
+      ]);
+      await router.sendWorkflowRunDispatchToAllocation(
+        TEST_TARGET,
+        TEST_IDENTITY.workflowRunAddress,
+        TEST_IDENTITY.anchorRunId,
+        [],
+        "dHJpZ2dlcg==",
+        TEST_SENDER,
+        "mid-credentials",
+      );
+      expect(framesOfType(first, "run.grants")[0]?.["credentials"]).toEqual(
+        delivery,
+      );
+
+      router.handleClose(first);
+      const second = await connectAllocated(router, [
+        TEST_IDENTITY.workflowRunAddress,
+      ]);
+      expect(framesOfType(second, "run.grants")[0]?.["credentials"]).toEqual(
+        delivery,
+      );
+      expect(loadedFor).toEqual([
+        TEST_IDENTITY.anchorRunId,
+        TEST_IDENTITY.anchorRunId,
+      ]);
+    });
+
+    test("a load failure on reconnect still redelivers the barrier and its mail", async () => {
+      let failing = false;
+      const router = createAllocatedRouter({
+        mailAckRetryIntervalMs: 10_000,
+        mailHoldTTLMs: 60_000,
+        lookups: {
+          async loadRunCredentials() {
+            if (failing) throw new Error("decrypt failed");
+            return delivery;
+          },
+        },
+      });
+      const first = await connectAllocated(router, [
+        TEST_IDENTITY.workflowRunAddress,
+      ]);
+      await router.sendWorkflowRunDispatchToAllocation(
+        TEST_TARGET,
+        TEST_IDENTITY.workflowRunAddress,
+        TEST_IDENTITY.anchorRunId,
+        [],
+        "dHJpZ2dlcg==",
+        TEST_SENDER,
+        "mid-load-failure",
+      );
+      router.handleClose(first);
+      failing = true;
+
+      const second = await connectAllocated(router, [
+        TEST_IDENTITY.workflowRunAddress,
+      ]);
+      const grants = framesOfType(second, "run.grants");
+      expect(grants).toHaveLength(1);
+      expect(grants[0]?.["credentials"]).toBeUndefined();
+      expect(framesOfType(second, "mail.inbound")).toHaveLength(1);
+    });
+
+    test("a standing-grant push carries none", async () => {
+      const loadedFor: string[] = [];
+      const router = routerWithCredentials(loadedFor);
+      const ws = await connectAllocated(router, [
+        TEST_IDENTITY.workflowRunAddress,
+      ]);
+      expect(
+        router.sendRunGrants(
+          TEST_IDENTITY.workflowRunAddress,
+          TEST_IDENTITY.anchorRunId,
+          [],
+          undefined,
+        ),
+      ).toBe(true);
+      expect(
+        framesOfType(ws, "run.grants")[0]?.["credentials"],
+      ).toBeUndefined();
+      expect(loadedFor).toEqual([]);
+    });
+  });
+
   test("replays the co-delivered sender key on reconnect", async () => {
     // A sidecar that missed the original dispatch learns the grant only from
     // the reconnect replay; the co-delivered key must ride that replay too, or

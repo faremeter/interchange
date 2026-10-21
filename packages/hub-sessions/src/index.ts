@@ -102,6 +102,11 @@ export {
   pushCredentialReconcile,
 } from "./credential-push";
 export {
+  createRunCredentialsLoader,
+  type CreateRunCredentialsLoaderDeps,
+  type RunCredentialsLoader,
+} from "./run-credentials";
+export {
   adapterManifestDigest,
   attachSidecarProvisioners,
   chooseFirstSidecarProvisioner,
