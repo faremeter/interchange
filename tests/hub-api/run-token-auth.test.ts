@@ -10,7 +10,7 @@ import { eq } from "drizzle-orm";
 
 import { createInMemoryGrantStore } from "@intx/authz";
 import { createRunTokenStore } from "@intx/db";
-import { principal } from "@intx/db/schema";
+import { principal, workflowDefinition, workflowRun } from "@intx/db/schema";
 import { createApp, RUN_TOKEN_ROUTES, type GetSession } from "@intx/hub-api";
 import {
   createEventCollectorRegistry,
@@ -18,6 +18,7 @@ import {
   type AssetService,
   type RepoStore,
   type SessionService,
+  type WorkflowAllocationService,
 } from "@intx/hub-sessions";
 import type { GrantRule } from "@intx/types/authz";
 import {
@@ -26,7 +27,7 @@ import {
   type TestDb,
 } from "@intx/test-harness/db-harness";
 import { createTestCredentialCipher } from "@intx/test-harness/crypto";
-import { seedPrincipal, seedTenants } from "@intx/test-harness/seed";
+import { seedAsset, seedPrincipal, seedTenants } from "@intx/test-harness/seed";
 
 // A workflow run token authenticates as its run principal on the tenant
 // routes, carries its consumer into authorization, and reaches only the
@@ -139,8 +140,23 @@ describe.skipIf(!harnessDbEnvAvailable())(
       token = delivered.token;
     });
 
-    function makeApp(grants: GrantRule[], sessionUser: string | null = null) {
+    function makeApp(
+      grants: GrantRule[],
+      sessionUser: string | null = null,
+      workflowAllocationService?: WorkflowAllocationService,
+    ) {
       return createApp({
+        // The deploy route mounts only with the stores. A stub allocation
+        // service never reaches them.
+        ...(workflowAllocationService !== undefined
+          ? {
+              workflowAllocationService,
+              // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- unused by the stubbed deploy
+              assetService: {} as AssetService,
+              // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- unused by the stubbed deploy
+              repoStore: {} as RepoStore,
+            }
+          : { assetService: null, repoStore: null }),
         getSession: mockGetSession(sessionUser),
         authHandler: () => new Response("", { status: 404 }),
         db: h.db,
@@ -154,8 +170,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         }),
         sessionService: mockSessionService(),
         eventCollectors: createEventCollectorRegistry({ db: h.db }),
-        assetService: null,
-        repoStore: null,
         maxTarballBytes: 10_000_000,
       });
     }
@@ -223,6 +237,72 @@ describe.skipIf(!harnessDbEnvAvailable())(
         headers: { authorization: `Bearer ${userToken.token}` },
       });
       expect(res.status).toBe(401);
+    });
+
+    test("a run that deploys a workflow is recorded as its deployer", async () => {
+      // The deployer is the invoker of record, so the child's invoker
+      // requirements resolve against the run that deployed it.
+      await seedAsset(h.db, {
+        id: "ast_child",
+        tenantId: TENANT_ID,
+        kind: "workflow",
+        name: "child",
+        creatorPrincipalId: USER_PRINCIPAL_ID,
+      });
+      const prepared: Parameters<
+        WorkflowAllocationService["prepareProvisionedDeployment"]
+      >[0][] = [];
+      const app = makeApp([RUN_EVERYTHING], null, {
+        prepareProvisionedDeployment: async (args) => {
+          prepared.push(args);
+          await h.db.insert(workflowDefinition).values({
+            id: "wfd_child",
+            tenantId: TENANT_ID,
+            name: "child",
+            assetId: args.definitionAssetId,
+          });
+          await h.db.insert(workflowRun).values({
+            id: args.anchorRunId,
+            tenantId: TENANT_ID,
+            anchorRunId: args.anchorRunId,
+            definitionId: "wfd_child",
+            address: `${args.anchorRunId}@${args.deploymentDomain}`,
+            status: "running",
+          });
+          return {
+            anchorRunId: args.anchorRunId,
+            deploymentAddress: `${args.anchorRunId}@${args.deploymentDomain}`,
+            allocationId: "sal_child",
+            status: "pending",
+          };
+        },
+        deployReadyAllocation: async () => null,
+      });
+
+      const res = await app.request(
+        `/api/tenants/${TENANT_ID}/workflows/deployments`,
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${token}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            source: {
+              kind: "asset",
+              assetId: "ast_child",
+              package: { format: "source", commitSha: "a".repeat(40) },
+            },
+            entry: "./workflow.ts",
+            sourceOfferingIds: ["ofr_primary"],
+            defaultSourceOfferingId: "ofr_primary",
+          }),
+        },
+      );
+      expect(res.status).toBe(201);
+      expect(prepared.map((p) => p.sourceAuthorityPrincipalId)).toEqual([
+        RUN_PRINCIPAL_ID,
+      ]);
     });
 
     test("a run token cannot reach a route off the allow-list, whatever its grants", async () => {
