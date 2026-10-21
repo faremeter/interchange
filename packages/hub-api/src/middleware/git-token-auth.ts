@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { createMiddleware } from "hono/factory";
 import type { Context, Env, MiddlewareHandler } from "hono";
 
@@ -278,8 +278,13 @@ async function resolvePrincipal(
   resolvedTenantId: string,
 ): Promise<PrincipalRow | undefined> {
   if (tokenRow.principalId !== null) {
+    // A service token's principal must belong to the request's tenant, as a
+    // personal token's does.
     return await db.query.principal.findFirst({
-      where: eq(principal.id, tokenRow.principalId),
+      where: and(
+        eq(principal.id, tokenRow.principalId),
+        eq(principal.tenantId, resolvedTenantId),
+      ),
     });
   }
 
