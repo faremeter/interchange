@@ -4,8 +4,8 @@
 // the production tool loader against a genuine bundle rather than a
 // hand-written string blob.
 //
-// The tool declares one credential handle and, at run, resolves it from the
-// host-assembled `credentials` capability into an http mediated credential,
+// The tool resolves one credential handle from the host-assembled
+// `credentials` capability into an http mediated credential,
 // then fetches a caller-chosen path on the credential's pinned origin. The
 // bearer the origin records is the e2e's end-to-end proof that the delivery
 // rail carried the secret to the tool -- through the deploy frame (or a live
@@ -15,31 +15,25 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { defineTool, type BaseEnv } from "@intx/agent";
+import { defineTool, type BaseEnv, type ToolBundle } from "@intx/agent";
 import type { RuntimeCapabilities } from "@intx/types/runtime-capabilities";
 
 /**
- * The credential handle the tool declares and resolves. The workflow's
- * declared credential binding MUST bind this same handle, or the launch-time
- * declared-vs-bound reconcile fails the deploy closed.
+ * The credential handle the tool resolves. `declaredCredentialProbe` declares
+ * it, so deploy refuses that tool unless a root binding names this handle for
+ * it; `credentialProbe` declares nothing, so its binding is not checked.
  */
 export const CREDENTIAL_HANDLE = "api-token";
 
 /**
- * The synthetic package name. The tool consumer identity Gate 2 checks is
- * `toolConsumer(PACKAGE_NAME)`; the delivered descriptor's `consumer` and the
- * `credential:{id}` / `use` grant's `{ tool }` condition must both match it.
+ * The factory id. On the source-ref lineage it is the tool's consumer
+ * identity: Gate 2 checks `toolConsumer(BUNDLE_ID)`, and a binding names it as
+ * its `package`.
  */
-export const PACKAGE_NAME = "@intx/tools-credential-probe";
-
-/** The bundle id; the loader namespaces the `probe` definition under it. */
 export const BUNDLE_ID = "@intx/tools-credential-probe/sidecar-bundle";
 
-/** The probe definition's bare name. */
+/** The probe definition's name; a source-ref tool keeps its bare name. */
 export const PROBE_DEFINITION_NAME = "probe";
-
-/** The model-facing tool name the loader synthesizes (`<bundleId>:<def>`). */
-export const TOOL_NAME = `${BUNDLE_ID}:${PROBE_DEFINITION_NAME}`;
 
 /**
  * Env contract for the probe bundle: `BaseEnv` (for `workdir`) plus the
@@ -50,11 +44,8 @@ interface CredentialToolEnv extends BaseEnv {
   capabilities: RuntimeCapabilities;
 }
 
-export const credentialProbe = defineTool<CredentialToolEnv>({
-  id: BUNDLE_ID,
-  requires: ["capabilities"],
-  definitions: [{ name: "probe" }],
-  factory: (env) => ({
+function probeBundle(env: CredentialToolEnv): ToolBundle {
+  return {
     definitions: [
       {
         name: "probe",
@@ -125,5 +116,30 @@ export const credentialProbe = defineTool<CredentialToolEnv>({
         content: `probe fetched ${requestPath} -> ${response.status}`,
       };
     },
-  }),
+  };
+}
+
+/**
+ * The probe as a tool that declares no credentials. Deploy does not hold its
+ * binding to a declared set, so a deployment can leave it unbound and deliver
+ * its credential later over the live `credentials.update` channel.
+ */
+export const credentialProbe = defineTool<CredentialToolEnv>({
+  id: BUNDLE_ID,
+  requires: ["capabilities"],
+  definitions: [{ name: "probe" }],
+  factory: probeBundle,
+});
+
+/**
+ * The probe as a tool that declares `CREDENTIAL_HANDLE`. Deploy refuses it
+ * without a root binding for that handle, and the child reconciles the
+ * declaration against the delivered bindings before the tool runs.
+ */
+export const declaredCredentialProbe = defineTool<CredentialToolEnv>({
+  id: BUNDLE_ID,
+  requires: ["capabilities"],
+  definitions: [{ name: "probe" }],
+  credentials: [{ handle: CREDENTIAL_HANDLE }],
+  factory: probeBundle,
 });

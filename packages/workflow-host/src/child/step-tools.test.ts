@@ -53,6 +53,7 @@ import {
   createToolBearingAgentFactory,
   deriveToolMarkFloorGrants,
   rewrapStepToolFactory,
+  sourceStepToolFactories,
   type StepToolMaterialization,
 } from "./step-tools";
 
@@ -683,5 +684,40 @@ describe("deriveToolMarkFloorGrants", () => {
     expect(await resolveWithFloor("run_shell", factories, [broadAllow])).toBe(
       "ask",
     );
+  });
+});
+
+describe("sourceStepToolFactories", () => {
+  test("keys each factory by its id and carries its credential declaration", () => {
+    const declaring = defineTool({
+      id: "@intx/test-tool/declaring",
+      definitions: [],
+      credentials: [{ handle: "api-token", scopes: ["read"] }],
+      factory: (): ToolBundle => ({
+        definitions: [],
+        run: (call) => Promise.resolve({ callId: call.id, content: "" }),
+      }),
+    });
+    const legacy = defineTool({
+      id: "@intx/test-tool/legacy",
+      definitions: [],
+      factory: (): ToolBundle => ({
+        definitions: [],
+        run: (call) => Promise.resolve({ callId: call.id, content: "" }),
+      }),
+    });
+
+    expect(
+      sourceStepToolFactories([declaring, legacy]).map((entry) => ({
+        packageName: entry.packageName,
+        declaredCredentials: entry.declaredCredentials,
+      })),
+    ).toEqual([
+      {
+        packageName: "@intx/test-tool/declaring",
+        declaredCredentials: [{ handle: "api-token", scopes: ["read"] }],
+      },
+      { packageName: "@intx/test-tool/legacy", declaredCredentials: [] },
+    ]);
   });
 });

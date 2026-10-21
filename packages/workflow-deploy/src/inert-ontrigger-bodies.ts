@@ -440,9 +440,14 @@ export function readInertStepInference(
   return { isAgent: false, preference: null };
 }
 
-// The agent surface the tool-factory reader reads, typing only the factory ids.
+// The agent surface the tool-factory reader reads: each factory's id and the
+// credential handles it declares, when it declares any.
+const InertToolFactoryRef = type({
+  id: "string",
+  "credentials?": type({ handle: "string", "scopes?": "string[]" }).array(),
+});
 const AgentWithToolFactories = type({
-  toolFactories: type({ id: "string" }).array(),
+  toolFactories: InertToolFactoryRef.array(),
 });
 const StepWithToolFactories = type({
   kind: "'step'",
@@ -453,24 +458,42 @@ const MapWithToolFactories = type({
   step: { agent: AgentWithToolFactories },
 });
 
+/** A tool factory a frozen inert step runs: its id and declared handles. */
+export type InertStepToolFactory = {
+  readonly id: string;
+  /** Absent when the factory declares no credentials. */
+  readonly credentialHandles?: readonly string[];
+};
+
 /**
- * The tool factory ids a frozen inert step's agent instantiates: a `step`
- * carries the agent directly, a `map` carries it on its inner step, and any
- * other primitive has none. A `step`/`map` that fails the agent shape is a
- * malformed projection and throws, prefixed with `context`.
+ * The tool factories a frozen inert step's agent instantiates, with the
+ * credential handles each declares: a `step` carries the agent directly, a
+ * `map` carries it on its inner step, and any other primitive has none. A
+ * `step`/`map` that fails the agent shape is a malformed projection and
+ * throws, prefixed with `context`.
  */
-export function readInertStepToolFactoryIds(
+export function readInertStepToolFactories(
   stepValue: unknown,
   context: string,
   stepId: string,
-): readonly string[] {
+): readonly InertStepToolFactory[] {
+  const toRef = (factory: typeof InertToolFactoryRef.infer) => ({
+    id: factory.id,
+    ...(factory.credentials !== undefined
+      ? {
+          credentialHandles: factory.credentials.map(
+            (declaration) => declaration.handle,
+          ),
+        }
+      : {}),
+  });
   const asStep = StepWithToolFactories(stepValue);
   if (!(asStep instanceof type.errors)) {
-    return asStep.agent.toolFactories.map((factory) => factory.id);
+    return asStep.agent.toolFactories.map(toRef);
   }
   const asMap = MapWithToolFactories(stepValue);
   if (!(asMap instanceof type.errors)) {
-    return asMap.step.agent.toolFactories.map((factory) => factory.id);
+    return asMap.step.agent.toolFactories.map(toRef);
   }
   const kind = StepKind(stepValue);
   if (

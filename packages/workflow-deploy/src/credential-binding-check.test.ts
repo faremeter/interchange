@@ -22,10 +22,13 @@ import {
 
 const TOOL_ID = "@acme/tools/github";
 
-function tool(id: string) {
+function tool(id: string, credentials?: readonly string[]) {
   return defineTool({
     id,
     definitions: [{ name: "fetch" }],
+    ...(credentials !== undefined
+      ? { credentials: credentials.map((handle) => ({ handle })) }
+      : {}),
     factory: (_env: BaseEnv) => ({
       definitions: [],
       run: () =>
@@ -34,12 +37,15 @@ function tool(id: string) {
   });
 }
 
-function agentStep(toolIds: readonly string[]) {
+function agentStep(
+  toolIds: readonly string[],
+  credentials?: readonly string[],
+) {
   return step({
     agent: defineAgent({
       id: "ag",
       systemPrompt: "s",
-      tools: toolIds.map(tool),
+      tools: toolIds.map((id) => tool(id, credentials)),
       capabilities: [],
       inference: { sources: [{ provider: "anthropic", model: "m" }] },
     }),
@@ -75,6 +81,60 @@ function check(
     ),
   );
 }
+
+describe("checkCredentialBindings holds a declaring tool to its declaration", () => {
+  test("a declared tool handle with a binding", () => {
+    expect(
+      check({ work: agentStep([TOOL_ID], ["gh"]) }, [toolBinding(TOOL_ID)]),
+    ).toEqual([]);
+  });
+
+  test("a binding for a tool that declares nothing", () => {
+    // A factory without a declaration predates them, so its binding is
+    // accepted without a declared set to hold it to.
+    expect(
+      check({ work: agentStep([TOOL_ID]) }, [toolBinding(TOOL_ID, "any")]),
+    ).toEqual([]);
+  });
+
+  test("refuses a declared tool handle with no binding", () => {
+    expect(check({ work: agentStep([TOOL_ID], ["gh"]) }, [])).toEqual([
+      { kind: "unbound_declared_tool_handle", factory: TOOL_ID, handle: "gh" },
+    ]);
+  });
+
+  test("refuses a binding for a handle the declaring tool omits", () => {
+    expect(
+      check({ work: agentStep([TOOL_ID], ["gh"]) }, [
+        toolBinding(TOOL_ID),
+        toolBinding(TOOL_ID, "gh-typo"),
+      ]),
+    ).toEqual([
+      {
+        kind: "undeclared_tool_binding_handle",
+        package: TOOL_ID,
+        handle: "gh-typo",
+      },
+    ]);
+  });
+
+  test("describes both tool violations", () => {
+    expect(
+      describeCredentialBindingViolation({
+        kind: "unbound_declared_tool_handle",
+        factory: TOOL_ID,
+        handle: "gh",
+      }),
+    ).toContain(`tool factory ${TOOL_ID} declares credential handle "gh"`);
+    expect(
+      describeCredentialBindingViolation({
+        kind: "undeclared_tool_binding_handle",
+        package: TOOL_ID,
+        handle: "gh",
+      }),
+    ).toContain("does not declare that handle");
+  });
+});
 
 describe("checkCredentialBindings accepts deliverable bindings", () => {
   test("a tool binding for a factory the workflow runs", () => {
@@ -378,6 +438,107 @@ describe("checkCredentialBindings on a malformed projection", () => {
     };
     expect(checkCredentialBindings(projection)).toEqual([
       { kind: "undeclared_binding_handle", action: "push", handle: "gh" },
+    ]);
+  });
+});
+
+const unbound = (factory: string) => ({
+  kind: "unbound_declared_tool_handle" as const,
+  factory,
+  handle: "gh",
+});
+const loopOf = (b: ReturnType<typeof body>) =>
+  loop({
+    body: b,
+    while: "cont",
+    carry: "next",
+    maxIterations: 1,
+    onExhausted: "done",
+  });
+
+describe("declared tool handles in nested positions", () => {
+  test("map item", () => {
+    expect(
+      check(
+        {
+          fan: map({
+            over: { literal: [1] },
+            step: agentStep([TOOL_ID], ["gh"]),
+          }),
+        },
+        [],
+      ),
+    ).toEqual([unbound(TOOL_ID)]);
+  });
+  test("onTrigger body", () => {
+    expect(
+      check(
+        {
+          s: onTrigger({
+            on: { type: "mail", to: "s@acme.test" },
+            body: body("b", { w: agentStep([TOOL_ID], ["gh"]) }),
+          }),
+        },
+        [],
+      ),
+    ).toEqual([unbound(TOOL_ID)]);
+  });
+  test("loop body", () => {
+    expect(
+      check(
+        {
+          r: loopOf(body("b", { w: agentStep([TOOL_ID], ["gh"]) })),
+          done: action({ handler: "done", after: ["r"] }),
+        },
+        [],
+      ),
+    ).toEqual([unbound(TOOL_ID)]);
+  });
+  test("childWorkflow body", () => {
+    expect(
+      check(
+        {
+          c: childWorkflow({
+            definition: body("b", { w: agentStep([TOOL_ID], ["gh"]) }),
+          }),
+        },
+        [],
+      ),
+    ).toEqual([unbound(TOOL_ID)]);
+  });
+  test("map inside loop inside onTrigger, bound and undeclared extra", () => {
+    const inner = body("lb", {
+      fan: map({ over: { literal: [1] }, step: agentStep([TOOL_ID], ["gh"]) }),
+    });
+    const sec = body("sb", {
+      r: loopOf(inner),
+      done: action({ handler: "done", after: ["r"] }),
+    });
+    expect(
+      check(
+        {
+          s: onTrigger({ on: { type: "mail", to: "s@acme.test" }, body: sec }),
+        },
+        [toolBinding(TOOL_ID), toolBinding(TOOL_ID, "x")],
+      ),
+    ).toEqual([
+      { kind: "undeclared_tool_binding_handle", package: TOOL_ID, handle: "x" },
+    ]);
+  });
+  test("same id declared in one step and legacy in another", () => {
+    const s1 = agentStep([TOOL_ID], ["gh"]);
+    const s2 = agentStep([TOOL_ID]);
+    expect(
+      check({ a: s1, b: s2 }, [
+        toolBinding(TOOL_ID),
+        toolBinding(TOOL_ID, "legacy"),
+      ]),
+    ).toEqual([
+      {
+        kind: "undeclared_tool_binding_handle",
+        package: TOOL_ID,
+        handle: "legacy",
+      },
     ]);
   });
 });
