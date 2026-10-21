@@ -61,6 +61,7 @@ import {
   lockAnchorCredentialResolution,
   lockDispatchableAllocation,
   lockWorkflowRunState,
+  collectDeployerInvokerGrants,
   stageRunGrantsFromSnapshot,
 } from "./run-grant-materialization";
 import type { MaterializedGrantRow } from "./grant-materialization";
@@ -363,15 +364,22 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
       }
 
       runPrincipalId = await deriveRunPrincipalId(tenant.id, runId);
-      // The external route resolves invoker grants live and passes the
-      // snapshot's FULL requirement list unfiltered, so
-      // `resolveGrantMaterialization` keeps its reject-on-insufficient-invoker
-      // contract.
+      // Invoker-sourced requirements resolve against the deployment's
+      // deployer, not this caller, so the trigger path cannot change whose
+      // authority a run delegates.
       const declaredGrantRequirements = snapshot.grantRequirements;
-      const invokerGrants = await grantStore.collectGrants(
-        principal.id,
-        tenant.id,
-      );
+      const invoker = await collectDeployerInvokerGrants({
+        db,
+        grantStore,
+        tenantId: tenant.id,
+        anchorRunId,
+        grantRequirements: declaredGrantRequirements,
+      });
+      if (!invoker.ok) {
+        const { status, code, message } = invoker.rejection;
+        return { ok: false, status, body: { error: { code, message } } };
+      }
+      const invokerGrants = invoker.invokerGrants;
       const creatorGrants = await collectCreatorGrants(
         grantStore,
         tenant.id,

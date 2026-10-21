@@ -882,7 +882,7 @@ export function createRunRoutes({
         ),
         404: jsonResponse("Run not found", ErrorResponse),
         409: jsonResponse(
-          "Run address is not routable, its allocation is no longer active, or the run is stopping or terminal",
+          "Run address is not routable, its allocation is no longer active, the run is stopping or terminal, or (`deployer_unavailable`) the definition has invoker-sourced grant requirements and the deployer is not recorded or no longer active",
           ErrorResponse,
         ),
         413: jsonResponse(

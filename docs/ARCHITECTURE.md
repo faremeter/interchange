@@ -178,13 +178,13 @@ When an agent is updated or retired, the harness drains in-flight work before sh
 
 ### Authorization Delegation
 
-Agents acquire capabilities from three sources: the tenant's organizational policies, the definition author (creator), and the user who launches the agent (invoker). These three authority domains combine to determine what the agent can actually do at runtime.
+Agents acquire capabilities from three sources: the tenant's organizational policies, the definition author (creator), and the invoker: for a workflow, the principal that deployed it. These three authority domains combine to determine what the agent can actually do at runtime.
 
 **Tenant-granted capabilities** come from organizational policies in the tenant hierarchy. These are baseline permissions that the tenant allows for agents of this type — resource access, network policies, spending limits. Tenant grants are resolved by walking up the tenant hierarchy, with child tenants able to add restrictions but not remove them.
 
 **Creator-granted capabilities** are delegated by the definition author. The creator is the principal who authored the agent definition. Their authority is a persistent property of the definition — analogous to the setuid model in UNIX. The agent runs with capabilities granted by its creator, not limited to what the invoking user could do themselves. A creator can build an agent that performs privileged operations on behalf of users who lack direct access to those operations. These capabilities travel with the definition regardless of who later launches agents from it.
 
-**Invoker-granted capabilities** are provided at launch time by the user who creates the agent. These are additional permissions the invoker delegates for the duration of the agent's lifetime — access to the invoker's data, authorization to act on the invoker's behalf with specific services, or credentials the agent needs to complete work for that particular user.
+**Invoker-granted capabilities** are delegated by the invoker when a run is first triggered. For a workflow, the invoker of record is the principal that deployed it, a user or another run, not whoever sends the trigger. These are additional permissions the invoker delegates for a fixed 24 hours — access to the invoker's data, authorization to act on the invoker's behalf with specific services, or credentials the agent needs to complete work for the invoker.
 
 **Effective capabilities** are the union of tenant, creator, and invoker grants, materialized on the agent's principal. The control plane resolves all grant requirements at launch time and ships the effective grant set to the harness in the deploy frame. The harness enforces these materialized grants throughout the agent's lifetime. See AUTH.md for the resolution algorithm.
 
@@ -199,7 +199,7 @@ This three-source model enables important patterns:
 
 **Inherited capabilities** apply when agents create other agents. The parent agent can grant its child a subset of its own creator-sourced capabilities, establishing a delegation chain. Children cannot exceed their parent's authority, but they can carry creator-sourced capabilities that future invokers of the child would not have on their own.
 
-**Grant revocation** is policy-driven with a default of fail-secure. If the creator's grants are revoked after agents have been launched with creator-sourced grants, running agents must lose the affected grants. Propagating a revocation to an already-running deployment is not currently implemented — the earlier grants-update wire mechanism has been retired, and its supervised replacement is designed separately; a change takes effect when the deployment next loads its grants. Tenants can configure grace periods or notification-only behavior for specific grant types. Invoker-granted capabilities expire when the agent stops unless explicitly persisted.
+**Grant revocation** is policy-driven with a default of fail-secure. If the creator's grants are revoked after agents have been launched with creator-sourced grants, running agents must lose the affected grants. Propagating a revocation to an already-running deployment is not currently implemented — the earlier grants-update wire mechanism has been retired, and its supervised replacement is designed separately; a change takes effect when the deployment next loads its grants. Tenants can configure grace periods or notification-only behavior for specific grant types. Invoker-granted capabilities expire 24 hours after the run's first trigger.
 
 Authorization grants are part of the agent's auditable state. The harness logs what was granted, by whom (tenant, creator, or invoker), when, and tracks all usage of delegated credentials.
 

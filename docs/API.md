@@ -580,7 +580,7 @@ Body: SendMessage
 202: unknown -- Trigger accepted for delivery
 400: ErrorResponse -- Attachment validation error. Each variant carries a structured code (too_many_attachments, oversize_attachment, disallowed_mime_type, invalid_attachment_name, malformed_base64, oversize_total) with the offending index and limits. A malformed request body that fails SendMessage validation returns the generic error shape instead.
 404: ErrorResponse -- Run not found
-409: ErrorResponse -- Run address is not routable, its allocation is no longer active, or the run is stopping or terminal
+409: ErrorResponse -- Run address is not routable, its allocation is no longer active, the run is stopping or terminal, or (`deployer_unavailable`) the definition has invoker-sourced grant requirements and the deployer is not recorded or no longer active
 413: ErrorResponse -- Request body exceeds the maximum allowed size
 503: ErrorResponse -- Run trigger substrate unavailable
 
@@ -695,7 +695,7 @@ Body: SendMessage
 202: unknown -- Trigger accepted for delivery
 400: ErrorResponse -- Attachment validation error. Each variant carries a structured code (too_many_attachments, oversize_attachment, disallowed_mime_type, invalid_attachment_name, malformed_base64, oversize_total) with the offending index and limits. A malformed request body that fails SendMessage validation returns the generic error shape instead.
 404: ErrorResponse -- Workflow deployment not found
-409: ErrorResponse -- Deployment address is not routable, its allocation is no longer active, or its top-level run is stopping or terminal
+409: ErrorResponse -- Deployment address is not routable, its allocation is no longer active, its top-level run is stopping or terminal, or (`deployer_unavailable`) the definition has invoker-sourced grant requirements and the deployer is not recorded or no longer active
 413: ErrorResponse -- Request body exceeds the maximum allowed size
 503: ErrorResponse -- Durable workflow dispatch unavailable
 
@@ -1362,7 +1362,7 @@ Source: packages/types/src/tenants.ts
 Source: packages/types/src/grants.ts
 
 **effect**: Outcome when this grant is the one resolved for a request: `allow` permits the action, `deny` blocks it, `ask` requires interactive approval before proceeding. When several grants match, the most specific wins, and at equal specificity the strongest effect wins (`deny` over `ask` over `allow`).
-**origin**: Records where the grant came from: `system` (built-in), `role` (granted via a role), `creator` (from the workflow definition author), or `invoker` (delegated by whoever launched the workflow run). Origin is provenance only; it does not affect evaluation precedence.
+**origin**: Records where the grant came from: `system` (built-in), `role` (granted via a role), `creator` (from the workflow definition author), or `invoker` (delegated by the workflow deployment's deployer, its invoker of record). Origin is provenance only; it does not affect evaluation precedence.
 **conditions**: Optional map of named conditions that must all pass for the grant to apply, evaluated against a condition registry at authorization time. A grant with conditions is skipped (fails closed) when no registry is available to evaluate them.
 
 ### CreateModel
@@ -1481,7 +1481,7 @@ Source: packages/types/src/agent-data.ts
 Source: packages/types/src/grants.ts
 
 **effect**: Outcome when this grant is the one resolved for a request: `allow` permits the action, `deny` blocks it, `ask` requires interactive approval before proceeding. When several grants match, the most specific wins, and at equal specificity the strongest effect wins (`deny` over `ask` over `allow`).
-**origin**: Records where the grant came from: `system` (built-in), `role` (granted via a role), `creator` (from the workflow definition author), or `invoker` (delegated by whoever launched the workflow run). Origin is provenance only; it does not affect evaluation precedence.
+**origin**: Records where the grant came from: `system` (built-in), `role` (granted via a role), `creator` (from the workflow definition author), or `invoker` (delegated by the workflow deployment's deployer, its invoker of record). Origin is provenance only; it does not affect evaluation precedence.
 **conditions**: Optional map of named conditions that must all pass for the grant to apply, evaluated against a condition registry at authorization time. A grant with conditions is skipped (fails closed) when no registry is available to evaluate them.
 
 ### HistoryEntry

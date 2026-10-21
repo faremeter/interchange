@@ -27,6 +27,7 @@ export {
 } from "./routes/workflow-principal-name";
 export { HUB_CONDITION_REGISTRY } from "./condition-registry";
 export {
+  collectDeployerInvokerGrants,
   createMailTriggeredRunGrantsMaterializer,
   createCorrespondentGrantMinter,
   setRunToolGrantEffect,
