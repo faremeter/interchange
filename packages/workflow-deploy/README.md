@@ -111,9 +111,10 @@ Public surface:
 - `checkCredentialBindings(projection)` /
   `describeCredentialBindingViolation(violation)` — every credential binding
   in a frozen inert projection that cannot be delivered: a declared action
-  handle with no root binding, `credentialBindings` on a nested body, a
-  binding whose tool factory or action handler the workflow does not run, a
-  binding for a handle the handler does not declare, and a duplicate binding.
+  or tool handle with no root binding, `credentialBindings` on a nested body,
+  a binding whose tool factory or action handler the workflow does not run, a
+  binding for a handle the handler or tool does not declare, and a duplicate
+  binding.
   The hub's probe gate refuses a definition with any of these.
 - `inertNestedBodies(step, descent)` — the nested body projections one step of
   a frozen inert projection carries, filtered by a `StepWalkDescent`. This is

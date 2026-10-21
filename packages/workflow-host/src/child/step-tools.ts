@@ -64,6 +64,28 @@ export interface StepToolMaterialization {
 }
 
 /**
+ * The step tool factories of a source-ref step: the agent's own evaluated
+ * factories, each keyed by its bundle `id` (the credential Gate-2 consumer)
+ * and carrying its `defineTool` credential declaration, so the declared
+ * handles are reconciled against the delivered bindings when the agent is
+ * built.
+ */
+export function sourceStepToolFactories(
+  toolFactories: readonly AnnotatedToolFactory<BaseEnv>[],
+): StepToolMaterialization["factories"] {
+  return toolFactories.map((factory) => ({
+    packageName: factory.id,
+    declaredCredentials: (factory.credentials ?? []).map((declaration) => ({
+      handle: declaration.handle,
+      ...(declaration.scopes !== undefined
+        ? { scopes: [...declaration.scopes] }
+        : {}),
+    })),
+    factory,
+  }));
+}
+
+/**
  * Derive the per-step tool-mark floor grants from a step's materialized
  * tool factories. Each loaded factory carries its static
  * `definitions` (name + optional `approval` mark) verbatim from the tool

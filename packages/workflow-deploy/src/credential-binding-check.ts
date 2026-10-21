@@ -11,8 +11,10 @@
 // of leaving a step without its credential.
 //
 // Scope of the rules:
-//   - The declared-handle rule covers actions only; tool packages carry no
-//     handle declarations in the inert projection.
+//   - The declared-handle rule covers actions and the tool factories that
+//     declare credentials through `defineTool`. A factory that declares no
+//     credentials is not checked, so its bindings may name any handle; one
+//     that declares a list is held to it, both ways.
 //   - Tool consumers are keyed on the tool factory id, the consumer identity
 //     on the source-ref lineage, the only lineage that delivers bindings. A
 //     `package` binding for a plugin package, or for a factory used only in a
@@ -32,7 +34,7 @@ import {
 
 import {
   inertNestedBodies,
-  readInertStepToolFactoryIds,
+  readInertStepToolFactories,
 } from "./inert-ontrigger-bodies";
 
 const CONTEXT = "credential binding check: ";
@@ -43,6 +45,18 @@ export type CredentialBindingViolation =
       /** An action declares a handle that no root binding names for it. */
       readonly kind: "unbound_declared_handle";
       readonly handler: string;
+      readonly handle: string;
+    }
+  | {
+      /** A tool factory declares a handle that no root binding names for it. */
+      readonly kind: "unbound_declared_tool_handle";
+      readonly factory: string;
+      readonly handle: string;
+    }
+  | {
+      /** A `package` binding names a handle its declaring factory omits. */
+      readonly kind: "undeclared_tool_binding_handle";
+      readonly package: string;
       readonly handle: string;
     }
   | {
@@ -98,6 +112,7 @@ export function checkCredentialBindings(
 ): readonly CredentialBindingViolation[] {
   const violations: CredentialBindingViolation[] = [];
   const toolFactoryIds = new Set<string>();
+  const declaredByFactory = new Map<string, Set<string>>();
   const declaredByHandler = new Map<string, Set<string>>();
 
   walkStepTree<unknown, WorkflowProjectionDefinition>({
@@ -117,8 +132,12 @@ export function checkCredentialBindings(
         }
       }
 
-      for (const id of readInertStepToolFactoryIds(step, CONTEXT, stepId)) {
-        toolFactoryIds.add(id);
+      for (const factory of readInertStepToolFactories(step, CONTEXT, stepId)) {
+        toolFactoryIds.add(factory.id);
+        if (factory.credentialHandles === undefined) continue;
+        const handles = declaredByFactory.get(factory.id) ?? new Set<string>();
+        for (const handle of factory.credentialHandles) handles.add(handle);
+        declaredByFactory.set(factory.id, handles);
       }
 
       const asAction = ActionStep(step);
@@ -157,6 +176,21 @@ export function checkCredentialBindings(
     }
   }
 
+  for (const [factory, handles] of declaredByFactory) {
+    for (const handle of handles) {
+      const bound = bindings.some(
+        (binding) => binding.package === factory && binding.handle === handle,
+      );
+      if (!bound) {
+        violations.push({
+          kind: "unbound_declared_tool_handle",
+          factory,
+          handle,
+        });
+      }
+    }
+  }
+
   const seen = new Set<string>();
   for (const binding of bindings) {
     const consumer = bindingConsumerLabel(binding);
@@ -174,6 +208,15 @@ export function checkCredentialBindings(
       if (!toolFactoryIds.has(binding.package)) {
         violations.push({
           kind: "unknown_binding_package",
+          package: binding.package,
+          handle: binding.handle,
+        });
+        continue;
+      }
+      const declaredByTool = declaredByFactory.get(binding.package);
+      if (declaredByTool !== undefined && !declaredByTool.has(binding.handle)) {
+        violations.push({
+          kind: "undeclared_tool_binding_handle",
           package: binding.package,
           handle: binding.handle,
         });
@@ -206,6 +249,10 @@ export function describeCredentialBindingViolation(
   switch (violation.kind) {
     case "unbound_declared_handle":
       return `action ${violation.handler} declares credential handle "${violation.handle}", but no root binding names it for that handler`;
+    case "unbound_declared_tool_handle":
+      return `tool factory ${violation.factory} declares credential handle "${violation.handle}", but no root binding names it for that factory`;
+    case "undeclared_tool_binding_handle":
+      return `the binding for handle "${violation.handle}" names package ${violation.package}, which declares its credentials and does not declare that handle`;
     case "nested_body_bindings":
       return `body ${violation.bodyId} (carried by step ${violation.reachedThrough.join(" > ")}) declares credentialBindings; remove them, because only the root definition's bindings are resolved`;
     case "unknown_binding_package":

@@ -68,6 +68,11 @@ export type CredentialToolWorkflowFixtureParams = {
    * probe's credential must arrive over the live `credentials.update` channel.
    */
   binding?: CredentialToolWorkflowBinding;
+  /**
+   * Whether the probe declares its credential handle (`declaredCredentialProbe`)
+   * or declares nothing (`credentialProbe`). Defaults to declaring nothing.
+   */
+  declareCredential?: boolean;
 };
 
 export function credentialToolWorkflowEntry(
@@ -77,6 +82,10 @@ export function credentialToolWorkflowEntry(
   const agentId = params.agentId ?? "credential-tool-workflow-agent";
   const workflowId = params.workflowId ?? "wf_credential_tool_workflow";
   const binding = params.binding;
+  const probeExport =
+    params.declareCredential === true
+      ? "declaredCredentialProbe"
+      : "credentialProbe";
   const credentialBindingsField =
     binding === undefined
       ? ""
@@ -93,12 +102,12 @@ export function credentialToolWorkflowEntry(
   return `
 import { defineWorkflow, step } from "@intx/workflow/definition";
 import { defineAgent } from "@intx/agent";
-import { credentialProbe } from ${JSON.stringify(CREDENTIAL_TOOL_MODULE)};
+import { ${probeExport} } from ${JSON.stringify(CREDENTIAL_TOOL_MODULE)};
 
 const agent = defineAgent({
   id: ${JSON.stringify(agentId)},
   systemPrompt: ${JSON.stringify(params.systemPrompt)},
-  tools: [credentialProbe],
+  tools: [${probeExport}],
   capabilities: [],
   inference: {
     sources: [{ provider: "anthropic", model: "mock-model" }],

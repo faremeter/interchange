@@ -253,12 +253,15 @@ async function deployProbeSource(opts: {
   anchorRunId: string;
   definitionAssetId: string;
   withBinding: boolean;
+  /** Deploy the probe that declares its handle, not the one that does not. */
+  declareCredential?: boolean;
 }): Promise<{
   mailAddress: string;
   workflowRunRepoId: RepoId;
   runGrants: WireGrantRule[];
 }> {
   const { anchorRunId, definitionAssetId, withBinding } = opts;
+  const declareCredential = opts.declareCredential === true;
   await seedAsset(h.db, {
     id: definitionAssetId,
     tenantId: TENANT_ID,
@@ -309,6 +312,7 @@ async function deployProbeSource(opts: {
     systemPrompt: "You are the source credential-probe agent.",
     address: mailAddress,
     agentId: AGENT_ID,
+    declareCredential,
     ...(withBinding
       ? {
           binding: {
@@ -395,6 +399,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           anchorRunId,
           definitionAssetId: "ast_credential_tool_pos",
           withBinding: true,
+          declareCredential: true,
         });
 
       const before = originRequests.length;
@@ -420,6 +425,17 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const probeReq = fresh.find((r) => r.path === PROBE_PATH);
       expect(probeReq).toBeDefined();
       expect(probeReq?.authorization).toBe(`Bearer ${SECRET_INITIAL}`);
+    });
+
+    test("deploy refuses a tool whose declared handle is unbound", async () => {
+      await expect(
+        deployProbeSource({
+          anchorRunId: "run_credential-tool-unbound",
+          definitionAssetId: "ast_credential_tool_unbound",
+          withBinding: false,
+          declareCredential: true,
+        }),
+      ).rejects.toThrow("credential_bindings_invalid");
     });
 
     test("delivers over the live credentials.update channel to a running child", async () => {

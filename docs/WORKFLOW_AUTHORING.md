@@ -549,3 +549,29 @@ Where it lives today: `validateConcurrentAwaitSignalNames` and
 `collectRelayedAwaitSignalNames`,
 `packages/workflow/src/definition/workflow.ts`; the name-mode guard in
 `driveContainerSignalRelay`, `packages/workflow/src/runtime/run.ts`
+
+**31.** A tool declares the credential handles it resolves in
+`defineTool({ ..., credentials: [{ handle }] })`. The declaration is part of
+the approved projection and its hash. Deploy refuses a declared handle that
+no root `credentialBindings` entry names for the tool, and a binding that
+names a handle the tool does not declare. The check works per tool package:
+the factories that share a package id share one set of declarations, and
+every tool of the package can resolve every handle bound to it. A package
+whose factories declare nothing is not held to its bindings. A credential failure reaches the author in one of
+three ways:
+
+- At install and approve, the probe gate refuses the definition with
+  `credential_bindings_invalid` and names each problem.
+- When the step's agent is built with delivered credential material, a
+  declared handle with no delivered binding throws, and the step fails with
+  `StepFailed`. A child run that received no credential material skips this
+  check, so its tool fails at `resolve` instead, as in the next case.
+- When a tool resolves a handle at run time and the consumer holds no
+  `credential:{id}` / `use` grant, the resolve throws inside the tool call.
+  The model receives an error `tool_result`, and the step and the run can
+  still complete (see 21). Assert on the tool result's content.
+
+Where it lives today: `defineTool`, `packages/agent/src/tool.ts`;
+`checkCredentialBindings`,
+`packages/workflow-deploy/src/credential-binding-check.ts`;
+`reconcileDeclaredCredentials`, `packages/harness/src/credential-capability.ts`

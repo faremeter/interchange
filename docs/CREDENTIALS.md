@@ -84,14 +84,17 @@ A binding names exactly one consumer:
 
 The condition key is `tool` for both kinds. The prefix of the value names the kind, so a tool package and an action handler with the same name never share a grant.
 
+A tool declares the handles it resolves in `defineTool({ ..., credentials: [{ handle, scopes? }, ...] })`. The declaration is part of the approved projection and its hash. The check works per tool package, which is also the consumer a binding names: the declarations of every factory with that package id form one set, and every tool of the package can resolve every handle bound to it. A package none of whose factories declares credentials is not checked: its bindings may name any handle. A pinned package declares in its `package.json` `interchange.credentials`; that list covers all of its factories. A factory in it that also declares through `defineTool` may declare only handles the list declares, with the same scopes, or the loader refuses the package. So a package whose factories use different handles lists them all in `interchange.credentials`, and each factory declares its own.
+
 An action declares the handles its handler may resolve: `action({ handler, credentials: [handle, ...], effect: { requires: [capability, ...] } })`. The handles resolve only inside `perform`'s `run`, so `action()` refuses `credentials` without an `effect.requires` capability. The declaration is part of the approved projection and its hash. The bindings for one handler may name only the union of the handles its action steps declare.
 
 Bindings belong on the root definition; deploy resolves no other. When a definition is installed and approved, the hub's probe gate refuses it, before any credential is resolved, if:
 
 - an action declares a handle that no root binding names for its handler;
+- a tool factory declares a handle that no root binding names for it;
 - a nested body (a `loop`, `childWorkflow`, or `onTrigger` body, at any depth) carries `credentialBindings`;
 - a `package` binding names no tool factory the workflow runs, or an `action` binding names no action handler that declares credentials;
-- an `action` binding names a handle its handler does not declare;
+- an `action` binding names a handle its handler does not declare, or a `package` binding names a handle that its declaring tool factory does not declare;
 - two bindings name the same consumer and handle.
 
 The check runs at install and approve, not when a deployment respawns, so a deployment approved earlier keeps running.
