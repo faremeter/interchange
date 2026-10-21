@@ -20,6 +20,7 @@ import { and, eq } from "drizzle-orm";
 
 import { grant as grantTable } from "@intx/db/schema";
 import { setRunToolGrantEffect } from "@intx/hub-api";
+import { createGrantEvaluator } from "@intx/workflow-host/local";
 import {
   createTestDb,
   harnessDbEnvAvailable,
@@ -90,6 +91,59 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await seedRunGrant("g_send", "tool:send_email", "ask");
       await setRunToolGrantEffect(h.db, TENANT, RUN_ID, "send_email", "allow");
       expect(await effectOf("tool:send_email")).toBe("allow");
+    });
+
+    test("approve-always keeps a time-window ask's window, and the sidecar allows inside it", async () => {
+      // Windows relative to now, in UTC, an hour clear of either edge.
+      const hhmm = (offsetHours: number) =>
+        new Date(Date.now() + offsetHours * 3_600_000)
+          .toISOString()
+          .slice(11, 16);
+      const window = (after: number, before: number) => ({
+        time_window: {
+          after: hhmm(after),
+          before: hhmm(before),
+          timezone: "UTC",
+        },
+      });
+      const evaluate = createGrantEvaluator({ floorFor: () => [] });
+      const approvedEffect = async (conditions: Record<string, unknown>) => {
+        await h.db.delete(grantTable);
+        await seedGrant(h.db, {
+          id: "g_window",
+          tenantId: TENANT,
+          resource: "tool:send_email",
+          action: "invoke",
+          effect: "ask",
+          origin: "creator",
+          principalId: RUN_PRINCIPAL,
+          conditions,
+        });
+        await setRunToolGrantEffect(
+          h.db,
+          TENANT,
+          RUN_ID,
+          "send_email",
+          "allow",
+        );
+        const rows = await h.db
+          .select()
+          .from(grantTable)
+          .where(eq(grantTable.principalId, RUN_PRINCIPAL));
+        expect(rows).toMatchObject([{ effect: "allow", conditions }]);
+        const decision = await evaluate({
+          resource: "tool:send_email",
+          action: "invoke",
+          stepId: "work",
+          attempt: 1,
+          runId: RUN_ID,
+          grants: rows,
+        });
+        return decision.effect;
+      };
+
+      expect(await approvedEffect(window(-1, 1))).toBe("allow");
+      expect(await approvedEffect(window(2, 3))).toBeNull();
     });
 
     test("reject-always flips an ask tool to deny", async () => {
