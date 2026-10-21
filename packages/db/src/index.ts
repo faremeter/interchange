@@ -5,6 +5,7 @@ export {
   type DBExecutor,
 } from "./client";
 export {
+  isReferencedRowViolation,
   pgErrorCode,
   PG_UNIQUE_VIOLATION,
   PG_FOREIGN_KEY_VIOLATION,

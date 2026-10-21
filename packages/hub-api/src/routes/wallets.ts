@@ -3,7 +3,11 @@ import { Hono } from "hono";
 import { describeRoute, validator } from "hono-openapi";
 
 import { wallet, transaction } from "@intx/db/schema";
-import { parseWalletRow, parseTransactionRow } from "@intx/db";
+import {
+  isReferencedRowViolation,
+  parseWalletRow,
+  parseTransactionRow,
+} from "@intx/db";
 import type { DB } from "@intx/db";
 import {
   CreateWallet,
@@ -18,7 +22,6 @@ import type { TenantEnv } from "../context";
 import { errorResponse } from "../error-response";
 import { first, ts } from "../format";
 import { generateId } from "@intx/hub-common";
-import { isReferencedRowViolation } from "../pg-errors";
 import { idResource } from "../middleware/grant";
 import type { RequireGrant } from "../middleware/grant";
 import {
