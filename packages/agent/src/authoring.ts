@@ -11,9 +11,11 @@ export {
   definePlugin,
   isAnnotatedPluginFactory,
   toolApprovalEffect,
+  toolFactoryMeta,
   type AnnotatedPluginFactory,
   type AnnotatedToolFactory,
   type ToolDeclaration,
+  type ToolFactoryMeta,
 } from "./tool";
 export {
   defineDirector,

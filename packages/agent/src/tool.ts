@@ -32,7 +32,13 @@
 // wants per-tool granularity wraps each tool in its own single-
 // definition bundle.
 
+import { type } from "arktype";
+
 import type { GrantEffect } from "@intx/types";
+import {
+  ToolCredentialDeclarationArray,
+  type ReadonlyToolCredentialDeclaration,
+} from "@intx/types/package-json";
 import type {
   ToolCall,
   ToolDefinition,
@@ -176,12 +182,60 @@ export function toolApprovalEffect(
  * package-namespaced; `requires` enumerates env keys the factory touches
  * beyond `BaseEnv`'s six core fields; `definitions` statically declares
  * the tool names the factory contributes so callers can enumerate them
- * without instantiating the factory.
+ * without instantiating the factory. `credentials`, when present, declares
+ * the credential handles the factory's tools resolve; a factory without it
+ * declares nothing and is not checked against its bindings.
  */
 export interface ToolFactoryMeta {
   readonly id: string;
   readonly requires: readonly string[];
   readonly definitions: readonly ToolDeclaration[];
+  readonly credentials?: readonly ReadonlyToolCredentialDeclaration[];
+}
+
+/**
+ * The static metadata of a tool factory, for a wrapper that attaches it to a
+ * new callable. Every wrapper copies through this one function, so a field
+ * added to `ToolFactoryMeta` cannot be dropped by a copy that forgot it.
+ */
+export function toolFactoryMeta(factory: ToolFactoryMeta): ToolFactoryMeta {
+  return {
+    id: factory.id,
+    requires: factory.requires,
+    definitions: factory.definitions,
+    ...(factory.credentials !== undefined
+      ? { credentials: factory.credentials }
+      : {}),
+  };
+}
+
+/**
+ * Validate and freeze a factory's declared credentials. An absent or empty
+ * list declares nothing and yields `undefined`, so such a factory carries no
+ * `credentials` field and its projection matches one that never names the
+ * field.
+ */
+function freezeToolCredentials(
+  id: string,
+  credentials: readonly ReadonlyToolCredentialDeclaration[] | undefined,
+): readonly ReadonlyToolCredentialDeclaration[] | undefined {
+  if (credentials === undefined || credentials.length === 0) return undefined;
+  const validated = ToolCredentialDeclarationArray(credentials);
+  if (validated instanceof type.errors) {
+    throw new Error(
+      `defineTool ${id}: invalid credentials declaration: ${validated.summary}`,
+    );
+  }
+  return Object.freeze(
+    validated.map((declaration) =>
+      Object.freeze({
+        handle: declaration.handle,
+        ...(declaration.scopes !== undefined
+          ? { scopes: Object.freeze([...declaration.scopes]) }
+          : {}),
+      }),
+    ),
+  );
 }
 
 /**
@@ -207,20 +261,25 @@ export type AnnotatedToolFactory<EnvReq extends BaseEnv = BaseEnv> =
  *   - `definitions` statically declares the tool names this factory
  *     contributes so callers (e.g. the deploy-time capability walk) can
  *     enumerate them without instantiating the factory.
+ *   - `credentials` declares the credential handles the factory's tools
+ *     resolve. Handles follow the package-manifest grammar and are unique;
+ *     an invalid list throws.
  *   - `factory(env)` returns a `ToolBundle`. Invoked once per agent
  *     instantiation; the bundle's lifetime is tied to that agent.
  *
  * The returned object is the same callable as the supplied `factory`
- * with `id`, a frozen `requires` array, and a frozen `definitions`
- * array attached.
+ * with `id`, a frozen `requires` array, a frozen `definitions` array and,
+ * when any are declared, a frozen `credentials` array attached.
  */
 export function defineTool<EnvReq extends BaseEnv = BaseEnv>(opts: {
   id: string;
   requires?: readonly string[];
   definitions: readonly ToolDeclaration[];
+  credentials?: readonly ReadonlyToolCredentialDeclaration[];
   factory: ToolFactory<EnvReq>;
 }): AnnotatedToolFactory<EnvReq> {
   validateNamespacedId(opts.id);
+  const credentials = freezeToolCredentials(opts.id, opts.credentials);
   const requires = Object.freeze([
     ...(opts.requires ?? []),
   ]) as readonly string[];
@@ -239,6 +298,7 @@ export function defineTool<EnvReq extends BaseEnv = BaseEnv>(opts: {
     id: opts.id,
     requires,
     definitions,
+    ...(credentials !== undefined ? { credentials } : {}),
   });
 }
 

@@ -11,6 +11,7 @@ import {
   defineAgent,
   defineTool,
   toolApprovalEffect,
+  toolFactoryMeta,
   type Agent,
   type AgentDefinition,
   type AnnotatedPluginFactory,
@@ -279,9 +280,7 @@ export function rewrapStepToolFactory(
   credentials: HostCredentialCapability | undefined,
 ): AnnotatedToolFactory<BaseEnv> {
   return defineTool({
-    id: annotated.id,
-    requires: annotated.requires,
-    definitions: annotated.definitions,
+    ...toolFactoryMeta(annotated),
     factory: (factoryEnv: BaseEnv): ToolBundle => {
       const env =
         credentials === undefined

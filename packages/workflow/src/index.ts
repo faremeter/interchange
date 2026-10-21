@@ -37,6 +37,7 @@ export {
   type InertPlugin,
   type InertStep,
   type InertStepStep,
+  type InertToolCredentialDeclaration,
   type InertToolDeclaration,
   type InertToolFactory,
   type InertWorkflowDefinition,

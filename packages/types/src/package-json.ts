@@ -27,6 +27,13 @@ export const ToolCredentialDeclaration = type({
 });
 export type ToolCredentialDeclaration = typeof ToolCredentialDeclaration.infer;
 
+/** A validated declaration as code holds it: frozen, so read-only. */
+export type ReadonlyToolCredentialDeclaration = {
+  readonly [K in keyof ToolCredentialDeclaration]: Readonly<
+    ToolCredentialDeclaration[K]
+  >;
+};
+
 /**
  * The credential declarations for one package, with the unique-handle
  * invariant enforced at parse time: a handle is the binding/delivery key, so a

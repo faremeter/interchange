@@ -28,6 +28,8 @@
 // `null`: a step whose kind is outside the closed primitive set is a
 // hydrated-or-tampered definition and must fail loud.
 
+import { type } from "arktype";
+import { ToolCredentialDeclarationArray } from "@intx/types/package-json";
 import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import type {
   AgentDefinition,
@@ -82,6 +84,16 @@ export interface InertToolFactory {
   readonly id: string;
   readonly requires: readonly string[];
   readonly definitions: readonly InertToolDeclaration[];
+  /** Present only when the factory declares credentials, so a factory that
+   * declares none projects, and hashes, the same as one that never names
+   * the field. */
+  readonly credentials?: readonly InertToolCredentialDeclaration[];
+}
+
+/** Plain-data mirror of a factory's declared credential handle. */
+export interface InertToolCredentialDeclaration {
+  readonly handle: string;
+  readonly scopes?: readonly string[];
 }
 
 /** A plugin package an agent declares, with the tool declarations the
@@ -633,7 +645,7 @@ function projectToolFactory(
         `projection (a JSON round-trip of a live factory yields null)`,
     );
   }
-  const { id, requires, definitions } = factory;
+  const { id, requires, definitions, credentials } = factory;
   if (typeof id !== "string" || id.length === 0) {
     throw new Error(
       `live->inert projector: tool factory at index ${String(index)} ` +
@@ -652,12 +664,34 @@ function projectToolFactory(
         `definitions; the tool grant surface is missing`,
     );
   }
+  // A hand-built factory skips defineTool's validation, so the declaration is
+  // checked here with the same validator before it reaches the projection.
+  const declared =
+    credentials === undefined
+      ? undefined
+      : ToolCredentialDeclarationArray(credentials);
+  if (declared instanceof type.errors) {
+    throw new Error(
+      `live->inert projector: tool factory ${id} carries a corrupt ` +
+        `credential declaration: ${declared.summary}`,
+    );
+  }
   return {
     id,
     requires: [...requires],
     definitions: definitions.map((declaration) =>
       projectToolDeclaration(declaration, `tool factory ${id}`),
     ),
+    ...(declared !== undefined && declared.length > 0
+      ? {
+          credentials: declared.map((declaration) => ({
+            handle: declaration.handle,
+            ...(declaration.scopes !== undefined
+              ? { scopes: [...declaration.scopes] }
+              : {}),
+          })),
+        }
+      : {}),
   };
 }
 

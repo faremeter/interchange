@@ -4,6 +4,7 @@ import { type } from "arktype";
 import {
   defineAgent,
   defineTool,
+  toolFactoryMeta,
   type AgentDefinition,
   type AnnotatedToolFactory,
   type InferencePreference,
@@ -271,6 +272,49 @@ describe("hash binds to the grant surface", () => {
         mkAgent([alphaToolPlus, betaTool], baseCapabilities, [OPENAI]),
       ),
     );
+  });
+
+  test("declaring a credential changes projection and hash", async () => {
+    const alphaWithCredential = defineTool({
+      ...toolFactoryMeta(alphaTool),
+      credentials: [{ handle: "api-token" }],
+      factory: alphaTool,
+    });
+    await expectGrantMutation(
+      mkSingleStep(
+        mkAgent([alphaWithCredential, betaTool], baseCapabilities, [OPENAI]),
+      ),
+    );
+  });
+
+  test("an empty credentials list keeps projection and hash", async () => {
+    const alphaWithNone = defineTool({
+      ...toolFactoryMeta(alphaTool),
+      credentials: [],
+      factory: alphaTool,
+    });
+    const unchanged = mkSingleStep(
+      mkAgent([alphaWithNone, betaTool], baseCapabilities, [OPENAI]),
+    );
+    expect(canonicalJsonStringify(projectLiveToInert(unchanged))).toBe(
+      baselineBytes,
+    );
+  });
+
+  test("refuses a hand-built factory with an invalid credential declaration", () => {
+    // `defineTool` would refuse the duplicate handle; a factory built by hand
+    // skips it, so the projector checks the declaration itself.
+    const handBuilt = Object.assign(alphaTool.bind(null), {
+      ...toolFactoryMeta(alphaTool),
+      credentials: [{ handle: "api-token" }, { handle: "api-token" }],
+    });
+    expect(() =>
+      projectLiveToInert(
+        mkSingleStep(
+          mkAgent([handBuilt, betaTool], baseCapabilities, [OPENAI]),
+        ),
+      ),
+    ).toThrow(/carries a corrupt credential declaration/);
   });
 
   test("flipping an approval flag changes projection and hash", async () => {

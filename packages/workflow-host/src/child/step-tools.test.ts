@@ -457,6 +457,26 @@ describe("rewrapStepToolFactory", () => {
     expect(rewrapped.requires).toEqual(source.requires);
   });
 
+  test("preserves the source factory's declared credentials on the re-wrap", () => {
+    const source = defineTool({
+      id: "@intx/test-tool/sidecar-bundle",
+      definitions: [],
+      credentials: [{ handle: "api-token" }],
+      factory: (): ToolBundle => ({
+        definitions: [],
+        run: (call) => Promise.resolve({ callId: call.id, content: "" }),
+      }),
+    });
+    const rewrapped = rewrapStepToolFactory(
+      source,
+      () => {
+        throw new Error("onDispose must not be called: factory is not invoked");
+      },
+      undefined,
+    );
+    expect(rewrapped.credentials).toEqual([{ handle: "api-token" }]);
+  });
+
   test("layers the given credentials capability onto the bundle's env", async () => {
     let seenEnv: BaseEnv | undefined;
     const source = defineTool({
