@@ -277,6 +277,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         [...runGrants],
         GRANTED_RESOURCE,
         "invoke",
+        { conditions: "pessimistic" },
       );
       expect(allowed.effect).toBe("allow");
 
@@ -284,6 +285,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         [...runGrants],
         UNGRANTED_RESOURCE,
         "invoke",
+        { conditions: "pessimistic" },
       );
       // Fail closed: no grant matches, so the resolved effect is null (the
       // authorize layer treats a null effect as deny).

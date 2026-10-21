@@ -68,7 +68,7 @@ export function createAuthorizeGrant({
       resource,
       action,
       {
-        registry: conditionRegistry,
+        conditions: conditionRegistry,
         ...(consumer !== undefined ? { consumer } : {}),
       },
     );

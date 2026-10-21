@@ -20,7 +20,7 @@ const originDescription =
   "Records where the grant came from: `system` (built-in), `role` (granted via a role), `creator` (from the workflow definition author), or `invoker` (delegated by the workflow deployment's deployer, its invoker of record). Origin is provenance only; it does not affect evaluation precedence.";
 
 const conditionsDescription =
-  "Optional map of named conditions that must all pass for the grant to apply, evaluated against a condition registry at authorization time. A grant with conditions is skipped (fails closed) when no registry is available to evaluate them.";
+  "Optional map of named conditions that must all pass for the grant to apply, evaluated against a condition registry at authorization time. A check with no request to evaluate conditions against, such as delegation at launch, treats a conditioned `deny` or `ask` as applying and a conditioned `allow` as not applying.";
 
 const specificityDescription =
   "Computed match-strength score used to rank grants: the count of non-wildcard characters in the resource and action patterns, with exact (wildcard-free) patterns scored far above prefix globs. Higher wins; ties are broken by effect priority.";

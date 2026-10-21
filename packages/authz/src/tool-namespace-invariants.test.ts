@@ -46,6 +46,7 @@ describe("a wildcard row reaches a pinned tool's namespaced gate", () => {
       [grant({ resource: "*", action: "*", effect: "allow" })],
       NAMESPACED_GATE,
       INVOKE,
+      { conditions: "pessimistic" },
     );
     expect(result.effect).toBe("allow");
   });
@@ -55,6 +56,7 @@ describe("a wildcard row reaches a pinned tool's namespaced gate", () => {
       [grant({ resource: BARE_GATE, action: INVOKE, effect: "allow" })],
       NAMESPACED_GATE,
       INVOKE,
+      { conditions: "pessimistic" },
     );
     expect(result.effect).toBe(null);
   });
@@ -64,6 +66,7 @@ describe("a wildcard row reaches a pinned tool's namespaced gate", () => {
       [grant({ resource: BARE_GATE, action: INVOKE, effect: "allow" })],
       BARE_GATE,
       INVOKE,
+      { conditions: "pessimistic" },
     );
     expect(result.effect).toBe("allow");
   });
@@ -73,6 +76,7 @@ describe("a wildcard row reaches a pinned tool's namespaced gate", () => {
       [grant({ resource: "*", action: "*", effect: "allow" })],
       "tool:tp_other_bundle:transfer",
       INVOKE,
+      { conditions: "pessimistic" },
     );
     expect(result.effect).toBe("allow");
   });
@@ -90,6 +94,7 @@ describe("the tool-mark floor still outranks a wildcard row", () => {
       [wildcard, floor],
       NAMESPACED_GATE,
       INVOKE,
+      { conditions: "pessimistic" },
     );
     expect(result.effect).toBe("ask");
   });

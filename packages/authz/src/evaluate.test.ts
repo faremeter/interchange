@@ -3,6 +3,10 @@ import { describe, test, expect } from "bun:test";
 import { authorize, evaluateGrants } from "./evaluate";
 import type { ConditionRegistry, GrantRule, GrantStore } from "./types";
 
+// The mode for a check with no request. On grants with no conditions it
+// gives the same result as a registry.
+const PESSIMISTIC = { conditions: "pessimistic" } as const;
+
 function grant(
   overrides: Partial<GrantRule> &
     Pick<GrantRule, "resource" | "action" | "effect">,
@@ -20,7 +24,7 @@ function grant(
 
 describe("evaluateGrants", () => {
   test("returns null effect when no grants match", async () => {
-    const result = await evaluateGrants([], "agent:*", "read");
+    const result = await evaluateGrants([], "agent:*", "read", PESSIMISTIC);
 
     expect(result.effect).toBeNull();
     expect(result.matchingGrants).toHaveLength(0);
@@ -32,7 +36,12 @@ describe("evaluateGrants", () => {
       grant({ resource: "wallet:*", action: "read", effect: "allow" }),
     ];
 
-    const result = await evaluateGrants(grants, "agent:agt_abc", "create");
+    const result = await evaluateGrants(
+      grants,
+      "agent:agt_abc",
+      "create",
+      PESSIMISTIC,
+    );
 
     expect(result.effect).toBeNull();
     expect(result.matchingGrants).toHaveLength(0);
@@ -41,7 +50,12 @@ describe("evaluateGrants", () => {
   test("single matching grant determines effect", async () => {
     const grants = [grant({ resource: "*", action: "read", effect: "allow" })];
 
-    const result = await evaluateGrants(grants, "agent:agt_abc", "read");
+    const result = await evaluateGrants(
+      grants,
+      "agent:agt_abc",
+      "read",
+      PESSIMISTIC,
+    );
 
     expect(result.effect).toBe("allow");
     expect(result.matchingGrants).toHaveLength(1);
@@ -54,7 +68,12 @@ describe("evaluateGrants", () => {
       grant({ resource: "agent:*", action: "read", effect: "deny" }),
     ];
 
-    const result = await evaluateGrants(grants, "agent:agt_abc", "read");
+    const result = await evaluateGrants(
+      grants,
+      "agent:agt_abc",
+      "read",
+      PESSIMISTIC,
+    );
 
     expect(result.effect).toBe("deny");
     expect(result.matchingGrants).toHaveLength(2);
@@ -67,7 +86,12 @@ describe("evaluateGrants", () => {
       grant({ resource: "agent:*", action: "read", effect: "deny" }),
     ];
 
-    const result = await evaluateGrants(grants, "agent:agt_abc", "read");
+    const result = await evaluateGrants(
+      grants,
+      "agent:agt_abc",
+      "read",
+      PESSIMISTIC,
+    );
 
     expect(result.effect).toBe("deny");
   });
@@ -78,7 +102,12 @@ describe("evaluateGrants", () => {
       grant({ resource: "agent:*", action: "read", effect: "ask" }),
     ];
 
-    const result = await evaluateGrants(grants, "agent:agt_abc", "read");
+    const result = await evaluateGrants(
+      grants,
+      "agent:agt_abc",
+      "read",
+      PESSIMISTIC,
+    );
 
     expect(result.effect).toBe("ask");
   });
@@ -89,7 +118,12 @@ describe("evaluateGrants", () => {
       grant({ resource: "agent:*", action: "read", effect: "deny" }),
     ];
 
-    const result = await evaluateGrants(grants, "agent:agt_abc", "read");
+    const result = await evaluateGrants(
+      grants,
+      "agent:agt_abc",
+      "read",
+      PESSIMISTIC,
+    );
 
     expect(result.effect).toBe("deny");
   });
@@ -100,7 +134,12 @@ describe("evaluateGrants", () => {
       grant({ resource: "agent:agt_abc", action: "read", effect: "allow" }),
     ];
 
-    const result = await evaluateGrants(grants, "agent:agt_abc", "read");
+    const result = await evaluateGrants(
+      grants,
+      "agent:agt_abc",
+      "read",
+      PESSIMISTIC,
+    );
 
     expect(result.effect).toBe("allow");
     expect(result.resolvedBy?.resource).toBe("agent:agt_abc");
@@ -109,7 +148,12 @@ describe("evaluateGrants", () => {
   test("wildcard action matches specific action", async () => {
     const grants = [grant({ resource: "*", action: "*", effect: "allow" })];
 
-    const result = await evaluateGrants(grants, "credential:crd_123", "manage");
+    const result = await evaluateGrants(
+      grants,
+      "credential:crd_123",
+      "manage",
+      PESSIMISTIC,
+    );
 
     expect(result.effect).toBe("allow");
   });
@@ -124,28 +168,29 @@ describe("evaluateGrants", () => {
       }),
     ];
 
-    expect((await evaluateGrants(grants, "agent:*", "read")).effect).toBe(
-      "allow",
-    );
     expect(
-      (await evaluateGrants(grants, "wallet:wal_123", "manage")).effect,
+      (await evaluateGrants(grants, "agent:*", "read", PESSIMISTIC)).effect,
     ).toBe("allow");
-    expect((await evaluateGrants(grants, "grant:*", "create")).effect).toBe(
-      "allow",
-    );
+    expect(
+      (await evaluateGrants(grants, "wallet:wal_123", "manage", PESSIMISTIC))
+        .effect,
+    ).toBe("allow");
+    expect(
+      (await evaluateGrants(grants, "grant:*", "create", PESSIMISTIC)).effect,
+    ).toBe("allow");
   });
 
   test("member read-only grant allows read but not create", async () => {
     const grants = [grant({ resource: "*", action: "read", effect: "allow" })];
 
-    expect((await evaluateGrants(grants, "agent:*", "read")).effect).toBe(
-      "allow",
-    );
     expect(
-      (await evaluateGrants(grants, "agent:*", "create")).effect,
+      (await evaluateGrants(grants, "agent:*", "read", PESSIMISTIC)).effect,
+    ).toBe("allow");
+    expect(
+      (await evaluateGrants(grants, "agent:*", "create", PESSIMISTIC)).effect,
     ).toBeNull();
     expect(
-      (await evaluateGrants(grants, "agent:*", "manage")).effect,
+      (await evaluateGrants(grants, "agent:*", "manage", PESSIMISTIC)).effect,
     ).toBeNull();
   });
 
@@ -156,14 +201,15 @@ describe("evaluateGrants", () => {
       grant({ resource: "*", action: "manage", effect: "allow" }),
     ];
 
-    expect((await evaluateGrants(grants, "agent:*", "read")).effect).toBe(
-      "allow",
-    );
-    expect((await evaluateGrants(grants, "agent:*", "create")).effect).toBe(
-      "allow",
-    );
     expect(
-      (await evaluateGrants(grants, "wallet:wal_123", "manage")).effect,
+      (await evaluateGrants(grants, "agent:*", "read", PESSIMISTIC)).effect,
+    ).toBe("allow");
+    expect(
+      (await evaluateGrants(grants, "agent:*", "create", PESSIMISTIC)).effect,
+    ).toBe("allow");
+    expect(
+      (await evaluateGrants(grants, "wallet:wal_123", "manage", PESSIMISTIC))
+        .effect,
     ).toBe("allow");
   });
 
@@ -184,13 +230,16 @@ describe("evaluateGrants", () => {
     ];
 
     expect(
-      (await evaluateGrants(grants, "documents:doc_1", "read")).effect,
+      (await evaluateGrants(grants, "documents:doc_1", "read", PESSIMISTIC))
+        .effect,
     ).toBe("allow");
     expect(
-      (await evaluateGrants(grants, "documents:doc_1", "write")).effect,
+      (await evaluateGrants(grants, "documents:doc_1", "write", PESSIMISTIC))
+        .effect,
     ).toBe("ask");
     expect(
-      (await evaluateGrants(grants, "repos:repo_1", "read")).effect,
+      (await evaluateGrants(grants, "repos:repo_1", "read", PESSIMISTIC))
+        .effect,
     ).toBeNull();
   });
 
@@ -201,7 +250,12 @@ describe("evaluateGrants", () => {
       grant({ id: "g3", resource: "agent:*", action: "read", effect: "allow" }),
     ];
 
-    const result = await evaluateGrants(grants, "agent:agt_abc", "read");
+    const result = await evaluateGrants(
+      grants,
+      "agent:agt_abc",
+      "read",
+      PESSIMISTIC,
+    );
 
     expect(result.matchingGrants).toHaveLength(3);
     expect(result.resolvedBy?.id).toBe("g3");
@@ -210,7 +264,7 @@ describe("evaluateGrants", () => {
   test("grant with null expiresAt is always evaluated", async () => {
     const grants = [grant({ resource: "*", action: "read", effect: "allow" })];
 
-    const result = await evaluateGrants(grants, "agent:*", "read");
+    const result = await evaluateGrants(grants, "agent:*", "read", PESSIMISTIC);
     expect(result.effect).toBe("allow");
   });
 });
@@ -222,7 +276,12 @@ describe("evaluateGrants determinism", () => {
       grant({ id: "g2", resource: "agent:*", action: "read", effect: "allow" }),
     ];
 
-    const result = await evaluateGrants(grants, "agent:agt_abc", "read");
+    const result = await evaluateGrants(
+      grants,
+      "agent:agt_abc",
+      "read",
+      PESSIMISTIC,
+    );
 
     expect(result.effect).toBe("allow");
     expect(result.matchingGrants).toHaveLength(2);
@@ -236,7 +295,12 @@ describe("evaluateGrants determinism", () => {
       grant({ resource: "agent:*", action: "read", effect: "deny" }),
     ];
 
-    const result = await evaluateGrants(grants, "agent:agt_abc", "read");
+    const result = await evaluateGrants(
+      grants,
+      "agent:agt_abc",
+      "read",
+      PESSIMISTIC,
+    );
 
     expect(result.effect).toBe("deny");
     expect(result.matchingGrants).toHaveLength(3);
@@ -251,7 +315,12 @@ describe("evaluateGrants determinism", () => {
         grant({ resource: "agent:*", action: "read", effect: "deny" }),
       ];
 
-      const result = await evaluateGrants(grants, "agent:agt_abc", "read");
+      const result = await evaluateGrants(
+        grants,
+        "agent:agt_abc",
+        "read",
+        PESSIMISTIC,
+      );
       expect(result.effect).toBe("deny");
     }
   });
@@ -266,7 +335,12 @@ describe("evaluateGrants origin neutrality", () => {
         grant({ resource: "agent:*", action: "read", effect: "allow", origin }),
       ];
 
-      const result = await evaluateGrants(grants, "agent:agt_abc", "read");
+      const result = await evaluateGrants(
+        grants,
+        "agent:agt_abc",
+        "read",
+        PESSIMISTIC,
+      );
       expect(result.effect).toBe("allow");
     }
   });
@@ -287,21 +361,31 @@ describe("evaluateGrants origin neutrality", () => {
       }),
     ];
 
-    const result = await evaluateGrants(grants, "agent:agt_abc", "read");
+    const result = await evaluateGrants(
+      grants,
+      "agent:agt_abc",
+      "read",
+      PESSIMISTIC,
+    );
 
     expect(result.effect).toBe("deny");
   });
 });
 
 describe("evaluateGrants conditions", () => {
-  test("grants with null conditions are unaffected by missing registry", async () => {
+  test("pessimistic mode leaves a grant with no conditions unchanged", async () => {
     const grants = [grant({ resource: "*", action: "read", effect: "allow" })];
 
-    const result = await evaluateGrants(grants, "agent:agt_abc", "read");
+    const result = await evaluateGrants(
+      grants,
+      "agent:agt_abc",
+      "read",
+      PESSIMISTIC,
+    );
     expect(result.effect).toBe("allow");
   });
 
-  test("grants with non-null conditions are skipped when no registry provided (fail-closed)", async () => {
+  test("pessimistic mode skips a conditioned allow", async () => {
     const grants = [
       grant({
         resource: "wallet:*",
@@ -311,9 +395,80 @@ describe("evaluateGrants conditions", () => {
       }),
     ];
 
-    const result = await evaluateGrants(grants, "wallet:wal_abc", "spend");
+    const result = await evaluateGrants(
+      grants,
+      "wallet:wal_abc",
+      "spend",
+      PESSIMISTIC,
+    );
     expect(result.effect).toBeNull();
     expect(result.matchingGrants).toHaveLength(0);
+  });
+
+  for (const effect of ["deny", "ask"] as const) {
+    test(`pessimistic mode applies a conditioned ${effect} over an unconditioned allow`, async () => {
+      const grants = [
+        grant({
+          id: "g_allow",
+          resource: "wallet:*",
+          action: "spend",
+          effect: "allow",
+        }),
+        grant({
+          id: "g_cond",
+          resource: "wallet:*",
+          action: "spend",
+          effect,
+          conditions: { tool: "tool:@acme/wallet" },
+        }),
+      ];
+
+      const result = await evaluateGrants(
+        grants,
+        "wallet:wal_abc",
+        "spend",
+        PESSIMISTIC,
+      );
+      expect(result.effect).toBe(effect);
+      expect(result.resolvedBy?.id).toBe("g_cond");
+    });
+  }
+
+  test("pessimistic mode still ranks by specificity", async () => {
+    // A conditioned deny blocks only what it would block if its condition
+    // held: a more specific unconditioned allow still wins over a broad one.
+    const broadDeny = grant({
+      id: "g_deny",
+      resource: "*",
+      action: "*",
+      effect: "deny",
+      conditions: { time_window: { after: "09:00", before: "17:00" } },
+    });
+    const specificAllow = grant({
+      id: "g_allow",
+      resource: "wallet:wal_abc",
+      action: "spend",
+      effect: "allow",
+    });
+
+    const result = await evaluateGrants(
+      [broadDeny, specificAllow],
+      "wallet:wal_abc",
+      "spend",
+      PESSIMISTIC,
+    );
+    expect(result.resolvedBy?.id).toBe("g_allow");
+
+    const narrowed = await evaluateGrants(
+      [
+        { ...broadDeny, resource: "wallet:wal_abc", action: "spend" },
+        specificAllow,
+      ],
+      "wallet:wal_abc",
+      "spend",
+      PESSIMISTIC,
+    );
+    expect(narrowed.effect).toBe("deny");
   });
 
   test("grant with conditions evaluated to true is included", async () => {
@@ -330,7 +485,7 @@ describe("evaluateGrants conditions", () => {
     ];
 
     const result = await evaluateGrants(grants, "wallet:wal_abc", "spend", {
-      registry,
+      conditions: registry,
     });
     expect(result.effect).toBe("allow");
     expect(result.matchingGrants).toHaveLength(1);
@@ -350,7 +505,7 @@ describe("evaluateGrants conditions", () => {
     ];
 
     const result = await evaluateGrants(grants, "wallet:wal_abc", "spend", {
-      registry,
+      conditions: registry,
     });
     expect(result.effect).toBeNull();
   });
@@ -366,7 +521,7 @@ describe("evaluateGrants conditions", () => {
     ];
 
     expect(
-      evaluateGrants(grants, "wallet:wal_abc", "spend", { registry: {} }),
+      evaluateGrants(grants, "wallet:wal_abc", "spend", { conditions: {} }),
     ).rejects.toThrow('Unknown condition: "unknown_cond"');
   });
 
@@ -391,7 +546,7 @@ describe("evaluateGrants conditions", () => {
     ];
 
     const result = await evaluateGrants(grants, "agent:agt_abc", "read", {
-      registry,
+      conditions: registry,
     });
 
     // g1 is skipped (condition failed), g2 matches
@@ -421,7 +576,7 @@ describe("evaluateGrants conditions", () => {
     ];
 
     const result = await evaluateGrants(grants, "agent:agt_abc", "read", {
-      registry,
+      conditions: registry,
     });
 
     expect(result.effect).toBe("deny");
@@ -448,7 +603,7 @@ describe("evaluateGrants conditions", () => {
     ];
 
     await evaluateGrants(grants, "agent:*", "read", {
-      registry,
+      conditions: registry,
       principalId: "prn_ctx",
       tenantId: "tnt_ctx",
     });
@@ -464,7 +619,12 @@ describe("evaluateGrants nested resource patterns", () => {
       grant({ resource: "api:stripe:*", action: "invoke", effect: "allow" }),
     ];
 
-    const result = await evaluateGrants(grants, "api:stripe:charges", "invoke");
+    const result = await evaluateGrants(
+      grants,
+      "api:stripe:charges",
+      "invoke",
+      PESSIMISTIC,
+    );
 
     expect(result.effect).toBe("allow");
   });
@@ -474,7 +634,12 @@ describe("evaluateGrants nested resource patterns", () => {
       grant({ resource: "api:*", action: "invoke", effect: "allow" }),
     ];
 
-    const result = await evaluateGrants(grants, "api:stripe:charges", "invoke");
+    const result = await evaluateGrants(
+      grants,
+      "api:stripe:charges",
+      "invoke",
+      PESSIMISTIC,
+    );
 
     expect(result.effect).toBe("allow");
   });
@@ -485,7 +650,12 @@ describe("evaluateGrants nested resource patterns", () => {
       grant({ resource: "api:stripe:*", action: "invoke", effect: "deny" }),
     ];
 
-    const result = await evaluateGrants(grants, "api:stripe:charges", "invoke");
+    const result = await evaluateGrants(
+      grants,
+      "api:stripe:charges",
+      "invoke",
+      PESSIMISTIC,
+    );
 
     expect(result.effect).toBe("deny");
     expect(result.resolvedBy?.resource).toBe("api:stripe:*");
@@ -498,14 +668,19 @@ describe("evaluateGrants no-match contract", () => {
       grant({ resource: "wallet:*", action: "read", effect: "allow" }),
     ];
 
-    const result = await evaluateGrants(grants, "agent:agt_abc", "read");
+    const result = await evaluateGrants(
+      grants,
+      "agent:agt_abc",
+      "read",
+      PESSIMISTIC,
+    );
 
     expect(result.effect).toBeNull();
     expect(result.effect).not.toBe("ask");
   });
 
   test("empty grants with empty resource and action returns null", async () => {
-    const result = await evaluateGrants([], "", "");
+    const result = await evaluateGrants([], "", "", PESSIMISTIC);
 
     expect(result.effect).toBeNull();
     expect(result.matchingGrants).toHaveLength(0);
@@ -519,11 +694,11 @@ describe("evaluateGrants action verbs from spec", () => {
       grant({ resource: "tool:bash", action: "invoke", effect: "allow" }),
     ];
 
-    expect((await evaluateGrants(grants, "tool:bash", "invoke")).effect).toBe(
-      "allow",
-    );
     expect(
-      (await evaluateGrants(grants, "tool:bash", "read")).effect,
+      (await evaluateGrants(grants, "tool:bash", "invoke", PESSIMISTIC)).effect,
+    ).toBe("allow");
+    expect(
+      (await evaluateGrants(grants, "tool:bash", "read", PESSIMISTIC)).effect,
     ).toBeNull();
   });
 
@@ -541,12 +716,18 @@ describe("evaluateGrants action verbs from spec", () => {
     ];
 
     expect(
-      (await evaluateGrants(grants, "wallet:wal_123", "spend", { registry }))
-        .effect,
+      (
+        await evaluateGrants(grants, "wallet:wal_123", "spend", {
+          conditions: registry,
+        })
+      ).effect,
     ).toBe("allow");
     expect(
-      (await evaluateGrants(grants, "wallet:wal_123", "manage", { registry }))
-        .effect,
+      (
+        await evaluateGrants(grants, "wallet:wal_123", "manage", {
+          conditions: registry,
+        })
+      ).effect,
     ).toBeNull();
   });
 
@@ -556,7 +737,12 @@ describe("evaluateGrants action verbs from spec", () => {
       grant({ resource: "tool:*", action: "invoke", effect: "deny" }),
     ];
 
-    const result = await evaluateGrants(grants, "tool:bash", "invoke");
+    const result = await evaluateGrants(
+      grants,
+      "tool:bash",
+      "invoke",
+      PESSIMISTIC,
+    );
 
     expect(result.effect).toBe("deny");
   });
@@ -629,7 +815,12 @@ describe("evaluateGrants large grant set", () => {
       }),
     ];
 
-    const bash = await evaluateGrants(grants, "tool:bash", "invoke");
+    const bash = await evaluateGrants(
+      grants,
+      "tool:bash",
+      "invoke",
+      PESSIMISTIC,
+    );
     expect(bash.effect).toBe("deny");
     expect(bash.resolvedBy?.id).toBe("g07");
 
@@ -637,23 +828,44 @@ describe("evaluateGrants large grant set", () => {
       grants,
       "api:stripe:charges",
       "invoke",
+      PESSIMISTIC,
     );
     expect(charges.effect).toBe("deny");
     expect(charges.resolvedBy?.id).toBe("g10");
 
-    const agentRead = await evaluateGrants(grants, "agent:agt_abc", "read");
+    const agentRead = await evaluateGrants(
+      grants,
+      "agent:agt_abc",
+      "read",
+      PESSIMISTIC,
+    );
     expect(agentRead.effect).toBe("allow");
     expect(agentRead.resolvedBy?.id).toBe("g03");
 
-    const walletSpend = await evaluateGrants(grants, "wallet:wal_123", "spend");
+    const walletSpend = await evaluateGrants(
+      grants,
+      "wallet:wal_123",
+      "spend",
+      PESSIMISTIC,
+    );
     expect(walletSpend.effect).toBe("ask");
     expect(walletSpend.resolvedBy?.id).toBe("g05");
 
-    const agentCreate = await evaluateGrants(grants, "agent:agt_abc", "create");
+    const agentCreate = await evaluateGrants(
+      grants,
+      "agent:agt_abc",
+      "create",
+      PESSIMISTIC,
+    );
     expect(agentCreate.effect).toBe("allow");
     expect(agentCreate.resolvedBy?.id).toBe("g02");
 
-    const docWrite = await evaluateGrants(grants, "documents:doc_1", "write");
+    const docWrite = await evaluateGrants(
+      grants,
+      "documents:doc_1",
+      "write",
+      PESSIMISTIC,
+    );
     expect(docWrite.effect).toBe("ask");
     expect(docWrite.resolvedBy?.id).toBe("g12");
   });
@@ -682,6 +894,7 @@ describe("authorize with in-memory store", () => {
       "tnt_1",
       "agent:agt_abc",
       "read",
+      PESSIMISTIC,
     );
 
     expect(result.effect).toBe("allow");
@@ -697,6 +910,7 @@ describe("authorize with in-memory store", () => {
       "tnt_1",
       "agent:agt_abc",
       "read",
+      PESSIMISTIC,
     );
 
     expect(result.effect).toBeNull();
@@ -714,6 +928,7 @@ describe("authorize with in-memory store", () => {
       "tnt_1",
       "agent:agt_abc",
       "read",
+      PESSIMISTIC,
     );
 
     expect(result.effect).toBe("deny");
@@ -735,7 +950,14 @@ describe("authorize with in-memory store", () => {
       },
     };
 
-    await authorize(store, "prn_abc", "tnt_xyz", "agent:*", "read");
+    await authorize(
+      store,
+      "prn_abc",
+      "tnt_xyz",
+      "agent:*",
+      "read",
+      PESSIMISTIC,
+    );
 
     expect(receivedPrincipalId).toBe("prn_abc");
     expect(receivedTenantId).toBe("tnt_xyz");
@@ -764,6 +986,7 @@ describe("authorize with in-memory store", () => {
       "tnt_1",
       "agent:agt_1",
       "read",
+      PESSIMISTIC,
     );
     expect(read.effect).toBe("allow");
 
@@ -773,6 +996,7 @@ describe("authorize with in-memory store", () => {
       "tnt_1",
       "wallet:wal_1",
       "spend",
+      PESSIMISTIC,
     );
     expect(spend.effect).toBe("ask");
 
@@ -782,6 +1006,7 @@ describe("authorize with in-memory store", () => {
       "tnt_1",
       "tool:bash",
       "invoke",
+      PESSIMISTIC,
     );
     expect(bash.effect).toBe("deny");
 
@@ -791,6 +1016,7 @@ describe("authorize with in-memory store", () => {
       "tnt_1",
       "agent:agt_1",
       "manage",
+      PESSIMISTIC,
     );
     expect(noMatch.effect).toBeNull();
   });
@@ -814,13 +1040,13 @@ describe("authorize with in-memory store", () => {
       "tnt_1",
       "agent:agt_abc",
       "read",
-      { registry },
+      { conditions: registry },
     );
 
     expect(result.effect).toBe("allow");
   });
 
-  test("conditional grant skipped without registry in authorize", async () => {
+  test("a conditioned allow is skipped by a pessimistic authorize", async () => {
     const store = memoryStore([
       grant({
         resource: "agent:*",
@@ -836,6 +1062,7 @@ describe("authorize with in-memory store", () => {
       "tnt_1",
       "agent:agt_abc",
       "read",
+      PESSIMISTIC,
     );
 
     expect(result.effect).toBeNull();
@@ -861,7 +1088,7 @@ describe("authorize with in-memory store", () => {
     ]);
 
     await authorize(store, "prn_check", "tnt_check", "agent:*", "read", {
-      registry,
+      conditions: registry,
     });
 
     expect(capturedPrincipal).toBe("prn_check");
@@ -881,7 +1108,12 @@ describe("evaluateGrants — expiry", () => {
       }),
     ];
 
-    const result = await evaluateGrants(grants, "tool:bash", "invoke");
+    const result = await evaluateGrants(
+      grants,
+      "tool:bash",
+      "invoke",
+      PESSIMISTIC,
+    );
     expect(result.effect).toBeNull();
   });
 
@@ -896,7 +1128,12 @@ describe("evaluateGrants — expiry", () => {
       }),
     ];
 
-    const result = await evaluateGrants(grants, "tool:bash", "invoke");
+    const result = await evaluateGrants(
+      grants,
+      "tool:bash",
+      "invoke",
+      PESSIMISTIC,
+    );
     expect(result.effect).toBe("allow");
   });
 
@@ -917,7 +1154,12 @@ describe("evaluateGrants — expiry", () => {
       }),
     ];
 
-    const result = await evaluateGrants(grants, "tool:bash", "invoke");
+    const result = await evaluateGrants(
+      grants,
+      "tool:bash",
+      "invoke",
+      PESSIMISTIC,
+    );
     expect(result.effect).toBe("allow");
   });
 
@@ -931,7 +1173,12 @@ describe("evaluateGrants — expiry", () => {
       }),
     ];
 
-    const result = await evaluateGrants(grants, "tool:bash", "invoke");
+    const result = await evaluateGrants(
+      grants,
+      "tool:bash",
+      "invoke",
+      PESSIMISTIC,
+    );
     expect(result.effect).toBe("allow");
   });
 });

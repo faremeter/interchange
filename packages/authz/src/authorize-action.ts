@@ -22,15 +22,15 @@ export type AuthorizeDecision =
  * Distinct from `authorize`: that one collects grants from a store and returns
  * the raw `AuthzResult` for an HTTP caller to interpret. This verb takes
  * pre-collected grants and returns the collapsed decision. `opts` is passed to
- * `evaluateGrants` verbatim -- this middle layer never defaults a condition
- * registry, so a caller that omits one keeps the fail-closed "skip conditioned
- * grants" behavior at the edge where that choice belongs.
+ * `evaluateGrants` verbatim: the caller chooses the condition mode, because
+ * only the caller knows whether it has a request to evaluate conditions
+ * against.
  */
 export async function authorizeAction(
   grants: GrantRule[],
   resource: string,
   action: string,
-  opts?: EvalOptions,
+  opts: EvalOptions,
 ): Promise<AuthorizeDecision> {
   const result = await evaluateGrants(grants, resource, action, opts);
   switch (result.effect) {

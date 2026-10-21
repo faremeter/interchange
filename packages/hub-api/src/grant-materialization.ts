@@ -85,15 +85,22 @@ export type ResolveGrantMaterializationResult =
 export const INVOKER_GRANT_TTL_MS = 24 * 60 * 60 * 1000;
 
 /**
- * Resolve an agent's grant requirements and ad-hoc invoker grants into the
- * grant rows to materialize on the target principal.
+ * Resolve an agent's grant requirements into the grant rows to materialize on
+ * the target principal.
  *
  * Pure over its inputs: it runs creator- and invoker-sourced delegation
  * checks with `authorizeAction` against the supplied collected grants and
- * accumulates the rows to insert. Only `system`/`role`/`creator` grants can be
- * delegated, so invoker-origin grants are filtered out of the invoker's
- * delegatable set before resolving invoker-sourced requirements. Nothing is
- * written to the database; the caller inserts the returned rows.
+ * accumulates the rows to insert. A delegation check has no request to
+ * evaluate a condition against, so it evaluates conditions pessimistically:
+ * a delegator's conditioned deny or ask refuses the requirement, and its
+ * conditioned allow does not satisfy it. The rows are frozen, so a run never
+ * holds more than its delegator holds without conditions.
+ *
+ * Only `system`/`role`/`creator` grants can be delegated, so invoker-origin
+ * allows are filtered out of the invoker's delegatable set before resolving
+ * invoker-sourced requirements. An invoker-origin deny or ask stays in the
+ * set, because it still restricts the invoker. Nothing is written to the
+ * database; the caller inserts the returned rows.
  *
  * Returns a rejection instead of rows when the creator or invoker lacks the
  * authority a requirement demands (403 `insufficient_grants`), or when a
@@ -107,10 +114,11 @@ export async function resolveGrantMaterialization({
   creatorGrants,
   now,
 }: ResolveGrantMaterializationArgs): Promise<ResolveGrantMaterializationResult> {
-  // Only system/role/creator grants can be delegated. Invoker-sourced
-  // grants cannot be transitively re-delegated.
+  // Only system/role/creator grants can be delegated: an invoker-origin allow
+  // cannot be re-delegated. An invoker-origin deny or ask still restricts what
+  // the invoker holds, so it stays in the set.
   const delegatableInvokerGrants = invokerGrants.filter(
-    (g) => g.origin !== "invoker",
+    (g) => g.origin !== "invoker" || g.effect === "deny" || g.effect === "ask",
   );
 
   const invokerExpiresAt = new Date(now.getTime() + INVOKER_GRANT_TTL_MS);
@@ -125,6 +133,7 @@ export async function resolveGrantMaterialization({
         creatorGrants,
         req.resource,
         req.action,
+        { conditions: "pessimistic" },
       );
       if (!decision.ok) {
         return {
@@ -132,7 +141,7 @@ export async function resolveGrantMaterialization({
           rejection: {
             status: 403,
             code: "insufficient_grants",
-            message: `Creator lacks authority to delegate ${req.resource}/${req.action}`,
+            message: `Creator lacks authority to delegate ${req.resource}/${req.action} (${decision.reason})`,
           },
         };
       }
@@ -154,6 +163,7 @@ export async function resolveGrantMaterialization({
         delegatableInvokerGrants,
         req.resource,
         req.action,
+        { conditions: "pessimistic" },
       );
       if (!decision.ok) {
         return {
@@ -161,7 +171,7 @@ export async function resolveGrantMaterialization({
           rejection: {
             status: 403,
             code: "insufficient_grants",
-            message: `Invoker lacks authority for ${req.resource}/${req.action}`,
+            message: `Invoker lacks authority for ${req.resource}/${req.action} (${decision.reason})`,
           },
         };
       }

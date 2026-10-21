@@ -255,7 +255,7 @@ export function createWorkflowDefinitionRoutes({
           `workflow-definition:${revisionId}`,
           "manage",
           {
-            registry: conditionRegistry,
+            conditions: conditionRegistry,
             principalId,
             tenantId,
             ...(consumer !== undefined ? { consumer } : {}),

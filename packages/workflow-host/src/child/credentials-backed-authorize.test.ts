@@ -158,4 +158,48 @@ describe("createGrantEvaluator", () => {
     ).resolves.toMatchObject({ effect: "deny" });
     expect(asked).toEqual(["fan", "fan"]);
   });
+
+  test("evaluates a time window against the clock, so an approved ask allows inside it", async () => {
+    // Windows relative to now, in UTC, an hour clear of either edge.
+    const hhmm = (offsetHours: number) =>
+      new Date(Date.now() + offsetHours * 3_600_000)
+        .toISOString()
+        .slice(11, 16);
+    const window = (after: number, before: number) => ({
+      time_window: {
+        after: hhmm(after),
+        before: hhmm(before),
+        timezone: "UTC",
+      },
+    });
+    const evaluate = createGrantEvaluator({ floorFor: () => [] });
+    const approved = (conditions: GrantRule["conditions"]) =>
+      evaluate(input("work", [{ ...rule("tool:fetch", "allow"), conditions }]));
+
+    await expect(approved(window(-1, 1))).resolves.toMatchObject({
+      effect: "allow",
+    });
+    await expect(approved(window(2, 3))).resolves.toMatchObject({
+      effect: null,
+    });
+    await expect(
+      evaluate(
+        input("work", [
+          rule("tool:fetch", "allow"),
+          { ...rule("tool:fetch", "deny"), conditions: window(-1, 1) },
+        ]),
+      ),
+    ).resolves.toMatchObject({ effect: "deny" });
+  });
+
+  test("fails closed on a condition the child cannot evaluate", async () => {
+    const evaluate = createGrantEvaluator({ floorFor: () => [] });
+    await expect(
+      evaluate(
+        input("work", [
+          { ...rule("tool:fetch", "allow"), conditions: { tool: "tool:x" } },
+        ]),
+      ),
+    ).rejects.toThrow('Unknown condition: "tool"');
+  });
 });

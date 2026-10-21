@@ -16,19 +16,30 @@ export const EFFECT_PRIORITY: Record<Effect, number> = {
   deny: 2,
 };
 
+/**
+ * How an evaluation treats a grant that carries conditions. A registry
+ * evaluates each condition against the request. `"pessimistic"` is for a
+ * check that has no request to evaluate a condition against, such as
+ * delegation: a conditioned `deny` or `ask` applies as if its condition held,
+ * and a conditioned `allow` does not. The result is then never more permissive
+ * than any request could see, and a run that receives delegated authority
+ * never holds more than its delegator holds without conditions.
+ */
+export type ConditionMode = ConditionRegistry | "pessimistic";
+
 export type EvalOptions = {
-  registry?: ConditionRegistry;
+  conditions: ConditionMode;
   principalId?: string;
   tenantId?: string;
   consumer?: string;
 };
 
 /**
- * What `authorize` takes beyond the query: the condition registry, and the
+ * What `authorize` takes beyond the query: the condition mode, and the
  * consumer a conditioned grant may be scoped to. The principal and tenant come
  * from the positional arguments that also select the grants.
  */
-export type AuthorizeOptions = Pick<EvalOptions, "registry" | "consumer">;
+export type AuthorizeOptions = Pick<EvalOptions, "conditions" | "consumer">;
 
 /**
  * Evaluate grants against a resource/action query.
@@ -36,26 +47,24 @@ export type AuthorizeOptions = Pick<EvalOptions, "registry" | "consumer">;
  * This is the core evaluation logic, separated from grant collection
  * so it can be tested with synthetic grant lists.
  *
- * When a condition registry is provided, grants with non-null
- * conditions are evaluated against it. Unknown condition keys
- * cause an error. When no registry is provided, grants with
- * non-null conditions are skipped (fail-closed).
+ * `opts.conditions` decides how a grant with conditions takes part; see
+ * `ConditionMode`. With a registry, an unknown condition key causes an error.
  */
 export async function evaluateGrants(
   grants: GrantRule[],
   resource: string,
   action: string,
-  opts?: EvalOptions,
+  opts: EvalOptions,
 ): Promise<AuthzResult> {
   const now = new Date();
-  const registry = opts?.registry;
+  const mode = opts.conditions;
   const ctx = {
     now,
     resource,
     action,
-    principalId: opts?.principalId ?? "",
-    tenantId: opts?.tenantId ?? "",
-    consumer: opts?.consumer ?? "",
+    principalId: opts.principalId ?? "",
+    tenantId: opts.tenantId ?? "",
+    consumer: opts.consumer ?? "",
   };
 
   const matching: MatchedGrant[] = [];
@@ -66,8 +75,11 @@ export async function evaluateGrants(
     if (!matchPattern(g.action, action)) continue;
 
     if (g.conditions && Object.keys(g.conditions).length > 0) {
-      if (!registry) continue;
-      if (!(await evaluateConditions(g.conditions, ctx, registry))) continue;
+      if (mode === "pessimistic") {
+        if (g.effect === "allow") continue;
+      } else if (!(await evaluateConditions(g.conditions, ctx, mode))) {
+        continue;
+      }
     }
 
     matching.push({
@@ -131,7 +143,7 @@ export async function authorize(
   tenantId: string,
   resource: string,
   action: string,
-  opts?: AuthorizeOptions,
+  opts: AuthorizeOptions,
 ): Promise<AuthzResult> {
   const grants = await store.collectGrants(principalId, tenantId);
   return evaluateGrants(grants, resource, action, {

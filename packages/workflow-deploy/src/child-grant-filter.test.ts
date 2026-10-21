@@ -151,6 +151,7 @@ describe("filterGrantsToDeclaredResources", () => {
       [...(filtered as readonly GrantRule[])],
       "tool:foo",
       "invoke",
+      { conditions: "pessimistic" },
     );
     expect(decision.effect).toBe("ask");
   });

@@ -165,6 +165,7 @@ const evaluateGrantsAdapter: SidecarRunChildDepsEvaluator = async ({
     [...(grants as readonly GrantRule[])],
     resource,
     action,
+    { conditions: "pessimistic" },
   );
   return { effect: result.effect, matchingGrants: [], resolvedBy: null };
 };

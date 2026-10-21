@@ -586,6 +586,7 @@ describe("deriveToolMarkFloorGrants", () => {
       [...snapshotGrants, ...floor],
       `tool:${toolName}`,
       "invoke",
+      { conditions: "pessimistic" },
     );
     return result.effect;
   }

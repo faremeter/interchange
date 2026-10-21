@@ -59,11 +59,10 @@ export type MailAdmissionResult = {
  *   names no coord type, so it ranks as namespace-wide, below every grant that
  *   names a coordinate.
  *
- * Conditioned `mail.accept` grants require a condition `registry`:
- * `evaluateGrants` skips conditioned grants without one, and a skipped
- * conditioned DENY would fail OPEN. So when no registry is supplied and any
- * matched-namespace grant carries conditions, this helper THROWS rather than
- * evaluating past a deny it cannot honor; the delivery seam turns that throw
+ * Conditioned `mail.accept` grants require a condition `registry`: without
+ * one the check cannot tell whether a grant's condition holds. So when no
+ * registry is supplied and any matched-namespace grant carries conditions,
+ * this helper THROWS rather than guess; the delivery seam turns that throw
  * into a fail-closed drop and the misconfiguration surfaces loudly. Callers
  * that legitimately use conditioned `mail.accept` grants MUST pass a registry.
  */
@@ -82,10 +81,9 @@ export async function evaluateMailAdmission(args: {
     isMailAcceptNamespaceResource(g.resource),
   );
 
-  // Without a registry, evaluateGrants silently skips conditioned grants -- a
-  // skipped conditioned DENY would fail OPEN. Refuse to evaluate rather than
-  // admit past a deny we cannot honor; fail loud so the misconfiguration is
-  // fixed instead of silently swallowed.
+  // Without a registry the check cannot tell whether a grant's condition holds.
+  // Refuse to evaluate a conditioned accept grant rather than guess; fail loud
+  // so the misconfiguration is fixed instead of silently absorbed.
   if (registry === undefined) {
     const conditioned = acceptGrants.find(
       (g) => g.conditions !== null && Object.keys(g.conditions).length > 0,
@@ -97,7 +95,9 @@ export async function evaluateMailAdmission(args: {
     }
   }
 
-  const opts = registry ? { registry } : undefined;
+  // With no registry, the guard above leaves no conditioned grant, so the
+  // pessimistic mode gives the same result as a registry would.
+  const opts = { conditions: registry ?? ("pessimistic" as const) };
 
   // A namespace-wide grant matches every coordinate, so key the pooled set on
   // grant id to count it once.

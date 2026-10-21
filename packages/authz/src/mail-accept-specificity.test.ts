@@ -39,7 +39,9 @@ describe("mail.accept coordinate specificity", () => {
       grant({ resource, action: MAIL_ACCEPT_ACTION, effect: "ask" }),
     ];
 
-    const result = await evaluateGrants(grants, resource, MAIL_ACCEPT_ACTION);
+    const result = await evaluateGrants(grants, resource, MAIL_ACCEPT_ACTION, {
+      conditions: "pessimistic",
+    });
 
     expect(result.effect).toBe("ask");
   });
@@ -52,7 +54,9 @@ describe("mail.accept coordinate specificity", () => {
       grant({ resource, action: MAIL_ACCEPT_ACTION, effect: "allow" }),
     ];
 
-    const result = await evaluateGrants(grants, resource, MAIL_ACCEPT_ACTION);
+    const result = await evaluateGrants(grants, resource, MAIL_ACCEPT_ACTION, {
+      conditions: "pessimistic",
+    });
 
     expect(result.effect).toBe("allow");
     expect(result.resolvedBy?.resource).toBe(resource);
@@ -68,7 +72,11 @@ describe("mail.accept coordinate specificity", () => {
       grant({ resource, action: MAIL_ACCEPT_ACTION, effect: "deny" }),
     ];
     expect(
-      (await evaluateGrants(equal, resource, MAIL_ACCEPT_ACTION)).effect,
+      (
+        await evaluateGrants(equal, resource, MAIL_ACCEPT_ACTION, {
+          conditions: "pessimistic",
+        })
+      ).effect,
     ).toBe("deny");
 
     // When specificity differs, it dominates: a more-specific allow beats a
@@ -77,7 +85,9 @@ describe("mail.accept coordinate specificity", () => {
       grant({ resource: wildcard, action: MAIL_ACCEPT_ACTION, effect: "deny" }),
       grant({ resource, action: MAIL_ACCEPT_ACTION, effect: "allow" }),
     ];
-    const result = await evaluateGrants(unequal, resource, MAIL_ACCEPT_ACTION);
+    const result = await evaluateGrants(unequal, resource, MAIL_ACCEPT_ACTION, {
+      conditions: "pessimistic",
+    });
     expect(result.effect).toBe("allow");
     expect(result.resolvedBy?.resource).toBe(resource);
   });

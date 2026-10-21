@@ -396,7 +396,7 @@ export function createEvaluateRoutes({
         body.resource,
         body.action,
         {
-          registry: conditionRegistry,
+          conditions: conditionRegistry,
           ...(body.consumer !== undefined ? { consumer: body.consumer } : {}),
         },
       );
