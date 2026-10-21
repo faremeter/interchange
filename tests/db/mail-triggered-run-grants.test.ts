@@ -479,6 +479,88 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(grants.length).toBe(firstGrantCount);
     });
 
+    // A run that deploys a workflow through its run token is the deployment's
+    // deployer, so the child's invoker requirements resolve against the run's
+    // own grants. A run triggers its child by mail, so this path decides them.
+    const PARENT_RUN = "prn_parent_run";
+    const DEPLOYING_CONSUMER = "tool:@acme/deployer";
+
+    async function seedRunDeployer(
+      grants: { effect: "allow" | "deny"; conditions?: { tool: string } }[],
+    ) {
+      await seedPrincipal(h.db, {
+        id: PARENT_RUN,
+        tenantId: TENANT,
+        kind: "workflow",
+        refId: "run_parent",
+      });
+      for (const [i, g] of grants.entries()) {
+        await seedGrant(h.db, {
+          id: `grt_parent_${String(i)}`,
+          tenantId: TENANT,
+          principalId: PARENT_RUN,
+          resource: "asset:a1",
+          action: "read",
+          origin: "system",
+          ...g,
+        });
+      }
+      await seedWorkflowRunLaunchSpec(h.db, {
+        anchorRunId: DEPLOYMENT,
+        sourceAuthorityPrincipalId: PARENT_RUN,
+        grantSnapshot: {
+          ...snapshot("secret:vault"),
+          grantRequirements: [
+            { resource: "asset:a1", action: "read", source: "invoker" },
+          ],
+        },
+      });
+    }
+
+    test("a deploying run's grant reaches its child as an invoker grant", async () => {
+      await seedRunDeployer([{ effect: "allow" }]);
+      const result = await materializeOnce(RUN_ID);
+      if (result.outcome !== "materialized") {
+        throw new Error(`expected materialized, got ${result.outcome}`);
+      }
+      const [child] = await h.db
+        .select()
+        .from(principal)
+        .where(eq(principal.refId, RUN_ID));
+      const delegated = await h.db
+        .select()
+        .from(grant)
+        .where(eq(grant.principalId, child?.id ?? ""));
+      const invoker = delegated.find((g) => g.resource === "asset:a1");
+      expect(invoker).toMatchObject({
+        action: "read",
+        effect: "allow",
+        origin: "invoker",
+        conditions: null,
+      });
+      expect(invoker?.expiresAt).not.toBeNull();
+    });
+
+    test("a deploying run's consumer-scoped deny refuses its child's invoker requirement", async () => {
+      // On a request from the deploying consumer, the scoped deny wins over
+      // the unscoped allow. Delegation has no request, so the deny applies.
+      await seedRunDeployer([
+        { effect: "allow" },
+        { effect: "deny", conditions: { tool: DEPLOYING_CONSUMER } },
+      ]);
+      const result = await materializeOnce(RUN_ID);
+      expect(result).toMatchObject({
+        outcome: "rejected",
+        status: 403,
+        code: "insufficient_grants",
+      });
+      const principals = await h.db
+        .select()
+        .from(principal)
+        .where(eq(principal.refId, RUN_ID));
+      expect(principals).toHaveLength(0);
+    });
+
     test("a creator shortfall rejects and writes zero rows", async () => {
       // The creator-sourced requirement names a resource the creator does not
       // hold, so staging rejects (403). The rejection is RETURNED (not
