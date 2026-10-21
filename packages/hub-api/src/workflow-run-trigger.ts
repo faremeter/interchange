@@ -17,12 +17,18 @@ import { type } from "arktype";
 
 import {
   asset,
+  hubConsumersOf,
   isLiveWorkflowRunStatus,
   sidecarAllocation,
   workflowDefinition,
   workflowRun,
 } from "@intx/db/schema";
-import type { DB, DBExecutor, PrincipalKeyStore } from "@intx/db";
+import type {
+  DB,
+  DBExecutor,
+  PrincipalKeyStore,
+  RunTokenStore,
+} from "@intx/db";
 import {
   loadDeploymentGrantSnapshot,
   resolveFrameSenderKey,
@@ -62,6 +68,7 @@ import {
   lockDispatchableAllocation,
   lockWorkflowRunState,
   collectDeployerInvokerGrants,
+  credentialUseBindings,
   stageRunGrantsFromSnapshot,
 } from "./run-grant-materialization";
 import type { MaterializedGrantRow } from "./grant-materialization";
@@ -89,6 +96,7 @@ export const WorkflowRunTriggerResponse = type({
 export type TriggerWorkflowRunDeps = {
   db: DB["db"];
   principalKeyStore: PrincipalKeyStore;
+  runTokenStore: RunTokenStore;
   grantStore: GrantStore;
   sidecarRouter: SidecarRouter;
   workflowDispatchService?: WorkflowDispatchService;
@@ -146,6 +154,7 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
   const {
     db,
     principalKeyStore,
+    runTokenStore,
     grantStore,
     sidecarRouter,
     workflowDispatchService,
@@ -403,7 +412,7 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
         invokerGrants,
         creatorGrants,
         grantRequirements: declaredGrantRequirements,
-        credentialBindings: anchor.credentialRefs?.bindings ?? [],
+        credentialBindings: credentialUseBindings(anchor.credentialRefs),
       });
       if (!staged.ok) {
         const { status, code, message } = staged.rejection;
@@ -462,6 +471,7 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
       const grantArgs = {
         db,
         principalKeyStore,
+        runTokenStore,
         tenantId: tenant.id,
         anchorRunId,
         definitionId: anchor.definitionId,
@@ -471,7 +481,7 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
       };
       if (committedRunGrants !== null) {
         return commitRunGrants(
-          { ...grantArgs, grantRows: stagedGrantRows },
+          { ...grantArgs, hubConsumers: [], grantRows: stagedGrantRows },
           tx,
         );
       }
@@ -487,7 +497,14 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
         { tenantId: tenant.id, runPrincipalId, now },
       );
       if (grantRows === "not-ready") return grantRows;
-      return commitRunGrants({ ...grantArgs, grantRows }, tx);
+      return commitRunGrants(
+        {
+          ...grantArgs,
+          hubConsumers: hubConsumersOf(resolution.credentialRefs),
+          grantRows,
+        },
+        tx,
+      );
     };
 
     const allocationId = anchor.allocationId;

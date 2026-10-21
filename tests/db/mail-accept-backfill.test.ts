@@ -22,7 +22,11 @@ import {
 
 import { and, eq, sql } from "drizzle-orm";
 
-import { createGrantStore, createPrincipalKeyStore } from "@intx/db";
+import {
+  createGrantStore,
+  createPrincipalKeyStore,
+  createRunTokenStore,
+} from "@intx/db";
 import {
   grant,
   workflowDefinition,
@@ -361,6 +365,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       agentAddress: string = WORKFLOW_ADDRESS,
     ): ReturnType<ReturnType<typeof createMailTriggeredRunGrantsMaterializer>> {
       const materializer = createMailTriggeredRunGrantsMaterializer({
+        runTokenStore: createRunTokenStore({
+          db: h.db,
+          cipher: createTestCredentialCipher(),
+        }),
         db: h.db,
         principalKeyStore: createPrincipalKeyStore({
           db: h.db,

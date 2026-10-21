@@ -22,6 +22,7 @@ import {
   oauthClient,
   principal,
   provider,
+  runToken,
   tenant,
   wallet,
   workflowDefinition,
@@ -448,5 +449,23 @@ export async function seedGrant(db: Db, g: SeedGrant): Promise<void> {
     origin: g.origin ?? "creator",
     conditions: g.conditions ?? null,
     expiresAt: g.expiresAt ?? null,
+  });
+}
+
+/**
+ * Insert a run token row for a principal. The hash and the sealed copy are
+ * placeholders: a test that seeds one checks the row's lifecycle, not
+ * authentication with it.
+ */
+export async function seedRunToken(
+  db: Db,
+  t: { id: string; principalId: string; consumer?: string },
+): Promise<void> {
+  await db.insert(runToken).values({
+    id: t.id,
+    principalId: t.principalId,
+    consumer: t.consumer ?? "action:seeded",
+    tokenHashSha256: new TextEncoder().encode(t.id.padEnd(32, "-")),
+    sealedToken: "sealed",
   });
 }

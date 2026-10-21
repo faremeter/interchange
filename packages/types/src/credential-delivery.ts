@@ -36,3 +36,20 @@ export const CredentialDelivery = type({
   materials: CredentialMaterialEntry.array(),
 });
 export type CredentialDelivery = typeof CredentialDelivery.infer;
+
+/**
+ * The reserved credential handle a tool or an action handler declares to call
+ * the hub REST API as its run principal. Deploy binds it without an authored
+ * `credentialBindings` entry, and an authored binding may not name it.
+ */
+export const HUB_CREDENTIAL_HANDLE = "interchange.hub";
+
+/**
+ * The delivery `credentialId` of a consumer's hub credential, and the id its
+ * `credential:{id}` / `use` grant names. It is fixed per consumer, so the grant
+ * can be staged before the run's token exists; a deployment has one run
+ * principal, so one id per consumer cannot carry another run's token.
+ */
+export function hubCredentialId(consumer: string): string {
+  return `hub:${consumer}`;
+}

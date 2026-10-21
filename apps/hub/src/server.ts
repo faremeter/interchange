@@ -2,6 +2,7 @@ import {
   createDB,
   createGrantStore,
   createPrincipalKeyStore,
+  createRunTokenStore,
   createSidecarAllocationStore,
   createWorkflowRunDispatchStore,
   createWorkflowRunLaunchSpecStore,
@@ -335,6 +336,7 @@ export async function createHubServer({
       {
         db,
         principalKeyStore,
+        runTokenStore: createRunTokenStore({ db, cipher: credentialCipher }),
         grantStore: createGrantStore(db),
         // The registry createHubApp uses, so a conditioned operator
         // mail.accept deny is evaluated, not skipped, by the admission gate.

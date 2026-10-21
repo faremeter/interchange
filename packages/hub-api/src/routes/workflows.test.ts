@@ -29,6 +29,7 @@ import {
   grant as grantTable,
   principal as principalTable,
   sidecarAllocation as sidecarAllocationTable,
+  runToken as runTokenTable,
   workflowRun as workflowRunTable,
   workflowRunLaunchSpec as workflowRunLaunchSpecTable,
 } from "@intx/db/schema";
@@ -323,6 +324,7 @@ type MockDBOpts = {
   credentialRefs?: {
     credentialIds: string[];
     bindings: { handle: string; credentialId: string; consumer: string }[];
+    hubConsumers?: string[];
   };
   /** Null models an anchor whose initialization has not published a key. */
   publicKey?: string | null;
@@ -2741,6 +2743,38 @@ describe("POST /workflows/:anchorRunId/mail", () => {
     expect(
       unauthorizedInserts.filter((i) => i.table === grantTable),
     ).toHaveLength(0);
+  });
+
+  test("mints a run token for each hub consumer and grants it the hub credential", async () => {
+    const runGrantsCalls: RunGrantsCall[] = [];
+    const inserts: InsertRecord[] = [];
+    const app = createTestApp({
+      grants: [manageGrant()],
+      runGrantsCalls,
+      db: {
+        deploymentRow,
+        assetRow: workflowAssetRow,
+        inserts,
+        credentialRefs: {
+          credentialIds: [],
+          bindings: [],
+          hubConsumers: ["action:a"],
+        },
+      },
+    });
+    const res = await app.fetch(
+      authedPost(`${base()}/${DEPLOYMENT_ID}/mail`, { content: "kick off" }),
+    );
+    expect(res.status).toBe(202);
+
+    const tokens = inserts.filter((i) => i.table === runTokenTable);
+    expect(tokens).toHaveLength(1);
+    expect(tokens[0]?.values).toMatchObject({ consumer: "action:a" });
+    expect(
+      runGrantsCalls[0]?.stepGrants.find(
+        (g) => g.resource === "credential:hub:action:a",
+      )?.conditions,
+    ).toEqual({ tool: "action:a" });
   });
 
   test("refuses invoker requirements when the deployer is no longer active", async () => {

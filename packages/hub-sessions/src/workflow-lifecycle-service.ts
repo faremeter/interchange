@@ -16,6 +16,7 @@ import {
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
 
 import {
+  deleteRunTokensForPrincipals,
   createSidecarAllocationStore,
   createWorkflowPendingProjectionStore,
   createWorkflowRunStore,
@@ -564,11 +565,13 @@ export function createWorkflowLifecycleService({
     const principalIds = stopped.flatMap((row) =>
       row.principalId === null ? [] : [row.principalId],
     );
-    if (principalIds.length > 0)
+    if (principalIds.length > 0) {
       await tx
         .update(principal)
         .set({ status: "deactivated", updatedAt: endedAt })
         .where(inArray(principal.id, principalIds));
+      await deleteRunTokensForPrincipals(tx, principalIds);
+    }
     await dispatches.abandonUnsettled(
       run.id,
       "workflow_cancelled",

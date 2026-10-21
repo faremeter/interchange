@@ -97,8 +97,9 @@ capability, which `ctx.perform` gives each `run` as `{ credentials }`. Its
 consumer is `action:<handler>`. The action declares each handle it resolves
 in `credentials: [...]`, and a root `credentialBindings` entry with
 `action: "<handler>"` binds each declared handle. Deploy refuses a declared
-handle with no binding. Any other per-deployment configuration it needs must
-arrive through its `input` selector, which in practice means the author
+handle with no binding, except the reserved hub handle `interchange.hub`,
+which the hub binds itself. Any other per-deployment configuration it needs
+must arrive through its `input` selector, which in practice means the author
 threads it from the trigger payload.
 
 Where it lives today: the `ActionHandler` doc comment,
@@ -554,11 +555,12 @@ Where it lives today: `validateConcurrentAwaitSignalNames` and
 `defineTool({ ..., credentials: [{ handle }] })`. The declaration is part of
 the approved projection and its hash. Deploy refuses a declared handle that
 no root `credentialBindings` entry names for the tool, and a binding that
-names a handle the tool does not declare. The check works per tool package:
-the factories that share a package id share one set of declarations, and
-every tool of the package can resolve every handle bound to it. A package
-whose factories declare nothing is not held to its bindings. A credential failure reaches the author in one of
-three ways:
+names a handle the tool does not declare. The reserved hub handle
+`interchange.hub` needs no binding; the hub binds it itself. The check works
+per tool package: the factories that share a package id share one set of
+declarations, and every tool of the package can resolve every handle bound
+to it. A package whose factories declare nothing is not held to its
+bindings. A credential failure reaches the author in one of three ways:
 
 - At install and approve, the probe gate refuses the definition with
   `credential_bindings_invalid` and names each problem.

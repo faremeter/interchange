@@ -10,7 +10,7 @@ import {
 import { eq } from "drizzle-orm";
 
 import { createInMemoryGrantStore } from "@intx/authz";
-import { credential, principal } from "@intx/db/schema";
+import { credential, principal, runToken } from "@intx/db/schema";
 import { createApp, type GetSession } from "@intx/hub-api";
 import {
   createSidecarEmitter,
@@ -29,6 +29,7 @@ import {
   seedCredential,
   seedPrincipal,
   seedProvider,
+  seedRunToken,
   seedTenants,
   seedWorkflowRun,
 } from "@intx/test-harness/seed";
@@ -166,7 +167,7 @@ beforeEach(async () => {
   await h.reset();
 });
 
-async function setup() {
+async function setup(grants: GrantRule[] = [readPrincipalsGrant()]) {
   await seedTenants(h.db, [{ id: TENANT_ID }]);
   await seedPrincipal(h.db, {
     id: ACTOR_PRINCIPAL_ID,
@@ -210,7 +211,7 @@ async function setup() {
     getSession: createMockGetSession(ACTOR_USER_ID),
     authHandler: () => new Response("", { status: 404 }),
     db: h.db,
-    grantStore: createInMemoryGrantStore([readPrincipalsGrant()]),
+    grantStore: createInMemoryGrantStore(grants),
     sidecarRouter: createMockSidecarRouter(),
     sessionService: createMockSessionService(),
     eventCollectors: createMockEventCollectors(),
@@ -279,6 +280,48 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(row["kind"]).toBe("workflow");
       expect(row["refId"]).toBe(RUN_ID);
       expect(row["displayName"]).toBe(`Workflow (${DEPLOYMENT_ADDRESS})`);
+    });
+  },
+);
+
+describe.skipIf(!harnessDbEnvAvailable())(
+  "PATCH /api/tenants/:tenantId/principals/:principalId",
+  () => {
+    function patchStatus(
+      app: Awaited<ReturnType<typeof setup>>,
+      status: string,
+    ) {
+      return app.request(
+        `/api/tenants/${TENANT_ID}/principals/${WORKFLOW_PRINCIPAL_ID}`,
+        {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ status }),
+        },
+      );
+    }
+
+    test("deactivating a run principal deletes its run tokens", async () => {
+      const app = await setup([managePrincipalsGrant()]);
+      await seedRunToken(h.db, {
+        id: "rtk_patch",
+        principalId: WORKFLOW_PRINCIPAL_ID,
+      });
+      expect((await patchStatus(app, "deactivated")).status).toBe(200);
+      expect(await h.db.select().from(runToken)).toEqual([]);
+      // Reactivating the principal does not bring a token back.
+      expect((await patchStatus(app, "active")).status).toBe(200);
+      expect(await h.db.select().from(runToken)).toEqual([]);
+    });
+
+    test("suspending a run principal keeps its run tokens", async () => {
+      const app = await setup([managePrincipalsGrant()]);
+      await seedRunToken(h.db, {
+        id: "rtk_patch",
+        principalId: WORKFLOW_PRINCIPAL_ID,
+      });
+      expect((await patchStatus(app, "suspended")).status).toBe(200);
+      expect(await h.db.select().from(runToken)).toHaveLength(1);
     });
   },
 );

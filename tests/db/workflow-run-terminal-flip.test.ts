@@ -31,6 +31,7 @@ import {
   sidecarAllocation,
   workflowPendingProjection,
   workflowRun,
+  runToken,
 } from "@intx/db/schema";
 import {
   createWorkflowHistoryReceiveTracker,
@@ -56,6 +57,7 @@ import {
   seedPrincipal,
   seedTenants,
   seedWorkflowRun,
+  seedRunToken,
 } from "@intx/test-harness/seed";
 
 const TENANT = "tnt";
@@ -361,6 +363,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         tenantId: TENANT,
         principalId: "prn-run",
       });
+      await seedRunToken(h.db, { id: "rtk_run_ext", principalId: "prn-run" });
 
       await buildAndReceive("run-ext", "RunCompleted");
 
@@ -376,6 +379,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         .from(principal)
         .where(eq(principal.id, "prn-run"));
       expect(prn?.status).toBe("deactivated");
+      expect(await h.db.select().from(runToken)).toEqual([]);
       expect(await h.db.select().from(workflowPendingProjection)).toEqual([]);
     });
 

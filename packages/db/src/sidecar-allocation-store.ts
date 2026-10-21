@@ -20,6 +20,7 @@ import {
 } from "@intx/types";
 
 import type { DB, DBExecutor } from "./client";
+import { deleteRunTokensForPrincipals } from "./run-token-store";
 import { createWorkflowPendingProjectionStore } from "./workflow-pending-projection-store";
 import {
   assertSidecarHasRoom,
@@ -794,6 +795,7 @@ function buildSidecarAllocationStore(
         .update(principal)
         .set({ status: "deactivated", updatedAt: now })
         .where(inArray(principal.id, principalIds));
+      await deleteRunTokensForPrincipals(tx, principalIds);
     }
     return failedRuns.map(({ id }) => id);
   }

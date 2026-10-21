@@ -15,7 +15,11 @@ import {
   harnessDbEnvAvailable,
   type TestDb,
 } from "@intx/test-harness/db-harness";
-import { seedPrincipal, seedTenants } from "@intx/test-harness/seed";
+import {
+  seedPrincipal,
+  seedTenants,
+  seedRunToken,
+} from "@intx/test-harness/seed";
 import {
   createSidecarAllocationStore,
   createWorkflowRunDispatchStore,
@@ -33,6 +37,7 @@ import {
   workflowDefinition,
   workflowPendingProjection,
   workflowRun,
+  runToken,
 } from "@intx/db/schema";
 import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 import {
@@ -2697,6 +2702,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await leavePending();
       await addChild("run_child_done");
       await addChild("run_child_live");
+      for (const { id } of await h.db
+        .select({ id: principal.id })
+        .from(principal)) {
+        await seedRunToken(h.db, { id: `rtk_${id}`, principalId: id });
+      }
       const actions: string[] = [];
       const options = {
         runReader: childHistory({
@@ -2727,6 +2737,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(principals.every((row) => row.status === "deactivated")).toBe(
         true,
       );
+      expect(await h.db.select().from(runToken)).toEqual([]);
     });
 
     test("an unresponsive worker is not declared stopped until capacity destruction is confirmed", async () => {
