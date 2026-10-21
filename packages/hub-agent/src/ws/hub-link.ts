@@ -1650,6 +1650,32 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       logger.warn`Received run.grants for ${frame.agentAddress} but no grantsInboundRouter is wired; dropping`;
       return;
     }
+    // The run's hub credentials ride the barrier. Merge them into the
+    // deployment's credential cell first, on this same lane, so the run never
+    // starts on these grants without them; they never reach the grants file.
+    if (frame.credentials !== undefined) {
+      if (credentialsInboundRouter === undefined) {
+        logger.error`run.grants for run ${frame.runId} carries credentials but no credentialsInboundRouter is wired; dropping`;
+        return;
+      }
+      try {
+        const delivered = await credentialsInboundRouter.tryRoute({
+          type: "credentials.update",
+          requestId: `run.grants:${frame.runId}`,
+          agentAddress: frame.agentAddress,
+          generation: frame.generation,
+          delivery: frame.credentials,
+        });
+        if (!delivered) {
+          logger.warn`run.grants credentials for ${frame.agentAddress} did not match any registered deployment; dropping`;
+          return;
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.error`run.grants credential merge failed for ${frame.agentAddress}; dropping the grants: ${msg}`;
+        return;
+      }
+    }
     try {
       const routed = await grantsInboundRouter.tryRoute(
         frame,

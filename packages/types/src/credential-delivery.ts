@@ -5,7 +5,8 @@ import { type } from "arktype";
  * delivered to a running agent so its consumers -- tools and action handlers --
  * can use provider-backed credentials. Secrets are decrypted hub-side and ride
  * this payload on the live channel ONLY -- the deploy frame at launch, a
- * `credentials.update` frame on rotation, and the child's in-memory cell. They
+ * `credentials.update` frame on rotation, a run's `run.grants` barrier (its
+ * hub tokens), and the child's in-memory cell. They
  * are NEVER written to disk (they do not ride the git-committed grants file)
  * and NEVER copied into any snapshot, event, or state -- redaction is by
  * construction, mirroring how an `InferenceSource`'s `apiKey` stays off every

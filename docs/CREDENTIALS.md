@@ -88,7 +88,7 @@ A tool declares the handles it resolves in `defineTool({ ..., credentials: [{ ha
 
 An action declares the handles its handler may resolve: `action({ handler, credentials: [handle, ...], effect: { requires: [capability, ...] } })`. The handles resolve only inside `perform`'s `run`, so `action()` refuses `credentials` without an `effect.requires` capability. The declaration is part of the approved projection and its hash. The bindings for one handler may name only the union of the handles its action steps declare.
 
-The reserved handle `interchange.hub` is not bound by an authored binding. Deploy records each consumer that declares it, and the hub issues that consumer a run token for the hub REST API; see "Workflow run tokens" in AUTH.md.
+The reserved handle `interchange.hub` is not bound by an authored binding. Deploy records each consumer that declares it, and the hub binds the handle for that consumer to the run's token for the hub REST API, delivered on the run's grants barrier; see "Workflow run tokens" in AUTH.md.
 
 Bindings belong on the root definition; deploy resolves no other. When a definition is installed and approved, the hub's probe gate refuses it, before any credential is resolved, if:
 

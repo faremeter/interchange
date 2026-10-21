@@ -24,6 +24,7 @@ import type {
   RunGrantsFrame,
   WorkflowRunRefTips,
 } from "@intx/types/sidecar";
+import type { CredentialDelivery } from "@intx/types/credential-delivery";
 import type { RepoId } from "@intx/types/repo";
 import type {
   ApprovalSnapshot,
@@ -277,6 +278,14 @@ export type SidecarLookups = {
    * best-effort source-update pushes. No-ops for a run that persisted no
    * credential refs. */
   resyncCredentials?: (agentAddress: string) => void;
+
+  /** Loads a deployment run's hub credentials (its run tokens) by run id, or
+   * null when it has none. The wire layer attaches the result to each
+   * `run.grants` barrier it sends ahead of a trigger mail, so a replayed
+   * barrier carries them again. Absent: barriers carry no hub credentials.
+   * It may throw; the wire layer logs a fault and sends the barrier without
+   * them, so a load failure never drops the mail it precedes. */
+  loadRunCredentials?: (runId: string) => Promise<CredentialDelivery | null>;
 
   /** Persists a delivered outbound mail frame. Returns one row per
    * persisted record; the wire layer attaches `raw` to each row and

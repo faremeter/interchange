@@ -1009,3 +1009,68 @@ describe("an undeploy the sidecar cannot finish", () => {
     }
   });
 });
+
+describe("run.grants hub credentials", () => {
+  test("merges a barrier's credentials before its grants and drops the grants when the merge fails", async () => {
+    const delivery = {
+      bindings: [
+        {
+          handle: "interchange.hub",
+          credentialId: "hub:action:a",
+          consumer: "action:a",
+        },
+      ],
+      materials: [
+        {
+          credentialId: "hub:action:a",
+          providerKey: "http",
+          origin: "https://hub.test",
+          secret: "itx_run_secret",
+        },
+      ],
+    };
+    const events: string[] = [];
+    const after = Promise.withResolvers<boolean>();
+    const { link, hub: conn } = await connectLink("sc-lanes-grant-creds", {
+      getIncarnations: () => [
+        { address: SLOW, generation: 1, state: "live" as const },
+      ],
+      credentialsInboundRouter: {
+        async tryRoute(frame) {
+          events.push(`credentials ${frame.delivery.materials.length}`);
+          if (frame.requestId === "run.grants:run-failed") {
+            throw new Error("merge refused");
+          }
+          return true;
+        },
+      },
+      grantsInboundRouter: {
+        async tryRoute(frame) {
+          events.push(`grants ${frame.runId}`);
+          if (frame.runId === "run-after") after.resolve(true);
+          return true;
+        },
+      },
+    });
+    try {
+      conn.send({ ...runGrants(SLOW), credentials: delivery });
+      // The lane is FIFO, so the grants of the frame after the failed merge
+      // land only after that frame was handled and dropped.
+      conn.send({
+        ...runGrants(SLOW),
+        runId: "run-failed",
+        credentials: delivery,
+      });
+      conn.send({ ...runGrants(SLOW), runId: "run-after" });
+      await after.promise;
+      expect(events).toEqual([
+        "credentials 1",
+        `grants run-of-${SLOW}`,
+        "credentials 1",
+        "grants run-after",
+      ]);
+    } finally {
+      link.close();
+    }
+  });
+});

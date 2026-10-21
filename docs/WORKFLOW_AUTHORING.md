@@ -98,9 +98,9 @@ consumer is `action:<handler>`. The action declares each handle it resolves
 in `credentials: [...]`, and a root `credentialBindings` entry with
 `action: "<handler>"` binds each declared handle. Deploy refuses a declared
 handle with no binding, except the reserved hub handle `interchange.hub`,
-which the hub binds itself. Any other per-deployment configuration it needs
-must arrive through its `input` selector, which in practice means the author
-threads it from the trigger payload.
+which the hub binds itself (see 32). Any other per-deployment configuration
+it needs must arrive through its `input` selector, which in practice means
+the author threads it from the trigger payload.
 
 Where it lives today: the `ActionHandler` doc comment,
 `packages/workflow/src/definition/primitives.ts`. The mechanism that makes
@@ -577,3 +577,29 @@ Where it lives today: `defineTool`, `packages/agent/src/tool.ts`;
 `checkCredentialBindings`,
 `packages/workflow-deploy/src/credential-binding-check.ts`;
 `reconcileDeclaredCredentials`, `packages/harness/src/credential-capability.ts`
+
+---
+
+**32.** A run calls the hub REST API as its own run principal. A tool or an
+action declares the reserved handle `interchange.hub` (in
+`defineTool({ credentials })` or `action({ credentials })`) and adds no
+`credentialBindings` entry for it. An action resolves the handle inside
+`perform`'s `run`, as any other handle. The handle resolves to an `http`
+mediated credential pinned to the hub's origin, so the consumer fetches
+relative paths such as `/api/tenants/<tenantId>/workflows/runs/<runId>`.
+
+- The run holds only the grants its definition's grant requirements
+  delegate to it. Name the run itself as `workflow-run:self`; see "Grant
+  Requirements on Definitions" in AUTH.md.
+- A run token reaches only the tenant routes on the run-token allow-list.
+  Every other tenant route refuses it with 403, whatever the run's grants. A
+  route outside `/api/tenants/:tenantId` does not authenticate a run token,
+  so such a route that requires authentication answers 401.
+- A `childWorkflow` body and a loop body share the top-level run's
+  principal, so their calls act as the top-level run.
+- The token stops working when the run principal is deactivated, for
+  example when the run ends. A consumer can read the header it sends, so do
+  not log or return the request headers.
+
+Where it lives today: "Workflow run tokens" in `docs/AUTH.md`;
+`RUN_TOKEN_ROUTES`, `packages/hub-api/src/middleware/run-token-auth.ts`.
