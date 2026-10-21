@@ -1363,7 +1363,7 @@ Source: packages/types/src/grants.ts
 
 **effect**: Outcome when this grant is the one resolved for a request: `allow` permits the action, `deny` blocks it, `ask` requires interactive approval before proceeding. When several grants match, the most specific wins, and at equal specificity the strongest effect wins (`deny` over `ask` over `allow`).
 **origin**: Records where the grant came from: `system` (built-in), `role` (granted via a role), `creator` (from the workflow definition author), or `invoker` (delegated by the workflow deployment's deployer, its invoker of record). Origin is provenance only; it does not affect evaluation precedence.
-**conditions**: Optional map of named conditions that must all pass for the grant to apply, evaluated against a condition registry at authorization time. A grant with conditions is skipped (fails closed) when no registry is available to evaluate them.
+**conditions**: Optional map of named conditions that must all pass for the grant to apply, evaluated against a condition registry at authorization time. A check with no request to evaluate conditions against, such as delegation at launch, treats a conditioned `deny` or `ask` as applying and a conditioned `allow` as not applying.
 
 ### CreateModel
 `{ canonicalName: string, description?: string | null, displayName?: string | null }`
@@ -1482,7 +1482,7 @@ Source: packages/types/src/grants.ts
 
 **effect**: Outcome when this grant is the one resolved for a request: `allow` permits the action, `deny` blocks it, `ask` requires interactive approval before proceeding. When several grants match, the most specific wins, and at equal specificity the strongest effect wins (`deny` over `ask` over `allow`).
 **origin**: Records where the grant came from: `system` (built-in), `role` (granted via a role), `creator` (from the workflow definition author), or `invoker` (delegated by the workflow deployment's deployer, its invoker of record). Origin is provenance only; it does not affect evaluation precedence.
-**conditions**: Optional map of named conditions that must all pass for the grant to apply, evaluated against a condition registry at authorization time. A grant with conditions is skipped (fails closed) when no registry is available to evaluate them.
+**conditions**: Optional map of named conditions that must all pass for the grant to apply, evaluated against a condition registry at authorization time. A check with no request to evaluate conditions against, such as delegation at launch, treats a conditioned `deny` or `ask` as applying and a conditioned `allow` as not applying.
 
 ### HistoryEntry
 `{ author: string, message: string, ref: string, timestamp: string, filesChanged?: number }`
@@ -1625,7 +1625,7 @@ Source: packages/types/src/credentials.ts
 `{ conditions?: { [string]: unknown } | null, effect?: "allow" | "ask" | "deny", expiresAt?: string | null }`
 Source: packages/types/src/grants.ts
 
-**conditions**: Optional map of named conditions that must all pass for the grant to apply, evaluated against a condition registry at authorization time. A grant with conditions is skipped (fails closed) when no registry is available to evaluate them.
+**conditions**: Optional map of named conditions that must all pass for the grant to apply, evaluated against a condition registry at authorization time. A check with no request to evaluate conditions against, such as delegation at launch, treats a conditioned `deny` or `ask` as applying and a conditioned `allow` as not applying.
 **effect**: Outcome when this grant is the one resolved for a request: `allow` permits the action, `deny` blocks it, `ask` requires interactive approval before proceeding. When several grants match, the most specific wins, and at equal specificity the strongest effect wins (`deny` over `ask` over `allow`).
 
 ### UpdateModel

@@ -117,7 +117,7 @@ export function createCredentialCapability(
         deps.grants,
         `credential:${binding.credentialId}`,
         "use",
-        { registry: CREDENTIAL_USE_CONDITIONS, consumer: deps.consumer },
+        { conditions: CREDENTIAL_USE_CONDITIONS, consumer: deps.consumer },
       );
       if (!decision.ok) {
         throw new Error(

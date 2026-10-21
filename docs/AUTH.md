@@ -317,6 +317,14 @@ Spending limits and threshold-based escalation are planned conditions with no ev
 
 Conditions are evaluated at runtime by the authorization engine: a grant whose registered condition is unmet is skipped, but a grant carrying a condition key with no registered evaluator throws and fails the authorization to surface the misconfiguration. Do not author grants with the planned conditions above until their evaluators ship — a grant referencing an unregistered condition will fail authorization with an error rather than silently passing.
 
+Every check names how it treats a conditioned grant. A check on a request evaluates each condition with the hub's condition registry. A check with no request to evaluate a condition against is **pessimistic**: a conditioned `deny` or `ask` applies as if its condition held, and a conditioned `allow` does not apply. Delegation is the pessimistic check:
+
+- **Delegation at launch.** Creator and invoker requirements resolve against the delegator's stored grants, not a request. A delegator's conditioned `deny` or `ask` refuses the requirement with 403 `insufficient_grants`, and a conditioned `allow` does not satisfy it. This applies to a user's time-window grant and to a run's consumer-scoped grant the same way, so a run never receives more than its delegator holds without conditions.
+
+The sidecar's step grant check evaluates `time_window` against the sidecar's clock, so a run's declared time-window grant applies inside its window, as on the hub. A grant with any other condition key fails the check closed, because that key needs request context the sidecar does not have.
+
+Specificity still decides between grants: a broad conditioned `deny` loses to a more specific unconditioned `allow`, as it would on a request where its condition holds.
+
 ## Grant Revocation
 
 Grant revocation is policy-driven with a default of fail-secure.

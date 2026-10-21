@@ -27,6 +27,7 @@ describe("authorizeAction collapses the fail-closed rule", () => {
       [grant({ resource: CRED, action: USE, effect: "allow" })],
       CRED,
       USE,
+      { conditions: "pessimistic" },
     );
     expect(decision).toEqual({ ok: true });
   });
@@ -36,6 +37,7 @@ describe("authorizeAction collapses the fail-closed rule", () => {
       [grant({ resource: CRED, action: USE, effect: "deny" })],
       CRED,
       USE,
+      { conditions: "pessimistic" },
     );
     expect(decision).toEqual({ ok: false, reason: "deny" });
   });
@@ -45,18 +47,21 @@ describe("authorizeAction collapses the fail-closed rule", () => {
       [grant({ resource: CRED, action: USE, effect: "ask" })],
       CRED,
       USE,
+      { conditions: "pessimistic" },
     );
     expect(decision).toEqual({ ok: false, reason: "ask" });
   });
 
   test("no matching grant withholds with reason no_matching_grant", async () => {
-    const decision = await authorizeAction([], CRED, USE);
+    const decision = await authorizeAction([], CRED, USE, {
+      conditions: "pessimistic",
+    });
     expect(decision).toEqual({ ok: false, reason: "no_matching_grant" });
   });
 
-  test("a conditioned grant is withheld when no registry is passed", async () => {
-    // The verb never defaults a registry; evaluateGrants skips conditioned
-    // grants fail-closed, so this resolves to no matching grant.
+  test("a conditioned allow is withheld in pessimistic mode", async () => {
+    // The verb passes the caller's mode through; pessimistic mode never
+    // applies a conditioned allow, so this resolves to no matching grant.
     const decision = await authorizeAction(
       [
         grant({
@@ -68,6 +73,7 @@ describe("authorizeAction collapses the fail-closed rule", () => {
       ],
       CRED,
       USE,
+      { conditions: "pessimistic" },
     );
     expect(decision).toEqual({ ok: false, reason: "no_matching_grant" });
   });

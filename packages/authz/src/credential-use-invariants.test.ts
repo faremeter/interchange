@@ -33,6 +33,7 @@ describe("wildcard matcher reaches credential:{id}/use", () => {
       [grant({ resource: "*", action: "*", effect: "allow" })],
       CRED,
       USE,
+      { conditions: "pessimistic" },
     );
     expect(result.effect).toBe("allow");
   });
@@ -42,6 +43,7 @@ describe("wildcard matcher reaches credential:{id}/use", () => {
       [grant({ resource: "credential:*", action: "use", effect: "allow" })],
       CRED,
       USE,
+      { conditions: "pessimistic" },
     );
     expect(result.effect).toBe("allow");
   });
@@ -54,7 +56,9 @@ describe("admin/member default grants lack use on credentials", () => {
       grant({ resource: "*", action: "create", effect: "allow" }),
       grant({ resource: "*", action: "manage", effect: "allow" }),
     ];
-    const result = await evaluateGrants(adminGrants, CRED, USE);
+    const result = await evaluateGrants(adminGrants, CRED, USE, {
+      conditions: "pessimistic",
+    });
     expect(result.effect).toBe(null);
     expect(result.effect === "allow").toBe(false);
   });
@@ -64,6 +68,7 @@ describe("admin/member default grants lack use on credentials", () => {
       [grant({ resource: "*", action: "read", effect: "allow" })],
       CRED,
       USE,
+      { conditions: "pessimistic" },
     );
     expect(result.effect).toBe(null);
   });
@@ -71,7 +76,9 @@ describe("admin/member default grants lack use on credentials", () => {
 
 describe("fail-closed: anything other than allow is denial", () => {
   test("no matching grant resolves to effect null", async () => {
-    const result = await evaluateGrants([], CRED, USE);
+    const result = await evaluateGrants([], CRED, USE, {
+      conditions: "pessimistic",
+    });
     expect(result.effect).toBe(null);
     expect(result.effect !== "allow").toBe(true);
   });
@@ -81,6 +88,7 @@ describe("fail-closed: anything other than allow is denial", () => {
       [grant({ resource: "credential:*", action: "use", effect: "ask" })],
       CRED,
       USE,
+      { conditions: "pessimistic" },
     );
     expect(result.effect).toBe("ask");
     expect(result.effect !== "allow").toBe(true);
@@ -97,12 +105,14 @@ describe("fail-closed: anything other than allow is denial", () => {
       action: "use",
       effect: "deny",
     });
-    const result = await evaluateGrants([allow, deny], CRED, USE);
+    const result = await evaluateGrants([allow, deny], CRED, USE, {
+      conditions: "pessimistic",
+    });
     expect(result.effect).toBe("deny");
     expect(result.effect !== "allow").toBe(true);
   });
 
-  test("conditioned grant with no registry is skipped (fail closed)", async () => {
+  test("a conditioned allow is skipped in pessimistic mode", async () => {
     const result = await evaluateGrants(
       [
         grant({
@@ -114,6 +124,7 @@ describe("fail-closed: anything other than allow is denial", () => {
       ],
       CRED,
       USE,
+      { conditions: "pessimistic" },
     );
     expect(result.effect).toBe(null);
   });

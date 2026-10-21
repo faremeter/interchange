@@ -216,6 +216,7 @@ const evaluateGrantsAdapter: Parameters<
     [...(grants as readonly GrantRule[])],
     resource,
     grantAction,
+    { conditions: "pessimistic" },
   );
   return { effect: result.effect, matchingGrants: [], resolvedBy: null };
 };

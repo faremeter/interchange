@@ -91,7 +91,7 @@ describe("consumer identities", () => {
 
 describe("CREDENTIAL_USE_CONDITIONS through evaluateGrants", () => {
   const opts = (consumer?: string) => ({
-    registry: CREDENTIAL_USE_CONDITIONS,
+    conditions: CREDENTIAL_USE_CONDITIONS,
     ...(consumer === undefined ? {} : { consumer }),
   });
 

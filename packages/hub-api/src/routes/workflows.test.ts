@@ -3229,7 +3229,9 @@ describe("deriveRunRuntimeGrantRows tool-mark floor", () => {
       declaredAllow,
     ];
 
-    const result = await evaluateGrants(grants, `tool:${toolName}`, "invoke");
+    const result = await evaluateGrants(grants, `tool:${toolName}`, "invoke", {
+      conditions: "pessimistic",
+    });
     expect(result.effect).toBe("ask");
   });
 });

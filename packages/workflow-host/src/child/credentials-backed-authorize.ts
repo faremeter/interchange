@@ -6,7 +6,12 @@
 // floor) with `evaluateGrants`. Nothing here imports a Node API, so a host
 // that cannot load the run child can still build the same pair.
 
-import { evaluateGrants, type GrantRule } from "@intx/authz";
+import {
+  evaluateGrants,
+  timeWindowEvaluator,
+  type ConditionRegistry,
+  type GrantRule,
+} from "@intx/authz";
 import type { AuthzCallResult } from "@intx/inference";
 import type { WorkflowAuthorizeFn } from "@intx/workflow";
 import { baseStepId } from "@intx/workflow";
@@ -106,6 +111,11 @@ export function createCredentialsBackedAuthorize(
   };
 }
 
+// The conditions the child can evaluate without a request: only the clock.
+const CHILD_CONDITIONS: ConditionRegistry = {
+  time_window: timeWindowEvaluator,
+};
+
 /**
  * The grant evaluator a run child's authorize closure delegates to. It ranks
  * the step's snapshot grants together with the step's pinned-tool floor
@@ -118,6 +128,16 @@ export function createCredentialsBackedAuthorize(
  * raises the minimum authority to the tool's static mark. A step with no floor
  * contributes no rows, which can only fail more closed. A source-ref step has
  * no floor: its `tool:<name>` grant is already in the snapshot.
+ *
+ * A snapshot grant's conditions come from the run's declared grant
+ * requirements, or are the `{ tool }` condition of a credential use row. Only
+ * a `credential:` resource matches such a row, and the harness checks those
+ * with its own registry. The child evaluates a time window against its own
+ * clock, so
+ * a time-window grant applies inside its window, as on the hub, and an
+ * approval that turns a conditioned `ask` into `allow` keeps working. Any
+ * other condition key needs request context the child does not have, so it
+ * throws and the authorization fails closed.
  */
 export function createGrantEvaluator(opts: {
   readonly floorFor: (baseStepId: string) => readonly GrantRule[];
@@ -132,6 +152,7 @@ export function createGrantEvaluator(opts: {
       [...(grants as readonly GrantRule[]), ...floor],
       resource,
       action,
+      { conditions: CHILD_CONDITIONS },
     );
     return {
       effect: result.effect,

@@ -16,7 +16,11 @@ Consumed by `@intx/hub-api` for HTTP request authorization and by
 `@intx/harness` for tool-call gating.
 
 ```ts
-import { authorize, createInMemoryGrantStore } from "@intx/authz";
+import {
+  authorize,
+  createInMemoryGrantStore,
+  timeWindowEvaluator,
+} from "@intx/authz";
 
 const store = createInMemoryGrantStore([
   {
@@ -38,6 +42,7 @@ const result = await authorize(
   "acme",
   "tenant:acme:agent:abc",
   "read",
+  { conditions: { time_window: timeWindowEvaluator } },
 );
 
 if (result.effect !== "allow") throw new Error("forbidden");
@@ -55,7 +60,10 @@ evaluation is fail-closed.
 - `evaluateGrants` — the core resolution logic operating on a supplied
   `GrantRule[]` rather than a store, so it can be driven with synthetic
   grant lists. `authorize` is a thin wrapper that collects grants and
-  delegates here.
+  delegates here. Every call names its `ConditionMode`: a
+  `ConditionRegistry` evaluates each condition, and `"pessimistic"`
+  applies a conditioned `deny` or `ask` as if it held and skips a
+  conditioned `allow`, for a check that has no request.
 - `timeWindowEvaluator` — a `ConditionEvaluator` for time-of-day
   windows. Register it under the `time_window` key in a
   `ConditionRegistry` to gate grants on `{ after, before, timezone }`;
@@ -68,5 +76,5 @@ evaluation is fail-closed.
   colon-segmented wildcard matcher and the specificity scoring used to
   pick the winning grant.
 - Types: `AuthzResult`, `ConditionContext`, `ConditionEvaluator`,
-  `ConditionRegistry`, `Effect`, `GrantRule`, `GrantStore`,
+  `ConditionMode`, `ConditionRegistry`, `Effect`, `GrantRule`, `GrantStore`,
   `MatchedGrant`.
