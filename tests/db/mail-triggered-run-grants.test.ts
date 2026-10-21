@@ -18,6 +18,7 @@ import {
 import {
   grant,
   principal,
+  runToken,
   workflowDefinition,
   workflowDefinitionVersion,
   workflowRun,
@@ -28,6 +29,7 @@ import {
   createCorrespondentGrantMinter,
   createMailTriggeredRunGrantsMaterializer,
 } from "@intx/hub-api";
+import { createRunCredentialsLoader } from "@intx/hub-sessions";
 import {
   createTestDb,
   harnessDbEnvAvailable,
@@ -352,6 +354,91 @@ describe.skipIf(!harnessDbEnvAvailable())(
         conditions: { tool: consumer },
         expiresAt: null,
       });
+    });
+
+    test("mints one hub token per hub consumer and delivers each at the hub origin", async () => {
+      await seedFrozenSnapshot(snapshot("secret:vault"));
+      const consumers = ["action:caller", "tool:@acme/hub"];
+      const origin = "https://hub.example.test";
+      await h.db
+        .update(workflowRun)
+        .set({
+          credentialRefs: {
+            credentialIds: [],
+            bindings: [],
+            hubConsumers: consumers,
+          },
+        })
+        .where(eq(workflowRun.id, DEPLOYMENT));
+
+      const runId = "<mail-run-hub@tenant.example>";
+      const result = await materializeOnce(runId);
+      if (result.outcome !== "materialized") {
+        throw new Error(`expected materialized, got ${result.outcome}`);
+      }
+      for (const consumer of consumers) {
+        expect(
+          result.stepGrants.find(
+            (g) => g.resource === `credential:hub:${consumer}`,
+          ),
+        ).toMatchObject({ action: "use", conditions: { tool: consumer } });
+      }
+
+      const [runPrincipal] = await h.db
+        .select()
+        .from(principal)
+        .where(eq(principal.refId, runId));
+      const runPrincipalId = runPrincipal?.id ?? "";
+      const tokensOfRun = () =>
+        h.db
+          .select({ id: runToken.id, consumer: runToken.consumer })
+          .from(runToken)
+          .where(eq(runToken.principalId, runPrincipalId))
+          .orderBy(runToken.consumer);
+      const minted = await tokensOfRun();
+      expect(minted.map((t) => t.consumer)).toEqual(consumers);
+
+      // A redelivered trigger keeps the tokens the run already holds.
+      await materializeOnce(runId);
+      expect(await tokensOfRun()).toEqual(minted);
+
+      const runTokenStore = createRunTokenStore({
+        db: h.db,
+        cipher: createTestCredentialCipher(),
+      });
+      const issued = new Map(
+        (await runTokenStore.loadDelivery(runPrincipalId)).map((t) => [
+          t.consumer,
+          t.token,
+        ]),
+      );
+      const issuedTo = (consumer: string) => {
+        const token = issued.get(consumer);
+        if (token === undefined) throw new Error(`no token for ${consumer}`);
+        return token;
+      };
+      const delivery = await createRunCredentialsLoader({
+        db: h.db,
+        runTokenStore,
+        hubApiOrigin: origin,
+      })(runId);
+      expect(delivery?.bindings).toEqual(
+        consumers.map((consumer) => ({
+          handle: "interchange.hub",
+          credentialId: `hub:${consumer}`,
+          consumer,
+        })),
+      );
+      // Each consumer receives its own minted token, pinned to the hub.
+      expect(delivery?.materials).toEqual(
+        consumers.map((consumer) => ({
+          credentialId: `hub:${consumer}`,
+          providerKey: "http",
+          origin,
+          secret: issuedTo(consumer),
+        })),
+      );
+      expect(new Set(issued.values()).size).toBe(consumers.length);
     });
 
     test("does not commit grants before credential resolution is recorded", async () => {
