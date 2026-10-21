@@ -110,57 +110,8 @@ function bindingConsumerLabel(binding: CredentialBinding): string {
 export function checkCredentialBindings(
   projection: WorkflowProjectionDefinition,
 ): readonly CredentialBindingViolation[] {
-  const violations: CredentialBindingViolation[] = [];
-  const toolFactoryIds = new Set<string>();
-  const declaredByFactory = new Map<string, Set<string>>();
-  const declaredByHandler = new Map<string, Set<string>>();
-
-  walkStepTree<unknown, WorkflowProjectionDefinition>({
-    tree: projection,
-    context: CONTEXT,
-    nestedTrees: (step) => inertNestedBodies(step, EXECUTABLE_STEP_DESCENT),
-    visit: ({ stepId, step, path }) => {
-      // Read each body off the step that carries it, so a body is checked
-      // once and whatever its step count.
-      for (const body of inertNestedBodies(step, EXECUTABLE_STEP_DESCENT)) {
-        if (!(HasBindingsKey(body) instanceof type.errors)) {
-          violations.push({
-            kind: "nested_body_bindings",
-            bodyId: body.id,
-            reachedThrough: path,
-          });
-        }
-      }
-
-      for (const factory of readInertStepToolFactories(step, CONTEXT, stepId)) {
-        toolFactoryIds.add(factory.id);
-        if (factory.credentialHandles === undefined) continue;
-        const handles = declaredByFactory.get(factory.id) ?? new Set<string>();
-        for (const handle of factory.credentialHandles) handles.add(handle);
-        declaredByFactory.set(factory.id, handles);
-      }
-
-      const asAction = ActionStep(step);
-      if (asAction instanceof type.errors) return;
-      if (
-        typeof step !== "object" ||
-        step === null ||
-        !("credentials" in step)
-      ) {
-        return;
-      }
-      const declared = DeclaredHandles(step.credentials);
-      if (declared instanceof type.errors) {
-        throw new Error(
-          `${CONTEXT}action step ${path.join(" > ")} declares credentials that are not a list of strings: ${declared.summary}`,
-        );
-      }
-      const handles =
-        declaredByHandler.get(asAction.handler) ?? new Set<string>();
-      for (const handle of declared) handles.add(handle);
-      declaredByHandler.set(asAction.handler, handles);
-    },
-  });
+  const { violations, toolFactoryIds, declaredByFactory, declaredByHandler } =
+    collectDeclarations(projection);
 
   const bindings: readonly CredentialBinding[] =
     projection.credentialBindings ?? [];
@@ -240,6 +191,76 @@ export function checkCredentialBindings(
   }
 
   return violations;
+}
+
+type Declarations = {
+  violations: CredentialBindingViolation[];
+  toolFactoryIds: Set<string>;
+  declaredByFactory: Map<string, Set<string>>;
+  declaredByHandler: Map<string, Set<string>>;
+};
+
+/**
+ * Walk the executable tree once for the tool factories it runs, the handles
+ * declaring factories and action handlers declare, and the nested bodies that
+ * wrongly carry bindings.
+ */
+function collectDeclarations(
+  projection: WorkflowProjectionDefinition,
+): Declarations {
+  const violations: CredentialBindingViolation[] = [];
+  const toolFactoryIds = new Set<string>();
+  const declaredByFactory = new Map<string, Set<string>>();
+  const declaredByHandler = new Map<string, Set<string>>();
+
+  walkStepTree<unknown, WorkflowProjectionDefinition>({
+    tree: projection,
+    context: CONTEXT,
+    nestedTrees: (step) => inertNestedBodies(step, EXECUTABLE_STEP_DESCENT),
+    visit: ({ stepId, step, path }) => {
+      // Read each body off the step that carries it, so a body is checked
+      // once and whatever its step count.
+      for (const body of inertNestedBodies(step, EXECUTABLE_STEP_DESCENT)) {
+        if (!(HasBindingsKey(body) instanceof type.errors)) {
+          violations.push({
+            kind: "nested_body_bindings",
+            bodyId: body.id,
+            reachedThrough: path,
+          });
+        }
+      }
+
+      for (const factory of readInertStepToolFactories(step, CONTEXT, stepId)) {
+        toolFactoryIds.add(factory.id);
+        if (factory.credentialHandles === undefined) continue;
+        const handles = declaredByFactory.get(factory.id) ?? new Set<string>();
+        for (const handle of factory.credentialHandles) handles.add(handle);
+        declaredByFactory.set(factory.id, handles);
+      }
+
+      const asAction = ActionStep(step);
+      if (asAction instanceof type.errors) return;
+      if (
+        typeof step !== "object" ||
+        step === null ||
+        !("credentials" in step)
+      ) {
+        return;
+      }
+      const declared = DeclaredHandles(step.credentials);
+      if (declared instanceof type.errors) {
+        throw new Error(
+          `${CONTEXT}action step ${path.join(" > ")} declares credentials that are not a list of strings: ${declared.summary}`,
+        );
+      }
+      const handles =
+        declaredByHandler.get(asAction.handler) ?? new Set<string>();
+      for (const handle of declared) handles.add(handle);
+      declaredByHandler.set(asAction.handler, handles);
+    },
+  });
+
+  return { violations, toolFactoryIds, declaredByFactory, declaredByHandler };
 }
 
 /** One sentence for a violation, for a refusal message. */
