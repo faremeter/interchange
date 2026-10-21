@@ -16,6 +16,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { defineTool, type BaseEnv, type ToolBundle } from "@intx/agent";
+import { HUB_CREDENTIAL_HANDLE } from "@intx/types/credential-delivery";
 import type { RuntimeCapabilities } from "@intx/types/runtime-capabilities";
 
 /**
@@ -44,8 +45,8 @@ interface CredentialToolEnv extends BaseEnv {
   capabilities: RuntimeCapabilities;
 }
 
-function probeBundle(env: CredentialToolEnv): ToolBundle {
-  return {
+function probeBundle(handle: string): (env: CredentialToolEnv) => ToolBundle {
+  return (env) => ({
     definitions: [
       {
         name: "probe",
@@ -91,7 +92,7 @@ function probeBundle(env: CredentialToolEnv): ToolBundle {
       // request is shaped, which is exactly the fail-closed the negative case
       // asserts.
       const credentials = env.capabilities.resolve("credentials");
-      const mediated = await credentials.resolve(CREDENTIAL_HANDLE);
+      const mediated = await credentials.resolve(handle);
       if (mediated.kind !== "http") {
         throw new Error(
           `credential-probe expected an http mediated credential, got ${mediated.kind}`,
@@ -116,7 +117,7 @@ function probeBundle(env: CredentialToolEnv): ToolBundle {
         content: `probe fetched ${requestPath} -> ${response.status}`,
       };
     },
-  };
+  });
 }
 
 /**
@@ -128,7 +129,7 @@ export const credentialProbe = defineTool<CredentialToolEnv>({
   id: BUNDLE_ID,
   requires: ["capabilities"],
   definitions: [{ name: "probe" }],
-  factory: probeBundle,
+  factory: probeBundle(CREDENTIAL_HANDLE),
 });
 
 /**
@@ -141,5 +142,18 @@ export const declaredCredentialProbe = defineTool<CredentialToolEnv>({
   requires: ["capabilities"],
   definitions: [{ name: "probe" }],
   credentials: [{ handle: CREDENTIAL_HANDLE }],
-  factory: probeBundle,
+  factory: probeBundle(CREDENTIAL_HANDLE),
+});
+
+/**
+ * The probe as a tool that declares the reserved hub handle. Deploy binds the
+ * handle to the run's hub token with no authored binding, so the probe's
+ * fetch goes to the hub REST API as the run.
+ */
+export const hubProbe = defineTool<CredentialToolEnv>({
+  id: BUNDLE_ID,
+  requires: ["capabilities"],
+  definitions: [{ name: "probe" }],
+  credentials: [{ handle: HUB_CREDENTIAL_HANDLE }],
+  factory: probeBundle(HUB_CREDENTIAL_HANDLE),
 });

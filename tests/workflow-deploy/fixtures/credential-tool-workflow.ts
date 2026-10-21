@@ -17,6 +17,8 @@
 
 import path from "node:path";
 
+import type { GrantRequirement } from "@intx/types";
+
 import { BUNDLE_ID } from "./credential-tool-bundle";
 
 // Absolute path to the sibling tool module, so the bundled entry resolves it
@@ -73,6 +75,13 @@ export type CredentialToolWorkflowFixtureParams = {
    * or declares nothing (`credentialProbe`). Defaults to declaring nothing.
    */
   declareCredential?: boolean;
+  /**
+   * Carry `hubProbe`, which declares the reserved hub handle, in place of the
+   * other probes. A workflow that sets it declares no binding.
+   */
+  hubProbe?: boolean;
+  /** The workflow's grant requirements; none when omitted. */
+  grantRequirements?: readonly GrantRequirement[];
 };
 
 export function credentialToolWorkflowEntry(
@@ -82,10 +91,25 @@ export function credentialToolWorkflowEntry(
   const agentId = params.agentId ?? "credential-tool-workflow-agent";
   const workflowId = params.workflowId ?? "wf_credential_tool_workflow";
   const binding = params.binding;
+  if (
+    params.hubProbe === true &&
+    (params.declareCredential === true || binding !== undefined)
+  ) {
+    throw new Error(
+      "credentialToolWorkflowEntry: hubProbe takes no binding and no declareCredential",
+    );
+  }
   const probeExport =
-    params.declareCredential === true
-      ? "declaredCredentialProbe"
-      : "credentialProbe";
+    params.hubProbe === true
+      ? "hubProbe"
+      : params.declareCredential === true
+        ? "declaredCredentialProbe"
+        : "credentialProbe";
+  const requirementsField =
+    params.grantRequirements === undefined
+      ? ""
+      : `
+  grantRequirements: ${JSON.stringify(params.grantRequirements)},`;
   const credentialBindingsField =
     binding === undefined
       ? ""
@@ -116,7 +140,7 @@ const agent = defineAgent({
 
 export const workflow = defineWorkflow({
   id: ${JSON.stringify(workflowId)},
-  trigger: { type: "mail", to: ${JSON.stringify(params.address)} },${credentialBindingsField}
+  trigger: { type: "mail", to: ${JSON.stringify(params.address)} },${credentialBindingsField}${requirementsField}
   steps: {
     [${JSON.stringify(stepId)}]: step({ agent }),
   },

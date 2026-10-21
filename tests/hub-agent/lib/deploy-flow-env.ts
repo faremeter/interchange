@@ -806,6 +806,7 @@ export async function startHub(
   opts: {
     registerSignalCorrelation?: SidecarLookups["registerSignalCorrelation"];
     materializeMailTriggeredRunGrants?: SidecarLookups["materializeMailTriggeredRunGrants"];
+    loadRunCredentials?: SidecarLookups["loadRunCredentials"];
     senderKeyResolution?: {
       db: DBExecutor;
       principalKeyStore: PrincipalKeyStore;
@@ -1010,6 +1011,12 @@ export async function startHub(
             materializeMailTriggeredRunGrants:
               opts.materializeMailTriggeredRunGrants,
           }
+        : {}),
+      // Only the hub-access test supplies it (the real loader over a test
+      // DB); every other test leaves it unset, so no run.grants frame
+      // carries a credential delivery.
+      ...(opts.loadRunCredentials !== undefined
+        ? { loadRunCredentials: opts.loadRunCredentials }
         : {}),
       // Resolve a signed mail sender's durable public key so the materializer
       // path co-delivers it on the recipient run's grants barrier, exactly as
@@ -1587,6 +1594,13 @@ export type StartDeployFlowEnvOpts = {
    */
   materializeMailTriggeredRunGrants?: SidecarLookups["materializeMailTriggeredRunGrants"];
   /**
+   * Loader for a run's hub credential delivery, wired into the mock hub's
+   * sidecar router as the `loadRunCredentials` lookup. The router attaches
+   * the delivery to each run.grants frame it sends, so a consumer that
+   * declares the reserved hub handle can call the hub REST API as the run.
+   */
+  loadRunCredentials?: SidecarLookups["loadRunCredentials"];
+  /**
    * A db + principal key store the mock hub uses to resolve a signed mail
    * sender's durable public key, wired into the sidecar router as the
    * `resolveSenderKey` / `resolveSenderKeyStrict` lookups exactly as production
@@ -1628,6 +1642,9 @@ export async function startDeployFlowEnv(
           materializeMailTriggeredRunGrants:
             opts.materializeMailTriggeredRunGrants,
         }
+      : {}),
+    ...(opts.loadRunCredentials !== undefined
+      ? { loadRunCredentials: opts.loadRunCredentials }
       : {}),
     ...(opts.senderKeyResolution !== undefined
       ? { senderKeyResolution: opts.senderKeyResolution }
