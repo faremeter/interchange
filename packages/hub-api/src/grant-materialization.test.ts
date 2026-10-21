@@ -41,7 +41,6 @@ describe("resolveGrantMaterialization", () => {
       grantRequirements: [
         { resource: "wallet:w1", action: "spend", source: "creator" },
       ],
-      adHocInvokerGrants: [],
       invokerGrants: [],
       creatorGrants: [
         grant({ resource: "wallet:w1", action: "spend", origin: "creator" }),
@@ -67,7 +66,6 @@ describe("resolveGrantMaterialization", () => {
       grantRequirements: [
         { resource: "wallet:w1", action: "spend", source: "invoker" },
       ],
-      adHocInvokerGrants: [],
       invokerGrants: [
         grant({ resource: "wallet:w1", action: "spend", origin: "role" }),
       ],
@@ -87,7 +85,6 @@ describe("resolveGrantMaterialization", () => {
       grantRequirements: [
         { resource: "wallet:w1", action: "spend", source: "invoker" },
       ],
-      adHocInvokerGrants: [],
       invokerGrants: [
         grant({ resource: "wallet:w1", action: "spend", origin: "invoker" }),
       ],
@@ -108,7 +105,6 @@ describe("resolveGrantMaterialization", () => {
       grantRequirements: [
         { resource: "wallet:w1", action: "spend", source: "creator" },
       ],
-      adHocInvokerGrants: [],
       invokerGrants: [],
       creatorGrants: [],
     });
@@ -128,7 +124,6 @@ describe("resolveGrantMaterialization", () => {
         // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- deliberately bypass the validated type to reach the defensive unknown-source branch
         { resource: "x", action: "y", source: "bogus" as unknown as "creator" },
       ],
-      adHocInvokerGrants: [],
       invokerGrants: [],
       creatorGrants: [],
     });
@@ -138,40 +133,6 @@ describe("resolveGrantMaterialization", () => {
       status: 409,
       code: "not_launchable",
       message: "Unknown grant requirement source: bogus",
-    });
-  });
-
-  test("ad-hoc invoker grants resolve against delegatable invoker grants, origin invoker + TTL", async () => {
-    const res = await resolveGrantMaterialization({
-      ...base,
-      grantRequirements: [],
-      adHocInvokerGrants: [{ resource: "wallet:w1", action: "spend" }],
-      invokerGrants: [
-        grant({ resource: "wallet:w1", action: "spend", origin: "system" }),
-      ],
-      creatorGrants: [],
-    });
-    expect(res.ok).toBe(true);
-    if (!res.ok) return;
-    const r = first(res.grantRows);
-    expect(r.origin).toBe("invoker");
-    expect(r.expiresAt).toEqual(new Date(NOW.getTime() + INVOKER_GRANT_TTL_MS));
-  });
-
-  test("ad-hoc invoker grant lacking authority => 403", async () => {
-    const res = await resolveGrantMaterialization({
-      ...base,
-      grantRequirements: [],
-      adHocInvokerGrants: [{ resource: "wallet:w9", action: "spend" }],
-      invokerGrants: [],
-      creatorGrants: [],
-    });
-    expect(res.ok).toBe(false);
-    if (res.ok) return;
-    expect(res.rejection).toEqual({
-      status: 403,
-      code: "insufficient_grants",
-      message: "Invoker lacks authority for wallet:w9/spend",
     });
   });
 
@@ -186,7 +147,6 @@ describe("resolveGrantMaterialization", () => {
           effect: "deny",
         },
       ],
-      adHocInvokerGrants: [],
       invokerGrants: [],
       // creator holds an allow that authorizes delegation; the materialized
       // row still carries the requirement's own effect (deny).
@@ -207,7 +167,6 @@ describe("resolveGrantMaterialization", () => {
         { resource: "wallet:w1", action: "spend", source: "creator" },
         { resource: "wallet:w2", action: "spend", source: "creator" },
       ],
-      adHocInvokerGrants: [],
       invokerGrants: [],
       creatorGrants: [
         grant({ resource: "wallet:w2", action: "spend", origin: "creator" }),
@@ -220,14 +179,13 @@ describe("resolveGrantMaterialization", () => {
     );
   });
 
-  test("requirements resolve in order, then ad-hoc grants appended", async () => {
+  test("requirements resolve in order", async () => {
     const res = await resolveGrantMaterialization({
       ...base,
       grantRequirements: [
         { resource: "wallet:w1", action: "spend", source: "creator" },
         { resource: "wallet:w2", action: "read", source: "invoker" },
       ],
-      adHocInvokerGrants: [{ resource: "wallet:w3", action: "read" }],
       invokerGrants: [
         grant({ resource: "wallet:*", action: "*", origin: "role" }),
       ],
@@ -240,7 +198,6 @@ describe("resolveGrantMaterialization", () => {
     expect(res.grantRows.map((r) => [r.resource, r.origin])).toEqual([
       ["wallet:w1", "creator"],
       ["wallet:w2", "invoker"],
-      ["wallet:w3", "invoker"],
     ]);
   });
 });

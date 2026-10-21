@@ -616,9 +616,10 @@ async function prepareSourceRefDeploy(
   // Resolve the operator-approved credential bindings into delivered material.
   // Tenant-owned resolution keys off the definition's tenant and walks up the
   // hierarchy; it does not consult creator/invoker (the only locator today is
-  // `tenant`). A code-sourced deployment has no single authenticated invoker,
-  // so invoker is null; when principal-owned locators arrive, the asset creator
-  // must be resolved and passed here. A resolution failure is fail-closed.
+  // `tenant`), so creator and invoker are null. When principal-owned locators
+  // arrive, pass the asset creator and the invoker of record, which is the
+  // deployer; this path records no deployer, so it would have to start. A
+  // resolution failure is fail-closed.
   const bindings = projection.credentialBindings ?? [];
   let credentials: CredentialDelivery | undefined;
   if (bindings.length > 0) {

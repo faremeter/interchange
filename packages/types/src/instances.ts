@@ -1,5 +1,4 @@
 import { type } from "arktype";
-import { InvokerModelPreferences } from "./catalog";
 import { grantEffects } from "./grants";
 import { ApprovalResponse } from "./approvals";
 
@@ -15,23 +14,6 @@ export const workflowRunStatuses = [
 export type WorkflowRunStatus = (typeof workflowRunStatuses)[number];
 
 const WorkflowRunStatusType = type.enumerated(...workflowRunStatuses);
-
-export const CreateWorkflowRun = type({
-  definitionId: "string",
-  "modelPreferences?": InvokerModelPreferences.describe(
-    "The invoker's per-model provider preferences for this launch. Applied over the tenant-visible providers after the definition's preferences; it can only reorder or restrict, never introduce a provider the tenant catalog lacks. Persisted on the run so re-resolution reuses it.",
-  ),
-  "invokerGrants?": type({
-    resource: "string",
-    action: "string",
-    "effect?": Effect,
-    "conditions?": "Record<string, unknown> | null",
-  })
-    .array()
-    .describe(
-      "Capabilities the invoker is willing to delegate to the run, resolved against the invoker's own authority at launch. These are materialized as grants on the run principal in addition to any grants from the definition's own requirements.",
-    ),
-});
 
 export const WorkflowRunResponse = type({
   id: "string",

@@ -661,9 +661,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
     });
 
-    describe("invoker authority of the mail sender", () => {
-      // An invoker-sourced requirement the run can only meet through its
-      // sender's grants.
+    describe("invoker authority is the deployer's, not the mail sender's", () => {
+      // An invoker-sourced requirement, which resolves against the
+      // deployment's deployer whoever sends the mail.
       const invokerSnapshot: GrantWalkSnapshot = {
         perStep: [
           {
@@ -707,17 +707,26 @@ describe.skipIf(!harnessDbEnvAvailable())(
         return rows.filter((row) => row.origin === "invoker");
       }
 
-      test("a same-tenant sender's grants satisfy an invoker requirement", async () => {
-        await seedSender("prn_insider", TENANT);
+      const insider = {
+        senderPrincipalId: "prn_insider",
+        senderCoordinates: [
+          { coordType: "principal" as const, id: "prn_insider" },
+          { coordType: "tenant" as const, id: TENANT },
+        ],
+      };
+
+      test("the deployer's grants satisfy an invoker requirement the sender cannot", async () => {
+        // The deployer (the creator here) holds `secret:vault`; the sender
+        // holds nothing.
+        await seedPrincipal(h.db, {
+          id: "prn_insider",
+          tenantId: TENANT,
+          kind: "user",
+          refId: "prn_insider-user",
+        });
         await seedFrozenSnapshot(invokerSnapshot);
 
-        const result = await materializeOnce(RUN_ID, {
-          senderPrincipalId: "prn_insider",
-          senderCoordinates: [
-            { coordType: "principal", id: "prn_insider" },
-            { coordType: "tenant", id: TENANT },
-          ],
-        });
+        const result = await materializeOnce(RUN_ID, insider);
 
         expect(result.outcome).toBe("materialized");
         const rows = await invokerRows();
@@ -725,21 +734,22 @@ describe.skipIf(!harnessDbEnvAvailable())(
         expect(rows[0]?.tenantId).toBe(TENANT);
       });
 
-      test("a cross-tenant sender's home-tenant grants do not satisfy it", async () => {
-        // The sender holds `*` in its OWN tenant only. `mail.accept:invoker`
-        // admits it, but invoker authority is collected in the run's tenant,
-        // where the sender holds nothing.
-        await seedTenants(h.db, [{ id: "tnt_other" }]);
-        await seedSender("prn_outsider", "tnt_other");
-        await seedFrozenSnapshot(invokerSnapshot);
-
-        const result = await materializeOnce(RUN_ID, {
-          senderPrincipalId: "prn_outsider",
-          senderCoordinates: [
-            { coordType: "principal", id: "prn_outsider" },
-            { coordType: "tenant", id: "tnt_other" },
-          ],
+      test("a sender's grants do not satisfy an invoker requirement the deployer lacks", async () => {
+        // The sender holds `*`; the deployer holds nothing.
+        await seedSender("prn_insider", TENANT);
+        await seedPrincipal(h.db, {
+          id: "prn_bare_deployer",
+          tenantId: TENANT,
+          kind: "user",
+          refId: "prn_bare_deployer-user",
         });
+        await seedWorkflowRunLaunchSpec(h.db, {
+          anchorRunId: DEPLOYMENT,
+          sourceAuthorityPrincipalId: "prn_bare_deployer",
+          grantSnapshot: invokerSnapshot,
+        });
+
+        const result = await materializeOnce(RUN_ID, insider);
 
         expect(result.outcome).toBe("rejected");
         if (result.outcome === "rejected") {
