@@ -4,6 +4,8 @@ import {
   CreateGrant,
   grantRequirementSources,
   GrantRequirement,
+  misplacesSelfRunResource,
+  SELF_RUN_RESOURCE,
 } from "./grants";
 
 // ---------------------------------------------------------------------------
@@ -39,6 +41,15 @@ describe("GrantRequirement validator", () => {
       });
       expect(result instanceof type.errors).toBe(false);
     }
+  });
+
+  test("accepts the run's own resource", () => {
+    const result = GrantRequirement({
+      resource: SELF_RUN_RESOURCE,
+      action: "read",
+      source: "invoker",
+    });
+    expect(result instanceof type.errors).toBe(false);
   });
 
   test("rejects an unknown source", () => {
@@ -176,5 +187,25 @@ describe("CreateGrant target validation", () => {
       CreateGrant({ ...base, roleId: null, principalId: null }) instanceof
         type.errors,
     ).toBe(true);
+  });
+});
+
+describe("misplacesSelfRunResource", () => {
+  test("allows the run's own resource and resources without self", () => {
+    expect(misplacesSelfRunResource(SELF_RUN_RESOURCE)).toBe(false);
+    expect(misplacesSelfRunResource("workflow-run:*")).toBe(false);
+    expect(misplacesSelfRunResource("tool:selfie")).toBe(false);
+  });
+
+  test("flags self anywhere else, ignoring case and whitespace", () => {
+    for (const resource of [
+      "agent:self",
+      "workflow-run:self:events",
+      "self",
+      "workflow-run:SELF",
+      "workflow-run:self ",
+    ]) {
+      expect(misplacesSelfRunResource(resource)).toBe(true);
+    }
   });
 });

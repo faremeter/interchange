@@ -381,6 +381,7 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
       const staged = await stageRunGrantsFromSnapshot({
         snapshot,
         tenantId: tenant.id,
+        runId,
         runPrincipalId,
         now,
         // The calling principal is the run's invoker; the asset behind the

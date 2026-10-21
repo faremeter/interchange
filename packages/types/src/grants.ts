@@ -103,6 +103,15 @@ export const EvaluateResult = type({
   ),
 });
 
+/**
+ * The resource a grant requirement uses to name the run it is materialized
+ * for. Launch replaces it with that run's own `workflow-run:<runId>`, the
+ * top-level run, which child bodies share. It lets a run hold a grant on
+ * itself without a `workflow-run:*` grant on every run in the tenant. The
+ * delegator still needs authority over the concrete run id.
+ */
+export const SELF_RUN_RESOURCE = "workflow-run:self";
+
 export const GrantRequirement = type({
   resource: "string",
   action: "string",
@@ -115,6 +124,19 @@ export const GrantRequirement = type({
   "conditions?": "Record<string, unknown> | null",
 });
 export type GrantRequirement = typeof GrantRequirement.infer;
+
+/**
+ * Whether a requirement's resource uses `self` anywhere but the whole
+ * `SELF_RUN_RESOURCE`. Launch binds only that exact resource, so `self`
+ * elsewhere would be stored literally and match nothing. The comparison
+ * ignores case and surrounding whitespace, so a near miss is caught too.
+ */
+export function misplacesSelfRunResource(resource: string): boolean {
+  if (resource === SELF_RUN_RESOURCE) return false;
+  return resource
+    .split(":")
+    .some((part) => part.trim().toLowerCase() === "self");
+}
 
 export const ApprovalItem = type("string").or(GrantRequirement);
 
