@@ -53,7 +53,11 @@ import {
 
 import { eq } from "drizzle-orm";
 
-import { createGrantStore, createPrincipalKeyStore } from "@intx/db";
+import {
+  createGrantStore,
+  createPrincipalKeyStore,
+  createRunTokenStore,
+} from "@intx/db";
 import { createTestCredentialCipher } from "@intx/test-harness/crypto";
 import {
   tenant as tenantTable,
@@ -174,6 +178,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const materializer = createMailTriggeredRunGrantsMaterializer({
         db: h.db,
         principalKeyStore,
+        runTokenStore: createRunTokenStore({
+          db: h.db,
+          cipher: createTestCredentialCipher(),
+        }),
         grantStore: createGrantStore(h.db),
       });
       env = await startDeployFlowEnv({

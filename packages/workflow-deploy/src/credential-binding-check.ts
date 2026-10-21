@@ -26,6 +26,8 @@
 
 import { type } from "arktype";
 import type { CredentialBinding } from "@intx/types";
+import { HUB_CREDENTIAL_HANDLE } from "@intx/types/credential-delivery";
+import { actionConsumer, toolConsumer } from "@intx/authz";
 import type { WorkflowProjectionDefinition } from "@intx/types/sidecar";
 import {
   EXECUTABLE_STEP_DESCENT,
@@ -85,6 +87,12 @@ export type CredentialBindingViolation =
       readonly handle: string;
     }
   | {
+      /** An authored binding names the reserved hub handle. */
+      readonly kind: "reserved_handle_binding";
+      readonly consumer: string;
+      readonly handle: string;
+    }
+  | {
       /** Two root bindings name the same consumer and handle. */
       readonly kind: "duplicate_binding";
       readonly consumer: string;
@@ -116,8 +124,11 @@ export function checkCredentialBindings(
   const bindings: readonly CredentialBinding[] =
     projection.credentialBindings ?? [];
 
+  // Deploy binds the reserved hub handle itself, so a declaration of it needs
+  // no authored binding.
   for (const [handler, handles] of declaredByHandler) {
     for (const handle of handles) {
+      if (handle === HUB_CREDENTIAL_HANDLE) continue;
       const bound = bindings.some(
         (binding) => binding.action === handler && binding.handle === handle,
       );
@@ -129,6 +140,7 @@ export function checkCredentialBindings(
 
   for (const [factory, handles] of declaredByFactory) {
     for (const handle of handles) {
+      if (handle === HUB_CREDENTIAL_HANDLE) continue;
       const bound = bindings.some(
         (binding) => binding.package === factory && binding.handle === handle,
       );
@@ -145,6 +157,14 @@ export function checkCredentialBindings(
   const seen = new Set<string>();
   for (const binding of bindings) {
     const consumer = bindingConsumerLabel(binding);
+    if (binding.handle === HUB_CREDENTIAL_HANDLE) {
+      violations.push({
+        kind: "reserved_handle_binding",
+        consumer,
+        handle: binding.handle,
+      });
+      continue;
+    }
     const key = `${consumer}\u0000${binding.handle}`;
     if (seen.has(key)) {
       violations.push({
@@ -191,6 +211,29 @@ export function checkCredentialBindings(
   }
 
   return violations;
+}
+
+/**
+ * The consumers that declare the reserved hub handle anywhere in the workflow
+ * -- the root and every nested body, which all run as the one run principal
+ * -- as `tool:<package>` and `action:<handler>`, sorted and without repeats. Each
+ * gets a run token for the hub REST API when the run principal is created.
+ */
+export function collectHubConsumers(
+  projection: WorkflowProjectionDefinition,
+): readonly string[] {
+  const { declaredByFactory, declaredByHandler } =
+    collectDeclarations(projection);
+  const consumers = new Set<string>();
+  for (const [factory, handles] of declaredByFactory) {
+    if (handles.has(HUB_CREDENTIAL_HANDLE))
+      consumers.add(toolConsumer(factory));
+  }
+  for (const [handler, handles] of declaredByHandler) {
+    if (handles.has(HUB_CREDENTIAL_HANDLE))
+      consumers.add(actionConsumer(handler));
+  }
+  return [...consumers].sort();
 }
 
 type Declarations = {
@@ -282,6 +325,8 @@ export function describeCredentialBindingViolation(
       return `the binding for handle "${violation.handle}" names action handler ${violation.action}, which no action step that declares credentials runs`;
     case "undeclared_binding_handle":
       return `the binding for handle "${violation.handle}" names action handler ${violation.action}, which does not declare that handle`;
+    case "reserved_handle_binding":
+      return `the binding for ${violation.consumer} names the reserved handle "${violation.handle}"; remove it, because deploy binds that handle itself`;
     case "duplicate_binding":
       return `two bindings name ${violation.consumer} and handle "${violation.handle}"`;
     default: {

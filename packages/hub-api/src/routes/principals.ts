@@ -5,6 +5,7 @@ import { describeRoute, validator } from "hono-openapi";
 import { principal, principalRole, role, user } from "@intx/db/schema";
 import {
   createPrincipalStore,
+  deleteRunTokensForPrincipals,
   isReferencedRowViolation,
   parsePrincipalRow,
 } from "@intx/db";
@@ -277,16 +278,24 @@ export function createPrincipalRoutes({
       const principalId = c.req.param("principalId");
       const body = c.req.valid("json");
 
-      const [updated] = await db
-        .update(principal)
-        .set({ status: body.status, updatedAt: new Date() })
-        .where(
-          and(
-            eq(principal.id, principalId),
-            eq(principal.tenantId, tenantCtx.id),
-          ),
-        )
-        .returning();
+      // Deactivating a principal also deletes its run tokens, in the same
+      // transaction, so reactivating it cannot bring a token back.
+      const updated = await db.transaction(async (tx) => {
+        const [row] = await tx
+          .update(principal)
+          .set({ status: body.status, updatedAt: new Date() })
+          .where(
+            and(
+              eq(principal.id, principalId),
+              eq(principal.tenantId, tenantCtx.id),
+            ),
+          )
+          .returning();
+        if (row !== undefined && body.status === "deactivated") {
+          await deleteRunTokensForPrincipals(tx, [row.id]);
+        }
+        return row;
+      });
 
       if (!updated) {
         return errorResponse(c, "not_found", "Principal not found");

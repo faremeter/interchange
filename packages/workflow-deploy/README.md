@@ -113,9 +113,13 @@ Public surface:
   in a frozen inert projection that cannot be delivered: a declared action
   or tool handle with no root binding, `credentialBindings` on a nested body,
   a binding whose tool factory or action handler the workflow does not run, a
-  binding for a handle the handler or tool does not declare, and a duplicate
-  binding.
+  binding for a handle the handler or tool does not declare, a binding for the
+  reserved hub handle `interchange.hub`, and a duplicate binding.
   The hub's probe gate refuses a definition with any of these.
+- `collectHubConsumers(projection)` — the consumers that declare the reserved
+  hub handle anywhere in a frozen inert projection, as `tool:<package>` and
+  `action:<handler>`. Each gets a run token for the hub REST API when the run
+  principal is created.
 - `inertNestedBodies(step, descent)` — the nested body projections one step of
   a frozen inert projection carries, filtered by a `StepWalkDescent`. This is
   the inert counterpart of `@intx/workflow`'s live `nestedWorkflowBodies`, so

@@ -51,6 +51,7 @@ import type {
 import {
   buildInertProjectionStepSources,
   collectAgentBearingStepIds,
+  collectHubConsumers,
   deriveRunAddress,
   WorkflowDefinitionInvalidError,
   type DeployContent as OrchestratorDeployContent,
@@ -569,7 +570,11 @@ function isAssetDeployArgs(
  */
 async function prepareSourceRefDeploy(
   args: DeployCodeSourcedWorkflowArgs,
-): Promise<{ definitionId: string; sendArgs: SendMultiStepDeployFrameArgs }> {
+): Promise<{
+  definitionId: string;
+  sendArgs: SendMultiStepDeployFrameArgs;
+  hubConsumers: readonly string[];
+}> {
   const { approval, projection, closure } = args.approved;
   if (!approval.ok) {
     throw new Error(
@@ -784,7 +789,11 @@ async function prepareSourceRefDeploy(
     ...(assets.length > 0 ? { assets } : {}),
   };
 
-  return { definitionId: approval.definitionId, sendArgs };
+  return {
+    definitionId: approval.definitionId,
+    sendArgs,
+    hubConsumers: collectHubConsumers(projection),
+  };
 }
 
 /**
@@ -799,14 +808,27 @@ async function prepareSourceRefDeploy(
  * prepare and emit, so it drives `prepareSourceRefDeploy` and
  * `sendMultiStepDeployFrame` directly.
  */
-// The non-secret projection of a delivery, persisted on the anchor run so the
-// reconnect resync can re-resolve current materials. Secrets never land here.
-function credentialRefsFromDelivery(
-  delivery: CredentialDelivery,
-): WorkflowRunCredentialRefs {
+// The non-secret projection of a delivery and the hub consumers, persisted on
+// the anchor run so the reconnect resync can re-resolve current materials and
+// the first trigger can mint the hub tokens. Secrets never land here.
+function credentialRefsField(
+  delivery: CredentialDelivery | undefined,
+  hubConsumers: readonly string[],
+): { credentialRefs?: WorkflowRunCredentialRefs } {
+  const credentialRefs = credentialRefsFor(delivery, hubConsumers);
+  return credentialRefs === undefined ? {} : { credentialRefs };
+}
+
+function credentialRefsFor(
+  delivery: CredentialDelivery | undefined,
+  hubConsumers: readonly string[],
+): WorkflowRunCredentialRefs | undefined {
+  if (delivery === undefined && hubConsumers.length === 0) return undefined;
   return {
-    credentialIds: delivery.materials.map((material) => material.credentialId),
-    bindings: delivery.bindings,
+    credentialIds:
+      delivery?.materials.map((material) => material.credentialId) ?? [],
+    bindings: delivery?.bindings ?? [],
+    ...(hubConsumers.length > 0 ? { hubConsumers: [...hubConsumers] } : {}),
   };
 }
 
@@ -824,7 +846,8 @@ async function emitSourceRefDeployFrame(
 }> {
   const { signal, leaseId } = reconciliation;
   signal.throwIfAborted();
-  const { definitionId, sendArgs } = await prepareSourceRefDeploy(args);
+  const { definitionId, sendArgs, hubConsumers } =
+    await prepareSourceRefDeploy(args);
   signal.throwIfAborted();
   const allocationStore = createSidecarAllocationStore(args.db);
   const initialization = {
@@ -852,9 +875,7 @@ async function emitSourceRefDeployFrame(
     return {
       publicKey: result.publicKey,
       definitionId,
-      ...(sendArgs.credentials !== undefined
-        ? { credentialRefs: credentialRefsFromDelivery(sendArgs.credentials) }
-        : {}),
+      ...credentialRefsField(sendArgs.credentials, hubConsumers),
     };
   } catch (cause) {
     if (cause instanceof DeploymentRejectedError && reserved) {
@@ -936,7 +957,8 @@ async function emitSourceRefDeployFrame(
 export async function deployCodeSourcedWorkflow(
   args: DeployCodeSourcedWorkflowArgs,
 ): Promise<{ publicKey: string }> {
-  const { definitionId, sendArgs } = await prepareSourceRefDeploy(args);
+  const { definitionId, sendArgs, hubConsumers } =
+    await prepareSourceRefDeploy(args);
 
   // INSERT the anchor before the frame. A collision or DB error here spawned
   // nothing (no frame went out), so it is a clean, non-leaking failure.
@@ -952,9 +974,7 @@ export async function deployCodeSourcedWorkflow(
       createdAt: new Date(),
       // Persist the non-secret shape of the delivery so the reconnect resync
       // can re-resolve current materials for these ids. Secrets never land here.
-      ...(sendArgs.credentials !== undefined
-        ? { credentialRefs: credentialRefsFromDelivery(sendArgs.credentials) }
-        : {}),
+      ...credentialRefsField(sendArgs.credentials, hubConsumers),
     });
   } catch (cause) {
     throw new SessionLaunchError("start", cause, false);

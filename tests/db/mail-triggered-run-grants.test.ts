@@ -12,6 +12,7 @@ import { eq, sql } from "drizzle-orm";
 import {
   createGrantStore,
   createPrincipalKeyStore,
+  createRunTokenStore,
   resolveSenderPrincipal,
 } from "@intx/db";
 import {
@@ -172,6 +173,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
           db: h.db,
           cipher: createTestCredentialCipher(),
         }),
+        runTokenStore: createRunTokenStore({
+          db: h.db,
+          cipher: createTestCredentialCipher(),
+        }),
         grantStore: createGrantStore(h.db),
       });
       return materialize({ agentAddress: WORKFLOW_ADDRESS, runId, ...sender });
@@ -218,6 +223,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const materialize = createMailTriggeredRunGrantsMaterializer({
         db: h.db,
         principalKeyStore: createPrincipalKeyStore({
+          db: h.db,
+          cipher: createTestCredentialCipher(),
+        }),
+        runTokenStore: createRunTokenStore({
           db: h.db,
           cipher: createTestCredentialCipher(),
         }),
@@ -796,6 +805,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
           },
         };
         const materialize = createMailTriggeredRunGrantsMaterializer({
+          runTokenStore: createRunTokenStore({
+            db: h.db,
+            cipher: createTestCredentialCipher(),
+          }),
           db: h.db,
           principalKeyStore: createPrincipalKeyStore({
             db: h.db,
@@ -1548,6 +1561,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
         function materializer() {
           return createMailTriggeredRunGrantsMaterializer({
+            runTokenStore: createRunTokenStore({
+              db: h.db,
+              cipher: createTestCredentialCipher(),
+            }),
             db: h.db,
             principalKeyStore: keyStore(),
             grantStore: createGrantStore(h.db),

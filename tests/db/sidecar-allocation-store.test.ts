@@ -37,6 +37,7 @@ import {
   workflowDefinition,
   workflowPendingProjection,
   workflowRun,
+  runToken,
 } from "@intx/db/schema";
 import {
   createTestDb,
@@ -48,6 +49,7 @@ import {
   seedPrincipal,
   seedTenants,
   seedWorkflowRun,
+  seedRunToken,
 } from "@intx/test-harness/seed";
 
 const TENANT_ID = "tnt-allocation";
@@ -5481,6 +5483,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         definitionId: DEFINITION_ID,
         principalId: "prn-terminal-run",
       });
+      await seedRunToken(h.db, {
+        id: "rtk_terminal_run",
+        principalId: "prn-terminal-run",
+      });
       const store = createSidecarAllocationStore(h.db);
       const dispatchStore = createWorkflowRunDispatchStore(h.db);
       await dispatchStore.enqueue({
@@ -5574,6 +5580,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           columns: { status: true },
         }),
       ).toEqual({ status: "deactivated" });
+      expect(await h.db.select().from(runToken)).toEqual([]);
       expect(await dispatchStore.findById("dispatch-terminal")).toMatchObject({
         status: "abandoned",
         failureCode: "quota_disabled",

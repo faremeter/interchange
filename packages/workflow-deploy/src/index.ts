@@ -43,6 +43,7 @@ export {
 } from "./capability-approval";
 export {
   checkCredentialBindings,
+  collectHubConsumers,
   describeCredentialBindingViolation,
   type CredentialBindingViolation,
 } from "./credential-binding-check";

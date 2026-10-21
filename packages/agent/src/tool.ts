@@ -264,7 +264,8 @@ export type AnnotatedToolFactory<EnvReq extends BaseEnv = BaseEnv> =
  *   - `credentials` declares the credential handles the factory's tools
  *     resolve. Handles follow the package-manifest grammar and are unique;
  *     an invalid list throws. Deploy refuses a declared handle that no
- *     binding names for this factory.
+ *     binding names for this factory, except the reserved hub handle
+ *     `interchange.hub`, which deploy binds itself.
  *   - `factory(env)` returns a `ToolBundle`. Invoked once per agent
  *     instantiation; the bundle's lifetime is tied to that agent.
  *

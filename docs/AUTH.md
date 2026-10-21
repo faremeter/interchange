@@ -98,6 +98,8 @@ Request to /api/tenants/:tenantId/... with Authorization: Bearer itx_run_...
 
 A request with no run token, or with a git token, takes the session flow above unchanged.
 
+A consumer opts into hub access by declaring the reserved credential handle `interchange.hub` (`HUB_CREDENTIAL_HANDLE`): a tool in `defineTool({ credentials })`, an action handler in `action({ credentials })`. Deploy records the declaring consumers on the deployment's anchor run, across the root and every nested body. When the hub creates the run principal, in the same transaction, it mints one token for each of them and stamps a `credential:hub:<consumer>` / `use` grant scoped to that consumer by a `{ tool }` condition. Every path that deactivates a run principal -- run termination, a stop or cancel, a terminal capacity failure, and `PATCH /principals/:principalId` -- deletes its tokens in the same transaction.
+
 The token's consumer goes into authorization. A grant with a `{ "tool": "<consumer>" }` condition, allow or deny, applies only to requests from that consumer. A session or git token has no consumer, so such a grant never matches it. `POST /api/tenants/:tenantId/principals/:principalId/evaluate` accepts an optional `consumer` to show the decision a consumer's token gets.
 
 The allow-list (`RUN_TOKEN_ROUTES` in `@intx/hub-api`) limits a run token to reading runs, deployments, definitions and assets, deploying, signaling and stopping runs. Every other route refuses a run token whatever grants the run holds. A run therefore cannot resolve approvals, change grants, roles, principals, credentials, OAuth clients, tokens or federation trusts, send REST mail, or manage the tenant.

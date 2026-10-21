@@ -17,6 +17,7 @@ import {
 
 import {
   checkCredentialBindings,
+  collectHubConsumers,
   describeCredentialBindingViolation,
 } from "./credential-binding-check";
 
@@ -539,6 +540,77 @@ describe("declared tool handles in nested positions", () => {
         package: TOOL_ID,
         handle: "legacy",
       },
+    ]);
+  });
+});
+
+describe("the reserved hub handle", () => {
+  const HUB = "interchange.hub";
+
+  function project(steps: WorkflowDefinition["steps"]) {
+    return WorkflowProjectionDefinition.assert(
+      projectLiveToInert(
+        defineWorkflow({
+          id: "wf",
+          trigger: { type: "mail", to: "wf@acme.test" },
+          steps,
+        }),
+      ),
+    );
+  }
+
+  test("a tool or action declaring it needs no binding", () => {
+    expect(
+      check(
+        {
+          work: agentStep([TOOL_ID], [HUB]),
+          push: action({
+            handler: "push",
+            credentials: [HUB],
+            effect: { requires: ["call"] },
+          }),
+        },
+        [],
+      ),
+    ).toEqual([]);
+  });
+
+  test("an authored binding may not name it", () => {
+    expect(
+      check({ work: agentStep([TOOL_ID], [HUB]) }, [toolBinding(TOOL_ID, HUB)]),
+    ).toEqual([
+      {
+        kind: "reserved_handle_binding",
+        consumer: `package ${TOOL_ID}`,
+        handle: HUB,
+      },
+    ]);
+  });
+
+  test("collects every declaring consumer, nested bodies included", () => {
+    const nested = body("b", {
+      w: agentStep(["@acme/tools/nested"], [HUB]),
+      a: action({
+        handler: "nestedPush",
+        credentials: [HUB],
+        effect: { requires: ["call"] },
+      }),
+    });
+    expect(
+      collectHubConsumers(
+        project({
+          work: agentStep([TOOL_ID], [HUB]),
+          other: agentStep(["@acme/tools/plain"], ["gh"]),
+          s: onTrigger({
+            on: { type: "mail", to: "s@acme.test" },
+            body: nested,
+          }),
+        }),
+      ),
+    ).toEqual([
+      "action:nestedPush",
+      "tool:@acme/tools/github",
+      "tool:@acme/tools/nested",
     ]);
   });
 });

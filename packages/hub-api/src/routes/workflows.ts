@@ -17,6 +17,7 @@ import {
   WorkflowRunDispatchPayloadConflictError,
   type DB,
   type PrincipalKeyStore,
+  type RunTokenStore,
 } from "@intx/db";
 import type { GrantStore } from "@intx/types/authz";
 import {
@@ -200,6 +201,7 @@ async function deploymentAnchorRunExists(
 export type CreateWorkflowRoutesDeps = {
   db: DB["db"];
   principalKeyStore: PrincipalKeyStore;
+  runTokenStore: RunTokenStore;
   workflowAllocationService?: WorkflowAllocationService;
   workflowDispatchService?: WorkflowDispatchService;
   sidecarRouter: SidecarRouter;
@@ -212,6 +214,7 @@ export type CreateWorkflowRoutesDeps = {
 export function createWorkflowRoutes({
   db,
   principalKeyStore,
+  runTokenStore,
   workflowAllocationService,
   workflowDispatchService,
   sidecarRouter,
@@ -225,6 +228,7 @@ export function createWorkflowRoutes({
   const triggerWorkflowRun = createWorkflowRunTrigger({
     db,
     principalKeyStore,
+    runTokenStore,
     grantStore,
     sidecarRouter,
     ...(workflowDispatchService !== undefined

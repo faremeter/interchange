@@ -235,6 +235,7 @@ export function mountHubRoutes(
   const signalCorrelationStore =
     opts.signalCorrelationStore ?? createSignalCorrelationStore(db);
   const resolveTenant = createResolveTenant({ db });
+  const runTokenStore = createRunTokenStore({ db, cipher: credentialCipher });
 
   app.get("/status", (c) => c.json({ status: "ok" }));
 
@@ -293,7 +294,7 @@ export function mountHubRoutes(
     "/api/tenants/:tenantId/*",
     createRunTokenAuth({
       db,
-      runTokenStore: createRunTokenStore({ db, cipher: credentialCipher }),
+      runTokenStore,
     }),
   );
 
@@ -351,6 +352,7 @@ export function mountHubRoutes(
     createRunRoutes({
       db,
       principalKeyStore,
+      runTokenStore,
       sessionService,
       sidecarRouter,
       eventCollectors,
@@ -393,6 +395,7 @@ export function mountHubRoutes(
       createWorkflowRoutes({
         db,
         principalKeyStore,
+        runTokenStore,
         ...(workflowAllocationService !== undefined
           ? { workflowAllocationService }
           : {}),

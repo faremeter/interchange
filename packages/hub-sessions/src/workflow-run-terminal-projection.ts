@@ -1,6 +1,10 @@
 import { and, eq } from "drizzle-orm";
 
-import type { DBExecutor, WorkflowRunStore } from "@intx/db";
+import {
+  deleteRunTokensForPrincipals,
+  type DBExecutor,
+  type WorkflowRunStore,
+} from "@intx/db";
 import { principal, workflowRun } from "@intx/db/schema";
 
 import { getWorkflowRunEndedAt } from "./workflow-run-ended-at";
@@ -103,6 +107,7 @@ export async function projectTerminalRun(
       .where(
         and(eq(principal.id, won.principalId), eq(principal.refId, runId)),
       );
+    await deleteRunTokensForPrincipals(tx, [won.principalId]);
   }
   return "projected";
 }

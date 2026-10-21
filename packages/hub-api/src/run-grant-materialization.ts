@@ -31,9 +31,15 @@ import {
   sidecarAllocation,
   workflowDefinition,
   workflowRun,
+  hubConsumersOf,
   type WorkflowRunCredentialRefs,
 } from "@intx/db/schema";
-import type { DB, DBExecutor, PrincipalKeyStore } from "@intx/db";
+import type {
+  DB,
+  DBExecutor,
+  PrincipalKeyStore,
+  RunTokenStore,
+} from "@intx/db";
 import {
   createPrincipalStore,
   createWorkflowRunStore,
@@ -47,6 +53,7 @@ import type {
   GrantRule,
   ConditionRegistry,
 } from "@intx/types/authz";
+import { hubCredentialId } from "@intx/types/credential-delivery";
 import {
   deriveWorkflowRunId,
   isSidecarAllocationDispatchable,
@@ -120,6 +127,23 @@ export function deriveCredentialUseGrantRows(args: {
       now: args.now,
     }),
   );
+}
+
+/**
+ * The `(credentialId, consumer)` pairs a run's credential-use grants cover:
+ * the anchor's resolved credential bindings, and one hub credential for each
+ * consumer that declares the reserved hub handle.
+ */
+export function credentialUseBindings(
+  refs: WorkflowRunCredentialRefs | null | undefined,
+): { credentialId: string; consumer: string }[] {
+  return [
+    ...(refs?.bindings ?? []),
+    ...hubConsumersOf(refs).map((consumer) => ({
+      credentialId: hubCredentialId(consumer),
+      consumer,
+    })),
+  ];
 }
 
 /**
@@ -218,7 +242,7 @@ export function grantRowsWithLockedCredentialResolution(
   return [
     ...base,
     ...deriveCredentialUseGrantRows({
-      bindings: resolution.credentialRefs?.bindings ?? [],
+      bindings: credentialUseBindings(resolution.credentialRefs),
       tenantId: args.tenantId,
       runPrincipalId: args.runPrincipalId,
       now: args.now,
@@ -643,6 +667,13 @@ export async function collectDeployerInvokerGrants(args: {
 export type CommitRunGrantsArgs = {
   db: DB["db"];
   principalKeyStore: PrincipalKeyStore;
+  runTokenStore: RunTokenStore;
+  /**
+   * The consumers that get a hub run token, from the locked anchor's
+   * `credentialRefs.hubConsumers`. Minted only by the commit that creates
+   * the run principal.
+   */
+  hubConsumers: readonly string[];
   tenantId: string;
   anchorRunId: string;
   /**
@@ -901,6 +932,10 @@ export async function commitRunGrants(
       return winner.stepGrants;
     }
 
+    await args.runTokenStore.mintIfAbsent(
+      { principalId: args.runPrincipalId, consumers: args.hubConsumers },
+      executor,
+    );
     await workflowRunStore.anchorWithPrincipal(
       {
         id: args.runId,
@@ -928,6 +963,7 @@ export async function commitRunGrants(
 export type MailTriggeredRunGrantsDeps = {
   db: DB["db"];
   principalKeyStore: PrincipalKeyStore;
+  runTokenStore: RunTokenStore;
   grantStore: GrantStore;
   // The hub's condition registry, passed to the admission evaluator so a
   // conditioned operator `mail.accept` deny (collected on the deliver path) is
@@ -1221,7 +1257,7 @@ export function createMailTriggeredRunGrantsMaterializer(
       invokerGrants: invoker.invokerGrants,
       creatorGrants,
       grantRequirements,
-      credentialBindings: anchor.credentialRefs?.bindings ?? [],
+      credentialBindings: credentialUseBindings(anchor.credentialRefs),
     });
     if (!staged.ok) {
       return {
@@ -1269,6 +1305,8 @@ export function createMailTriggeredRunGrantsMaterializer(
         {
           db: deps.db,
           principalKeyStore: deps.principalKeyStore,
+          runTokenStore: deps.runTokenStore,
+          hubConsumers: hubConsumersOf(resolution.credentialRefs),
           tenantId,
           anchorRunId,
           definitionId: anchor.definitionId,
