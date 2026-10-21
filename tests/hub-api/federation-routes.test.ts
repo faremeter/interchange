@@ -238,6 +238,33 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(res.status).toBe(403);
     });
 
+    test("a create grant keyed on another target cannot establish the trust", async () => {
+      const app = await setup(grantsFor(["create"], "federation:tnt_other"));
+      const res = await createTrust(app);
+      expect(res.status).toBe(403);
+      expect(await trustRows()).toHaveLength(0);
+    });
+
+    test("a create grant keyed on the target tenant establishes the trust", async () => {
+      const app = await setup(
+        grantsFor(["create"], `federation:${TARGET_TENANT_ID}`),
+      );
+      expect((await createTrust(app)).status).toBe(201);
+      expect(await trustRows()).toHaveLength(1);
+    });
+
+    test("a deny keyed on the target tenant overrides a create grant on every target", async () => {
+      const [deny] = grantsFor(["create"], `federation:${TARGET_TENANT_ID}`);
+      if (deny === undefined) throw new Error("expected one grant");
+      const app = await setup([
+        ...grantsFor(["create"], "federation:*"),
+        { ...deny, id: "grant-actor-deny", effect: "deny" },
+      ]);
+      const res = await createTrust(app);
+      expect(res.status).toBe(403);
+      expect(await trustRows()).toHaveLength(0);
+    });
+
     test("a manage grant keyed on another target cannot revoke the trust", async () => {
       const app = await setup(grantsFor(["manage"], "federation:tnt_other"));
       await seedTrust();

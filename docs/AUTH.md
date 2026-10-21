@@ -279,7 +279,7 @@ Resources use a `type:identifier` format with glob support:
 - `credential:crd_stripe` -- a specific credential
 - `api:stripe:*` -- all Stripe API operations
 - `federation:*` -- all federation trusts of the tenant
-- `federation:tnt_abc` -- the federation trust with tenant `tnt_abc` (keyed on the target tenant id, not the trust row id). Revoking a trust checks this resource with `manage`. Listing the trusts checks `federation:*` / `read`, and establishing a trust checks `federation:*` / `create`, whatever the target.
+- `federation:tnt_abc` -- the federation trust with tenant `tnt_abc` (keyed on the target tenant id, not the trust row id). Establishing a trust checks this resource with `create`, and revoking it checks `manage`. Listing the trusts checks `federation:*` / `read`.
 - `*` -- everything
 
 Actions are operation verbs:

@@ -12,7 +12,12 @@ import {
 } from "@intx/types";
 
 import type { TenantEnv } from "../context";
-import { idResource, type RequireGrant } from "../middleware/grant";
+import {
+  denyUnlessBodyGrant,
+  idResource,
+  type AuthorizeGrant,
+  type RequireGrant,
+} from "../middleware/grant";
 import { errorResponse } from "../error-response";
 import { ts } from "../format";
 import { generateId } from "@intx/hub-common";
@@ -28,11 +33,13 @@ import { jsonResponse } from "../openapi";
 export type CreateTenantFederationRoutesDeps = {
   db: DB["db"];
   requireGrant: RequireGrant;
+  authorizeGrant: AuthorizeGrant;
 };
 
 export function createTenantFederationRoutes({
   db,
   requireGrant,
+  authorizeGrant,
 }: CreateTenantFederationRoutesDeps): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
 
@@ -114,11 +121,20 @@ export function createTenantFederationRoutes({
         409: jsonResponse("Trust relationship already exists", ErrorResponse),
       },
     }),
-    requireGrant("federation:*", "create"),
     validator("json", CreateFederationTrust),
     async (c) => {
       const tenantCtx = c.get("tenant");
       const body = c.req.valid("json");
+
+      // Keyed on the target, as revoke is, so a grant on one target's trust
+      // decides that trust and a `federation:*` grant covers every target.
+      const denied = await denyUnlessBodyGrant({
+        c,
+        authorizeGrant,
+        resource: `federation:${body.targetTenantId}`,
+        action: "create",
+      });
+      if (denied !== null) return denied;
 
       const target = await db.query.tenant.findFirst({
         where: eq(tenant.id, body.targetTenantId),
