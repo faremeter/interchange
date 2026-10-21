@@ -11,6 +11,7 @@ import {
   fromToolRunner,
   stringTool,
   tool,
+  toolFactoryMeta,
 } from "./tool";
 import type { BaseEnv } from "./env";
 
@@ -254,6 +255,66 @@ describe("defineTool", () => {
     expect(factory.requires).toEqual([]);
     expect(Object.isFrozen(factory.requires)).toBe(true);
     expect(Object.isFrozen(factory.definitions)).toBe(true);
+  });
+
+  test("attaches validated, frozen credential declarations", () => {
+    const factory = defineTool({
+      id: "@vendor/pkg/name",
+      definitions: [],
+      credentials: [{ handle: "api-token", scopes: ["read"] }],
+      factory: () => emptyBundle(),
+    });
+
+    expect(factory.credentials).toEqual([
+      { handle: "api-token", scopes: ["read"] },
+    ]);
+    expect(Object.isFrozen(factory.credentials)).toBe(true);
+    expect(Object.isFrozen(factory.credentials?.[0])).toBe(true);
+    expect(Object.isFrozen(factory.credentials?.[0]?.scopes)).toBe(true);
+  });
+
+  test("an empty credentials list declares nothing", () => {
+    const factory = defineTool({
+      id: "@vendor/pkg/name",
+      definitions: [],
+      credentials: [],
+      factory: () => emptyBundle(),
+    });
+
+    expect("credentials" in factory).toBe(false);
+  });
+
+  test("rejects a malformed or duplicate credential handle", () => {
+    for (const credentials of [
+      [{ handle: "Bad Handle" }],
+      [{ handle: "api-token" }, { handle: "api-token" }],
+    ]) {
+      expect(() =>
+        defineTool({
+          id: "@vendor/pkg/name",
+          definitions: [],
+          credentials,
+          factory: () => emptyBundle(),
+        }),
+      ).toThrow(/invalid credentials declaration/);
+    }
+  });
+
+  test("toolFactoryMeta copies every metadata field", () => {
+    const factory = defineTool({
+      id: "@vendor/pkg/name",
+      requires: ["transport"],
+      definitions: [{ name: "probe" }],
+      credentials: [{ handle: "api-token" }],
+      factory: () => emptyBundle(),
+    });
+
+    expect(toolFactoryMeta(factory)).toEqual({
+      id: factory.id,
+      requires: factory.requires,
+      definitions: factory.definitions,
+      credentials: [{ handle: "api-token" }],
+    });
   });
 
   test("rejects bare ids", () => {

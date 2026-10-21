@@ -27,6 +27,7 @@ export {
   type ToolPluginKind,
   createToolRunner,
   defineTool,
+  toolFactoryMeta,
   definePlugin,
   fromToolRunner,
   isAnnotatedPluginFactory,

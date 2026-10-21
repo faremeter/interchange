@@ -52,8 +52,12 @@ import type {
 import {
   isAnnotatedDirectorFactory,
   isAnnotatedPluginFactory,
+  toolFactoryMeta,
 } from "@intx/agent/authoring";
-import type { ToolCredentialDeclaration } from "@intx/types/package-json";
+import type {
+  ReadonlyToolCredentialDeclaration,
+  ToolCredentialDeclaration,
+} from "@intx/types/package-json";
 import { ToolCredentialDeclarationArray } from "@intx/types/package-json";
 import type { ToolCall, ToolResult } from "@intx/types/runtime";
 import { getLogger } from "@intx/log";
@@ -414,6 +418,30 @@ export function createToolLoader(config: LoaderConfig): ToolLoader {
     // malformed `interchange.credentials` surfaces the same
     // package.entry.invalid class as a bad tool/director entry.
     const credentials = readInterchangeCredentials(pkgJson, entry);
+    // The manifest is the pinned package's declaration of record, for all of
+    // its factories. A factory may also declare through `defineTool`; it may
+    // then name only handles the manifest declares, with the same scopes, so
+    // a package whose factories use different handles declares each one.
+    for (const factory of factories) {
+      if (factory.credentials === undefined) continue;
+      // The factory comes from the package's module exports, so its
+      // declaration is untrusted until it passes the same validator.
+      const declared = ToolCredentialDeclarationArray(factory.credentials);
+      if (declared instanceof type.errors) {
+        throw new ToolLoaderError({
+          category: "package.entry.invalid",
+          message: `${entry.name}@${entry.version} tool factory ${factory.id} credentials failed validation: ${declared.summary}`,
+          package: { name: entry.name, version: entry.version },
+        });
+      }
+      if (!declaresSubsetOf(declared, credentials)) {
+        throw new ToolLoaderError({
+          category: "package.entry.invalid",
+          message: `${entry.name}@${entry.version} tool factory ${factory.id} declares credentials that the package's interchange.credentials does not`,
+          package: { name: entry.name, version: entry.version },
+        });
+      }
+    }
 
     return {
       name: entry.name,
@@ -753,6 +781,20 @@ function readInterchangeEntry(
 }
 
 /**
+ * Whether every declaration in `declared` appears in `manifest` with the same
+ * scopes. Order, duplicate scopes and an empty scope list carry no meaning.
+ */
+function declaresSubsetOf(
+  declared: readonly ReadonlyToolCredentialDeclaration[],
+  manifest: readonly ReadonlyToolCredentialDeclaration[],
+): boolean {
+  const scopesOf = (d: ReadonlyToolCredentialDeclaration) =>
+    JSON.stringify([...new Set(d.scopes ?? [])].sort());
+  const manifestScopes = new Map(manifest.map((d) => [d.handle, scopesOf(d)]));
+  return declared.every((d) => manifestScopes.get(d.handle) === scopesOf(d));
+}
+
+/**
  * Read a package's inline `interchange.credentials` declarations from its
  * parsed `package.json`. Unlike `tools`/`directors` (module-path fields
  * `readInterchangeEntry` resolves and imports), `credentials` is inline
@@ -907,7 +949,7 @@ function applyNamespacePrefix(
         };
       },
       {
-        id: factory.id,
+        ...toolFactoryMeta(factory),
         requires: frozenRequires,
         definitions: frozenDefinitions,
       },

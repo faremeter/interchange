@@ -509,6 +509,128 @@ describe("createToolLoader", () => {
     ]);
   });
 
+  type Declarations = readonly {
+    readonly handle: string;
+    readonly scopes?: readonly string[];
+  }[];
+
+  // Load one package whose manifest declares `manifest` and whose only
+  // factory declares `factory` through `defineTool` (undefined: nothing).
+  // `factory` is whatever the package's module exports as the factory's
+  // `credentials`, so a test can hand the loader a malformed declaration.
+  async function loadWithDeclarations(
+    manifest: Declarations | undefined,
+    factory: unknown,
+  ) {
+    const cache = createTarballCache({
+      rootDir: cacheDir,
+      maxBytes: 10_000_000,
+    });
+    const fixture = await packFixture({
+      name: "tools-creds",
+      version: "1.0.0",
+      entryModuleSource: "// stub; importer is faked",
+      ...(manifest !== undefined ? { interchangeCredentials: manifest } : {}),
+    });
+    const loader = createToolLoader({
+      cache,
+      registries: new Map([["npmjs", { url: "https://r.test" }]]),
+      host: { os: "linux", cpu: "x64" },
+      fetchTarball: async () => fixture.bytes,
+      importModule: async () => ({
+        main: Object.assign(
+          makeFakeFactory("@vendor/creds/main", ["env.thing"]),
+          factory === undefined ? {} : { credentials: factory },
+        ),
+      }),
+    });
+    return loader.loadManifest({
+      manifest: {
+        schemaVersion: "1",
+        topLevel: [{ name: "tools-creds", version: "1.0.0" }],
+        entries: [
+          {
+            name: "tools-creds",
+            version: "1.0.0",
+            source: {
+              kind: "registry",
+              registry: "npmjs",
+              integrity: fixture.integrity,
+            },
+          },
+        ],
+      },
+      instanceScratchDir: instanceDir,
+      assetRoot,
+      assetMounts: new Map(),
+      gitDirs: new Map(),
+    });
+  }
+
+  const MANIFEST: Declarations = [
+    { handle: "openai", scopes: ["chat", "embed"] },
+    { handle: "stripe" },
+  ];
+
+  for (const [label, factory] of [
+    ["declares nothing", undefined],
+    [
+      "declares one of the manifest's handles",
+      [{ handle: "openai", scopes: ["chat", "embed"] }],
+    ],
+    [
+      "declares the same handles in another order",
+      [{ handle: "stripe" }, { handle: "openai", scopes: ["chat", "embed"] }],
+    ],
+    [
+      "lists scopes in another order or more than once",
+      [
+        { handle: "openai", scopes: ["embed", "chat", "chat"] },
+        { handle: "stripe", scopes: [] },
+      ],
+    ],
+  ] as const) {
+    test(`accepts a factory that ${label}`, async () => {
+      const loaded = await loadWithDeclarations(MANIFEST, factory);
+      expect(loaded[0]?.credentials).toEqual([
+        { handle: "openai", scopes: ["chat", "embed"] },
+        { handle: "stripe" },
+      ]);
+    });
+  }
+
+  for (const [label, manifest, factory] of [
+    [
+      "declares different scopes",
+      MANIFEST,
+      [{ handle: "openai", scopes: ["chat"] }, { handle: "stripe" }],
+    ],
+    [
+      "declares handles the manifest does not",
+      undefined,
+      [{ handle: "stripe" }],
+    ],
+  ] as const) {
+    test(`rejects a factory that ${label}`, async () => {
+      await expect(loadWithDeclarations(manifest, factory)).rejects.toThrow(
+        /that the package's interchange.credentials does not/,
+      );
+    });
+  }
+
+  for (const [label, factory] of [
+    ["null", null],
+    ["a string", "openai"],
+    ["a list with a number", [1]],
+    ["a handle that is not a string", [{ handle: 1 }]],
+  ] as const) {
+    test(`rejects a factory whose credentials are ${label}`, async () => {
+      await expect(loadWithDeclarations(MANIFEST, factory)).rejects.toThrow(
+        /tool factory @vendor\/creds\/main credentials failed validation/,
+      );
+    });
+  }
+
   test("rejects interchange.credentials with a duplicate handle", async () => {
     const cache = createTarballCache({
       rootDir: cacheDir,
