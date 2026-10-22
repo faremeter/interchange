@@ -15,14 +15,17 @@
 //   4. Reject a projection declaring a trigger type the runtime does not
 //      implement, so a deployment that could only ever sit inert never gets
 //      approved.
-//   5. Reject a projection carrying a step the grant walk left no record for,
+//   5. Reject a grant requirement inside the `mail.accept` namespace, and a
+//      `mail.accept` walk marker the projection's `mailAccept` does not
+//      produce, so the accept surface comes only from the hashed `mailAccept`.
+//   6. Reject a projection carrying a step the grant walk left no record for,
 //      so no deployment can schedule a step whose grants nobody approved.
-//   6. Gate the advisory grant set AND the definition's declared grant
+//   7. Gate the advisory grant set AND the definition's declared grant
 //      requirements against the approval policy: an operator `ApprovalSet`
 //      requires every grant the probe surfaced and every requirement it
 //      declared to be approved or the gate fails, while `approve-probed`
 //      approves exactly what the probe surfaced.
-//   7. Freeze the approved wire hash onto the definition version row, keyed by
+//   8. Freeze the approved wire hash onto the definition version row, keyed by
 //      the definition's selector, and return the frozen approved grant set.
 //
 // The frozen approved set is the single source of truth for the definition's
@@ -44,6 +47,7 @@ import type {
 import type { PackumentFetcher, RegistryConfig } from "@intx/tool-packaging";
 import type { WorkflowProjectionDefinition } from "@intx/types/sidecar";
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
+import { isMailAcceptNamespaceResource } from "@intx/types/mail-accept";
 import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import type {
   WorkflowDefinitionAssetSource,
@@ -57,6 +61,7 @@ import {
 import {
   approvalSetFromItems,
   checkCredentialBindings,
+  collectMailAcceptGrants,
   describeCredentialBindingViolation,
   inertNestedBodies,
   isApprovedGrantRequirement,
@@ -126,8 +131,10 @@ export type PersistFrozenApprovalFn = (
  * tarball, a shipped hash that does not match the hub recompute
  * (tamper-evidence), advisory grants the operator did not approve, declared
  * grant requirements the operator did not approve, a trigger type the runtime
- * does not implement, credential bindings that cannot be delivered, and an
- * executable step the grant walk left no record for.
+ * does not implement, a grant requirement inside the `mail.accept` namespace, a
+ * `mail.accept` walk marker the projection's `mailAccept` does not produce,
+ * credential bindings that cannot be delivered, and an executable step the
+ * grant walk left no record for.
  */
 export type ProbeGateResult =
   | {
@@ -174,6 +181,21 @@ export type ProbeGateResult =
       readonly reason: "unimplemented_trigger";
       /** The distinct reserved-but-unimplemented trigger types the projection declared. */
       readonly unimplementedTriggerTypes: readonly string[];
+    }
+  | {
+      readonly ok: false;
+      readonly reason: "mail_accept_grant_requirements";
+      /** The declared requirements inside the `mail.accept` namespace. */
+      readonly mailAcceptGrantRequirements: readonly GrantRequirement[];
+    }
+  | {
+      readonly ok: false;
+      readonly reason: "mail_accept_markers_undeclared";
+      /**
+       * The reported `mail.accept` markers the projection's `mailAccept` does
+       * not produce, in the order the probe reported them.
+       */
+      readonly undeclaredMailAcceptMarkers: readonly string[];
     }
   | {
       readonly ok: false;
@@ -246,6 +268,10 @@ export function describeProbeGateRefusal(refusal: ProbeGateRefusal): string {
       return `creator_requirements_unsupported_for_package_registry_tarball: a workflow from a package-registry tarball cannot declare creator-sourced grant requirements, because the hub does not know who published the package; declared: ${refusal.creatorGrantRequirements.map(describeGrantRequirement).join("; ")}`;
     case "unimplemented_trigger":
       return `unimplemented_trigger: ${refusal.unimplementedTriggerTypes.join(", ")}`;
+    case "mail_accept_grant_requirements":
+      return `mail_accept_grant_requirements: accept-rules are declared only through mailAccept; declared: ${refusal.mailAcceptGrantRequirements.map(describeGrantRequirement).join("; ")}`;
+    case "mail_accept_markers_undeclared":
+      return `mail_accept_markers_undeclared: the projection's mailAccept does not produce ${refusal.undeclaredMailAcceptMarkers.join(", ")}`;
     case "credential_bindings_invalid":
       return `credential_bindings_invalid: ${refusal.message}`;
     case "steps_without_grant_record":
@@ -365,6 +391,32 @@ function collectUnimplementedTriggerTypes(
   return found;
 }
 
+/**
+ * Every `mail.accept` marker the probe reports, in its advisory grants or in
+ * any step of its grant-walk snapshot, that the projection's own `mailAccept`
+ * does not produce. The expected set comes from the derivation the capability
+ * walk uses, run here over the projection the freeze hashes.
+ */
+function collectUndeclaredMailAcceptMarkers(
+  probeResult: WorkflowProbeResult,
+): readonly string[] {
+  const declared = new Set(
+    collectMailAcceptGrants({ mailAccept: probeResult.projection.mailAccept }),
+  );
+  const reported = [
+    ...probeResult.grants,
+    ...probeResult.grantWalkSnapshot.perStep.flatMap((step) => step.grants),
+  ];
+  const found: string[] = [];
+  for (const grant of reported) {
+    if (!isMailAcceptNamespaceResource(grant)) continue;
+    if (declared.has(grant)) continue;
+    if (found.includes(grant)) continue;
+    found.push(grant);
+  }
+  return found;
+}
+
 const EXECUTABLE_CLOSURE_CONTEXT = "probe gate executable closure: ";
 
 /** One step the executable walk reached, with where it was reached from. */
@@ -467,12 +519,15 @@ export type GateAndFreezeArgs = {
  * a package-registry tarball cannot claim creator authority while package
  * publisher provenance is unavailable, the recomputed wire hash must match the
  * hash the sidecar shipped (tamper-evidence), every advisory grant must be
- * operator-approved, and every declared grant requirement must be
- * operator-approved. It also refuses a projection whose triggers include a
- * reserved-but-unimplemented type -- not a
- * security check, but the layer a pinned closure cannot carry a stale copy of,
- * so it is where a workflow that could only sit inert is caught -- one whose
- * credential bindings cannot be delivered to a consumer it runs, and one
+ * operator-approved, every declared grant requirement must be
+ * operator-approved, no declared grant requirement may lie inside the
+ * `mail.accept` namespace, and every reported `mail.accept` marker must be one
+ * the projection's `mailAccept` produces (the hub is the only trusted layer
+ * that sees the requirements and markers before they freeze). It also refuses
+ * a projection whose triggers include a reserved-but-unimplemented type -- not
+ * a security check, but the layer a pinned closure cannot carry a stale copy
+ * of, so it is where a workflow that could only sit inert is caught -- one
+ * whose credential bindings cannot be delivered to a consumer it runs, and one
  * whose executable closure reaches a step the grant walk left no record for --
  * the layer holding both halves of the probe answer at once, and a presence
  * check on those records rather than a check that any record's contents are
@@ -531,6 +586,41 @@ export async function gateAndFreezeProbeResult(
       ok: false,
       reason: "unimplemented_trigger",
       unimplementedTriggerTypes,
+    };
+  }
+
+  // Refuse a grant requirement inside the `mail.accept` namespace. `mailAccept`
+  // is the only source of accept-rules; such a requirement would materialize
+  // an accept-grant outside the approved accept surface (a creator holding `*`
+  // satisfies `mail.accept:*`, which admits every sender). Like the trigger
+  // check this is an author-definition error an operator cannot approve away,
+  // and it runs here because `defineWorkflow`'s own check rides the pinned
+  // closure, which a stale or untrusted sidecar can skip.
+  const mailAcceptGrantRequirements =
+    probeResult.grantWalkSnapshot.grantRequirements.filter((requirement) =>
+      isMailAcceptNamespaceResource(requirement.resource),
+    );
+  if (mailAcceptGrantRequirements.length > 0) {
+    return {
+      ok: false,
+      reason: "mail_accept_grant_requirements",
+      mailAcceptGrantRequirements,
+    };
+  }
+
+  // Refuse a `mail.accept` marker the projection's own `mailAccept` does not
+  // produce. Launch turns these markers into accept-grants, and the walk that
+  // reports them runs on the sidecar, which a stale or untrusted sidecar can
+  // skip or forge. A namespace-wide or wildcard marker would fail every
+  // launch, and a coordinate no `mailAccept` declares would admit a sender
+  // nobody authored, so neither may freeze.
+  const undeclaredMailAcceptMarkers =
+    collectUndeclaredMailAcceptMarkers(probeResult);
+  if (undeclaredMailAcceptMarkers.length > 0) {
+    return {
+      ok: false,
+      reason: "mail_accept_markers_undeclared",
+      undeclaredMailAcceptMarkers,
     };
   }
 

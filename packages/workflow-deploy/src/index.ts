@@ -18,9 +18,11 @@
 //     can invoke inference from one merely carrying a placeholder pin.
 
 export {
+  collectMailAcceptGrants,
   walkCapabilities,
   type CapabilityWalkResult,
   type GrantDeclarations,
+  type MailAcceptGrantSource,
 } from "./capability-walk";
 export {
   collectDeclaredCredentialConsumers,

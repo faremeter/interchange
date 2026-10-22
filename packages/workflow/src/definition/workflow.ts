@@ -7,6 +7,8 @@
 // from its record key and applies the default-input convention so the
 // runtime sees a fully-specified definition with no implicit shape.
 
+import { type } from "arktype";
+
 import { canonicalizeForHash } from "@intx/agent/canonicalize";
 import type { AgentDefinition, BaseEnv } from "@intx/agent";
 import type {
@@ -15,6 +17,10 @@ import type {
   SidecarCapabilityPolicy,
 } from "@intx/types";
 import type { InboundMailPolicy } from "@intx/types/inbound-mail-policy";
+import {
+  isMailAcceptNamespaceResource,
+  MailAccept,
+} from "@intx/types/mail-accept";
 
 import { normalizeSingularShorthand } from "./shorthand";
 import {
@@ -69,6 +75,16 @@ export interface WorkflowDefinition {
    * decisions on it.
    */
   inboundMailPolicy?: InboundMailPolicy;
+  /**
+   * The author-declared relational accept-rules governing which senders this
+   * workflow accepts inbound mail from. Every run has an address that mail can
+   * reach, so a workflow of any trigger may declare them. Sparse: an absent
+   * relational toggle is not defaulted here -- the shared accept-rule resolver
+   * supplies the default at the read edge. This package carries it through the
+   * projection and content hash; the capability walk in `@intx/workflow-deploy`
+   * turns it into the `mail.accept` strings the operator approves at deploy.
+   */
+  mailAccept?: MailAccept;
 }
 
 export interface WorkflowConfig {
@@ -81,6 +97,7 @@ export interface WorkflowConfig {
   credentialBindings?: readonly CredentialBinding[];
   sidecarPlacement?: SidecarCapabilityPolicy;
   inboundMailPolicy?: InboundMailPolicy;
+  mailAccept?: MailAccept;
 }
 
 export interface SingularWorkflowConfig<EnvReq extends BaseEnv> {
@@ -93,6 +110,7 @@ export interface SingularWorkflowConfig<EnvReq extends BaseEnv> {
   credentialBindings?: readonly CredentialBinding[];
   sidecarPlacement?: SidecarCapabilityPolicy;
   inboundMailPolicy?: InboundMailPolicy;
+  mailAccept?: MailAccept;
 }
 
 /**
@@ -187,12 +205,11 @@ function normalize(config: WorkflowConfig): WorkflowDefinition {
     }
   }
 
-  // An inbound-mail admission policy governs how mail delivered to this
-  // workflow is admitted, so it is meaningless without a mail trigger to
-  // deliver that mail. A policy on a workflow that no mail can ever reach is a
-  // silent authoring error -- the author believes they constrained admission,
-  // but the constraint can never take effect. Reject it here, at the authoring
-  // boundary, rather than let it ride through the projection as a dead field.
+  // An inbound-mail admission policy is accepted only on a workflow with a mail
+  // trigger. A workflow with another trigger can still receive mail, such as
+  // the replies a `correspondent` rule admits, and the signature gate applies
+  // the default policy to that mail. Reject a policy on such a workflow here,
+  // at the authoring boundary, rather than let it ride through the projection.
   // The check runs after resolveTriggers so a mail trigger contributed by an
   // onTrigger section's `on` counts, not only a top-level `trigger`/`triggers`.
   if (config.inboundMailPolicy !== undefined) {
@@ -201,6 +218,37 @@ function normalize(config: WorkflowConfig): WorkflowDefinition {
       throw new Error(
         `defineWorkflow ${config.id} declares an inboundMailPolicy but no mail ` +
           `trigger; the policy can never take effect`,
+      );
+    }
+  }
+
+  // Accept-rules need no mail trigger. Every run has an address the hub routes
+  // mail to, and a run of any trigger can send mail and wait for the reply, so
+  // the rules apply to every workflow.
+  if (config.mailAccept !== undefined) {
+    // The wire schema rejects a malformed rule set, but a definition that is
+    // authored here would otherwise carry one until the capability walk
+    // throws on it at deploy. Apply the same schema at authoring.
+    const accepted = MailAccept(config.mailAccept);
+    if (accepted instanceof type.errors) {
+      throw new Error(
+        `defineWorkflow ${config.id} declares an invalid mailAccept: ` +
+          accepted.summary,
+      );
+    }
+  }
+
+  // `mailAccept` is the only source of accept-rules: its relations are what the
+  // operator approves at deploy. A grant requirement inside the `mail.accept`
+  // namespace would materialize an accept-grant outside that surface (a creator
+  // holding `*` satisfies `mail.accept:*`, which admits every sender), so reject
+  // it here rather than let it widen admission.
+  for (const requirement of config.grantRequirements ?? []) {
+    if (isMailAcceptNamespaceResource(requirement.resource)) {
+      throw new Error(
+        `defineWorkflow ${config.id} declares a grant requirement on ` +
+          `${JSON.stringify(requirement.resource)}; accept-rules are declared ` +
+          `only through mailAccept`,
       );
     }
   }
@@ -222,6 +270,9 @@ function normalize(config: WorkflowConfig): WorkflowDefinition {
       : {}),
     ...(config.inboundMailPolicy !== undefined
       ? { inboundMailPolicy: config.inboundMailPolicy }
+      : {}),
+    ...(config.mailAccept !== undefined
+      ? { mailAccept: config.mailAccept }
       : {}),
   };
   return definition;
@@ -1184,6 +1235,14 @@ function projectForHash(definition: WorkflowDefinition): unknown {
     // identically to one authored before the field existed.
     ...(definition.inboundMailPolicy !== undefined
       ? { inboundMailPolicy: definition.inboundMailPolicy }
+      : {}),
+    // The relational accept-rules change which senders inbound mail is accepted
+    // from, so two definitions differing only in their accept-rules must hash
+    // differently -- include them exactly as inboundMailPolicy is included.
+    // Absent, the spread contributes nothing, so a definition without
+    // accept-rules hashes identically to one authored before the field existed.
+    ...(definition.mailAccept !== undefined
+      ? { mailAccept: definition.mailAccept }
       : {}),
     steps: Object.fromEntries(
       Object.entries(definition.steps).map(([id, primitive]) => [

@@ -21,6 +21,12 @@ import {
   type WorkflowDefinition,
 } from "@intx/workflow/definition";
 import { rewriteInlineChildWorkflowBodies } from "@intx/workflow";
+import {
+  mailAcceptRelationToken,
+  mailAcceptResource,
+  resolveMailAcceptRelations,
+} from "@intx/authz";
+import type { MailAccept } from "@intx/types/mail-accept";
 
 import { serializeGrantWalk, type GrantEffect } from "@intx/types";
 
@@ -119,6 +125,18 @@ function computeImplicitGrants(
     if (at >= 0 && at < trigger.to.length - 1) {
       grants.add(`mail.send:${trigger.to.slice(at + 1)}`);
     }
+  }
+  // Mirror the walk's mail-accept axis: emitted for any trigger, relations
+  // resolved through the shared default resolver, and explicit
+  // principals/assets as concrete coordinates.
+  for (const relation of resolveMailAcceptRelations(workflow.mailAccept)) {
+    grants.add(mailAcceptRelationToken(relation));
+  }
+  for (const id of workflow.mailAccept?.principals ?? []) {
+    grants.add(mailAcceptResource("principal", id));
+  }
+  for (const id of workflow.mailAccept?.assets ?? []) {
+    grants.add(mailAcceptResource("asset", id));
   }
   return grants;
 }
@@ -612,6 +630,104 @@ describe("walkCapabilities", () => {
         (g) => g.startsWith("mail.address:") || g.startsWith("mail.send:"),
       ),
     ).toBe(false);
+  });
+
+  // The mail-accept axis (`mail.accept:*`) is emitted from the definition's
+  // authored `mailAccept` field, alongside the unchanged `mail.address:` /
+  // `mail.send:` axis. Relational toggles emit id-less relation tokens through
+  // the shared default resolver; explicit principals/assets emit concrete
+  // coordinates.
+  function mailAcceptGrantsOf(workflow: WorkflowDefinition): Set<string> {
+    const walk = walkCapabilities(workflow, createDefaultDirectorRegistry());
+    const stepId = workflow.stepOrder[0];
+    if (stepId === undefined) throw new Error("missing step");
+    const declarations = walk.perStep.get(stepId);
+    if (declarations === undefined) throw new Error("missing declarations");
+    return new Set(declarations.grants);
+  }
+
+  test("authored relational toggles emit relation tokens", () => {
+    const workflow = defineWorkflow({
+      id: "wf_accept_relational",
+      agent: makeTrivialAgent(),
+      trigger: { type: "mail", to: "run_test-agent@integration.interchange" },
+      mailAccept: { invoker: true, tenant: true },
+    });
+
+    const grants = mailAcceptGrantsOf(workflow);
+
+    // Authored-on relations emit their token; omitted relations do not.
+    expect(grants.has("mail.accept:invoker")).toBe(true);
+    expect(grants.has("mail.accept:tenant")).toBe(true);
+    expect(grants.has("mail.accept:self")).toBe(false);
+    expect(grants.has("mail.accept:correspondent")).toBe(false);
+  });
+
+  test("a mail trigger with no mailAccept emits no relation markers", () => {
+    const workflow = defineWorkflow({
+      id: "wf_accept_default",
+      agent: makeTrivialAgent(),
+      trigger: { type: "mail", to: "run_test-agent@integration.interchange" },
+    });
+
+    const grants = mailAcceptGrantsOf(workflow);
+
+    // Every relation is opt-in: an absent mailAccept accepts nothing.
+    expect(grants.has("mail.accept:invoker")).toBe(false);
+    expect(grants.has("mail.accept:self")).toBe(false);
+    expect(grants.has("mail.accept:tenant")).toBe(false);
+    expect(grants.has("mail.accept:correspondent")).toBe(false);
+  });
+
+  test("a definition with no mail trigger emits its authored rules", () => {
+    // A run of any trigger has an address and can send mail, so an HTTP-only
+    // workflow's rules reach the operator's approval like any other.
+    const workflow = defineWorkflow({
+      id: "wf_accept_nomail",
+      agent: makeTrivialAgent(),
+      trigger: { type: "manual" },
+      mailAccept: { invoker: true, correspondent: true, principals: ["prn_x"] },
+    });
+
+    const grants = mailAcceptGrantsOf(workflow);
+
+    expect(grants.has("mail.accept:invoker")).toBe(true);
+    expect(grants.has("mail.accept:correspondent")).toBe(true);
+    expect(grants.has("mail.accept:principal:prn_x")).toBe(true);
+    expect([...grants].some((g) => g.startsWith("mail.address:"))).toBe(false);
+  });
+
+  test("explicit principals and assets emit concrete coordinates", () => {
+    const mailAccept: MailAccept = {
+      principals: ["prn_x"],
+      assets: ["ast_y"],
+    };
+    const workflow = defineWorkflow({
+      id: "wf_accept_coords",
+      agent: makeTrivialAgent(),
+      trigger: { type: "mail", to: "run_test-agent@integration.interchange" },
+      mailAccept,
+    });
+
+    const grants = mailAcceptGrantsOf(workflow);
+
+    expect(grants.has("mail.accept:principal:prn_x")).toBe(true);
+    expect(grants.has("mail.accept:asset:ast_y")).toBe(true);
+  });
+
+  test("mail.accept emission leaves the mail.address/mail.send axis unchanged", () => {
+    const workflow = defineWorkflow({
+      id: "wf_accept_axis",
+      agent: makeTrivialAgent(),
+      trigger: { type: "mail", to: "support@example.com" },
+      mailAccept: { invoker: true },
+    });
+
+    const grants = mailAcceptGrantsOf(workflow);
+
+    expect(grants.has("mail.address:support@example.com")).toBe(true);
+    expect(grants.has("mail.send:example.com")).toBe(true);
+    expect(grants.has("mail.accept:invoker")).toBe(true);
   });
 
   test("emits an effect grant for each of an action's declared requires", () => {

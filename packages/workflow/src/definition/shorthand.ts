@@ -29,6 +29,7 @@ import type {
   SidecarCapabilityPolicy,
 } from "@intx/types";
 import type { InboundMailPolicy } from "@intx/types/inbound-mail-policy";
+import type { MailAccept } from "@intx/types/mail-accept";
 
 import { step } from "./primitives";
 import type { Primitive } from "./primitives";
@@ -45,6 +46,7 @@ export interface SingularShorthand<EnvReq extends BaseEnv> {
   credentialBindings?: readonly CredentialBinding[];
   sidecarPlacement?: SidecarCapabilityPolicy;
   inboundMailPolicy?: InboundMailPolicy;
+  mailAccept?: MailAccept;
 }
 
 export interface PluralShape {
@@ -57,6 +59,7 @@ export interface PluralShape {
   credentialBindings?: readonly CredentialBinding[];
   sidecarPlacement?: SidecarCapabilityPolicy;
   inboundMailPolicy?: InboundMailPolicy;
+  mailAccept?: MailAccept;
 }
 
 export function normalizeSingularShorthand<EnvReq extends BaseEnv>(
@@ -79,6 +82,9 @@ export function normalizeSingularShorthand<EnvReq extends BaseEnv>(
       : {}),
     ...(config.inboundMailPolicy !== undefined
       ? { inboundMailPolicy: config.inboundMailPolicy }
+      : {}),
+    ...(config.mailAccept !== undefined
+      ? { mailAccept: config.mailAccept }
       : {}),
   };
 }
