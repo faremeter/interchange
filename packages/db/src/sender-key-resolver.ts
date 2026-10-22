@@ -1,12 +1,14 @@
 import { and, eq, isNotNull, or, sql } from "drizzle-orm";
 
 import { parseAddress } from "@intx/types";
+import type { MailAcceptCoordinate } from "@intx/authz";
 import { getLogger } from "@intx/log";
 
 import type { DBExecutor } from "./client";
 import type { PrincipalKeyStore } from "./principal-key-store";
 import { principal } from "./schema/principals";
 import { tenant } from "./schema/tenants";
+import { workflowDefinition } from "./schema/workflow-definitions";
 import { workflowRun } from "./schema/workflow-run";
 
 const RUN_PREFIX = "run_";
@@ -15,26 +17,100 @@ const logger = getLogger(["db", "sender-key-resolver"]);
 
 /**
  * The durable public key that authenticates a signed mail sender, resolved from
- * the hub's own storage. `source` records which store the key came from -- a
- * run sender's key is the sidecar-minted key recorded on the deployment anchor,
- * a user sender's key is the hub-custodied principal key -- so a consumer can
- * bucket a resolution without re-parsing the address.
+ * the hub's own storage, together with the sender's admission coordinates.
+ * `source` records which store the key came from -- a run sender's key is the
+ * sidecar-minted key recorded on the deployment anchor, a user sender's key is
+ * the hub-custodied principal key -- so a consumer can bucket a resolution
+ * without re-parsing the address.
+ *
+ * Every resolution carries the durable ids the admission gate keys on: the
+ * sender's own `principalId` and its `tenantId`. A run sender additionally
+ * carries the `assetId` of the workflow asset that backs its definition,
+ * because a `mail.accept` grant can target every deployment of an asset. The
+ * `assetId` is null when the definition has no asset. `senderCoordinates`
+ * renders these ids as the `MailAcceptCoordinate` set the gate compares against
+ * with no translation.
+ *
+ * A run's `principalId` is nullable: a deployment anchor holds a signing key
+ * (recorded at deploy ack) before its first trigger mints and reconciles its
+ * principal, so a run that CAN sign mail may not yet carry a principal. The key
+ * still resolves for signature checks; `senderCoordinates` returns `null` for
+ * such a sender, which the admission gate treats as the `unknown` outcome. A
+ * user sender always resolves to a concrete principal, so its `principalId` is
+ * never null.
  */
 export type SenderKeyResolution =
-  | { source: "run"; publicKey: string }
-  | { source: "user"; publicKey: string };
+  | {
+      source: "run";
+      publicKey: string;
+      principalId: string | null;
+      assetId: string | null;
+      tenantId: string;
+    }
+  | {
+      source: "user";
+      publicKey: string;
+      principalId: string;
+      tenantId: string;
+    };
 
 /**
- * Resolve the durable public key a signed mail sender must verify against,
- * unioning the two existing durable-key sources: a run address
- * (`run_<id>@<domain>`) resolves to the run's `workflow_run.public_key`; any
+ * Render a resolved sender's admission coordinates as the `MailAcceptCoordinate`
+ * set the admission gate matches `mail.accept` grants against. A user sender
+ * yields `principal` + `tenant`; a run sender additionally yields `asset`, since
+ * a run belongs to a definition whose workflow asset a grant can target. A run
+ * whose definition has no asset yields no `asset` coordinate, so an asset grant
+ * never matches it. The ids are returned in the `@intx/authz` coordinate shape
+ * so the gate compares without translating.
+ *
+ * Returns `null` when the sender has no principal to key on -- a run that holds
+ * a signing key but has not yet minted its principal (the acked-but-not-yet-
+ * reconciled anchor window). This is the fail-closed signal: the gate treats a
+ * `null` coordinate set as the `unknown` sender outcome rather than admitting on
+ * a partial (principal-less) set.
+ */
+export function senderCoordinates(
+  resolution: SenderKeyResolution,
+): MailAcceptCoordinate[] | null {
+  if (resolution.principalId === null) return null;
+  const coordinates: MailAcceptCoordinate[] = [
+    { coordType: "principal", id: resolution.principalId },
+  ];
+  // Do not fall back to the definition id when the asset id is null: an
+  // asset-less run has no asset coordinate, so it fails closed on `asset`
+  // grants and still resolves its principal and tenant coordinates.
+  if (resolution.source === "run" && resolution.assetId !== null) {
+    coordinates.push({ coordType: "asset", id: resolution.assetId });
+  }
+  coordinates.push({ coordType: "tenant", id: resolution.tenantId });
+  return coordinates;
+}
+
+/**
+ * Resolve the durable public key a signed mail sender must verify against, plus
+ * the sender's admission coordinates, unioning the two existing durable-key
+ * sources: a run address (`run_<id>@<domain>`) resolves to the run's
+ * `workflow_run.public_key` and its `(principal, asset, tenant)` ids; any
  * other address (`<refId>@<domain>`) is treated as a user sender and resolves
- * to that principal's hub-custodied key.
+ * to that principal's hub-custodied key and its `(principal, tenant)` ids. The
+ * sender is identified only from the passed address; the MIME `From` is never
+ * consulted.
  *
  * Read-only. Returns `null` when the sender has no durable key to resolve -- a
  * malformed address, an unknown run, a run whose deploy has not been acked yet,
  * or an address that matches no user principal. A `null` is a legitimate
- * "unresolvable sender" answer the caller acts on; it is NOT an error.
+ * "unresolvable sender" answer the caller acts on; it is NOT an error. An
+ * admission caller treats a `null` as the `unknown` sender outcome, which its
+ * policy rejects by default.
+ *
+ * A resolved run may carry a null `principalId` -- an anchor that acked its
+ * deploy (so it holds a signing key and CAN sign) but has not yet minted and
+ * reconciled its principal. The key still resolves, so signature checks and the
+ * send path are unaffected; the fail-closed for admission lives in
+ * `senderCoordinates`, which returns `null` for such a sender. This keeps the
+ * send path identical while a principal-less signer never yields a partial
+ * coordinate set. A keyless USER principal is different: it is an invariant
+ * break, so `getPublicKey` throws rather than defaulting (see below).
  *
  * Addresses are matched case-insensitively. Inbound `From` addresses are
  * lowercased when parsed (see `@intx/mime` `extractAddrSpec`), so the address is
@@ -67,24 +143,94 @@ export async function resolveSenderKey(
     // expected pre-ack state -- so it resolves to nothing rather than erroring,
     // unlike the keyless-principal invariant break below.
     const [row] = await db
-      .select({ publicKey: workflowRun.publicKey })
+      .select({
+        publicKey: workflowRun.publicKey,
+        principalId: workflowRun.principalId,
+        assetId: workflowDefinition.assetId,
+        tenantId: workflowRun.tenantId,
+      })
       .from(workflowRun)
+      .innerJoin(
+        workflowDefinition,
+        eq(workflowRun.definitionId, workflowDefinition.id),
+      )
       .where(eq(sql`lower(${workflowRun.address})`, normalized))
       .limit(1);
     if (row === undefined || row.publicKey === null) return null;
-    return { source: "run", publicKey: row.publicKey };
+    // `principalId` may be null: an acked anchor holds a signing key before its
+    // first trigger mints and reconciles its principal, so it CAN sign yet has
+    // no principal. The key still resolves (the send path is unaffected);
+    // `senderCoordinates` fails closed on the null principal for admission.
+    // `tenantId` is a non-null column. `assetId` is null when the definition
+    // has no asset.
+    return {
+      source: "run",
+      publicKey: row.publicKey,
+      principalId: row.principalId,
+      assetId: row.assetId,
+      tenantId: row.tenantId,
+    };
   }
 
   // A user sender resolves to its hub-custodied principal key, keyed by the
-  // `(tenant domain, user refId)` its From address carries.
-  const principalId = await resolveUserPrincipalId(db, domain, localPart);
-  if (principalId === null) return null;
-  // The principal exists; a principal with no active key violates INTR-164's
-  // invariant that every principal is minted with one, so `getPublicKey` throws
-  // rather than defaulting. Do not soften that to null -- unlike the pre-ack run
-  // key above, a keyless principal is a real breakage that must surface.
-  const publicKey = await principalKeyStore.getPublicKey(principalId, db);
-  return { source: "user", publicKey };
+  // `(tenant domain, user refId)` its address carries.
+  const resolved = await resolveUserPrincipal(db, domain, localPart);
+  if (resolved === null) return null;
+  // The principal exists; a principal with no active key violates the invariant
+  // that every principal is minted with one, so `getPublicKey` throws rather
+  // than defaulting. Do not soften that to null -- unlike the pre-ack run key
+  // above, a keyless principal is a real breakage that must surface.
+  const publicKey = await principalKeyStore.getPublicKey(
+    resolved.principalId,
+    db,
+  );
+  return {
+    source: "user",
+    publicKey,
+    principalId: resolved.principalId,
+    tenantId: resolved.tenantId,
+  };
+}
+
+/**
+ * The strict, coordinate-carrying resolution a mail-triggered run's invoker
+ * binding needs: the sender's durable `principalId`, its `tenantId`, and its
+ * admission `coordinates`.
+ */
+export type ResolvedSenderPrincipal = {
+  principalId: string;
+  tenantId: string;
+  coordinates: MailAcceptCoordinate[];
+};
+
+/**
+ * Resolve a signed mail sender to the durable identity a mail-triggered run
+ * binds as its invoker. Consumes the strict {@link resolveSenderKey} and keeps
+ * the widened resolution rather than unwrapping to the key, so the sender's
+ * principal, tenant, and admission coordinates carry through.
+ *
+ * Returns `null` when there is no durable identity to bind: an unresolvable
+ * address, or a principal-less run (an acked anchor before its first trigger
+ * mints a principal, for which `senderCoordinates` returns `null`). A `null`
+ * fails the invoker binding closed rather than binding a partial identity. The
+ * strict resolver's throw on an ambiguous address or a keyless-principal
+ * invariant break is preserved for the caller to catch, so a fault never
+ * silently binds an identity.
+ */
+export async function resolveSenderPrincipal(
+  db: DBExecutor,
+  principalKeyStore: PrincipalKeyStore,
+  address: string,
+): Promise<ResolvedSenderPrincipal | null> {
+  const resolution = await resolveSenderKey(db, principalKeyStore, address);
+  if (resolution === null) return null;
+  const coordinates = senderCoordinates(resolution);
+  if (coordinates === null || resolution.principalId === null) return null;
+  return {
+    principalId: resolution.principalId,
+    tenantId: resolution.tenantId,
+    coordinates,
+  };
 }
 
 /**
@@ -137,13 +283,15 @@ export async function resolveFrameSenderKey(
  * rather than return an arbitrary one and attribute the sender to the wrong
  * principal.
  */
-async function resolveUserPrincipalId(
+async function resolveUserPrincipal(
   db: DBExecutor,
   domain: string,
   localPart: string,
-): Promise<string | null> {
+): Promise<{ principalId: string; tenantId: string } | null> {
+  const columns = { principalId: principal.id, tenantId: principal.tenantId };
+
   const [exact] = await db
-    .select({ principalId: principal.id })
+    .select(columns)
     .from(principal)
     .innerJoin(tenant, eq(principal.tenantId, tenant.id))
     .where(
@@ -154,10 +302,10 @@ async function resolveUserPrincipalId(
       ),
     )
     .limit(1);
-  if (exact !== undefined) return exact.principalId;
+  if (exact !== undefined) return exact;
 
   const caseInsensitive = await db
-    .select({ principalId: principal.id })
+    .select(columns)
     .from(principal)
     .innerJoin(tenant, eq(principal.tenantId, tenant.id))
     .where(
@@ -177,7 +325,7 @@ async function resolveUserPrincipalId(
     );
   }
   const [only] = caseInsensitive;
-  return only === undefined ? null : only.principalId;
+  return only === undefined ? null : only;
 }
 
 /**
