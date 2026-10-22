@@ -75,6 +75,11 @@
       "types": "./dist/inbound-mail-policy.d.ts",
       "default": "./dist/inbound-mail-policy.js"
     },
+    "./mail-accept": {
+      "intx-src": "./src/mail-accept.ts",
+      "types": "./dist/mail-accept.d.ts",
+      "default": "./dist/mail-accept.js"
+    },
     "./workflow-definition": {
       "intx-src": "./src/workflow-definition.ts",
       "types": "./dist/workflow-definition.d.ts",

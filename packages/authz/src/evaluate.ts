@@ -10,7 +10,7 @@ import { matchPattern } from "./patterns";
 import { grantSpecificity } from "./specificity";
 import { evaluateConditions } from "./conditions";
 
-const EFFECT_PRIORITY: Record<Effect, number> = {
+export const EFFECT_PRIORITY: Record<Effect, number> = {
   allow: 0,
   ask: 1,
   deny: 2,
