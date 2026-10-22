@@ -193,9 +193,9 @@ export async function resolveSenderKey(
 }
 
 /**
- * The strict, coordinate-carrying resolution a mail-triggered run's invoker
- * binding needs: the sender's durable `principalId`, its `tenantId`, and its
- * admission `coordinates`.
+ * The strict, coordinate-carrying resolution a mail-triggered run's admission
+ * needs: the sender's durable `principalId`, its `tenantId`, and its admission
+ * `coordinates`.
  */
 export type ResolvedSenderPrincipal = {
   principalId: string;
@@ -205,14 +205,14 @@ export type ResolvedSenderPrincipal = {
 
 /**
  * Resolve a signed mail sender to the durable identity a mail-triggered run
- * binds as its invoker. Consumes the strict {@link resolveSenderKey} and keeps
+ * admits it by. Consumes the strict {@link resolveSenderKey} and keeps
  * the widened resolution rather than unwrapping to the key, so the sender's
  * principal, tenant, and admission coordinates carry through.
  *
  * Returns `null` when there is no durable identity to bind: an unresolvable
  * address, or a principal-less run (an acked anchor before its first trigger
  * mints a principal, for which `senderCoordinates` returns `null`). A `null`
- * fails the invoker binding closed rather than binding a partial identity. The
+ * leaves the sender unadmitted rather than admitting a partial identity. The
  * strict resolver's throw on an ambiguous address or a keyless-principal
  * invariant break is preserved for the caller to catch, so a fault never
  * silently binds an identity.

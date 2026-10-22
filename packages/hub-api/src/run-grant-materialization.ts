@@ -292,10 +292,10 @@ export function legacyMailAcceptMarkers(
 /**
  * The launch context a run's `mail.accept` accept-grants resolve against. The
  * relational markers name a coordinate that is only concrete at launch: the run
- * itself (`self` -> the deployment's workflow asset), the launching principal
- * (`invoker`), or the run's tenant. `invokerPrincipalId` is null when no invoker
- * principal resolved (e.g. an unresolvable mail sender), in which case no
- * invoker row is emitted. `legacyMailAccept` is the deployment's legacy rule,
+ * itself (`self` -> the deployment's workflow asset), its invoker of record,
+ * the deployer (`invoker`), or the run's tenant. `invokerPrincipalId` is null
+ * when the deployment has no active deployer, in which case no invoker row is
+ * emitted. `legacyMailAccept` is the deployment's legacy rule,
  * null for a deployment made after the sender gate.
  */
 export type MailAcceptGrantContext = {
@@ -327,8 +327,8 @@ function resolveMailAcceptMarker(
   }
   switch (marker) {
     case MAIL_ACCEPT_INVOKER_MARKER:
-      // No invoker principal resolved (an unresolvable mail sender threads a
-      // null invoker). Emit no invoker row rather than invent a coordinate.
+      // The deployment has no active deployer. Emit no invoker row rather
+      // than invent a coordinate.
       return ctx.invokerPrincipalId === null
         ? null
         : mailAcceptResource("principal", ctx.invokerPrincipalId);
@@ -452,10 +452,10 @@ export type StageRunGrantsFromSnapshotArgs = {
   runPrincipalId: string;
   now: Date;
   /**
-   * The launching principal's id. Resolves the snapshot's
-   * `mail.accept:invoker` marker to `mail.accept:principal:<id>`. Null when no
-   * invoker principal resolved (e.g. an unresolvable mail sender); then no
-   * invoker accept-grant row is emitted.
+   * The deployment's active deployer, its invoker of record. Resolves the
+   * snapshot's `mail.accept:invoker` marker to `mail.accept:principal:<id>`.
+   * Null when the deployment has no active deployer; then no invoker
+   * accept-grant row is emitted.
    */
   invokerPrincipalId: string | null;
   /**
@@ -621,6 +621,33 @@ export type DeployerInvokerGrantsResult =
  * longer active is unusable and is refused; one without such requirements
  * needs no deployer.
  */
+/**
+ * The deployment's active deployer -- the launch spec's source authority, its
+ * invoker of record -- or null when the launch spec records none, or names a
+ * principal outside the deployment's tenant or not active.
+ */
+export async function loadActiveDeployerId(
+  db: DBExecutor,
+  tenantId: string,
+  anchorRunId: string,
+): Promise<string | null> {
+  const [deployer] = await db
+    .select({ id: principalTable.id, status: principalTable.status })
+    .from(workflowRunLaunchSpec)
+    .innerJoin(
+      principalTable,
+      eq(principalTable.id, workflowRunLaunchSpec.sourceAuthorityPrincipalId),
+    )
+    .where(
+      and(
+        eq(workflowRunLaunchSpec.anchorRunId, anchorRunId),
+        eq(principalTable.tenantId, tenantId),
+      ),
+    )
+    .limit(1);
+  return deployer?.status === "active" ? deployer.id : null;
+}
+
 export async function collectDeployerInvokerGrants(args: {
   db: DBExecutor;
   grantStore: GrantStore;
@@ -631,21 +658,12 @@ export async function collectDeployerInvokerGrants(args: {
   if (!args.grantRequirements.some((r) => r.source === "invoker")) {
     return { ok: true, invokerGrants: [] };
   }
-  const [deployer] = await args.db
-    .select({ id: principalTable.id, status: principalTable.status })
-    .from(workflowRunLaunchSpec)
-    .innerJoin(
-      principalTable,
-      eq(principalTable.id, workflowRunLaunchSpec.sourceAuthorityPrincipalId),
-    )
-    .where(
-      and(
-        eq(workflowRunLaunchSpec.anchorRunId, args.anchorRunId),
-        eq(principalTable.tenantId, args.tenantId),
-      ),
-    )
-    .limit(1);
-  if (deployer === undefined || deployer.status !== "active") {
+  const deployerId = await loadActiveDeployerId(
+    args.db,
+    args.tenantId,
+    args.anchorRunId,
+  );
+  if (deployerId === null) {
     return {
       ok: false,
       rejection: {
@@ -658,7 +676,7 @@ export async function collectDeployerInvokerGrants(args: {
   return {
     ok: true,
     invokerGrants: await args.grantStore.collectGrants(
-      deployer.id,
+      deployerId,
       args.tenantId,
     ),
   };
@@ -1020,15 +1038,9 @@ export function createMailTriggeredRunGrantsMaterializer(
 ): (args: {
   agentAddress: string;
   runId: string;
-  senderPrincipalId: string | null;
   senderCoordinates: MailAcceptCoordinate[] | null;
 }) => Promise<MailTriggeredRunGrantsResult> {
-  return async ({
-    agentAddress,
-    runId,
-    senderPrincipalId,
-    senderCoordinates,
-  }) => {
+  return async ({ agentAddress, runId, senderCoordinates }) => {
     const topLevelRun = alias(workflowRun, "mail_triggered_top_level_run");
     const [anchor] = await deps.db
       .select({
@@ -1142,8 +1154,8 @@ export function createMailTriggeredRunGrantsMaterializer(
     // Mail starts only a deployment that has a mail trigger. A deployment with
     // another trigger starts through that trigger, and its `mail.accept` rules
     // then admit mail to the run that the start commits. Without this check, a
-    // sender that a launch rule admits would start the run as its invoker and
-    // bypass the authorization of the deployment's own trigger.
+    // sender that a launch rule admits would start the run and bypass the
+    // authorization of the deployment's own trigger.
     if (!snapshotHasMailTrigger(snapshot)) {
       return {
         outcome: "rejected",
@@ -1163,7 +1175,7 @@ export function createMailTriggeredRunGrantsMaterializer(
     // `mail.accept` rows BEFORE committing: an un-admitted sender must not
     // create or fire the run. The rows are the same derivation the staging
     // below writes: the definition's declared accept-allows resolved onto this
-    // run (`invoker`->the sender's principal, `self`->the definition's asset,
+    // run (`invoker`->the deployer, `self`->the definition's asset,
     // `tenant`->the run tenant, plus explicit coordinates).
     // `evaluateMailAdmission` filters them to the `mail.accept` namespace,
     // picks one winning grant across the sender's coordinates, and
@@ -1176,14 +1188,23 @@ export function createMailTriggeredRunGrantsMaterializer(
     // The check runs before the grant requirements resolve, so a refused
     // sender is refused as `mail_admission_denied` and costs no grant reads.
     //
-    // This check is provisional until the commit below: a staged `invoker` row
-    // names THIS sender, so two senders racing the first fire each pass it. The
-    // anchor lock serializes them, and the loser finds the winner's committed
-    // run there and is gated as a delivery to that existing run instead.
+    // This check is provisional until the commit below: two admitted senders
+    // racing the first fire each pass it. The anchor lock serializes them, and
+    // the loser finds the winner's committed run there and is gated as a
+    // delivery to that existing run instead.
+    //
+    // `invoker` names the deployer, not this sender, so which sender wins the
+    // race does not change who the rules admit. Reading the deployer is not a
+    // grant read: its grants are collected only after admission.
+    const deployerPrincipalId = await loadActiveDeployerId(
+      deps.db,
+      tenantId,
+      anchorRunId,
+    );
     const acceptRows = deriveMailAcceptGrantRows(
       snapshot,
       {
-        invokerPrincipalId: senderPrincipalId,
+        invokerPrincipalId: deployerPrincipalId,
         assetId: definitionAssetId,
         tenantId,
         runPrincipalId,
@@ -1247,11 +1268,11 @@ export function createMailTriggeredRunGrantsMaterializer(
       runId,
       runPrincipalId,
       now,
-      // The authenticated mail sender resolves the run's `mail.accept:invoker`
-      // marker; the asset behind the receiving deployment's definition is
-      // `self`. Both resolve the run's declared `mail.accept` relation
-      // markers to concrete accept-grant rows.
-      invokerPrincipalId: senderPrincipalId,
+      // The deployer resolves the run's `mail.accept:invoker` marker; the
+      // asset behind the receiving deployment's definition is `self`. Both
+      // resolve the run's declared `mail.accept` relation markers to concrete
+      // accept-grant rows.
+      invokerPrincipalId: deployerPrincipalId,
       assetId: definitionAssetId,
       legacyMailAccept: anchor.legacyMailAccept,
       invokerGrants: invoker.invokerGrants,

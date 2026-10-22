@@ -61,15 +61,19 @@ const MAIL_TRIGGER_GRANT = `mail.address:${WORKFLOW_ADDRESS}`;
 // runtime grant plus a creator-sourced and an invoker-sourced requirement. The
 // walk yields the `tool:read_file` grant; the creator requirement resolves
 // against the creator's grants and the invoker requirement against the
-// deployer's. The `mail.accept:invoker` marker declares the definition accepts
-// mail from its invoker, so the mail-transport admission gate admits the sender
-// (`invoker` resolves to the sender's own principal).
+// deployer's. The `mail.accept:tenant` marker admits the sender, a principal of
+// the run's tenant; the `mail.accept:invoker` marker resolves to the deployer.
 function snapshot(): GrantWalkSnapshot {
   return {
     perStep: [
       {
         stepId: "work",
-        grants: ["tool:read_file", MAIL_TRIGGER_GRANT, "mail.accept:invoker"],
+        grants: [
+          "tool:read_file",
+          MAIL_TRIGGER_GRANT,
+          "mail.accept:invoker",
+          "mail.accept:tenant",
+        ],
         grantEffects: { "tool:read_file": "allow" },
       },
     ],
@@ -87,7 +91,12 @@ function invokerOnlySnapshot(): GrantWalkSnapshot {
     perStep: [
       {
         stepId: "work",
-        grants: ["tool:read_file", MAIL_TRIGGER_GRANT, "mail.accept:invoker"],
+        grants: [
+          "tool:read_file",
+          MAIL_TRIGGER_GRANT,
+          "mail.accept:invoker",
+          "mail.accept:tenant",
+        ],
         grantEffects: { "tool:read_file": "allow" },
       },
     ],
@@ -592,7 +601,6 @@ const senderCoordinates: MailAcceptCoordinate[] = [
   { coordType: "tenant", id: TENANT_ID },
 ];
 const senderArgs = {
-  senderPrincipalId: SENDER_PRINCIPAL_ID,
   senderCoordinates,
 } as const;
 
@@ -802,10 +810,11 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
     const resources = result.stepGrants
       .map((g) => `${g.resource}/${g.action}`)
       .sort();
-    // The tool grant, the invoker requirement, and the resolved
-    // `mail.accept:invoker` accept-row all materialize.
+    // The tool grant, the invoker requirement, and the resolved accept rows
+    // all materialize; `mail.accept:invoker` names the deployer.
     expect(resources).toEqual([
-      "mail.accept:principal:prn_sender/accept",
+      `mail.accept:principal:${DEPLOYER_PRINCIPAL_ID}/accept`,
+      `mail.accept:tenant:${TENANT_ID}/accept`,
       "secret:other/use",
       "tool:read_file/invoke",
     ]);
@@ -839,7 +848,6 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
     // A sender admitted by its tenant coordinate but with no principal does
     // not change whose authority the run holds.
     const snapshot = invokerOnlySnapshot();
-    snapshot.perStep[0]?.grants.push("mail.accept:tenant");
     const materialize = createMailTriggeredRunGrantsMaterializer({
       runTokenStore: stubRunTokenStore,
       db: mockDb({
@@ -853,7 +861,6 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
     const result = await materialize({
       agentAddress: WORKFLOW_ADDRESS,
       runId: WORKFLOW_ADDRESS,
-      senderPrincipalId: null,
       senderCoordinates: [{ coordType: "tenant", id: TENANT_ID }],
     });
     if (result.outcome !== "materialized") {
@@ -881,7 +888,6 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
       materialize({
         agentAddress: WORKFLOW_ADDRESS,
         runId: WORKFLOW_ADDRESS,
-        senderPrincipalId: null,
         senderCoordinates: null,
       }),
     ).resolves.toMatchObject({
@@ -1250,7 +1256,6 @@ describe("createMailTriggeredRunGrantsMaterializer admission gate", () => {
       materialize({
         agentAddress: WORKFLOW_ADDRESS,
         runId: WORKFLOW_ADDRESS,
-        senderPrincipalId: SENDER_PRINCIPAL_ID,
         senderCoordinates: [
           { coordType: "principal", id: SENDER_PRINCIPAL_ID },
           { coordType: "tenant", id: TENANT_ID },
@@ -1291,7 +1296,6 @@ describe("createMailTriggeredRunGrantsMaterializer admission gate", () => {
       materialize({
         agentAddress: WORKFLOW_ADDRESS,
         runId: WORKFLOW_ADDRESS,
-        senderPrincipalId: null,
         senderCoordinates: null,
       }),
     ).resolves.toMatchObject({
@@ -1654,10 +1658,10 @@ describe("createMailTriggeredRunGrantsMaterializer committed grants", () => {
 });
 
 describe("stageRunGrantsFromSnapshot for an HTTP launch", () => {
-  test("stages the caller as the invoker of a definition with no mail trigger", async () => {
-    // The HTTP trigger route passes its caller as the invoker. A definition
+  test("stages the invoker's accept row for a definition with no mail trigger", async () => {
+    // The HTTP trigger route passes the deployer as the invoker. A definition
     // with no mail trigger carries no `mail.address:` grant, and its
-    // `mail.accept:invoker` marker still resolves to the caller.
+    // `mail.accept:invoker` marker still resolves to that invoker.
     const staged = await stageRunGrantsFromSnapshot({
       snapshot: {
         perStep: [
@@ -1673,7 +1677,7 @@ describe("stageRunGrantsFromSnapshot for an HTTP launch", () => {
       runId: "run_http_launch",
       runPrincipalId: "prn_run",
       now: new Date("2026-01-01T00:00:00.000Z"),
-      invokerPrincipalId: "prn_caller",
+      invokerPrincipalId: DEPLOYER_PRINCIPAL_ID,
       assetId: ASSET_ID,
       legacyMailAccept: null,
       invokerGrants: [],
@@ -1687,7 +1691,7 @@ describe("stageRunGrantsFromSnapshot for an HTTP launch", () => {
     expect(
       staged.stepGrants.map((g) => `${g.resource}/${g.action}`).sort(),
     ).toEqual([
-      "mail.accept:principal:prn_caller/accept",
+      `mail.accept:principal:${DEPLOYER_PRINCIPAL_ID}/accept`,
       "tool:mail_send/invoke",
     ]);
   });

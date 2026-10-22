@@ -134,15 +134,21 @@ function sendingSnapshot(): GrantWalkSnapshot {
 }
 
 const SAME_TENANT_SENDER = {
-  senderPrincipalId: "prn_colleague",
   senderCoordinates: [
     { coordType: "principal", id: "prn_colleague" },
     { coordType: "tenant", id: TENANT },
   ] satisfies MailAcceptCoordinate[],
 };
 
+// The creator deployed every deployment here, so it is their invoker.
+const DEPLOYER_SENDER = {
+  senderCoordinates: [
+    { coordType: "principal", id: CREATOR },
+    { coordType: "tenant", id: TENANT },
+  ] satisfies MailAcceptCoordinate[],
+};
+
 const OTHER_TENANT_SENDER = {
-  senderPrincipalId: "prn_outsider",
   senderCoordinates: [
     { coordType: "principal", id: "prn_outsider" },
     { coordType: "tenant", id: "tnt_other" },
@@ -608,14 +614,16 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(rowsAfterSecond[0]?.id).toBe(rowsAfterFirst[0]?.id);
     });
 
-    test("after the backfill a deployment that has not fired admits its first mail", async () => {
+    test("after the backfill a deployment that has not fired admits its first mail from its deployer", async () => {
       const firstRun = "<mail-run-first@tenant.example>";
-      const before = await materialize(firstRun, OTHER_TENANT_SENDER);
+      const before = await materialize(firstRun, DEPLOYER_SENDER);
       expect(before.outcome).toBe("rejected");
 
       await runBackfill();
 
-      const after = await materialize(firstRun, OTHER_TENANT_SENDER);
+      const outsider = await materialize(firstRun, OTHER_TENANT_SENDER);
+      expect(outsider.outcome).toBe("rejected");
+      const after = await materialize(firstRun, DEPLOYER_SENDER);
       expect(after.outcome).toBe("materialized");
     });
 
@@ -663,13 +671,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const older = await materialize(
         "<mail-run-older@tenant.example>",
-        OTHER_TENANT_SENDER,
+        DEPLOYER_SENDER,
       );
       expect(older.outcome).toBe("materialized");
 
       const newer = await materialize(
         "<mail-run-newer@tenant.example>",
-        OTHER_TENANT_SENDER,
+        DEPLOYER_SENDER,
         "run_mail_new@tenant.example",
       );
       expect(newer.outcome).toBe("rejected");

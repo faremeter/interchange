@@ -68,6 +68,7 @@ import {
   lockDispatchableAllocation,
   lockWorkflowRunState,
   collectDeployerInvokerGrants,
+  loadActiveDeployerId,
   credentialUseBindings,
   stageRunGrantsFromSnapshot,
 } from "./run-grant-materialization";
@@ -401,12 +402,16 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
         runId,
         runPrincipalId,
         now,
-        // The calling principal is the run's invoker; the asset behind the
-        // triggered deployment's definition is `self`. Both resolve the run's
-        // declared `mail.accept` relation markers to concrete accept-grant
-        // rows so an HTTP-launched run still carries them for later
-        // mail-transport delivery.
-        invokerPrincipalId: principal.id,
+        // The deployer, not the caller, is the run's invoker; the asset behind
+        // the triggered deployment's definition is `self`. Both resolve the
+        // run's declared `mail.accept` relation markers to concrete
+        // accept-grant rows so an HTTP-launched run still carries them for
+        // later mail-transport delivery.
+        invokerPrincipalId: await loadActiveDeployerId(
+          db,
+          tenant.id,
+          anchorRunId,
+        ),
         assetId: definitionAssetId,
         legacyMailAccept: anchor.legacyMailAccept,
         invokerGrants,

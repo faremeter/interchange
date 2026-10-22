@@ -1049,7 +1049,7 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
     "From: sender@example.test\r\nTo: run_anchor@tenant.example\r\nMessage-ID: <mail-1@example.test>\r\n\r\nbody",
   );
 
-  test("materializes and sends run grants before workflow mail, binding the resolved sender as invoker", async () => {
+  test("materializes and sends run grants before workflow mail, threading the resolved sender through", async () => {
     const materialized: unknown[] = [];
     const router = createAllocatedRouter({
       lookups: {
@@ -1059,7 +1059,7 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
         },
         // The strict, coordinate-carrying resolution the seam runs ONCE for the
         // fan-out. Its principal/tenant thread into the materializer as the
-        // run's invoker identity.
+        // sender it gates.
         async resolveSenderPrincipal() {
           return {
             principalId: "prn_sender",
@@ -1086,12 +1086,11 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
     await tick();
 
     // The materializer is invoked with the recipient's run id AND the once-
-    // resolved sender invoker identity threaded through the seam.
+    // resolved sender's admission coordinates threaded through the seam.
     expect(materialized).toEqual([
       {
         agentAddress: TEST_IDENTITY.workflowRunAddress,
         runId: TEST_IDENTITY.anchorRunId,
-        senderPrincipalId: "prn_sender",
         senderCoordinates: [],
       },
     ]);
@@ -1222,10 +1221,9 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
     expect(framesOfType(ws, "mail.inbound")).toHaveLength(0);
   });
 
-  test("threads null sender ids when the sender does not resolve to an invoker", async () => {
-    // An unresolvable sender yields no invoker principal; the materializer is
-    // still invoked (its own resolver fails any invoker requirement closed), but
-    // with null sender ids so no invoker authority binds.
+  test("threads null sender coordinates when the sender does not resolve", async () => {
+    // An unresolvable sender yields no principal; the materializer is still
+    // invoked, with null coordinates, so its admission gate refuses the sender.
     const materialized: unknown[] = [];
     const materializerCalled = Promise.withResolvers<undefined>();
     const router = createAllocatedRouter({
@@ -1260,7 +1258,6 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
       {
         agentAddress: TEST_IDENTITY.workflowRunAddress,
         runId: TEST_IDENTITY.anchorRunId,
-        senderPrincipalId: null,
         senderCoordinates: null,
       },
     ]);

@@ -36,9 +36,10 @@ export function isValidCoordId(id: string): boolean {
  * to the deployment. The relational toggles admit a sender the deployment stands
  * in that relation to:
  *
- * - `invoker` -- the principal that started the run: the HTTP caller, or for
- *   a mail trigger the sender whose mail fired it. A deployment has one run,
- *   so mail from any other sender needs another rule.
+ * - `invoker` -- the deployment's deployer, its invoker of record: the
+ *   principal that deployed it, a user or another run. It names the same
+ *   principal whoever triggers the run, so mail from any other sender needs
+ *   another rule.
  * - `self` -- a deployment of any definition backed by the same workflow
  *   asset. One asset backs many definitions (one per wire hash), so this
  *   trusts every definition the asset backs, not only other versions of this

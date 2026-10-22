@@ -157,13 +157,11 @@ the reply from each party that it mails.
 
 Each relation admits a sender that stands in that relation to the deployment:
 
-- `invoker` admits the principal that started the run. For a run started
-  through the HTTP trigger route, that is the caller. For a mail trigger, that
-  is the sender whose mail fired it. So the first mail can come from any
-  authenticated sender in any tenant, because that sender becomes the invoker.
-  After that, the rule admits only that invoker. A mail-trigger deployment
-  fires one time and keeps that run, so `invoker` admits the sender of its
-  first mail and no other outside sender.
+- `invoker` admits the deployment's deployer, its invoker of record: the
+  principal that deployed it, a user or another run (see "Grant Requirements
+  on Definitions" in AUTH.md). It names the same principal whoever triggers
+  the run, so it admits no other sender. A deployment that another run
+  deployed admits mail from that run.
 - `self` admits a deployment of any definition that the same workflow asset
   backs.
 - `tenant` admits any principal in the deployment's tenant.
@@ -182,11 +180,12 @@ strings of the capability walk. `defineWorkflow` rejects a grant requirement in
 the `mail.accept` namespace, so `mailAccept` is the only way to author a rule.
 
 No `mailAccept` rule admits an arbitrary outside sender: `principals` and
-`assets` name literal ids, and `invoker` admits one sender. A mail-trigger
-address that takes mail from many outside senders, such as a public support
-address, needs an operator `mail.accept` grant on the run principal. That grant
-needs a run principal, so the workflow declares `invoker` to admit the first
-mail, and the operator adds the grant after the run exists.
+`assets` name literal ids, and `invoker` admits only the deployer. A
+mail-trigger address that takes mail from many outside senders, such as a
+public support address, needs an operator `mail.accept` grant on the run
+principal, and that grant can exist only after the run exists. So the run's
+first mail must come from a sender a rule admits: the deployer, a principal of
+the run's tenant under `tenant`, or a sender `principals` or `assets` names.
 
 At launch, each rule except `correspondent` becomes a
 `mail.accept:<coord-type>:<id>` grant on the run principal. A `correspondent`
@@ -248,11 +247,10 @@ spec of its deployment:
 - Each live deployment of a definition with a mail trigger gets the legacy rule
   `invoker-correspondent` on its anchor run, and its runs get a
   `correspondent` grant for each party they mail. The `invoker` half helps
-  only a deployment that has not fired: its first fire admits any
-  authenticated sender, who becomes the invoker. A deployment that already
-  fired keeps its run, so from now on it admits only senders in its own
-  tenant and the parties it mails. To admit other outside senders, it needs an
-  operator `mail.accept` grant on the run principal.
+  only a deployment that has not fired: its first fire admits its deployer. A
+  deployment that already fired keeps its run, so from now on it admits only
+  senders in its own tenant and the parties it mails. To admit other outside
+  senders, it needs an operator `mail.accept` grant on the run principal.
 - Each live deployment of a definition with no mail trigger whose agent can
   send mail (its snapshot grants `tool:mail_send`) gets the legacy rule
   `correspondent`. Its runs get a `correspondent` grant for each party they
@@ -260,8 +258,8 @@ spec of its deployment:
 - Each live run that has a run principal, of a definition with a mail trigger
   or with any mail tool (`mail_send`, `mail_reply`, `mail_wait`, `mail_read`,
   `mail_search`, `mail_flag` or `mail_expunge`), gets a
-  `mail.accept:tenant:<id>` grant for its own tenant. The data records neither
-  the invoker of an existing run nor the parties it mailed, so an existing run
+  `mail.accept:tenant:<id>` grant for its own tenant. The backfill adds no
+  invoker row and does not know the parties it mailed, so an existing run
   admits only senders in its own tenant.
 - A deployment that has not fired has no run principal, so it gets only the
   legacy rule and no tenant grant. After its first fire, a mail-trigger

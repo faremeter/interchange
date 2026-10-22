@@ -307,10 +307,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
         systemPrompt: "You are the federated-mail receiver agent.",
         address: receiverAddress,
         agentId: `agent_${RECEIVER_ID}`,
-        // Accept mail from the triggering sender: the mail-transport admission
-        // gate stages `mail.accept:principal:<sender>` from this and admits the
-        // sender bound as the run's invoker.
-        mailAccept: { invoker: true },
+        // Accept mail from the sending run by name: the mail-transport
+        // admission gate stages `mail.accept:principal:<sender>` from this. The
+        // sender is in another tenant and did not deploy the receiver, so no
+        // relational rule admits it.
+        mailAccept: { principals: [SENDER_RUN_PRINCIPAL_ID] },
       });
       await deployWorkflowSourceForTest(env, {
         entryModule: receiverEntry,
@@ -326,7 +327,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
         sidecarId: SIDECAR_ID,
         deploymentDomain: DEPLOYMENT_DOMAIN,
         agentAddress: receiverAddress,
-        approvals: buildApprovals(receiverAddress, ["mail.accept:invoker"]),
+        approvals: buildApprovals(receiverAddress, [
+          `mail.accept:principal:${SENDER_RUN_PRINCIPAL_ID}`,
+        ]),
         config: buildConfig(RECEIVER_ID, receiverAddress, "sk-mock-receiver"),
         sources: { [RECEIVER_STEP_ID]: [inferenceSource("sk-mock-receiver")] },
       });

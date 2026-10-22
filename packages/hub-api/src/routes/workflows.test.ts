@@ -2745,6 +2745,39 @@ describe("POST /workflows/:anchorRunId/mail", () => {
     ).toHaveLength(0);
   });
 
+  test("stages the invoker accept row for the deployer, not the caller", async () => {
+    const runGrantsCalls: RunGrantsCall[] = [];
+    const app = createTestApp({
+      grants: [manageGrant()],
+      runGrantsCalls,
+      db: {
+        deploymentRow,
+        assetRow: workflowAssetRow,
+        inserts: [],
+        grantSnapshot: {
+          perStep: [
+            {
+              stepId: "work",
+              grants: ["mail.accept:invoker"],
+              grantEffects: {},
+            },
+          ],
+          grantRequirements: [],
+        },
+      },
+    });
+    const res = await app.fetch(
+      authedPost(`${base()}/${DEPLOYMENT_ID}/mail`, { content: "kick off" }),
+    );
+    expect(res.status).toBe(202);
+    const acceptRows = (runGrantsCalls[0]?.stepGrants ?? [])
+      .map((g) => g.resource)
+      .filter((resource) => resource.startsWith("mail.accept:principal:"));
+    expect(acceptRows).toEqual([
+      `mail.accept:principal:${DEPLOYER_PRINCIPAL_ID}`,
+    ]);
+  });
+
   test("mints a run token for each hub consumer and grants it the hub credential", async () => {
     const runGrantsCalls: RunGrantsCall[] = [];
     const inserts: InsertRecord[] = [];

@@ -32,7 +32,7 @@ export type WorkflowRunCredentialRefs = {
 };
 
 // The legacy mail accept rules a pre-gate deployment can hold. A deployment
-// that received mail before the gate admits its first sender as invoker and
+// that received mail before the gate admits its deployer as invoker and
 // its correspondents (`invoker-correspondent`); a deployment that only sent
 // mail admits its correspondents (`correspondent`).
 export const legacyMailAcceptRules = [
