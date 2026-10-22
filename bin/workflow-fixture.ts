@@ -131,6 +131,11 @@ export function buildWorkflowFixture(): WorkflowDefinition {
   return defineWorkflow({
     id: "wf_approval_flow",
     trigger: { type: "mail", to: WORKFLOW_FIXTURE_TRIGGER_ADDRESS },
+    // Accept mail from whoever triggers the run. The mail-transport admission
+    // gate default-denies a definition with no accept-policy, so a run started
+    // by real inbound mail needs this; an HTTP trigger stays governed by its own
+    // `workflow-run:<id>` / `manage` authorization and is unaffected.
+    mailAccept: { invoker: true },
     steps: {
       draft: step({ agent: draftAgent }),
       approval: awaitSignal({

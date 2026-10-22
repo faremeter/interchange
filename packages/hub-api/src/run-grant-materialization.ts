@@ -18,13 +18,14 @@
 // transport, so each orchestrates delivery itself around the shared
 // staging and commit below.
 
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, gt, isNull, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 
 import {
   asset,
   grant as grantTable,
   isLiveWorkflowRunStatus,
+  type LegacyMailAcceptRule,
   principal as principalTable,
   sidecarAllocation,
   workflowDefinition,
@@ -37,21 +38,40 @@ import {
   createWorkflowRunStore,
   workflowRunExecutability,
   loadDeploymentGrantSnapshot,
+  resolveSenderPrincipal,
 } from "@intx/db";
-import type { GrantStore, GrantRule } from "@intx/types/authz";
+import { getLogger } from "@intx/log";
+import type {
+  GrantStore,
+  GrantRule,
+  ConditionRegistry,
+} from "@intx/types/authz";
 import {
+  deriveWorkflowRunId,
   isSidecarAllocationDispatchable,
   type GrantRequirement,
   type GrantWalkSnapshot,
 } from "@intx/types";
+import { isMailAcceptNamespaceResource } from "@intx/types/mail-accept";
 import { RunGrantsFrame } from "@intx/types/sidecar";
 import { ToolDefinition } from "@intx/types/runtime";
-import { type MailTriggeredRunGrantsResult } from "@intx/hub-sessions";
+import {
+  MAIL_ADMISSION_DENIED_CODE,
+  type MailTriggeredRunGrantsResult,
+} from "@intx/hub-sessions";
 import {
   credentialUseGrantRules,
   runtimeGrantRules,
 } from "@intx/workflow-deploy/capabilities";
 import { deriveRunPrincipalId } from "@intx/hub-common";
+import {
+  evaluateMailAdmission,
+  MAIL_ACCEPT_ACTION,
+  mailAcceptRelationToken,
+  mailAcceptResource,
+  parseMailAcceptResource,
+  type MailAcceptCoordinate,
+} from "@intx/authz";
 
 import {
   makeGrantRow,
@@ -203,6 +223,169 @@ export function grantRowsWithLockedCredentialResolution(
   ];
 }
 
+// The id-less `mail.accept:<relation>` marker strings the capability walk
+// (`collectMailAcceptGrants`) emits for a definition's declared accept-policy.
+// There is deliberately no relation-token parser in `@intx/authz`; a marker is
+// matched by comparing it against the shared `mailAcceptRelationToken`
+// formatter for each known relation. These are computed once so the derivation
+// below compares against constants.
+const MAIL_ACCEPT_INVOKER_MARKER = mailAcceptRelationToken("invoker");
+const MAIL_ACCEPT_SELF_MARKER = mailAcceptRelationToken("self");
+const MAIL_ACCEPT_TENANT_MARKER = mailAcceptRelationToken("tenant");
+const MAIL_ACCEPT_CORRESPONDENT_MARKER =
+  mailAcceptRelationToken("correspondent");
+
+const MAIL_ADDRESS_GRANT_PREFIX = "mail.address:";
+
+/**
+ * The relation markers a deployment's legacy mail accept rule stands for. A
+ * deployment that predates the sender gate holds the rule on its anchor run
+ * (see `workflowRun.legacyMailAccept`); its markers add to the ones in the
+ * shared definition snapshot.
+ */
+export function legacyMailAcceptMarkers(
+  rule: LegacyMailAcceptRule | null,
+): readonly string[] {
+  switch (rule) {
+    case null:
+      return [];
+    case "invoker-correspondent":
+      return [MAIL_ACCEPT_INVOKER_MARKER, MAIL_ACCEPT_CORRESPONDENT_MARKER];
+    case "correspondent":
+      return [MAIL_ACCEPT_CORRESPONDENT_MARKER];
+    default: {
+      const _exhaustive: never = rule;
+      throw new Error(
+        `unhandled legacy mail accept rule: ${String(_exhaustive)}`,
+      );
+    }
+  }
+}
+
+/**
+ * The launch context a run's `mail.accept` accept-grants resolve against. The
+ * relational markers name a coordinate that is only concrete at launch: the run
+ * itself (`self` -> the deployment's workflow asset), the launching principal
+ * (`invoker`), or the run's tenant. `invokerPrincipalId` is null when no invoker
+ * principal resolved (e.g. an unresolvable mail sender), in which case no
+ * invoker row is emitted. `legacyMailAccept` is the deployment's legacy rule,
+ * null for a deployment made after the sender gate.
+ */
+export type MailAcceptGrantContext = {
+  invokerPrincipalId: string | null;
+  assetId: string;
+  tenantId: string;
+  runPrincipalId: string;
+  legacyMailAccept: LegacyMailAcceptRule | null;
+};
+
+/**
+ * Resolve one `mail.accept:*` snapshot marker to the concrete
+ * `mail.accept:<coord-type>:<id>` resource string it materializes as, or `null`
+ * when it must not emit a launch row. Throws on an unrecognized `mail.accept`
+ * marker so a corrupt snapshot fails loudly rather than silently dropping an
+ * accept-grant.
+ */
+function resolveMailAcceptMarker(
+  marker: string,
+  ctx: MailAcceptGrantContext,
+): string | null {
+  // An explicit concrete coordinate (`mail.accept:principal:<id>` /
+  // `mail.accept:asset:<id>`) is already resolved at deploy time; pass it
+  // through unchanged. A coordinate whose id is a `*` pattern does not parse,
+  // so it falls to the unrecognized-marker throw below and can never become a
+  // grant that admits many senders.
+  if (parseMailAcceptResource(marker) !== null) {
+    return marker;
+  }
+  switch (marker) {
+    case MAIL_ACCEPT_INVOKER_MARKER:
+      // No invoker principal resolved (an unresolvable mail sender threads a
+      // null invoker). Emit no invoker row rather than invent a coordinate.
+      return ctx.invokerPrincipalId === null
+        ? null
+        : mailAcceptResource("principal", ctx.invokerPrincipalId);
+    case MAIL_ACCEPT_SELF_MARKER:
+      return mailAcceptResource("asset", ctx.assetId);
+    case MAIL_ACCEPT_TENANT_MARKER:
+      return mailAcceptResource("tenant", ctx.tenantId);
+    case MAIL_ACCEPT_CORRESPONDENT_MARKER:
+      // `correspondent` is dynamic: the counterparty is not known from the
+      // frozen definition at launch -- it is the party the run mails, resolved
+      // and minted at the send instant (see `createCorrespondentGrantMinter`).
+      // So it materializes no launch row; skipped here without error. Its
+      // presence in the snapshot is the deploy-time approval the send-time mint
+      // gates on.
+      return null;
+    default:
+      throw new Error(
+        `deriveMailAcceptGrantRows: unrecognized mail.accept marker ${JSON.stringify(marker)}; the grant-walk snapshot must emit only known relation tokens or concrete coordinates`,
+      );
+  }
+}
+
+/**
+ * Project the frozen grant-walk snapshot's `mail.accept:*` markers into the
+ * run's concrete accept-grant rows at launch. This rides the SAME materialization path as
+ * `deriveRunRuntimeGrantRows` (which stays pure over `tool:`/`effect:`): a
+ * definition's declared accept-relations become concrete
+ * `mail.accept:<coord-type>:<id>` grant rows on the run principal so later
+ * inbound mail transport can authorize delivery against them.
+ *
+ * `invoker` resolves to `mail.accept:principal:<invokerPrincipalId>` (skipped
+ * when no invoker resolved), `self` to `mail.accept:asset:<assetId>`,
+ * and `tenant` to `mail.accept:tenant:<tenantId>`. Explicit concrete
+ * coordinates pass through. `correspondent` is dynamic and not materializable
+ * at launch (it is minted at the send instant), so it is skipped. Rows are
+ * deduplicated by
+ * resolved resource string (markers repeat per step, and `self`/`invoker` may
+ * collide with an explicit coordinate), mirroring the runtime derivation's
+ * per-resource dedup. The markers of the deployment's legacy rule, if any,
+ * resolve the same way. Every emitted row is a creator-origin
+ * `accept`/`allow` grant with no conditions and no expiry.
+ */
+export function deriveMailAcceptGrantRows(
+  snapshot: GrantWalkSnapshot,
+  ctx: MailAcceptGrantContext,
+  now: Date,
+): MaterializedGrantRow[] {
+  const resources = new Set<string>();
+  const markers = [
+    ...snapshot.perStep.flatMap((step) => step.grants),
+    ...legacyMailAcceptMarkers(ctx.legacyMailAccept),
+  ];
+  for (const grant of markers) {
+    if (!isMailAcceptNamespaceResource(grant)) continue;
+    const resolved = resolveMailAcceptMarker(grant, ctx);
+    if (resolved !== null) resources.add(resolved);
+  }
+
+  return [...resources].map((resource) =>
+    makeGrantRow({
+      tenantId: ctx.tenantId,
+      principalId: ctx.runPrincipalId,
+      resource,
+      action: MAIL_ACCEPT_ACTION,
+      effect: "allow",
+      conditions: null,
+      origin: "creator",
+      expiresAt: null,
+      now,
+    }),
+  );
+}
+
+/**
+ * Whether the frozen grant-walk snapshot belongs to a definition with a mail
+ * trigger. The capability walk emits a `mail.address:<address>` grant for each
+ * mail trigger, so that grant is the snapshot's record of the trigger.
+ */
+function snapshotHasMailTrigger(snapshot: GrantWalkSnapshot): boolean {
+  return snapshot.perStep.some((step) =>
+    step.grants.some((grant) => grant.startsWith(MAIL_ADDRESS_GRANT_PREFIX)),
+  );
+}
+
 /**
  * Project a materialized run grant row into the `run.grants` wire shape --
  * the same `WireGrantRule` encoding the `agent.deploy` frame's
@@ -237,17 +420,35 @@ export type StageRunGrantsFromSnapshotArgs = {
   runPrincipalId: string;
   now: Date;
   /**
+   * The launching principal's id -- the run's invoker. Resolves the snapshot's
+   * `mail.accept:invoker` marker to `mail.accept:principal:<id>`. Null when no
+   * invoker principal resolved (e.g. an unresolvable mail sender); then no
+   * invoker accept-grant row is emitted.
+   */
+  invokerPrincipalId: string | null;
+  /**
+   * The workflow asset that backs the deployment's definition -- resolves the
+   * snapshot's `mail.accept:self` marker to `mail.accept:asset:<assetId>`.
+   */
+  assetId: string;
+  /**
+   * The deployment's legacy mail accept rule from its anchor run, null for a
+   * deployment made after the sender gate. Its markers add to the snapshot's.
+   */
+  legacyMailAccept: LegacyMailAcceptRule | null;
+  /**
    * Declared invoker grants resolved against the launching principal's
-   * authority. The mail path passes an empty set (no invoker is on the
-   * wire); the external trigger route passes the caller's grants.
+   * authority. The external trigger route passes the caller's grants; the mail
+   * path passes the authenticated sender's grants (empty when the sender did
+   * not resolve to an invoker principal).
    */
   invokerGrants: GrantRule[];
   /** Declared creator grants resolved against the definition asset's creator. */
   creatorGrants: GrantRule[];
   /**
-   * Grant requirements to resolve. The mail path pre-filters the snapshot's
-   * requirements to the non-invoker ones before calling; the external route
-   * passes the snapshot's requirements unfiltered.
+   * Grant requirements to resolve. Both call sites pass the snapshot's
+   * requirements unfiltered, so an invoker-sourced requirement resolves against
+   * the passed `invokerGrants` and fails closed when they are insufficient.
    */
   grantRequirements: readonly GrantRequirement[];
   /**
@@ -290,6 +491,21 @@ export async function stageRunGrantsFromSnapshot(
     args.now,
   );
 
+  // Ride the same path to project the run's `mail.accept:*` accept-grants from
+  // the snapshot's declared relation markers. Kept separate from
+  // `deriveRunRuntimeGrantRows`, which stays pure over `tool:`/`effect:`.
+  const mailAcceptGrantRows = deriveMailAcceptGrantRows(
+    args.snapshot,
+    {
+      invokerPrincipalId: args.invokerPrincipalId,
+      assetId: args.assetId,
+      tenantId: args.tenantId,
+      runPrincipalId: args.runPrincipalId,
+      legacyMailAccept: args.legacyMailAccept,
+    },
+    args.now,
+  );
+
   const materialization = await resolveGrantMaterialization({
     tenantId: args.tenantId,
     targetPrincipalId: args.runPrincipalId,
@@ -312,6 +528,7 @@ export async function stageRunGrantsFromSnapshot(
 
   const grantRows = [
     ...runtimeGrantRows,
+    ...mailAcceptGrantRows,
     ...materialization.grantRows,
     ...credentialGrantRows,
   ];
@@ -643,7 +860,33 @@ export type MailTriggeredRunGrantsDeps = {
   db: DB["db"];
   principalKeyStore: PrincipalKeyStore;
   grantStore: GrantStore;
+  // The hub's condition registry, passed to the admission evaluator so a
+  // conditioned operator `mail.accept` deny (collected on the deliver path) is
+  // honored rather than skipped. Omitted here means the evaluator throws (fails
+  // closed) if it ever meets a conditioned grant; production supplies it.
+  registry?: ConditionRegistry;
 };
+
+/**
+ * Adapt a staged `MaterializedGrantRow` to the `GrantRule` shape
+ * `evaluateMailAdmission` reads. A staged run grant is always a direct
+ * principal grant, so `roleId` is null. Only the `mail.accept:*` rows drive
+ * the decision; `evaluateMailAdmission` filters to that namespace itself, so
+ * the full staged set can be passed through unchanged.
+ */
+function materializedRowToGrantRule(row: MaterializedGrantRow): GrantRule {
+  return {
+    id: row.id,
+    resource: row.resource,
+    action: row.action,
+    effect: row.effect,
+    origin: row.origin,
+    conditions: row.conditions,
+    expiresAt: row.expiresAt,
+    roleId: null,
+    principalId: row.principalId,
+  };
+}
 
 /**
  * Build the mail-triggered run-grants materializer the sidecar router's
@@ -651,20 +894,21 @@ export type MailTriggeredRunGrantsDeps = {
  *
  * A mail-triggered run derives its grants from the RECEIVING deployment's
  * frozen snapshot and from that deployment's anchor: the snapshot's
- * `tool:`/`effect:` runtime grants, the CREATOR-resolved declared
- * requirements, and the anchor's resolved credential-binding grants.
+ * `tool:`/`effect:` runtime grants, the declared requirements resolved against
+ * their sources, and the anchor's resolved credential-binding grants.
  * A first commit returns `notReady` and writes nothing while initialization
  * has not published credential resolution. That is an anchor with neither a
  * public key nor credential refs, or one whose allocation holds an
  * initialization lease. Committing during the lease would freeze the
  * previous bindings.
- * Invoker-sourced requirements are
- * NOT materialized -- no invoker is on the wire -- and the run still
- * launches: a step that needs an invoker grant fails closed at its own
- * authz check. The snapshot's requirements are pre-filtered to
- * `source !== "invoker"` before staging, so `resolveGrantMaterialization`
- * keeps its reject-on-insufficient-invoker contract intact for the external
- * route.
+ * Creator-sourced requirements resolve against the workflow asset's creator;
+ * invoker-sourced requirements resolve against the authenticated mail sender's
+ * grants, binding the sender as the run's invoker -- the mail equivalent of the
+ * HTTP-trigger route resolving its calling principal as invoker. The sender's
+ * `(principalId, tenantId)` are resolved ONCE at the mail seam and threaded in;
+ * when the sender did not resolve to a concrete invoker principal both are
+ * `null`, no invoker grants are collected, and any invoker-sourced requirement
+ * fails closed in `resolveGrantMaterialization`.
  *
  * The materializer reserves the stable run and its immutable grants before
  * delivery. A delivery failure can therefore leave a grants-only run, which
@@ -676,8 +920,15 @@ export function createMailTriggeredRunGrantsMaterializer(
 ): (args: {
   agentAddress: string;
   runId: string;
+  senderPrincipalId: string | null;
+  senderCoordinates: MailAcceptCoordinate[] | null;
 }) => Promise<MailTriggeredRunGrantsResult> {
-  return async ({ agentAddress, runId }) => {
+  return async ({
+    agentAddress,
+    runId,
+    senderPrincipalId,
+    senderCoordinates,
+  }) => {
     const topLevelRun = alias(workflowRun, "mail_triggered_top_level_run");
     const [anchor] = await deps.db
       .select({
@@ -690,6 +941,7 @@ export function createMailTriggeredRunGrantsMaterializer(
         anchorCancellationRequestedAt: workflowRun.cancellationRequestedAt,
         topLevelRunStatus: topLevelRun.status,
         credentialRefs: workflowRun.credentialRefs,
+        legacyMailAccept: workflowRun.legacyMailAccept,
       })
       .from(workflowRun)
       .innerJoin(
@@ -738,13 +990,45 @@ export function createMailTriggeredRunGrantsMaterializer(
     const tenantId = anchor.tenantId;
     const anchorRunId = anchor.anchorRunId;
 
-    const committed = await loadCommittedRunGrants(deps.db, tenantId, runId);
-    if (committed !== null) {
+    // Deliver-to-existing admission. Gate the sender against the run's
+    // COLLECTED grants (not `loadCommittedRunGrants`, which reads only the run
+    // principal's direct rows): `collectGrants` returns the run principal's
+    // direct grants and the grants of its roles in the run's tenant, so an
+    // operator `deny mail.accept:…` on the run principal or one of its roles is
+    // honored. It does not walk the tenant chain. A `null` sender coordinate set
+    // (an unresolvable/ambiguous sender) is never admitted. Same-tenant scoping
+    // is inherent in the coordinate ids: a `principal`/`asset` coordinate
+    // carries a globally-unique id, and the `tenant` coordinate carries the
+    // sender's own tenant, so a cross-tenant sender only matches a rule that
+    // explicitly names its ids.
+    const admitToCommittedRun = async (
+      committed: CommittedRunGrants,
+    ): Promise<MailTriggeredRunGrantsResult> => {
+      const recipientGrants = await deps.grantStore.collectGrants(
+        committed.runPrincipalId,
+        tenantId,
+      );
+      const admission = await evaluateMailAdmission({
+        senderCoordinates,
+        recipientGrants,
+        ...(deps.registry ? { registry: deps.registry } : {}),
+      });
+      if (!admission.admit) {
+        return {
+          outcome: "rejected",
+          status: 403,
+          code: MAIL_ADMISSION_DENIED_CODE,
+          message: `Workflow run ${runId} does not admit mail from this sender`,
+        };
+      }
       return {
         outcome: "materialized",
         stepGrants: committed.stepGrants,
       };
-    }
+    };
+
+    const committed = await loadCommittedRunGrants(deps.db, tenantId, runId);
+    if (committed !== null) return admitToCommittedRun(committed);
 
     const snapshot = await loadDeploymentGrantSnapshot(deps.db, anchorRunId);
     if (snapshot === null) {
@@ -755,12 +1039,90 @@ export function createMailTriggeredRunGrantsMaterializer(
       );
     }
 
-    // Invoker-sourced requirements are not materialized on the mail path:
-    // filter them out BEFORE staging rather than teaching the resolver a skip
-    // mode, so the external route keeps resolving invoker grants.
-    const creatorRequirements = snapshot.grantRequirements.filter(
-      (r) => r.source !== "invoker",
+    // Mail starts only a deployment that has a mail trigger. A deployment with
+    // another trigger starts through that trigger, and its `mail.accept` rules
+    // then admit mail to the run that the start commits. Without this check, a
+    // sender that a launch rule admits would start the run as its invoker and
+    // bypass the authorization of the deployment's own trigger.
+    if (!snapshotHasMailTrigger(snapshot)) {
+      return {
+        outcome: "rejected",
+        status: 403,
+        code: MAIL_ADMISSION_DENIED_CODE,
+        message: `Workflow run ${runId} has no mail trigger and does not start by mail`,
+      };
+    }
+
+    // Derive the run principal id from `(tenantId, runId)`. The runId is the
+    // stable deployment address, so all trigger occurrences resolve the same
+    // principal and canonical grant snapshot.
+    const runPrincipalId = await deriveRunPrincipalId(tenantId, runId);
+    const now = new Date();
+
+    // Start (first-fire) admission. Gate the sender against the run's
+    // `mail.accept` rows BEFORE committing: an un-admitted sender must not
+    // create or fire the run. The rows are the same derivation the staging
+    // below writes: the definition's declared accept-allows resolved onto this
+    // run (`invoker`->the sender's principal, `self`->the definition's asset,
+    // `tenant`->the run tenant, plus explicit coordinates).
+    // `evaluateMailAdmission` filters them to the `mail.accept` namespace,
+    // picks one winning grant across the sender's coordinates, and
+    // default-denies when none match. A `null` sender coordinate set is never
+    // admitted. The run principal does not exist before this commit, so no
+    // operator grant can target it yet: first-fire admission is governed by the
+    // deploy-approved accept surface alone, and an operator deny on the run
+    // principal binds from the next delivery on.
+    //
+    // The check runs before the grant requirements resolve, so a refused
+    // sender is refused as `mail_admission_denied` and costs no grant reads.
+    //
+    // This check is provisional until the commit below: a staged `invoker` row
+    // names THIS sender, so two senders racing the first fire each pass it. The
+    // anchor lock serializes them, and the loser finds the winner's committed
+    // run there and is gated as a delivery to that existing run instead.
+    const acceptRows = deriveMailAcceptGrantRows(
+      snapshot,
+      {
+        invokerPrincipalId: senderPrincipalId,
+        assetId: definitionAssetId,
+        tenantId,
+        runPrincipalId,
+        legacyMailAccept: anchor.legacyMailAccept,
+      },
+      now,
     );
+    const admission = await evaluateMailAdmission({
+      senderCoordinates,
+      recipientGrants: acceptRows.map(materializedRowToGrantRule),
+      ...(deps.registry ? { registry: deps.registry } : {}),
+    });
+    if (!admission.admit) {
+      return {
+        outcome: "rejected",
+        status: 403,
+        code: MAIL_ADMISSION_DENIED_CODE,
+        message: `Workflow run ${runId} does not admit mail from this sender`,
+      };
+    }
+
+    // The definition's FULL declared requirements are resolved -- both creator-
+    // and invoker-sourced -- so an invoker requirement materializes against the
+    // sender's grants rather than being stripped. Passing the unfiltered list
+    // keeps `resolveGrantMaterialization`'s reject-on-insufficient-invoker
+    // contract intact, so an invoker requirement the sender cannot satisfy fails
+    // the run closed instead of launching under-authorized.
+    const declaredGrantRequirements = snapshot.grantRequirements;
+
+    // Invoker authority is the authenticated mail sender's grants, binding the
+    // sender as the run's invoker. Resolved live per run in the RUN's tenant,
+    // the same as the HTTP trigger route: a sender from another tenant holds no
+    // authority here, whatever it holds in its own tenant. A null sender (an
+    // unresolvable/ambiguous sender, or none resolved) collects nothing, so an
+    // invoker-sourced requirement fails closed in the staging below.
+    const invokerGrants =
+      senderPrincipalId !== null
+        ? await deps.grantStore.collectGrants(senderPrincipalId, tenantId)
+        : [];
 
     // Creator authority is resolved LIVE per run: the definition's grant SHAPE
     // is frozen in the snapshot, but which grants the creator currently holds
@@ -775,22 +1137,24 @@ export function createMailTriggeredRunGrantsMaterializer(
       deps.grantStore,
       tenantId,
       creatorPrincipalId,
-      creatorRequirements,
+      declaredGrantRequirements,
     );
 
-    // Derive the run principal id from `(tenantId, runId)`. The runId is the
-    // stable deployment address, so all trigger occurrences resolve the same
-    // principal and canonical grant snapshot.
-    const runPrincipalId = await deriveRunPrincipalId(tenantId, runId);
-    const now = new Date();
     const staged = await stageRunGrantsFromSnapshot({
       snapshot,
       tenantId: tenantId,
       runPrincipalId,
       now,
-      invokerGrants: [],
+      // The authenticated mail sender is the run's invoker; the asset behind
+      // the receiving deployment's definition is `self`. Both resolve the
+      // run's declared `mail.accept` relation markers to concrete accept-grant
+      // rows.
+      invokerPrincipalId: senderPrincipalId,
+      assetId: definitionAssetId,
+      legacyMailAccept: anchor.legacyMailAccept,
+      invokerGrants,
       creatorGrants,
-      grantRequirements: creatorRequirements,
+      grantRequirements: declaredGrantRequirements,
       credentialBindings: anchor.credentialRefs?.bindings ?? [],
     });
     if (!staged.ok) {
@@ -812,6 +1176,17 @@ export function createMailTriggeredRunGrantsMaterializer(
         return anchorState === "stopping" ? anchorState : "terminal";
       const runState = await lockWorkflowRunState(tx, anchorRunId, runId);
       if (runState === "stopping" || runState === "terminal") return runState;
+      // A sender that raced this first fire and lost finds the winner's run
+      // committed once it holds the anchor lock. `commitRunGrants` would also
+      // see it, but only after the credential-resolution gate below, which can
+      // park mail to a run that is already live; check here so the loser goes
+      // straight to deliver-to-existing admission.
+      const raced = await loadCommittedRunGrantsFromExecutor(
+        tx,
+        tenantId,
+        runId,
+      );
+      if (raced !== null) return { committedByAnotherSender: raced };
       const resolution = await lockAnchorCredentialResolution(tx, anchorRunId);
       if (resolution === null) {
         throw new Error(
@@ -842,9 +1217,264 @@ export function createMailTriggeredRunGrantsMaterializer(
     if (reserved === "not-ready") return { outcome: "notReady" };
     if (reserved === "stopping" || reserved === "terminal")
       return unavailableRunResult(runId, reserved);
+    if ("committedByAnotherSender" in reserved)
+      return admitToCommittedRun(reserved.committedByAnotherSender);
     return {
       outcome: "materialized",
       stepGrants: reserved,
     };
+  };
+}
+
+const correspondentLogger = getLogger(["hub-api", "correspondent-grant"]);
+
+/**
+ * Resolve the principal a correspondent's reply will present. A party with a
+ * durable identity resolves through the same `resolveSenderPrincipal` the reply
+ * resolves through. A local deployment that `resolveSenderPrincipal` cannot
+ * resolve -- one that has not fired yet (the first fire sets its principal), or
+ * one whose signing key is cleared while its sidecar is replaced -- resolves
+ * from its anchor row instead: the committed principal when there is one, else
+ * the id the first fire derives, `deriveRunPrincipalId(tenantId, runId)` with
+ * the runId taken from the deployment address, exactly as the mail seam and the
+ * trigger route derive it. A committed principal is that same derived id, so a
+ * first fire that commits concurrently cannot make the two disagree. The anchor
+ * is matched on its exact stored address, as the mail materializer matches it.
+ *
+ * Only an executable anchor qualifies: a stopping or terminal deployment never
+ * fires or replies, so a row for it would be dead weight. An anchor without a
+ * signing key also qualifies; its reply cannot be signed until it acks, so the
+ * row stays inert until then. Anything else resolves to `null`.
+ */
+async function resolveCorrespondentPrincipalId(
+  tx: DBExecutor,
+  principalKeyStore: PrincipalKeyStore,
+  address: string,
+  now: Date,
+): Promise<string | null> {
+  const resolved = await resolveSenderPrincipal(tx, principalKeyStore, address);
+  if (resolved !== null) return resolved.principalId;
+
+  const [anchor] = await tx
+    .select({
+      id: workflowRun.id,
+      anchorRunId: workflowRun.anchorRunId,
+      tenantId: workflowRun.tenantId,
+      principalId: workflowRun.principalId,
+      status: workflowRun.status,
+      expiresAt: workflowRun.expiresAt,
+      cancellationRequestedAt: workflowRun.cancellationRequestedAt,
+    })
+    .from(workflowRun)
+    .where(eq(workflowRun.address, address))
+    .limit(1);
+  if (
+    anchor === undefined ||
+    anchor.anchorRunId !== anchor.id ||
+    workflowRunExecutability(anchor, now) !== "executable"
+  ) {
+    return null;
+  }
+  return (
+    anchor.principalId ??
+    deriveRunPrincipalId(anchor.tenantId, deriveWorkflowRunId(address))
+  );
+}
+
+/**
+ * Report whether the sending deployment holds the `correspondent` relation:
+ * a legacy rule that includes it, or the approved `mail.accept:correspondent`
+ * marker in the grant snapshot of its launch spec.
+ */
+async function holdsCorrespondentRule(
+  executor: DBExecutor,
+  sender: {
+    runId: string;
+    legacyMailAccept: LegacyMailAcceptRule | null;
+  },
+): Promise<boolean> {
+  if (
+    legacyMailAcceptMarkers(sender.legacyMailAccept).includes(
+      MAIL_ACCEPT_CORRESPONDENT_MARKER,
+    )
+  ) {
+    return true;
+  }
+  const snapshot = await loadDeploymentGrantSnapshot(executor, sender.runId);
+  if (snapshot === null) return false;
+  return snapshot.perStep.some((step) =>
+    step.grants.includes(MAIL_ACCEPT_CORRESPONDENT_MARKER),
+  );
+}
+
+export type CorrespondentGrantMinterDeps = {
+  db: DB["db"];
+  principalKeyStore: PrincipalKeyStore;
+};
+
+/**
+ * Mint the accept-grant that admits a reply from a party a run mails -- the
+ * dynamic `correspondent` relation. Launch
+ * materialization cannot enumerate future correspondents, so the grant is
+ * committed at the send instant instead: when an executable run mails a party,
+ * a `mail.accept:principal:<recipient>` allow row is added to the SENDING run's
+ * principal, so the reply (recipient -> sender) is admitted by the ordinary
+ * deliver-to-existing gate with no new admission path. The recipient is
+ * resolved to the principal id its reply will present (see
+ * `resolveCorrespondentPrincipalId`), so the minted grant matches the
+ * coordinate the reply carries.
+ *
+ * Fail-closed and bounded:
+ * - The sending deployment must carry the approved `mail.accept:correspondent`
+ *   marker in its launch-spec snapshot, or hold a legacy rule that includes
+ *   it; absent both, nothing is minted.
+ * - A stopping, terminal, or absent sending run mints nothing. The row is only
+ *   reachable while the run is executable. The run principal id derives from
+ *   the tenant and the stable run id, so the bound is that a terminal run
+ *   stays terminal and receives no new grant. A stopping run (cancellation
+ *   requested or deadline passed) cannot receive the reply, so a row would be
+ *   dead weight.
+ * - A principal-less sending run or an unresolvable/external recipient mints
+ *   nothing. A local deployment that has not fired yet has no principal on its
+ *   anchor row; it is minted for the principal its first fire will create (see
+ *   `resolveCorrespondentPrincipalId`), so the reply to a first contact is
+ *   admitted.
+ * - The insert is deduplicated under a `FOR UPDATE` lock on the sending run, so
+ *   a repeat mail to the same recipient does not accrue a second row.
+ * - A sending deployment with no `correspondent` relation takes no lock: an
+ *   unlocked read finds no rule and returns before the transaction.
+ *
+ * All recipients of one outbound mail are handled in one transaction: the
+ * sending run is locked and its `correspondent` authorization checked once, then
+ * each recipient is resolved and inserted under that one lock -- the
+ * authorization is invariant across the fan-out, so it is not re-derived per
+ * recipient. Each recipient runs in its own savepoint, so a fault on one
+ * recipient rolls back only that recipient's grant.
+ *
+ * Best-effort: minting is a side effect of sending and MUST NOT break delivery,
+ * so any fault degrades to no grant and is logged, mirroring the send path's
+ * frame-key resolver.
+ */
+export function createCorrespondentGrantMinter(
+  deps: CorrespondentGrantMinterDeps,
+): (args: {
+  senderAddress: string;
+  recipientAddresses: string[];
+}) => Promise<void> {
+  return async (args) => {
+    const senderAddress = args.senderAddress.toLowerCase();
+    try {
+      // Most outbound mail comes from a deployment with no `correspondent`
+      // rule. Check the rule without a lock first, so that mail opens no
+      // transaction and does not serialize the run's sends. The locked path
+      // checks the rule again, so a mint never depends on this read.
+      const [candidate] = await deps.db
+        .select({
+          runId: workflowRun.id,
+          legacyMailAccept: workflowRun.legacyMailAccept,
+        })
+        .from(workflowRun)
+        .where(eq(sql`lower(${workflowRun.address})`, senderAddress))
+        .limit(1);
+      if (candidate === undefined) return;
+      if (!(await holdsCorrespondentRule(deps.db, candidate))) return;
+
+      await deps.db.transaction(async (tx) => {
+        // Lock the SENDING run row once. A stopping/terminal/absent run mints
+        // nothing, and the lock serializes concurrent sends from the same run
+        // so the per-recipient dedup below cannot be raced.
+        const [sender] = await tx
+          .select({
+            status: workflowRun.status,
+            runId: workflowRun.id,
+            principalId: workflowRun.principalId,
+            tenantId: workflowRun.tenantId,
+            expiresAt: workflowRun.expiresAt,
+            cancellationRequestedAt: workflowRun.cancellationRequestedAt,
+            legacyMailAccept: workflowRun.legacyMailAccept,
+          })
+          .from(workflowRun)
+          .where(eq(sql`lower(${workflowRun.address})`, senderAddress))
+          .limit(1)
+          .for("update");
+        if (sender === undefined) return;
+        const now = new Date();
+        if (workflowRunExecutability(sender, now) !== "executable") return;
+        if (sender.principalId === null) return;
+        const senderPrincipalId = sender.principalId;
+
+        // Gate: the sending deployment must have been approved for the
+        // `correspondent` relation, or hold it as its legacy rule. The sending
+        // run is the deployment's anchor, the only run with an address. This
+        // holds for every recipient of this mail, so check it once.
+        if (!(await holdsCorrespondentRule(tx, sender))) return;
+
+        for (const recipientAddress of args.recipientAddresses) {
+          // Each recipient runs in its own savepoint. A recipient that fails to
+          // resolve or insert (an ambiguous user address, a keyless principal,
+          // a query fault) rolls back only its own work, so it never costs a
+          // co-recipient of the same mail its grant.
+          try {
+            await tx.transaction(async (sp) => {
+              const recipientPrincipalId =
+                await resolveCorrespondentPrincipalId(
+                  sp,
+                  deps.principalKeyStore,
+                  recipientAddress,
+                  now,
+                );
+              if (recipientPrincipalId === null) return;
+
+              const resource = mailAcceptResource(
+                "principal",
+                recipientPrincipalId,
+              );
+              // No unique constraint exists on `(principalId, resource,
+              // action)` (a principal may hold both an allow and a deny), so
+              // dedup with a guarded insert under the run lock rather than an
+              // ON CONFLICT. An expired row no longer admits or refuses, so it
+              // does not count.
+              const [existing] = await sp
+                .select({ id: grantTable.id })
+                .from(grantTable)
+                .where(
+                  and(
+                    eq(grantTable.principalId, senderPrincipalId),
+                    eq(grantTable.resource, resource),
+                    eq(grantTable.action, MAIL_ACCEPT_ACTION),
+                    or(
+                      isNull(grantTable.expiresAt),
+                      gt(grantTable.expiresAt, now),
+                    ),
+                  ),
+                )
+                .limit(1);
+              if (existing !== undefined) return;
+
+              await sp.insert(grantTable).values(
+                makeGrantRow({
+                  tenantId: sender.tenantId,
+                  principalId: senderPrincipalId,
+                  resource,
+                  action: MAIL_ACCEPT_ACTION,
+                  effect: "allow",
+                  conditions: null,
+                  // A correspondent grant materializes the definition's
+                  // creator-declared `correspondent` policy, so it shares the
+                  // `creator` provenance of the launch-time `mail.accept` rows.
+                  origin: "creator",
+                  expiresAt: null,
+                  now,
+                }),
+              );
+            });
+          } catch (cause) {
+            correspondentLogger.error`Failed to mint a correspondent accept-grant for sender ${args.senderAddress} to recipient ${recipientAddress}: ${cause instanceof Error ? cause.message : String(cause)}`;
+          }
+        }
+      });
+    } catch (cause) {
+      correspondentLogger.error`Failed to mint correspondent accept-grants for sender ${args.senderAddress}: ${cause instanceof Error ? cause.message : String(cause)}`;
+    }
   };
 }

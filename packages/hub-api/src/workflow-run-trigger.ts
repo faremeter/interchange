@@ -220,6 +220,7 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
         anchorStatus: workflowRun.status,
         runStatus: topLevelRun.status,
         credentialRefs: workflowRun.credentialRefs,
+        legacyMailAccept: workflowRun.legacyMailAccept,
       })
       .from(workflowRun)
       .innerJoin(
@@ -382,6 +383,14 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
         tenantId: tenant.id,
         runPrincipalId,
         now,
+        // The calling principal is the run's invoker; the asset behind the
+        // triggered deployment's definition is `self`. Both resolve the run's
+        // declared `mail.accept` relation markers to concrete accept-grant
+        // rows so an HTTP-launched run still carries them for later
+        // mail-transport delivery.
+        invokerPrincipalId: principal.id,
+        assetId: definitionAssetId,
+        legacyMailAccept: anchor.legacyMailAccept,
         invokerGrants,
         creatorGrants,
         grantRequirements: declaredGrantRequirements,

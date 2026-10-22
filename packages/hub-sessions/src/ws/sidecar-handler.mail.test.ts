@@ -928,13 +928,23 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
     "From: sender@example.test\r\nTo: run_anchor@tenant.example\r\nMessage-ID: <mail-1@example.test>\r\n\r\nbody",
   );
 
-  test("materializes and sends run grants before workflow mail", async () => {
+  test("materializes and sends run grants before workflow mail, binding the resolved sender as invoker", async () => {
     const materialized: unknown[] = [];
     const router = createAllocatedRouter({
       lookups: {
         async materializeMailTriggeredRunGrants(args) {
           materialized.push(args);
           return { outcome: "materialized", stepGrants: [] };
+        },
+        // The strict, coordinate-carrying resolution the seam runs ONCE for the
+        // fan-out. Its principal/tenant thread into the materializer as the
+        // run's invoker identity.
+        async resolveSenderPrincipal() {
+          return {
+            principalId: "prn_sender",
+            tenantId: "tenant-x",
+            coordinates: [],
+          };
         },
       },
     });
@@ -954,10 +964,14 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
     );
     await tick();
 
+    // The materializer is invoked with the recipient's run id AND the once-
+    // resolved sender invoker identity threaded through the seam.
     expect(materialized).toEqual([
       {
         agentAddress: TEST_IDENTITY.workflowRunAddress,
         runId: TEST_IDENTITY.anchorRunId,
+        senderPrincipalId: "prn_sender",
+        senderCoordinates: [],
       },
     ]);
     expect(
@@ -971,6 +985,164 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
         )
         .map((frame) => frame["type"]),
     ).toEqual(["run.grants", "mail.inbound"]);
+  });
+
+  test("mints correspondent grants for every recipient before delivering to any", async () => {
+    const calls: unknown[] = [];
+    const router = createAllocatedRouter({
+      lookups: {
+        async materializeMailTriggeredRunGrants(args) {
+          calls.push({ materialize: args.agentAddress });
+          return { outcome: "materialized", stepGrants: [] };
+        },
+        async resolveSenderPrincipal() {
+          return null;
+        },
+        async mintCorrespondentGrant(args) {
+          calls.push({ mint: args });
+        },
+      },
+    });
+    // The external recipient is unrouted, so this event ends the fan-out.
+    const fanOutDone = Promise.withResolvers<undefined>();
+    router.events.on("mail.outbound.undelivered", () => {
+      fanOutDone.resolve(undefined);
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "mail.outbound",
+        senderAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: 1,
+        rawMessage,
+        recipients: [TEST_IDENTITY.workflowRunAddress, "someone@example.test"],
+      }),
+    );
+    await fanOutDone.promise;
+
+    // One mint for the whole fan-out, ahead of the first recipient's
+    // materialization, so a reply cannot outrun the grant that admits it.
+    expect(calls).toEqual([
+      {
+        mint: {
+          senderAddress: TEST_IDENTITY.workflowRunAddress,
+          recipientAddresses: [
+            TEST_IDENTITY.workflowRunAddress,
+            "someone@example.test",
+          ],
+        },
+      },
+      { materialize: TEST_IDENTITY.workflowRunAddress },
+    ]);
+  });
+
+  test("keeps the correspondent grant of a recipient whose delivery fails closed", async () => {
+    const calls: unknown[] = [];
+    const router = createAllocatedRouter({
+      lookups: {
+        async materializeMailTriggeredRunGrants(args) {
+          calls.push({ materialize: args.agentAddress });
+          return {
+            outcome: "rejected",
+            status: 403,
+            code: "mail_admission_denied",
+            message: "refused",
+          };
+        },
+        async resolveSenderPrincipal() {
+          return null;
+        },
+        async mintCorrespondentGrant(args) {
+          calls.push({ mint: args });
+        },
+      },
+    });
+    // The external co-recipient is unrouted, so this event ends the fan-out,
+    // after the run recipient's delivery has failed closed.
+    const fanOutDone = Promise.withResolvers<undefined>();
+    router.events.on("mail.outbound.undelivered", () => {
+      fanOutDone.resolve(undefined);
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "mail.outbound",
+        senderAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: 1,
+        rawMessage,
+        recipients: [TEST_IDENTITY.workflowRunAddress, "someone@example.test"],
+      }),
+    );
+    await fanOutDone.promise;
+
+    // The recipient is minted, then its delivery fails closed. The minter is
+    // the only grant write on this path, so the grant stays: the run's
+    // lifetime limits it, not the delivery outcome.
+    expect(calls).toEqual([
+      {
+        mint: {
+          senderAddress: TEST_IDENTITY.workflowRunAddress,
+          recipientAddresses: [
+            TEST_IDENTITY.workflowRunAddress,
+            "someone@example.test",
+          ],
+        },
+      },
+      { materialize: TEST_IDENTITY.workflowRunAddress },
+    ]);
+    expect(framesOfType(ws, "mail.inbound")).toHaveLength(0);
+  });
+
+  test("threads null sender ids when the sender does not resolve to an invoker", async () => {
+    // An unresolvable sender yields no invoker principal; the materializer is
+    // still invoked (its own resolver fails any invoker requirement closed), but
+    // with null sender ids so no invoker authority binds.
+    const materialized: unknown[] = [];
+    const materializerCalled = Promise.withResolvers<undefined>();
+    const router = createAllocatedRouter({
+      lookups: {
+        async materializeMailTriggeredRunGrants(args) {
+          materialized.push(args);
+          materializerCalled.resolve(undefined);
+          return { outcome: "materialized", stepGrants: [] };
+        },
+        async resolveSenderPrincipal() {
+          return null;
+        },
+      },
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "mail.outbound",
+        senderAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: 1,
+        rawMessage,
+        recipients: [TEST_IDENTITY.workflowRunAddress],
+      }),
+    );
+    await materializerCalled.promise;
+
+    expect(materialized).toEqual([
+      {
+        agentAddress: TEST_IDENTITY.workflowRunAddress,
+        runId: TEST_IDENTITY.anchorRunId,
+        senderPrincipalId: null,
+        senderCoordinates: null,
+      },
+    ]);
   });
 
   test("co-delivers the sender key on the live run.grants frame", async () => {

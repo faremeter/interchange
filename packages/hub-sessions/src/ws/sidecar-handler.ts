@@ -7,6 +7,7 @@
 import { getLogger } from "@intx/log";
 import {
   WorkflowRunNotExecutableError,
+  type ResolvedSenderPrincipal,
   type SidecarInventory,
   type WorkflowRunExecutionTarget,
 } from "@intx/db";
@@ -64,6 +65,7 @@ import type { ToolPackageManifest } from "@intx/types/tool-packages";
 import type { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
 import {
   createSidecarEmitter,
+  MAIL_ADMISSION_DENIED_CODE,
   type SidecarEventEmitter,
   type SidecarLookups,
   type SidecarMailPersistedRow,
@@ -3384,6 +3386,55 @@ export function createSidecarRouter(
     const boundSenderKey =
       boundIdentity === undefined ? null : boundIdentity.publicKey;
 
+    // Resolve the authenticated sender's durable invoker identity ONCE for the
+    // whole fan-out (the sender is the same for every recipient), scoped to the
+    // run-address deliver path -- only a run recipient materializes a run that
+    // binds an invoker. This is the STRICT, coordinate-carrying resolution, kept
+    // separate from the best-effort key co-delivery above: an unresolvable or
+    // ambiguous sender yields no invoker principal, so the run materializes with
+    // no invoker authority and any invoker-sourced requirement fails closed. The
+    // strict resolver throws on a fault; catch it and keep the binding closed
+    // rather than abort the fan-out, so co-delivery to co-recipients (and the
+    // unknown-sender park path) is unaffected.
+    let senderPrincipal: ResolvedSenderPrincipal | null = null;
+    if (
+      lookups.materializeMailTriggeredRunGrants !== undefined &&
+      lookups.resolveSenderPrincipal !== undefined &&
+      recipients.some(isRunAddress)
+    ) {
+      try {
+        senderPrincipal =
+          await lookups.resolveSenderPrincipal(authenticatedSender);
+      } catch (err) {
+        logger.error`Resolving the invoker principal for ${authenticatedSender} failed; the mail-triggered run binds no invoker authority: ${err instanceof Error ? err.message : String(err)}`;
+        senderPrincipal = null;
+      }
+    }
+
+    // Record the recipients as correspondents of the sending run so their
+    // replies are admitted (the dynamic `correspondent` relation). Minted on
+    // the send ACT, independent of the routing outcome below, once for the whole
+    // fan-out and only when the sender is one of our runs. The minter no-ops
+    // unless the sending definition authored `correspondent` and the run is
+    // executable (live and not stopping), and never throws, so it cannot break
+    // delivery.
+    //
+    // The delivery outcome does not limit the grant: a recipient whose
+    // delivery fails closed keeps it. The run chose to mail that party, a
+    // parked or relayed mail can still arrive, and a grant minted after
+    // routing would let a fast reply arrive before it. The run's lifetime
+    // limits the grant instead, because a stopping or terminal run admits no
+    // mail.
+    if (
+      lookups.mintCorrespondentGrant !== undefined &&
+      isRunAddress(authenticatedSender)
+    ) {
+      await lookups.mintCorrespondentGrant({
+        senderAddress: authenticatedSender,
+        recipientAddresses: recipients,
+      });
+    }
+
     // Route each recipient over the connection that routes its address.
     const unrouted: string[] = [];
     for (const recipient of recipients) {
@@ -3412,6 +3463,7 @@ export function createSidecarRouter(
           rawMessage,
           authenticatedSender,
           senderIdentities,
+          senderPrincipal,
           parked,
         );
         if (
@@ -3468,6 +3520,7 @@ export function createSidecarRouter(
     rawMessage: string,
     authenticatedSender: string,
     senderIdentities: RunGrantsFrame["senderIdentities"],
+    senderPrincipal: ResolvedSenderPrincipal | null,
     hold?: DeferredRecipientResolutionMailEntry,
   ): Promise<
     "routed" | "unrouted" | "failed-closed" | "parked" | "superseded"
@@ -3486,9 +3539,20 @@ export function createSidecarRouter(
       // path), so this re-send is idempotent -- it re-establishes the run's
       // current floor on the sidecar, self-healing a `grants.json` a sidecar
       // may have lost, and never overwrites it with anything staler.
+      // Thread the once-resolved sender invoker identity into the materializer
+      // so the run binds its authenticated sender as invoker. A `null`
+      // senderPrincipal (unresolvable/ambiguous sender, or no strict resolver
+      // wired) yields no invoker authority; the materializer then fails any
+      // invoker-sourced requirement closed.
       const result = await lookups.materializeMailTriggeredRunGrants({
         agentAddress: recipient,
         runId,
+        senderPrincipalId: senderPrincipal?.principalId ?? null,
+        // The same resolved sender rendered as admission coordinates. The
+        // materializer gates the mail-transport start and deliver-to-existing
+        // paths on them; a null (unresolvable/ambiguous sender) is never
+        // admitted.
+        senderCoordinates: senderPrincipal?.coordinates ?? null,
       });
       if (result.outcome === "notReady") return "parked";
       // Claim before any send. A settle that arrived during the await must
@@ -3497,10 +3561,17 @@ export function createSidecarRouter(
         return "superseded";
       }
       if (result.outcome === "rejected") {
-        // The run's grants could not be materialized with sufficient
-        // authority or it is already terminal. Fail the mail closed for this
-        // recipient: routing or external relay would bypass that decision.
-        logger.error`Refusing mail-triggered run ${runId} for ${recipient}: grant materialization rejected (${result.code}): ${result.message}`;
+        // The sender gate refused the sender, the run's grants could not be
+        // materialized with sufficient authority, or the run is already
+        // terminal. Fail the mail closed for this recipient: routing or
+        // external relay would bypass that decision. A refused sender is an
+        // expected policy outcome that any sender can cause, so it logs at
+        // info; the other codes are faults and log at error.
+        if (result.code === MAIL_ADMISSION_DENIED_CODE) {
+          logger.info`Refusing mail to run ${runId} at ${recipient} from sender ${authenticatedSender} (principal ${senderPrincipal?.principalId ?? "unresolved"}): sender not admitted: ${result.message}`;
+        } else {
+          logger.error`Refusing mail-triggered run ${runId} for ${recipient} from sender ${authenticatedSender} (principal ${senderPrincipal?.principalId ?? "unresolved"}): grant materialization rejected (${result.code}): ${result.message}`;
+        }
         return "failed-closed";
       }
       if (result.outcome === "materialized") {
@@ -3512,7 +3583,9 @@ export function createSidecarRouter(
         // list is undefined then), so the "authorized-with-a-key implies key
         // cached" invariant holds; a recipient with no cached key resolves such
         // mail as `unknown`, which its admission policy rejects by default (a
-        // workflow may relax `unknown` to admit).
+        // workflow may relax `unknown` to admit). The sender gate has already
+        // admitted this sender, so it resolved to a principal; a sender the hub
+        // cannot resolve never reaches this point.
         // Finish asynchronous preparation before sending the grants and mail
         // together, keeping another delivery's key out of the gap between them.
         const messageId = await deriveMessageId(base64Decode(rawMessage));

@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
   type AnyPgColumn,
+  check,
   index,
   jsonb,
   pgTable,
@@ -24,6 +25,17 @@ export type WorkflowRunCredentialRefs = {
   credentialIds: string[];
   bindings: { handle: string; credentialId: string; consumer: string }[];
 };
+
+// The legacy mail accept rules a pre-gate deployment can hold. A deployment
+// that received mail before the gate admits its first sender as invoker and
+// its correspondents (`invoker-correspondent`); a deployment that only sent
+// mail admits its correspondents (`correspondent`).
+export const legacyMailAcceptRules = [
+  "invoker-correspondent",
+  "correspondent",
+] as const;
+
+export type LegacyMailAcceptRule = (typeof legacyMailAcceptRules)[number];
 
 // workflow_run is the per-run authorization subject: one row per run of a
 // workflow deployment. It gives "this approval belongs to a real run of this
@@ -120,6 +132,16 @@ export const workflowRun = pgTable(
     // and kept after the allocation that also records it is released.
     failureCode: text("failure_code"),
     failureMessage: text("failure_message"),
+    // The mail accept rule a deployment that predates the inbound mail sender
+    // gate keeps, so it stays reachable. Only the migration that adds the gate
+    // writes it, on the anchor run of each such deployment; a deployment made
+    // after the gate leaves it null and takes its rules from its own approved
+    // `mailAccept` alone. It lives on the anchor run, not in the deployment's
+    // launch-spec snapshot, so the migration leaves the grant shape the
+    // operator approved unchanged.
+    legacyMailAccept: text("legacy_mail_accept", {
+      enum: legacyMailAcceptRules,
+    }),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     // Nullable: a run has no end time until it reaches a terminal state.
     endedAt: timestamp("ended_at"),
@@ -153,6 +175,10 @@ export const workflowRun = pgTable(
     index("workflow_run_sidecar_idx")
       .on(t.sidecarId)
       .where(sql`${t.sidecarId} is not null`),
+    check(
+      "workflow_run_legacy_mail_accept_check",
+      sql`${t.legacyMailAccept} is null or ${t.legacyMailAccept} in ('invoker-correspondent', 'correspondent')`,
+    ),
   ],
 );
 

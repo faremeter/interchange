@@ -25,10 +25,13 @@ export {
   resolveWorkflowPrincipalNames,
   resolveWorkflowPrincipalLabels,
 } from "./routes/workflow-principal-name";
+export { HUB_CONDITION_REGISTRY } from "./condition-registry";
 export {
   createMailTriggeredRunGrantsMaterializer,
+  createCorrespondentGrantMinter,
   setRunToolGrantEffect,
   type MailTriggeredRunGrantsDeps,
+  type CorrespondentGrantMinterDeps,
 } from "./run-grant-materialization";
 export {
   resolveDefinitionSources,

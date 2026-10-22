@@ -74,6 +74,7 @@ export {
   type SidecarLookups,
   type SidecarMailPersistedPayload,
   type SidecarMailPersistedRow,
+  MAIL_ADMISSION_DENIED_CODE,
   type MailTriggeredRunGrantsResult,
   type WorkflowRunPackSource,
 } from "./ws";
