@@ -5,6 +5,8 @@
 // requests go to the app in process, so every request on the port came from a
 // run.
 
+import { type } from "arktype";
+
 import { createNoopCredentialCipher } from "@intx/crypto";
 import { createGrantStore, createRunTokenStore } from "@intx/db";
 import { tenant as tenantTable } from "@intx/db/schema";
@@ -40,6 +42,33 @@ import {
 } from "../hub-agent/lib/deploy-flow-env";
 
 export const DEPLOYMENT_DOMAIN = "integration.interchange";
+
+const HubCallOutcomes = type({
+  "[string]": {
+    status: "number",
+    id: "string | null",
+    message: "string | null",
+  },
+});
+
+/** The hub call outcomes one fixture action step returned, by call name. */
+export function hubCallOutcomes(
+  events: readonly WorkflowRunEvent[],
+  stepId: string,
+) {
+  const completed = events.find(
+    (event) =>
+      event.type === "StepCompleted" && event.body["stepId"] === stepId,
+  );
+  if (completed === undefined) {
+    throw new Error(`no StepCompleted event for step ${stepId}`);
+  }
+  const ref = type({ ref: "string" }).assert(completed.body["output"]).ref;
+  if (!ref.startsWith("inline:")) {
+    throw new Error(`step ${stepId} output is not an inline ref: ${ref}`);
+  }
+  return HubCallOutcomes.assert(JSON.parse(ref.slice("inline:".length)));
+}
 
 /** A grant requirement for the run to read itself, from its creator. */
 export const SELF_READ: GrantRequirement = {
