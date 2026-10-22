@@ -122,6 +122,8 @@ export type HubAccessEnv = {
     deployerPrincipalId?: string;
     /** The `interchange.actions` module, for a workflow with actions. */
     actions?: string;
+    /** The `interchange.loops` module, for a workflow with a loop. */
+    loops?: string;
     /** The step that runs an agent, for a workflow with an agent step. */
     agentStepId?: string;
   }): Promise<{ publicKey: string }>;
@@ -326,6 +328,7 @@ export async function startHubAccessEnv(args: {
         ...(deployArgs.actions !== undefined
           ? { actions: deployArgs.actions }
           : {}),
+        ...(deployArgs.loops !== undefined ? { loops: deployArgs.loops } : {}),
         ...(deployArgs.agentStepId !== undefined
           ? { sources: { [deployArgs.agentStepId]: [source] } }
           : {}),
