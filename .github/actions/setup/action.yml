@@ -23,7 +23,13 @@ inputs:
 runs:
   using: composite
   steps:
+    # Pinned, because without a version each run installs the newest Bun
+    # release. Bun 1.4.4 closes a valid WebSocket while a test awaits a
+    # pending `.rejects` matcher, which fails the hub-link pack rejection
+    # tests: https://github.com/oven-sh/bun/issues/45805
     - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      with:
+        bun-version: 1.4.3
 
     # bin/check-env requires core.hooksPath=.githooks. The hook never fires in
     # CI (no commits happen); this only satisfies the gate.
