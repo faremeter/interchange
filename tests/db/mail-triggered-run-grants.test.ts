@@ -7,9 +7,13 @@ import {
   test,
 } from "bun:test";
 
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 
-import { createGrantStore, createPrincipalKeyStore } from "@intx/db";
+import {
+  createGrantStore,
+  createPrincipalKeyStore,
+  resolveSenderPrincipal,
+} from "@intx/db";
 import {
   grant,
   principal,
@@ -18,7 +22,11 @@ import {
   workflowRun,
 } from "@intx/db/schema";
 import type { GrantWalkSnapshot } from "@intx/types";
-import { createMailTriggeredRunGrantsMaterializer } from "@intx/hub-api";
+import { mailAcceptResource, type MailAcceptCoordinate } from "@intx/authz";
+import {
+  createCorrespondentGrantMinter,
+  createMailTriggeredRunGrantsMaterializer,
+} from "@intx/hub-api";
 import {
   createTestDb,
   harnessDbEnvAvailable,
@@ -38,20 +46,24 @@ const ASSET = "ast";
 const DEFINITION = "wfd_real";
 const DEPLOYMENT = "run_real";
 const WORKFLOW_ADDRESS = "run_real@tenant.example";
+// The capability walk emits this grant for the workflow's mail trigger. A
+// snapshot without it belongs to a workflow that mail does not start.
+const MAIL_TRIGGER_GRANT = `mail.address:${WORKFLOW_ADDRESS}`;
 const CREATOR = "prn_creator";
 const RUN_ID = "<mail-run-1@tenant.example>";
 const HASH = "a".repeat(64);
 
 // The deploy-approved grant-walk snapshot a source-ref deployment persists at
-// approval: one `tool:read_file` runtime grant plus a creator-sourced
-// requirement. The mail path materializes grants from THIS, never from a
-// workflow.json blob.
+// approval: one `tool:read_file` runtime grant, a `mail.accept:tenant` accept
+// marker so the mail-transport admission gate admits a same-tenant sender, plus
+// a creator-sourced requirement. The mail path materializes grants from THIS,
+// never from a workflow.json blob.
 function snapshot(creatorRequirementResource: string): GrantWalkSnapshot {
   return {
     perStep: [
       {
         stepId: "work",
-        grants: ["tool:read_file"],
+        grants: ["tool:read_file", MAIL_TRIGGER_GRANT, "mail.accept:tenant"],
         grantEffects: { "tool:read_file": "allow" },
       },
     ],
@@ -64,6 +76,17 @@ function snapshot(creatorRequirementResource: string): GrantWalkSnapshot {
     ],
   };
 }
+
+// The sender the admission gate matches against the run's accept-policy. A
+// same-tenant sender's `tenant` coordinate matches the `mail.accept:tenant`
+// marker the snapshot declares, so the gate admits.
+const ADMITTED_SENDER: {
+  senderPrincipalId: string | null;
+  senderCoordinates: MailAcceptCoordinate[] | null;
+} = {
+  senderPrincipalId: null,
+  senderCoordinates: [{ coordType: "tenant", id: TENANT }],
+};
 
 describe.skipIf(!harnessDbEnvAvailable())(
   "createMailTriggeredRunGrantsMaterializer (real DB)",
@@ -138,6 +161,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     async function materializeOnce(
       runId: string,
+      sender: {
+        senderPrincipalId: string | null;
+        senderCoordinates: MailAcceptCoordinate[] | null;
+      } = ADMITTED_SENDER,
     ): ReturnType<ReturnType<typeof createMailTriggeredRunGrantsMaterializer>> {
       const materialize = createMailTriggeredRunGrantsMaterializer({
         db: h.db,
@@ -147,7 +174,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         }),
         grantStore: createGrantStore(h.db),
       });
-      return materialize({ agentAddress: WORKFLOW_ADDRESS, runId });
+      return materialize({ agentAddress: WORKFLOW_ADDRESS, runId, ...sender });
     }
 
     test("deployments of one definition keep their own frozen snapshots", async () => {
@@ -167,7 +194,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
         perStep: [
           {
             stepId: "work",
-            grants: ["tool:write_file"],
+            grants: [
+              "tool:write_file",
+              "mail.address:run_second@tenant.example",
+              "mail.accept:tenant",
+            ],
             grantEffects: { "tool:write_file": "allow" },
           },
         ],
@@ -198,7 +229,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
       ];
       const resources: string[][] = [];
       for (const { address, runId } of runs) {
-        const result = await materialize({ agentAddress: address, runId });
+        const result = await materialize({
+          agentAddress: address,
+          runId,
+          ...ADMITTED_SENDER,
+        });
         if (result.outcome !== "materialized") {
           throw new Error(`expected materialized, got ${result.outcome}`);
         }
@@ -468,6 +503,1150 @@ describe.skipIf(!harnessDbEnvAvailable())(
         .from(grant)
         .where(eq(grant.resource, "tool:read_file"));
       expect(runGrants).toHaveLength(0);
+    });
+
+    test("an unadmitted sender is dropped and writes zero rows", async () => {
+      // The definition accepts only its own tenant; a sender whose coordinates
+      // name a DIFFERENT tenant is not admitted. The start gate rejects before
+      // commit, so no run principal, run row, or run grants are written.
+      await seedFrozenSnapshot(snapshot("secret:vault"));
+      const result = await materializeOnce(RUN_ID, {
+        senderPrincipalId: "prn_outsider",
+        senderCoordinates: [
+          { coordType: "principal", id: "prn_outsider" },
+          { coordType: "tenant", id: "tnt_other" },
+        ],
+      });
+      expect(result.outcome).toBe("rejected");
+      if (result.outcome === "rejected") {
+        expect(result.status).toBe(403);
+        expect(result.code).toBe("mail_admission_denied");
+      }
+
+      const principals = await h.db
+        .select()
+        .from(principal)
+        .where(eq(principal.refId, RUN_ID));
+      expect(principals).toHaveLength(0);
+      const runs = await h.db
+        .select()
+        .from(workflowRun)
+        .where(eq(workflowRun.id, RUN_ID));
+      expect(runs).toHaveLength(0);
+      const runGrants = await h.db
+        .select()
+        .from(grant)
+        .where(eq(grant.resource, "tool:read_file"));
+      expect(runGrants).toHaveLength(0);
+    });
+
+    test("refuses relayed mail to a run of a workflow with no mail trigger and no mailAccept", async () => {
+      // An HTTP-launched run: a committed run principal, a snapshot with a
+      // `tool:mail_send` grant and no mail trigger, and no accept rule. The run
+      // has an address, so mail reaches the gate, and the gate refuses it.
+      await seedFrozenSnapshot({
+        perStep: [
+          {
+            stepId: "work",
+            grants: ["tool:mail_send"],
+            grantEffects: { "tool:mail_send": "allow" },
+          },
+        ],
+        grantRequirements: [],
+      });
+      await seedPrincipal(h.db, {
+        id: "prn_http_run",
+        tenantId: TENANT,
+        kind: "workflow",
+        refId: DEPLOYMENT,
+      });
+      await h.db
+        .update(workflowRun)
+        .set({ principalId: "prn_http_run" })
+        .where(eq(workflowRun.id, DEPLOYMENT));
+      await seedGrant(h.db, {
+        id: "grt_http_run_tool",
+        tenantId: TENANT,
+        principalId: "prn_http_run",
+        resource: "tool:mail_send",
+        action: "invoke",
+        effect: "allow",
+        origin: "creator",
+      });
+
+      const result = await materializeOnce(DEPLOYMENT, {
+        senderPrincipalId: CREATOR,
+        senderCoordinates: [
+          { coordType: "principal", id: CREATOR },
+          { coordType: "tenant", id: TENANT },
+        ],
+      });
+
+      expect(result.outcome).toBe("rejected");
+      if (result.outcome === "rejected") {
+        expect(result.code).toBe("mail_admission_denied");
+      }
+    });
+
+    describe("a workflow with no mail trigger", () => {
+      // The snapshot of `trigger: manual, mailAccept: { invoker: true }`: no
+      // `mail.address:` grant, only the invoker accept marker.
+      const manualSnapshot: GrantWalkSnapshot = {
+        perStep: [
+          {
+            stepId: "work",
+            grants: ["tool:read_file", "mail.accept:invoker"],
+            grantEffects: { "tool:read_file": "allow" },
+          },
+        ],
+        grantRequirements: [],
+      };
+
+      test("refuses a first fire by mail, even from a sender the rules name", async () => {
+        await seedTenants(h.db, [{ id: "tnt_other" }]);
+        await seedFrozenSnapshot(manualSnapshot);
+
+        const result = await materializeOnce(DEPLOYMENT, {
+          senderPrincipalId: "prn_outsider",
+          senderCoordinates: [
+            { coordType: "principal", id: "prn_outsider" },
+            { coordType: "tenant", id: "tnt_other" },
+          ],
+        });
+
+        expect(result.outcome).toBe("rejected");
+        if (result.outcome === "rejected") {
+          expect(result.code).toBe("mail_admission_denied");
+        }
+        const runPrincipals = await h.db
+          .select({ id: principal.id })
+          .from(principal)
+          .where(eq(principal.refId, DEPLOYMENT));
+        expect(runPrincipals).toHaveLength(0);
+      });
+
+      test("admits mail to the run that its own trigger started", async () => {
+        // The run's own trigger committed its principal and its accept rule:
+        // here the caller that started it, the tenant's creator.
+        await seedFrozenSnapshot(manualSnapshot);
+        await seedPrincipal(h.db, {
+          id: "prn_manual_run",
+          tenantId: TENANT,
+          kind: "workflow",
+          refId: DEPLOYMENT,
+        });
+        await h.db
+          .update(workflowRun)
+          .set({ principalId: "prn_manual_run" })
+          .where(eq(workflowRun.id, DEPLOYMENT));
+        await seedGrant(h.db, {
+          id: "grt_manual_run_invoker",
+          tenantId: TENANT,
+          principalId: "prn_manual_run",
+          resource: mailAcceptResource("principal", CREATOR),
+          action: "accept",
+          effect: "allow",
+          origin: "creator",
+        });
+
+        const result = await materializeOnce(DEPLOYMENT, {
+          senderPrincipalId: CREATOR,
+          senderCoordinates: [
+            { coordType: "principal", id: CREATOR },
+            { coordType: "tenant", id: TENANT },
+          ],
+        });
+
+        expect(result.outcome).toBe("materialized");
+      });
+    });
+
+    describe("invoker authority of the mail sender", () => {
+      // An invoker-sourced requirement the run can only meet through its
+      // sender's grants.
+      const invokerSnapshot: GrantWalkSnapshot = {
+        perStep: [
+          {
+            stepId: "work",
+            grants: [
+              "tool:read_file",
+              MAIL_TRIGGER_GRANT,
+              "mail.accept:invoker",
+            ],
+            grantEffects: { "tool:read_file": "allow" },
+          },
+        ],
+        grantRequirements: [
+          { resource: "secret:vault", action: "use", source: "invoker" },
+        ],
+      };
+
+      async function seedSender(id: string, tenantId: string) {
+        await seedPrincipal(h.db, {
+          id,
+          tenantId,
+          kind: "user",
+          refId: `${id}-user`,
+        });
+        await seedGrant(h.db, {
+          id: `grt_${id}_star`,
+          tenantId,
+          principalId: id,
+          resource: "*",
+          action: "*",
+          effect: "allow",
+          origin: "role",
+        });
+      }
+
+      async function invokerRows() {
+        const rows = await h.db
+          .select()
+          .from(grant)
+          .where(eq(grant.resource, "secret:vault"));
+        return rows.filter((row) => row.origin === "invoker");
+      }
+
+      test("a same-tenant sender's grants satisfy an invoker requirement", async () => {
+        await seedSender("prn_insider", TENANT);
+        await seedFrozenSnapshot(invokerSnapshot);
+
+        const result = await materializeOnce(RUN_ID, {
+          senderPrincipalId: "prn_insider",
+          senderCoordinates: [
+            { coordType: "principal", id: "prn_insider" },
+            { coordType: "tenant", id: TENANT },
+          ],
+        });
+
+        expect(result.outcome).toBe("materialized");
+        const rows = await invokerRows();
+        expect(rows).toHaveLength(1);
+        expect(rows[0]?.tenantId).toBe(TENANT);
+      });
+
+      test("a cross-tenant sender's home-tenant grants do not satisfy it", async () => {
+        // The sender holds `*` in its OWN tenant only. `mail.accept:invoker`
+        // admits it, but invoker authority is collected in the run's tenant,
+        // where the sender holds nothing.
+        await seedTenants(h.db, [{ id: "tnt_other" }]);
+        await seedSender("prn_outsider", "tnt_other");
+        await seedFrozenSnapshot(invokerSnapshot);
+
+        const result = await materializeOnce(RUN_ID, {
+          senderPrincipalId: "prn_outsider",
+          senderCoordinates: [
+            { coordType: "principal", id: "prn_outsider" },
+            { coordType: "tenant", id: "tnt_other" },
+          ],
+        });
+
+        expect(result.outcome).toBe("rejected");
+        if (result.outcome === "rejected") {
+          expect(result.status).toBe(403);
+        }
+        expect(await invokerRows()).toHaveLength(0);
+      });
+
+      test("a sender the rules refuse is refused before its invoker requirement resolves", async () => {
+        // The rules admit only the run's tenant, and the sender is in another
+        // tenant and holds nothing in the run's tenant. The sender gate runs
+        // first, so the refusal is `mail_admission_denied` and not the
+        // requirement shortfall, and no grant is read for the sender.
+        await seedTenants(h.db, [{ id: "tnt_other" }]);
+        await seedPrincipal(h.db, {
+          id: "prn_outsider",
+          tenantId: "tnt_other",
+          kind: "user",
+          refId: "prn_outsider-user",
+        });
+        await seedFrozenSnapshot({
+          perStep: [
+            {
+              stepId: "work",
+              grants: [
+                "tool:read_file",
+                MAIL_TRIGGER_GRANT,
+                "mail.accept:tenant",
+              ],
+              grantEffects: { "tool:read_file": "allow" },
+            },
+          ],
+          grantRequirements: [
+            { resource: "secret:vault", action: "use", source: "invoker" },
+          ],
+        });
+        const grantStore = createGrantStore(h.db);
+        let grantReads = 0;
+        const countingGrantStore: typeof grantStore = {
+          ...grantStore,
+          collectGrants: (principalId, tenantId) => {
+            grantReads += 1;
+            return grantStore.collectGrants(principalId, tenantId);
+          },
+        };
+        const materialize = createMailTriggeredRunGrantsMaterializer({
+          db: h.db,
+          principalKeyStore: createPrincipalKeyStore({
+            db: h.db,
+            cipher: createTestCredentialCipher(),
+          }),
+          grantStore: countingGrantStore,
+        });
+
+        const result = await materialize({
+          agentAddress: WORKFLOW_ADDRESS,
+          runId: RUN_ID,
+          senderPrincipalId: "prn_outsider",
+          senderCoordinates: [
+            { coordType: "principal", id: "prn_outsider" },
+            { coordType: "tenant", id: "tnt_other" },
+          ],
+        });
+
+        expect(result.outcome).toBe("rejected");
+        if (result.outcome === "rejected") {
+          expect(result.code).toBe("mail_admission_denied");
+        }
+        expect(grantReads).toBe(0);
+      });
+
+      test("an invoker-only rule admits the first mail from a sender in another tenant", async () => {
+        // The first sender becomes the invoker, so `mail.accept:invoker`
+        // names that sender whatever its tenant. Approval of the rule is the
+        // control.
+        await seedTenants(h.db, [{ id: "tnt_other" }]);
+        await seedPrincipal(h.db, {
+          id: "prn_stranger",
+          tenantId: "tnt_other",
+          kind: "user",
+          refId: "usr_stranger",
+        });
+        await seedFrozenSnapshot({
+          perStep: [
+            {
+              stepId: "work",
+              grants: [MAIL_TRIGGER_GRANT, "mail.accept:invoker"],
+              grantEffects: {},
+            },
+          ],
+          grantRequirements: [],
+        });
+
+        const result = await materializeOnce(RUN_ID, {
+          senderPrincipalId: "prn_stranger",
+          senderCoordinates: [
+            { coordType: "principal", id: "prn_stranger" },
+            { coordType: "tenant", id: "tnt_other" },
+          ],
+        });
+
+        expect(result.outcome).toBe("materialized");
+      });
+    });
+
+    describe("two senders racing the first fire", () => {
+      const WINNER = "prn_winner";
+      const LOSER = "prn_loser";
+
+      function senderOf(principalId: string) {
+        return {
+          senderPrincipalId: principalId,
+          senderCoordinates: [
+            { coordType: "principal" as const, id: principalId },
+            { coordType: "tenant" as const, id: TENANT },
+          ],
+        };
+      }
+
+      async function waitForBlocked(blockerPid: number) {
+        // Postgres exposes lock waits through its activity view only.
+        for (;;) {
+          const waiting = await h.db.execute(
+            sql`select pid from pg_stat_activity where ${blockerPid} = any(pg_blocking_pids(pid))`,
+          );
+          const pid = waiting[0]?.["pid"];
+          if (typeof pid === "number") return pid;
+          await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+      }
+
+      // Hold the anchor lock while the winner and then the loser pass their
+      // staged first-fire admission and queue on it, so the winner commits the
+      // run first and the loser reaches the commit with the run already live.
+      async function raceFirstFire(accept: string[]) {
+        await seedFrozenSnapshot({
+          perStep: [
+            {
+              stepId: "work",
+              grants: [MAIL_TRIGGER_GRANT, ...accept],
+              grantEffects: {},
+            },
+          ],
+          grantRequirements: [],
+        });
+        const locked = Promise.withResolvers<number>();
+        const release = Promise.withResolvers<undefined>();
+        const blocker = h.db.transaction(async (tx) => {
+          await tx
+            .select({ id: workflowRun.id })
+            .from(workflowRun)
+            .where(eq(workflowRun.id, DEPLOYMENT))
+            .for("update");
+          const [backend] = await tx.execute(
+            sql`select pg_backend_pid() as pid`,
+          );
+          const pid = backend?.["pid"];
+          if (typeof pid !== "number") throw new Error("Missing backend PID");
+          locked.resolve(pid);
+          await release.promise;
+        });
+        void blocker.catch(locked.reject);
+        try {
+          const blockerPid = await locked.promise;
+          const winner = materializeOnce(RUN_ID, senderOf(WINNER));
+          const winnerPid = await waitForBlocked(blockerPid);
+          const loser = materializeOnce(RUN_ID, senderOf(LOSER));
+          // A second waiter on a row lock queues behind the first waiter.
+          await waitForBlocked(winnerPid);
+          release.resolve(undefined);
+          await blocker;
+          return { winner: await winner, loser: await loser };
+        } finally {
+          release.resolve(undefined);
+        }
+      }
+
+      test("refuses the loser when the committed run does not accept it", async () => {
+        const { winner, loser } = await raceFirstFire(["mail.accept:invoker"]);
+
+        expect(winner.outcome).toBe("materialized");
+        expect(loser.outcome).toBe("rejected");
+        if (loser.outcome === "rejected") {
+          expect(loser.code).toBe("mail_admission_denied");
+        }
+      });
+
+      test("gates the loser on the committed run even while credentials are unready", async () => {
+        await seedFrozenSnapshot({
+          perStep: [
+            {
+              stepId: "work",
+              grants: [MAIL_TRIGGER_GRANT, "mail.accept:invoker"],
+              grantEffects: {},
+            },
+          ],
+          grantRequirements: [],
+        });
+        // The blocker plays the winner: under the anchor lock it commits the
+        // run principal with the winner's accept-grant, and it clears the
+        // anchor's key so credential resolution is not ready afterwards. The
+        // loser must be gated as a delivery to the live run, not parked.
+        const locked = Promise.withResolvers<number>();
+        const release = Promise.withResolvers<undefined>();
+        const blocker = h.db.transaction(async (tx) => {
+          await tx
+            .select({ id: workflowRun.id })
+            .from(workflowRun)
+            .where(eq(workflowRun.id, DEPLOYMENT))
+            .for("update");
+          await tx.insert(principal).values({
+            id: "prn_committed_run",
+            tenantId: TENANT,
+            kind: "workflow",
+            refId: RUN_ID,
+            status: "active",
+          });
+          await tx.insert(grant).values({
+            id: "grt_winner_accept",
+            tenantId: TENANT,
+            principalId: "prn_committed_run",
+            resource: mailAcceptResource("principal", WINNER),
+            action: "accept",
+            effect: "allow",
+            origin: "creator",
+          });
+          await tx
+            .update(workflowRun)
+            .set({ publicKey: null })
+            .where(eq(workflowRun.id, DEPLOYMENT));
+          const [backend] = await tx.execute(
+            sql`select pg_backend_pid() as pid`,
+          );
+          const pid = backend?.["pid"];
+          if (typeof pid !== "number") throw new Error("Missing backend PID");
+          locked.resolve(pid);
+          await release.promise;
+        });
+        void blocker.catch(locked.reject);
+        try {
+          const blockerPid = await locked.promise;
+          const loser = materializeOnce(RUN_ID, senderOf(LOSER));
+          await waitForBlocked(blockerPid);
+          release.resolve(undefined);
+          await blocker;
+          const result = await loser;
+
+          expect(result.outcome).toBe("rejected");
+          if (result.outcome === "rejected") {
+            expect(result.code).toBe("mail_admission_denied");
+          }
+        } finally {
+          release.resolve(undefined);
+          await blocker.catch(() => undefined);
+        }
+      });
+
+      test("admits the loser when the committed run accepts it", async () => {
+        const { winner, loser } = await raceFirstFire([
+          "mail.accept:invoker",
+          "mail.accept:tenant",
+        ]);
+
+        expect(winner.outcome).toBe("materialized");
+        expect(loser.outcome).toBe("materialized");
+      });
+    });
+
+    describe("createCorrespondentGrantMinter (send-seam)", () => {
+      const SENDER_PRINCIPAL = "prn_sender_run";
+      const RECIPIENT_RUN_ID = "run_recipient";
+      const RECIPIENT_ADDRESS = "run_recipient@tenant.example";
+      const RECIPIENT_PRINCIPAL = "prn_recipient";
+      const CORRESPONDENT_RESOURCE = mailAcceptResource(
+        "principal",
+        RECIPIENT_PRINCIPAL,
+      );
+
+      // A frozen snapshot that authored the `correspondent` relation: the deploy
+      // marker is present, so the send-time mint is authorized.
+      function correspondentSnapshot(): GrantWalkSnapshot {
+        return {
+          perStep: [
+            {
+              stepId: "work",
+              grants: ["mail.accept:correspondent"],
+              grantEffects: {},
+            },
+          ],
+          grantRequirements: [],
+        };
+      }
+
+      // Give the seeded deployment run a principal and a live/terminal status,
+      // optionally with a cancellation request or deadline: the send-seam mint
+      // hangs the correspondent grant off the SENDING run's principal and only
+      // mints for an executable run.
+      async function makeSenderRun(
+        status: "running" | "completed",
+        overrides: { cancellationRequestedAt?: Date; expiresAt?: Date } = {},
+      ) {
+        await seedPrincipal(h.db, {
+          id: SENDER_PRINCIPAL,
+          tenantId: TENANT,
+          kind: "workflow",
+          refId: DEPLOYMENT,
+        });
+        await h.db
+          .update(workflowRun)
+          .set({ principalId: SENDER_PRINCIPAL, status, ...overrides })
+          .where(eq(workflowRun.id, DEPLOYMENT));
+      }
+
+      async function senderRunStatus() {
+        const [row] = await h.db
+          .select({ status: workflowRun.status })
+          .from(workflowRun)
+          .where(eq(workflowRun.id, DEPLOYMENT));
+        return row?.status;
+      }
+
+      // A recipient run that resolves to a durable principal: `resolveSenderKey`
+      // reads its `public_key`/`principal_id` off the run row, so the reply's
+      // coordinate the gate later matches is exactly this principal.
+      async function seedRecipientRun() {
+        await seedPrincipal(h.db, {
+          id: RECIPIENT_PRINCIPAL,
+          tenantId: TENANT,
+          kind: "workflow",
+          refId: RECIPIENT_RUN_ID,
+        });
+        await h.db.insert(workflowRun).values({
+          id: RECIPIENT_RUN_ID,
+          tenantId: TENANT,
+          anchorRunId: RECIPIENT_RUN_ID,
+          definitionId: DEFINITION,
+          address: RECIPIENT_ADDRESS,
+          status: "running",
+          principalId: RECIPIENT_PRINCIPAL,
+          publicKey: "ab".repeat(32),
+        });
+      }
+
+      function mint() {
+        return createCorrespondentGrantMinter({
+          db: h.db,
+          principalKeyStore: createPrincipalKeyStore({
+            db: h.db,
+            cipher: createTestCredentialCipher(),
+          }),
+        });
+      }
+
+      async function correspondentRows() {
+        return h.db
+          .select()
+          .from(grant)
+          .where(eq(grant.resource, CORRESPONDENT_RESOURCE));
+      }
+
+      test("mints a correspondent accept-grant on the sending run when the definition authored correspondent", async () => {
+        await seedFrozenSnapshot(correspondentSnapshot());
+        await makeSenderRun("running");
+        await seedRecipientRun();
+
+        await mint()({
+          senderAddress: WORKFLOW_ADDRESS,
+          recipientAddresses: [RECIPIENT_ADDRESS],
+        });
+
+        const rows = await correspondentRows();
+        expect(rows).toHaveLength(1);
+        expect(rows[0]?.principalId).toBe(SENDER_PRINCIPAL);
+        expect(rows[0]?.action).toBe("accept");
+        expect(rows[0]?.effect).toBe("allow");
+        expect(rows[0]?.origin).toBe("creator");
+      });
+
+      test("admits the reply to a run with no mail trigger and refuses another sender", async () => {
+        // An HTTP-launched run that sends with mail_send: its snapshot has no
+        // mail trigger and authors only `correspondent`.
+        await seedFrozenSnapshot({
+          perStep: [
+            {
+              stepId: "work",
+              grants: ["tool:mail_send", "mail.accept:correspondent"],
+              grantEffects: { "tool:mail_send": "allow" },
+            },
+          ],
+          grantRequirements: [],
+        });
+        await makeSenderRun("running");
+        await seedRecipientRun();
+
+        await mint()({
+          senderAddress: WORKFLOW_ADDRESS,
+          recipientAddresses: [RECIPIENT_ADDRESS],
+        });
+
+        const reply = await materializeOnce(DEPLOYMENT, {
+          senderPrincipalId: RECIPIENT_PRINCIPAL,
+          senderCoordinates: [
+            { coordType: "principal", id: RECIPIENT_PRINCIPAL },
+            { coordType: "asset", id: ASSET },
+            { coordType: "tenant", id: TENANT },
+          ],
+        });
+        expect(reply.outcome).toBe("materialized");
+
+        const stranger = await materializeOnce(DEPLOYMENT, {
+          senderPrincipalId: CREATOR,
+          senderCoordinates: [
+            { coordType: "principal", id: CREATOR },
+            { coordType: "tenant", id: TENANT },
+          ],
+        });
+        expect(stranger.outcome).toBe("rejected");
+        if (stranger.outcome === "rejected") {
+          expect(stranger.code).toBe("mail_admission_denied");
+        }
+      });
+
+      test("mints nothing when the sending definition did not author correspondent", async () => {
+        // The base snapshot declares `mail.accept:tenant`, never correspondent.
+        await seedFrozenSnapshot(snapshot("secret:vault"));
+        await makeSenderRun("running");
+        await seedRecipientRun();
+
+        await mint()({
+          senderAddress: WORKFLOW_ADDRESS,
+          recipientAddresses: [RECIPIENT_ADDRESS],
+        });
+
+        expect(await correspondentRows()).toHaveLength(0);
+      });
+
+      test("mints nothing when the sending run is terminal", async () => {
+        await seedFrozenSnapshot(correspondentSnapshot());
+        await makeSenderRun("completed");
+        await seedRecipientRun();
+
+        await mint()({
+          senderAddress: WORKFLOW_ADDRESS,
+          recipientAddresses: [RECIPIENT_ADDRESS],
+        });
+
+        expect(await correspondentRows()).toHaveLength(0);
+      });
+
+      test("mints nothing when the sending run has a cancellation request", async () => {
+        await seedFrozenSnapshot(correspondentSnapshot());
+        await makeSenderRun("running", { cancellationRequestedAt: new Date() });
+        await seedRecipientRun();
+        expect(await senderRunStatus()).toBe("running");
+
+        await mint()({
+          senderAddress: WORKFLOW_ADDRESS,
+          recipientAddresses: [RECIPIENT_ADDRESS],
+        });
+
+        expect(await correspondentRows()).toHaveLength(0);
+      });
+
+      test("mints nothing when the sending run's deadline has passed", async () => {
+        await seedFrozenSnapshot(correspondentSnapshot());
+        await makeSenderRun("running", {
+          expiresAt: new Date(Date.now() - 3_600_000),
+        });
+        await seedRecipientRun();
+        expect(await senderRunStatus()).toBe("running");
+
+        await mint()({
+          senderAddress: WORKFLOW_ADDRESS,
+          recipientAddresses: [RECIPIENT_ADDRESS],
+        });
+
+        expect(await correspondentRows()).toHaveLength(0);
+      });
+
+      test("mints when the sending run's deadline is in the future", async () => {
+        await seedFrozenSnapshot(correspondentSnapshot());
+        await makeSenderRun("running", {
+          expiresAt: new Date(Date.now() + 3_600_000),
+        });
+        await seedRecipientRun();
+
+        await mint()({
+          senderAddress: WORKFLOW_ADDRESS,
+          recipientAddresses: [RECIPIENT_ADDRESS],
+        });
+
+        expect(await correspondentRows()).toHaveLength(1);
+      });
+
+      test("is idempotent: a repeat mail to the same recipient does not accrue a second row", async () => {
+        await seedFrozenSnapshot(correspondentSnapshot());
+        await makeSenderRun("running");
+        await seedRecipientRun();
+
+        const minter = mint();
+        await minter({
+          senderAddress: WORKFLOW_ADDRESS,
+          recipientAddresses: [RECIPIENT_ADDRESS],
+        });
+        await minter({
+          senderAddress: WORKFLOW_ADDRESS,
+          recipientAddresses: [RECIPIENT_ADDRESS],
+        });
+
+        expect(await correspondentRows()).toHaveLength(1);
+      });
+
+      test("mints past an expired grant on the same coordinate and admits the reply", async () => {
+        await seedFrozenSnapshot({
+          perStep: [
+            {
+              stepId: "work",
+              grants: ["tool:mail_send", "mail.accept:correspondent"],
+              grantEffects: { "tool:mail_send": "allow" },
+            },
+          ],
+          grantRequirements: [],
+        });
+        await makeSenderRun("running");
+        await seedRecipientRun();
+        await h.db.insert(grant).values({
+          id: "grt_expired_allow",
+          tenantId: TENANT,
+          principalId: SENDER_PRINCIPAL,
+          resource: CORRESPONDENT_RESOURCE,
+          action: "accept",
+          effect: "allow",
+          origin: "creator",
+          expiresAt: new Date(Date.now() - 60_000),
+        });
+
+        await mint()({
+          senderAddress: WORKFLOW_ADDRESS,
+          recipientAddresses: [RECIPIENT_ADDRESS],
+        });
+
+        expect(await correspondentRows()).toHaveLength(2);
+        const reply = await materializeOnce(DEPLOYMENT, {
+          senderPrincipalId: RECIPIENT_PRINCIPAL,
+          senderCoordinates: [
+            { coordType: "principal", id: RECIPIENT_PRINCIPAL },
+            { coordType: "asset", id: ASSET },
+            { coordType: "tenant", id: TENANT },
+          ],
+        });
+        expect(reply.outcome).toBe("materialized");
+      });
+
+      test("mints for a fired recipient whose signing key is cleared", async () => {
+        await seedFrozenSnapshot(correspondentSnapshot());
+        await makeSenderRun("running");
+        await seedRecipientRun();
+        // A sidecar replacement clears the recorded key but keeps the principal.
+        await h.db
+          .update(workflowRun)
+          .set({ publicKey: null })
+          .where(eq(workflowRun.id, RECIPIENT_RUN_ID));
+
+        await mint()({
+          senderAddress: WORKFLOW_ADDRESS,
+          recipientAddresses: [RECIPIENT_ADDRESS],
+        });
+
+        const rows = await correspondentRows();
+        expect(rows).toHaveLength(1);
+        expect(rows[0]?.principalId).toBe(SENDER_PRINCIPAL);
+      });
+
+      test("mints nothing when the recipient does not resolve to a principal", async () => {
+        await seedFrozenSnapshot(correspondentSnapshot());
+        await makeSenderRun("running");
+        // No recipient run seeded: the address resolves to no durable principal.
+
+        await mint()({
+          senderAddress: WORKFLOW_ADDRESS,
+          recipientAddresses: [RECIPIENT_ADDRESS],
+        });
+
+        expect(await correspondentRows()).toHaveLength(0);
+      });
+
+      test("mints a grant for each recipient of one outbound mail in a single call", async () => {
+        await seedFrozenSnapshot(correspondentSnapshot());
+        await makeSenderRun("running");
+        await seedRecipientRun();
+        // A second resolvable recipient run: the fan-out mints one grant per
+        // recipient under a single lock on the sending run.
+        const RECIPIENT2_RUN_ID = "run_recipient2";
+        const RECIPIENT2_ADDRESS = "run_recipient2@tenant.example";
+        const RECIPIENT2_PRINCIPAL = "prn_recipient2";
+        await seedPrincipal(h.db, {
+          id: RECIPIENT2_PRINCIPAL,
+          tenantId: TENANT,
+          kind: "workflow",
+          refId: RECIPIENT2_RUN_ID,
+        });
+        await h.db.insert(workflowRun).values({
+          id: RECIPIENT2_RUN_ID,
+          tenantId: TENANT,
+          anchorRunId: RECIPIENT2_RUN_ID,
+          definitionId: DEFINITION,
+          address: RECIPIENT2_ADDRESS,
+          status: "running",
+          principalId: RECIPIENT2_PRINCIPAL,
+          publicKey: "cd".repeat(32),
+        });
+
+        await mint()({
+          senderAddress: WORKFLOW_ADDRESS,
+          recipientAddresses: [RECIPIENT_ADDRESS, RECIPIENT2_ADDRESS],
+        });
+
+        expect(await correspondentRows()).toHaveLength(1);
+        const rows2 = await h.db
+          .select()
+          .from(grant)
+          .where(
+            eq(
+              grant.resource,
+              mailAcceptResource("principal", RECIPIENT2_PRINCIPAL),
+            ),
+          );
+        expect(rows2).toHaveLength(1);
+        expect(rows2[0]?.principalId).toBe(SENDER_PRINCIPAL);
+      });
+
+      test("a recipient that fails to resolve does not cost a co-recipient its grant", async () => {
+        await seedFrozenSnapshot(correspondentSnapshot());
+        await makeSenderRun("running");
+        const keys = createPrincipalKeyStore({
+          db: h.db,
+          cipher: createTestCredentialCipher(),
+        });
+        // A resolvable user recipient with a signing key.
+        await seedPrincipal(h.db, {
+          id: "prn_bob",
+          tenantId: TENANT,
+          kind: "user",
+          refId: "usr_bob",
+          status: "active",
+        });
+        await keys.generate("prn_bob");
+        // An ambiguous user recipient: two case variants of one user id and
+        // no canonical row, so its resolution throws.
+        for (const [id, refId] of [
+          ["prn_v1", "Usr_Alice"],
+          ["prn_v2", "USR_ALICE"],
+        ] as const) {
+          await seedPrincipal(h.db, {
+            id,
+            tenantId: TENANT,
+            kind: "user",
+            refId,
+            status: "active",
+          });
+          await keys.generate(id);
+        }
+
+        await createCorrespondentGrantMinter({
+          db: h.db,
+          principalKeyStore: keys,
+        })({
+          senderAddress: WORKFLOW_ADDRESS,
+          recipientAddresses: [
+            "usr_alice@tnt.example.test",
+            "usr_bob@tnt.example.test",
+          ],
+        });
+
+        const rows = await h.db
+          .select()
+          .from(grant)
+          .where(
+            eq(grant.resource, mailAcceptResource("principal", "prn_bob")),
+          );
+        expect(rows).toHaveLength(1);
+        expect(rows[0]?.principalId).toBe(SENDER_PRINCIPAL);
+      });
+
+      test("a SQL fault on one recipient does not cost a co-recipient its grant", async () => {
+        await seedFrozenSnapshot(correspondentSnapshot());
+        await makeSenderRun("running");
+        const keys = createPrincipalKeyStore({
+          db: h.db,
+          cipher: createTestCredentialCipher(),
+        });
+        for (const [id, refId] of [
+          ["prn_carol", "usr_carol"],
+          ["prn_bob", "usr_bob"],
+        ] as const) {
+          await seedPrincipal(h.db, {
+            id,
+            tenantId: TENANT,
+            kind: "user",
+            refId,
+            status: "active",
+          });
+          await keys.generate(id);
+        }
+        // A statement error inside the minter's transaction, unlike a throw
+        // in application code, aborts that transaction in Postgres. Only a
+        // savepoint per recipient keeps the co-recipient's insert alive.
+        const faultingKeys: typeof keys = {
+          ...keys,
+          async getPublicKey(principalId, tx) {
+            if (principalId === "prn_carol") {
+              await (tx ?? h.db).execute(sql`select 1 / 0`);
+            }
+            return keys.getPublicKey(principalId, tx);
+          },
+        };
+
+        await createCorrespondentGrantMinter({
+          db: h.db,
+          principalKeyStore: faultingKeys,
+        })({
+          senderAddress: WORKFLOW_ADDRESS,
+          recipientAddresses: [
+            "usr_carol@tnt.example.test",
+            "usr_bob@tnt.example.test",
+          ],
+        });
+
+        const rows = await h.db
+          .select({ resource: grant.resource })
+          .from(grant)
+          .where(eq(grant.principalId, SENDER_PRINCIPAL));
+        expect(
+          rows
+            .map((row) => row.resource)
+            .filter((resource) =>
+              resource.startsWith("mail.accept:principal:"),
+            ),
+        ).toEqual([mailAcceptResource("principal", "prn_bob")]);
+      });
+
+      describe("a recipient deployment that has not fired yet", () => {
+        const FRESH_DEFINITION = "wfd_fresh";
+        const FRESH_RUN_ID = "run_fresh";
+        const FRESH_ADDRESS = "run_fresh@tenant.example";
+
+        // A deployed, acked anchor with no principal: its first fire mints the
+        // principal. Its own snapshot admits whoever fires it as the invoker.
+        async function seedFreshRecipient(
+          overrides: {
+            cancellationRequestedAt?: Date;
+            publicKey?: string | null;
+          } = {},
+        ) {
+          await h.db.insert(workflowDefinition).values({
+            id: FRESH_DEFINITION,
+            tenantId: TENANT,
+            name: FRESH_DEFINITION,
+            assetId: ASSET,
+          });
+          await h.db.insert(workflowRun).values({
+            id: FRESH_RUN_ID,
+            tenantId: TENANT,
+            anchorRunId: FRESH_RUN_ID,
+            definitionId: FRESH_DEFINITION,
+            address: FRESH_ADDRESS,
+            status: "deployed",
+            publicKey: "ef".repeat(32),
+            ...overrides,
+          });
+          await seedWorkflowRunLaunchSpec(h.db, {
+            anchorRunId: FRESH_RUN_ID,
+            sourceAuthorityPrincipalId: CREATOR,
+            grantSnapshot: {
+              perStep: [
+                {
+                  stepId: "work",
+                  grants: [
+                    `mail.address:${FRESH_ADDRESS}`,
+                    "mail.accept:invoker",
+                  ],
+                  grantEffects: {},
+                },
+              ],
+              grantRequirements: [],
+            },
+          });
+        }
+
+        function keyStore() {
+          return createPrincipalKeyStore({
+            db: h.db,
+            cipher: createTestCredentialCipher(),
+          });
+        }
+
+        function materializer() {
+          return createMailTriggeredRunGrantsMaterializer({
+            db: h.db,
+            principalKeyStore: keyStore(),
+            grantStore: createGrantStore(h.db),
+          });
+        }
+
+        async function senderArgs(address: string) {
+          const resolved = await resolveSenderPrincipal(
+            h.db,
+            keyStore(),
+            address,
+          );
+          if (resolved === null) throw new Error(`${address} did not resolve`);
+          return {
+            senderPrincipalId: resolved.principalId,
+            senderCoordinates: resolved.coordinates,
+          };
+        }
+
+        // The send-seam order: the sender mints, then its mail first-fires the
+        // recipient, then the recipient replies to the sender.
+        async function firstContactThenReply() {
+          await mint()({
+            senderAddress: WORKFLOW_ADDRESS,
+            recipientAddresses: [FRESH_ADDRESS],
+          });
+          const fired = await materializer()({
+            agentAddress: FRESH_ADDRESS,
+            runId: FRESH_RUN_ID,
+            ...(await senderArgs(WORKFLOW_ADDRESS)),
+          });
+          expect(fired.outcome).toBe("materialized");
+          return materializer()({
+            agentAddress: WORKFLOW_ADDRESS,
+            runId: DEPLOYMENT,
+            ...(await senderArgs(FRESH_ADDRESS)),
+          });
+        }
+
+        async function senderAcceptRows() {
+          const rows = await h.db
+            .select({ resource: grant.resource })
+            .from(grant)
+            .where(eq(grant.principalId, SENDER_PRINCIPAL));
+          return rows
+            .map((row) => row.resource)
+            .filter((resource) =>
+              resource.startsWith("mail.accept:principal:"),
+            );
+        }
+
+        test("admits the reply to a first contact", async () => {
+          await seedFrozenSnapshot(correspondentSnapshot());
+          await makeSenderRun("running");
+          await seedFreshRecipient();
+
+          const reply = await firstContactThenReply();
+
+          const [fresh] = await h.db
+            .select({ principalId: workflowRun.principalId })
+            .from(workflowRun)
+            .where(eq(workflowRun.id, FRESH_RUN_ID));
+          expect(fresh?.principalId).not.toBeNull();
+          expect(await senderAcceptRows()).toEqual([
+            mailAcceptResource("principal", fresh?.principalId ?? ""),
+          ]);
+          expect(reply.outcome).toBe("materialized");
+        });
+
+        test("refuses the reply when the sender did not author correspondent", async () => {
+          await seedFrozenSnapshot(snapshot("secret:vault"));
+          await makeSenderRun("running");
+          await seedFreshRecipient();
+
+          const reply = await firstContactThenReply();
+
+          expect(await senderAcceptRows()).toEqual([]);
+          expect(reply.outcome).toBe("rejected");
+          if (reply.outcome === "rejected") {
+            expect(reply.code).toBe("mail_admission_denied");
+          }
+        });
+
+        test("mints for a deployment that has not acked its deploy yet", async () => {
+          await seedFrozenSnapshot(correspondentSnapshot());
+          await makeSenderRun("running");
+          await seedFreshRecipient({ publicKey: null });
+
+          await mint()({
+            senderAddress: WORKFLOW_ADDRESS,
+            recipientAddresses: [FRESH_ADDRESS],
+          });
+
+          expect(await senderAcceptRows()).toHaveLength(1);
+        });
+
+        test("mints nothing for a deployment that can no longer fire", async () => {
+          await seedFrozenSnapshot(correspondentSnapshot());
+          await makeSenderRun("running");
+          await seedFreshRecipient({ cancellationRequestedAt: new Date() });
+
+          await mint()({
+            senderAddress: WORKFLOW_ADDRESS,
+            recipientAddresses: [FRESH_ADDRESS],
+          });
+
+          expect(await senderAcceptRows()).toEqual([]);
+        });
+      });
     });
   },
 );

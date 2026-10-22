@@ -30,6 +30,7 @@ import type {
   ConnectorThreadState,
 } from "@intx/types/runtime";
 import type { SignalKind } from "@intx/types";
+import type { MailAcceptCoordinate, ResolvedSenderPrincipal } from "@intx/db";
 import { getLogger } from "@intx/log";
 
 const logger = getLogger(["hub", "ws", "sidecar", "events"]);
@@ -55,13 +56,21 @@ export type WorkflowRunPackSource = {
   readonly generation: number;
 };
 
+// The code a mail-transport admission denial rejects under. Distinct from
+// `insufficient_grants` (a declared requirement's authority is missing) and
+// `workflow_run_terminal` (the run is settled): this one means the run's
+// accept-policy does not admit the authenticated sender.
+export const MAIL_ADMISSION_DENIED_CODE = "mail_admission_denied";
+
 /**
  * Outcome of reserving a mail-triggered run's grants. `skip` means the
  * recipient names no workflow deployment; `rejected` means the deployment's
- * stable run is terminal or its requirements cannot be authorized;
- * `notReady` means credential resolution is not recorded yet, so nothing
- * was committed and the caller should retry after initialization;
- * `materialized` carries the canonical persisted wire rows.
+ * stable run is terminal, its requirements cannot be authorized, or the
+ * sender gate refused the mail (`MAIL_ADMISSION_DENIED_CODE`: the sender is
+ * not admitted, or the deployment has no mail trigger); `notReady` means
+ * credential resolution is not recorded yet, so nothing was committed and
+ * the caller should retry after initialization; `materialized` carries the
+ * canonical persisted wire rows.
  */
 export type MailTriggeredRunGrantsResult =
   | { outcome: "skip" }
@@ -311,6 +320,26 @@ export type SidecarLookups = {
    * one. */
   resolveSenderKeyStrict?: (address: string) => Promise<string | null>;
 
+  /** Resolves an authenticated mail sender to its durable invoker identity --
+   * the principal and tenant a mail-triggered run binds as its invoker, plus the
+   * sender's admission coordinates. Distinct from `resolveSenderKey`: that one is
+   * best-effort (degrade-to-null) and yields only a signing key for co-delivery;
+   * this one is the STRICT, coordinate-carrying resolution the invoker binding
+   * needs, and it must NOT be sourced from the degrade-to-null path.
+   *
+   * Returns `null` when the sender does not resolve to a concrete invoker
+   * principal -- an address matching no principal, or a run whose deploy is acked
+   * but whose principal is not yet minted (a principal-less signer). THROWS on a
+   * genuine fault (an ambiguous address, a data-integrity break). Both a `null`
+   * and a throw fail the invoker binding closed at the seam: the run materializes
+   * with no invoker authority, so any invoker-sourced grant requirement fails
+   * closed. Wraps the strict `resolveSenderKey` in `@intx/db` WITHOUT unwrapping
+   * to the key, keeping `senderCoordinates`' fail-closed on a principal-less run.
+   */
+  resolveSenderPrincipal?: (
+    address: string,
+  ) => Promise<ResolvedSenderPrincipal | null>;
+
   /** Co-writes the `signal_correlation` routing row and the `approval` row
    * for a suspending workflow agent step, in one transaction. Called from
    * the `signal.correlation.register` frame handler after the wire layer has
@@ -338,13 +367,47 @@ export type SidecarLookups = {
    * them ahead of the inbound mail. Reservation is idempotent on the runId, so
    * a redelivered inbound mail neither double-mints nor throws. On `skip` the
    * address names no deployed workflow deployment, so no grants are sent and
-   * the mail still forwards. On `rejected` the stable run is terminal or a
-   * declared requirement's authority is insufficient; the caller fails the
-   * mail closed for that recipient. */
+   * the mail still forwards. On `rejected` the stable run is terminal, a
+   * declared requirement's authority is insufficient, or the sender gate
+   * refused the mail (`mail_admission_denied`: the sender is not admitted, or
+   * the deployment has no mail trigger); the caller fails the mail closed for
+   * that recipient.
+   *
+   * `senderPrincipalId` is the authenticated sender's invoker identity,
+   * resolved ONCE at the seam via `resolveSenderPrincipal` and threaded in so
+   * the run binds its sender as invoker: the materializer collects that
+   * principal's grants in the run's tenant and resolves the definition's
+   * invoker-sourced requirements against them. It is `null` when the sender did
+   * not resolve to a concrete invoker principal, in which case no invoker
+   * grants are collected and any invoker-sourced requirement fails closed.
+   *
+   * `senderCoordinates` are the same sender rendered as the `mail.accept`
+   * admission coordinates, resolved on the same `resolveSenderPrincipal` call.
+   * The materializer gates delivery on them: a start (first fire) is admitted
+   * only when the run's staged `mail.accept` rows admit the sender, and a
+   * delivery to an already-committed run is admitted only when the run's
+   * collected grants do. `null` means the sender did not resolve to a concrete
+   * principal, which the admission gate treats as an unknown sender and never
+   * admits. */
   materializeMailTriggeredRunGrants?: (args: {
     agentAddress: string;
     runId: string;
+    senderPrincipalId: string | null;
+    senderCoordinates: MailAcceptCoordinate[] | null;
   }) => Promise<MailTriggeredRunGrantsResult>;
+
+  /**
+   * Records that a live run mailed one or more parties, so their replies are
+   * admitted: the dynamic `correspondent` relation. Called once per outbound
+   * mail with all its recipients. It mints a `mail.accept:principal:<id>` grant
+   * on the SENDING run for each recipient, only when the sending definition
+   * authored the `correspondent` relation and the sending run is live; an
+   * unresolvable recipient or a principal-less/terminal sender mints nothing.
+   * Best-effort -- it never throws, so a mint fault never breaks delivery. */
+  mintCorrespondentGrant?: (args: {
+    senderAddress: string;
+    recipientAddresses: string[];
+  }) => Promise<void>;
 
   /** Ingests a received agent-state pack and returns whether the wire
    * layer should ack or reject the pack to the sidecar. `repoId.kind`

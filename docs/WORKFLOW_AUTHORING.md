@@ -393,14 +393,37 @@ Where it lives today: nowhere in the repository.
 
 **23.** `defineWorkflow` REJECTS a `schedule` trigger outright (it is
 reserved, not implemented), and rejects an `inboundMailPolicy` on a workflow
-with no mail trigger. Every key of that policy defaults to REJECT, so a
-workflow declaring none receives only mail the signature gate found nothing
-to complain about, and every other message is dropped before the workflow
-sees it.
+with no mail trigger. A `mailAccept` needs no mail trigger: every run has an
+address, so a workflow of any trigger may declare who it accepts mail from.
+`defineWorkflow` also rejects a grant requirement in the `mail.accept`
+namespace, so `mailAccept` is the only way to author an accept-rule. Every
+key of `inboundMailPolicy` defaults to REJECT, so a workflow declaring none
+receives only mail the signature gate found nothing to complain about.
+Before that gate, the hub refuses hub-relayed mail from a sender that no
+`mailAccept` rule and no operator grant admits. A workflow declaring no
+`mailAccept` receives hub-relayed mail only when an operator grant on the run
+principal admits the sender. That needs a run principal, so the first mail
+that fires such a workflow is always refused. Every other message is dropped
+before the workflow sees it. The HTTP trigger route is governed by its own
+authorization, not by this gate. Mail cannot start a deployment that has no
+mail trigger: the hub refuses the first mail to it. The `mailAccept` rules of
+such a workflow take effect after its own trigger starts the run.
+
+A workflow that sends mail and waits for the reply declares `correspondent`,
+whatever its trigger:
+
+```ts
+defineWorkflow({
+  id: "vendor-quote",
+  trigger: { type: "manual" },
+  mailAccept: { correspondent: true },
+  steps: { ask: step({ agent: quoteAgent }) },
+});
+```
 
 Where it lives today: [`INBOUND_MAIL_POLICY.md`](./INBOUND_MAIL_POLICY.md)
 for the policy itself; `normalize`,
-`packages/workflow/src/definition/workflow.ts` for the two rejections
+`packages/workflow/src/definition/workflow.ts` for the rejections
 
 **24.** A loop body may contain `awaitSignal`, `childWorkflow` and a nested
 loop, but may NOT contain `sleep` or `onTrigger`. The `awaitSignal` permission

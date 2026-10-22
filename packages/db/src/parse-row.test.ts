@@ -321,6 +321,7 @@ function makeWorkflowRunRow(
     infrastructureFailedAt: null,
     failureCode: null,
     failureMessage: null,
+    legacyMailAccept: null,
     createdAt: now,
     endedAt: null,
     ...overrides,

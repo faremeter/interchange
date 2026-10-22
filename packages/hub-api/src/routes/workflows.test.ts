@@ -415,6 +415,7 @@ function createMockDB(opts: MockDBOpts) {
                     ? "running"
                     : opts.topLevelRunStatus,
                 createdAt: opts.deploymentRow.createdAt,
+                legacyMailAccept: null,
                 ...(opts.credentialRefs !== undefined
                   ? { credentialRefs: opts.credentialRefs }
                   : {}),

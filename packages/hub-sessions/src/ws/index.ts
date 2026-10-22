@@ -33,6 +33,7 @@ export {
   type SidecarLookups,
   type SidecarMailPersistedRow,
   type SidecarMailPersistedPayload,
+  MAIL_ADMISSION_DENIED_CODE,
   type MailTriggeredRunGrantsResult,
   type WorkflowRunPackSource,
 } from "./sidecar-events";
