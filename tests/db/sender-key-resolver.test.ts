@@ -12,9 +12,10 @@ import {
   createPrincipalKeyStore,
   resolveSenderKey,
   resolveFrameSenderKey,
+  senderCoordinates,
   type PrincipalKeyStore,
 } from "@intx/db";
-import { tenant as tenantTable } from "@intx/db/schema";
+import { tenant as tenantTable, workflowDefinition } from "@intx/db/schema";
 import { createTestCredentialCipher } from "@intx/test-harness/crypto";
 import {
   createTestDb,
@@ -22,6 +23,7 @@ import {
   type TestDb,
 } from "@intx/test-harness/db-harness";
 import {
+  seedAsset,
   seedPrincipal,
   seedWorkflowRun,
   tenantSlugFromId,
@@ -71,7 +73,117 @@ describe.skipIf(!harnessDbEnvAvailable())("resolveSenderKey (real DB)", () => {
     expect(await resolveSenderKey(h.db, store, address)).toEqual({
       source: "run",
       publicKey: RUN_PUBLIC_KEY,
+      // The seeded anchor holds a key but has not reconciled its principal, so
+      // it resolves for the send path with a null principal.
+      principalId: null,
+      assetId: null,
+      tenantId: "tnt_run",
     });
+  });
+
+  test("resolves a reconciled run sender to principal + asset + tenant coordinates", async () => {
+    await seedTenant("tnt_coord", "coord.localhost");
+    await seedPrincipal(h.db, {
+      id: "prn_run_owner",
+      tenantId: "tnt_coord",
+      kind: "workflow",
+      refId: "run_coord001",
+      status: "active",
+    });
+    await seedAsset(h.db, {
+      id: "ast_coord",
+      tenantId: "tnt_coord",
+      kind: "workflow",
+      name: "ast_coord",
+    });
+    await h.db.insert(workflowDefinition).values({
+      id: "wfd_coord",
+      tenantId: "tnt_coord",
+      name: "wfd_coord",
+      assetId: "ast_coord",
+    });
+    const address = "run_coord001@coord.localhost";
+    // A reconciled anchor: key recorded at ack, principal minted at first
+    // trigger. This is the run sender the admission gate keys on.
+    await seedWorkflowRun(h.db, {
+      id: "run_coord001",
+      tenantId: "tnt_coord",
+      definitionId: "wfd_coord",
+      principalId: "prn_run_owner",
+      address,
+      publicKey: RUN_PUBLIC_KEY,
+      status: "running",
+    });
+
+    const resolution = await resolveSenderKey(h.db, store, address);
+    expect(resolution).toEqual({
+      source: "run",
+      publicKey: RUN_PUBLIC_KEY,
+      principalId: "prn_run_owner",
+      assetId: "ast_coord",
+      tenantId: "tnt_coord",
+    });
+    expect(resolution === null ? null : senderCoordinates(resolution)).toEqual([
+      { coordType: "principal", id: "prn_run_owner" },
+      { coordType: "asset", id: "ast_coord" },
+      { coordType: "tenant", id: "tnt_coord" },
+    ]);
+  });
+
+  test("a reconciled run whose definition has no asset yields no asset coordinate", async () => {
+    await seedTenant("tnt_noasset", "noasset.localhost");
+    await seedPrincipal(h.db, {
+      id: "prn_run_noasset",
+      tenantId: "tnt_noasset",
+      kind: "workflow",
+      refId: "run_noasset01",
+      status: "active",
+    });
+    const address = "run_noasset01@noasset.localhost";
+    // The default seed definition carries no asset.
+    await seedWorkflowRun(h.db, {
+      id: "run_noasset01",
+      tenantId: "tnt_noasset",
+      principalId: "prn_run_noasset",
+      address,
+      publicKey: RUN_PUBLIC_KEY,
+      status: "running",
+    });
+
+    const resolution = await resolveSenderKey(h.db, store, address);
+    expect(resolution).toMatchObject({ source: "run", assetId: null });
+    expect(resolution === null ? null : senderCoordinates(resolution)).toEqual([
+      { coordType: "principal", id: "prn_run_noasset" },
+      { coordType: "tenant", id: "tnt_noasset" },
+    ]);
+  });
+
+  test("a keyed run with no principal resolves its key but fails closed on coordinates", async () => {
+    await seedTenant("tnt_ackwin", "ackwin.localhost");
+    const address = "run_ackwin01@ackwin.localhost";
+    // An anchor past deploy ack (key recorded) but before its first trigger
+    // mints and reconciles its principal: it CAN sign, yet has no principal.
+    await seedWorkflowRun(h.db, {
+      id: "run_ackwin01",
+      tenantId: "tnt_ackwin",
+      address,
+      publicKey: RUN_PUBLIC_KEY,
+      status: "deployed",
+    });
+
+    const resolution = await resolveSenderKey(h.db, store, address);
+    // The key still resolves, so the send path is unaffected.
+    expect(resolution).toEqual({
+      source: "run",
+      publicKey: RUN_PUBLIC_KEY,
+      principalId: null,
+      assetId: null,
+      tenantId: "tnt_ackwin",
+    });
+    // Admission fails closed: no principal means no coordinate set.
+    expect(
+      resolution === null ? null : senderCoordinates(resolution),
+    ).toBeNull();
   });
 
   test("returns null for a run whose deploy has not been acked yet", async () => {
@@ -107,9 +219,21 @@ describe.skipIf(!harnessDbEnvAvailable())("resolveSenderKey (real DB)", () => {
     });
     const publicKey = await store.generate("prn_user");
 
-    expect(
-      await resolveSenderKey(h.db, store, "usr_alice@user.localhost"),
-    ).toEqual({ source: "user", publicKey });
+    const resolution = await resolveSenderKey(
+      h.db,
+      store,
+      "usr_alice@user.localhost",
+    );
+    expect(resolution).toEqual({
+      source: "user",
+      publicKey,
+      principalId: "prn_user",
+      tenantId: "tnt_user",
+    });
+    expect(resolution === null ? null : senderCoordinates(resolution)).toEqual([
+      { coordType: "principal", id: "prn_user" },
+      { coordType: "tenant", id: "tnt_user" },
+    ]);
   });
 
   test("returns null for an address that matches no user principal", async () => {
@@ -147,10 +271,21 @@ describe.skipIf(!harnessDbEnvAvailable())("resolveSenderKey (real DB)", () => {
 
     expect(
       await resolveSenderKey(h.db, store, "usr_case@acme.localhost"),
-    ).toEqual({ source: "user", publicKey });
+    ).toEqual({
+      source: "user",
+      publicKey,
+      principalId: "prn_case",
+      tenantId: "tnt_case",
+    });
     expect(
       await resolveSenderKey(h.db, store, "run_caseabc0@acme.localhost"),
-    ).toEqual({ source: "run", publicKey: RUN_PUBLIC_KEY });
+    ).toEqual({
+      source: "run",
+      publicKey: RUN_PUBLIC_KEY,
+      principalId: null,
+      assetId: null,
+      tenantId: "tnt_case",
+    });
   });
 
   test("prefers the exact canonical refId when a case-variant refId collides", async () => {
@@ -178,7 +313,12 @@ describe.skipIf(!harnessDbEnvAvailable())("resolveSenderKey (real DB)", () => {
 
     expect(
       await resolveSenderKey(h.db, store, "usr_alice@case.localhost"),
-    ).toEqual({ source: "user", publicKey: keyExact });
+    ).toEqual({
+      source: "user",
+      publicKey: keyExact,
+      principalId: "prn_exact",
+      tenantId: "tnt_case",
+    });
   });
 
   test("prefers the exact refId even when the tenant's stored domain is mixed-case", async () => {
@@ -206,7 +346,12 @@ describe.skipIf(!harnessDbEnvAvailable())("resolveSenderKey (real DB)", () => {
 
     expect(
       await resolveSenderKey(h.db, store, "usr_alice@acme.localhost"),
-    ).toEqual({ source: "user", publicKey: keyExact });
+    ).toEqual({
+      source: "user",
+      publicKey: keyExact,
+      principalId: "prn_legacy_exact",
+      tenantId: "tnt_legacy",
+    });
   });
 
   test("throws when a user address is ambiguous with no canonical refId", async () => {
