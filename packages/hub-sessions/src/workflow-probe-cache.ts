@@ -8,7 +8,7 @@ import type { WorkflowProbeResult } from "./ws/sidecar-handler";
 
 // Bump when probe semantics or the stored result shape changes. Probe workers
 // must use compatible evaluator code and environments within this version.
-const WORKFLOW_PROBE_CACHE_VERSION = 2;
+const WORKFLOW_PROBE_CACHE_VERSION = 3;
 
 export type WorkflowProbeLeaseTiming = {
   readonly leaseMs: number;

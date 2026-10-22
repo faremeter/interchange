@@ -3,6 +3,7 @@ import { type } from "arktype";
 import { CredentialBinding } from "./credentials";
 import { GrantRequirement } from "./grants";
 import { InboundMailPolicy } from "./inbound-mail-policy";
+import { MailAccept } from "./mail-accept";
 import { SidecarCapabilityPolicy } from "./sidecar-capabilities";
 
 /**
@@ -59,4 +60,9 @@ export const workflowDefinitionEnvelopeSchema = type({
   // boundary rather than passed through to later admission resolution
   // unchecked.
   "inboundMailPolicy?": InboundMailPolicy,
+  // `mailAccept` is validated here too -- same defense-in-depth rationale as
+  // inboundMailPolicy above: a malformed rule set (an unknown relation key or a
+  // toggle that is not a boolean) is rejected at the deploy boundary rather than
+  // passed through to later admission resolution unchecked.
+  "mailAccept?": MailAccept,
 }).onUndeclaredKey("ignore");

@@ -32,6 +32,19 @@
 //   - `mail.send:<domain>`           -- the trigger address's domain
 //                                        (the deployment's right to
 //                                        send mail as that domain)
+//   - `mail.accept:<relation>`       -- a relational accept marker
+//                                        (`invoker`/`self`/`tenant`/
+//                                        `correspondent`)
+//                                        resolved from the definition's
+//                                        authored `mailAccept` via the
+//                                        shared relation resolver
+//   - `mail.accept:principal:<id>`   -- an explicit principal coordinate
+//                                        from `mailAccept.principals[]`
+//   - `mail.accept:asset:<id>`       -- an explicit asset coordinate
+//                                        from `mailAccept.assets[]`
+//
+// The `mail.accept:*` axis is emitted for a definition of any trigger: every
+// run has an address that mail can reach (see `collectMailAcceptGrants`).
 //
 // Wildcard semantics (e.g. `tool:@vendor/foo/*`) are intentionally
 // deferred: v1 ships explicit per-tool approvals so the operator UX
@@ -61,8 +74,15 @@ import {
   toolApprovalEffect,
   UnknownDirectorIdError,
 } from "@intx/agent/authoring";
-import { actionConsumer, toolConsumer } from "@intx/authz";
+import {
+  actionConsumer,
+  mailAcceptRelationToken,
+  mailAcceptResource,
+  resolveMailAcceptRelations,
+  toolConsumer,
+} from "@intx/authz";
 import type { GrantEffect, GrantOrigin, GrantWalkSnapshot } from "@intx/types";
+import type { MailAccept } from "@intx/types/mail-accept";
 import {
   EXECUTABLE_STEP_DESCENT,
   walkNestedWorkflowSteps,
@@ -138,11 +158,12 @@ function freezeDeclarations(
 /**
  * Walk a workflow definition and produce per-step grant declarations.
  *
- * The walk visits every step's agent definition once; trigger-derived
- * grants (`mail.address:` / `mail.send:`) are attached to every step
- * because the workflow's mail-receive and mail-send authority is a
- * deployment-wide property -- any step can be the one whose run
- * consumes inbound mail or generates a reply.
+ * The walk visits every step's agent definition once; deployment-wide
+ * grants (the trigger-derived `mail.address:` / `mail.send:` axis and the
+ * `mail.accept:*` accept axis) are attached to every step because the
+ * workflow's mail-receive, mail-send, and mail-accept authority is a
+ * deployment-wide property -- any step can be the one whose run consumes
+ * inbound mail or generates a reply.
  */
 export function walkCapabilities(
   workflow: WorkflowDefinition,
@@ -289,7 +310,10 @@ function walkDefinition(
   readonly unresolved: Set<string>;
   readonly credentialConsumers: ReadonlySet<string>;
 } {
-  const triggerGrants = collectTriggerGrants(workflow);
+  const triggerGrants = [
+    ...collectTriggerGrants(workflow),
+    ...collectMailAcceptGrants(workflow),
+  ];
   const unresolved = new Set<string>();
   const perStep = new Map<string, GrantDeclarations>();
   const credentialConsumers = new Set<string>();
@@ -530,6 +554,47 @@ function collectTriggerGrants(workflow: WorkflowDefinition): string[] {
     if (domain !== null) {
       grants.add(`mail.send:${domain}`);
     }
+  }
+  return [...grants];
+}
+
+/** The parts of a definition that decide its `mail.accept:*` approval strings. */
+export type MailAcceptGrantSource = {
+  readonly mailAccept?: MailAccept | undefined;
+};
+
+/**
+ * Emit the deployment-wide `mail.accept:*` approval strings from the
+ * definition's authored `mailAccept` field.
+ *
+ * The markers do not depend on the triggers. Every run has an address the hub
+ * routes mail to, and a run of any trigger can send mail and wait for the
+ * reply, so a workflow with no mail trigger emits its authored rules too. Every
+ * relation is opt-in (`resolveMailAcceptRelations` enables one only when
+ * authored `true`), so an absent `mailAccept` emits nothing.
+ *
+ * Relational toggles resolve through the shared `resolveMailAcceptRelations`
+ * resolver (the single home of the enablement rule -- not re-derived here) and
+ * emit id-less relation tokens. Explicit `principals`/`assets` ids emit
+ * concrete coordinates known at deploy time. Both feed the same approval-gate
+ * set membership check, which treats every grant string as opaque.
+ *
+ * The hub probe gate calls this over the inert projection to check the
+ * markers a sidecar's walk reports, so the walk and the gate derive the set
+ * from one function.
+ */
+export function collectMailAcceptGrants(
+  workflow: MailAcceptGrantSource,
+): string[] {
+  const grants = new Set<string>();
+  for (const relation of resolveMailAcceptRelations(workflow.mailAccept)) {
+    grants.add(mailAcceptRelationToken(relation));
+  }
+  for (const id of workflow.mailAccept?.principals ?? []) {
+    grants.add(mailAcceptResource("principal", id));
+  }
+  for (const id of workflow.mailAccept?.assets ?? []) {
+    grants.add(mailAcceptResource("asset", id));
   }
   return [...grants];
 }

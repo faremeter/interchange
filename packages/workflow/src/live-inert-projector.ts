@@ -39,6 +39,7 @@ import type {
 import type { ToolPackagePin } from "@intx/types/tool-packages";
 import type { CredentialBinding, SidecarCapabilityPolicy } from "@intx/types";
 import type { InboundMailPolicy } from "@intx/types/inbound-mail-policy";
+import type { MailAccept } from "@intx/types/mail-accept";
 import type {
   ActionPrimitive,
   AwaitSignalPrimitive,
@@ -233,6 +234,14 @@ export interface InertWorkflowDefinition {
   // Sparse -- an outcome the author left unset stays unset in the projection,
   // so the hash covers only the declared keys.
   readonly inboundMailPolicy?: InboundMailPolicy;
+  // The author-declared relational accept-rules, projected verbatim (already
+  // pure plain data). Part of the hashed surface for the same reason as
+  // inboundMailPolicy: the accept-rules govern which senders mail addressed to
+  // the deployment is accepted from, so a changed or tampered rule set must
+  // move the content hash and fail re-verify. Sparse -- a relation the author
+  // left unset stays unset in the projection, so the hash covers only the
+  // declared keys.
+  readonly mailAccept?: MailAccept;
 }
 
 // ---------------------------------------------------------------------------
@@ -316,6 +325,24 @@ function projectDefinition(
     // inside the content hash (see `InertWorkflowDefinition`).
     ...(definition.inboundMailPolicy !== undefined
       ? { inboundMailPolicy: { ...definition.inboundMailPolicy } }
+      : {}),
+    // The relational accept-rules project into the content hash like the
+    // admission policy (see `InertWorkflowDefinition`). Unlike the flat policy,
+    // `mailAccept` carries nested `principals`/`assets` arrays, so copy
+    // those fresh rather than aliasing the live definition's arrays, matching
+    // how every other array field above is projected.
+    ...(definition.mailAccept !== undefined
+      ? {
+          mailAccept: {
+            ...definition.mailAccept,
+            ...(definition.mailAccept.principals !== undefined
+              ? { principals: [...definition.mailAccept.principals] }
+              : {}),
+            ...(definition.mailAccept.assets !== undefined
+              ? { assets: [...definition.mailAccept.assets] }
+              : {}),
+          },
+        }
       : {}),
   };
 }

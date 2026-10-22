@@ -140,3 +140,8 @@ The capability walk emits the v1 grant-shape vocabulary: `tool:`,
 existing agent-deploy already enforces implicitly — the parity test
 in this package's test suite is the structural-identity check that
 backs the capability-surface uniformity claim.
+
+The walk also emits `mail.accept:` strings from the definition's
+authored `mailAccept` rules, for a definition of any trigger.
+Agent deploy has no such surface, so the parity test does not cover
+them.

@@ -74,6 +74,26 @@ describe("describeProbeGateRefusal", () => {
     [
       {
         ok: false,
+        reason: "mail_accept_grant_requirements",
+        mailAcceptGrantRequirements: [
+          { resource: "mail.accept:*", action: "accept", source: "creator" },
+        ],
+      },
+      "mail_accept_grant_requirements: accept-rules are declared only " +
+        "through mailAccept; declared: accept on mail.accept:* (creator)",
+    ],
+    [
+      {
+        ok: false,
+        reason: "mail_accept_markers_undeclared",
+        undeclaredMailAcceptMarkers: ["mail.accept:*", "mail.accept:tenant"],
+      },
+      "mail_accept_markers_undeclared: the projection's mailAccept does not " +
+        "produce mail.accept:*, mail.accept:tenant",
+    ],
+    [
+      {
+        ok: false,
         reason: "credential_bindings_invalid",
         violations: [],
         message: 'two bindings name action push and handle "github"',
