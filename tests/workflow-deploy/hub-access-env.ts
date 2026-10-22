@@ -118,6 +118,8 @@ export type HubAccessEnv = {
   deploy(args: {
     anchorRunId: string;
     entryModule: (mailAddress: string) => string;
+    /** The principal the launch spec records as deployer; the caller when omitted. */
+    deployerPrincipalId?: string;
     /** The `interchange.actions` module, for a workflow with actions. */
     actions?: string;
     /** The step that runs an agent, for a workflow with an agent step. */
@@ -334,9 +336,10 @@ export async function startHubAccessEnv(args: {
         deploymentDomain: DEPLOYMENT_DOMAIN,
         agentAddress: mailAddress,
         approvals: "approve-probed",
-        // The caller deploys, so the launch spec records it as the deployer
-        // and carries the approved grant snapshot the trigger reads.
-        sourceAuthorityPrincipalId: callerPrincipalId,
+        // The launch spec records the deployer and carries the approved grant
+        // snapshot the trigger reads.
+        sourceAuthorityPrincipalId:
+          deployArgs.deployerPrincipalId ?? callerPrincipalId,
         config,
         credentialCipher: cipher,
       });
