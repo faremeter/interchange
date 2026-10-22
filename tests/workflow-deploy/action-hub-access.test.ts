@@ -18,7 +18,6 @@
 // presented no longer authenticates.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { type } from "arktype";
 import { eq } from "drizzle-orm";
 
 import { runToken } from "@intx/db/schema";
@@ -26,13 +25,13 @@ import { deriveRunPrincipalId, RUN_TOKEN_PREFIX } from "@intx/hub-common";
 import type { GrantRequirement } from "@intx/types";
 import { harnessDbEnvAvailable } from "@intx/test-harness/db-harness";
 
-import type { WorkflowRunEvent } from "../hub-agent/lib/deploy-flow-env";
 import {
   HUB_CALLER_HANDLER,
   hubAccessWorkflowEntry,
   type HubCallOutcome,
 } from "./fixtures/hub-access-workflow";
 import {
+  hubCallOutcomes,
   NO_GRANT,
   OFF_LIST,
   SELF_READ,
@@ -46,30 +45,7 @@ const OTHER_TENANT_ID = "tnt_hub_access_other";
 const RUN_A = "run_hub-access-a";
 const RUN_B = "run_hub-access-b";
 
-const HubCallOutcomes = type({
-  "[string]": {
-    status: "number",
-    id: "string | null",
-    message: "string | null",
-  },
-});
-
 let t: HubAccessEnv;
-
-function stepOutput(events: readonly WorkflowRunEvent[], stepId: string) {
-  const completed = events.find(
-    (event) =>
-      event.type === "StepCompleted" && event.body["stepId"] === stepId,
-  );
-  if (completed === undefined) {
-    throw new Error(`no StepCompleted event for step ${stepId}`);
-  }
-  const ref = type({ ref: "string" }).assert(completed.body["output"]).ref;
-  if (!ref.startsWith("inline:")) {
-    throw new Error(`step ${stepId} output is not an inline ref: ${ref}`);
-  }
-  return HubCallOutcomes.assert(JSON.parse(ref.slice("inline:".length)));
-}
 
 /** Deploy the fixture, run it once, and return its action's outcomes. */
 async function deployAndRun(args: {
@@ -91,7 +67,7 @@ async function deployAndRun(args: {
       }),
   });
   const events = await t.runOnce(args.anchorRunId);
-  return { events, outcomes: stepOutput(events, HUB_CALLER_HANDLER) };
+  return { events, outcomes: hubCallOutcomes(events, HUB_CALLER_HANDLER) };
 }
 
 describe.skipIf(!harnessDbEnvAvailable())(
