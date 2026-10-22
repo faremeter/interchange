@@ -84,10 +84,8 @@ function snapshot(creatorRequirementResource: string): GrantWalkSnapshot {
 // same-tenant sender's `tenant` coordinate matches the `mail.accept:tenant`
 // marker the snapshot declares, so the gate admits.
 const ADMITTED_SENDER: {
-  senderPrincipalId: string | null;
   senderCoordinates: MailAcceptCoordinate[] | null;
 } = {
-  senderPrincipalId: null,
   senderCoordinates: [{ coordType: "tenant", id: TENANT }],
 };
 
@@ -165,7 +163,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
     async function materializeOnce(
       runId: string,
       sender: {
-        senderPrincipalId: string | null;
         senderCoordinates: MailAcceptCoordinate[] | null;
       } = ADMITTED_SENDER,
     ): ReturnType<ReturnType<typeof createMailTriggeredRunGrantsMaterializer>> {
@@ -689,7 +686,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // commit, so no run principal, run row, or run grants are written.
       await seedFrozenSnapshot(snapshot("secret:vault"));
       const result = await materializeOnce(RUN_ID, {
-        senderPrincipalId: "prn_outsider",
         senderCoordinates: [
           { coordType: "principal", id: "prn_outsider" },
           { coordType: "tenant", id: "tnt_other" },
@@ -753,7 +749,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
 
       const result = await materializeOnce(DEPLOYMENT, {
-        senderPrincipalId: CREATOR,
         senderCoordinates: [
           { coordType: "principal", id: CREATOR },
           { coordType: "tenant", id: TENANT },
@@ -785,7 +780,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         await seedFrozenSnapshot(manualSnapshot);
 
         const result = await materializeOnce(DEPLOYMENT, {
-          senderPrincipalId: "prn_outsider",
           senderCoordinates: [
             { coordType: "principal", id: "prn_outsider" },
             { coordType: "tenant", id: "tnt_other" },
@@ -828,7 +822,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         });
 
         const result = await materializeOnce(DEPLOYMENT, {
-          senderPrincipalId: CREATOR,
           senderCoordinates: [
             { coordType: "principal", id: CREATOR },
             { coordType: "tenant", id: TENANT },
@@ -850,6 +843,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
               "tool:read_file",
               MAIL_TRIGGER_GRANT,
               "mail.accept:invoker",
+              "mail.accept:tenant",
             ],
             grantEffects: { "tool:read_file": "allow" },
           },
@@ -886,7 +880,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
       }
 
       const insider = {
-        senderPrincipalId: "prn_insider",
         senderCoordinates: [
           { coordType: "principal" as const, id: "prn_insider" },
           { coordType: "tenant" as const, id: TENANT },
@@ -989,7 +982,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         const result = await materialize({
           agentAddress: WORKFLOW_ADDRESS,
           runId: RUN_ID,
-          senderPrincipalId: "prn_outsider",
           senderCoordinates: [
             { coordType: "principal", id: "prn_outsider" },
             { coordType: "tenant", id: "tnt_other" },
@@ -1003,10 +995,20 @@ describe.skipIf(!harnessDbEnvAvailable())(
         expect(grantReads).toBe(0);
       });
 
-      test("an invoker-only rule admits the first mail from a sender in another tenant", async () => {
-        // The first sender becomes the invoker, so `mail.accept:invoker`
-        // names that sender whatever its tenant. Approval of the rule is the
-        // control.
+      // A rule set that names only the invoker, so only the deployer may
+      // fire the run.
+      const invokerOnlyRules: GrantWalkSnapshot = {
+        perStep: [
+          {
+            stepId: "work",
+            grants: [MAIL_TRIGGER_GRANT, "mail.accept:invoker"],
+            grantEffects: {},
+          },
+        ],
+        grantRequirements: [],
+      };
+
+      test("an invoker-only rule refuses the first mail from a sender who is not the deployer", async () => {
         await seedTenants(h.db, [{ id: "tnt_other" }]);
         await seedPrincipal(h.db, {
           id: "prn_stranger",
@@ -1014,26 +1016,108 @@ describe.skipIf(!harnessDbEnvAvailable())(
           kind: "user",
           refId: "usr_stranger",
         });
-        await seedFrozenSnapshot({
-          perStep: [
-            {
-              stepId: "work",
-              grants: [MAIL_TRIGGER_GRANT, "mail.accept:invoker"],
-              grantEffects: {},
-            },
-          ],
-          grantRequirements: [],
-        });
+        await seedFrozenSnapshot(invokerOnlyRules);
 
         const result = await materializeOnce(RUN_ID, {
-          senderPrincipalId: "prn_stranger",
           senderCoordinates: [
             { coordType: "principal", id: "prn_stranger" },
             { coordType: "tenant", id: "tnt_other" },
           ],
         });
 
+        expect(result.outcome).toBe("rejected");
+        if (result.outcome === "rejected") {
+          expect(result.code).toBe("mail_admission_denied");
+        }
+      });
+
+      test("an invoker-only rule admits the first mail from the deployer", async () => {
+        // The frozen snapshot's launch spec records the creator as deployer.
+        await seedFrozenSnapshot(invokerOnlyRules);
+
+        const result = await materializeOnce(RUN_ID, {
+          senderCoordinates: [
+            { coordType: "principal", id: CREATOR },
+            { coordType: "tenant", id: TENANT },
+          ],
+        });
+
         expect(result.outcome).toBe("materialized");
+      });
+
+      test("an unadmitted sender is refused before the deployer's absence is reported", async () => {
+        // The deployment's deployer is gone, and it has an invoker
+        // requirement. The stranger is refused as unadmitted, not told that
+        // the deployment has no deployer.
+        await seedTenants(h.db, [{ id: "tnt_other" }]);
+        await seedPrincipal(h.db, {
+          id: "prn_gone",
+          tenantId: TENANT,
+          kind: "user",
+          refId: "prn_gone-user",
+          status: "deactivated",
+        });
+        await seedWorkflowRunLaunchSpec(h.db, {
+          anchorRunId: DEPLOYMENT,
+          sourceAuthorityPrincipalId: "prn_gone",
+          grantSnapshot: {
+            ...invokerOnlyRules,
+            grantRequirements: [
+              { resource: "secret:vault", action: "use", source: "invoker" },
+            ],
+          },
+        });
+
+        const result = await materializeOnce(RUN_ID, {
+          senderCoordinates: [
+            { coordType: "principal", id: "prn_stranger" },
+            { coordType: "tenant", id: "tnt_other" },
+          ],
+        });
+
+        expect(result).toMatchObject({
+          outcome: "rejected",
+          code: "mail_admission_denied",
+        });
+      });
+
+      test("an inactive deployer emits no invoker row", async () => {
+        await seedPrincipal(h.db, {
+          id: "prn_gone",
+          tenantId: TENANT,
+          kind: "user",
+          refId: "prn_gone-user",
+          status: "deactivated",
+        });
+        await seedWorkflowRunLaunchSpec(h.db, {
+          anchorRunId: DEPLOYMENT,
+          sourceAuthorityPrincipalId: "prn_gone",
+          grantSnapshot: {
+            perStep: [
+              {
+                stepId: "work",
+                grants: [
+                  MAIL_TRIGGER_GRANT,
+                  "mail.accept:invoker",
+                  "mail.accept:tenant",
+                ],
+                grantEffects: {},
+              },
+            ],
+            grantRequirements: [],
+          },
+        });
+
+        const result = await materializeOnce(RUN_ID);
+
+        if (result.outcome !== "materialized") {
+          throw new Error(`expected materialized, got ${result.outcome}`);
+        }
+        expect(
+          result.stepGrants.filter((g) =>
+            g.resource.startsWith("mail.accept:principal:"),
+          ),
+        ).toEqual([]);
       });
     });
 
@@ -1043,7 +1127,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       function senderOf(principalId: string) {
         return {
-          senderPrincipalId: principalId,
           senderCoordinates: [
             { coordType: "principal" as const, id: principalId },
             { coordType: "tenant" as const, id: TENANT },
@@ -1109,22 +1192,17 @@ describe.skipIf(!harnessDbEnvAvailable())(
         }
       }
 
-      test("refuses the loser when the committed run does not accept it", async () => {
-        const { winner, loser } = await raceFirstFire(["mail.accept:invoker"]);
-
-        expect(winner.outcome).toBe("materialized");
-        expect(loser.outcome).toBe("rejected");
-        if (loser.outcome === "rejected") {
-          expect(loser.code).toBe("mail_admission_denied");
-        }
-      });
-
       test("gates the loser on the committed run even while credentials are unready", async () => {
+        // The rules name the loser, so it passes the staged first-fire check
+        // and queues on the anchor lock.
         await seedFrozenSnapshot({
           perStep: [
             {
               stepId: "work",
-              grants: [MAIL_TRIGGER_GRANT, "mail.accept:invoker"],
+              grants: [
+                MAIL_TRIGGER_GRANT,
+                mailAcceptResource("principal", LOSER),
+              ],
               grantEffects: {},
             },
           ],
@@ -1190,10 +1268,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
 
       test("admits the loser when the committed run accepts it", async () => {
-        const { winner, loser } = await raceFirstFire([
-          "mail.accept:invoker",
-          "mail.accept:tenant",
-        ]);
+        const { winner, loser } = await raceFirstFire(["mail.accept:tenant"]);
 
         expect(winner.outcome).toBe("materialized");
         expect(loser.outcome).toBe("materialized");
@@ -1332,7 +1407,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         });
 
         const reply = await materializeOnce(DEPLOYMENT, {
-          senderPrincipalId: RECIPIENT_PRINCIPAL,
           senderCoordinates: [
             { coordType: "principal", id: RECIPIENT_PRINCIPAL },
             { coordType: "asset", id: ASSET },
@@ -1342,7 +1416,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         expect(reply.outcome).toBe("materialized");
 
         const stranger = await materializeOnce(DEPLOYMENT, {
-          senderPrincipalId: CREATOR,
           senderCoordinates: [
             { coordType: "principal", id: CREATOR },
             { coordType: "tenant", id: TENANT },
@@ -1475,7 +1548,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
         expect(await correspondentRows()).toHaveLength(2);
         const reply = await materializeOnce(DEPLOYMENT, {
-          senderPrincipalId: RECIPIENT_PRINCIPAL,
           senderCoordinates: [
             { coordType: "principal", id: RECIPIENT_PRINCIPAL },
             { coordType: "asset", id: ASSET },
@@ -1678,8 +1750,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
         const FRESH_RUN_ID = "run_fresh";
         const FRESH_ADDRESS = "run_fresh@tenant.example";
 
-        // A deployed, acked anchor with no principal: its first fire mints the
-        // principal. Its own snapshot admits whoever fires it as the invoker.
+        // A deployed, acked anchor with no principal, which the sending run
+        // deployed: its first fire mints the principal, and its own snapshot
+        // admits mail from its deployer, the invoker.
         async function seedFreshRecipient(
           overrides: {
             cancellationRequestedAt?: Date;
@@ -1704,7 +1777,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           });
           await seedWorkflowRunLaunchSpec(h.db, {
             anchorRunId: FRESH_RUN_ID,
-            sourceAuthorityPrincipalId: CREATOR,
+            sourceAuthorityPrincipalId: SENDER_PRINCIPAL,
             grantSnapshot: {
               perStep: [
                 {
@@ -1748,7 +1821,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
           );
           if (resolved === null) throw new Error(`${address} did not resolve`);
           return {
-            senderPrincipalId: resolved.principalId,
             senderCoordinates: resolved.coordinates,
           };
         }

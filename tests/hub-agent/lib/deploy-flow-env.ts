@@ -1043,7 +1043,7 @@ export async function startHub(
                 )
               )?.publicKey ?? null,
             // The strict, coordinate-carrying resolution the mail-triggered
-            // run's invoker binding needs, wired exactly as production
+            // run's admission needs, wired exactly as production
             // (apps/hub/src/server.ts) through the shared `resolveSenderPrincipal`
             // so the harness exercises the real resolution rather than a copy.
             resolveSenderPrincipal: (address: string) =>
