@@ -29,6 +29,7 @@ import type {
 import {
   downstreamClosure,
   hashDefinition,
+  onFailureOf,
   RUN_ID_PATTERN,
   stepTriggerBudget,
   validateRetryTriggerCombination,
@@ -40,6 +41,7 @@ import {
 } from "./selectors";
 import {
   hasFailedStep,
+  isCrashedInvocationStep,
   isRunDone,
   nextSchedulable,
   resumeResidualOf,
@@ -47,6 +49,8 @@ import {
 import {
   commit as commitDurableToChain,
   commitBuffered as commitBufferedToChain,
+  commitBufferedFrom as commitBufferedFromChain,
+  commitFrom as commitDurableFromChain,
   dropChain,
   flushChain,
   isRepoWriteFailure,
@@ -74,6 +78,7 @@ import {
 import {
   EphemeralResumeSeedError,
   RuntimeResumeUnsupportedError,
+  StepOutcomeCommitError,
 } from "./errors";
 import { loopBodyRunId, scopedStepId, sectionBodyRunId } from "./step-scope";
 import { inlineBodyRef } from "../inline-body-ref";
@@ -83,6 +88,7 @@ import {
   decideTerminalRunFlip,
   emptyState,
   isTerminalRunPhase,
+  isTerminalStepPhase,
   resumeFromLog,
   TransitionError,
   type RunState,
@@ -517,9 +523,11 @@ async function settleThrownBody(
 // write into the per-runId buffer. The buffer is flushed in one
 // `appendBatch` at the next segment boundary -- a suspension (`flush`
 // before the run parks) or completion (`commitDurable` on the terminal
-// event). A synchronous single-step run buffers RunStarted ->
-// StepStarted -> StepCompleted and flushes all of them together with
-// the terminal RunCompleted in ONE commit.
+// event). A run of coordination steps buffers its whole segment and
+// flushes it together with the terminal RunCompleted in ONE commit; an
+// agent step's or action's StepStarted and StepCompleted each close a
+// commit of their own, except a map item's completion, which waits for
+// the next one.
 function commit(
   env: WorkflowRuntimeEnv,
   runId: string,
@@ -529,24 +537,48 @@ function commit(
   return commitBufferedToChain(env, runId, event, guard);
 }
 
+// Intra-segment commit of the events `build` returns for the state the
+// chain holds when this commit's turn comes, landing all of them or none.
+// A caller whose write depends on a step's current phase decides it here,
+// where no other commit can change that phase first.
+function commitFrom(
+  env: WorkflowRuntimeEnv,
+  runId: string,
+  build: (fresh: RunState) => readonly WorkflowEvent[],
+): Promise<ReturnType<typeof resumeFromLog>> {
+  return commitBufferedFromChain(env, runId, build);
+}
+
 // Segment-boundary commit: buffers the event then flushes the whole
 // pending buffer (this event LAST) in one durable `appendBatch`. Used
 // for the terminal events (RunCompleted/RunFailed/RunCancelled) so the
 // terminal is on disk -- and the supervisor's terminal-write sniff
 // fires -- the moment the commit resolves, for the control-plane
 // `cancel` whose `CancelRequested` must persist immediately, and for
-// the agent-invoke barrier in `runStep` (the agent step's `StepStarted`
-// is flushed durably before `env.invokeStep` runs, so a crash
-// mid-invocation leaves a durable marker the recovery path settles as a
-// terminal failure rather than re-invoking the non-idempotent agent).
-// The terminal event being the last blob in the merge keeps the
-// workflow-run kind handler's terminal-lock satisfied.
+// the invocation barriers in `runStep` and `runAction` (the step's
+// `StepStarted` is flushed durably before the agent or handler runs, so
+// a crash mid-invocation leaves a durable marker the recovery path
+// settles as a terminal failure rather than re-invoking it). The terminal
+// event being the last blob in the merge keeps the workflow-run kind
+// handler's terminal-lock satisfied.
 function commitDurable(
   env: WorkflowRuntimeEnv,
   runId: string,
   event: WorkflowEvent,
 ): Promise<ReturnType<typeof resumeFromLog>> {
   return commitDurableToChain(env, runId, event);
+}
+
+// Segment-boundary twin of `commitFrom`: the events `build` returns land in
+// the same durable `appendBatch` as the pending buffer, all or none. An
+// agent step's or action's success `StepCompleted` lands here outside a map,
+// so a crash after the work finished is not settled as one mid-invocation.
+function commitDurableFrom(
+  env: WorkflowRuntimeEnv,
+  runId: string,
+  build: (fresh: RunState) => readonly WorkflowEvent[],
+): Promise<ReturnType<typeof resumeFromLog>> {
+  return commitDurableFromChain(env, runId, build);
 }
 
 // Flush the pending buffer to durable storage in one `appendBatch`.
@@ -702,6 +734,7 @@ async function executeRunBody(
   const crashedInFlight: { stepId: string; attempt: number }[] = [];
   const recoverableParks: {
     stepId: string;
+    attempt: number;
     correlationId: string;
     timeoutAtMs?: number;
   }[] = [];
@@ -743,11 +776,11 @@ async function executeRunBody(
       // recoverable: the suspension decision is durable in the reactor's
       // pending-operation store even though the workflow log lost it, so the
       // reconstruction loop below re-commits the missing `SignalAwaited` rather
-      // than failing the run. Otherwise (no binding, or no pending approval op)
-      // it is a genuine crash mid-agent-turn and settles terminal, the
-      // pre-recovery behavior. Both settlings happen AFTER this loop --
-      // committing inline would leave `state` stale and merely relocate the
-      // stall to the main loop.
+      // than failing the run. Otherwise (no binding, no pending approval op, or
+      // a stale one) it is a genuine crash mid-agent-turn and settles
+      // terminal, the pre-recovery behavior. Both settlings happen AFTER this
+      // loop -- committing inline would leave `state` stale and merely
+      // relocate the stall to the main loop.
       if (residual === "crashed-invocation") {
         const parkedOps =
           env.readParkedApprovalOps !== undefined
@@ -766,9 +799,24 @@ async function executeRunBody(
           );
         }
         const parked = parkedOps[0];
-        if (parked !== undefined) {
+        // A durable op whose channel this step already awaited in the log is
+        // stale, not a lost park: that park flushed and a delivery resumed the
+        // step, whose reactor consumed the op before the store holding it
+        // caught up (the committed copy of a step that crashed mid-turn trails
+        // its local store). Re-parking would wait on a decision already spent,
+        // so the step is a genuine crash mid-turn.
+        if (
+          parked !== undefined &&
+          !(await stepAwaitedSignal(
+            env,
+            runId,
+            stepId,
+            signalName(parked.correlationId),
+          ))
+        ) {
           recoverableParks.push({
             stepId,
+            attempt: stepState.currentAttempt,
             correlationId: parked.correlationId,
             ...(parked.timeoutAtMs !== undefined
               ? { timeoutAtMs: parked.timeoutAtMs }
@@ -827,7 +875,25 @@ async function executeRunBody(
   // `crashedInFlight` and it settles as a terminal StepFailed below rather than
   // re-parking. The durable input substrate that closes this window is future
   // work; input-park crash-safety today holds only for the post-flush window.
-  for (const { stepId, correlationId, timeoutAtMs } of recoverableParks) {
+  for (const {
+    stepId,
+    attempt,
+    correlationId,
+    timeoutAtMs,
+  } of recoverableParks) {
+    try {
+      await env.persistRecoveredPark?.({
+        runId,
+        stepId,
+        attempt,
+        correlationId,
+      });
+    } catch (cause) {
+      // The step state goes where the run log is, so this is a failed
+      // durable write: recovery retries the park rather than the run failing.
+      markRepoWriteFailure(cause);
+      throw cause;
+    }
     const awaited: WorkflowEvent = {
       kind: "SignalAwaited",
       seq: state.lastSeq + 1,
@@ -850,10 +916,11 @@ async function executeRunBody(
   // exhaustion, so a crash mid-invocation is the same "run the fallback"
   // case. The onFailure resume reconciliation below observes the `routed`
   // phase, prunes its normal dependents, and reconstructs its sentinel. A unit
-  // with no `onFailure` stays a bare fatal `StepFailed`, and the post-loop
-  // `hasFailedStep` path commits `RunFailed`. (`isCrashedInvocationStep`
-  // matches only `step`/`action`; a crashed `childWorkflow` is a host-owned
-  // recovery surface handled elsewhere.)
+  // with no `onFailure`, or whose handler a branch already skipped, stays a
+  // bare fatal `StepFailed`, and the post-loop `hasFailedStep` path commits
+  // `RunFailed`. (`isCrashedInvocationStep` matches only `step`/`action`; a
+  // crashed `childWorkflow` is a host-owned recovery surface handled
+  // elsewhere.)
   for (const { stepId, attempt } of crashedInFlight) {
     const primitive = definition.steps[stepId];
     const onFailure =
@@ -861,20 +928,23 @@ async function executeRunBody(
       (primitive.kind === "step" || primitive.kind === "action")
         ? primitive.onFailure
         : undefined;
-    const failed: WorkflowEvent = {
-      kind: "StepFailed",
-      seq: state.lastSeq + 1,
-      at: env.clock().toISOString(),
-      stepId,
-      attempt,
-      error: {
-        message: `step ${stepId} crashed mid-invocation; the invoked primitive is non-deterministic and unrecorded, so it is not re-invoked (at-most-once)`,
-        code: "crash-mid-invocation",
+    state = await commitDurableFrom(env, runId, (fresh) => [
+      {
+        kind: "StepFailed",
+        seq: fresh.lastSeq + 1,
+        at: env.clock().toISOString(),
+        stepId,
+        attempt,
+        error: {
+          message: `step ${stepId} crashed mid-invocation; the invoked primitive is non-deterministic and unrecorded, so it is not re-invoked (at-most-once)`,
+          code: "crash-mid-invocation",
+        },
+        retriesExhausted: true,
+        ...(onFailure !== undefined && canRouteTo(fresh, onFailure)
+          ? { routedTo: onFailure }
+          : {}),
       },
-      retriesExhausted: true,
-      ...(onFailure !== undefined ? { routedTo: onFailure } : {}),
-    };
-    state = await commitDurable(env, runId, failed);
+    ]);
   }
 
   // Issue RunStarted only if the state machine has not seen it.
@@ -939,34 +1009,21 @@ async function executeRunBody(
   // reads `steps.<unit>.output.error.message`. Rebuild it from the routed
   // StepFailed's reduced error so the selector resolves the same value it saw
   // before the crash. The pass also completes the branch prune for each routed
-  // or completed onFailure unit. That prune is idempotent: the durable log is a
-  // prefix and each route emits its prune BEFORE its terminal in one batch, so
-  // a durable terminal already carries its skips and `emitSkipClosure`
-  // re-emits nothing; the pass keeps it so a unit whose prune is not durable is
-  // still completed here. Skip the pass unless the run is `running` -- a
-  // cancelling/terminal resume is owned by the drive loop's settlement, and a
-  // skip StepStarted would throw against a non-running run.
+  // onFailure unit. A live route writes its prune with its terminal, so its
+  // skips are already present. Crash classification above writes the routed
+  // failure first; this pass completes its prune before scheduling. A completed unit
+  // needs no pass: a success writes its prune in the same batch as its
+  // StepCompleted, and a unit a branch skipped is completed too, so pruning
+  // there would skip a handler the branch kept, such as a gate's pick. A
+  // prune left by an interrupted recovery is completed idempotently. Skip the
+  // pass unless the run is `running` -- a cancelling/terminal
+  // resume is owned by the drive loop's settlement, and a skip StepStarted
+  // would throw against a non-running run.
   if (state.phase === "running") {
     for (const [stepId, primitive] of Object.entries(definition.steps)) {
-      const onFailure =
-        primitive.kind === "step" ||
-        primitive.kind === "action" ||
-        primitive.kind === "childWorkflow"
-          ? primitive.onFailure
-          : undefined;
+      const onFailure = onFailureOf(primitive);
       if (onFailure === undefined) continue;
-      const phase = state.steps.get(stepId)?.phase;
-      if (phase === "completed") {
-        await pruneAroundRoute(
-          definition,
-          env,
-          runId,
-          stepId,
-          onFailure,
-          "completed",
-          cancelController.signal,
-        );
-      } else if (phase === "routed") {
+      if (state.steps.get(stepId)?.phase === "routed") {
         await pruneAroundRoute(
           definition,
           env,
@@ -1006,21 +1063,18 @@ async function executeRunBody(
   // that same error. The loop below would otherwise treat the
   // rejection as a settled step and schedule the step again, or wait
   // forever on a sibling that is already parked. Remember the first
-  // error and rethrow it once every in-flight step has stopped.
+  // error and rethrow it; the loop stops every in-flight step before
+  // the error leaves it.
   let repoWriteFailure: unknown;
   // One waiter for the whole loop. A flush that already failed resolves
   // it immediately, so the next race observes it without a new registration.
   const flushFailed = whenRunFlushFails(runId);
-  async function throwRememberedWriteFailure(): Promise<void> {
+  function throwRememberedWriteFailure(): void {
     if (repoWriteFailure === undefined) {
       repoWriteFailure = flushFailureCause(runId);
     }
     const cause = repoWriteFailure;
     if (cause === undefined) return;
-    for (const controller of stepAborts.values()) {
-      if (!controller.signal.aborted) controller.abort();
-    }
-    await Promise.allSettled(stepPromises.values());
     throw cause;
   }
 
@@ -1028,130 +1082,171 @@ async function executeRunBody(
   // settle, repeat until done. Cancellation aborts every in-flight
   // executor; we still loop to commit `CancelPropagated` and the
   // terminal `RunCancelled`.
-  while (!isRunDone(definition, state)) {
-    await throwRememberedWriteFailure();
-    if (cancelController.signal.aborted && state.phase !== "cancelling") {
-      state = await reloadState(env, runId);
-    }
+  // A step's terminal event can precede its runner's output publication and
+  // cleanup, so a running or cancelling run also waits for its live runners.
+  try {
+    while (
+      !isTerminalRunPhase(state.phase) &&
+      (inFlight.size > 0 || !isRunDone(definition, state))
+    ) {
+      throwRememberedWriteFailure();
+      if (cancelController.signal.aborted && state.phase !== "cancelling") {
+        state = await reloadState(env, runId);
+      }
 
-    // Drain observation point #1: main loop entry. If drain has
-    // fired, abort every in-flight step whose declared behavior is
-    // `"cancel"`. The supervisor's drainTimeout accumulator on the
-    // host side ticks against these aborts; on expiry it commits a
-    // signed `CancelRequested{origin: "supervisor-drain"}` which
-    // the runtime body picks up via the existing cancel cascade.
-    if (env.drain.signal.aborted) {
-      for (const stepId of inFlight) {
-        if (shouldAbortForDrain(env.drain, stepId)) {
-          const ac = stepAborts.get(stepId);
-          if (ac !== undefined && !ac.signal.aborted) ac.abort();
+      // Drain observation point #1: main loop entry. If drain has
+      // fired, abort every in-flight step whose declared behavior is
+      // `"cancel"`. The supervisor's drainTimeout accumulator on the
+      // host side ticks against these aborts; on expiry it commits a
+      // signed `CancelRequested{origin: "supervisor-drain"}` which
+      // the runtime body picks up via the existing cancel cascade.
+      if (env.drain.signal.aborted) {
+        for (const stepId of inFlight) {
+          if (shouldAbortForDrain(env.drain, stepId)) {
+            const ac = stepAborts.get(stepId);
+            if (ac !== undefined && !ac.signal.aborted) ac.abort();
+          }
         }
       }
-    }
 
-    const ready = nextSchedulable(definition, state, inFlight);
-    for (const primitive of ready) {
-      inFlight.add(primitive.id);
-      const ctx: SelectorContext = {
-        trigger: { payload: options.triggerPayload },
-        steps: Object.fromEntries(
-          Object.entries(stepOutputs).map(([id, output]) => [id, { output }]),
-        ),
-      };
-      const stepLocalAbort = createStepAbort(
-        primitive.id,
-        cancelController.signal,
-        env.drain,
-      );
-      stepAborts.set(primitive.id, stepLocalAbort);
-      const promise = runPrimitiveSafe(
-        definition,
-        env,
-        runId,
-        primitive,
-        ctx,
-        stepLocalAbort.signal,
-        depth,
-        maxChildSpawnDepth,
-      )
-        .then((output) => {
-          stepOutputs[primitive.id] = output;
-        })
-        .catch((cause: unknown) => {
-          if (isRunFlushFailure(runId, cause)) {
-            if (repoWriteFailure === undefined) repoWriteFailure = cause;
-            return;
+      if (state.phase === "running") {
+        try {
+          state = await skipUnroutedHandlerBranches(
+            definition,
+            env,
+            runId,
+            state,
+            inFlight,
+            cancelController.signal,
+          );
+        } catch (cause) {
+          // A cancel that lands while a branch is being skipped makes the next
+          // skip StepStarted throw `code: "phase"`. A runner's own skip reaches
+          // the cancelling branch through runPrimitiveSafe; this one reloads
+          // and reaches it below.
+          if (!(cause instanceof TransitionError && cause.code === "phase")) {
+            throw cause;
           }
-          // Errors are committed as StepFailed inside the primitive
-          // runner; the main loop notices the failed phase on the
-          // next state reload.
-        })
-        .finally(() => {
-          inFlight.delete(primitive.id);
-          justSettled.add(primitive.id);
-          stepAborts.delete(primitive.id);
-        });
-      stepPromises.set(primitive.id, promise);
-    }
-
-    if (state.phase === "cancelling") {
-      state = await reloadState(env, runId);
-      for (const [stepId, stepState] of state.steps) {
-        if (
-          stepState.phase !== "in-flight" &&
-          stepState.phase !== "awaiting-signal" &&
-          stepState.phase !== "awaiting-timer"
-        ) {
-          continue;
+          state = await reloadState(env, runId);
+          if (state.phase === "running") throw cause;
         }
-        const propagate: WorkflowEvent = {
-          kind: "CancelPropagated",
+        if (inFlight.size === 0 && isRunDone(definition, state)) break;
+      }
+
+      const ready = nextSchedulable(definition, state, inFlight);
+      for (const primitive of ready) {
+        inFlight.add(primitive.id);
+        const ctx: SelectorContext = {
+          trigger: { payload: options.triggerPayload },
+          steps: Object.fromEntries(
+            Object.entries(stepOutputs).map(([id, output]) => [id, { output }]),
+          ),
+        };
+        const stepLocalAbort = createStepAbort(
+          primitive.id,
+          cancelController.signal,
+          env.drain,
+        );
+        stepAborts.set(primitive.id, stepLocalAbort);
+        const promise = runPrimitiveSafe(
+          definition,
+          env,
+          runId,
+          primitive,
+          ctx,
+          stepLocalAbort.signal,
+          depth,
+          maxChildSpawnDepth,
+        )
+          .then((output) => {
+            stepOutputs[primitive.id] = output;
+          })
+          .catch((cause: unknown) => {
+            if (isRunFlushFailure(runId, cause)) {
+              if (repoWriteFailure === undefined) repoWriteFailure = cause;
+              return;
+            }
+            // Errors are committed as StepFailed inside the primitive
+            // runner; the main loop notices the failed phase on the
+            // next state reload.
+          })
+          .finally(() => {
+            inFlight.delete(primitive.id);
+            justSettled.add(primitive.id);
+            stepAborts.delete(primitive.id);
+          });
+        stepPromises.set(primitive.id, promise);
+      }
+
+      if (state.phase === "cancelling") {
+        state = await reloadState(env, runId);
+        for (const [stepId, stepState] of state.steps) {
+          if (
+            stepState.phase !== "in-flight" &&
+            stepState.phase !== "awaiting-signal" &&
+            stepState.phase !== "awaiting-timer"
+          ) {
+            continue;
+          }
+          const propagate: WorkflowEvent = {
+            kind: "CancelPropagated",
+            seq: state.lastSeq + 1,
+            at: env.clock().toISOString(),
+            stepId,
+          };
+          state = await commit(env, runId, propagate);
+        }
+        state = await emitChildCancelCascade(env, runId, state);
+        await Promise.allSettled(stepPromises.values());
+        const cancelled: WorkflowEvent = {
+          kind: "RunCancelled",
           seq: state.lastSeq + 1,
           at: env.clock().toISOString(),
-          stepId,
         };
-        state = await commit(env, runId, propagate);
+        state = await commitDurable(env, runId, cancelled);
+        break;
       }
-      state = await emitChildCancelCascade(env, runId, state);
-      await Promise.allSettled(stepPromises.values());
-      const cancelled: WorkflowEvent = {
-        kind: "RunCancelled",
-        seq: state.lastSeq + 1,
-        at: env.clock().toISOString(),
-      };
-      state = await commitDurable(env, runId, cancelled);
-      break;
-    }
 
-    if (stepPromises.size === 0) {
-      await throwRememberedWriteFailure();
-      if (ready.length === 0) {
-        throw new Error(
-          `workflow ${definition.id} run ${runId} stalled with no schedulable primitives`,
-        );
+      if (stepPromises.size === 0) {
+        throwRememberedWriteFailure();
+        if (ready.length === 0) {
+          throw new Error(
+            `workflow ${definition.id} run ${runId} stalled with no schedulable primitives`,
+          );
+        }
+        // Promises were scheduled this tick but already completed
+        // synchronously; reload state and continue.
+        state = await reloadState(env, runId);
+        throwRememberedWriteFailure();
+        continue;
       }
-      // Promises were scheduled this tick but already completed
-      // synchronously; reload state and continue.
+
+      // Wait for at least one in-flight primitive to settle. Step
+      // failures are already `StepFailed`. A parked step never settles,
+      // so the flush waiter is what wakes the loop when an external
+      // writer drops the buffer.
+      await Promise.race([
+        ...Array.from(stepPromises.values()).map((p) =>
+          p.catch(() => undefined),
+        ),
+        flushFailed,
+      ]);
+      throwRememberedWriteFailure();
       state = await reloadState(env, runId);
-      await throwRememberedWriteFailure();
-      continue;
+      throwRememberedWriteFailure();
+      for (const stepId of justSettled) {
+        stepPromises.delete(stepId);
+      }
+      justSettled.clear();
     }
-
-    // Wait for at least one in-flight primitive to settle. Step
-    // failures are already `StepFailed`. A parked step never settles,
-    // so the flush waiter is what wakes the loop when an external
-    // writer drops the buffer.
-    await Promise.race([
-      ...Array.from(stepPromises.values()).map((p) => p.catch(() => undefined)),
-      flushFailed,
-    ]);
-    await throwRememberedWriteFailure();
-    state = await reloadState(env, runId);
-    await throwRememberedWriteFailure();
-    for (const stepId of justSettled) {
-      stepPromises.delete(stepId);
+  } catch (cause) {
+    // Nothing supervises a step once the error leaves the loop, so each one
+    // still running is stopped before the run settles.
+    for (const controller of stepAborts.values()) {
+      if (!controller.signal.aborted) controller.abort();
     }
-    justSettled.clear();
+    await Promise.allSettled(stepPromises.values());
+    throw cause;
   }
 
   // If we exited the loop without a terminal phase, settle it. The
@@ -1384,7 +1479,15 @@ async function runPrimitive(
 ): Promise<unknown> {
   switch (primitive.kind) {
     case "step":
-      return runStep(definition, env, runId, primitive, selectorCtx, abort);
+      return runStep(
+        definition,
+        env,
+        runId,
+        primitive,
+        selectorCtx,
+        abort,
+        "durable",
+      );
     case "action":
       return runAction(definition, env, runId, primitive, selectorCtx, abort);
     case "loop":
@@ -1483,7 +1586,10 @@ async function runPrimitiveSafe(
       // No StepStarted was committed (e.g., the input-materialization
       // selector threw before runStep emitted StepStarted). Emit a
       // synthetic StepStarted + StepFailed so the scheduler sees the
-      // step as terminal and does not busy-loop on it.
+      // step as terminal and does not busy-loop on it. They land in one
+      // batch: a durable StepStarted alone reads on resume as a crash
+      // mid-invocation, which routes to an onFailure handler this
+      // failure does not.
       const message = cause instanceof Error ? cause.message : String(cause);
       const syntheticStarted: WorkflowEvent = {
         kind: "StepStarted",
@@ -1493,7 +1599,6 @@ async function runPrimitiveSafe(
         attempt: 1,
         input: { ref: "(error)" },
       };
-      state = await commit(env, runId, syntheticStarted);
       const syntheticFailed: WorkflowEvent = {
         kind: "StepFailed",
         seq: state.lastSeq + 1,
@@ -1503,8 +1608,7 @@ async function runPrimitiveSafe(
         error: { message },
         retriesExhausted: true,
       };
-      state = await commit(env, runId, syntheticFailed);
-      void state;
+      await commitFrom(env, runId, () => [syntheticStarted, syntheticFailed]);
       throw cause;
     }
     const stillRunning =
@@ -1535,8 +1639,8 @@ async function runPrimitiveSafe(
         // the invocation kinds explicitly). This covers only a post-StepStarted
         // invocation failure; a structural pre-StepStarted throw lands in the
         // no-StepStarted arm above and fails hard by design. A cancelled child
-        // keeps its current disposition (bare StepFailed, no routedTo): routing
-        // it would fire the fallback handler on an operator's intentional stop.
+        // or a unit this run stopped keeps a bare StepFailed, no routedTo:
+        // routing it would fire the fallback handler on an intentional stop.
         const unit = definition.steps[primitive.id];
         const onFailure =
           unit !== undefined &&
@@ -1554,45 +1658,24 @@ async function runPrimitiveSafe(
         if (
           onFailure !== undefined &&
           !cancelledChild &&
+          !abort.aborted &&
           !(cause instanceof SuccessTerminalizationError)
         ) {
-          await pruneAroundRoute(
-            definition,
+          state = await commitFrom(
             env,
             runId,
-            primitive.id,
-            onFailure,
-            "routed",
-            abort,
+            await buildFailureTerminal(
+              definition,
+              env,
+              runId,
+              primitive.id,
+              onFailure,
+              stepState.currentAttempt,
+              message,
+            ),
           );
-          state = await reloadState(env, runId);
-          // Cancellation wins over routing: a cancel that landed across the
-          // prune's awaits settles the unit `cancelled` rather than routed,
-          // mirroring the cancelling arm above and the step failure route.
-          if (state.phase === "cancelling") {
-            const propagated: WorkflowEvent = {
-              kind: "CancelPropagated",
-              seq: state.lastSeq + 1,
-              at: env.clock().toISOString(),
-              stepId: primitive.id,
-            };
-            state = await commit(env, runId, propagated);
-            void state;
-            throw cause;
-          }
-          const routed: WorkflowEvent = {
-            kind: "StepFailed",
-            seq: state.lastSeq + 1,
-            at: env.clock().toISOString(),
-            stepId: primitive.id,
-            attempt: stepState.currentAttempt,
-            error: { message },
-            retriesExhausted: true,
-            routedTo: onFailure,
-          };
-          state = await commit(env, runId, routed);
-          void state;
           await flushParkedChildWorkflowFailure(env, runId, primitive.kind);
+          if (state.steps.get(primitive.id)?.phase !== "routed") throw cause;
           return { failed: true, stepId: primitive.id, error: { message } };
         }
         const failed: WorkflowEvent = {
@@ -1604,7 +1687,13 @@ async function runPrimitiveSafe(
           error: { message },
           retriesExhausted: true,
         };
-        state = await commit(env, runId, failed);
+        state = await commitUnroutedFailure(
+          env,
+          runId,
+          failed,
+          isCrashedInvocationStep(definition, primitive.id, stepState.phase) &&
+            onFailureOf(primitive) !== undefined,
+        );
         await flushParkedChildWorkflowFailure(env, runId, primitive.kind);
       }
     }
@@ -1639,6 +1728,7 @@ async function runStep(
   step: StepPrimitive,
   selectorCtx: SelectorContext,
   abort: AbortSignal,
+  completion: "durable" | "buffered",
 ): Promise<unknown> {
   // Re-apply the retry/budget cross-field guard here as a defensive
   // re-check, at the runtime's single read point for both fields, rather
@@ -1934,30 +2024,17 @@ async function runStep(
         // A unit carrying onFailure routes on BOTH outcomes: on success the
         // handler branch must be pruned, or the scheduler would offer the
         // failure handler off its `after: [unit]` once the unit is terminal.
-        // Prune while the unit is still in-flight -- before the StepCompleted
-        // below -- so no sibling settling can schedule the handler mid-prune.
-        if (step.onFailure !== undefined) {
-          await pruneAroundRoute(
-            definition,
-            env,
-            runId,
-            step.id,
-            step.onFailure,
-            "completed",
-            abort,
-          );
-        }
-        let after = await reloadState(env, runId);
-        const completed: WorkflowEvent = {
-          kind: "StepCompleted",
-          seq: after.lastSeq + 1,
-          at: env.clock().toISOString(),
-          stepId: step.id,
+        // The prune lands in the same commit as the StepCompleted.
+        await commitInvocationCompleted(
+          definition,
+          env,
+          runId,
+          step.id,
+          step.onFailure,
           attempt,
-          output: { ref: outputRef },
-        };
-        after = await commit(env, runId, completed);
-        void after;
+          outputRef,
+          completion,
+        );
       } catch (termCause) {
         throw new SuccessTerminalizationError(termCause);
       }
@@ -1965,6 +2042,9 @@ async function runStep(
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
       const exhausted = attempt >= maxAttempts;
+      // A map item is never resumed in flight: its whole map fails instead.
+      const routedOnResume =
+        completion === "durable" && step.onFailure !== undefined;
       let after = await reloadState(env, runId);
       // Cancellation wins over step-level failure: if the run is
       // cancelling, the catch landed because the step's abort fired,
@@ -1984,12 +2064,18 @@ async function runStep(
         void after;
         throw cause;
       }
-      if (cause instanceof SuccessTerminalizationError) {
-        // The step's work succeeded but landing its terminal failed. Do not
+      if (
+        cause instanceof SuccessTerminalizationError ||
+        cause instanceof StepOutcomeCommitError
+      ) {
+        // The step's work succeeded but landing its terminal failed, or the
+        // invoker could not commit the outcome of a turn that ran. Do not
         // route and do not retry -- both would act on a step that already did
         // its work (a retry would re-invoke the agent, an at-most-once
         // violation). Land a bare failure so the run fails loudly via the
-        // verdict; a resume re-drives under the at-most-once contract.
+        // verdict; a resume re-drives under the at-most-once contract. The
+        // handler branch is skipped by `skipUnroutedHandlerBranches` once this
+        // failure lands, as for every failure that does not route.
         const failed: WorkflowEvent = {
           kind: "StepFailed",
           seq: after.lastSeq + 1,
@@ -1999,58 +2085,40 @@ async function runStep(
           error: { message },
           retriesExhausted: true,
         };
-        after = await commit(env, runId, failed);
+        after = await commitUnroutedFailure(env, runId, failed, routedOnResume);
         void after;
         throw cause;
       }
-      if (exhausted && step.onFailure !== undefined) {
+      // A runner stopped by a drain or by an error leaving the run's loop
+      // gets no next attempt, and its handler would run off a stop rather
+      // than a failure, so its failure is final and does not route.
+      const stopped = abort.aborted;
+      if (exhausted && !stopped && step.onFailure !== undefined) {
         // Route the permanent failure to the handler instead of failing the
-        // run. Prune the unit's normal dependents FIRST -- while the unit is
-        // still in-flight -- then land the unit `routed` with a single
-        // StepFailed{routedTo} (never a failed->routed promotion). The
+        // run. The route decision, normal-branch skips, and StepFailed land
+        // together, so a handler skipped during preparation cannot leave the
+        // normal branch pruned for a failure that never routed. The
         // returned sentinel becomes the unit's own output in the in-process
         // stepOutputs (via the drive loop's `.then`), so the handler reads
         // steps.<unit>.output.error.message. There is no StepCompleted for a
         // routed unit, so that output is live-path only.
-        await pruneAroundRoute(
-          definition,
+        after = await commitFrom(
           env,
           runId,
-          step.id,
-          step.onFailure,
-          "routed",
-          abort,
+          await buildFailureTerminal(
+            definition,
+            env,
+            runId,
+            step.id,
+            step.onFailure,
+            attempt,
+            message,
+          ),
         );
-        after = await reloadState(env, runId);
-        // Cancellation wins over routing, mirroring the cancelling guard
-        // above: if the run started cancelling across the prune's awaits,
-        // settle the unit `cancelled` rather than land a routed failure whose
-        // (pruned) handler branch the cancel sweep will never service.
-        if (after.phase === "cancelling") {
-          const propagated: WorkflowEvent = {
-            kind: "CancelPropagated",
-            seq: after.lastSeq + 1,
-            at: env.clock().toISOString(),
-            stepId: step.id,
-          };
-          after = await commit(env, runId, propagated);
-          void after;
-          throw cause;
-        }
-        const routed: WorkflowEvent = {
-          kind: "StepFailed",
-          seq: after.lastSeq + 1,
-          at: env.clock().toISOString(),
-          stepId: step.id,
-          attempt,
-          error: { message },
-          retriesExhausted: true,
-          routedTo: step.onFailure,
-        };
-        after = await commit(env, runId, routed);
-        void after;
+        if (after.steps.get(step.id)?.phase !== "routed") throw cause;
         return { failed: true, stepId: step.id, error: { message } };
       }
+      const final = exhausted || stopped;
       const failed: WorkflowEvent = {
         kind: "StepFailed",
         seq: after.lastSeq + 1,
@@ -2058,13 +2126,15 @@ async function runStep(
         stepId: step.id,
         attempt,
         error: { message },
-        retriesExhausted: exhausted,
+        retriesExhausted: final,
       };
-      after = await commit(env, runId, failed);
-      if (exhausted) {
+      if (final) {
+        await commitUnroutedFailure(env, runId, failed, routedOnResume);
         throw cause;
       }
-      // Schedule the next attempt: emit TimerSet then AttemptScheduled.
+      // Publish the failed attempt with its retry. State readers include buffered
+      // events, so separate commits could expose a terminal failure while this
+      // runner is still scheduling the next attempt.
       const backoff = computeBackoff(step.retry, attempt);
       const timerId = env.newId("timer");
       const fireAtDate = new Date(env.clock().getTime() + backoff);
@@ -2077,7 +2147,6 @@ async function runStep(
         fireAt,
         stepId: step.id,
       };
-      after = await commit(env, runId, timerSet);
       const nextAttempt = attempt + 1;
       const scheduled: WorkflowEvent = {
         kind: "AttemptScheduled",
@@ -2088,7 +2157,21 @@ async function runStep(
         timerId,
         fireAt,
       };
-      after = await commit(env, runId, scheduled);
+      // A cancel that lands first wins: the step is cancelled rather than
+      // given an attempt the run never makes.
+      const retrying = await commitFrom(env, runId, (fresh) =>
+        fresh.phase === "cancelling"
+          ? [
+              {
+                kind: "CancelPropagated",
+                seq: fresh.lastSeq + 1,
+                at: env.clock().toISOString(),
+                stepId: step.id,
+              },
+            ]
+          : [failed, timerSet, scheduled],
+      );
+      if (retrying.phase === "cancelling") throw cause;
       // Wait for the scheduler to commit TimerFired before looping
       // into the next attempt. The step itself stays awaiting-timer
       // through the wait.
@@ -2217,21 +2300,23 @@ async function runAction(
     // from an invocation failure in runPrimitiveSafe -- the action's work
     // already succeeded, so it must land a bare failure, not route or retry.
     try {
-      // Mirror runStep's success prune: a unit carrying onFailure routes on
-      // both outcomes, so on success prune the handler branch before the
-      // terminal lands, while the unit is still in-flight.
-      if (primitive.onFailure !== undefined) {
-        await pruneAroundRoute(
-          definition,
-          env,
-          runId,
-          primitive.id,
-          primitive.onFailure,
-          "completed",
-          abort,
-        );
-      }
-      await emitStepCompletedWithValue(env, runId, primitive.id, result.output);
+      // Mirror runStep's success terminal: a unit carrying onFailure prunes
+      // its handler branch in the same commit as its StepCompleted.
+      const { ref: outputRef } = await env.blobs.recordOutput(
+        primitive.id,
+        1,
+        result.output,
+      );
+      await commitInvocationCompleted(
+        definition,
+        env,
+        runId,
+        primitive.id,
+        primitive.onFailure,
+        1,
+        outputRef,
+        "durable",
+      );
     } catch (termCause) {
       throw new SuccessTerminalizationError(termCause);
     }
@@ -4757,16 +4842,16 @@ async function routeLoopOutcome(
 }
 
 /**
- * Prune around an onFailure route, the mirror of `routeLoopOutcome`. A unit
- * carrying `onFailure` settles on both outcomes, so both prune the not-taken
- * side: a routed failure prunes the unit's normal after-dependents and spares
- * the handler branch; a success prunes the handler branch and spares the
- * normal dependents. A diamond-join reachable from the spared side stays live
- * (the `collectBranchClosure` guard). The caller runs this BEFORE it commits
- * the unit's terminal event, so the unit is still in-flight while the skips
- * land -- the scheduler offers none of the unit's direct dependents until it
- * is terminal, and `emitSkipClosure`'s leaf-first order covers the deeper
- * members.
+ * Prune around an onFailure unit whose terminal is already written, the mirror
+ * of `routeLoopOutcome`. A routed failure prunes the unit's normal
+ * after-dependents and spares the handler branch; a failure that did not route
+ * prunes the handler branch and spares the normal dependents. A diamond-join
+ * reachable from the spared side stays live (the `collectBranchClosure` guard).
+ * A live outcome writes the same skips with its terminal instead
+ * (`recordHandlerSkips`). This covers the resume pass, which completes a routed
+ * unit's prune before it schedules anything, and a failure that did not route,
+ * which is safe to prune after its terminal because the scheduler never offers
+ * a handler off such a unit.
  */
 async function pruneAroundRoute(
   definition: WorkflowDefinition,
@@ -4774,9 +4859,26 @@ async function pruneAroundRoute(
   runId: string,
   unitId: string,
   handlerId: string,
-  settled: "routed" | "completed",
+  settled: "routed" | "failed",
   abort: AbortSignal,
 ): Promise<void> {
+  const { toSkip, sentinel } = onFailurePrune(
+    definition,
+    unitId,
+    handlerId,
+    settled,
+  );
+  await emitSkipClosure(env, runId, definition, toSkip, sentinel, abort);
+}
+
+// The closure an onFailure unit's outcome prunes, and the sentinel each
+// skipped member records.
+function onFailurePrune(
+  definition: WorkflowDefinition,
+  unitId: string,
+  handlerId: string,
+  settled: "routed" | "completed" | "failed",
+): { toSkip: readonly string[]; sentinel: unknown } {
   const normalDependents = Object.entries(definition.steps)
     .filter(
       ([id, p]) => id !== handlerId && (p.after?.includes(unitId) ?? false),
@@ -4785,9 +4887,51 @@ async function pruneAroundRoute(
   const handler = [handlerId];
   const notSelected = settled === "routed" ? normalDependents : handler;
   const selected = settled === "routed" ? handler : normalDependents;
-  const toSkip = collectBranchClosure(definition, notSelected, selected);
-  const sentinel = { skipped: true, onFailureStepId: unitId, settled };
-  await emitSkipClosure(env, runId, definition, toSkip, sentinel, abort);
+  return {
+    toSkip: collectBranchClosure(definition, notSelected, selected),
+    sentinel: { skipped: true, onFailureStepId: unitId, settled },
+  };
+}
+
+/**
+ * Skip the handler branch of each onFailure unit whose failure did not route:
+ * one whose work succeeded but whose terminal could not land, that the run
+ * stopped, whose child was cancelled, or that failed before it started. The
+ * scheduler never offers the handler off such a unit, so the run cannot finish
+ * until the branch is skipped. A failure a resume would route were it lost is
+ * already durable (`commitUnroutedFailure`), so a skip that cannot be written
+ * does not turn it into a route. A unit whose runner is still in flight may
+ * yet retry, so it waits for the runner to return.
+ */
+async function skipUnroutedHandlerBranches(
+  definition: WorkflowDefinition,
+  env: WorkflowRuntimeEnv,
+  runId: string,
+  state: RunState,
+  inFlight: ReadonlySet<string>,
+  abort: AbortSignal,
+): Promise<RunState> {
+  let skipped = false;
+  for (const [unitId, unit] of Object.entries(definition.steps)) {
+    const onFailure = onFailureOf(unit);
+    if (onFailure === undefined || inFlight.has(unitId)) continue;
+    if (state.steps.get(unitId)?.phase !== "failed") continue;
+    const handlerPhase = state.steps.get(onFailure)?.phase;
+    if (handlerPhase !== undefined && isTerminalStepPhase(handlerPhase)) {
+      continue;
+    }
+    skipped = true;
+    await pruneAroundRoute(
+      definition,
+      env,
+      runId,
+      unitId,
+      onFailure,
+      "failed",
+      abort,
+    );
+  }
+  return skipped ? reloadState(env, runId) : state;
 }
 
 /**
@@ -4927,6 +5071,8 @@ async function runMap(
         ? { retry: primitive.retry }
         : {}),
     };
+    // Resume cannot continue a map still in flight, so an item's completion
+    // stays buffered: writing it durably would buy nothing.
     const output = await runStep(
       definition,
       env,
@@ -4934,6 +5080,7 @@ async function runMap(
       scopedStep,
       itemCtx,
       abort,
+      "buffered",
     );
     outputs.push(output);
   }
@@ -5050,26 +5197,32 @@ function leafFirstOrder(
 
 /**
  * Emit the skip sentinels for a branch-prune closure, the shared body of
- * every route-to-handler prune (gate, loop, onFailure). Completes the closure
- * LEAF-FIRST: a skipped step is completed only after every skipped step that
- * depends on it. This closes a scheduling race -- while the container/unit is
- * in-flight the scheduler offers none of its direct dependents, but a skipped
- * INTERMEDIATE that completed before its skipped dependent was settled would
- * unblock that dependent, and the drive loop (woken by an unrelated sibling
- * settling) could schedule it. Leaf-first means a skipped step's dependents
- * are already terminal when it completes, and while a step is briefly
- * in-flight its dependencies are not yet terminal, so `areDepsResolved` never
- * offers it -- this holds even for the resumable kinds (sleep/loop/onTrigger/
- * awaitSignal) that `nextSchedulable` offers while in-flight.
+ * every route-to-handler prune (gate, loop, await-signal timeout, onFailure).
+ * Completes the closure LEAF-FIRST: a skipped step is completed only after
+ * every skipped step that depends on it. This closes a scheduling race --
+ * while the container/unit is in-flight the scheduler offers none of its
+ * direct dependents, but a skipped INTERMEDIATE that completed before its
+ * skipped dependent was settled would unblock that dependent, and the drive
+ * loop (woken by an unrelated sibling settling) could schedule it. Leaf-first
+ * means a skipped step's dependents are already terminal when it completes,
+ * and while a step is briefly in-flight its dependencies are not yet terminal,
+ * so `areDepsResolved` never offers it -- this holds even for the resumable
+ * kinds (sleep/loop/onTrigger/awaitSignal) that `nextSchedulable` offers while
+ * in-flight.
  *
- * A step already in the log is not re-started (idempotent replay); a step left
- * in-flight by a crash mid-prune is re-completed. The prune bails only for a
- * run that is no longer `running` (a cancelling/terminal run, whose cancel
- * sweep settles the closure via CancelPropagated); it MUST complete for a
- * drained-but-still-running run, since the caller commits the unit's terminal
- * right after and a half-pruned branch would leave the not-taken side live. A
- * cancel that lands mid-prune makes the next StepStarted throw and propagate;
- * a step already started still completes, so no step is left half-emitted.
+ * A step already in the log is left alone, whatever its phase: a skip lands in
+ * one commit, so a step the prune finds in flight is running, not half
+ * skipped. That check is made in the same chain commit as the write, so a step
+ * two prunes share -- a join below two skipped handlers -- is skipped by
+ * whichever prune reaches it first and left alone by the other. The prune
+ * bails only for a run that is no longer `running` (a cancelling/terminal run,
+ * whose cancel sweep settles the closure via CancelPropagated); it MUST
+ * complete for a drained-but-still-running run, since a half-pruned branch
+ * would leave the not-taken side live once the unit is terminal, whether the
+ * caller commits that terminal right after or, as an onFailure prune does,
+ * already has. A cancel that lands mid-prune makes the next
+ * StepStarted throw and propagate; a skipped step's StepStarted and
+ * StepCompleted land in one commit, so no step is left half-emitted.
  */
 async function emitSkipClosure(
   env: WorkflowRuntimeEnv,
@@ -5090,15 +5243,237 @@ async function emitSkipClosure(
   for (const skipId of leafFirstOrder(definition, toSkip)) {
     // No per-iteration abort bail: if the run turns cancelling mid-prune the
     // next StepStarted throws (the reducer requires `running`) and propagates
-    // to the cancel sweep; a step already started still completes
-    // (StepCompleted has no run-phase guard), so no skip is left half-emitted.
-    const phase = snapshot.steps.get(skipId)?.phase;
-    if (phase !== undefined && phase !== "in-flight") continue;
-    if (phase === undefined) {
-      await emitStepStartedWithValue(env, runId, skipId, sentinel);
-    }
-    await emitStepCompletedWithValue(env, runId, skipId, sentinel);
+    // to the cancel sweep.
+    const skip = await recordSkipSentinels(env, snapshot, skipId, sentinel);
+    if (skip === null) continue;
+    await commitFrom(env, runId, (fresh) =>
+      skipEvents(env, definition, fresh, skip),
+    );
   }
+}
+
+type SkipWrite = {
+  stepId: string;
+  inputRef: string;
+  outputRef: string;
+};
+
+// Record the sentinel blobs a skip of `stepId` commits, or return null when
+// `snapshot` shows the step already started.
+async function recordSkipSentinels(
+  env: WorkflowRuntimeEnv,
+  snapshot: RunState,
+  stepId: string,
+  sentinel: unknown,
+): Promise<SkipWrite | null> {
+  if (snapshot.steps.has(stepId)) return null;
+  const inputRef = (
+    await env.blobs.recordOutput(`${stepId}.input`, 1, sentinel)
+  ).ref;
+  const outputRef = (await env.blobs.recordOutput(stepId, 1, sentinel)).ref;
+  return { stepId, inputRef, outputRef };
+}
+
+// The unit that routed its failure to `handlerId`, if one has.
+function unitRoutedTo(
+  definition: WorkflowDefinition,
+  state: RunState,
+  handlerId: string,
+): string | undefined {
+  for (const [unitId, unit] of Object.entries(definition.steps)) {
+    if (
+      onFailureOf(unit) === handlerId &&
+      state.steps.get(unitId)?.phase === "routed"
+    ) {
+      return unitId;
+    }
+  }
+  return undefined;
+}
+
+// A unit routes its failure only to a handler that has not settled. A branch
+// that does not hold the unit can skip the handler before the unit fails, and
+// a failure routed there would go unhandled while the run completes, so it
+// lands unrouted and fails the run instead.
+function canRouteTo(state: RunState, handlerId: string): boolean {
+  return state.steps.get(handlerId) === undefined;
+}
+
+// The events that skip one closure member, built from the state its commit
+// sees. The step is written only while it has still not started: a prune that
+// shares the step may have skipped it since, and then it is left alone.
+// A branch that does not hold a unit can also reach the unit's handler after
+// the unit routed there. Nothing else would handle that failure, so the
+// handler fails instead of being skipped, and the run fails with it.
+function skipEvents(
+  env: WorkflowRuntimeEnv,
+  definition: WorkflowDefinition,
+  fresh: RunState,
+  skip: SkipWrite,
+): WorkflowEvent[] {
+  const current = fresh.steps.get(skip.stepId)?.phase;
+  const at = env.clock().toISOString();
+  const routedUnit = unitRoutedTo(definition, fresh, skip.stepId);
+  const completion = (seq: number): WorkflowEvent =>
+    routedUnit === undefined
+      ? {
+          kind: "StepCompleted",
+          seq,
+          at,
+          stepId: skip.stepId,
+          attempt: 1,
+          output: { ref: skip.outputRef },
+        }
+      : {
+          kind: "StepFailed",
+          seq,
+          at,
+          stepId: skip.stepId,
+          attempt: 1,
+          error: {
+            message: `${routedUnit} routed its failure to ${skip.stepId}, but a branch skipped ${skip.stepId} before it ran, so nothing handled the failure`,
+          },
+          retriesExhausted: true,
+        };
+  if (current !== undefined) return [];
+  return [
+    {
+      kind: "StepStarted",
+      seq: fresh.lastSeq + 1,
+      at,
+      stepId: skip.stepId,
+      attempt: 1,
+      input: { ref: skip.inputRef },
+    },
+    completion(fresh.lastSeq + 2),
+  ];
+}
+
+async function recordHandlerSkips(
+  definition: WorkflowDefinition,
+  env: WorkflowRuntimeEnv,
+  runId: string,
+  unitId: string,
+  handlerId: string,
+  settled: "routed" | "completed",
+): Promise<SkipWrite[]> {
+  const snapshot = await reloadState(env, runId);
+  if (
+    snapshot.phase !== "running" ||
+    (settled === "routed" && !canRouteTo(snapshot, handlerId))
+  ) {
+    return [];
+  }
+  const { toSkip, sentinel } = onFailurePrune(
+    definition,
+    unitId,
+    handlerId,
+    settled,
+  );
+  const skips: SkipWrite[] = [];
+  for (const skipId of leafFirstOrder(definition, toSkip)) {
+    const skip = await recordSkipSentinels(env, snapshot, skipId, sentinel);
+    if (skip !== null) skips.push(skip);
+  }
+  return skips;
+}
+
+// Blob recording can yield to another branch's skip or to cancellation.
+// Decide the route under the commit lock, and only include its skips if the
+// handler is still available. No partially pruned route becomes observable.
+async function buildFailureTerminal(
+  definition: WorkflowDefinition,
+  env: WorkflowRuntimeEnv,
+  runId: string,
+  unitId: string,
+  handlerId: string,
+  attempt: number,
+  message: string,
+): Promise<(fresh: RunState) => WorkflowEvent[]> {
+  const skips = await recordHandlerSkips(
+    definition,
+    env,
+    runId,
+    unitId,
+    handlerId,
+    "routed",
+  );
+  return (fresh) => {
+    const at = env.clock().toISOString();
+    if (fresh.phase === "cancelling") {
+      return [
+        {
+          kind: "CancelPropagated",
+          seq: fresh.lastSeq + 1,
+          at,
+          stepId: unitId,
+        },
+      ];
+    }
+    const routed = canRouteTo(fresh, handlerId);
+    return [
+      ...(routed
+        ? skips.flatMap((skip) => skipEvents(env, definition, fresh, skip))
+        : []),
+      {
+        kind: "StepFailed",
+        seq: fresh.lastSeq + 1,
+        at,
+        stepId: unitId,
+        attempt,
+        error: { message },
+        retriesExhausted: true,
+        ...(routed ? { routedTo: handlerId } : {}),
+      },
+    ];
+  };
+}
+
+/**
+ * Build a unit's success terminal: its StepCompleted, preceded by the skips
+ * that prune its handler branch when it carries `onFailure`. The caller
+ * commits them as one batch. Written apart, another writer's flush could land
+ * the skips without the completion, and resume would settle the unit as a
+ * crash mid-invocation and route it to a handler already skipped, so neither
+ * branch would run. A run that is no longer `running` gets the completion
+ * alone, with its output: its cancel sweep settles the branch, and the
+ * reducer refuses a skip's StepStarted.
+ */
+async function buildSuccessTerminal(
+  definition: WorkflowDefinition,
+  env: WorkflowRuntimeEnv,
+  runId: string,
+  unitId: string,
+  onFailure: string | undefined,
+  attempt: number,
+  outputRef: string,
+): Promise<(fresh: RunState) => WorkflowEvent[]> {
+  const skips =
+    onFailure === undefined
+      ? []
+      : await recordHandlerSkips(
+          definition,
+          env,
+          runId,
+          unitId,
+          onFailure,
+          "completed",
+        );
+  return (fresh) => {
+    const completed: WorkflowEvent = {
+      kind: "StepCompleted",
+      seq: fresh.lastSeq + 1,
+      at: env.clock().toISOString(),
+      stepId: unitId,
+      attempt,
+      output: { ref: outputRef },
+    };
+    if (fresh.phase !== "running") return [completed];
+    return [
+      ...skips.flatMap((skip) => skipEvents(env, definition, fresh, skip)),
+      completed,
+    ];
+  };
 }
 
 /**
@@ -5154,6 +5529,47 @@ async function emitStepCompleted(
   };
   state = await commit(env, runId, completed);
   void state;
+}
+
+// The success terminal of an agent step or action. Durable unless the caller
+// buffers it: a buffered completion lost to a crash leaves the step in-flight,
+// and resume settles work that already ran as a crash mid-invocation, routing
+// it to its onFailure handler.
+async function commitInvocationCompleted(
+  definition: WorkflowDefinition,
+  env: WorkflowRuntimeEnv,
+  runId: string,
+  stepId: string,
+  onFailure: string | undefined,
+  attempt: number,
+  ref: string,
+  completion: "durable" | "buffered",
+): Promise<void> {
+  const build = await buildSuccessTerminal(
+    definition,
+    env,
+    runId,
+    stepId,
+    onFailure,
+    attempt,
+    ref,
+  );
+  await (completion === "durable"
+    ? commitDurableFrom(env, runId, build)
+    : commitFrom(env, runId, build));
+}
+
+// A failure that does not route, of a unit a resume would route were it left
+// in flight, lands durably: lost to a crash, the failure would become a route.
+function commitUnroutedFailure(
+  env: WorkflowRuntimeEnv,
+  runId: string,
+  failed: WorkflowEvent,
+  routedOnResume: boolean,
+): Promise<ReturnType<typeof resumeFromLog>> {
+  return routedOnResume
+    ? commitDurable(env, runId, failed)
+    : commit(env, runId, failed);
 }
 
 /**
@@ -6013,21 +6429,12 @@ async function completeAwaitSignalOutcome(
   const notSelected = result.timedOut ? normalDependents : [onTimeoutTarget];
   const selected = result.timedOut ? [onTimeoutTarget] : normalDependents;
   const toSkip = collectBranchClosure(definition, notSelected, selected);
-  const skipState = await reloadState(env, runId);
-  for (const skipId of toSkip) {
-    if (abort.aborted) break;
-    // A resumed routing pass skips a sentinel already committed (mirrors
-    // routeLoopOutcome); a timed gate crashed mid-routing is otherwise the
-    // pre-existing RuntimeResumeUnsupportedError window, inherited unchanged.
-    if (skipState.steps.has(skipId)) continue;
-    const sentinel = {
-      skipped: true,
-      gateId: primitive.id,
-      timedOut: result.timedOut,
-    };
-    await emitStepStartedWithValue(env, runId, skipId, sentinel);
-    await emitStepCompletedWithValue(env, runId, skipId, sentinel);
-  }
+  const sentinel = {
+    skipped: true,
+    gateId: primitive.id,
+    timedOut: result.timedOut,
+  };
+  await emitSkipClosure(env, runId, definition, toSkip, sentinel, abort);
   const output = result.timedOut ? { timedOut: true } : result.payload;
   await emitStepCompletedWithValue(env, runId, primitive.id, output);
   return output;
@@ -7229,21 +7636,23 @@ async function runChildWorkflow(
   // child failure in runPrimitiveSafe -- the child already completed, so it
   // must land a bare failure, not route or retry.
   try {
-    // Mirror runStep's success prune: a unit carrying onFailure routes on both
-    // outcomes, so on success prune the handler branch before the terminal
-    // lands, while the unit is still in-flight.
-    if (primitive.onFailure !== undefined) {
-      await pruneAroundRoute(
+    // Mirror runStep's success terminal, buffered like every child
+    // completion: the prune and the StepCompleted enter the buffer together,
+    // so whichever flush lands one lands both.
+    const { ref } = await env.blobs.recordOutput(primitive.id, 1, output);
+    await commitFrom(
+      env,
+      parentRunId,
+      await buildSuccessTerminal(
         parent,
         env,
         parentRunId,
         primitive.id,
         primitive.onFailure,
-        "completed",
-        abort,
-      );
-    }
-    await emitStepCompletedWithValue(env, parentRunId, primitive.id, output);
+        1,
+        ref,
+      ),
+    );
   } catch (termCause) {
     throw new SuccessTerminalizationError(termCause);
   }
@@ -7265,6 +7674,22 @@ class ChildWorkflowFailedError extends Error {
     this.name = "ChildWorkflowFailedError";
     this.childTerminalStatus = childTerminalStatus;
   }
+}
+
+/** Whether `stepId` has committed a `SignalAwaited` on `name` to the run's log. */
+async function stepAwaitedSignal(
+  env: WorkflowRuntimeEnv,
+  runId: string,
+  stepId: string,
+  name: string,
+): Promise<boolean> {
+  const events = await env.repoStore.read(runId);
+  return events.some(
+    (e) =>
+      e.kind === "SignalAwaited" &&
+      e.stepId === stepId &&
+      e.signalName === name,
+  );
 }
 
 // A unit's work succeeded but landing its terminal -- pruning the handler

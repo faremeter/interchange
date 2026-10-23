@@ -216,7 +216,6 @@ export {
   WORKFLOW_RUN_RUNS_PREFIX,
   WORKFLOW_RUN_EVENTS_DIR,
   WORKFLOW_RUN_GRANTS_FILE,
-  WORKFLOW_RUN_AGENT_STATE_PREFIX,
   WORKFLOW_RUN_ADDRESSES_PREFIX,
   WORKFLOW_RUN_CONTROL_PREFIX,
   WORKFLOW_RUN_INBOX_DIR,
@@ -224,6 +223,8 @@ export {
   WORKFLOW_RUN_CONSUMED_DIR,
   WORKFLOW_RUN_WATERMARK_FILE,
   DEFAULT_CONSUMED_RETENTION_MS,
+  workflowRunStepSeedPath,
+  workflowRunStepStatePrefix,
   type ClaimCheckEnvelope,
   type ConsumedEnvelope,
   type EnqueueAlreadyPresentReason,
@@ -243,6 +244,24 @@ export {
   type WorkflowRunWorkflowProcessPrincipal,
   type WorkflowRunSupervisorPrincipal,
 } from "./workflow-run-kind";
+export {
+  readCommittedStepStateSeed,
+  readStepStateSnapshot,
+} from "./step-state-snapshot";
+export { MAILBOX_INDEX_VERSION, MailboxIndex } from "./mailbox-index";
+export {
+  buildStepStateCheckpoint,
+  createCommittedStepStateReader,
+  reconstructStepState,
+  serializeStepStateWalEntry,
+  stepStateWalBucket,
+  stepStateWalBucketPrefix,
+  stepStateWalEntryPath,
+  type ReconstructedStepState,
+  type StepStateContent,
+  type StepStateMetadata,
+  type StepStateReader,
+} from "./step-state";
 export {
   readWorkflowRunRefTips,
   restoreWorkflowRunToAllocation,
@@ -288,4 +307,9 @@ export type {
   ValidatePushResult,
   WriteResult,
 } from "./repo-store";
-export { createRepoStore, subscribeKind, UserPrincipal } from "./repo-store";
+export {
+  createRepoStore,
+  isPlainPathSegment,
+  subscribeKind,
+  UserPrincipal,
+} from "./repo-store";

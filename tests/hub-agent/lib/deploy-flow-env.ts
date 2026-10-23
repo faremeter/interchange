@@ -1373,7 +1373,7 @@ function pidAlive(pid: number): boolean {
  * match is needed: every descendant of the sidecar is a process the test
  * owns (its workflow-process children and any tools they spawn).
  */
-function listProcessSubtree(rootPid: number): number[] {
+export function listProcessSubtree(rootPid: number): number[] {
   const result = Bun.spawnSync(["ps", "-A", "-o", "pid=,ppid="]);
   const childrenOf = new Map<number, number[]>();
   for (const line of new TextDecoder().decode(result.stdout).split("\n")) {

@@ -1,4 +1,5 @@
 import { describe, test, expect, afterAll, beforeAll } from "bun:test";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -27,12 +28,20 @@ import {
   WORKFLOW_RUN_BLOBS_DIR,
   WORKFLOW_RUN_PARTS_DIR,
   WORKFLOW_RUN_GRANTS_FILE,
-  WORKFLOW_RUN_AGENT_STATE_PREFIX,
   WORKFLOW_RUN_WATERMARK_FILE,
   WORKFLOW_RUN_MAILBOX_PREFIX,
   WORKFLOW_RUN_MAILBOX_INBOX_DIR,
   WORKFLOW_RUN_MAILBOX_INDEX_FILE,
+  WORKFLOW_RUN_STEPS_DIR,
+  workflowRunStepSeedPath,
+  workflowRunStepStatePrefix,
 } from "./workflow-run-kind";
+import {
+  buildStepStateCheckpoint,
+  serializeStepStateWalEntry,
+  stepStateWalEntryPath,
+} from "./step-state";
+import { MAILBOX_INDEX_VERSION } from "./mailbox-index";
 import { createRepoStore } from "./repo-store";
 import type { KindHandler, Principal, RepoId } from "./repo-store";
 
@@ -53,18 +62,43 @@ function makeReadBlob(
 function makeListDir(
   files: Record<string, string>,
 ): (path: string) => Promise<string[]> {
-  return async (path) => {
-    const prefix = path === "" ? "" : `${path}/`;
-    const names = new Set<string>();
-    for (const p of Object.keys(files)) {
-      if (prefix !== "" && !p.startsWith(prefix)) continue;
-      const rest = p.slice(prefix.length);
-      if (rest.length === 0) continue;
-      const slash = rest.indexOf("/");
-      names.add(slash === -1 ? rest : rest.substring(0, slash));
-    }
-    return Array.from(names);
-  };
+  return async (path) => makeListDirSync(files, path);
+}
+
+// Stand-ins for git object ids, derived from content the way git derives them:
+// equal content, wherever it sits, gets an equal id.
+function objectId(files: Record<string, string>, entryPath: string): string {
+  const body = files[entryPath];
+  if (body !== undefined) {
+    return createHash("sha1").update(`blob\0${body}`).digest("hex");
+  }
+  const children = makeListDirSync(files, entryPath)
+    .sort()
+    .map((name) => `${name} ${objectId(files, `${entryPath}/${name}`)}`);
+  return createHash("sha1")
+    .update(`tree\0${children.join("\n")}`)
+    .digest("hex");
+}
+
+function makeListDirSync(files: Record<string, string>, dir: string): string[] {
+  const prefix = dir === "" ? "" : `${dir}/`;
+  const names = new Set<string>();
+  for (const p of Object.keys(files)) {
+    if (!p.startsWith(prefix)) continue;
+    const rest = p.slice(prefix.length);
+    if (rest.length === 0) continue;
+    const slash = rest.indexOf("/");
+    names.add(slash === -1 ? rest : rest.substring(0, slash));
+  }
+  return Array.from(names);
+}
+
+function makeListDirOids(files: Record<string, string>): ListDirOids {
+  return async (dir) =>
+    makeListDirSync(files, dir).map((name) => ({
+      name,
+      oid: objectId(files, dir === "" ? name : `${dir}/${name}`),
+    }));
 }
 
 function topLevels(files: Record<string, string>): string[] {
@@ -99,11 +133,17 @@ const WORKFLOW_PROCESS_PRINCIPAL: Principal = WORKFLOW_PROCESS_PRINCIPAL_SHAPE;
 const noPriorBlob = async (): Promise<Uint8Array | null> => null;
 const noPriorDir = async (): Promise<string[]> => [];
 
+type ListDirOids = (path: string) => Promise<{ name: string; oid: string }[]>;
+
 type ValidateOpts = {
   ref?: string;
   principal?: Principal;
   priorFiles?: Record<string, string>;
   changedPathPrefixes?: ReadonlySet<string>;
+  listDirOids?: ListDirOids;
+  priorListDirOids?: ListDirOids;
+  /** Collects every path either side lists. */
+  listed?: string[];
 };
 
 async function validate(
@@ -113,6 +153,16 @@ async function validate(
   const repoId = uniqueRepoId("wfr");
   const ref = opts.ref ?? REF;
   const principal = opts.principal ?? HUB_PRINCIPAL;
+  const listed = opts.listed;
+  const recorded = (
+    list: (path: string) => Promise<string[]>,
+  ): ((path: string) => Promise<string[]>) =>
+    listed === undefined
+      ? list
+      : async (path) => {
+          listed.push(path);
+          return list(path);
+        };
   const priorReadBlob =
     opts.priorFiles === undefined
       ? noPriorBlob
@@ -125,10 +175,16 @@ async function validate(
     principal,
     topLevelTreePaths: topLevels(files),
     readBlob: makeReadBlob(files),
-    listDir: makeListDir(files),
+    listDir: recorded(makeListDir(files)),
     priorReadBlob,
-    priorListDir,
+    priorListDir: recorded(priorListDir),
     changedPathPrefixes: opts.changedPathPrefixes,
+    ...(opts.listDirOids !== undefined
+      ? { listDirOids: opts.listDirOids }
+      : {}),
+    ...(opts.priorListDirOids !== undefined
+      ? { priorListDirOids: opts.priorListDirOids }
+      : {}),
   });
 }
 
@@ -274,133 +330,455 @@ describe("workflowRunKindHandler.validatePush — accepts", () => {
       expect(r.ok).toBe(true);
     }
   });
+});
 
-  test("accepts a per-agent conversation snapshot under agent-state/", async () => {
+describe("workflowRunKindHandler.validatePush — step state", () => {
+  const RUN = "run-a";
+  const STEP = "specialist";
+  const ZERO_USAGE = {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    thinking: 0,
+  };
+  const METADATA = {
+    pendingOperations: [],
+    tokenUsage: ZERO_USAGE,
+    connectorState: null,
+  };
+  const turn = (text: string) => ({
+    role: "user",
+    content: [{ type: "text", text }],
+    timestamp: 0,
+  });
+  const stateDir = (stepId = STEP) => workflowRunStepStatePrefix(RUN, stepId);
+  const walEntry = (seq: number, stepId = STEP) => ({
+    [stepStateWalEntryPath(stateDir(stepId), seq)]: serializeStepStateWalEntry(
+      seq,
+      [turn(`turn ${String(seq)}`)],
+      METADATA,
+    ),
+  });
+  const checkpoint = (seq: number, turnCount: number) =>
+    buildStepStateCheckpoint(stateDir(), seq, {
+      turns: Array.from({ length: turnCount }, (_, i) => turn(String(i))),
+      ...METADATA,
+    });
+  const seed = (snapshot: unknown, stepId = STEP) => ({
+    [workflowRunStepSeedPath(RUN, stepId)]: JSON.stringify(snapshot),
+  });
+  const snapshot = (text: string) => ({
+    version: 1,
+    turns: [turn(text)],
+    tokenUsage: ZERO_USAGE,
+    connectorState: null,
+  });
+  const runEvents = {
+    [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+    [`${WORKFLOW_RUN_RUNS_PREFIX}/${RUN}/events/0.json`]: eventBody(
+      0,
+      "RunStarted",
+    ),
+  };
+  const stepsPrefix = `${WORKFLOW_RUN_RUNS_PREFIX}/${RUN}/${WORKFLOW_RUN_STEPS_DIR}`;
+
+  async function expectRejected(
+    files: Record<string, string>,
+    reason: RegExp,
+    opts: ValidateOpts = {},
+  ): Promise<void> {
+    const r = await validate(files, {
+      principal: WORKFLOW_PROCESS_PRINCIPAL,
+      ...opts,
+    });
+    if (r.ok) throw new Error("expected the push to be rejected");
+    expect(r.reason).toMatch(reason);
+  }
+
+  test("accepts a checkpoint pair with the WAL continuing from its seq", async () => {
+    const r = await validate(
+      { ...runEvents, ...checkpoint(64, 3), ...walEntry(64), ...walEntry(65) },
+      { principal: WORKFLOW_PROCESS_PRINCIPAL },
+    );
+    if (!r.ok) throw new Error(r.reason);
+  });
+
+  test("accepts WAL-only state, a map iteration's encoded step id, and a run with no events yet", async () => {
     const r = await validate(
       {
         [WORKFLOW_RUN_GITIGNORE_PATH]: "",
-        [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/0.json`]: eventBody(
-          0,
-          "RunStarted",
-        ),
-        [`${WORKFLOW_RUN_AGENT_STATE_PREFIX}/step-1/conversation.json`]:
-          JSON.stringify({ turns: [], connectorState: null }),
+        ...walEntry(0),
+        ...walEntry(1),
+        ...walEntry(0, "review[0]"),
       },
       { principal: WORKFLOW_PROCESS_PRINCIPAL },
     );
-    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error(r.reason);
   });
 
-  test("accepts the two-tier WAL + checkpoint agent-state layout (Phase D1)", async () => {
-    // The durable conversation store no longer writes a single
-    // `conversation.json`; it writes a compacted `checkpoint.json` plus
-    // bucket-sharded `wal/<bucket>/<seq>.json` delta blobs. The validator
-    // enforces only that every `agent-state/<segment>` is a non-empty
-    // directory (not a dangling blob) and round-trips URL-encoding -- it
-    // says nothing about the files INSIDE, so the nested WAL layout must
-    // pass unchanged with no validator loosening.
+  test("accepts a compaction that rewrites the checkpoint and truncates the WAL", async () => {
     const r = await validate(
-      {
-        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
-        [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/0.json`]: eventBody(
-          0,
-          "RunStarted",
-        ),
-        [`${WORKFLOW_RUN_AGENT_STATE_PREFIX}/step-1/checkpoint.json`]:
-          JSON.stringify({
-            turns: [],
-            pendingOperations: [],
-            tokenUsage: {
-              input: 0,
-              output: 0,
-              cacheRead: 0,
-              cacheWrite: 0,
-              thinking: 0,
-            },
-            connectorState: null,
-          }),
-        [`${WORKFLOW_RUN_AGENT_STATE_PREFIX}/step-1/checkpoint.meta.json`]:
-          JSON.stringify({
-            checkpointSeq: 0,
-            turnCount: 0,
-            pendingOperations: [],
-            tokenUsage: {
-              input: 0,
-              output: 0,
-              cacheRead: 0,
-              cacheWrite: 0,
-              thinking: 0,
-            },
-            connectorState: null,
-          }),
-        [`${WORKFLOW_RUN_AGENT_STATE_PREFIX}/step-1/wal/0/0.json`]:
-          JSON.stringify({
-            seq: 0,
-            turns: [{ role: "user", content: [], timestamp: 0 }],
-            metadata: {
-              pendingOperations: [],
-              tokenUsage: {
-                input: 0,
-                output: 0,
-                cacheRead: 0,
-                cacheWrite: 0,
-                thinking: 0,
-              },
-              connectorState: null,
-            },
-          }),
-      },
-      { principal: WORKFLOW_PROCESS_PRINCIPAL },
-    );
-    expect(r.ok).toBe(true);
-  });
-
-  test("accepts a mutated agent-state snapshot (subtree is mutable, not append-only)", async () => {
-    const r = await validate(
-      {
-        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
-        [`${WORKFLOW_RUN_AGENT_STATE_PREFIX}/step-1/conversation.json`]:
-          JSON.stringify({ turns: ["second"], connectorState: null }),
-      },
+      { ...runEvents, ...checkpoint(2, 2) },
       {
         principal: WORKFLOW_PROCESS_PRINCIPAL,
-        priorFiles: {
-          [WORKFLOW_RUN_GITIGNORE_PATH]: "",
-          [`${WORKFLOW_RUN_AGENT_STATE_PREFIX}/step-1/conversation.json`]:
-            JSON.stringify({ turns: ["first"], connectorState: null }),
+        priorFiles: { ...runEvents, ...walEntry(0), ...walEntry(1) },
+      },
+    );
+    if (!r.ok) throw new Error(r.reason);
+  });
+
+  test("rejects a step segment that does not round-trip URL-encoding", async () => {
+    await expectRejected(
+      {
+        ...runEvents,
+        [`${stepsPrefix}/bad%2segment/state/wal/0/0.json`]: "{}",
+      },
+      /step segment "bad%2segment"/,
+    );
+  });
+
+  test("rejects entries outside the state layout", async () => {
+    await expectRejected(
+      {
+        ...runEvents,
+        ...walEntry(0),
+        [`${stepsPrefix}/${STEP}/notes.json`]: "{}",
+      },
+      /unexpected entry "notes.json"/,
+    );
+    await expectRejected(
+      { ...runEvents, ...walEntry(0), [`${stateDir()}extra.json`]: "{}" },
+      /unexpected entry "extra.json"/,
+    );
+    await expectRejected(
+      { ...runEvents, [`${stepsPrefix}/${STEP}`]: "{}" },
+      /steps\/specialist is not a directory of step state/,
+    );
+    await expectRejected(
+      { ...runEvents, [stepsPrefix]: "{}" },
+      /not a directory of step state/,
+    );
+  });
+
+  test("rejects half a checkpoint pair", async () => {
+    const pair = checkpoint(0, 0);
+    await expectRejected(
+      {
+        ...runEvents,
+        [`${stateDir()}checkpoint.json`]:
+          pair[`${stateDir()}checkpoint.json`] ?? "",
+      },
+      /only one of "checkpoint.json" and "checkpoint.meta.json"/,
+    );
+  });
+
+  test("rejects a WAL entry filed in the wrong bucket", async () => {
+    await expectRejected(
+      {
+        ...runEvents,
+        [`${stateDir()}wal/1/0.json`]: serializeStepStateWalEntry(
+          0,
+          [],
+          METADATA,
+        ),
+      },
+      /belongs in bucket 0/,
+    );
+  });
+
+  test("rejects a WAL that is not buckets of numbered entries", async () => {
+    const entry = serializeStepStateWalEntry(0, [], METADATA);
+    await expectRejected(
+      { ...runEvents, [`${stateDir()}wal`]: entry },
+      /state\/wal is not a directory/,
+    );
+    await expectRejected(
+      { ...runEvents, [`${stateDir()}wal/first/0.json`]: entry },
+      /WAL bucket .*state\/wal\/first is not a decimal bucket number/,
+    );
+    await expectRejected(
+      { ...runEvents, [`${stateDir()}wal/0`]: entry },
+      /state\/wal\/0 is not a directory/,
+    );
+    await expectRejected(
+      { ...runEvents, [`${stateDir()}wal/0/first.json`]: entry },
+      /WAL entry .*state\/wal\/0\/first\.json does not match <seq>\.json/,
+    );
+  });
+
+  test("rejects a WAL that is not contiguous from the checkpoint", async () => {
+    await expectRejected(
+      { ...runEvents, ...walEntry(0), ...walEntry(2) },
+      /expected seq 1, found 2/,
+    );
+    await expectRejected(
+      { ...runEvents, ...checkpoint(64, 1), ...walEntry(3), ...walEntry(64) },
+      /expected seq 64, found 3/,
+    );
+  });
+
+  test("rejects a changed WAL entry whose body fails the step-state envelope", async () => {
+    const path = stepStateWalEntryPath(stateDir(), 0);
+    await expectRejected(
+      { ...runEvents, [path]: "not json" },
+      /is not valid JSON/,
+    );
+    await expectRejected(
+      { ...runEvents, [path]: JSON.stringify({ seq: 0, turns: [] }) },
+      /failed validation/,
+    );
+    await expectRejected(
+      { ...runEvents, [path]: serializeStepStateWalEntry(7, [], METADATA) },
+      /carries seq 7/,
+    );
+  });
+
+  // Export and a failover host both read the Hub's copy, so a malformed turn
+  // or pending operation is refused when it is pushed, not when it is read.
+  test("rejects changed step state whose turns or pending operations are malformed", async () => {
+    const path = stepStateWalEntryPath(stateDir(), 0);
+    await expectRejected(
+      { ...runEvents, [path]: serializeStepStateWalEntry(0, [42], METADATA) },
+      /failed validation: turns\[0\] must be an object/,
+    );
+    await expectRejected(
+      {
+        ...runEvents,
+        [path]: JSON.stringify({
+          seq: 0,
+          turns: [],
+          metadata: {
+            ...METADATA,
+            pendingOperations: [{ correlationId: "c-1" }],
+          },
+        }),
+      },
+      /failed validation: metadata\.pendingOperations\[0\]/,
+    );
+    await expectRejected(
+      {
+        ...runEvents,
+        ...buildStepStateCheckpoint(stateDir(), 0, {
+          ...METADATA,
+          turns: [{ role: "narrator", content: [], timestamp: 0 }],
+        }),
+      },
+      /checkpoint\.json failed validation: turns\[0\]\.role/,
+    );
+  });
+
+  test("rejects a checkpoint pair that disagrees on its turn count", async () => {
+    const pair = checkpoint(0, 2);
+    const metaPath = `${stateDir()}checkpoint.meta.json`;
+    await expectRejected(
+      {
+        ...runEvents,
+        ...pair,
+        [metaPath]: JSON.stringify({
+          checkpointSeq: 0,
+          turnCount: 5,
+          ...METADATA,
+        }),
+      },
+      /carries 2 turns but .* reports turnCount 5/,
+    );
+  });
+
+  test("rejects a checkpoint pointer whose seq is not a non-negative integer", async () => {
+    const metaPath = `${stateDir()}checkpoint.meta.json`;
+    for (const checkpointSeq of [1.5, -1]) {
+      await expectRejected(
+        {
+          ...runEvents,
+          ...checkpoint(0, 0),
+          [metaPath]: JSON.stringify({
+            checkpointSeq,
+            turnCount: 0,
+            ...METADATA,
+          }),
         },
-      },
-    );
-    expect(r.ok).toBe(true);
+        /failed validation/,
+      );
+    }
   });
 
-  test("rejects an agent-state segment that does not round-trip URL-encoding", async () => {
-    const r = await validate(
+  test("a steps-scoped change validates the named step and not the run's event log", async () => {
+    const eventGap = {
+      ...runEvents,
+      [`${WORKFLOW_RUN_RUNS_PREFIX}/${RUN}/events/2.json`]: eventBody(
+        2,
+        "StepStarted",
+      ),
+    };
+    const scope = new Set([`${stateDir()}wal/0/`]);
+    const accepted = await validate(
+      { ...eventGap, ...walEntry(0), ...walEntry(1) },
       {
-        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
-        [`${WORKFLOW_RUN_AGENT_STATE_PREFIX}/bad%2segment/conversation.json`]:
-          "{}",
+        principal: WORKFLOW_PROCESS_PRINCIPAL,
+        priorFiles: { ...eventGap, ...walEntry(0) },
+        changedPathPrefixes: scope,
       },
-      { principal: WORKFLOW_PROCESS_PRINCIPAL },
     );
-    expect(r.ok).toBe(false);
-    if (r.ok) throw new Error("unreachable");
-    expect(r.reason).toMatch(/agent-state segment/);
+    if (!accepted.ok) throw new Error(accepted.reason);
+
+    await expectRejected(
+      { ...runEvents, ...walEntry(0), ...walEntry(2) },
+      /expected seq 1, found 2/,
+      {
+        priorFiles: { ...runEvents, ...walEntry(0) },
+        changedPathPrefixes: scope,
+      },
+    );
   });
 
-  test("rejects a blob dangling directly under agent-state/", async () => {
-    const r = await validate(
-      {
-        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
-        // No `<agentKey>/` directory layer: the blob sits directly under
-        // the prefix, so it is not keyed by any agent.
-        [`${WORKFLOW_RUN_AGENT_STATE_PREFIX}/conversation.json`]: "{}",
-      },
-      { principal: WORKFLOW_PROCESS_PRINCIPAL },
+  test("an event append does not walk a run's unchanged step state", async () => {
+    const prior = {
+      ...runEvents,
+      ...walEntry(0),
+      ...walEntry(1),
+      ...walEntry(0, "reviewer"),
+    };
+    const next = {
+      ...prior,
+      [`${WORKFLOW_RUN_RUNS_PREFIX}/${RUN}/events/1.json`]: eventBody(
+        1,
+        "StepStarted",
+      ),
+    };
+    const eventsOnly = new Set([`${WORKFLOW_RUN_RUNS_PREFIX}/${RUN}/events/`]);
+    const underSteps = (paths: string[]) =>
+      paths.filter((p) => p.startsWith(`${stepsPrefix}/`));
+
+    const listed: string[] = [];
+    const skipped = await validate(next, {
+      principal: WORKFLOW_PROCESS_PRINCIPAL,
+      priorFiles: prior,
+      changedPathPrefixes: eventsOnly,
+      listDirOids: makeListDirOids(next),
+      priorListDirOids: makeListDirOids(prior),
+      listed,
+    });
+    if (!skipped.ok) throw new Error(skipped.reason);
+    expect(underSteps(listed)).toEqual([]);
+
+    // Without object ids the same push walks every step.
+    const walked: string[] = [];
+    const full = await validate(next, {
+      principal: WORKFLOW_PROCESS_PRINCIPAL,
+      priorFiles: prior,
+      changedPathPrefixes: eventsOnly,
+      listed: walked,
+    });
+    if (!full.ok) throw new Error(full.reason);
+    expect(underSteps(walked)).not.toEqual([]);
+  });
+
+  test("a steps entry that keeps its object id but is no longer a directory is rejected", async () => {
+    const runDir = `${WORKFLOW_RUN_RUNS_PREFIX}/${RUN}`;
+    const prior = { ...runEvents, ...walEntry(0) };
+    const stepsOid = objectId(prior, stepsPrefix);
+    // A mode change turns the directory entry into a file entry that keeps
+    // the directory's object id.
+    const next = { ...runEvents, [stepsPrefix]: "" };
+    const nextOids = makeListDirOids(next);
+    await expectRejected(next, /is not a directory of step state/, {
+      priorFiles: prior,
+      changedPathPrefixes: new Set([`${runDir}/`]),
+      listDirOids: async (dir) =>
+        (await nextOids(dir)).map((entry) =>
+          dir === runDir && entry.name === WORKFLOW_RUN_STEPS_DIR
+            ? { ...entry, oid: stepsOid }
+            : entry,
+        ),
+      priorListDirOids: makeListDirOids(prior),
+    });
+  });
+
+  test("accepts a seed written before the run starts and carried beside the step's state", async () => {
+    const seeded = {
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      ...seed(snapshot("imported")),
+    };
+    const written = await validate(seeded);
+    if (!written.ok) throw new Error(written.reason);
+
+    const carried = await validate(
+      { ...seeded, ...runEvents, ...walEntry(0) },
+      { principal: WORKFLOW_PROCESS_PRINCIPAL, priorFiles: seeded },
     );
-    expect(r.ok).toBe(false);
-    if (r.ok) throw new Error("unreachable");
-    expect(r.reason).toMatch(/blob directly under/);
+    if (!carried.ok) throw new Error(carried.reason);
+  });
+
+  test("rejects a seed added by anyone but the Hub", async () => {
+    for (const principal of [
+      WORKFLOW_PROCESS_PRINCIPAL,
+      SUPERVISOR_PRINCIPAL,
+    ]) {
+      await expectRejected(
+        { ...runEvents, ...seed(snapshot("planted")) },
+        /seed\.json was added by a ".+" principal; only the Hub writes a step's seed/,
+        { principal },
+      );
+    }
+  });
+
+  test("rejects a new seed that is not a valid snapshot", async () => {
+    const byHub = { principal: HUB_PRINCIPAL };
+    await expectRejected(
+      { ...runEvents, [workflowRunStepSeedPath(RUN, STEP)]: "not json" },
+      /is not valid JSON/,
+      byHub,
+    );
+    await expectRejected(
+      { ...runEvents, ...seed({ ...snapshot("imported"), version: 2 }) },
+      /seed\.json failed validation/,
+      byHub,
+    );
+    await expectRejected(
+      {
+        ...runEvents,
+        ...seed({ ...snapshot("imported"), turns: [{ role: "narrator" }] }),
+      },
+      /seed\.json failed validation/,
+      byHub,
+    );
+  });
+
+  test("rejects a push that rewrites a seed, even from the Hub", async () => {
+    for (const principal of [WORKFLOW_PROCESS_PRINCIPAL, HUB_PRINCIPAL]) {
+      await expectRejected(
+        { ...runEvents, ...seed(snapshot("rewritten")) },
+        /seed\.json diverges from the prior tree/,
+        {
+          principal,
+          priorFiles: { ...runEvents, ...seed(snapshot("imported")) },
+        },
+      );
+    }
+  });
+
+  test("rejects a push that drops a seed with or without its directory", async () => {
+    const prior = {
+      ...runEvents,
+      ...seed(snapshot("imported")),
+      ...walEntry(0),
+    };
+    const missing = /seed\.json present in the prior tree is missing/;
+    await expectRejected({ ...runEvents, ...walEntry(0) }, missing, {
+      priorFiles: prior,
+    });
+    await expectRejected(runEvents, missing, { priorFiles: prior });
+    await expectRejected({ ...runEvents, ...walEntry(0) }, missing, {
+      priorFiles: prior,
+      changedPathPrefixes: new Set([`${stepsPrefix}/${STEP}/`]),
+    });
+    await expectRejected({ [WORKFLOW_RUN_GITIGNORE_PATH]: "" }, missing, {
+      priorFiles: {
+        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+        ...seed(snapshot("imported")),
+      },
+    });
   });
 });
 
@@ -734,7 +1112,7 @@ describe("workflowRunKindHandler.validatePush — rejects top-level shape", () =
     expect(r.reason).toMatch(/unsupported .*control\//);
   });
 
-  test("rejects an arbitrary disallowed top-level entry and names agent-state in the allowed list", async () => {
+  test("rejects an arbitrary disallowed top-level entry and names the mailbox in the allowed list", async () => {
     const r = await validate({
       [WORKFLOW_RUN_GITIGNORE_PATH]: "",
       "stray.txt": "nope",
@@ -743,8 +1121,8 @@ describe("workflowRunKindHandler.validatePush — rejects top-level shape", () =
     if (r.ok) throw new Error("unreachable");
     expect(r.reason).toMatch(/unexpected top-level entry/);
     // The allowed-list in the rejection message must enumerate every
-    // accepted top-level, including agent-state/ (Phase 4.5).
-    expect(r.reason).toContain(WORKFLOW_RUN_AGENT_STATE_PREFIX);
+    // accepted top-level, including mailbox/.
+    expect(r.reason).toContain(WORKFLOW_RUN_MAILBOX_PREFIX);
   });
 });
 
@@ -1396,8 +1774,7 @@ describe("workflowRunKindHandler.validatePush — mail parts subtree", () => {
 
   test("rejects a blob dangling directly at parts/<segment>", async () => {
     // A blob committed at the message-segment path (no <index>-<name> file
-    // beneath it) lists as an empty directory and must be rejected, matching
-    // the agent-state dangling-blob guard.
+    // beneath it) lists as an empty directory and must be rejected.
     const r = await validate(
       partsTree("run-a", { [SEGMENT]: "not-a-directory" }),
     );
@@ -1545,17 +1922,47 @@ describe("workflowRunKindHandler.validatePush — mailbox subtree", () => {
     return tree;
   }
 
+  function mailboxIndex(
+    uidNext: number,
+    uidValidity = 1,
+    uids: readonly number[] = [],
+  ): string {
+    return JSON.stringify({
+      version: MAILBOX_INDEX_VERSION,
+      uidValidity,
+      uidNext,
+      highestModSeq: uids.length,
+      messages: uids.map((uid, i) => ({
+        uid,
+        modseq: i + 1,
+        flags: [],
+        envelope: {
+          messageId: `<${String(uid)}@example.com>`,
+          from: "sender@example.com",
+          to: ["agent@example.com"],
+          subject: "hello",
+          date: null,
+          inReplyTo: null,
+          references: [],
+          interchangeType: null,
+          interchangeCorrelationId: null,
+        },
+      })),
+      expunged: [],
+    });
+  }
+
   test("accepts a well-formed mailbox with an index and a message", async () => {
     const r = await validate(
       mailboxTree({
-        [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: JSON.stringify({ messages: [1] }),
+        [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: mailboxIndex(2),
         "1.eml": "raw-signed-message-bytes",
       }),
     );
     expect(r.ok).toBe(true);
   });
 
-  test("accepts a mailbox alongside runs and agent-state siblings", async () => {
+  test("accepts a mailbox alongside a runs sibling", async () => {
     const r = await validate(
       {
         [WORKFLOW_RUN_GITIGNORE_PATH]: "",
@@ -1563,10 +1970,7 @@ describe("workflowRunKindHandler.validatePush — mailbox subtree", () => {
           0,
           "RunStarted",
         ),
-        [`${WORKFLOW_RUN_AGENT_STATE_PREFIX}/step-1/conversation.json`]: "{}",
-        [`${INBOX}/${WORKFLOW_RUN_MAILBOX_INDEX_FILE}`]: JSON.stringify({
-          messages: [1, 2],
-        }),
+        [`${INBOX}/${WORKFLOW_RUN_MAILBOX_INDEX_FILE}`]: mailboxIndex(3),
         [`${INBOX}/1.eml`]: "first",
         [`${INBOX}/2.eml`]: "second",
       },
@@ -1577,11 +1981,11 @@ describe("workflowRunKindHandler.validatePush — mailbox subtree", () => {
 
   test("accepts a mutated index alongside an immutable message", async () => {
     const prior = mailboxTree({
-      [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: JSON.stringify({ messages: [1] }),
+      [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: mailboxIndex(2),
       "1.eml": "raw-bytes",
     });
     const prospective = mailboxTree({
-      [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: JSON.stringify({ messages: [1, 2] }),
+      [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: mailboxIndex(3),
       "1.eml": "raw-bytes",
       "2.eml": "more-bytes",
     });
@@ -1645,8 +2049,8 @@ describe("workflowRunKindHandler.validatePush — mailbox subtree", () => {
 
   test("rejects a blob dangling directly at mailbox/INBOX", async () => {
     // A blob committed at `mailbox/INBOX` (no entries beneath it) lists as
-    // an empty directory and must be rejected, mirroring the agent-state
-    // and mail-parts dangling-blob guards.
+    // an empty directory and must be rejected, mirroring the mail-parts
+    // dangling-blob guard.
     const r = await validate({
       [WORKFLOW_RUN_GITIGNORE_PATH]: "",
       [INBOX]: "not-a-directory",
@@ -1681,12 +2085,12 @@ describe("workflowRunKindHandler.validatePush — mailbox subtree", () => {
     // dropped from the tree but survives in git history because a
     // workflow-run repo is never GC'd.
     const prior = mailboxTree({
-      [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: JSON.stringify({ messages: [1] }),
+      [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: mailboxIndex(2),
       "1.eml": "raw-bytes",
     });
     // Prospective keeps the index but drops the message blob.
     const prospective = mailboxTree({
-      [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: JSON.stringify({ messages: [] }),
+      [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: mailboxIndex(2),
     });
     const r = await validate(prospective, { priorFiles: prior });
     expect(r.ok).toBe(true);
@@ -1697,12 +2101,12 @@ describe("workflowRunKindHandler.validatePush — mailbox subtree", () => {
     // uid 2 must still be rejected -- expunge relaxes the deletion direction,
     // not the byte-equality of messages that stay.
     const prior = mailboxTree({
-      [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: JSON.stringify({ messages: [1, 2] }),
+      [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: mailboxIndex(3),
       "1.eml": "first",
       "2.eml": "second",
     });
     const prospective = mailboxTree({
-      [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: JSON.stringify({ messages: [2] }),
+      [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: mailboxIndex(3),
       "2.eml": "second-mutated",
     });
     const r = await validate(prospective, { priorFiles: prior });
@@ -1719,7 +2123,7 @@ describe("workflowRunKindHandler.validatePush — mailbox subtree", () => {
     // A real backing keeps index.json even after expunging every message, so
     // this rejects only the pathological whole-subtree drop.
     const prior = mailboxTree({
-      [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: JSON.stringify({ messages: [1] }),
+      [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: mailboxIndex(2),
       "1.eml": "raw-bytes",
     });
     const prospective = { [WORKFLOW_RUN_GITIGNORE_PATH]: "" };
@@ -1727,6 +2131,86 @@ describe("workflowRunKindHandler.validatePush — mailbox subtree", () => {
     expect(r.ok).toBe(false);
     if (r.ok) throw new Error("unreachable");
     expect(r.reason).toMatch(/the mailbox index must persist/);
+  });
+
+  test("rejects an index that does not parse", async () => {
+    const r = await validate(
+      mailboxTree({ [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: "{}" }),
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(
+      /mailbox index mailbox\/INBOX\/index\.json is not valid/,
+    );
+  });
+
+  test("rejects an index whose uidNext is past the 32-bit UID space", async () => {
+    const r = await validate(
+      mailboxTree({
+        [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: mailboxIndex(2 ** 32 + 1),
+      }),
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(/uidNext must be at most 4294967295/);
+  });
+
+  test("rejects an index that lowers uidNext", async () => {
+    const r = await validate(
+      mailboxTree({ [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: mailboxIndex(2) }),
+      {
+        priorFiles: mailboxTree({
+          [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: mailboxIndex(5),
+        }),
+      },
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(/lowers uidNext from 5 to 2/);
+  });
+
+  test("rejects an index that adds a uid below the prior uidNext", async () => {
+    const r = await validate(
+      mailboxTree({
+        [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: mailboxIndex(6, 1, [1, 3]),
+      }),
+      {
+        priorFiles: mailboxTree({
+          [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: mailboxIndex(5, 1, [1]),
+        }),
+      },
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(/adds uid 3 below the prior uidNext 5/);
+  });
+
+  test("accepts an index that numbers the messages it adds from the prior uidNext", async () => {
+    const r = await validate(
+      mailboxTree({
+        [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: mailboxIndex(7, 1, [1, 5, 6]),
+      }),
+      {
+        priorFiles: mailboxTree({
+          [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: mailboxIndex(5, 1, [1, 2]),
+        }),
+      },
+    );
+    if (!r.ok) throw new Error(r.reason);
+  });
+
+  test("rejects an index that changes uidValidity", async () => {
+    const r = await validate(
+      mailboxTree({ [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: mailboxIndex(5, 2) }),
+      {
+        priorFiles: mailboxTree({
+          [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: mailboxIndex(5, 1),
+        }),
+      },
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(/changes uidValidity from 1 to 2/);
   });
 });
 

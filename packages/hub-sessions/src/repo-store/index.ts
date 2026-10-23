@@ -18,7 +18,7 @@ export type {
   WriteResult,
   WriteTreePreservingPrefixArgs,
 } from "./types";
-export { UserPrincipal } from "./types";
+export { isPlainPathSegment, UserPrincipal } from "./types";
 export {
   authorizeUserPrincipal,
   type AuthorizeUserPrincipalArgs,

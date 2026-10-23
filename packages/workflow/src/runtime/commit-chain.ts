@@ -256,19 +256,72 @@ export async function commitBuffered(
   event: WorkflowEvent,
   guard?: (state: RunState) => void,
 ): Promise<RunState> {
-  return followChain(runId, async () => {
-    const fresh = await readStateWithPending(env, runId);
-    if (signalAlreadyRecorded(fresh, event)) return fresh;
+  return commitBufferedFrom(env, runId, (fresh) => {
+    if (signalAlreadyRecorded(fresh, event)) return [];
     // A throw here leaves the buffer unchanged. A check that must exclude
     // a concurrent writer of this same event belongs in the guard: the
-    // chain is the lock those writers share, and the fresh read above is
-    // the state both of them see.
+    // chain is the lock those writers share, and the state handed to it
+    // is the state both of them see.
     guard?.(fresh);
-    const adjustedEvent: WorkflowEvent = { ...event, seq: fresh.lastSeq + 1 };
-    const nextState = applyEvent(fresh, adjustedEvent);
-    getBuffer(runId).push(adjustedEvent);
+    return [event];
+  });
+}
+
+// Validate the events `build` returns for `fresh` in order, each at the next
+// seq. A rejection throws before the caller buffers any of them.
+function applyBuilt(
+  fresh: RunState,
+  build: (fresh: RunState) => readonly WorkflowEvent[],
+): { state: RunState; events: WorkflowEvent[] } {
+  let state = fresh;
+  const events: WorkflowEvent[] = [];
+  for (const event of build(fresh)) {
+    const adjusted: WorkflowEvent = { ...event, seq: state.lastSeq + 1 };
+    state = applyEvent(state, adjusted);
+    events.push(adjusted);
+  }
+  return { state, events };
+}
+
+/**
+ * Like `commitBuffered`, but the caller builds the events from the
+ * canonical state inside the lock, so it can base a write on state no
+ * other commit changes in between. The events land together or not at
+ * all: each is validated in order and none is buffered unless all
+ * apply. An empty list commits nothing.
+ */
+export async function commitBufferedFrom(
+  env: CommitEnv,
+  runId: string,
+  build: (fresh: RunState) => readonly WorkflowEvent[],
+): Promise<RunState> {
+  return followChain(runId, async () => {
+    const fresh = await readStateWithPending(env, runId);
+    const { state, events } = applyBuilt(fresh, build);
+    if (events.length === 0) return state;
+    getBuffer(runId).push(...events);
     wake(bufferWaiters, runId);
-    return nextState;
+    return state;
+  });
+}
+
+/**
+ * Like `commitBufferedFrom`, but immediate like `commit`: the pending
+ * buffer and the built events land in ONE durable `appendBatch` in the
+ * same chain turn. None of the events is ever buffered on its own, so no
+ * other writer's flush can carry part of them to disk.
+ */
+export async function commitFrom(
+  env: CommitEnv,
+  runId: string,
+  build: (fresh: RunState) => readonly WorkflowEvent[],
+): Promise<RunState> {
+  return followChain(runId, async () => {
+    const fresh = await readStateWithPending(env, runId);
+    const { state, events } = applyBuilt(fresh, build);
+    getBuffer(runId).push(...events);
+    await flushBuffer(env, runId);
+    return state;
   });
 }
 

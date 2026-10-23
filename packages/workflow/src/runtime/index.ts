@@ -10,6 +10,7 @@ export type {
   LoopFnRegistry,
   ParkedApprovalOp,
   PerformScope,
+  PersistRecoveredPark,
   PrimitiveKind,
   ReadParkedApprovalOps,
   RepoStore,
@@ -66,7 +67,10 @@ export {
   assertSpawnDepthWithinLimit,
 } from "./child-depth";
 
-export { RuntimeResumeUnsupportedError } from "./errors";
+export {
+  RuntimeResumeUnsupportedError,
+  StepOutcomeCommitError,
+} from "./errors";
 
 export {
   createNoopDrainController,

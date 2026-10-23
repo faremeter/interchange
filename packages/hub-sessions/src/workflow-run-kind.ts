@@ -18,6 +18,14 @@
 //     string; the blob value is opaque bytes. Blobs are append-only
 //     and immutable: any blob present in the prior tree must carry
 //     byte-identical contents in the prospective tree.
+//   - `runs/<runId>/steps/<urlEncoded(stepId)>/state/` — an agent step's
+//     durable state (turns, pending operations, token usage, reply-thread
+//     state) as a checkpoint plus write-ahead log in the step-state format.
+//     Mutable, unlike the rest of the run directory; validated for shape
+//     and envelope only (see `WORKFLOW_RUN_STEPS_DIR`).
+//   - `runs/<runId>/steps/<urlEncoded(stepId)>/seed.json` — a snapshot the
+//     Hub wrote for the step to start from until it has state of its own.
+//     Immutable once written (see `WORKFLOW_RUN_STEP_SEED_FILE`).
 //   - `addresses/<urlEncoded(address)>/inbox/<receivedAt>-<messageId>.json`
 //     — pending inbound mail for the address, FIFO-ordered by the
 //     filename's parsed numeric `receivedAt` prefix (with a
@@ -166,7 +174,9 @@ import fs from "node:fs";
 import git from "isomorphic-git";
 import { type } from "arktype";
 import { getLogger } from "@intx/log";
+import { StepStateSnapshot } from "@intx/types/step-state-snapshot";
 import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy/addresses";
+import { parseMailboxIndex, type MailboxIndex } from "./mailbox-index";
 import {
   authorizeUserPrincipal,
   type AuthorizeFn,
@@ -184,6 +194,15 @@ import {
   splitCombinedEventLog,
   encodeCombinedEventLog,
 } from "./workflow-run-event-log";
+import {
+  STEP_STATE_CHECKPOINT_FILE,
+  STEP_STATE_CHECKPOINT_META_FILE,
+  STEP_STATE_WAL_DIR,
+  StepStateCheckpoint,
+  StepStateCheckpointMeta,
+  StepStateWalEntry,
+  stepStateWalBucket,
+} from "./step-state";
 
 const logger = getLogger(["hub-sessions", "workflow-run-kind"]);
 
@@ -249,6 +268,47 @@ export const WORKFLOW_RUN_CONSUMED_DIR = "consumed";
 export const WORKFLOW_RUN_PARTS_DIR = "parts";
 
 /**
+ * Per-run step subtree. Each agent step of the run keeps its durable state
+ * (conversation turns, pending operations, token usage, reply-thread state)
+ * at `runs/<runId>/steps/<urlEncoded(stepId)>/state/` in the step-state
+ * format (`step-state.ts`), so the Hub's copy of the repo carries everything
+ * a replacement host needs to continue the step. Unlike the rest of the run
+ * directory the state is MUTABLE: each mirror boundary appends a WAL entry,
+ * and compaction rewrites the checkpoint and truncates the WAL. It is therefore
+ * exempt from the append-only and immutability walks; its push-time
+ * constraints are shape and envelope checks (`validateRunStepsSubtree`).
+ */
+export const WORKFLOW_RUN_STEPS_DIR = "steps";
+export const WORKFLOW_RUN_STEP_STATE_DIR = "state";
+
+/**
+ * A step's seed: a `StepStateSnapshot` the Hub commits beside the step's
+ * `state/` for the step to start from. The step starts from it whenever it
+ * has no state of its own, which covers its first turn and a retried attempt
+ * that starts over. It sits outside `state/` so a checkpoint rewrite never
+ * clears it. Only a `hub` principal adds one, and it is immutable once
+ * written: a push may neither change nor remove it.
+ */
+export const WORKFLOW_RUN_STEP_SEED_FILE = "seed.json";
+
+/**
+ * The repo-relative state directory of one step of one run, with a trailing
+ * slash. The step id is URL-encoded so a scoped `map` iteration id
+ * (`<base>[<index>]`) stays a single path segment.
+ */
+export function workflowRunStepStatePrefix(
+  runId: string,
+  stepId: string,
+): string {
+  return `${WORKFLOW_RUN_RUNS_PREFIX}/${runId}/${WORKFLOW_RUN_STEPS_DIR}/${encodeURIComponent(stepId)}/${WORKFLOW_RUN_STEP_STATE_DIR}/`;
+}
+
+/** The repo-relative path of one step's seed (`WORKFLOW_RUN_STEP_SEED_FILE`). */
+export function workflowRunStepSeedPath(runId: string, stepId: string): string {
+  return `${WORKFLOW_RUN_RUNS_PREFIX}/${runId}/${WORKFLOW_RUN_STEPS_DIR}/${encodeURIComponent(stepId)}/${WORKFLOW_RUN_STEP_SEED_FILE}`;
+}
+
+/**
  * Filename of the per-address retention watermark blob, a direct child
  * of `addresses/<urlEncoded>/` (a file, not a directory). Carries the
  * monotonic `receivedAt`-horizon below which consumed entries may be
@@ -292,22 +352,6 @@ export const WORKFLOW_RUN_WATERMARK_FILE = "watermark.json";
 export const DEFAULT_CONSUMED_RETENTION_MS = 24 * 60 * 60 * 1000;
 
 /**
- * Per-agent durable conversation-state subtree (design §3c). A
- * long-lived single-step agent's multi-turn conversation context is
- * committed under `agent-state/<agentKey>/...` so it survives child
- * respawn: on respawn the rebuilt warm agent reads its prior
- * conversation back from here before the resumed run replays.
- *
- * Unlike `runs/` (append-only events, immutable blobs) this subtree is
- * MUTABLE: each run boundary overwrites the agent's conversation
- * snapshot with the latest turns. It is therefore exempt from the
- * append-only / deletion-direction walks `runs/` is subject to; the
- * only push-time constraint is segment shape (a single round-trip-safe
- * `<agentKey>` directory layer below the prefix).
- */
-export const WORKFLOW_RUN_AGENT_STATE_PREFIX = "agent-state";
-
-/**
  * Conversational-mailbox subtree for the warm single-step agent. The
  * substrate mailbox backing commits the agent's durable inbox under
  * `mailbox/INBOX/` so the full message history replicates to the hub
@@ -347,7 +391,6 @@ export const WORKFLOW_RUN_MAILBOX_INDEX_FILE = "index.json";
 const ALLOWED_TOP_LEVEL = new Set<string>([
   WORKFLOW_RUN_RUNS_PREFIX,
   WORKFLOW_RUN_ADDRESSES_PREFIX,
-  WORKFLOW_RUN_AGENT_STATE_PREFIX,
   WORKFLOW_RUN_MAILBOX_PREFIX,
   WORKFLOW_RUN_GITIGNORE_PATH,
 ]);
@@ -464,6 +507,9 @@ const RUN_DIR_ALLOWED_CHILDREN = new Set<string>([
   // WORKFLOW_RUN_PARTS_DIR; validated by enumerateRunParts and
   // held immutable by the same prior-tree byte-equality walk as blobs.
   WORKFLOW_RUN_PARTS_DIR,
+  // Mutable per-step durable state. See WORKFLOW_RUN_STEPS_DIR; validated
+  // by validateRunStepsSubtree.
+  WORKFLOW_RUN_STEPS_DIR,
 ]);
 
 /**
@@ -694,26 +740,91 @@ type RunEventBlob = {
  * never touches `runs/` -- e.g. a claim-check write under `addresses/`
  * -- contributes no run ids; an empty result set means the commit
  * touched no run, so the per-run walks legitimately validate nothing.
+ * A prefix inside a run's `steps/` subtree contributes no run id either:
+ * it cannot reach the run's events, blobs, or mail parts, which the steps
+ * walk leaves to these per-run walks.
  */
 function runScopeFromChangedPrefixes(
   changedPathPrefixes: ReadonlySet<string> | undefined,
 ): Set<string> | undefined {
   if (changedPathPrefixes === undefined) return undefined;
-  const runsPrefix = `${WORKFLOW_RUN_RUNS_PREFIX}/`;
   const runIds = new Set<string>();
   for (const prefix of changedPathPrefixes) {
-    if (prefix === WORKFLOW_RUN_RUNS_PREFIX || prefix === runsPrefix) {
-      // The `runs/` subtree changed but the substrate could not name
-      // which run; fall back to validating every run.
-      return undefined;
-    }
-    if (!prefix.startsWith(runsPrefix)) continue;
-    const rest = prefix.slice(runsPrefix.length);
-    const slash = rest.indexOf("/");
-    if (slash <= 0) return undefined;
-    runIds.add(rest.slice(0, slash));
+    const parsed = parseRunChangePrefix(prefix);
+    if (parsed === "unbounded") return undefined;
+    if (parsed === null || parsed.withinSteps) continue;
+    runIds.add(parsed.runId);
   }
   return runIds;
+}
+
+/**
+ * The steps a commit could have touched, per run: a run id maps to the set
+ * of URL-encoded step segments changed under its `steps/` subtree, or to
+ * `"all"` when the change covers the run's whole `steps/` subtree. Returns
+ * `undefined` (validate every run's steps) under the same conditions as
+ * `runScopeFromChangedPrefixes`.
+ */
+function stepScopeFromChangedPrefixes(
+  changedPathPrefixes: ReadonlySet<string> | undefined,
+): Map<string, Set<string> | "all"> | undefined {
+  if (changedPathPrefixes === undefined) return undefined;
+  const scope = new Map<string, Set<string> | "all">();
+  for (const prefix of changedPathPrefixes) {
+    const parsed = parseRunChangePrefix(prefix);
+    if (parsed === "unbounded") return undefined;
+    if (parsed === null) continue;
+    const current = scope.get(parsed.runId);
+    if (current === "all") continue;
+    if (!parsed.withinSteps || parsed.stepSegment === null) {
+      scope.set(parsed.runId, "all");
+      continue;
+    }
+    const segments = current ?? new Set<string>();
+    segments.add(parsed.stepSegment);
+    scope.set(parsed.runId, segments);
+  }
+  return scope;
+}
+
+/**
+ * Classify one changed-path prefix against the `runs/` layout: `null` when
+ * it lies outside `runs/`, `"unbounded"` when it reaches into `runs/`
+ * without naming a run, and otherwise the run it names plus whether it lies
+ * within that run's `steps/` subtree (and which step segment, when it names
+ * one). A component only counts as named once the prefix carries its
+ * trailing slash: `runs/abc` is also a string prefix of `runs/abcd/`, so it
+ * names no single run.
+ */
+function parseRunChangePrefix(prefix: string):
+  | null
+  | "unbounded"
+  | {
+      runId: string;
+      withinSteps: boolean;
+      stepSegment: string | null;
+    } {
+  const runsPrefix = `${WORKFLOW_RUN_RUNS_PREFIX}/`;
+  if (prefix === WORKFLOW_RUN_RUNS_PREFIX || prefix === runsPrefix) {
+    return "unbounded";
+  }
+  if (!prefix.startsWith(runsPrefix)) return null;
+  const rest = prefix.slice(runsPrefix.length);
+  const runSlash = rest.indexOf("/");
+  if (runSlash <= 0) return "unbounded";
+  const runId = rest.slice(0, runSlash);
+  const inRun = rest.slice(runSlash + 1);
+  const stepsDir = `${WORKFLOW_RUN_STEPS_DIR}/`;
+  if (!inRun.startsWith(stepsDir)) {
+    return { runId, withinSteps: false, stepSegment: null };
+  }
+  const inSteps = inRun.slice(stepsDir.length);
+  const stepSlash = inSteps.indexOf("/");
+  return {
+    runId,
+    withinSteps: true,
+    stepSegment: stepSlash <= 0 ? null : inSteps.slice(0, stepSlash),
+  };
 }
 
 /**
@@ -761,7 +872,7 @@ async function enumerateEventBlobs(
     if (offender !== undefined) {
       return {
         ok: false,
-        reason: `run directory ${runDirPath} contains unexpected entry ${JSON.stringify(offender)}; only "${WORKFLOW_RUN_EVENTS_DIR}", "${WORKFLOW_RUN_BLOBS_DIR}", "${WORKFLOW_RUN_EVENTS_FILE}", "${WORKFLOW_RUN_GRANTS_FILE}", and "${WORKFLOW_RUN_PARTS_DIR}" are allowed`,
+        reason: `run directory ${runDirPath} contains unexpected entry ${JSON.stringify(offender)}; only "${WORKFLOW_RUN_EVENTS_DIR}", "${WORKFLOW_RUN_BLOBS_DIR}", "${WORKFLOW_RUN_EVENTS_FILE}", "${WORKFLOW_RUN_GRANTS_FILE}", "${WORKFLOW_RUN_PARTS_DIR}", and "${WORKFLOW_RUN_STEPS_DIR}" are allowed`,
       };
     }
     const hasCombined = runChildren.includes(WORKFLOW_RUN_EVENTS_FILE);
@@ -777,15 +888,19 @@ async function enumerateEventBlobs(
     if (hasCombined) continue;
     if (!hasPerEvent) {
       // The pre-first-event window: `grants.json` (the hub's `run.grants`
-      // frame writes grants ahead of the trigger) and `parts/` (the
+      // frame writes grants ahead of the trigger), `parts/` (the
       // supervisor commits inbound-mail mail part bytes before firing the
-      // trigger) may both land before the child emits its first event. Carry
-      // such a run forward untouched -- there is no event log to enumerate
-      // yet, and the mail parts subtree is validated by its own walk. Any
-      // other events-less shape (e.g. a bare `blobs/` with no events) remains
-      // rejected below.
+      // trigger), and `steps/` (step state is independent of the event log)
+      // may all land before the child emits its first event. Carry such a
+      // run forward untouched -- there is no event log to enumerate yet, and
+      // the mail parts and steps subtrees are validated by their own walks.
+      // Any other events-less shape (e.g. a bare `blobs/` with no events)
+      // remains rejected below.
       const nonPreEvent = runChildren.filter(
-        (c) => c !== WORKFLOW_RUN_GRANTS_FILE && c !== WORKFLOW_RUN_PARTS_DIR,
+        (c) =>
+          c !== WORKFLOW_RUN_GRANTS_FILE &&
+          c !== WORKFLOW_RUN_PARTS_DIR &&
+          c !== WORKFLOW_RUN_STEPS_DIR,
       );
       if (nonPreEvent.length === 0) {
         continue;
@@ -1127,9 +1242,8 @@ async function enumerateRunParts(
       // A message segment must be a directory carrying at least one
       // mail part file. An empty listing means either a dangling blob
       // committed directly at `parts/<segment>` (the substrate lists a
-      // blob path as empty, exactly as the agent-state walk detects) or an
-      // empty directory; both are rejected so untrusted inbound content has
-      // no silent-accept path.
+      // blob path as empty) or an empty directory; both are rejected so
+      // untrusted inbound content has no silent-accept path.
       if (filenames.length === 0) {
         return {
           ok: false,
@@ -1155,10 +1269,8 @@ async function enumerateRunParts(
         // Each mail part entry must be a leaf blob, not a nested directory.
         // The `<index>-<name>` shape is permissive (`.+`), so a directory
         // named e.g. `0-foo` would otherwise pass and admit an arbitrarily
-        // nested subtree, breaking the one-file-per-mail-part invariant and
-        // -- on a pack-receive validation with no `listDirOids` -- driving the
-        // immutability resolver to `readBlob` a tree path and throw. A blob
-        // lists as empty; a directory lists its children.
+        // nested subtree, breaking the one-file-per-mail-part invariant. A
+        // blob lists as empty; a directory lists its children.
         const filePath = `${messageDirPath}/${filename}`;
         if ((await listDir(filePath)).length > 0) {
           return {
@@ -1257,6 +1369,398 @@ async function validateRunPartsSubtree(args: {
     };
   }
   return { ok: true };
+}
+
+/** A WAL bucket directory name: a decimal integer. */
+const STEP_STATE_WAL_BUCKET_RE = /^(0|[1-9][0-9]*)$/;
+
+/** A WAL entry filename: `<seq>.json` with a decimal seq. */
+const STEP_STATE_WAL_ENTRY_RE = /^(0|[1-9][0-9]*)\.json$/;
+
+type StepsWalkArgs = {
+  listDir: (path: string) => Promise<string[]>;
+  readBlob: (path: string) => Promise<Uint8Array>;
+  priorListDir: (path: string) => Promise<string[]>;
+  priorReadBlob: (path: string) => Promise<Uint8Array | null>;
+  listDirOids:
+    | ((path: string) => Promise<{ name: string; oid: string }[]>)
+    | undefined;
+  priorListDirOids:
+    | ((path: string) => Promise<{ name: string; oid: string }[]>)
+    | undefined;
+};
+
+/**
+ * Validate the per-run `steps/` subtree (see `WORKFLOW_RUN_STEPS_DIR`) for
+ * the steps `scope` names, or every run's steps when it is `undefined`.
+ * Each `steps/<segment>` must round-trip URL-encoding and hold a `state/`
+ * directory, a seed (`WORKFLOW_RUN_STEP_SEED_FILE`), or both. The state
+ * directory follows the step-state layout: the checkpoint pair, present
+ * together or not at all, and `wal/<bucket>/<seq>.json` entries whose
+ * bucket matches their seq and whose seqs run contiguously from the
+ * checkpoint's. State blobs this commit added or changed must carry the
+ * step-state JSON envelope, a WAL entry's `seq` must match its filename,
+ * and a changed checkpoint pair must agree on its turn count. The state is
+ * mutable, so for it the prior tree only decides which blobs changed. A
+ * seed is not: only the Hub adds one (`principal` of kind `hub`, which also
+ * carries a replayed history onto a sidecar), it must be a valid
+ * `StepStateSnapshot`, and one in the prior tree must survive byte for byte.
+ */
+async function validateRunStepsSubtree(
+  args: StepsWalkArgs & {
+    scope: ReadonlyMap<string, ReadonlySet<string> | "all"> | undefined;
+    principal: Principal;
+  },
+): Promise<ValidatePushResult> {
+  const changed = createStepStateChangeCheck(args);
+  // Unscoped, the prior tree's runs are walked too, so that dropping a whole
+  // run directory cannot take a seed with it unchecked.
+  const runIds =
+    args.scope === undefined
+      ? new Set([
+          ...(await args.listDir(WORKFLOW_RUN_RUNS_PREFIX)),
+          ...(await args.priorListDir(WORKFLOW_RUN_RUNS_PREFIX)),
+        ])
+      : args.scope.keys();
+  for (const runId of runIds) {
+    const runDirPath = `${WORKFLOW_RUN_RUNS_PREFIX}/${runId}`;
+    const stepsDirPath = `${runDirPath}/${WORKFLOW_RUN_STEPS_DIR}`;
+    if (await isStepsSubtreeUnchanged(args, runDirPath, stepsDirPath)) {
+      continue;
+    }
+    const scoped = args.scope?.get(runId);
+    const inScope = (segment: string) =>
+      scoped === undefined || scoped === "all" || scoped.has(segment);
+    const retained = await checkStepSeedsRetained(args, stepsDirPath, inScope);
+    if (!retained.ok) return retained;
+    if (!(await args.listDir(runDirPath)).includes(WORKFLOW_RUN_STEPS_DIR)) {
+      continue;
+    }
+    const present = await args.listDir(stepsDirPath);
+    if (present.length === 0) {
+      return {
+        ok: false,
+        reason: `${stepsDirPath} is not a directory of step state`,
+      };
+    }
+    for (const segment of present.filter(inScope)) {
+      const result = await validateStepStateDir(
+        args,
+        changed,
+        stepsDirPath,
+        segment,
+        args.principal,
+      );
+      if (!result.ok) return result;
+    }
+  }
+  return { ok: true };
+}
+
+/**
+ * Whether a run's `steps/` subtree is the same tree object as in the prior
+ * tree. Git is content-addressed, so every step directory and seed under it
+ * is then exactly what the prior tree held, validated when it was written,
+ * and a commit that only appends events need not walk it again. Both sides
+ * must also list it as a directory, since an entry whose mode changed keeps
+ * its object id.
+ */
+async function isStepsSubtreeUnchanged(
+  args: StepsWalkArgs,
+  runDirPath: string,
+  stepsDirPath: string,
+): Promise<boolean> {
+  if (args.listDirOids === undefined || args.priorListDirOids === undefined) {
+    return false;
+  }
+  const [next, prior] = await Promise.all([
+    args.listDirOids(runDirPath),
+    args.priorListDirOids(runDirPath),
+  ]);
+  const nextOid = next.find((e) => e.name === WORKFLOW_RUN_STEPS_DIR)?.oid;
+  const priorOid = prior.find((e) => e.name === WORKFLOW_RUN_STEPS_DIR)?.oid;
+  if (nextOid === undefined || nextOid !== priorOid) return false;
+  const [nextSteps, priorSteps] = await Promise.all([
+    args.listDir(stepsDirPath),
+    args.priorListDir(stepsDirPath),
+  ]);
+  return nextSteps.length > 0 && priorSteps.length > 0;
+}
+
+/**
+ * Reject a push that drops a seed the prior tree carries, whether it removes
+ * the seed alone or the step or run directory holding it. That a surviving
+ * seed kept its bytes is checked where the step directory is validated.
+ */
+async function checkStepSeedsRetained(
+  args: StepsWalkArgs,
+  stepsDirPath: string,
+  inScope: (segment: string) => boolean,
+): Promise<ValidatePushResult> {
+  for (const segment of await args.priorListDir(stepsDirPath)) {
+    if (!inScope(segment)) continue;
+    const stepPath = `${stepsDirPath}/${segment}`;
+    if (
+      !(await args.priorListDir(stepPath)).includes(WORKFLOW_RUN_STEP_SEED_FILE)
+    ) {
+      continue;
+    }
+    if (!(await args.listDir(stepPath)).includes(WORKFLOW_RUN_STEP_SEED_FILE)) {
+      return {
+        ok: false,
+        reason: `step seed ${stepPath}/${WORKFLOW_RUN_STEP_SEED_FILE} present in the prior tree is missing from the prospective tree; a step's seed is immutable once written`,
+      };
+    }
+  }
+  return { ok: true };
+}
+
+async function validateStepStateDir(
+  args: StepsWalkArgs,
+  changed: (blobPath: string) => Promise<boolean>,
+  stepsDirPath: string,
+  segment: string,
+  principal: Principal,
+): Promise<ValidatePushResult> {
+  const roundTrip = checkUrlSegmentRoundTrip(segment);
+  if (!roundTrip.ok) {
+    return {
+      ok: false,
+      reason: `step ${roundTrip.reason} under ${stepsDirPath}`,
+    };
+  }
+  const stepPath = `${stepsDirPath}/${segment}`;
+  const stepChildren = await args.listDir(stepPath);
+  if (stepChildren.length === 0) {
+    return {
+      ok: false,
+      reason: `${stepPath} is not a directory of step state`,
+    };
+  }
+  const unexpected = stepChildren.find(
+    (child) =>
+      child !== WORKFLOW_RUN_STEP_STATE_DIR &&
+      child !== WORKFLOW_RUN_STEP_SEED_FILE,
+  );
+  if (unexpected !== undefined) {
+    return {
+      ok: false,
+      reason: `step directory ${stepPath} contains unexpected entry ${JSON.stringify(unexpected)}; only "${WORKFLOW_RUN_STEP_STATE_DIR}" and "${WORKFLOW_RUN_STEP_SEED_FILE}" are allowed`,
+    };
+  }
+  if (stepChildren.includes(WORKFLOW_RUN_STEP_SEED_FILE)) {
+    const seedPath = `${stepPath}/${WORKFLOW_RUN_STEP_SEED_FILE}`;
+    if (await changed(seedPath)) {
+      if (
+        (await args.priorListDir(stepPath)).includes(
+          WORKFLOW_RUN_STEP_SEED_FILE,
+        )
+      ) {
+        return {
+          ok: false,
+          reason: `step seed ${seedPath} diverges from the prior tree; a step's seed is immutable once written`,
+        };
+      }
+      if (principal.kind !== "hub") {
+        return {
+          ok: false,
+          reason: `step seed ${seedPath} was added by a ${JSON.stringify(principal.kind)} principal; only the Hub writes a step's seed`,
+        };
+      }
+      const seed = await parseStepStateBlob(args, seedPath, StepStateSnapshot);
+      if (!seed.ok) return seed;
+    }
+  }
+  if (!stepChildren.includes(WORKFLOW_RUN_STEP_STATE_DIR)) {
+    return { ok: true };
+  }
+  const statePath = `${stepPath}/${WORKFLOW_RUN_STEP_STATE_DIR}`;
+  const stateChildren = await args.listDir(statePath);
+  if (stateChildren.length === 0) {
+    return {
+      ok: false,
+      reason: `${statePath} is not a directory of step state`,
+    };
+  }
+  const allowed = [
+    STEP_STATE_CHECKPOINT_FILE,
+    STEP_STATE_CHECKPOINT_META_FILE,
+    STEP_STATE_WAL_DIR,
+  ];
+  const offender = stateChildren.find((child) => !allowed.includes(child));
+  if (offender !== undefined) {
+    return {
+      ok: false,
+      reason: `step state ${statePath} contains unexpected entry ${JSON.stringify(offender)}; only "${STEP_STATE_CHECKPOINT_FILE}", "${STEP_STATE_CHECKPOINT_META_FILE}", and "${STEP_STATE_WAL_DIR}" are allowed`,
+    };
+  }
+  const checkpointPath = `${statePath}/${STEP_STATE_CHECKPOINT_FILE}`;
+  const metaPath = `${statePath}/${STEP_STATE_CHECKPOINT_META_FILE}`;
+  const hasCheckpoint = stateChildren.includes(STEP_STATE_CHECKPOINT_FILE);
+  if (
+    hasCheckpoint !== stateChildren.includes(STEP_STATE_CHECKPOINT_META_FILE)
+  ) {
+    return {
+      ok: false,
+      reason: `step state ${statePath} carries only one of "${STEP_STATE_CHECKPOINT_FILE}" and "${STEP_STATE_CHECKPOINT_META_FILE}"; the checkpoint pair is written together`,
+    };
+  }
+
+  const walEntries: { seq: number; path: string }[] = [];
+  if (stateChildren.includes(STEP_STATE_WAL_DIR)) {
+    const walPath = `${statePath}/${STEP_STATE_WAL_DIR}`;
+    const buckets = await args.listDir(walPath);
+    if (buckets.length === 0) {
+      return { ok: false, reason: `${walPath} is not a directory` };
+    }
+    for (const bucket of buckets) {
+      if (!STEP_STATE_WAL_BUCKET_RE.test(bucket)) {
+        return {
+          ok: false,
+          reason: `step state WAL bucket ${walPath}/${bucket} is not a decimal bucket number`,
+        };
+      }
+      const bucketPath = `${walPath}/${bucket}`;
+      const files = await args.listDir(bucketPath);
+      if (files.length === 0) {
+        return { ok: false, reason: `${bucketPath} is not a directory` };
+      }
+      for (const file of files) {
+        const match = STEP_STATE_WAL_ENTRY_RE.exec(file);
+        const seqStr = match?.[1];
+        if (seqStr === undefined) {
+          return {
+            ok: false,
+            reason: `step state WAL entry ${bucketPath}/${file} does not match <seq>.json`,
+          };
+        }
+        const seq = Number.parseInt(seqStr, 10);
+        if (String(stepStateWalBucket(seq)) !== bucket) {
+          return {
+            ok: false,
+            reason: `step state WAL entry ${bucketPath}/${file} belongs in bucket ${String(stepStateWalBucket(seq))}`,
+          };
+        }
+        walEntries.push({ seq, path: `${bucketPath}/${file}` });
+      }
+    }
+  }
+
+  let checkpointSeq = 0;
+  if (hasCheckpoint) {
+    const meta = await parseStepStateBlob(
+      args,
+      metaPath,
+      StepStateCheckpointMeta,
+    );
+    if (!meta.ok) return meta;
+    checkpointSeq = meta.value.checkpointSeq;
+    if ((await changed(metaPath)) || (await changed(checkpointPath))) {
+      const checkpoint = await parseStepStateBlob(
+        args,
+        checkpointPath,
+        StepStateCheckpoint,
+      );
+      if (!checkpoint.ok) return checkpoint;
+      if (checkpoint.value.turns.length !== meta.value.turnCount) {
+        return {
+          ok: false,
+          reason: `step state ${checkpointPath} carries ${String(checkpoint.value.turns.length)} turns but ${metaPath} reports turnCount ${String(meta.value.turnCount)}`,
+        };
+      }
+    }
+  }
+
+  walEntries.sort((a, b) => a.seq - b.seq);
+  for (const [index, entry] of walEntries.entries()) {
+    const expected = checkpointSeq + index;
+    if (entry.seq !== expected) {
+      return {
+        ok: false,
+        reason: `step state WAL under ${statePath} is not contiguous from checkpoint seq ${String(checkpointSeq)}: expected seq ${String(expected)}, found ${String(entry.seq)}`,
+      };
+    }
+    if (!(await changed(entry.path))) continue;
+    const parsed = await parseStepStateBlob(
+      args,
+      entry.path,
+      StepStateWalEntry,
+    );
+    if (!parsed.ok) return parsed;
+    if (parsed.value.seq !== entry.seq) {
+      return {
+        ok: false,
+        reason: `step state WAL entry ${entry.path} carries seq ${String(parsed.value.seq)}`,
+      };
+    }
+  }
+  return { ok: true };
+}
+
+/**
+ * True when the blob at `blobPath` is new in this commit or its bytes differ
+ * from the prior tree's, compared by git blob OID. A blob the commit carried
+ * forward unchanged was validated when it was written.
+ */
+function createStepStateChangeCheck(
+  args: StepsWalkArgs,
+): (blobPath: string) => Promise<boolean> {
+  const prospectiveOid = makeListingOidResolver(
+    "prospective",
+    args.listDirOids,
+    async (p) => (await git.hashBlob({ object: await args.readBlob(p) })).oid,
+  );
+  const priorOid = makeListingOidResolver(
+    "prior",
+    args.priorListDirOids,
+    async (p) => {
+      const bytes = await args.priorReadBlob(p);
+      if (bytes === null) {
+        throw new Error(
+          `step state: prior entry ${p} was listed but its bytes could not be read`,
+        );
+      }
+      return (await git.hashBlob({ object: bytes })).oid;
+    },
+  );
+  return async (blobPath) => {
+    const slash = blobPath.lastIndexOf("/");
+    const dir = blobPath.slice(0, slash);
+    const name = blobPath.slice(slash + 1);
+    if (!(await args.priorListDir(dir)).includes(name)) return true;
+    const [next, before] = await Promise.all([
+      prospectiveOid(blobPath),
+      priorOid(blobPath),
+    ]);
+    return next !== before;
+  };
+}
+
+async function parseStepStateBlob<T>(
+  args: StepsWalkArgs,
+  blobPath: string,
+  schema: (data: unknown) => T | type.errors,
+): Promise<{ ok: true; value: T } | { ok: false; reason: string }> {
+  if ((await args.listDir(blobPath)).length > 0) {
+    return { ok: false, reason: `step state ${blobPath} is a directory` };
+  }
+  let body: unknown;
+  try {
+    body = JSON.parse(new TextDecoder().decode(await args.readBlob(blobPath)));
+  } catch (cause) {
+    return {
+      ok: false,
+      reason: `step state ${blobPath} is not valid JSON: ${cause instanceof Error ? cause.message : String(cause)}`,
+    };
+  }
+  const validated = schema(body);
+  if (validated instanceof type.errors) {
+    return {
+      ok: false,
+      reason: `step state ${blobPath} failed validation: ${validated.summary}`,
+    };
+  }
+  return { ok: true, value: validated };
 }
 
 /**
@@ -1396,8 +1900,8 @@ async function checkPriorByteEquality(
  * value, which would leave consumers guessing which encoding to use
  * when reading the subtree. Surface as a concrete rejection at push
  * time. Shared by every subtree that keys a directory by an
- * `encodeURIComponent`-encoded identity (`addresses/`, `agent-state/`,
- * and the per-run `parts/` message segment); callers prepend
+ * `encodeURIComponent`-encoded identity (`addresses/` and the per-run
+ * `parts/` message segment); callers prepend
  * their own subtree context to the returned reason.
  */
 function checkUrlSegmentRoundTrip(segment: string):
@@ -2299,54 +2803,6 @@ async function enforceWorkflowProcessPathScope(
 }
 
 /**
- * Validate the `agent-state/` subtree shape (design §3c). The subtree
- * holds one MUTABLE per-agent conversation snapshot directory per agent
- * below the prefix; each entry directly under `agent-state/` must be a
- * `<agentKey>/` DIRECTORY (not a dangling blob), and each `<agentKey>`
- * segment must round-trip URL-encoding so a reader can recover the
- * agent's identity from the path. The conversation blobs inside a
- * `<agentKey>/` directory are opaque to the substrate (the warm agent's
- * ContextStore owns their shape), so no file-level shape is enforced
- * here.
- *
- * A blob written DIRECTLY at `agent-state/<name>` (with no `<agentKey>/`
- * layer) is rejected: it would not be keyed by an agent and would not be
- * recoverable by any reader walking the per-agent layout.
- */
-async function validateAgentStateSubtree(
-  topLevelTreePaths: readonly string[],
-  listDir: (path: string) => Promise<string[]>,
-): Promise<ValidatePushResult> {
-  if (!topLevelTreePaths.includes(WORKFLOW_RUN_AGENT_STATE_PREFIX)) {
-    return { ok: true };
-  }
-  const segments = await listDir(WORKFLOW_RUN_AGENT_STATE_PREFIX);
-  for (const segment of segments) {
-    const roundTrip = checkUrlSegmentRoundTrip(segment);
-    if (!roundTrip.ok) {
-      return {
-        ok: false,
-        reason: `agent-state ${roundTrip.reason}`,
-      };
-    }
-    // Reject a blob dangling directly at `agent-state/<segment>`: every
-    // entry under the prefix must be a `<agentKey>/` directory carrying
-    // the agent's snapshot files. A directory has children under
-    // `agent-state/<segment>/`; a direct blob has none.
-    const children = await listDir(
-      `${WORKFLOW_RUN_AGENT_STATE_PREFIX}/${segment}`,
-    );
-    if (children.length === 0) {
-      return {
-        ok: false,
-        reason: `agent-state entry ${JSON.stringify(segment)} is a blob directly under ${WORKFLOW_RUN_AGENT_STATE_PREFIX}/; entries must be a <agentKey>/ directory carrying the agent's snapshot files`,
-      };
-    }
-  }
-  return { ok: true };
-}
-
-/**
  * Enforce mailbox `<uid>.eml` immutability via prior-tree byte equality.
  * A message blob RETAINED from the prior tree (present in both) must carry
  * byte-identical contents in the prospective tree. A prior blob absent
@@ -2385,8 +2841,8 @@ async function checkMailboxEmlPriorByteEquality(
  * the only entries permitted under `mailbox/INBOX/` are the mutable
  * `index.json` file and `<uid>.eml` message files. Each entry must be a
  * leaf blob rather than a nested directory (a blob lists as empty, a
- * directory lists its children -- the same discrimination the agent-state
- * and mail-parts walks use). Returns the flat set of `<uid>.eml` blob
+ * directory lists its children -- the same discrimination the mail-parts
+ * walk uses). Returns the flat set of `<uid>.eml` blob
  * paths so the caller can hold retained messages immutable against the
  * prior tree, plus `indexPresent` -- whether `index.json` exists under
  * the INBOX -- so the caller can enforce index continuity. An absent
@@ -2502,6 +2958,74 @@ async function validateMailboxSubtree(
       reason: `mailbox ${WORKFLOW_RUN_MAILBOX_PREFIX}/${WORKFLOW_RUN_MAILBOX_INBOX_DIR}/${WORKFLOW_RUN_MAILBOX_INDEX_FILE} present in the prior tree is missing from the prospective tree; the mailbox index must persist so uidValidity/uidNext continuity holds across reopens`,
     };
   }
+  if (prospective.indexPresent) {
+    return checkMailboxIndexContinuity(
+      readBlob,
+      prior.indexPresent ? priorReadBlob : null,
+    );
+  }
+  return { ok: true };
+}
+
+/**
+ * Hold a changed `index.json` to its format, to the prior index's
+ * `uidValidity` and at least its `uidNext`, and to numbering each message it
+ * adds from that `uidNext`: a replacement host reopens the mailbox from it,
+ * so a malformed index breaks the mailbox, and a uid it reissues would name a
+ * different message than the one the uid named before.
+ */
+async function checkMailboxIndexContinuity(
+  readBlob: (path: string) => Promise<Uint8Array>,
+  priorReadBlob: ((path: string) => Promise<Uint8Array | null>) | null,
+): Promise<ValidatePushResult> {
+  const indexPath = `${WORKFLOW_RUN_MAILBOX_PREFIX}/${WORKFLOW_RUN_MAILBOX_INBOX_DIR}/${WORKFLOW_RUN_MAILBOX_INDEX_FILE}`;
+  const decoder = new TextDecoder();
+  const text = decoder.decode(await readBlob(indexPath));
+  const priorBytes =
+    priorReadBlob === null ? null : await priorReadBlob(indexPath);
+  const priorText = priorBytes === null ? null : decoder.decode(priorBytes);
+  if (text === priorText) return { ok: true };
+  let index: MailboxIndex;
+  try {
+    index = parseMailboxIndex(text, `mailbox index ${indexPath}`);
+  } catch (cause) {
+    return {
+      ok: false,
+      reason: cause instanceof Error ? cause.message : String(cause),
+    };
+  }
+  if (priorText === null) return { ok: true };
+  let prior: MailboxIndex;
+  try {
+    prior = parseMailboxIndex(priorText, `prior mailbox index ${indexPath}`);
+  } catch (cause) {
+    return {
+      ok: false,
+      reason: `prior tree's mailbox subtree is structurally invalid: ${cause instanceof Error ? cause.message : String(cause)}`,
+    };
+  }
+  if (index.uidValidity !== prior.uidValidity) {
+    return {
+      ok: false,
+      reason: `mailbox index ${indexPath} changes uidValidity from ${String(prior.uidValidity)} to ${String(index.uidValidity)}; a mailbox keeps the uidValidity its uids were issued under`,
+    };
+  }
+  if (index.uidNext < prior.uidNext) {
+    return {
+      ok: false,
+      reason: `mailbox index ${indexPath} lowers uidNext from ${String(prior.uidNext)} to ${String(index.uidNext)}; a mailbox never reissues a uid`,
+    };
+  }
+  const priorUids = new Set(prior.messages.map((message) => message.uid));
+  const reissued = index.messages.find(
+    (message) => !priorUids.has(message.uid) && message.uid < prior.uidNext,
+  );
+  if (reissued !== undefined) {
+    return {
+      ok: false,
+      reason: `mailbox index ${indexPath} adds uid ${String(reissued.uid)} below the prior uidNext ${String(prior.uidNext)}; a mailbox never reissues a uid`,
+    };
+  }
   return { ok: true };
 }
 
@@ -2548,7 +3072,7 @@ export const workflowRunKindHandler: KindHandler = {
       if (!ALLOWED_TOP_LEVEL.has(entry)) {
         return {
           ok: false,
-          reason: `unexpected top-level entry ${JSON.stringify(entry)}; allowed: "${WORKFLOW_RUN_RUNS_PREFIX}", "${WORKFLOW_RUN_ADDRESSES_PREFIX}", "${WORKFLOW_RUN_AGENT_STATE_PREFIX}", "${WORKFLOW_RUN_MAILBOX_PREFIX}", "${WORKFLOW_RUN_GITIGNORE_PATH}"`,
+          reason: `unexpected top-level entry ${JSON.stringify(entry)}; allowed: "${WORKFLOW_RUN_RUNS_PREFIX}", "${WORKFLOW_RUN_ADDRESSES_PREFIX}", "${WORKFLOW_RUN_MAILBOX_PREFIX}", "${WORKFLOW_RUN_GITIGNORE_PATH}"`,
         };
       }
     }
@@ -2561,15 +3085,6 @@ export const workflowRunKindHandler: KindHandler = {
     if (!scopingCheck.ok) {
       logger.debug`workflow-run validatePush rejected ${repoId.kind}/${repoId.id} on ${ref}: ${scopingCheck.reason}`;
       return scopingCheck;
-    }
-
-    const agentStateCheck = await validateAgentStateSubtree(
-      topLevelTreePaths,
-      listDir,
-    );
-    if (!agentStateCheck.ok) {
-      logger.debug`workflow-run validatePush rejected ${repoId.kind}/${repoId.id} on ${ref}: ${agentStateCheck.reason}`;
-      return agentStateCheck;
     }
 
     const priorTopLevels = await priorListDir("");
@@ -2842,6 +3357,21 @@ export const workflowRunKindHandler: KindHandler = {
     if (!partsCheck.ok) {
       logger.debug`workflow-run validatePush rejected ${repoId.kind}/${repoId.id} on ${ref}: ${partsCheck.reason}`;
       return partsCheck;
+    }
+
+    const stepsCheck = await validateRunStepsSubtree({
+      listDir,
+      readBlob,
+      priorListDir,
+      priorReadBlob,
+      listDirOids,
+      priorListDirOids,
+      scope: stepScopeFromChangedPrefixes(changedPathPrefixes),
+      principal,
+    });
+    if (!stepsCheck.ok) {
+      logger.debug`workflow-run validatePush rejected ${repoId.kind}/${repoId.id} on ${ref}: ${stepsCheck.reason}`;
+      return stepsCheck;
     }
 
     return { ok: true, newlyTerminalRuns };

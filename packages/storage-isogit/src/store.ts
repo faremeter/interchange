@@ -1,16 +1,15 @@
 import git from "isomorphic-git";
 import {
-  ApprovalSnapshot,
-  ContentBlock,
+  ConversationTurn,
+  PersistedPendingOperation,
   TokenUsage,
-  ToolCall,
   TransformRecord,
+  emptyTokenUsage,
   type AssistantTurn,
   type TransformRecord as TransformRecordType,
   type ContextStore,
   type AuditStore,
   type ContextCommit,
-  type ConversationTurn,
   type ConnectorThreadState,
   type PendingOperation,
 } from "@intx/types/runtime-core";
@@ -37,6 +36,7 @@ import {
   type StorageRuntime,
 } from "./runtime";
 import { hasCode } from "@intx/types/has-code";
+import { hexEncode } from "@intx/types/hex";
 
 const TURNS_FILE = "turns.jsonl";
 const PROMPT_FILE = "prompt.jsonl";
@@ -64,45 +64,8 @@ const ConnectorThreadStateSchema = type({
   "subject?": "string",
 });
 
-const ConversationTurnSchema = type({
-  role: "'user' | 'assistant' | 'system'",
-  content: ContentBlock.array(),
-  "model?": "string",
-  timestamp: "number",
-});
-
-const PendingOperationSchema = type({
-  correlationId: "string",
-  kind: "'approval'",
-  registeredAt: "number",
-  gateId: "string",
-  "timeoutAt?": "number",
-  "suspendedCall?": ToolCall,
-  "approvalSnapshot?": ApprovalSnapshot,
-});
-
-// The persisted schema and the in-memory PendingOperation type are two
-// separate declarations kept in lockstep. arktype passes undeclared keys
-// through at runtime, so dropping `suspendedCall?` from the schema would not
-// surface as a runtime failure. Projecting the field off the schema's
-// inferred type makes the declaration load-bearing: the indexed access
-// errors under `tsc` if the schema stops carrying the field, and the return
-// annotation pins its persisted type to `ToolCall`.
-const _persistedSuspendedCall = (
-  op: typeof PendingOperationSchema.infer,
-): ToolCall | undefined => op.suspendedCall;
-void _persistedSuspendedCall;
-
-// Same lockstep guard for the approval snapshot: the persisted schema must
-// keep carrying `approvalSnapshot` so a rehydrated pending operation still
-// exposes it. The projection errors under `tsc` if the schema drops the field.
-const _persistedApprovalSnapshot = (
-  op: typeof PendingOperationSchema.infer,
-): ApprovalSnapshot | undefined => op.approvalSnapshot;
-void _persistedApprovalSnapshot;
-
 const MetadataSchema = type({
-  pendingOperations: PendingOperationSchema.array(),
+  pendingOperations: PersistedPendingOperation.array(),
   tokenUsage: TokenUsage,
   connectorState: type("null").or(ConnectorThreadStateSchema),
 });
@@ -111,14 +74,6 @@ type MetadataData = {
   pendingOperations: PendingOperation[];
   tokenUsage: TokenUsage;
   connectorState: ConnectorThreadState | null;
-};
-
-const EMPTY_USAGE: TokenUsage = {
-  input: 0,
-  output: 0,
-  cacheRead: 0,
-  cacheWrite: 0,
-  thinking: 0,
 };
 
 function parseMetadata(raw: unknown): MetadataData {
@@ -304,7 +259,7 @@ function parseTurns(text: string): ConversationTurn[] {
   const lines = decodeJsonlLines(text);
   const turns: ConversationTurn[] = [];
   for (const raw of lines) {
-    const result = ConversationTurnSchema(raw);
+    const result = ConversationTurn(raw);
     if (result instanceof type.errors) {
       throw new Error(
         `turns.jsonl has unexpected structure: ${result.summary}`,
@@ -350,6 +305,13 @@ export interface DurableMirrorReads {
     tokenUsage: TokenUsage;
     connectorState: ConnectorThreadState | null;
   }>;
+  /**
+   * Whether the last checkpoint failed, so the files may not hold the state
+   * it was saving. A checkpoint runs from `writeTurns` through `commit`; a
+   * write it skipped after an earlier failure counts. The next checkpoint
+   * that completes clears it.
+   */
+  hasFailedCheckpoint(): boolean;
 }
 
 export class IsogitStore
@@ -361,6 +323,9 @@ export class IsogitStore
   private readonly gcPolicy: GCPolicy | undefined;
   private pendingConnectorState: ConnectorThreadState | null = null;
   private lastTurns: ConversationTurn[] = [];
+  // `retrying` is a checkpoint opened after a failed one: until it completes,
+  // the files can still hold the failed checkpoint's partial state.
+  private checkpoint: "open" | "retrying" | "complete" | "failed" = "complete";
 
   constructor(
     runtime: StorageRuntime,
@@ -509,7 +474,7 @@ export class IsogitStore
     if (!(await pathExists(this.runtime, metadataPath))) {
       return {
         pendingOperations: [],
-        tokenUsage: { ...EMPTY_USAGE },
+        tokenUsage: emptyTokenUsage(),
         connectorState: null,
       };
     }
@@ -527,7 +492,7 @@ export class IsogitStore
     options: { message: string },
     _signal?: AbortSignal,
   ): Promise<ContextCommit> {
-    return withRepoDirLock(this.runtime, this.dir, async () => {
+    const committed = withRepoDirLock(this.runtime, this.dir, async () => {
       const tracked = [
         TURNS_FILE,
         PROMPT_FILE,
@@ -585,6 +550,11 @@ export class IsogitStore
       await this.maybeGC();
       return described;
     });
+    const commit = await this.checkpointStep(committed);
+    if (this.checkpoint === "open" || this.checkpoint === "retrying") {
+      this.checkpoint = "complete";
+    }
+    return commit;
   }
 
   private async describeHead(
@@ -700,9 +670,11 @@ export class IsogitStore
     records: TransformRecordType[],
     _signal?: AbortSignal,
   ): Promise<void> {
-    await this.runtime.fs.writeFile(
-      this.runtime.path.join(this.dir, MANIFEST_FILE),
-      encodeJsonlLines(records),
+    await this.checkpointStep(
+      this.runtime.fs.writeFile(
+        this.runtime.path.join(this.dir, MANIFEST_FILE),
+        encodeJsonlLines(records),
+      ),
     );
   }
 
@@ -710,9 +682,12 @@ export class IsogitStore
     turns: ConversationTurn[],
     _signal?: AbortSignal,
   ): Promise<void> {
-    await this.runtime.fs.writeFile(
-      this.runtime.path.join(this.dir, TURNS_FILE),
-      encodeJsonlLines(turns),
+    this.checkpoint =
+      this.checkpoint === "failed" || this.checkpoint === "retrying"
+        ? "retrying"
+        : "open";
+    await this.checkpointStep(
+      this.writeFileAtomically(TURNS_FILE, encodeJsonlLines(turns)),
     );
     // Advance the in-memory marker only after the durable write succeeds.
     // peekTurns must never surface an array that failed to persist -- a
@@ -724,11 +699,29 @@ export class IsogitStore
     return this.lastTurns;
   }
 
+  hasFailedCheckpoint(): boolean {
+    return this.checkpoint === "failed" || this.checkpoint === "retrying";
+  }
+
+  // A failed step leaves the checkpoint failed even when the writer stops
+  // there, so the files it skipped count too.
+  private async checkpointStep<T>(step: Promise<T>): Promise<T> {
+    try {
+      return await step;
+    } catch (cause) {
+      this.checkpoint = "failed";
+      throw cause;
+    }
+  }
+
   /**
    * Write `metadata.json` containing pending operations, token usage, and the
    * currently-buffered connector state. The reactor calls this once per cycle
    * before issuing the working-tree commit so the file is staged atomically
    * with the per-cycle conversation data.
+   *
+   * The reactor and a durable-conversation mirror can write and read this
+   * file concurrently, so it is written atomically.
    */
   async writeMetadata(
     metadata: {
@@ -742,10 +735,33 @@ export class IsogitStore
       tokenUsage: metadata.tokenUsage,
       connectorState: this.pendingConnectorState,
     };
-    await this.runtime.fs.writeFile(
-      this.runtime.path.join(this.dir, METADATA_FILE),
-      JSON.stringify(payload, null, 2),
+    await this.checkpointStep(
+      this.writeFileAtomically(METADATA_FILE, JSON.stringify(payload, null, 2)),
     );
+  }
+
+  /**
+   * Replace a working-tree file through a per-write staging file renamed over
+   * it, so a concurrent reader or a second writer sees either the prior
+   * complete file or the new one, and a process that dies mid-write leaves the
+   * prior file rather than a partial one. Nothing is fsynced, so this does not
+   * hold across an OS crash or power loss.
+   */
+  private async writeFileAtomically(
+    filepath: string,
+    contents: string,
+  ): Promise<void> {
+    const target = this.runtime.path.join(this.dir, filepath);
+    const staged = `${target}.${hexEncode(crypto.getRandomValues(new Uint8Array(8)))}.tmp`;
+    try {
+      await this.runtime.fs.writeFile(staged, contents);
+      await this.runtime.fs.rename(staged, target);
+    } catch (cause) {
+      await this.runtime.fs
+        .remove(staged, { force: true })
+        .catch(() => undefined);
+      throw cause;
+    }
   }
 
   async readManifestHistory(

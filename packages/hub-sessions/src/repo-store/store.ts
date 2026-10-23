@@ -35,7 +35,7 @@ import type {
   WriteTreeDeltaArgs,
   WriteTreePreservingPrefixArgs,
 } from "./types";
-import { SAFE_REPO_ID } from "./types";
+import { isPlainPathSegment, SAFE_REPO_ID } from "./types";
 
 const DEFAULT_SUBSCRIBE_BUFFER_LIMIT = 1024;
 const DEFINITION_REF_NAMESPACE = `${HUB_REF_NAMESPACE}/workflow-definitions`;
@@ -96,6 +96,19 @@ async function withRepoLock<T>(
     }
     releaseFn();
   }
+}
+
+// A write names each path as plain relative segments. A prefix keeps its
+// trailing slash.
+function isPlainRelativePath(p: string, isPrefix: boolean): boolean {
+  const body = isPrefix && p.endsWith("/") ? p.slice(0, -1) : p;
+  return body.split("/").every(isPlainPathSegment);
+}
+
+function isAbsentPathError(cause: unknown): boolean {
+  return (
+    hasCode(cause) && (cause.code === "ENOENT" || cause.code === "ENOTDIR")
+  );
 }
 
 export type CreateRepoStoreConfig = {
@@ -205,6 +218,32 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   }
   function invalidateGitCache(dir: string): void {
     gitCaches.delete(dir);
+  }
+  // Every write has one parent and receivePack refuses merge commits, so
+  // HEAD's history is a single chain and its last entry is the root. A pack
+  // that ships only its tip leaves that chain without its older commits, and
+  // then there is no root to find.
+  async function initialCommit(dir: string): Promise<string> {
+    let history: Awaited<ReturnType<typeof git.log>>;
+    try {
+      history = await git.log({
+        fs,
+        dir,
+        cache: cacheFor(dir),
+        ref: "HEAD",
+      });
+    } catch (err) {
+      if (!hasCode(err) || err.code !== "NotFoundError") throw err;
+      throw new Error(
+        `repository ${dir} is missing commits between HEAD and its initial commit`,
+        { cause: err },
+      );
+    }
+    const root = history.at(-1);
+    if (root === undefined) {
+      throw new Error(`repository ${dir} has no initial commit`);
+    }
+    return root.oid;
   }
 
   // Per-(repoId, ref) seq cache. Value is the seq of the ref's
@@ -447,10 +486,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
 
   function validateClearPrefix(clearPrefix: string): void {
     const malformed =
-      clearPrefix.length === 0 ||
-      !clearPrefix.endsWith("/") ||
-      clearPrefix.startsWith("/") ||
-      clearPrefix.split("/").includes("..");
+      !clearPrefix.endsWith("/") || !isPlainRelativePath(clearPrefix, true);
     if (malformed) {
       throw new Error(`clear_prefix_invalid: ${clearPrefix}`);
     }
@@ -458,15 +494,9 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
 
   // Validate a delta write path. A put is always a file (no trailing
   // slash); a delete is either an exact file or a subtree prefix
-  // (trailing slash allowed). Both reject empties, absolute paths, and
-  // any `..` traversal segment.
+  // (trailing slash allowed).
   function validateDeltaPath(p: string, isDelete: boolean): void {
-    const malformed =
-      p.length === 0 ||
-      p.startsWith("/") ||
-      p.split("/").includes("..") ||
-      (!isDelete && p.endsWith("/"));
-    if (malformed) {
+    if (!isPlainRelativePath(p, isDelete)) {
       throw new Error(`delta_path_invalid: ${JSON.stringify(p)}`);
     }
   }
@@ -556,11 +586,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   ): Promise<RefEntry[]> {
     gateAccess(principal, repoId, "*", "resolveRef");
     const dir = repoDir(repoId);
-    const repoExists = await fs.promises
-      .stat(path.join(dir, ".git"))
-      .then(() => true)
-      .catch(() => false);
-    if (!repoExists) return [];
+    if (!(await repoHasGitDir(dir))) return [];
 
     const [branches, tags] = await Promise.all([
       git.listBranches({ fs, dir }),
@@ -574,13 +600,8 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
 
     const entries: RefEntry[] = [];
     for (const name of names) {
-      try {
-        const sha = await git.resolveRef({ fs, dir, ref: name });
-        entries.push({ name, sha });
-      } catch (err: unknown) {
-        if (hasCode(err) && err.code === "NotFoundError") continue;
-        throw err;
-      }
+      const sha = await resolveRefSha(dir, name);
+      if (sha !== null) entries.push({ name, sha });
     }
     return entries;
   }
@@ -591,11 +612,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   ): Promise<{ symbolicTarget: string; sha: string } | null> {
     gateAccess(principal, repoId, "*", "resolveRef");
     const dir = repoDir(repoId);
-    const repoExists = await fs.promises
-      .stat(path.join(dir, ".git"))
-      .then(() => true)
-      .catch(() => false);
-    if (!repoExists) return null;
+    if (!(await repoHasGitDir(dir))) return null;
 
     const symbolicTarget = await git.currentBranch({ fs, dir, fullname: true });
     if (symbolicTarget === undefined) return null;
@@ -606,6 +623,13 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     return { symbolicTarget, sha };
   }
 
+  // isomorphic-git reads an empty or malformed ref file as a missing ref, and
+  // it writes refs in place, so a crash mid-write can leave one. Its
+  // NotFoundError therefore only means "absent" once the ref is confirmed
+  // missing from both the loose ref file and packed-refs. A ref that is
+  // recorded gets one more resolve, which covers one written between the two
+  // reads; failing again, it throws rather than reading as a repo without
+  // that ref.
   async function resolveRefSha(
     dir: string,
     ref: string,
@@ -613,11 +637,41 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     try {
       return await git.resolveRef({ fs, dir, ref });
     } catch (err: unknown) {
-      if (hasCode(err) && err.code === "NotFoundError") {
-        return null;
-      }
-      throw err;
+      if (!hasCode(err) || err.code !== "NotFoundError") throw err;
     }
+    if (!(await isRefRecorded(dir, ref))) return null;
+    try {
+      return await git.resolveRef({ fs, dir, ref });
+    } catch (cause) {
+      throw new Error(`ref ${ref} in ${dir} exists but could not be read`, {
+        cause,
+      });
+    }
+  }
+
+  async function isRefRecorded(dir: string, ref: string): Promise<boolean> {
+    const gitDir = path.join(dir, ".git");
+    try {
+      const loose = await fs.promises.stat(
+        path.join(gitDir, ...ref.split("/")),
+      );
+      // A directory at the ref's path holds other refs (`<ref>/<name>`), so
+      // it records none under this name; the ref may still be packed.
+      if (loose.isFile()) return true;
+    } catch (cause) {
+      if (!isAbsentPathError(cause)) throw cause;
+    }
+    let packedRefs: string;
+    try {
+      packedRefs = await fs.promises.readFile(
+        path.join(gitDir, "packed-refs"),
+        "utf8",
+      );
+    } catch (cause) {
+      if (isAbsentPathError(cause)) return false;
+      throw cause;
+    }
+    return packedRefs.split("\n").some((line) => line.endsWith(` ${ref}`));
   }
 
   // Walk from a tree object's root to the tree-or-blob entry at
@@ -771,6 +825,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     topLevelTreePaths: string[];
     readBlob: (path: string) => Promise<Uint8Array>;
     listDir: (path: string) => Promise<string[]>;
+    listDirOids: (path: string) => Promise<{ name: string; oid: string }[]>;
   }> {
     const { commit } = await git.readCommit({
       fs,
@@ -820,11 +875,28 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
       });
       return tree.map((e) => e.path);
     };
-    return { topLevelTreePaths, readBlob, listDir };
+    // The prospective mirror of `priorListDirOids`, so a handler proving a
+    // retained entry unchanged compares object ids instead of re-reading
+    // and hashing the entry's bytes.
+    const listDirOids = async (
+      relPath: string,
+    ): Promise<{ name: string; oid: string }[]> => {
+      const oid = await resolveTreeEntry(dir, commitSha, relPath, "tree");
+      if (oid === null) return [];
+      const { tree } = await git.readTree({
+        fs,
+        dir,
+        cache: cacheFor(dir),
+        oid,
+      });
+      return tree.map((e) => ({ name: e.path, oid: e.oid }));
+    };
+    return { topLevelTreePaths, readBlob, listDir, listDirOids };
   }
 
-  // Read a tree's child entries as a name->oid map. Returns null when
-  // the path is absent or is not a tree at the given commit, so the
+  // Read a tree's child entries as a map from name to mode and oid, so a
+  // change to an entry's mode alone still counts as a change. Returns null
+  // when the path is absent or is not a tree at the given commit, so the
   // diff below treats "subtree gained/lost" uniformly with "subtree
   // changed".
   async function readTreeEntryMap(
@@ -846,7 +918,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     if (oid === null) return null;
     const { tree } = await git.readTree({ fs, dir, cache: cacheFor(dir), oid });
     const out = new Map<string, string>();
-    for (const e of tree) out.set(e.path, e.oid);
+    for (const e of tree) out.set(e.path, `${e.mode} ${e.oid}`);
     return out;
   }
 
@@ -857,18 +929,24 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   const GIT_MODE_SUBMODULE = "160000";
 
   // Walk a commit's tree and return the first entry whose mode is disallowed
-  // (a symlink or a submodule), or null when the tree is clean. This mirrors
-  // the materialization backstop in `writeTreeToDisk`, but at the PUSH boundary
-  // so a directory-escaping symlink (or a dangling gitlink) is refused at
-  // admission rather than only caught later at checkout. It reads trees only,
-  // never blobs; `seen` deduplicates shared subtree oids across the commits of
-  // one pack so a subtree is walked once.
-  async function findDisallowedTreeMode(
+  // (a symlink or a submodule) or whose name its tree repeats, or null when
+  // the tree is clean. This mirrors the materialization backstop in
+  // `writeTreeToDisk`, but at the PUSH boundary so a directory-escaping
+  // symlink (or a dangling gitlink) is refused at admission rather than only
+  // caught later at checkout. A repeated name is refused because the change
+  // scope keeps the last entry of a name while reads resolve the first, so
+  // a change to the first would escape validation. It reads trees only,
+  // never blobs; `seen` deduplicates shared subtree oids across the commits
+  // of one pack so a subtree is walked once.
+  async function findDisallowedTreeEntry(
     dir: string,
     treeOid: string,
     seen: Set<string>,
     prefix = "",
-  ): Promise<{ path: string; kind: "symlink" | "submodule" } | null> {
+  ): Promise<{
+    path: string;
+    kind: "symlink" | "submodule" | "duplicate entry";
+  } | null> {
     if (seen.has(treeOid)) return null;
     seen.add(treeOid);
     const { tree } = await git.readTree({
@@ -877,8 +955,13 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
       cache: cacheFor(dir),
       oid: treeOid,
     });
+    const names = new Set<string>();
     for (const entry of tree) {
       const entryPath = prefix === "" ? entry.path : `${prefix}/${entry.path}`;
+      if (names.has(entry.path)) {
+        return { path: entryPath, kind: "duplicate entry" };
+      }
+      names.add(entry.path);
       if (entry.mode === GIT_MODE_SYMLINK) {
         return { path: entryPath, kind: "symlink" };
       }
@@ -886,7 +969,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
         return { path: entryPath, kind: "submodule" };
       }
       if (entry.type === "tree") {
-        const nested = await findDisallowedTreeMode(
+        const nested = await findDisallowedTreeEntry(
           dir,
           entry.oid,
           seen,
@@ -902,13 +985,15 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   // relative to its parent, as repo-root-relative POSIX prefixes ending
   // in `/`. Git is content-addressed: a subtree whose object id is
   // unchanged between the two commits is byte-identical, so the diff
-  // only descends into entries whose oid differs. Top-level entries that
-  // differ are emitted as `<name>/`; the `runs/` subtree is descended
-  // one level further so a per-run handler can scope to the exact
-  // `runs/<runId>/` directories that changed rather than re-validating
-  // every run. `parentSha === null` (no readable parent) means the
-  // substrate cannot bound the change set, so it returns `undefined`
-  // and the handler validates the whole tree.
+  // only descends into entries whose mode or oid differs. Top-level
+  // entries that differ are emitted as `<name>/`; the `runs/` subtree is
+  // descended one level further so a per-run handler can scope to the
+  // exact `runs/<runId>/` directories that changed rather than
+  // re-validating every run, and further still for a run whose only
+  // changed child is its `steps/` subtree (see `changedRunPrefixes`).
+  // `parentSha === null` (no readable parent) means the substrate cannot
+  // bound the change set, so it returns `undefined` and the handler
+  // validates the whole tree.
   async function computeChangedPathPrefixes(
     dir: string,
     commitSha: string,
@@ -932,13 +1017,58 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
         ]);
         for (const runId of runNames) {
           if (newRuns.get(runId) === oldRuns.get(runId)) continue;
-          prefixes.add(`runs/${runId}/`);
+          for (const prefix of await changedRunPrefixes(
+            dir,
+            commitSha,
+            parentSha,
+            runId,
+          )) {
+            prefixes.add(prefix);
+          }
         }
         continue;
       }
       prefixes.add(`${name}/`);
     }
     return prefixes;
+  }
+
+  // The prefixes a commit changed inside one run directory that differs
+  // from its parent's. The whole run (`runs/<runId>/`) unless `steps/` is
+  // its only changed child: a workflow-run's per-step state is validated
+  // apart from the run's event log, so each step directory that changed
+  // (`runs/<runId>/steps/<segment>/`) is emitted instead, or
+  // `runs/<runId>/steps/` when that subtree was added, removed, or is not
+  // a directory on one side. A directory whose object differs while its
+  // listing does not is emitted whole rather than dropped.
+  async function changedRunPrefixes(
+    dir: string,
+    commitSha: string,
+    parentSha: string,
+    runId: string,
+  ): Promise<string[]> {
+    const runPath = `runs/${runId}`;
+    const newRun = await readTreeEntryMap(dir, commitSha, runPath);
+    const oldRun = await readTreeEntryMap(dir, parentSha, runPath);
+    if (newRun === null || oldRun === null) return [`${runPath}/`];
+    let stepsChanged = false;
+    for (const child of new Set([...newRun.keys(), ...oldRun.keys()])) {
+      if (newRun.get(child) === oldRun.get(child)) continue;
+      if (child !== "steps") return [`${runPath}/`];
+      stepsChanged = true;
+    }
+    if (!stepsChanged) return [`${runPath}/`];
+    const stepsPath = `${runPath}/steps`;
+    const newSteps = await readTreeEntryMap(dir, commitSha, stepsPath);
+    const oldSteps = await readTreeEntryMap(dir, parentSha, stepsPath);
+    if (newSteps === null || oldSteps === null) return [`${stepsPath}/`];
+    const prefixes: string[] = [];
+    for (const segment of new Set([...newSteps.keys(), ...oldSteps.keys()])) {
+      if (newSteps.get(segment) !== oldSteps.get(segment)) {
+        prefixes.push(`${stepsPath}/${segment}/`);
+      }
+    }
+    return prefixes.length > 0 ? prefixes : [`${stepsPath}/`];
   }
 
   // Enumerate every commit OID reachable from any branch or tag in
@@ -1045,6 +1175,45 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
       current = next;
     }
     return chain.reverse();
+  }
+
+  // A push that does not build on the ref's tip would drop whatever the tip
+  // holds past the point the push branched from. A tip holding only the
+  // `.gitignore` every repository starts with has nothing to drop: a
+  // deployment's first push replaces the Hub's empty start, and restoring its
+  // history replaces a fresh worker's.
+  async function buildsOnTip(
+    dir: string,
+    commitSha: string,
+    expectedOldSha: string | null,
+    newCommits: readonly string[],
+  ): Promise<boolean> {
+    if (expectedOldSha === null || commitSha === expectedOldSha) return true;
+    const oldest = newCommits[0];
+    if (oldest !== undefined) {
+      const { commit } = await git.readCommit({
+        fs,
+        dir,
+        cache: cacheFor(dir),
+        oid: oldest,
+      });
+      if (commit.parent[0] === expectedOldSha) return true;
+    }
+    const { commit: tip } = await git.readCommit({
+      fs,
+      dir,
+      cache: cacheFor(dir),
+      oid: expectedOldSha,
+    });
+    const { tree } = await git.readTree({
+      fs,
+      dir,
+      cache: cacheFor(dir),
+      oid: tip.tree,
+    });
+    return tree.every(
+      (entry) => entry.type === "blob" && entry.path === ".gitignore",
+    );
   }
 
   // Assemble a new root tree by splicing `puts` (repo-root-relative path
@@ -1356,12 +1525,17 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     // ref's tip, and the splice runs against THAT commit's root tree,
     // read under the same lock, so the pre-image is race-free. A ref
     // that does not yet exist has no base tree (the splice starts from
-    // empty) and parents on HEAD, matching the prior index-reset path
-    // which seeded an empty index for a missing ref.
+    // empty) and parents on the repo's initial commit.
     const parentCommitSha =
       pinnedParent !== undefined
         ? pinnedParent.sha
         : await resolveRefSha(dir, ref);
+    // A never-written ref parents on the initial commit, not HEAD's tip: its
+    // tree starts from empty, so parenting it on a HEAD that has moved past
+    // the initial commit would read as deleting everything HEAD holds. It is
+    // resolved before anything is written, so a history it cannot walk fails
+    // the write without touching the working tree.
+    const commitParentSha = parentCommitSha ?? (await initialCommit(dir));
     let baseRootTreeOid: string | null = null;
     if (parentCommitSha !== null) {
       const { commit } = await git.readCommit({
@@ -1455,12 +1629,8 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
       await fs.promises.writeFile(fullPath, contents);
     }
 
-    // The parent is the pinned tip, or HEAD for a never-written ref so a
-    // first write parents on the repo's initial commit. `oldSha` is
-    // precise: null only when the ref truly does not exist.
+    // `oldSha` is precise: null only when the ref truly does not exist.
     const oldSha = parentCommitSha;
-    const parentSha =
-      parentCommitSha ?? (await git.resolveRef({ fs, dir, ref: "HEAD" }));
 
     const commitSha = await git.commit({
       fs,
@@ -1469,7 +1639,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
       tree: newRootTreeOid,
       message: w.message,
       author: AUTHOR,
-      parent: [parentSha],
+      parent: [commitParentSha],
       ref,
       signingKey: "sshsig",
       onSign: async ({ payload }) => ({
@@ -1491,22 +1661,48 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     return { commitSha, newlyTerminalRuns: validation.newlyTerminalRuns ?? [] };
   }
 
+  // A clearPrefix write clears and rewrites its prefix, but its files may
+  // land outside it. Each such file widens the change scope to its own
+  // directory, or to the whole tree for a top-level file, so no change
+  // escapes the handler's validation.
+  function prefixWriteScope(
+    prefix: string,
+    files: Record<string, string | Uint8Array>,
+  ): ReadonlySet<string> | undefined {
+    const scope = new Set([prefix]);
+    for (const filepath of Object.keys(files)) {
+      if (filepath.startsWith(prefix)) continue;
+      const slash = filepath.lastIndexOf("/");
+      if (slash < 0) return undefined;
+      scope.add(filepath.slice(0, slash + 1));
+    }
+    return scope;
+  }
+
   // Normalize a `TreeContent` (files + optional clearPrefix) into the
   // puts/deletes/scope shape writeTreeUnderLock consumes. A clearPrefix
-  // becomes a single subtree-delete and the handler's change scope; its
-  // absence is a purely-additive write validated in full.
+  // becomes a single subtree-delete and anchors the handler's change
+  // scope; its absence is a purely-additive write validated in full.
   function normalizeTreeContent(content: TreeContent): {
     files: Record<string, string | Uint8Array>;
     deletes: ReadonlySet<string>;
     changedPathPrefixes: ReadonlySet<string> | undefined;
     message: string;
   } {
+    for (const filepath of Object.keys(content.files)) {
+      if (!isPlainRelativePath(filepath, false)) {
+        throw new Error(`tree_path_invalid: ${JSON.stringify(filepath)}`);
+      }
+    }
     if (content.clearPrefix !== undefined) {
       validateClearPrefix(content.clearPrefix);
       return {
         files: content.files,
         deletes: new Set([content.clearPrefix]),
-        changedPathPrefixes: new Set([content.clearPrefix]),
+        changedPathPrefixes: prefixWriteScope(
+          content.clearPrefix,
+          content.files,
+        ),
         message: content.message,
       };
     }
@@ -1547,11 +1743,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   ): Promise<Map<string, Uint8Array>> {
     const dir = repoDir(repoId);
     const out = new Map<string, Uint8Array>();
-    const repoExists = await fs.promises
-      .stat(path.join(dir, ".git"))
-      .then(() => true)
-      .catch(() => false);
-    if (!repoExists) return out;
+    if (!(await repoHasGitDir(dir))) return out;
     const commitSha = await resolveRefSha(dir, ref);
     if (commitSha === null) return out;
     const { commit } = await git.readCommit({
@@ -1620,6 +1812,16 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
       await storageInitRepo(repoDir(repoId), storageOptsFor(repoId, undefined));
       const existing = await readPrefixBlobs(repoId, ref, args.preservePrefix);
       const files = await args.merge(existing);
+      const outside = Object.keys(files).find(
+        (filepath) =>
+          !filepath.startsWith(args.preservePrefix) ||
+          !isPlainRelativePath(filepath, false),
+      );
+      if (outside !== undefined) {
+        throw new Error(
+          `preserve_prefix_out_of_scope: merge returned ${JSON.stringify(outside)}, which is not a file path under ${JSON.stringify(args.preservePrefix)}`,
+        );
+      }
       return writeTreeUnderLock(principal, repoId, ref, {
         files,
         deletes: new Set([args.preservePrefix]),
@@ -1740,6 +1942,14 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
             existingCommits,
           );
           newCommitsFromPack.push(...newCommits);
+          if (
+            repoId.kind === "workflow-run" &&
+            !(await buildsOnTip(dir, commitSha, expectedOldSha, newCommits))
+          ) {
+            const reason = `commit ${commitSha} does not build on the tip ${String(expectedOldSha)} of ${ref}; a workflow-run history only grows`;
+            logger.debug`validatePush rejected ${repoId.kind}/${repoId.id} on ${ref}: ${reason}`;
+            return { ok: false, reason };
+          }
           // Shared across the pack's commits so a subtree common to several is
           // walked once by the disallowed-mode gate below.
           const seenTreeOids = new Set<string>();
@@ -1794,7 +2004,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
             }
             const { priorReadBlob, priorListDir, priorListDirOids } =
               buildPriorTreeClosures(dir, parentSha);
-            const { topLevelTreePaths, readBlob, listDir } =
+            const { topLevelTreePaths, readBlob, listDir, listDirOids } =
               await buildCommitTreeClosures(dir, newCommit);
             const changedPathPrefixes = await computeChangedPathPrefixes(
               dir,
@@ -1803,13 +2013,14 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
             );
             // Admission gate for EVERY kind, before the per-kind validatePush:
             // an asset tree carrying a symlink (which can escape its directory
-            // at checkout) or a submodule (a dangling gitlink the pack cannot
-            // reproduce) is refused here, so the ref never advances. No kind
-            // legitimately pushes either; `writeTreeToDisk` rejects both at
+            // at checkout), a submodule (a dangling gitlink the pack cannot
+            // reproduce) or a name its tree repeats is refused here, so the
+            // ref never advances. No kind legitimately pushes any of them;
+            // `writeTreeToDisk` rejects symlinks and submodules at
             // materialization as the defense-in-depth backstop. Per-commit, so
             // an intermediate commit that adds a symlink a later commit deletes
             // is still caught.
-            const disallowed = await findDisallowedTreeMode(
+            const disallowed = await findDisallowedTreeEntry(
               dir,
               parsed.tree,
               seenTreeOids,
@@ -1828,6 +2039,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
               topLevelTreePaths,
               readBlob,
               listDir,
+              listDirOids,
               priorReadBlob,
               priorListDir,
               priorListDirOids,
@@ -2042,10 +2254,13 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   }
 
   async function repoHasGitDir(dir: string): Promise<boolean> {
-    return fs.promises
-      .stat(path.join(dir, ".git"))
-      .then(() => true)
-      .catch(() => false);
+    try {
+      await fs.promises.stat(path.join(dir, ".git"));
+      return true;
+    } catch (cause) {
+      if (isAbsentPathError(cause)) return false;
+      throw cause;
+    }
   }
 
   async function openCommittedReads(

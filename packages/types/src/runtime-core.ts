@@ -873,6 +873,11 @@ export const TokenUsage = type({
 });
 export type TokenUsage = typeof TokenUsage.infer;
 
+/** Zero usage, as a new object per call so no two holders share one. */
+export function emptyTokenUsage(): TokenUsage {
+  return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, thinking: 0 };
+}
+
 /**
  * Slim source descriptor stamped onto `inference.usage` / `inference.done`
  * events and onto `ReactorState.lastCycleSource`.
@@ -1256,12 +1261,13 @@ export type ContentBlock = typeof ContentBlock.infer;
  *
  * (INFERENCE.md § Message Format)
  */
-export type ConversationTurn = {
-  role: "user" | "assistant" | "system";
-  content: ContentBlock[];
-  model?: string;
-  timestamp: number;
-};
+export const ConversationTurn = type({
+  role: "'user' | 'assistant' | 'system'",
+  content: ContentBlock.array(),
+  "model?": "string",
+  timestamp: "number",
+});
+export type ConversationTurn = typeof ConversationTurn.infer;
 
 /**
  * A completed assistant turn returned in `inference.done`. Narrower type
@@ -1367,6 +1373,40 @@ export type PendingOperation = {
    */
   approvalSnapshot?: ApprovalSnapshot;
 };
+
+/**
+ * Validator for a {@link PendingOperation} read back from an agent's durable
+ * state, by the agent's own store and by the Hub's copy of it.
+ */
+export const PersistedPendingOperation = type({
+  correlationId: "string",
+  kind: "'approval'",
+  registeredAt: "number",
+  gateId: "string",
+  "timeoutAt?": "number",
+  "suspendedCall?": ToolCall,
+  "approvalSnapshot?": ApprovalSnapshot,
+});
+
+// The persisted schema and the in-memory PendingOperation type are two
+// separate declarations kept in lockstep. arktype passes undeclared keys
+// through at runtime, so dropping `suspendedCall?` from the schema would not
+// surface as a runtime failure. Projecting the field off the schema's
+// inferred type makes the declaration load-bearing: the indexed access
+// errors under `tsc` if the schema stops carrying the field, and the return
+// annotation pins its persisted type to `ToolCall`.
+const _persistedSuspendedCall = (
+  op: typeof PersistedPendingOperation.infer,
+): ToolCall | undefined => op.suspendedCall;
+void _persistedSuspendedCall;
+
+// Same lockstep guard for the approval snapshot: the persisted schema must
+// keep carrying `approvalSnapshot` so a rehydrated pending operation still
+// exposes it. The projection errors under `tsc` if the schema drops the field.
+const _persistedApprovalSnapshot = (
+  op: typeof PersistedPendingOperation.infer,
+): ApprovalSnapshot | undefined => op.approvalSnapshot;
+void _persistedApprovalSnapshot;
 
 /**
  * Complete reactor state visible to the director decision function.

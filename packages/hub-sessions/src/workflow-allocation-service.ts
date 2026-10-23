@@ -18,6 +18,7 @@ import {
 import { grant, workflowRun } from "@intx/db/schema";
 import { eq } from "drizzle-orm";
 import { generateId } from "@intx/hub-common";
+import { getLogger } from "@intx/log";
 import {
   hexEncode,
   lifecycleDeadline,
@@ -26,6 +27,7 @@ import {
   type AdapterManifest,
   type CredentialCipher,
   type ResolvedWorkflowLifecyclePolicy,
+  type StepStateImport,
 } from "@intx/types";
 import {
   DeploymentRejectedError,
@@ -43,6 +45,7 @@ import {
 } from "@intx/workflow-deploy";
 
 import type { DeployContent } from "./agent-repo";
+import type { RepoStore } from "./repo-store/types";
 import {
   adapterManifestDigest,
   DestroySidecarResult,
@@ -62,6 +65,7 @@ import type {
   AllocatedSidecarTarget,
   SidecarAllocationRouter,
 } from "./ws/sidecar-handler";
+import { buildStepStateSeeds, writeStepStateSeeds } from "./step-state-import";
 import type { InstallAndApproveResult } from "./workflow-probe-gate";
 import { buildReferencedWorkflowSourcePins } from "./workflow-source-pins";
 import {
@@ -80,11 +84,13 @@ import {
 const STOPPED_HISTORY_WAIT_MS = 60_000;
 const STOPPED_HISTORY_POLL_MS = 1_000;
 
+const logger = getLogger(["hub-sessions", "workflow-allocation"]);
+
 export class WorkflowProvisioningError extends Error {
   readonly code: string;
 
-  constructor(code: string, message: string) {
-    super(message);
+  constructor(code: string, message: string, options?: { cause?: unknown }) {
+    super(message, options);
     this.name = "WorkflowProvisioningError";
     this.code = code;
   }
@@ -110,6 +116,11 @@ export type PrepareProvisionedWorkflowDeploymentArgs = {
   readonly defaultSourceOfferingId: string;
   readonly deployContent: DeployContent;
   readonly toolPackagePins?: readonly ToolPackagePin[];
+  /**
+   * State to start agent steps from, keyed by step id. Each key must name a
+   * top-level agent step of the approved definition.
+   */
+  readonly stepState?: StepStateImport;
 };
 
 export type PreparedProvisionedWorkflowDeployment = {
@@ -136,6 +147,8 @@ export type WorkflowAllocationServiceDeps = {
   readonly deploymentPlugins: SidecarPluginRegistry;
   readonly probePlugins: SidecarPluginRegistry;
   readonly preparedDeployer: PreparedWorkflowDeployer;
+  /** The Hub's copy of workflow-run histories, where imported state lands. */
+  readonly workflowRunRepoStore: Pick<RepoStore, "writeTree">;
   /** Decrypts tenant-owned credential bindings for provisioned deployments. */
   readonly credentialCipher: CredentialCipher;
   readonly probeCapabilityRules?: readonly SidecarCapabilityRule[];
@@ -245,6 +258,7 @@ export function createWorkflowAllocationService({
   deploymentPlugins,
   probePlugins,
   preparedDeployer,
+  workflowRunRepoStore,
   credentialCipher,
   probeCapabilityRules = [],
   allocationRouter,
@@ -781,11 +795,27 @@ export function createWorkflowAllocationService({
         sources: sourceCheck.sources,
         defaultSource: defaultSource.id,
       });
-      buildInertProjectionStepSources({
+      const stepSources = buildInertProjectionStepSources({
         projection: approved.projection,
         config,
         operatorApprovals: approved.approval.approvedSurface,
       });
+      const stepStateSeeds =
+        args.stepState === undefined
+          ? null
+          : buildStepStateSeeds({
+              projection: approved.projection,
+              sources: stepSources,
+              runId: args.anchorRunId,
+              stepState: args.stepState,
+              uidValidity: now().getTime(),
+            });
+      if (stepStateSeeds?.ok === false) {
+        throw new WorkflowProvisioningError(
+          "invalid_step_state",
+          stepStateSeeds.reason,
+        );
+      }
       await buildReferencedWorkflowSourcePins({
         projection: approved.projection,
         config,
@@ -807,6 +837,29 @@ export function createWorkflowAllocationService({
       const adoptedProbe = sameBinding ? probe : null;
       if (probe !== null && adoptedProbe === null) {
         await releaseProbe(probe, "succeeded");
+      }
+      // Seeded before the deployment's rows exist: the reconciler deploys
+      // from them, and that deploy restores this history onto the sidecar.
+      if (stepStateSeeds !== null) {
+        try {
+          await writeStepStateSeeds({
+            repoStore: workflowRunRepoStore,
+            deploymentAddress: deriveRunAddress({
+              runId: args.anchorRunId,
+              domain: args.deploymentDomain,
+            }),
+            files: stepStateSeeds.files,
+          });
+        } catch (cause) {
+          // A storage error names the Hub's own paths, so the caller gets a
+          // fixed message and the cause stays in the log.
+          logger.error`storing imported step state for ${args.anchorRunId} failed: ${cause instanceof Error ? cause.message : String(cause)}`;
+          throw new WorkflowProvisioningError(
+            "step_state_unwritable",
+            "The imported step state could not be stored",
+            { cause },
+          );
+        }
       }
       return await createDeployment({
         request: args,
