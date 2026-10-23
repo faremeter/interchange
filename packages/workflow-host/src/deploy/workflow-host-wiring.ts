@@ -49,6 +49,7 @@ import {
   type AgentUndeployFrame,
   type DeploymentStoppedFrame,
   type DeploymentRetention,
+  type DeploymentUnparkedFrame,
   type HostedIncarnation,
   type IncarnationState,
   type SourceRefPin,
@@ -82,6 +83,8 @@ import {
 } from "../supervisor/credentials";
 import {
   createWorkflowSupervisor,
+  ParkRefusedError,
+  type ParkOutcome,
   type SpawnOpts,
   type WorkflowSupervisor,
 } from "../supervisor/supervisor";
@@ -101,6 +104,7 @@ import type {
 import {
   deleteWorkflowRunRecord,
   markWorkflowRunRecord,
+  markWorkflowRunRecordParked,
   scanWorkflowRunRecords,
   updateWorkflowRunRecordSources,
   withWorkflowRunRecord,
@@ -641,6 +645,10 @@ export type CreateSidecarWorkflowSupervisorOpts = {
    * poisoned.
    */
   isRunPoisoned?: (runId: string) => boolean;
+  /** The definition's projected steps the supervisor's park judges runs by. */
+  definitionSteps?: Readonly<Record<string, unknown>>;
+  /** Called when a parked supervisor's child runs again. */
+  onWake?: (info: { reason: string }) => void;
 };
 
 export type SidecarWorkflowSupervisor = {
@@ -841,6 +849,7 @@ type DeployRouterResult = {
 type WorkflowControlOutcome = {
   refTips?: WorkflowRunRefTips;
   retention?: DeploymentRetention;
+  wakeAt?: string;
 };
 
 type ResolvedInboundMailPolicy = Record<InboundMailOutcome, "reject" | "admit">;
@@ -1288,6 +1297,13 @@ export function createSidecarDeployRouter<
   publishDeploymentStopped?: (
     report: Omit<DeploymentStoppedFrame, "type">,
   ) => void;
+  /**
+   * Send the Hub a report of a parked deployment that an input woke. Tests
+   * that do not exercise the report omit it.
+   */
+  publishDeploymentUnparked?: (
+    report: Omit<DeploymentUnparkedFrame, "type">,
+  ) => void;
 }): SidecarDeployRouter {
   // Validate the signing seed at construction so a malformed key fails
   // sidecar boot rather than the first multi-step deploy, where the
@@ -1363,6 +1379,8 @@ export function createSidecarDeployRouter<
     wired?: SidecarWorkflowSupervisor;
     // Why a stopped incarnation stopped when the Hub did not stop it.
     error?: string;
+    // The workflow child is parked: stopped while every run waits.
+    parked?: true;
   };
   const deployments = new Map<string, HostedDeployment>();
   const retaining = new Set<HostedDeployment>();
@@ -1546,6 +1564,37 @@ export function createSidecarDeployRouter<
     deps.multistepCredentialsRouter?.unregister(agentAddress);
   }
 
+  // A parked child runs again. Clear the mark so a restart does not park it,
+  // and tell the Hub when it did not ask for the wake.
+  function noteDeploymentUnparked(args: {
+    runId: string;
+    agentAddress: string;
+    hosted: HostedDeployment;
+    reason: string;
+  }): void {
+    if (deployments.get(args.agentAddress) !== args.hosted) return;
+    delete args.hosted.parked;
+    const report = (): void => {
+      if (args.reason === "unpark") return;
+      if (deployments.get(args.agentAddress) !== args.hosted) return;
+      deps.publishDeploymentUnparked?.({
+        agentAddress: args.agentAddress,
+        generation: args.hosted.generation,
+        reason: fitDeploymentError(`Woken by ${args.reason}`),
+      });
+    };
+    if (stepStateDataDir === undefined) {
+      report();
+      return;
+    }
+    void markWorkflowRunRecordParked(stepStateDataDir, args.runId, false)
+      .catch((cause: unknown) => {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        logger.error`Could not clear the parked mark of ${args.agentAddress}; a restart would park it again: ${message}`;
+      })
+      .finally(report);
+  }
+
   // Hold a deployment whose supervisor drove ITSELF to a terminal phase
   // (crash-loop latch, channel crash, recycle failure) as stopped, with why,
   // until the Hub undeploys it: the hello reports it, the Hub fails the
@@ -1723,6 +1772,8 @@ export function createSidecarDeployRouter<
      * frozen versions + SRIs.
      */
     sourceRef: NonNullable<AgentDeployFrame["workflow"]>["sourceRef"];
+    /** The deployment is parked, so its child is parked before it runs. */
+    parked: boolean;
   }
 
   /**
@@ -1759,6 +1810,7 @@ export function createSidecarDeployRouter<
       // restore re-runs applyFrozenWorkflowClosure with.
       approvedWireHash: spec.approvedWireHash,
       sourceRef: spec.sourceRef,
+      ...(spec.parked ? { parked: true as const } : {}),
     };
   }
 
@@ -2012,6 +2064,15 @@ export function createSidecarDeployRouter<
             error: `Its workflow child ended itself (${phase}): ${reason}`,
           });
         },
+        definitionSteps: spec.definition.steps,
+        onWake: ({ reason }) => {
+          noteDeploymentUnparked({
+            runId,
+            agentAddress: spec.agentAddress,
+            hosted,
+            reason,
+          });
+        },
         substrateEnv,
         // Recomputed on every spawn AND recycle respawn. The rotation
         // handler below revises `currentSources` in place, so a respawn
@@ -2100,6 +2161,7 @@ export function createSidecarDeployRouter<
             spec.sessionId,
           );
         },
+        ...(spec.parked ? { parked: true as const } : {}),
       };
 
       // Record the deployment-address mapping BEFORE `spawn`, because
@@ -2125,10 +2187,25 @@ export function createSidecarDeployRouter<
       // rejection into a structured failure frame. The supervisor is
       // registered against the deployment address only after spawn succeeds,
       // so a spawn-time rejection leaves the registry untouched.
-      await wired.supervisor.spawn(spawnOpts);
+      const spawned = await wired.supervisor.spawn(spawnOpts);
       wiredForUnwind = wired;
       hosted.wired = wired;
       supervisorRegistered = true;
+      if (spawned.parked !== undefined) {
+        hosted.parked = true;
+        void spawned.parked.catch((cause: unknown) => {
+          const message =
+            cause instanceof Error ? cause.message : String(cause);
+          logger.warn`${spec.agentAddress} is parked, and parking its new child failed: ${message}`;
+          if (hosted.wired !== wired || hosted.parked !== true) return;
+          noteDeploymentUnparked({
+            runId,
+            agentAddress: spec.agentAddress,
+            hosted,
+            reason: `its start, which could not park it: ${message}`,
+          });
+        });
+      }
 
       // Bind the deployment's mail address to this supervisor's
       // `routeInbound` so the hub-link dispatches inbound mail into the
@@ -2552,6 +2629,7 @@ export function createSidecarDeployRouter<
         // The source-ref pin the record persists so a restore can
         // re-materialize the closure.
         sourceRef: projection.sourceRef,
+        parked: projection.parked === true,
       };
       const record = buildWorkflowRunRecord(spec);
 
@@ -2635,6 +2713,54 @@ export function createSidecarDeployRouter<
     }
   }
 
+  // The Hub confirms a park only once it holds the tips read after the child
+  // stopped, and the parked mark is durable before it hears of the park.
+  async function parkDeployment(
+    frame: WorkflowControlFrame,
+    hosted: HostedDeployment,
+    wired: SidecarWorkflowSupervisor,
+  ): Promise<WorkflowControlOutcome> {
+    let outcome: ParkOutcome;
+    try {
+      outcome = await wired.supervisor.park();
+    } catch (cause) {
+      if (cause instanceof ParkRefusedError) {
+        throw new Error(`The deployment was not parked: ${cause.message}`, {
+          cause,
+        });
+      }
+      throw cause;
+    }
+    if (
+      deployments.get(frame.agentAddress) !== hosted ||
+      hosted.wired !== wired
+    )
+      throw new Error("The deployment changed while it was parking");
+    hosted.parked = true;
+    if (stepStateDataDir !== undefined) {
+      await markWorkflowRunRecordParked(
+        stepStateDataDir,
+        deps.deriveWorkflowRunRepoId(frame.agentAddress),
+        true,
+      );
+    }
+    const refTips = await deps.reportDeploymentRefTips({
+      agentAddress: frame.agentAddress,
+      generation: frame.generation,
+    });
+    return {
+      refTips,
+      ...(outcome.wakeAt !== undefined ? { wakeAt: outcome.wakeAt } : {}),
+    };
+  }
+
+  async function unparkDeployment(
+    wired: SidecarWorkflowSupervisor,
+  ): Promise<WorkflowControlOutcome> {
+    await wired.supervisor.unpark();
+    return {};
+  }
+
   async function control(
     frame: WorkflowControlFrame,
   ): Promise<WorkflowControlOutcome> {
@@ -2654,6 +2780,22 @@ export function createSidecarDeployRouter<
     const stopping = workflowStopTasks.get(frame.agentAddress);
     if (hosted?.state === "tearing-down")
       throw new Error("The deployment is being removed");
+    if (frame.action === "park" || frame.action === "unpark") {
+      if (stopping !== undefined) throw new Error("The deployment is stopping");
+      if (hosted?.state === "deploying") {
+        throw new Error(WORKFLOW_CONTROL_INITIALIZING_ERROR);
+      }
+      const wired = hosted?.wired;
+      if (
+        hosted === undefined ||
+        wired === undefined ||
+        hosted.state !== "live"
+      )
+        throw new Error("The deployment has no workflow child to park");
+      return frame.action === "park"
+        ? parkDeployment(frame, hosted, wired)
+        : unparkDeployment(wired);
+    }
     if (stopping !== undefined) {
       await stopping;
       if (frame.action === "retain" && hosted?.retention === undefined)
@@ -3090,6 +3232,7 @@ export function createSidecarDeployRouter<
               // without this a rotation would silently drop it and wedge the
               // NEXT restart.
               sourceRef: record.sourceRef,
+              parked: record.parked === true,
             };
 
             await spawnWorkflowRun(spec, hosted);
@@ -3160,6 +3303,9 @@ export function createSidecarDeployRouter<
         address,
         generation: hosted.generation,
         state: hosted.state,
+        ...(hosted.parked === true && hosted.state === "live"
+          ? { parked: true as const }
+          : {}),
         ...(hosted.retention !== undefined
           ? { retention: hosted.retention }
           : {}),
@@ -3311,6 +3457,10 @@ export function createSidecarWorkflowSupervisor(
     ...(opts.onSelfTerminate !== undefined
       ? { onSelfTerminate: opts.onSelfTerminate }
       : {}),
+    ...(opts.definitionSteps !== undefined
+      ? { definitionSteps: opts.definitionSteps }
+      : {}),
+    ...(opts.onWake !== undefined ? { onWake: opts.onWake } : {}),
     ...(opts.deriveStepRepoId !== undefined
       ? { deriveStepRepoId: opts.deriveStepRepoId }
       : {}),

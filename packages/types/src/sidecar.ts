@@ -196,18 +196,28 @@ export const HostedIncarnation = type({
   address: type("string").atMostLength(MAX_DEPLOYMENT_ADDRESS_LENGTH),
   generation: Generation,
   state: IncarnationState,
+  // A live incarnation whose workflow child is parked: stopped while every
+  // run waits, and respawned for its next input.
+  "parked?": "true",
   "retention?": DeploymentRetention,
   // Why a stopped incarnation stopped when the Hub did not stop it: its
   // workflow child ended itself, or the sidecar could not restore it. The Hub
   // fails such a deployment.
   "error?": type("string > 0").atMostLength(MAX_DEPLOYMENT_ERROR_LENGTH),
-}).narrow(
-  (incarnation, ctx) =>
-    incarnation.retention === undefined ||
-    incarnation.state === "stopped" ||
-    incarnation.state === "tearing-down" ||
-    ctx.mustBe("stopped before deciding retention"),
-);
+})
+  .narrow(
+    (incarnation, ctx) =>
+      incarnation.retention === undefined ||
+      incarnation.state === "stopped" ||
+      incarnation.state === "tearing-down" ||
+      ctx.mustBe("stopped before deciding retention"),
+  )
+  .narrow(
+    (incarnation, ctx) =>
+      incarnation.parked === undefined ||
+      incarnation.state === "live" ||
+      ctx.mustBe("live to be parked"),
+  );
 export type HostedIncarnation = typeof HostedIncarnation.infer;
 
 // ---------------------------------------------------------------------------
@@ -792,6 +802,9 @@ export const AgentDeployWorkflow = type({
   // an asset-sourced deploy carries it; a registry-sourced pin fetches its
   // tarballs over HTTP and delivers none.
   "assets?": WorkflowSourceAssetMount.array(),
+  // The Hub holds the deployment parked. The sidecar parks the child before it
+  // runs anything.
+  "parked?": "true",
 });
 export type AgentDeployWorkflow = typeof AgentDeployWorkflow.infer;
 
@@ -846,9 +859,13 @@ export const AgentUndeployFrame = type({
 export type AgentUndeployFrame = typeof AgentUndeployFrame.infer;
 
 /**
- * Cancel a workflow, stop its process, or transfer a terminal copy into the
- * retained pool. Retention reports kept/refused only after its decision is
- * durable. The sidecar refuses a command for another generation.
+ * Cancel a workflow, stop its process, transfer a terminal copy into the
+ * retained pool, or park or unpark its workflow child. Retention reports
+ * kept/refused only after its decision is durable. A park answers once the
+ * child is stopped and the parked mark is durable, or with the reason it was
+ * abandoned; an unpark answers once a park in progress is abandoned or the
+ * child is running again. The sidecar refuses a command for another
+ * generation.
  */
 export const WorkflowControlFrame = type({
   type: "'workflow.control'",
@@ -856,7 +873,7 @@ export const WorkflowControlFrame = type({
   agentAddress: "string",
   generation: Generation,
   runId: "string",
-  action: "'cancel' | 'stop' | 'retain'",
+  action: "'cancel' | 'stop' | 'retain' | 'park' | 'unpark'",
   reason: "string",
 });
 export type WorkflowControlFrame = typeof WorkflowControlFrame.infer;
@@ -884,11 +901,14 @@ export const WorkflowControlAckFrame = type({
   "error?": "string",
   "retention?": DeploymentRetention,
   /**
-   * A stopped worker's ref tips, read after its child exited. The Hub
-   * confirms a live stop only once it holds the same tips. Retain follows
-   * the existing terminal-history cutoff instead of importing later commits.
+   * A stopped or parked worker's ref tips, read after its child exited. The
+   * Hub confirms a live stop or a park only once it holds the same tips.
+   * Retain follows the existing terminal-history cutoff instead of importing
+   * later commits.
    */
   "refTips?": WorkflowRunRefTips,
+  /** A park's earliest pending timer, which wakes the parked child. */
+  "wakeAt?": "string",
 });
 export type WorkflowControlAckFrame = typeof WorkflowControlAckFrame.infer;
 
@@ -908,6 +928,20 @@ export const DeploymentStoppedFrame = type({
   "refTips?": WorkflowRunRefTips,
 });
 export type DeploymentStoppedFrame = typeof DeploymentStoppedFrame.infer;
+
+/**
+ * Reports a parked deployment whose workflow child is running again though
+ * the Hub did not unpark it: mail, a signal, a cancellation, or its earliest
+ * pending timer woke it. A report lost to a disconnect is corrected by the
+ * next `hello`, whose incarnation no longer carries `parked`.
+ */
+export const DeploymentUnparkedFrame = type({
+  type: "'deployment.unparked'",
+  agentAddress: type("string").atMostLength(MAX_DEPLOYMENT_ADDRESS_LENGTH),
+  generation: Generation,
+  reason: type("string > 0").atMostLength(MAX_DEPLOYMENT_ERROR_LENGTH),
+});
+export type DeploymentUnparkedFrame = typeof DeploymentUnparkedFrame.infer;
 
 /**
  * The Hub's answer to `hello`, sent once it has reconciled the reported
@@ -1319,6 +1353,7 @@ export const SidecarFrame = type.or(
   WorkflowProbeErrorFrame,
   WorkflowControlAckFrame,
   DeploymentStoppedFrame,
+  DeploymentUnparkedFrame,
 );
 export type SidecarFrame = typeof SidecarFrame.infer;
 

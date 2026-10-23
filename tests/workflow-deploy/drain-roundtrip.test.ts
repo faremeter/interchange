@@ -62,6 +62,7 @@ import {
 import {
   WorkflowControlHistoryPendingError,
   type RepoId,
+  type SidecarEventMap,
 } from "@intx/hub-sessions";
 
 import {
@@ -84,6 +85,7 @@ const DEPLOYMENT_ID = "run_drain-roundtrip-1";
 const WAIT_DEPLOYMENT_ID = "run_drain-roundtrip-wait-1";
 const CONTROL_DEPLOYMENT_ID = "run_control-roundtrip";
 const STOP_DEPLOYMENT_ID = "run_stop-roundtrip";
+const PARK_DEPLOYMENT_ID = "run_park-roundtrip";
 // Longer than the test's budget, so the worker's acknowledgement, not the
 // clock, settles the control request.
 const CONTROL_TIMEOUT_MS = 120_000;
@@ -106,6 +108,7 @@ const CALLER_PRINCIPAL_ID = "prn_drain_roundtrip";
 const DEFINITION_ASSET_IDS: Record<string, string> = {
   [CONTROL_DEPLOYMENT_ID]: "ast_control_roundtrip",
   [STOP_DEPLOYMENT_ID]: "ast_stop_roundtrip",
+  [PARK_DEPLOYMENT_ID]: "ast_park_roundtrip",
   [DEPLOYMENT_ID]: "ast_drain_roundtrip_cancel_wf",
   [WAIT_DEPLOYMENT_ID]: "ast_drain_roundtrip_wait_wf",
 };
@@ -606,6 +609,87 @@ test.skipIf(!harnessDbEnvAvailable())(
     ).toBe("supervisor-operator");
   },
   30_000,
+);
+
+// A wait on an author signal sends the supervisor no park notice, so the
+// trigger's dispatch never sees this run park; the park goes through anyway
+// once the child has taken the trigger. It runs before the stop test, whose
+// stop fences the allocation identity every deployment here shares.
+test.skipIf(!harnessDbEnvAvailable())(
+  "Hub parks and unparks a real child, and mail wakes a parked one",
+  async () => {
+    const { address, handle } = await deployParkedOnSignal({
+      anchorRunId: PARK_DEPLOYMENT_ID,
+      definitionAssetId: "ast_park_roundtrip",
+      workflowId: "park-workflow",
+    });
+    const target = env.hub.prepareAllocationIdentity(
+      PARK_DEPLOYMENT_ID,
+      address,
+    );
+    const recordFile = path.join(
+      env.sidecar.dataDir,
+      "workflow-runs",
+      handle.workflowRunRepoId.id,
+      "deployment.json",
+    );
+    const parkedMark = async () => {
+      const record: unknown = JSON.parse(await readFile(recordFile, "utf8"));
+      return typeof record === "object" && record !== null && "parked" in record
+        ? record.parked
+        : undefined;
+    };
+    // The park can overtake the child's last pushes; a repeated park answers
+    // again once that history has landed.
+    const park = () =>
+      waitFor(
+        async () => {
+          try {
+            await env.hub.router.parkAllocation(target, CONTROL_TIMEOUT_MS);
+            return true;
+          } catch (error) {
+            if (error instanceof WorkflowControlHistoryPendingError)
+              return false;
+            throw error;
+          }
+        },
+        { diagnostics: env.sidecarDiagnostics },
+      );
+
+    await park();
+    expect(await parkedMark()).toBe(true);
+    // A parked deployment keeps its routes, so mail can still wake it.
+    expect(env.hub.router.getRoutableAddresses()).toContain(address);
+
+    await env.hub.router.unparkAllocation(target, CONTROL_TIMEOUT_MS);
+    await waitFor(async () => (await parkedMark()) === undefined, {
+      diagnostics: env.sidecarDiagnostics,
+    });
+
+    await park();
+    const reports: SidecarEventMap["deployment.parked"][] = [];
+    const unsubscribe = env.hub.router.events.on(
+      "deployment.parked",
+      (report) => {
+        reports.push(report);
+      },
+    );
+    try {
+      await fireMailTrigger(env, address, {
+        messageId: `<${PARK_DEPLOYMENT_ID}-wake@integration.interchange>`,
+      });
+      await waitFor(() => reports.length > 0, {
+        diagnostics: env.sidecarDiagnostics,
+      });
+      expect(reports).toEqual([
+        { ...target, parked: false, reason: "Woken by mail" },
+      ]);
+      expect(await parkedMark()).toBeUndefined();
+    } finally {
+      unsubscribe();
+    }
+  },
+  60_000,
 );
 
 test.skipIf(!harnessDbEnvAvailable())(

@@ -246,6 +246,12 @@ function createMockAllocationRouter(
     async sendWorkflowControl() {
       throw new Error("mock workflow control is not used by session service");
     },
+    async parkAllocation() {
+      throw new Error("mock park is not used by session service");
+    },
+    async unparkAllocation() {
+      throw new Error("mock unpark is not used by session service");
+    },
     retireAllocation() {
       throw new Error(
         "mock allocation retirement is not used by session service",

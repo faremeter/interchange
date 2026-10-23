@@ -16,6 +16,7 @@ import type { HubTransport } from "@intx/mail-memory";
 import type { SignalKind } from "@intx/types";
 import type {
   DeploymentStoppedFrame,
+  DeploymentUnparkedFrame,
   HostedIncarnation,
   SidecarCapacity,
 } from "@intx/types/sidecar";
@@ -107,6 +108,13 @@ export type CreateDeployRouter = (deps: {
    */
   publishDeploymentStopped: (
     report: Omit<DeploymentStoppedFrame, "type">,
+  ) => void;
+  /**
+   * Sink for a parked deployment an input woke. Wired to the hub-link's
+   * `sendDeploymentUnparked`, like `publishDeploymentStopped`.
+   */
+  publishDeploymentUnparked: (
+    report: Omit<DeploymentUnparkedFrame, "type">,
   ) => void;
 }) => DeployRouter;
 
@@ -337,6 +345,12 @@ export function createSidecarOrchestrator(
     /* replaced after HubLink construction */
   };
 
+  let dispatchDeploymentUnparked: (
+    report: Omit<DeploymentUnparkedFrame, "type">,
+  ) => void = () => {
+    /* replaced after HubLink construction */
+  };
+
   const sessions = createSessionManager({ repoStore });
 
   const deployRouter = createDeployRouter({
@@ -374,6 +388,9 @@ export function createSidecarOrchestrator(
     },
     publishDeploymentStopped: (report) => {
       dispatchDeploymentStopped(report);
+    },
+    publishDeploymentUnparked: (report) => {
+      dispatchDeploymentUnparked(report);
     },
   });
 
@@ -418,6 +435,7 @@ export function createSidecarOrchestrator(
   dispatchEvent = hubLink.sendEvent;
   dispatchSuspension = hubLink.sendSignalCorrelationRegister;
   dispatchDeploymentStopped = hubLink.sendDeploymentStopped;
+  dispatchDeploymentUnparked = hubLink.sendDeploymentUnparked;
 
   function start(): void {
     hubLink.connect();

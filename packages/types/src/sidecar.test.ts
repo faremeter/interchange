@@ -1053,6 +1053,35 @@ describe("DeploymentStoppedFrame", () => {
   });
 });
 
+describe("parked deployments", () => {
+  test("a hello marks only a live incarnation parked", () => {
+    const hello = (state: string) => ({
+      type: "hello",
+      sidecarId: "sc-1",
+      token: "token",
+      capacity: { maxActiveDeployments: 1, maxRetainedDeployments: 0 },
+      incarnations: [
+        { address: "wf@example.test", generation: 1, state, parked: true },
+      ],
+    });
+    expect(SidecarFrame(hello("live")) instanceof type.errors).toBe(false);
+    expect(SidecarFrame(hello("stopped")) instanceof type.errors).toBe(true);
+  });
+
+  test("the SidecarFrame union admits a wake report with why", () => {
+    const frame = {
+      type: "deployment.unparked" as const,
+      agentAddress: "wf@example.test",
+      generation: 1,
+      reason: "Woken by mail",
+    };
+    expect(SidecarFrame(frame)).toEqual(frame);
+    expect(SidecarFrame({ ...frame, reason: "" }) instanceof type.errors).toBe(
+      true,
+    );
+  });
+});
+
 describe("SenderKeyEvictFrame", () => {
   const frame = {
     type: "sender.key.evict",

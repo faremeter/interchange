@@ -23,6 +23,7 @@ import {
   type SessionErrorFrame,
   type AgentUndeployFrame,
   type DeploymentStoppedFrame,
+  type DeploymentUnparkedFrame,
   type DeploymentRetention,
   type WorkflowControlFrame,
   type WorkflowRunRefTips,
@@ -379,8 +380,13 @@ export interface DeployRouter {
 /** What a handled workflow control reports back to the Hub. */
 export type WorkflowControlOutcome = {
   retention?: DeploymentRetention;
-  /** Final history for a live stop, which the Hub must confirm receiving. */
+  /**
+   * Final history for a live stop or a park, which the Hub must confirm
+   * receiving.
+   */
   refTips?: WorkflowRunRefTips;
+  /** A park's earliest pending timer. */
+  wakeAt?: string;
 };
 
 /**
@@ -832,6 +838,13 @@ export type HubLink = {
    * again after each `welcome`.
    */
   sendDeploymentStopped: (report: Omit<DeploymentStoppedFrame, "type">) => void;
+  /**
+   * Report a parked deployment that an input woke. Dropped while the link is
+   * not welcomed: the next `hello` carries the incarnation without `parked`.
+   */
+  sendDeploymentUnparked: (
+    report: Omit<DeploymentUnparkedFrame, "type">,
+  ) => void;
 };
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
@@ -2010,10 +2023,11 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     let error: string | undefined;
     let refTips: WorkflowRunRefTips | undefined;
     let retention: DeploymentRetention | undefined;
+    let wakeAt: string | undefined;
     try {
       if (deployRouter.control === undefined)
         throw new Error("Workflow control is not supported by this sidecar");
-      ({ refTips, retention } = await deployRouter.control(frame));
+      ({ refTips, retention, wakeAt } = await deployRouter.control(frame));
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause);
     }
@@ -2023,6 +2037,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       ...(error !== undefined ? { error } : {}),
       ...(refTips !== undefined ? { refTips } : {}),
       ...(retention !== undefined ? { retention } : {}),
+      ...(wakeAt !== undefined ? { wakeAt } : {}),
     });
   }
 
@@ -2158,8 +2173,8 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       }
       case "workflow.control":
         // Start in the address's order, but leave its lane free for a forced
-        // stop and the deployment's undeploy while cooperative cancellation
-        // waits for the child.
+        // stop and the deployment's undeploy while cooperative cancellation or
+        // a park waits for the child.
         onLanes(frame.type, [frame.agentAddress], async () => {
           void handleWorkflowControl(frame, reply).catch((cause: unknown) => {
             logger.warn`Workflow control reply failed: ${cause instanceof Error ? cause.message : String(cause)}`;
@@ -2442,6 +2457,17 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     );
   };
 
+  const sendDeploymentUnparked: HubLink["sendDeploymentUnparked"] = (
+    report,
+  ) => {
+    welcomedSocket()?.send(
+      JSON.stringify({
+        type: "deployment.unparked",
+        ...report,
+      } satisfies SidecarFrame),
+    );
+  };
+
   return {
     connect,
     close,
@@ -2449,5 +2475,6 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     sendSignalCorrelationRegister,
     pushWorkflowRunPack,
     sendDeploymentStopped,
+    sendDeploymentUnparked,
   };
 }

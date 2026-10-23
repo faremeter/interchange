@@ -39,6 +39,7 @@ import {
   createMemoryNdjsonStream,
   createSpawnObserver,
   createChangeNotifier,
+  waitForUpstreamPayload,
 } from "@intx/workflow-host/testing";
 import {
   assembleRunCredentialsSnapshot,
@@ -1349,6 +1350,32 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     expect(reported).toEqual([agentAddress]);
   });
 
+  test("refuses to park or unpark a deployment with no workflow child here", async () => {
+    const { router } = await buildMultistepFixture({
+      spawner: () => {
+        throw new Error("control must not spawn");
+      },
+    });
+    if (router.control === undefined)
+      throw new Error("router.control is undefined");
+    const command = {
+      type: "workflow.control",
+      requestId: "park-missing",
+      agentAddress: "run_parkmissing@example.com",
+      generation: 1,
+      runId: "run_parkmissing",
+      action: "park",
+      reason: "Park the deployment's workflow child",
+    } as const;
+
+    await expect(router.control(command)).rejects.toThrow(
+      "The deployment has no workflow child to park",
+    );
+    await expect(
+      router.control({ ...command, requestId: "unpark", action: "unpark" }),
+    ).rejects.toThrow("The deployment has no workflow child to park");
+  });
+
   test("registers a multistepMailRouter handler against the deployment address once spawn succeeds", async () => {
     // Drives the spawn handshake the same way the first multi-step
     // test does, but injects a `multistepMailRouter` and asserts the
@@ -2332,6 +2359,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
   function makeReadyDrivingSpawner(pidBase: number) {
     type Spawn = {
       env: Record<string, string>;
+      supervisorToChild: ReturnType<typeof createMemoryNdjsonStream>;
       childToSupervisor: ReturnType<typeof createMemoryNdjsonStream>;
       eventChildToSupervisor: ReturnType<typeof createMemoryFrameStream>;
       childSender?: ReturnType<typeof createControlChannelSender>;
@@ -2355,7 +2383,12 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         exited,
         resolveExit,
       } = createChildStreams();
-      spawns.push({ env, childToSupervisor, eventChildToSupervisor });
+      spawns.push({
+        env,
+        supervisorToChild,
+        childToSupervisor,
+        eventChildToSupervisor,
+      });
       spawnsChanges.notify();
       const handle: SubprocessHandle = {
         pid: pidBase + spawns.length,
@@ -2424,6 +2457,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         spawnsChanges.until(() => spawns.length >= count),
       envFor: (index: number): Record<string, string> | undefined =>
         spawns[index]?.env,
+      controlFor: (index: number) => spawns[index]?.supervisorToChild,
       async recycleRequestFor(index: number): Promise<void> {
         const sender = spawns[index]?.childSender;
         if (sender === undefined) {
@@ -2558,6 +2592,52 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // The deployment was re-spawned exactly once and its head is live again.
     expect(second.spawnCount()).toBe(1);
     expect(isRegistered(freshTransport, head)).toBe(true);
+  });
+
+  test("a parked deploy is marked parked and its child starts held, before and after a restart", async () => {
+    const dataDir = await createTempBaseDir("sidecar-parked-deploy-");
+    const head = "run_parkeddeploy@example.com";
+    const frame = singleStepFrame(head, "wf-parked-deploy");
+    if (frame.workflow === undefined) throw new Error("frame has no workflow");
+    frame.workflow.parked = true;
+    const startsHeld = async (
+      spawner: ReturnType<typeof makeReadyDrivingSpawner>,
+    ) => {
+      const control = spawner.controlFor(0);
+      if (control === undefined) throw new Error("no spawned child");
+      return (await waitForUpstreamPayload(control, "startup")).data.hold;
+    };
+    const parkedHere = (router: SidecarDeployRouter) =>
+      router.incarnations().find((incarnation) => incarnation.address === head)
+        ?.parked;
+
+    const first = makeReadyDrivingSpawner(9150);
+    const { router: routerA } = await buildMultistepFixture({
+      spawner: first.spawner,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+    });
+    const deployPromise = routerA.deploy(frame);
+    await first.driveReadyFor(0);
+    await deployPromise;
+    expect(await startsHeld(first)).toBe(true);
+    expect(parkedHere(routerA)).toBe(true);
+    expect(
+      (
+        await waitForRecord(dataDir, deriveWorkflowRunRepoId(head), () => true)
+      )?.["parked"],
+    ).toBe(true);
+
+    const second = makeReadyDrivingSpawner(9250);
+    const { router: routerB } = await buildMultistepFixture({
+      spawner: second.spawner,
+      transport: createInMemoryTransport(),
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+    });
+    const restorePromise = routerB.restoreWorkflowRuns();
+    await second.driveReadyFor(0);
+    await restorePromise;
+    expect(await startsHeld(second)).toBe(true);
+    expect(parkedHere(routerB)).toBe(true);
   });
 
   test("restore holds a record whose closure will not materialize as stopped and restores the rest", async () => {

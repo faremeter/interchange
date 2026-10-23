@@ -111,6 +111,19 @@ export type SidecarEventMap = {
     generation: number;
   };
 
+  /**
+   * Notification of whether the current generation's workflow child is
+   * parked, as the sidecar reports it: on every `hello` for each live
+   * incarnation it routes, and when an input wakes a parked child.
+   */
+  "deployment.parked": {
+    allocationId: string;
+    generation: number;
+    parked: boolean;
+    /** Why a parked child runs again, when an input woke it. */
+    reason?: string;
+  };
+
   /** Notification. Emitted for mail the Hub gives up on: recipients no
    * connection routes, un-acked mail it stops redelivering that no
    * dispatch row stands behind, and mail held for a sender key that never
@@ -194,6 +207,7 @@ export function createSidecarEmitter(): SidecarEventEmitter {
     "sidecar.disconnect": new Set(),
     "sidecar.allocated.connected": new Set(),
     "deployment.stopped": new Set(),
+    "deployment.parked": new Set(),
     "mail.outbound.undelivered": new Set(),
     "mail.persisted": new Set(),
     "mail.inbound.acknowledged": new Set(),

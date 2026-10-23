@@ -13,6 +13,7 @@ import {
   writeWorkflowRunRecord,
   deleteWorkflowRunRecord,
   markWorkflowRunRecord,
+  markWorkflowRunRecordParked,
   updateWorkflowRunRecordSources,
   withWorkflowRunRecord,
   scanWorkflowRunRecords,
@@ -748,6 +749,27 @@ describe("workflow run record store", () => {
     } finally {
       await fs.rm(dataDir, { recursive: true, force: true });
     }
+  });
+
+  test("a parked mark keeps the rest of the record and clears without trace", async () => {
+    const dataDir = await makeDataDir();
+    const anchorRunId = "parked-1";
+    expect(await markWorkflowRunRecordParked(dataDir, anchorRunId, true)).toBe(
+      false,
+    );
+
+    await writeWorkflowRunRecord(dataDir, anchorRunId, SINGLE_STEP, CIPHER);
+    expect(await markWorkflowRunRecordParked(dataDir, anchorRunId, true)).toBe(
+      true,
+    );
+    expect(await scanWorkflowRunRecords(dataDir, CIPHER)).toEqual([
+      { runId: anchorRunId, record: { ...SINGLE_STEP, parked: true } },
+    ]);
+
+    await markWorkflowRunRecordParked(dataDir, anchorRunId, false);
+    expect(await scanWorkflowRunRecords(dataDir, CIPHER)).toEqual([
+      { runId: anchorRunId, record: SINGLE_STEP },
+    ]);
   });
 
   test("marking leaves a record the boot scan would skip as it is", async () => {

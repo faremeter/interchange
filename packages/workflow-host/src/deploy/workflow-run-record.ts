@@ -104,6 +104,9 @@ const workflowRunRecordBase = {
   "state?": "'stopped' | 'tearing-down'",
   "retention?": DeploymentRetention,
   "error?": "string > 0",
+  // A live deployment whose child was parked: a restart respawns the child and
+  // parks it again.
+  "parked?": "true",
 } as const;
 
 /**
@@ -350,6 +353,29 @@ export async function markWorkflowRunRecord(
         null,
         2,
       ),
+      { mode: 0o600, requireDirectorySync: true },
+    );
+    return true;
+  });
+}
+
+/**
+ * Mark or clear a live deployment's parked child, keeping the rest of the
+ * record as it is. Returns false when the run has no record the boot scan
+ * would accept, so there is nothing a restart would park.
+ */
+export async function markWorkflowRunRecordParked(
+  dataDir: string,
+  runId: string,
+  parked: boolean,
+): Promise<boolean> {
+  return withWorkflowRunRecord(dataDir, runId, async (path) => {
+    const checked = await readWorkflowRunRecord(path, runId);
+    if (checked === null) return false;
+    const { parked: _replaced, ...record } = checked;
+    await writeFileAtomicDurable(
+      path,
+      JSON.stringify(parked ? { ...record, parked: true } : record, null, 2),
       { mode: 0o600, requireDirectorySync: true },
     );
     return true;

@@ -22,7 +22,9 @@ import {
   connectAllocated,
   createAllocatedRouter,
   createManualRetries,
+  createMockWs,
   deployReply,
+  helloFrame,
   parsedFrames,
   TEST_CONFIG,
   TEST_IDENTITY,
@@ -712,6 +714,105 @@ describe("SidecarRouter allocation control protocols", () => {
     await tick();
     expect(received).toBe(1);
     expect(finalityReads).toBe(0);
+  });
+
+  test("confirms a park once the Hub holds its history and keeps the route", async () => {
+    let hubRefTips: WorkflowRunRefTips = {
+      ...TEST_REF_TIPS,
+      "refs/heads/main": "b".repeat(40),
+    };
+    const router = createAllocatedRouter({
+      lookups: { readWorkflowRunRefTips: async () => hubRefTips },
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    const acknowledgePark = async () => {
+      const pending = router.parkAllocation(TEST_IDENTITY, CONTROL_TIMEOUT_MS);
+      await tick();
+      const frame = WorkflowControlFrame.assert(
+        framesOfType(ws, "workflow.control").at(-1),
+      );
+      expect(frame.action).toBe("park");
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "workflow.control.ack",
+          requestId: frame.requestId,
+          refTips: TEST_REF_TIPS,
+          wakeAt: "2026-10-02T00:00:00.000Z",
+        }),
+      );
+      return pending;
+    };
+
+    await expect(acknowledgePark()).rejects.toThrow(
+      WorkflowControlHistoryPendingError,
+    );
+    hubRefTips = TEST_REF_TIPS;
+    expect(await acknowledgePark()).toEqual({
+      wakeAt: "2026-10-02T00:00:00.000Z",
+    });
+    expect(router.getRoutableAddresses()).toContain(
+      TEST_IDENTITY.workflowRunAddress,
+    );
+  });
+
+  test("reports a park the worker refused", async () => {
+    const router = createAllocatedRouter();
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    const pending = router.parkAllocation(TEST_IDENTITY, CONTROL_TIMEOUT_MS);
+    await tick();
+    const frame = WorkflowControlFrame.assert(
+      framesOfType(ws, "workflow.control").at(-1),
+    );
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "workflow.control.ack",
+        requestId: frame.requestId,
+        error: "The deployment was not parked: the workflow run has ended",
+      }),
+    );
+    await expect(pending).rejects.toThrow(WorkflowControlRejectedError);
+  });
+
+  test("reports whether a routed worker's child is parked, on hello and on a wake", async () => {
+    const router = createAllocatedRouter();
+    const reports: { parked: boolean; reason?: string }[] = [];
+    router.events.on("deployment.parked", ({ parked, reason }) => {
+      reports.push({ parked, ...(reason !== undefined ? { reason } : {}) });
+    });
+    const ws = createMockWs();
+    router.handleOpen(ws);
+    router.handleMessage(
+      ws,
+      helloFrame(TEST_IDENTITY.sidecarId, [
+        {
+          address: TEST_IDENTITY.workflowRunAddress,
+          generation: TEST_IDENTITY.generation,
+          state: "live",
+          parked: true,
+        },
+      ]),
+    );
+    await tick();
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "deployment.unparked",
+        agentAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: TEST_IDENTITY.generation,
+        reason: "Woken by mail",
+      }),
+    );
+    await tick();
+    expect(reports).toEqual([
+      { parked: true },
+      { parked: false, reason: "Woken by mail" },
+    ]);
   });
 
   test("a stopped worker that reconnects without its address still delivers its history", async () => {

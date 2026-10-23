@@ -31,6 +31,7 @@ import {
   type AgentUndeployAckFrame,
   type AgentUndeployErrorFrame,
   type DeploymentStoppedFrame,
+  type DeploymentUnparkedFrame,
   type DeploymentRetention,
   type HostedIncarnation,
   type SidecarCapacity,
@@ -498,6 +499,12 @@ type WorkflowControlCommand = Omit<
   "type" | "requestId" | "generation" | "action"
 > & { action: "cancel" | "stop" };
 
+// What an acknowledged workflow control carries back to its caller.
+type WorkflowControlResult = {
+  readonly retention?: DeploymentRetention;
+  readonly wakeAt?: string;
+};
+
 export type SidecarAllocationRouter = {
   /** Opaque identity of the currently attached cleanup connection. */
   getCleanupConnection(target: AllocatedSidecarTarget): object | undefined;
@@ -517,6 +524,22 @@ export type SidecarAllocationRouter = {
   sendWorkflowControl(
     target: AllocatedSidecarTarget,
     command: WorkflowControlCommand,
+    timeoutMs: number,
+  ): Promise<void>;
+  /**
+   * Park the deployment's workflow child. Resolves with its earliest pending
+   * timer once the sidecar has stopped the child and the Hub holds the
+   * history the sidecar reported for it. Rejects with the sidecar's reason
+   * when the park was abandoned, and with `WorkflowControlHistoryPendingError`
+   * while that history is still arriving; a repeated park answers again.
+   */
+  parkAllocation(
+    target: AllocatedSidecarTarget,
+    timeoutMs: number,
+  ): Promise<{ readonly wakeAt?: string }>;
+  /** Abandon a park in progress, or run a parked workflow child again. */
+  unparkAllocation(
+    target: AllocatedSidecarTarget,
     timeoutMs: number,
   ): Promise<void>;
   /** Concurrent callers share the existing request and its deadline. */
@@ -1131,7 +1154,7 @@ export function createSidecarRouter(
   >(scheduleTimeout);
   const pendingWorkflowControls = new PendingTracker<
     string,
-    DeploymentRetention | undefined,
+    WorkflowControlResult,
     AllocatedSidecarTarget &
       Pick<WorkflowControlFrame, "agentAddress" | "action" | "runId"> & {
         terminal: boolean;
@@ -1742,6 +1765,7 @@ export function createSidecarRouter(
       case "signal.correlation.register":
       case "workflow.control.ack":
       case "deployment.stopped":
+      case "deployment.unparked":
       case "repo.pack.push":
       case "repo.pack.done":
         return false;
@@ -1948,6 +1972,9 @@ export function createSidecarRouter(
         return;
       case "deployment.stopped":
         handleDeploymentStopped(ws, frame);
+        return;
+      case "deployment.unparked":
+        handleDeploymentUnparked(ws, frame);
         return;
       default:
         return assertNever(frame);
@@ -2754,6 +2781,15 @@ export function createSidecarRouter(
     conn.send({ type: "welcome", routed });
     welcomedSockets.add(ws);
     notifySidecarInventory(sidecarId);
+    for (const incarnation of incarnations) {
+      const binding = reclaimed.get(incarnation.address);
+      if (binding === undefined) continue;
+      events.emit("deployment.parked", {
+        allocationId: binding.allocationId,
+        generation: binding.generation,
+        parked: incarnation.parked === true,
+      });
+    }
     // Live retained copies were validated in readHostedWork's bounded batches.
     // Stop them without repeating those queries or awaiting acknowledgements
     // inside the hello handler that must finish before processing the replies.
@@ -5473,10 +5509,15 @@ export function createSidecarRouter(
         connectionRetention.set(ws, retained);
         removeRoute(ws, entry.meta.agentAddress);
       }
-      if (entry.meta.action === "stop" || entry.meta.action === "retain") {
-        // A live stop waits for the worker's tips. Terminal controls follow the
-        // admission cutoff instead: later history cannot change an ended run.
-        // Both wait for earlier accepted writes before fencing further packs.
+      if (
+        entry.meta.action === "stop" ||
+        entry.meta.action === "retain" ||
+        entry.meta.action === "park"
+      ) {
+        // A live stop or a park waits for the worker's tips. Terminal controls
+        // follow the admission cutoff instead: later history cannot change an
+        // ended run. A stop and a retention wait for earlier accepted writes
+        // before fencing further packs; a parked worker keeps its routes.
         let unreceived: string | null = null;
         let unreceivedCause: unknown;
         if (
@@ -5535,13 +5576,22 @@ export function createSidecarRouter(
           );
           return;
         }
-        stoppedAllocations.set(entry.meta.allocationId, entry.meta.generation);
-        removeRoute(ws, entry.meta.agentAddress);
+        if (entry.meta.action !== "park") {
+          stoppedAllocations.set(
+            entry.meta.allocationId,
+            entry.meta.generation,
+          );
+          removeRoute(ws, entry.meta.agentAddress);
+        }
       }
-      pendingWorkflowControls.resolve(
-        frame.requestId,
-        entry.meta.action === "retain" ? frame.retention : undefined,
-      );
+      pendingWorkflowControls.resolve(frame.requestId, {
+        ...(entry.meta.action === "retain" && frame.retention !== undefined
+          ? { retention: frame.retention }
+          : {}),
+        ...(entry.meta.action === "park" && frame.wakeAt !== undefined
+          ? { wakeAt: frame.wakeAt }
+          : {}),
+      });
     }
   }
 
@@ -5609,6 +5659,24 @@ export function createSidecarRouter(
     });
   }
 
+  // A parked child an input woke. Only the current generation's report counts.
+  function handleDeploymentUnparked(
+    ws: WsHandle,
+    frame: DeploymentUnparkedFrame,
+  ): void {
+    const conn = connections.get(ws);
+    if (conn === undefined) return;
+    const binding = deploymentBinding(conn, frame.agentAddress);
+    if (binding?.generation !== frame.generation || !isFencedAsCurrent(binding))
+      return;
+    events.emit("deployment.parked", {
+      allocationId: binding.allocationId,
+      generation: binding.generation,
+      parked: false,
+      reason: frame.reason,
+    });
+  }
+
   // Describes the first ref whose reported tip the Hub does not hold, or
   // returns null when the Hub holds the worker's whole history.
   async function findUnreceivedWorkflowHistory(
@@ -5638,6 +5706,41 @@ export function createSidecarRouter(
     timeoutMs: number,
   ): Promise<void> {
     await requestWorkflowControl(target, command, timeoutMs);
+  }
+
+  async function parkAllocation(
+    target: AllocatedSidecarTarget,
+    timeoutMs: number,
+  ): Promise<{ readonly wakeAt?: string }> {
+    const { binding } = await getAllocatedConnection(target, "routing");
+    const result = await requestWorkflowControl(
+      target,
+      {
+        runId: binding.anchorRunId,
+        agentAddress: binding.workflowRunAddress,
+        action: "park",
+        reason: "Park the deployment's workflow child",
+      },
+      timeoutMs,
+    );
+    return result.wakeAt === undefined ? {} : { wakeAt: result.wakeAt };
+  }
+
+  async function unparkAllocation(
+    target: AllocatedSidecarTarget,
+    timeoutMs: number,
+  ): Promise<void> {
+    const { binding } = await getAllocatedConnection(target, "routing");
+    await requestWorkflowControl(
+      target,
+      {
+        runId: binding.anchorRunId,
+        agentAddress: binding.workflowRunAddress,
+        action: "unpark",
+        reason: "Unpark the deployment's workflow child",
+      },
+      timeoutMs,
+    );
   }
 
   async function retainAllocation(
@@ -5674,7 +5777,7 @@ export function createSidecarRouter(
       },
       timeoutMs,
       { terminal: true },
-    ).then((retention) => {
+    ).then(({ retention }) => {
       if (retention === undefined)
         throw new WorkflowControlRejectedError("Retention was not confirmed");
       return retention;
@@ -5691,9 +5794,9 @@ export function createSidecarRouter(
 
   async function requestWorkflowControl(
     target: AllocatedSidecarTarget,
-    command: WorkflowControlCommand,
+    command: Omit<WorkflowControlFrame, "type" | "requestId" | "generation">,
     timeoutMs: number,
-  ): Promise<DeploymentRetention | undefined> {
+  ): Promise<WorkflowControlResult> {
     let connection: Awaited<ReturnType<typeof getAllocatedConnection>>;
     try {
       connection = await getAllocatedConnection(target, "routing");
@@ -5719,7 +5822,7 @@ export function createSidecarRouter(
     command: Omit<WorkflowControlFrame, "type" | "requestId" | "generation">,
     timeoutMs: number,
     { terminal }: { terminal: boolean },
-  ): Promise<DeploymentRetention | undefined> {
+  ): Promise<WorkflowControlResult> {
     const { ws, conn, binding } = connection;
     if (
       command.agentAddress !== binding.workflowRunAddress ||
@@ -5732,7 +5835,7 @@ export function createSidecarRouter(
     const requestId = nextRequestId();
     const timeoutMessage = `Workflow control ${requestId} timed out`;
     const unconfirmedMessage = `Workflow control ${requestId} was acknowledged but not processed in time`;
-    return new Promise<DeploymentRetention | undefined>((resolve, reject) => {
+    return new Promise<WorkflowControlResult>((resolve, reject) => {
       let cancelProcessing: (() => void) | undefined;
       const settle = () => {
         cancelProcessing?.();
@@ -6133,6 +6236,8 @@ export function createSidecarRouter(
     undeployAllocation,
     getCleanupConnection,
     sendWorkflowControl,
+    parkAllocation,
+    unparkAllocation,
     retainAllocation,
     getAllocationRetention,
     getRetentionCandidates,
