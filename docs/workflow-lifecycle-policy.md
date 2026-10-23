@@ -205,7 +205,10 @@ unreconciled.
 A missed sidecar connect deadline is a different decision from that capacity-loss
 record. When the committed run log is one the workflow runtime would continue,
 and it contains a park the runtime would re-attach, the Hub replaces the worker
-and restores the run onto it. Otherwise it releases the allocation and logs the
+and restores the run onto it. The live runs of loop and onTrigger bodies and of
+child workflows are judged the same way, at any depth, against their own inline
+definitions; a live child whose definition is only a ref cannot be judged.
+Otherwise it releases the allocation and logs the
 anchor, the allocation, and the reason. Sleep with no signal park, a park that
 was not pushed to the committed ref, and an approval that was never flushed to
 the log stay on the release path: the first has no re-attachable park, and the

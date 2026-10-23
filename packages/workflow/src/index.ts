@@ -87,6 +87,7 @@ export {
   type ResumeResidual,
   type StepKindLookup,
   type ParkedRunClassification,
+  type ParkedRunMode,
   type ParkedRunVerdict,
   type RuntimeWorkflowRun,
   type Scheduler,

@@ -89,6 +89,7 @@ export type { ResumeResidual, StepKindLookup } from "./dag";
 export {
   classifyParkedRun,
   type ParkedRunClassification,
+  type ParkedRunMode,
   type ParkedRunVerdict,
 } from "./parked-run";
 

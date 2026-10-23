@@ -72,6 +72,7 @@ async function classifyAnchor(
       );
       return events.map(toWorkflowEvent);
     },
+    mode: "replace",
   });
 }
 
