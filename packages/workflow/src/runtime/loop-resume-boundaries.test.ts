@@ -3,6 +3,13 @@
 // clean between-iteration boundary, exhausted path, and the
 // post-routing window (skip sentinels durable, container StepCompleted
 // not yet landed).
+//
+// Each resume runs against a fresh repo store seeded with a trimmed parent
+// log and the ledger shared with the first run: a shared-ledger re-drive that
+// a consistent store never takes. The "crash" in each test name is that
+// trimmed log, and the ledger dedup that holds the effect counts is what these
+// tests pin. The `ActionPrimitive` doc comment states what a real crash resume
+// does.
 
 import { describe, test, expect } from "bun:test";
 
@@ -225,7 +232,7 @@ describe("loop resume boundaries (critique)", () => {
     expect(result2.terminalStatus).toBe("completed");
     expect(result2.outputs.consolidate).toBe("ran:consolidate");
     expect("escalate" in result2.outputs).toBe(false);
-    // whole loop re-driven from scratch; ledger holds to 3.
+    // whole loop re-driven from scratch; the shared ledger holds to 3.
     expect(effectRuns).toBe(3);
   });
 
@@ -300,7 +307,8 @@ describe("loop resume boundaries (critique)", () => {
     );
     expect(result2.terminalStatus).toBe("completed");
     expect(result2.outputs.consolidate).toBe("ran:consolidate");
-    // iter0 re-drives at this boundary; the ledger holds the effect count to 3.
+    // iter0 re-drives at this boundary; the shared ledger holds the effect
+    // count to 3.
     expect(effectRuns).toBe(3);
   });
 });

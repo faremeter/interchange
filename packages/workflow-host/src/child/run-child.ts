@@ -1863,16 +1863,12 @@ function buildRuntimeEnv(args: {
     loopIterationHost(spawnInput, args.onEvent);
 
   // Action handlers run against a per-run effect ledger. The ledger is
-  // IN-MEMORY, and that is correct -- not a shortcut -- on the deployed store:
-  // appends are immediate-durable single-ref commits, `runAction` flushes
-  // StepStarted durably before the effect, and the runtime never re-invokes a
-  // crashed action (a mid-action crash settles the step failed; a loop-body
-  // action leaves a non-empty child log that fails the iteration loud rather
-  // than re-running). So the ledger is never consulted across a crash; its
-  // cross-crash exactly-once rests on that store-consistency invariant, which
-  // the store layer owns. A durable ledger here would re-enforce a constraint
-  // a lower layer already guarantees. Within a single invocation the ledger
-  // still dedups a handler that performs the same effect twice.
+  // IN-MEMORY, and that is correct -- not a shortcut: the runtime never calls
+  // a crashed action's handler again, so no resume needs a record written
+  // before the crash. The `ActionPrimitive` doc comment states that rule, the
+  // store premise it rests on, and its exceptions; a durable ledger would not
+  // close any of them. Within a single invocation the ledger still dedups a
+  // handler that performs the same effect twice.
   const effects = createInMemoryEffectLedger();
   env.effects = effects;
   env.invokeAction = createDefaultActionInvoker(

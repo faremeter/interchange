@@ -1095,8 +1095,8 @@ function trimBeforeStep(
   throw new Error(`no StepStarted for step ${stepId}`);
 }
 
-describe("dispatch orchestrator: crash-safe exactly-once effects", () => {
-  test("holds exactly-once Phase-5 effects across a crash inside the loop body", async () => {
+describe("dispatch orchestrator: effects across a shared-ledger re-drive", () => {
+  test("runs each Phase-5 effect once across a loop-body re-drive with a shared ledger", async () => {
     const blobs = createInMemoryBlobSubstrate();
     const effects = inMemoryLedger();
     const effectRuns = noEffects();
@@ -1148,7 +1148,7 @@ describe("dispatch orchestrator: crash-safe exactly-once effects", () => {
 
   test("re-runs the Phase-5 effects across the same crash without ledger dedup", async () => {
     const blobs = createInMemoryBlobSubstrate();
-    // A ledger that never dedups, proving the exactly-once test above is not
+    // A ledger that never dedups, proving the run-once test above is not
     // vacuous: without the ledger, the re-driven iterations re-execute.
     const defeatedLedger: EffectLedger = {
       async lookup() {
@@ -1237,16 +1237,16 @@ function completingEnv(opts: {
 //           un-journaled one re-drives    [tests: both below]
 //   case-3  fix-agent crashed dirty (reset, re-run)  -> re-drive an incomplete
 //           agent step on resume; same mechanism as case-1  [test: re-drives ...]
-//   case-4  mid-rebuild, do not redo committed work  -> effect exactly-once
-//           across a loop-body re-drive   [test: the crash-safe block above]
+//   case-4  mid-rebuild, do not redo committed work  -> effect runs once
+//           across a loop-body re-drive   [test: the shared-ledger block above]
 //   case-5  commit / boundary-write                  -> the journal IS the
 //           boundary record; a re-driven commit effect dedups against the
-//           ledger  [test: re-enters plan, asserting commit stays exactly-once]
+//           ledger  [test: re-enters plan, asserting commit runs once]
 //   case-6  pre-plan                                 -> re-enter from a pre-work
 //           crash                          [test: re-enters plan ...]
-//   case-7  mid-Phase-5 fix loop (orphan build log)  -> effect exactly-once
+//   case-7  mid-Phase-5 fix loop (orphan build log)  -> effect runs once
 //           across a loop-body re-drive; the orphan-log cleanup is moot
-//                                          [test: the crash-safe block above]
+//                                          [test: the shared-ledger block above]
 //
 // Cases 3/4/5 are git-working-tree and commit-reachability reconstructions in
 // the host; under a journal they are moot, because the journal -- not the
@@ -1271,11 +1271,12 @@ describe("dispatch orchestrator: the seven resume cases via engine resume", () =
     const plannerRuns1 = agentRunsOf(trace, "planner");
     expect(plannerRuns1).toBe(1);
 
-    // Crash before `plan` ever started (case-6's "planning, no tasks" state).
-    // On resume `plan` re-drives. `captureBaseline` is kept by step-replay (its
-    // StepCompleted is journaled in the seed); the downstream `commit`/`build`
-    // effects are re-driven but dedup against the shared ledger. Either way no
-    // handler runs a second time.
+    // Trim the log back to before `plan` started (case-6's "planning, no
+    // tasks" state) and re-drive with the shared ledger. A consistent store
+    // keeps the later events, so production does not take this re-drive.
+    // `plan` re-drives. `captureBaseline` is kept by step-replay (its
+    // StepCompleted is journaled in the seed). The `commit`/`build` handlers
+    // run again, but their effects dedup against the shared ledger.
     const trimmed = trimBeforeStep(result1.events, "plan");
     const result2 = await runtimeRun(
       fullDemo,
@@ -1293,8 +1294,9 @@ describe("dispatch orchestrator: the seven resume cases via engine resume", () =
     // `plan` re-drove (the planner ran a second time) -- the engine re-enters
     // the pre-work state without a bespoke detector.
     expect(agentRunsOf(trace, "planner")).toBe(plannerRuns1 + 1);
-    // Every effect that had completed before the crash stays exactly-once: the
-    // journaled completions are kept, not re-executed (cases 2, 5).
+    // Each effect runs once: the journaled `captureBaseline` is kept, not
+    // re-executed (case 2), and the shared ledger dedups the re-driven
+    // `commit`/`build` effects (case 5).
     expect(effectRuns.baseline).toBe(1);
     expect(effectRuns.commit).toBe(1);
     expect(effectRuns.build).toBe(1);

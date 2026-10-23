@@ -346,21 +346,32 @@ into an `effect:<cap>` grant. A handler gets its credentials only inside
 that `run` awaits goes through the effect grant and the ledger. So `action()`
 refuses `credentials` without an `effect.requires` capability. The scope
 closes when `run` settles: after that, `credentials.resolve` rejects and every
-handle from the scope refuses use. A ledger hit does not call `run`, so a
-replay resolves no credential. This guards against an author mistake; it is
+handle from the scope refuses use. A ledger hit does not call `run`, so it
+resolves no credential. This guards against an author mistake; it is
 not an isolation boundary, because a handler can still call `fetch` itself.
 
 Where it lives today: `EffectContext`,
 `packages/workflow/src/runtime/env.ts`
 
-**20.** Three handler-author obligations the runtime cannot enforce: every
-external effect goes through `ctx.perform`; each effect is idempotent under
-its `effectId`, or atomic with its ledger record; and a returned output is
-deterministic given its effects' results, because a crash resume replays the
-handler BODY against ledger hits.
+**20.** A crash resume does not call an action's handler again. It skips a
+completed action, and it fails an action that was in flight with
+`crash-mid-invocation`, in a top-level run and in a body run. The effects of
+that handler possibly did not finish. The rule rests on a premise about the
+store and has known exceptions, and the effect ledger is not what stops a
+repeat. Two handler-author obligations follow:
+every external effect goes through `ctx.perform`, and an effect that a
+workflow can perform again is safe to repeat. The `ActionPrimitive` doc
+comment states the rule, the premise, the exceptions, the effect on `after`
+dependents and the obligations in full.
 
 Where it lives today: the `ActionPrimitive` doc comment,
-`packages/workflow/src/definition/primitives.ts`
+`packages/workflow/src/definition/primitives.ts` (enforced by `runAction` and
+`executeRunBody`, `packages/workflow/src/runtime/run.ts`; exercised by
+`packages/workflow/src/runtime/resume-mid-action-step.test.ts` and
+`packages/workflow/src/runtime/loop-action-crash-resume.test.ts`, and on a
+deployed sidecar by
+`tests/workflow-deploy/body-action-restart-effect-once.test.ts` and
+`tests/workflow-deploy/body-action-crash-mid-effect.test.ts`)
 
 ---
 
@@ -517,13 +528,18 @@ from the run's live material. Bind the body's handler in the root
 `credentialBindings`: deploy resolves only root bindings and refuses bindings
 on a body. The child run's grants keep a credential use grant only for a
 consumer the body runs: a tool factory, or an action that declares
-`credentials`.
+`credentials`. A body action follows the crash rule in entry 20, with the
+same premise and exceptions, because its body run resumes from its own log.
+So the body's in-memory ledger does not have to survive a restart.
 
 Where it lives today: `buildChildRunEnv`,
 `packages/workflow-host/src/child/substrate-factory.ts`;
 `createDefaultActionInvoker`, `packages/workflow/src/runlocal/run-local.ts`;
 `createLoopIterationHandle`,
-`packages/workflow/src/runtime/loop-iteration-handle.ts`
+`packages/workflow/src/runtime/loop-iteration-handle.ts` (a restart around an
+action in a top-level `childWorkflow` or `onTrigger` body is exercised by
+`tests/workflow-deploy/body-action-restart-effect-once.test.ts` and
+`tests/workflow-deploy/body-action-crash-mid-effect.test.ts`)
 
 **29.** A caller addresses an `onTrigger` body's `awaitSignal` by the
 `correlationId` on the container's relay `SignalAwaited`, together with the

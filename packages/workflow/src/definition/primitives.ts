@@ -260,13 +260,41 @@ export interface EffectSpec {
  * a handler function, mirroring how `step.agent` is resolved by
  * `invokeStep` -- kept a string so the definition stays hashable.
  *
+ * Crash behavior. The runtime calls the handler at most once for each
+ * action step of a workflow run. `runAction` commits the step's
+ * `StepStarted` before the call. On resume, the runtime skips a completed
+ * action, and it settles an in-flight action as `StepFailed` with the code
+ * `crash-mid-invocation` without a second call. The effects the handler
+ * started possibly did not finish. The rule applies to a top-level run and
+ * to a `childWorkflow`, `onTrigger` or loop body run, because each body run
+ * resumes from its own log.
+ *
+ * Premise. The store never loses a committed part of a run log that the
+ * runtime acted on, including a body run's log for as long as it keeps the
+ * parent's `ChildSpawned`. That holds across a crash or restart of the
+ * workflow process or the sidecar on the same sidecar data. Two known cases
+ * break it, and the handler can then run again: a host crash or power loss
+ * (the store does not fsync, so a committed `StepStarted` can be lost), and
+ * a replacement worker that resumes from the hub's copy of the log, which
+ * can lag the lost worker's local log.
+ *
+ * Repeats by design. A loop with `onIterationFailure: "tolerate"` runs a
+ * failed iteration's body again with the same input in a new body run, and
+ * an `onFailure` target can perform the same effect. The effect ledger does
+ * not stop either repeat, because its key holds the run and the step (see
+ * `EffectLedger`).
+ *
+ * Dependents. A failed action with no `onFailure`, including one that
+ * failed with `crash-mid-invocation`, does not stop the steps that list it
+ * in `after`: a failure is a terminal phase, and they still run. An action
+ * with `onFailure` routes the failure: the runtime skips those steps and
+ * runs the `onFailure` target.
+ *
  * Handler contract (the runtime cannot enforce these; the handler author
  * owns them): every external effect must run through the EffectContext's
- * `perform`, each effect must be idempotent keyed by its `effectId`
- * (check-then-act) or atomic with its ledger record, and the handler's
- * returned output must be deterministic given its effects' results --
- * on crash-resume the handler body is replayed against ledger hits and
- * its output reconstructed.
+ * `perform`, because a direct call bypasses the capability check and the
+ * effect grant; and an effect that a workflow can perform again must be
+ * safe to repeat (an idempotent external system, or check-then-act).
  */
 export interface ActionPrimitive extends PrimitiveBase {
   kind: "action";

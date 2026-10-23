@@ -46,7 +46,7 @@
 //      escalate is pruned.
 //   2. Exhaustion: the gate-critic never passes. The loop exhausts at its
 //      cap and routes to escalate; consolidate is pruned.
-//   3. Crash-resume exactly-once: a mid-loop crash re-drives the final
+//   3. Shared-ledger re-drive: a mid-loop crash re-drives the final
 //      amendment iteration through the real step-invoker on resume, and the
 //      shared effect ledger holds every effect to one execution. The stubbed
 //      loop-resume tests (packages/workflow runtime) cover this dedup
@@ -54,7 +54,7 @@
 //      re-driven through the production seam.
 //   4. Defeated-ledger probe: the identical crash under a ledger that never
 //      dedups re-executes the re-driven effect, so the effect count rises --
-//      proving scenario 3's exactly-once assertion is non-vacuous (the crash
+//      proving scenario 3's run-once assertion is non-vacuous (the crash
 //      truly re-drives the effect rather than replaying it from the log).
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -260,9 +260,9 @@ const amendBody = defineWorkflow({
       // output. The ledger dedups by hash(runId, stepId, effectId, input),
       // so a re-driven iteration must reconstruct the IDENTICAL input for
       // dedup to fire -- and a real agent's turn (timestamps, ids) is not
-      // stable across a re-drive. Deterministic effect input is what makes
-      // the crash-resume exactly-once guarantee hold; keying an effect on
-      // upstream agent output would silently defeat it.
+      // stable across a re-drive. Deterministic effect input is what lets
+      // the shared ledger dedup the re-drive; keying an effect on upstream
+      // agent output would silently defeat it.
       input: { from: "trigger.payload" },
       after: ["fix"],
     }),
@@ -583,11 +583,11 @@ function inMemoryLedger(): EffectLedger {
 }
 
 // A ledger whose `lookup` never hits (always a miss) but whose `record`
-// still stores. It defeats the exactly-once dedup: on resume, the
+// still stores. It defeats the shared-ledger dedup: on resume, the
 // re-driven iteration's `perform` sees no prior record and re-runs the
 // effect. Used only by the defeated-ledger probe, which asserts the
 // re-driven effect count goes strictly UP -- proving the primary
-// exactly-once assertion is non-vacuous (the crash point truly forces a
+// run-once assertion is non-vacuous (the crash point truly forces a
 // re-run that the real ledger dedups).
 function defeatedLedger(): EffectLedger {
   const store = new Map<string, { output: unknown }>();
@@ -1074,7 +1074,7 @@ describe("per-level pipeline with real agents", () => {
   // `rebuild` action runs again). The re-driven effect's effectKey looks up
   // the record the completed run already wrote; a real ledger dedups it, a
   // defeated one does not. Returns the effect-run counts before and after
-  // the resume so a caller can assert either exactly-once or the probe.
+  // the resume so a caller can assert either run-once or the probe.
   async function runCrashResume(
     effects: EffectLedger,
   ): Promise<{ afterRun1: number; afterResume: number; result2: RunResult }> {
@@ -1119,7 +1119,7 @@ describe("per-level pipeline with real agents", () => {
     return { afterRun1, afterResume: effectRuns.n, result2 };
   }
 
-  test("a mid-loop crash resumes through real agents to exactly-once effects", async () => {
+  test("a mid-loop crash re-drive through real agents runs each effect once under a shared ledger", async () => {
     const { afterRun1, afterResume, result2 } =
       await runCrashResume(inMemoryLedger());
 
@@ -1140,12 +1140,12 @@ describe("per-level pipeline with real agents", () => {
     expect(afterResume).toBe(afterRun1);
   });
 
-  test("the crash-resume exactly-once claim is non-vacuous under a defeated ledger", async () => {
+  test("the run-once claim is non-vacuous under a defeated ledger", async () => {
     // The identical crash, but the ledger never dedups. The re-driven
     // iteration's rebuild re-executes, so the effect count rises strictly
     // above the completed-run total. If it did not, the crash point would be
     // replaying an already-complete effect from the durable log rather than
-    // re-driving it, and the exactly-once assertion above would prove nothing.
+    // re-driving it, and the run-once assertion above would prove nothing.
     const { afterRun1, afterResume } = await runCrashResume(defeatedLedger());
     expect(afterResume).toBeGreaterThan(afterRun1);
   });

@@ -173,17 +173,18 @@ workflow threads `outputPath` from the trigger payload all the way through
 the loop's carry state rather than reading it
 from the process.
 
-Three rules the runtime cannot enforce, and that the handler author
-owns:
+A crash resume does not call the handler again. The `ActionPrimitive` doc
+comment in `@intx/workflow` states that rule, its premise and its
+exceptions. Two rules the runtime cannot enforce, and that the handler
+author owns:
 
 1. Every external effect goes through `ctx.perform`. Nothing stops a
-   handler calling `writeFile` directly — and one that does is invisible
-   to the capability check and replays on every resume.
-2. Each effect is idempotent under its `effectId`, or atomic with its
-   ledger record. On a crash resume the handler _body_ is replayed; only
-   the effects are deduplicated, by `effectId`, against the ledger.
-3. The returned output is deterministic given its effects' results,
-   because that replay reconstructs it.
+   handler calling `writeFile` directly — and one that does bypasses
+   the capability check and the effect grant.
+2. An effect that the workflow can perform again is safe to repeat: the
+   external system is idempotent for it, or the handler checks before it
+   acts. The same doc comment names when a workflow performs an effect
+   again.
 
 `ctx.perform` refuses any `capability` not listed in the action's
 `effect.requires`. The capability string is the author's own vocabulary;

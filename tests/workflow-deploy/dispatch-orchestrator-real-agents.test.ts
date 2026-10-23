@@ -2,15 +2,15 @@
 // driven by REAL @intx/agent agents through the production step-invoker seam.
 //
 // `tests/workflow/dispatch-orchestrator.test.ts` proves the full composition -- the
-// outer per-level loop, the Phase-5 verification loop, crash-resume exactly-once
-// and the seven resume cases -- with a stubbed `invokeStep`. This test proves
-// the SAME composition runs end-to-end with real agents: every agent step is a
-// genuine `defineAgent` reactor with an arktype-validated terminal tool, built
-// via `createAgent` and driven by deterministic mock inference from
-// `@intx/inference-testing`, wired through the production
-// `createWorkflowStepInvoker` into an in-process `runtimeRun(definition, env)` --
-// the same in-process harness the per-level real-agent sibling uses, NOT the
-// deploy hub/sidecar/subprocess harness.
+// outer per-level loop, the Phase-5 verification loop, a shared-ledger re-drive
+// that runs each effect once, and the seven resume cases -- with a stubbed
+// `invokeStep`. This test proves the SAME composition runs end-to-end with
+// real agents: every agent step is a genuine `defineAgent` reactor with an
+// arktype-validated terminal tool, built via `createAgent` and driven by
+// deterministic mock inference from `@intx/inference-testing`, wired through
+// the production `createWorkflowStepInvoker` into an in-process
+// `runtimeRun(definition, env)` -- the same in-process harness the per-level
+// real-agent sibling uses, NOT the deploy hub/sidecar/subprocess harness.
 //
 // The authored workflow mirrors the shape test: captureBaseline -> plan ->
 // parsePlan -> perLevelLoop(pickLevel -> implement map -> commit -> critique ->
@@ -40,7 +40,7 @@
 //      pruned and Phase 5 converges without running its attributor/fixer.
 //   2. Dirty-then-clean Phase 5: round 1 builds dirty, so the real attributor
 //      and Phase-5 fixer run, rebuild commits, and round 2 builds clean.
-//   3. Crash-resume exactly-once through Phase 5: a crash at the Phase-5 loop's
+//   3. Shared-ledger re-drive through Phase 5: a crash at the Phase-5 loop's
 //      first ChildSpawned on the dirty path re-drives the Phase-5 body -- its
 //      attributor and fixer re-run through the real step-invoker -- while the
 //      shared ledger holds build/rebuild to one execution. A defeated-ledger
@@ -317,8 +317,9 @@ const phase5Body = defineWorkflow({
       effect: { requires: ["git:commit"] },
       // Key the rebuild on the deterministic round payload, NEVER on the
       // fixer's agent output: the ledger dedups by hash(runId, stepId,
-      // effectId, input), and a re-driven agent's reply is not stable across a
-      // crash-resume, so keying the effect on it would silently defeat dedup.
+      // effectId, input), and a re-driven agent's reply is not stable across the
+      // shared-ledger re-drive, so keying the effect on it would silently defeat
+      // dedup.
       input: { from: "trigger.payload" },
       after: ["taskLoop"],
     }),
@@ -1168,11 +1169,13 @@ describe("dispatch orchestrator with real agents", () => {
   });
 
   // Crash right after the first Phase-5 iteration's body was spawned on the
-  // dirty path, then resume against a fresh repo store but the SAME blobs and
-  // effect ledger. The resumed run re-drives the Phase-5 body -- its attributor
-  // and fixer re-run through the real step-invoker -- while the build/rebuild
-  // effects dedup against the shared ledger. Returns the effect-run counts
-  // before and after the resume so a caller can assert exactly-once or the probe.
+  // dirty path, then re-drive against a fresh repo store but the SAME blobs and
+  // effect ledger. A consistent store keeps the body log, so production does
+  // not take this re-drive. The resumed run re-drives the Phase-5 body -- its
+  // attributor and fixer re-run through the real step-invoker -- while the
+  // build/rebuild effects dedup against the shared ledger. Returns the
+  // effect-run counts before and after the resume so a caller can assert
+  // run-once or the probe.
   async function runPhase5CrashResume(
     effects: EffectLedger,
   ): Promise<{ afterRun1: number; afterResume: number; result2: RunResult }> {
@@ -1221,7 +1224,7 @@ describe("dispatch orchestrator with real agents", () => {
     return { afterRun1, afterResume: effectRuns.n, result2 };
   }
 
-  test("a crash inside Phase 5 resumes through real agents to exactly-once effects", async () => {
+  test("a Phase-5 crash re-drive through real agents runs each effect once under a shared ledger", async () => {
     const { afterRun1, afterResume, result2 } =
       await runPhase5CrashResume(inMemoryLedger());
 
@@ -1240,7 +1243,7 @@ describe("dispatch orchestrator with real agents", () => {
     expect(afterResume).toBe(afterRun1);
   });
 
-  test("the Phase-5 crash-resume exactly-once claim is non-vacuous under a defeated ledger", async () => {
+  test("the Phase-5 run-once claim is non-vacuous under a defeated ledger", async () => {
     const { afterRun1, afterResume } =
       await runPhase5CrashResume(defeatedLedger());
     expect(afterResume).toBeGreaterThan(afterRun1);

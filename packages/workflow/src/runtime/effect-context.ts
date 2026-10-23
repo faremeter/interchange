@@ -3,7 +3,7 @@
 // The capability- and ledger-checked handle an action handler uses to
 // perform external effects. Both the runLocal host and the production
 // host build their action EffectContext through this factory so the
-// exactly-once contract -- authorize, then dedup per effect against the
+// per-effect contract -- authorize, then dedup per effect against the
 // ledger -- lives in one place rather than being re-implemented per
 // host.
 //
