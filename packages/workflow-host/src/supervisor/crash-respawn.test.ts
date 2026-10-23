@@ -343,6 +343,9 @@ function createMemoryInboxPrimitives(): InboxPrimitives & {
         prunedMessageIds: [],
       };
     },
+    async hasInboxEntries(_store, _principal, _repoId, address) {
+      return getOrCreate(address).inbox.size > 0;
+    },
     async replayProcessingToInbox(_store, _principal, _repoId, address) {
       replayCalls += 1;
       replayChanges.notify();

@@ -4049,6 +4049,28 @@ export async function readProcessingEntry(
   return null;
 }
 
+/**
+ * Whether `address` holds inbox entries no dispatch has taken yet. A
+ * point-in-time read of the working tree, like `readProcessingEntry`.
+ */
+export async function hasInboxEntries(
+  store: RepoStore,
+  _principal: Principal,
+  repoId: RepoId,
+  address: string,
+): Promise<boolean> {
+  const inboxDir = `${store.getRepoDir(repoId)}/${WORKFLOW_RUN_ADDRESSES_PREFIX}/${addressSegmentFor(address)}/${WORKFLOW_RUN_INBOX_DIR}`;
+  try {
+    return (await fs.promises.readdir(inboxDir)).some((filename) =>
+      filename.endsWith(".json"),
+    );
+  } catch (cause) {
+    if (cause instanceof Error && "code" in cause && cause.code === "ENOENT")
+      return false;
+    throw cause;
+  }
+}
+
 export type MarkConsumedArgs = {
   address: string;
   messageId: string;

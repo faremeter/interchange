@@ -592,7 +592,9 @@ ChannelSender` writes against; the event channel is the
    restart), so the supervisor sends `startup` on every spawn and
    respawn. The snapshot is the live top-level run's grants file, or
    empty when no run is live; the credential material is the
-   supervisor's live mirror. A channel whose first frame is anything
+   supervisor's live mirror. A parked deployment's child is started
+   with `hold` set, so a run it resumes starts no step before the
+   supervisor parks it again. A channel whose first frame is anything
    else crashes the child.
 4. **Self-discovery.** The child enumerates `runs/<runId>/` under
    the workflow-run repo's working tree, calls `resumeFromLog` for
@@ -616,6 +618,10 @@ ChannelSender` writes against; the event channel is the
      supervisor's recycle path drives the kill/respawn from outside
      the child, so the downstream `recycle` payload exists for
      symmetry with the protocol but is not the trigger.
+   - `signal.deliver` -> commit the signal as `SignalReceived`. A frame
+     with a `requestId`, like a `trigger.fire` with one, is answered with
+     `input.taken` once the commit settles, saying whether it committed,
+     so a park waits for it.
    - `hold` / `hold.lift` -> hold the runtime from starting any step
      the log has not started, or lift that hold. Running steps go on to
      their end or a park; a spawned child workflow or onTrigger body

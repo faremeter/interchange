@@ -921,6 +921,9 @@ function createMemoryInboxPrimitives(): MemoryInboxPrimitives {
         prunedMessageIds: [],
       };
     },
+    async hasInboxEntries(_store, _principal, _repoId, address) {
+      return getOrCreate(address).inbox.size > 0;
+    },
     async replayProcessingToInbox(_store, _principal, _repoId, address) {
       const state = getOrCreate(address);
       const replayedKeys: string[] = [];

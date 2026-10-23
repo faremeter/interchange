@@ -263,6 +263,54 @@ sees the crash-loop as a failed run. The commit lands before the latch's
 teardown resolves and before the host hears of the self-termination, so a
 host that reads the stopped deployment's history finds it.
 
+### Parking
+
+`park()` stops the child while every run waits and keeps the deployment:
+its mail subscription, address registration, and history stay as they are.
+
+1. The supervisor sends `hold`, so the child starts no step its log has
+   not started and makes what it buffered durable, and dispatch hands it
+   no new mail. Running steps go on to their end or to a park, and signals
+   are still delivered.
+2. Once nothing the supervisor drives is in flight, it judges the
+   committed log with the runtime's parked-run check in `park` mode:
+   nothing may be mid-invocation, in the top-level run or any live run it
+   spawned. A run that still has work to finish is judged again after the
+   child's next write. An input the child took counts as in flight until
+   the child answers it: `input.taken` answers each `trigger.fire` and
+   `signal.deliver` the supervisor sends, saying whether the child
+   committed the input. A dispatch waiting for its run to park or end does
+   not: its mail stays in `processing/` with the run, as it does across any
+   respawn (see Respawn policy). Mail the dispatch took but never handed
+   over, or that the child declined, wakes the child again, as mail in the
+   inbox does.
+3. When the check passes, the supervisor holds the child's further writes
+   and judges the log again, so the log it read is the log the stopped
+   child leaves. It records the correlations the child is parked on, sends
+   `shutdown`, and kills the child if it does not exit. The writes it held
+   are dropped; the runtime commits `StepStarted` before invoking anything,
+   so nothing they would have recorded had started.
+
+`park()` resolves with the earliest pending timer of a live run, if any.
+It rejects with `ParkRefusedError`, and the hold is lifted, when `unpark()`
+or a cancellation abandons it, the child restarts, the run ends, a run has
+input it has not acted on yet (its trigger, a signal, or a timer that just
+landed, which the run then handles, as it would input that arrives after the
+park), or the check cannot judge a run (a live child workflow whose
+definition is only a ref).
+
+A parked supervisor respawns its child through the recycle path for mail,
+a signal (delivered to the new child), a cancellation (committed first),
+its earliest pending timer, or `unpark()`, and then calls `onWake`. Mail
+still in the inbox once the child stops wakes it as arriving mail does. A
+hub re-establishment while parked re-registers the recorded correlations
+without a child.
+
+`spawn({ parked: true })` stands up a deployment its host holds parked.
+The child starts held, dispatch takes no mail while the park runs, and
+the park begins at once; `spawn` returns it as `parked` for the host to
+handle.
+
 ### Host wiring
 
 A host that wants to instantiate a supervisor constructs the
@@ -310,7 +358,8 @@ forking a process.
    plus the host-process scheduler singleton carried on
    `bindings.scheduler`).
 3. Read the supervisor's `startup` frame, which carries the grants and
-   credentials a resumed run needs before it moves on.
+   credentials a resumed run needs before it moves on, and whether to
+   start held.
 4. Self-discover in-flight runs by enumerating `runs/<runId>/` and
    resuming any whose log lacks a terminal event.
 5. Emit `ready` on the control channel.

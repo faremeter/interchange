@@ -1,11 +1,13 @@
 export {
   createWorkflowSupervisor,
+  ParkRefusedError,
   type CancelCommitInfo,
   type CancelRequestOpts,
   type DeliverCredentialsOpts,
   type DeliverSignalOpts,
   type DeliverSourcesOpts,
   type DrainOpts,
+  type ParkOutcome,
   type RecycleOpts,
   type SpawnOpts,
   type SpawnResult,

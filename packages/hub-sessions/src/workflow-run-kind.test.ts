@@ -13,6 +13,7 @@ import {
   classifyTerminalEvent,
   enqueueInbox,
   dequeueToProcessing,
+  hasInboxEntries,
   markConsumed,
   NotInProcessingError,
   parseEventSeq,
@@ -3005,6 +3006,27 @@ describe("claim-check API — enqueueInbox", () => {
       outcome: "already-present",
       reason: "processing",
     });
+  });
+});
+
+describe("claim-check API — hasInboxEntries", () => {
+  test("reports mail no dispatch has taken yet", async () => {
+    const { store, repoId, principal } =
+      await makeClaimCheckStore("cc-has-inbox-");
+    expect(await hasInboxEntries(store, principal, repoId, ADDRESS)).toBe(
+      false,
+    );
+    await enqueueInbox(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "msg-1",
+      receivedAt: 100,
+      mailAuditRef: { store: "audit", path: "mail/msg-1" },
+    });
+    expect(await hasInboxEntries(store, principal, repoId, ADDRESS)).toBe(true);
+    await dequeueToProcessing(store, principal, repoId, ADDRESS);
+    expect(await hasInboxEntries(store, principal, repoId, ADDRESS)).toBe(
+      false,
+    );
   });
 });
 

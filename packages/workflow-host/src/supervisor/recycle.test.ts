@@ -19,7 +19,7 @@ import { type } from "arktype";
 
 import { generateKeyPair } from "@intx/crypto";
 import { hexEncode } from "@intx/types";
-import type { RepoId } from "@intx/hub-sessions";
+import type { RepoId, RepoStore } from "@intx/hub-sessions";
 import { NotInProcessingError } from "@intx/hub-sessions";
 import {
   createMemoryFrameStream,
@@ -29,11 +29,13 @@ import {
   createChangeNotifier,
   waitForTriggerFireRunIds,
   waitForUpstreamPayload,
+  waitForUpstreamPayloads,
   createStubRepoStore,
 } from "@intx/workflow-host/testing";
 
 import {
   createWorkflowSupervisor,
+  ParkRefusedError,
   type InboxPrimitives,
   type MailBusBindings,
   type SignedPayload,
@@ -344,6 +346,9 @@ function createMemoryInboxPrimitives(): InboxPrimitives & {
         prunedMessageIds: [],
       };
     },
+    async hasInboxEntries(_store, _principal, _repoId, address) {
+      return getOrCreate(address).inbox.size > 0;
+    },
     async replayProcessingToInbox(_store, _principal, _repoId, address, opts) {
       const s = getOrCreate(address);
       const replayedKeys: string[] = [];
@@ -422,6 +427,7 @@ async function spawnSupervisor(opts: {
   ipcKeypair: { privateKey: Uint8Array; publicKey: Uint8Array };
   recyclePolicy?: RecyclePolicyBounds;
   overrides?: Partial<WorkflowSupervisorBindings>;
+  parked?: true;
 }) {
   await seedStepGrants(
     opts.baseDir,
@@ -447,6 +453,7 @@ async function spawnSupervisor(opts: {
     warmKeep: false,
 
     onInferenceEvent: () => undefined,
+    ...(opts.parked !== undefined ? { parked: opts.parked } : {}),
   });
   // Wait until the spawner has been invoked and the channelId is
   // known, then drive the synthetic child's `ready` frame.
@@ -2060,5 +2067,553 @@ describe("supervisor respawn: mail a resumed run took", () => {
 
       await owned.supervisor.shutdown();
     });
+  });
+});
+
+// A store that serves `files` as the committed tree, so the park check reads
+// the run log the test seeded.
+function withCommittedFiles(
+  base: RepoStore,
+  files: Map<string, string>,
+): RepoStore {
+  const encoder = new TextEncoder();
+  return new Proxy(base, {
+    get(target, prop, receiver) {
+      if (prop !== "openCommittedReads") {
+        return Reflect.get(target, prop, receiver);
+      }
+      return async () => ({
+        async listDir(relPath: string) {
+          const prefix = relPath === "" ? "" : `${relPath}/`;
+          const entries = new Map<string, "blob" | "tree">();
+          for (const filePath of files.keys()) {
+            if (!filePath.startsWith(prefix)) continue;
+            const [name, ...rest] = filePath.slice(prefix.length).split("/");
+            if (name === undefined) continue;
+            entries.set(name, rest.length === 0 ? "blob" : "tree");
+          }
+          return [...entries].map(([name, type]) => ({
+            name,
+            type,
+            oid: `${prefix}${name}`,
+          }));
+        },
+        async readBlobByOid(oid: string) {
+          const content = files.get(oid);
+          if (content === undefined) throw new Error(`no blob ${oid}`);
+          return encoder.encode(content);
+        },
+        async treeOid() {
+          return null;
+        },
+      });
+    },
+  });
+}
+
+function seedRunLog(
+  files: Map<string, string>,
+  runId: string,
+  events: readonly Record<string, unknown>[],
+): void {
+  events.forEach((event, index) => {
+    const seq = index + 1;
+    files.set(
+      `runs/${runId}/events/${String(seq)}.json`,
+      JSON.stringify({ seq, at: "2026-10-01T00:00:00.000Z", ...event }),
+    );
+  });
+}
+
+function stepStarted(stepId: string): Record<string, unknown> {
+  return { type: "StepStarted", stepId, attempt: 1, input: { ref: "x" } };
+}
+
+const parkSteps = {
+  gate: { kind: "awaitSignal", id: "gate" },
+  think: { kind: "step", id: "think" },
+  nap: { kind: "sleep", id: "nap" },
+};
+
+// Answer the `count`th correlation query on the child's channel. Every spawn
+// sends one of its own, so a park's query is the second.
+async function answerParkedQuery(
+  child: FakeChild,
+  childSender: ReturnType<typeof createControlChannelSender>,
+  count: number,
+): Promise<void> {
+  const queries = await waitForUpstreamPayloads(
+    child.supervisorToChild,
+    "parked-correlations.request",
+    count,
+  );
+  const query = queries[count - 1];
+  if (query === undefined) throw new Error("correlation query missing");
+  await childSender.send({
+    type: "parked-correlations.response",
+    data: { requestId: query.data.requestId, parked: [] },
+  });
+}
+
+// The fake child answers the park's correlation query and exits on its
+// `shutdown`, as the real child's control loop does.
+async function actAsParkingChild(
+  child: FakeChild,
+  childSender: ReturnType<typeof createControlChannelSender>,
+): Promise<void> {
+  await waitForUpstreamPayload(child.supervisorToChild, "hold");
+  await answerParkedQuery(child, childSender, 2);
+  await waitForUpstreamPayload(child.supervisorToChild, "shutdown");
+  child.eventChildToSupervisor.close();
+  child.childToSupervisor.close();
+  child.resolveExit?.(0);
+}
+
+describe("supervisor park and wake", () => {
+  async function setup(opts: {
+    events: readonly Record<string, unknown>[];
+    onWake?: (info: { reason: string }) => void;
+    inboxPrimitives?: InboxPrimitives;
+    parked?: true;
+    beforeSpawn?: (baseDir: string) => Promise<void>;
+  }) {
+    const baseDir = await makeTempDir("park-");
+    await opts.beforeSpawn?.(baseDir);
+    const ipcKeypair = await generateKeyPair();
+    const mailBus = createMockMailBus();
+    const tracker = createSpawnTracker({});
+    const files = new Map<string, string>();
+    seedRunLog(files, RUN, opts.events);
+    const { supervisor, firstSender, spawnResult } = await spawnSupervisor({
+      baseDir,
+      tracker,
+      mailBus,
+      ipcKeypair,
+      ...(opts.parked !== undefined ? { parked: opts.parked } : {}),
+      overrides: {
+        repoStore: withCommittedFiles(
+          createStubRepoStore(baseDir, { writeTree: true }),
+          files,
+        ),
+        definitionSteps: parkSteps,
+        ...(opts.onWake !== undefined ? { onWake: opts.onWake } : {}),
+        ...(opts.inboxPrimitives !== undefined
+          ? { inboxPrimitives: opts.inboxPrimitives }
+          : {}),
+      },
+    });
+    const first = tracker.children[0];
+    if (first === undefined) throw new Error("first child missing");
+    return {
+      supervisor,
+      firstSender,
+      first,
+      tracker,
+      mailBus,
+      ipcKeypair,
+      spawnResult,
+      baseDir,
+      files,
+    };
+  }
+
+  test("stops the child once its run waits, and mail respawns it", async () => {
+    const woke = Promise.withResolvers<string>();
+    const { supervisor, firstSender, first, tracker, mailBus, ipcKeypair } =
+      await setup({
+        events: [
+          runStarted(),
+          stepStarted("gate"),
+          { type: "SignalAwaited", stepId: "gate", signalName: "gate" },
+        ],
+        onWake: ({ reason }) => woke.resolve(reason),
+      });
+
+    const parked = supervisor.park();
+    await actAsParkingChild(first, firstSender);
+    expect(await parked).toEqual({});
+    expect(tracker.totalSpawns).toBe(1);
+
+    mailBus.deliver(
+      "run_deployment-x@example.com",
+      new TextEncoder().encode("wake up"),
+    );
+    await tracker.awaitChildren(2);
+    const second = tracker.children[1];
+    if (second === undefined) throw new Error("second child missing");
+    const secondSender = await driveReady(second, ipcKeypair);
+    await answerParkedQuery(second, secondSender, 1);
+    expect(await woke.promise).toBe("mail");
+
+    await supervisor.shutdown();
+  });
+
+  // Mail queued behind the dispatch the park waited for, or enqueued as the
+  // park began, is in the inbox but was never dispatched.
+  const waitingInboxes: [string, InboxPrimitives["hasInboxEntries"]][] = [
+    ["holds mail", async () => true],
+    [
+      "cannot be read",
+      async () => {
+        throw new Error("the inbox is unreadable");
+      },
+    ],
+  ];
+  test.each(waitingInboxes)(
+    "a child whose inbox %s once it stops is respawned",
+    async (_case, hasInboxEntries) => {
+      const woke = Promise.withResolvers<string>();
+      const { supervisor, firstSender, first, tracker, ipcKeypair } =
+        await setup({
+          events: [
+            runStarted(),
+            stepStarted("gate"),
+            { type: "SignalAwaited", stepId: "gate", signalName: "gate" },
+          ],
+          onWake: ({ reason }) => woke.resolve(reason),
+          inboxPrimitives: {
+            ...createMemoryInboxPrimitives(),
+            hasInboxEntries,
+          },
+        });
+
+      const parked = supervisor.park();
+      await actAsParkingChild(first, firstSender);
+      expect(await parked).toEqual({});
+
+      await tracker.awaitChildren(2);
+      const second = tracker.children[1];
+      if (second === undefined) throw new Error("second child missing");
+      const secondSender = await driveReady(second, ipcKeypair);
+      await answerParkedQuery(second, secondSender, 1);
+      expect(await woke.promise).toBe("mail");
+
+      await supervisor.shutdown();
+    },
+  );
+
+  test("a parked spawn holds its child and parks it before dispatching mail to it", async () => {
+    const woke = Promise.withResolvers<string>();
+    const inbox = createMemoryInboxPrimitives();
+    const dequeued: number[] = [];
+    const { supervisor, firstSender, first, tracker, ipcKeypair, spawnResult } =
+      await setup({
+        events: [
+          runStarted(),
+          stepStarted("gate"),
+          { type: "SignalAwaited", stepId: "gate", signalName: "gate" },
+        ],
+        onWake: ({ reason }) => woke.resolve(reason),
+        parked: true,
+        inboxPrimitives: {
+          ...inbox,
+          async dequeueToProcessing(...args) {
+            dequeued.push(tracker.totalSpawns);
+            return inbox.dequeueToProcessing(...args);
+          },
+          // Mail that arrived while the deployment was parked.
+          async hasInboxEntries() {
+            return true;
+          },
+        },
+      });
+    const startup = await waitForUpstreamPayload(
+      first.supervisorToChild,
+      "startup",
+    );
+    expect(startup.data.hold).toBe(true);
+    const parked = spawnResult.parked;
+    if (parked === undefined) throw new Error("the spawn started no park");
+
+    await actAsParkingChild(first, firstSender);
+    expect(await parked).toEqual({});
+    expect(dequeued).toEqual([]);
+
+    await tracker.awaitChildren(2);
+    const second = tracker.children[1];
+    if (second === undefined) throw new Error("second child missing");
+    const secondStartup = await waitForUpstreamPayload(
+      second.supervisorToChild,
+      "startup",
+    );
+    expect(secondStartup.data.hold).toBeUndefined();
+    const secondSender = await driveReady(second, ipcKeypair);
+    await answerParkedQuery(second, secondSender, 1);
+    expect(await woke.promise).toBe("mail");
+
+    await supervisor.shutdown();
+  });
+
+  // The dispatch for a mail waits until its run parks or ends, which a held
+  // run never does; the park goes ahead once the child has taken the mail.
+  test("a park pauses a run that acted on its mail, without waiting for the mail's dispatch", async () => {
+    const inbox = createMemoryInboxPrimitives();
+    const { supervisor, firstSender, first, mailBus, files } = await setup({
+      events: [],
+      inboxPrimitives: inbox,
+    });
+    mailBus.deliver(ADDRESS, new TextEncoder().encode("hello"));
+    const fire = await waitForUpstreamPayload(
+      first.supervisorToChild,
+      "trigger.fire",
+    );
+    const requestId = fire.data.requestId;
+    if (requestId === undefined)
+      throw new Error("the trigger has no requestId");
+    // The child starts the run, finishes its first step, and holds the next.
+    seedRunLog(files, RUN, [
+      { ...runStarted(), consumedMessageId: fire.data.messageId },
+      stepStarted("think"),
+      {
+        type: "StepCompleted",
+        stepId: "think",
+        attempt: 1,
+        output: { ref: "x" },
+      },
+    ]);
+
+    const parked = supervisor.park();
+    await waitForUpstreamPayload(first.supervisorToChild, "hold");
+    await firstSender.send({
+      type: "input.taken",
+      data: { requestId, committed: true },
+    });
+    await actAsParkingChild(first, firstSender);
+    expect(await parked).toEqual({});
+    // The stopped run keeps its mail rather than consuming it.
+    expect(inbox.messageIds(ADDRESS)).toEqual({
+      inbox: [],
+      processing: [fire.data.messageId],
+      consumed: [],
+    });
+
+    await supervisor.shutdown();
+  });
+
+  test("a park is refused while a run has taken a mail it has not acted on", async () => {
+    const { supervisor, firstSender, first, mailBus, files, tracker } =
+      await setup({ events: [] });
+    mailBus.deliver(ADDRESS, new TextEncoder().encode("hello"));
+    const fire = await waitForUpstreamPayload(
+      first.supervisorToChild,
+      "trigger.fire",
+    );
+    const requestId = fire.data.requestId;
+    if (requestId === undefined)
+      throw new Error("the trigger has no requestId");
+    // The child committed RunStarted, and the hold keeps its first step.
+    seedRunLog(files, RUN, [
+      { ...runStarted(), consumedMessageId: fire.data.messageId },
+    ]);
+
+    const parked = supervisor.park();
+    await waitForUpstreamPayload(first.supervisorToChild, "hold");
+    await firstSender.send({
+      type: "input.taken",
+      data: { requestId, committed: true },
+    });
+    await expect(parked).rejects.toBeInstanceOf(ParkRefusedError);
+    await waitForUpstreamPayload(first.supervisorToChild, "hold.lift");
+    expect(first.killSignals).toEqual([]);
+    expect(tracker.totalSpawns).toBe(1);
+
+    await supervisor.shutdown();
+  });
+
+  test("a park after the child declined a mail wakes the deployment for it", async () => {
+    const woke = Promise.withResolvers<string>();
+    const { supervisor, firstSender, first, tracker, mailBus, ipcKeypair } =
+      await setup({
+        events: [],
+        onWake: ({ reason }) => woke.resolve(reason),
+      });
+    mailBus.deliver(ADDRESS, new TextEncoder().encode("hello"));
+    const fire = await waitForUpstreamPayload(
+      first.supervisorToChild,
+      "trigger.fire",
+    );
+    const requestId = fire.data.requestId;
+    if (requestId === undefined)
+      throw new Error("the trigger has no requestId");
+
+    const parked = supervisor.park();
+    await waitForUpstreamPayload(first.supervisorToChild, "hold");
+    await firstSender.send({
+      type: "input.taken",
+      data: { requestId, committed: false },
+    });
+    await actAsParkingChild(first, firstSender);
+    expect(await parked).toEqual({});
+    await tracker.awaitChildren(2);
+    const second = tracker.children[1];
+    if (second === undefined) throw new Error("second child missing");
+    const secondSender = await driveReady(second, ipcKeypair);
+    await answerParkedQuery(second, secondSender, 1);
+    expect(await woke.promise).toBe("mail");
+
+    await supervisor.shutdown();
+  });
+
+  test("a park while a dispatch waits for the run's next input wakes the deployment for that mail", async () => {
+    const woke = Promise.withResolvers<string>();
+    const inbox = createMemoryInboxPrimitives();
+    const dequeued = Promise.withResolvers<undefined>();
+    const { supervisor, firstSender, first, tracker, mailBus, ipcKeypair } =
+      await setup({
+        events: [
+          runStarted(),
+          stepStarted("gate"),
+          { type: "SignalAwaited", stepId: "gate", signalName: "gate" },
+        ],
+        onWake: ({ reason }) => woke.resolve(reason),
+        // The run is live, but the supervisor knows no input channel for it.
+        beforeSpawn: (baseDir) => writeWorkingRunLog(baseDir, [runStarted()]),
+        inboxPrimitives: {
+          ...inbox,
+          async dequeueToProcessing(...args) {
+            const entry = await inbox.dequeueToProcessing(...args);
+            if (entry !== null) dequeued.resolve(undefined);
+            return entry;
+          },
+        },
+      });
+    mailBus.deliver(ADDRESS, new TextEncoder().encode("follow-up"));
+    await dequeued.promise;
+
+    const parked = supervisor.park();
+    await actAsParkingChild(first, firstSender);
+    expect(await parked).toEqual({});
+    await tracker.awaitChildren(2);
+    const second = tracker.children[1];
+    if (second === undefined) throw new Error("second child missing");
+    const secondSender = await driveReady(second, ipcKeypair);
+    await answerParkedQuery(second, secondSender, 1);
+    expect(await woke.promise).toBe("mail");
+    // The first child was never handed the mail.
+    expect(
+      parseControlFrameTypes(first.supervisorToChild.flushed()).filter(
+        (frameType) =>
+          frameType === "trigger.fire" || frameType === "signal.deliver",
+      ),
+    ).toEqual([]);
+
+    await supervisor.shutdown();
+  });
+
+  test("reports the earliest pending timer, and wakes for it", async () => {
+    const fireAt = new Date(Date.now() + 50).toISOString();
+    const woke = Promise.withResolvers<string>();
+    const { supervisor, firstSender, first, tracker, ipcKeypair } = await setup(
+      {
+        events: [
+          runStarted(),
+          stepStarted("nap"),
+          { type: "TimerSet", timerId: "t1", fireAt, stepId: "nap" },
+        ],
+        onWake: ({ reason }) => woke.resolve(reason),
+      },
+    );
+
+    const parked = supervisor.park();
+    await actAsParkingChild(first, firstSender);
+    expect(await parked).toEqual({ wakeAt: fireAt });
+
+    await tracker.awaitChildren(2);
+    const second = tracker.children[1];
+    if (second === undefined) throw new Error("second child missing");
+    await driveReady(second, ipcKeypair);
+    expect(await woke.promise).toBe("timer");
+
+    await supervisor.shutdown();
+  });
+
+  test("a signal respawns a parked child and is delivered to the new one", async () => {
+    const { supervisor, firstSender, first, tracker, ipcKeypair } = await setup(
+      {
+        events: [
+          runStarted(),
+          stepStarted("gate"),
+          { type: "SignalAwaited", stepId: "gate", signalName: "gate" },
+        ],
+      },
+    );
+    const parked = supervisor.park();
+    await actAsParkingChild(first, firstSender);
+    await parked;
+
+    const delivered = supervisor.deliverSignal({
+      runId: RUN,
+      signalName: "gate",
+      signalId: "sig-1",
+      payload: { approved: true },
+    });
+    await tracker.awaitChildren(2);
+    const second = tracker.children[1];
+    if (second === undefined) throw new Error("second child missing");
+    await driveReady(second, ipcKeypair);
+    await delivered;
+    const signal = await waitForUpstreamPayload(
+      second.supervisorToChild,
+      "signal.deliver",
+    );
+    expect(signal.data.signalId).toBe("sig-1");
+    expect(parseSignalDeliverRunIds(first.supervisorToChild.flushed())).toEqual(
+      [],
+    );
+
+    await supervisor.shutdown();
+  });
+
+  test("a park goes on once the child commits a signal delivered before it", async () => {
+    const { supervisor, firstSender, first } = await setup({
+      events: [
+        runStarted(),
+        stepStarted("gate"),
+        { type: "SignalAwaited", stepId: "gate", signalName: "gate" },
+      ],
+    });
+    await supervisor.deliverSignal({
+      runId: RUN,
+      signalName: "gate",
+      signalId: "sig-1",
+      payload: { approved: true },
+    });
+    const signal = await waitForUpstreamPayload(
+      first.supervisorToChild,
+      "signal.deliver",
+    );
+    const requestId = signal.data.requestId;
+    if (requestId === undefined) throw new Error("the signal has no requestId");
+
+    const parked = supervisor.park();
+    await waitForUpstreamPayload(first.supervisorToChild, "hold");
+    await firstSender.send({
+      type: "input.taken",
+      data: { requestId, committed: true },
+    });
+    await answerParkedQuery(first, firstSender, 2);
+    await waitForUpstreamPayload(first.supervisorToChild, "shutdown");
+    first.eventChildToSupervisor.close();
+    first.childToSupervisor.close();
+    first.resolveExit?.(0);
+    expect(await parked).toEqual({});
+
+    await supervisor.shutdown();
+  });
+
+  test("unpark abandons a park whose run is mid-step and lifts the hold", async () => {
+    const { supervisor, first, tracker } = await setup({
+      events: [runStarted(), stepStarted("think")],
+    });
+
+    const parked = supervisor.park();
+    await waitForUpstreamPayload(first.supervisorToChild, "hold");
+    await supervisor.unpark();
+    await expect(parked).rejects.toBeInstanceOf(ParkRefusedError);
+    await waitForUpstreamPayload(first.supervisorToChild, "hold.lift");
+    expect(first.killSignals).toEqual([]);
+    expect(tracker.totalSpawns).toBe(1);
+
+    await supervisor.shutdown();
   });
 });

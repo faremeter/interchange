@@ -21,7 +21,8 @@
 //      and the substrate-shaped seams (signal channel; scheduler is a
 //      host-process singleton supplied by the binary).
 //   3. Read the supervisor's `startup` frame, which carries the grants
-//      and credentials a resumed run needs before it moves on.
+//      and credentials a resumed run needs before it moves on, and
+//      whether to start held.
 //   4. Discover any in-flight runs via the workflow-run repo's `runs/`
 //      subdirectory and call `runtimeRun` with `resumeFromEvents` for
 //      each one whose log lacks a terminal event.
@@ -860,6 +861,7 @@ export async function runWorkflowChild(
   }
   credentialsRef.current = startup.value.data.snapshot;
   credentialMaterialRef.current = startup.value.data.delivery;
+  if (startup.value.data.hold === true) drainController.holdSteps();
 
   // Self-discovery before announcing `ready`. The runtime body must
   // see every in-flight run before the supervisor starts forwarding
@@ -1151,6 +1153,12 @@ async function handleControlPayload(
       // (that would block the control loop).
       if (ctx.runsInFlight.has(payload.data.runId)) {
         ctx.triggeredRunIds.push(payload.data.runId);
+        void answerInputTaken(
+          ctx.upstreamSender,
+          payload.data.requestId,
+          payload.data.runId,
+          false,
+        );
         return false;
       }
       // The supervisor resolved the inbound mail to the run's input (the
@@ -1196,6 +1204,14 @@ async function handleControlPayload(
         triggerPayload,
       });
       ctx.runsInFlight.set(payload.data.runId, handle);
+      void handle.started.then((committed) =>
+        answerInputTaken(
+          ctx.upstreamSender,
+          payload.data.requestId,
+          payload.data.runId,
+          committed,
+        ),
+      );
       // Fan the run's terminal status back to the supervisor over the
       // upstream control channel. The supervisor's dispatch loop and
       // any armed drainTimeout accumulator subscribe through the
@@ -1276,8 +1292,16 @@ async function handleControlPayload(
       // re-discovered -- must not commit an orphan `SignalReceived` to a log no
       // awaiter is tailing. `runsInFlight` is the one-driver authority on which
       // runs this child drives.
+      const acknowledge = (committed: boolean) =>
+        answerInputTaken(
+          ctx.upstreamSender,
+          payload.data.requestId,
+          payload.data.runId,
+          committed,
+        );
       if (!ctx.runsInFlight.has(payload.data.runId)) {
         logger.warn`signal.deliver for run ${payload.data.runId} which is not in flight; dropping (signalName=${payload.data.signalName})`;
+        void acknowledge(false);
         return false;
       }
       // Land the signal as a `SignalReceived` commit on the run's
@@ -1316,6 +1340,7 @@ async function handleControlPayload(
         clock: ctx.clock,
       });
       void (async () => {
+        let committed = false;
         try {
           await transientSignalChannel.deliver(
             payload.data.signalName,
@@ -1325,11 +1350,13 @@ async function handleControlPayload(
               ? [payload.data.correlationId]
               : []),
           );
+          committed = true;
         } catch (cause) {
           const reason = cause instanceof Error ? cause.message : String(cause);
           logger.warn`signal.deliver commit failed runId=${payload.data.runId} signalName=${payload.data.signalName}: ${reason}`;
         } finally {
           await transientSignalChannel.stop();
+          await acknowledge(committed);
         }
       })();
       return false;
@@ -1354,6 +1381,9 @@ async function handleControlPayload(
     }
     case "cancel.prepared": {
       throw new Error("workflow-child received an upstream cancellation reply");
+    }
+    case "input.taken": {
+      throw new Error("workflow-child received an upstream input reply");
     }
     case "drain": {
       // The supervisor's `drain` control mail flips the controller's
@@ -1906,6 +1936,28 @@ function buildRuntimeEnv(args: {
     args.bindings.actionCredentials(args.credentialWiring),
   );
   return env;
+}
+
+/**
+ * Tell the supervisor whether the input a `trigger.fire` or `signal.deliver`
+ * carried is committed, when the frame asked. Best-effort like the other
+ * upstream sends: a reply is lost only with the control channel, and until
+ * the child is replaced every park of this deployment waits for it, which
+ * `unpark` abandons.
+ */
+async function answerInputTaken(
+  upstreamSender: ControlChannelSender,
+  requestId: string | undefined,
+  runId: string,
+  committed: boolean,
+): Promise<void> {
+  if (requestId === undefined) return;
+  await upstreamSender
+    .send({ type: "input.taken", data: { requestId, committed } })
+    .catch((cause: unknown) => {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      logger.warn`input.taken reply failed runId=${runId}: ${message}`;
+    });
 }
 
 /**

@@ -212,6 +212,9 @@ function createGatedInboxPrimitives(): {
         prunedMessageIds: [],
       };
     },
+    async hasInboxEntries(_store, _principal, _repoId, address) {
+      return getOrCreate(address).inbox.size > 0;
+    },
     async replayProcessingToInbox(_store, _principal, _repoId, address) {
       await gate;
       const s = getOrCreate(address);

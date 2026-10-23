@@ -42,6 +42,7 @@ export {
 } from "./adapters/spawn-child";
 export {
   createWorkflowSupervisor,
+  ParkRefusedError,
   assembleCredentialsSnapshot,
   isErrnoNotFound,
   commitCancelRequested,
@@ -84,6 +85,7 @@ export {
   type RecyclePolicy,
   type RecyclePolicyBounds,
   type RecyclePolicyOpts,
+  type ParkOutcome,
   type SignedPayload,
   type SpawnOpts,
   type SpawnResult,

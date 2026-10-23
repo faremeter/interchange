@@ -226,7 +226,7 @@ export type DeriveMailAuditRef = (
  * Inbox claim-check primitives the supervisor's mail-arrival path
  * and dispatch loop reach into. Production wires this against the
  * concrete `enqueueInbox` / `dequeueToProcessing` / `markConsumed`
- * / `replayProcessingToInbox` functions exported from
+ * / `replayProcessingToInbox` / `hasInboxEntries` functions exported from
  * `@intx/hub-sessions`; tests inject a deterministic in-memory
  * stub so the supervisor's dispatch loop is observable without a
  * real git substrate.
@@ -261,6 +261,12 @@ export interface InboxPrimitives {
     address: string,
     opts?: ReplayProcessingToInboxOpts,
   ): Promise<ReplayProcessingToInboxResult>;
+  hasInboxEntries(
+    store: SubstrateRepoStore,
+    principal: Principal,
+    repoId: RepoId,
+    address: string,
+  ): Promise<boolean>;
 }
 
 /**
@@ -345,6 +351,18 @@ export interface WorkflowSupervisorBindings {
     phase: "stopped" | "crash-looping";
     reason: string;
   }) => void;
+  /**
+   * The deployment definition's `steps`, as the frozen projection carries
+   * them. `park` judges every live run against them before it stops the
+   * child; absent, `park` refuses.
+   */
+  definitionSteps?: Readonly<Record<string, unknown>>;
+  /**
+   * Fired once a parked supervisor has a running child again, whatever woke
+   * it: mail, a signal, a cancellation, its earliest pending timer, or
+   * `unpark`.
+   */
+  onWake?: (info: { reason: string }) => void;
   /**
    * Per-run grants source the dispatch loop consults before it forwards a
    * `trigger.fire`. Unlike `onSuspensionRegister` (best-effort, fire-and-

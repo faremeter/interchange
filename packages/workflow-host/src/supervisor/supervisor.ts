@@ -54,6 +54,7 @@ import { generateKeyPair } from "@intx/crypto";
 import {
   enqueueInbox as defaultEnqueueInbox,
   dequeueToProcessing as defaultDequeueToProcessing,
+  hasInboxEntries as defaultHasInboxEntries,
   markConsumed as defaultMarkConsumed,
   scanRunsForBoot,
   readWorkflowRunLifecycle,
@@ -93,7 +94,12 @@ import {
   type OutboundMessage,
   type SearchQuery,
 } from "@intx/types/runtime";
-import type { CancelOrigin } from "@intx/workflow";
+import {
+  classifyParkedRun,
+  isTerminalRunPhase,
+  resumeFromLog,
+  type CancelOrigin,
+} from "@intx/workflow";
 
 import {
   createControlChannelSender,
@@ -123,6 +129,7 @@ import {
   InvalidMailError,
 } from "../adapters/mail-part-store";
 import { mergeCredentialDelivery } from "../child/credential-cell";
+import { createWorkflowRunRepoStore } from "../adapters/repo-store";
 import {
   createSubstrateMailboxStore,
   MAILBOX_INBOX_DIR,
@@ -305,7 +312,9 @@ export interface WorkflowSupervisor {
    *
    * Throws when the supervisor is not in a phase where it can address
    * the child (idle / stopping / stopped); the caller is responsible
-   * for serializing delivery against `spawn` completion.
+   * for serializing delivery against `spawn` completion. A park past its
+   * final check settles first, and a parked child is respawned and the
+   * signal delivered to the new one.
    */
   deliverSignal(opts: DeliverSignalOpts): Promise<void>;
   /**
@@ -313,7 +322,8 @@ export interface WorkflowSupervisor {
    * agent. Mirrors `deliverSignal`: the supervisor is the single producer
    * of `sources-updated` control frames, and delivery is phase-guarded to
    * starting/running so a frame is never written into a recycling child's
-   * closing pipe. Throws otherwise.
+   * closing pipe. While parked it returns at once, since the respawn reads
+   * the host's persisted sources; any other phase throws.
    */
   deliverSources(opts: DeliverSourcesOpts): Promise<void>;
   /**
@@ -341,7 +351,8 @@ export interface WorkflowSupervisor {
    * Re-register every correlation the child is currently parked on by
    * querying it for its parked correlations and re-emitting each through
    * `onSuspensionRegister`. Recovers a `park.notify` register the hub may have
-   * missed while it was down at suspend time.
+   * missed while it was down at suspend time. While parked it re-sends the
+   * correlations the stopped child was parked on.
    *
    * Best-effort and safe to call at any time, including concurrently. Unlike
    * `deliverSignal`/`deliverSources`, which throw when the child is not
@@ -358,6 +369,35 @@ export interface WorkflowSupervisor {
    * round-tripping the substrate. Returns `null` before spawn.
    */
   getCredentialsSnapshot(): CredentialsSnapshot | null;
+  /**
+   * Stop the child once every run waits, keeping the deployment's mail
+   * subscription and address registration. The child is held from starting
+   * new steps and dispatch hands it no new mail; running steps go on to their
+   * end or a park, and signals are still delivered. Once nothing is
+   * mid-invocation by the parked-run check, the child's writes are held for a
+   * final check and the child is stopped. Resolves when the child is stopped;
+   * rejects with `ParkRefusedError` when the park is abandoned or refused: by
+   * `unpark`, a cancellation, the child restarting, the run ending, a run
+   * holding input it has not acted on, a run the check cannot judge, or
+   * definition steps the bindings do not carry.
+   *
+   * A parked supervisor respawns its child for mail, a signal, a
+   * cancellation, its earliest pending timer, or `unpark`.
+   */
+  park(): Promise<ParkOutcome>;
+  /** Abandon a park in progress, or respawn a parked child. */
+  unpark(): Promise<void>;
+}
+
+/** A park that stopped the child. */
+export type ParkOutcome = {
+  /** Earliest pending timer of a live run: the supervisor wakes for it. */
+  wakeAt?: string;
+};
+
+/** A park that was refused or abandoned. */
+export class ParkRefusedError extends Error {
+  override name = "ParkRefusedError";
 }
 
 export type SpawnOpts = {
@@ -385,6 +425,11 @@ export type SpawnOpts = {
    * sink the host exposes; the supervisor is the in-host translator.
    */
   onInferenceEvent: (event: EventPayload) => void;
+  /**
+   * The deployment was parked: the child starts held and is parked again
+   * before any mail is dispatched to it, so nothing it resumes runs.
+   */
+  parked?: true;
 };
 
 export type SpawnResult = {
@@ -394,6 +439,8 @@ export type SpawnResult = {
   channelId: string;
   /** Initial credentials snapshot pushed to the child. */
   credentialsSnapshot: CredentialsSnapshot;
+  /** The park a `parked` spawn started, which the caller owns. */
+  parked?: Promise<ParkOutcome>;
 };
 
 export type CancelRequestOpts = {
@@ -990,6 +1037,7 @@ export function createWorkflowSupervisor(
     dequeueToProcessing: defaultDequeueToProcessing,
     markConsumed: defaultMarkConsumed,
     replayProcessingToInbox: defaultReplayProcessingToInbox,
+    hasInboxEntries: defaultHasInboxEntries,
   };
   const deriveMailAuditRef: DeriveMailAuditRef =
     bindings.deriveMailAuditRef ?? defaultInProcessMailAuditRef;
@@ -1068,6 +1116,33 @@ export function createWorkflowSupervisor(
   // caller owns the contention read because the two paths diverge on
   // contention (recycle throws, crash-respawn declines silently).
   let respawnInProgress = false;
+  // A park in progress. The child is held and dispatch is paused while the
+  // supervisor waits for the parked-run check; `fence` queues the child's
+  // repository writes during the final check, so the log it read is the log
+  // the stopped child leaves behind.
+  type Parking = {
+    readonly generation: number;
+    readonly abandon: AbortController;
+    readonly outcome: Promise<ParkOutcome>;
+    readonly settled: Promise<void>;
+    progress: PromiseWithResolvers<undefined>;
+    fence: SubstrateWriteRequest[] | null;
+  };
+  type SubstrateWriteRequest = Extract<
+    ControlPayload,
+    { type: "substrate.write.request" }
+  >["data"];
+  let parking: Parking | null = null;
+  // While parked: the correlations the stopped child was parked on, re-sent
+  // on a hub re-establishment, and the timer for its earliest pending timer.
+  let parked: {
+    correlations: ParkedCorrelations;
+    outcome: ParkOutcome;
+    wakeTimer: unknown;
+  } | null = null;
+  let waking: Promise<void> | null = null;
+  let deliveringSignals = 0;
+  let dispatching = false;
   // Monotonic child-cohort generation, bumped atomically with each
   // transition to `running` (initial spawn and every respawn's
   // `installNewChild`). The exit-watcher captures the generation it was
@@ -1147,8 +1222,12 @@ export function createWorkflowSupervisor(
   // respawn/crash-loop path a clean death takes -- a violation that emits a
   // garbage frame just before dying must not divert to `stopped` while a
   // clean SIGKILL respawns. In any other phase the owning lifecycle path
-  // (spawn handshake, recycle reap, shutdown) owns teardown.
+  // (spawn handshake, recycle reap, park, shutdown) owns teardown.
   function onChildCrash(reason: string): void {
+    if (state.phase === "parked") {
+      logger.info`workflow-process channel ended after the child was parked: ${reason}`;
+      return;
+    }
     if (state.phase === "running") {
       logger.error`workflow-process channel crash on live cohort; forcing child down to respawn: ${reason}`;
       state.handle.kill();
@@ -1629,6 +1708,12 @@ export function createWorkflowSupervisor(
       }
       throw cause;
     }
+    // The mail is durable in the inbox; the respawned child dispatches it.
+    if (state.phase === "parked") {
+      void wakeParked("mail").catch((cause: unknown) => {
+        logger.error`waking a parked child for mail failed: ${cause instanceof Error ? cause.message : String(cause)}`;
+      });
+    }
   }
 
   async function enqueueInboundMail(rawMessage: Uint8Array): Promise<void> {
@@ -1699,6 +1784,17 @@ export function createWorkflowSupervisor(
     cohortBroadcaster: TerminalBroadcaster,
   ): Promise<void> {
     for await (const payload of iter) {
+      if (payload.type === "input.taken") {
+        inputCommits.delete(payload.data.requestId);
+        if (payload.data.requestId === dispatchRequestId) {
+          // A declined input leaves its mail untaken, so a park wakes the
+          // child for it as it would for mail still in the inbox.
+          if (payload.data.committed) untakenMessageId = null;
+          dispatchRequestId = null;
+        }
+        noteParkProgress();
+        continue;
+      }
       if (payload.type === "cancel.prepared") {
         const pending = pendingCancellations.get(payload.data.requestId);
         if (pending?.broadcaster === cohortBroadcaster)
@@ -1722,6 +1818,10 @@ export function createWorkflowSupervisor(
         return;
       }
       if (payload.type === "substrate.write.request") {
+        if (parking !== null && parking.fence !== null) {
+          parking.fence.push(payload.data);
+          continue;
+        }
         // Run the write off the iterator's loop so the iterator can
         // continue draining other upstream frames (notably the
         // substrate.merge.response that resolves the merge round-trip
@@ -1919,6 +2019,17 @@ export function createWorkflowSupervisor(
   >();
   let cancellationSeq = 0;
   const cancellationCommits = new Set<Promise<CancelCommitInfo>>();
+  // Inputs sent to the child that it has not committed yet. Its writes are
+  // dropped when a park stops it, so a park waits for these.
+  const inputCommits = new Set<string>();
+  let inputSeq = 0;
+  // The mail the dispatch took out of the inbox, until the child commits it.
+  // A park that stops the child with one here wakes it again for that mail.
+  let untakenMessageId: string | null = null;
+  let dispatchRequestId: string | null = null;
+  // The dispatch is waiting on its run or on a park, neither of which a park
+  // has to wait out.
+  let dispatchWaiting = false;
   // Mail a resumed run took before its child was replaced. The dispatch that
   // took it is gone, so it is consumed when the run next parks or ends.
   const ownedMessages = new Set<string>();
@@ -1933,6 +2044,7 @@ export function createWorkflowSupervisor(
     detachedWrites.add(write);
     void write.then(() => {
       detachedWrites.delete(write);
+      noteParkProgress();
     });
   }
 
@@ -1961,6 +2073,7 @@ export function createWorkflowSupervisor(
     for (const pending of pendingCancellations.values())
       pending.resolve(`cohort aborted: ${reason}`);
     pendingCancellations.clear();
+    inputCommits.clear();
     for (const [requestId, entry] of pendingMerges) {
       pendingMerges.delete(requestId);
       entry.resolve({ ok: false, reason: `cohort aborted: ${reason}` });
@@ -2085,6 +2198,11 @@ export function createWorkflowSupervisor(
   }
 
   async function reEmitParkedCorrelations(): Promise<void> {
+    // A parked child cannot be asked; re-send what it was parked on.
+    if (state.phase === "parked") {
+      if (parked !== null) registerParkedCorrelations(parked.correlations);
+      return;
+    }
     // No-op (NOT throw) when the child is not addressable. `deliverSignal`
     // throws on non-running/starting (including recycling) because it points a
     // write at the dying child's closing pipe and wants the caller to retry;
@@ -2095,7 +2213,16 @@ export function createWorkflowSupervisor(
       logger.info`reEmitParkedCorrelations: child not addressable (phase=${state.phase}); skipping`;
       return;
     }
-    const controlSender = state.controlSender;
+    const outcome = await queryParkedCorrelations(state.controlSender);
+    // A failed query is re-driven by the next re-establishment.
+    if (outcome !== null) registerParkedCorrelations(outcome);
+  }
+
+  // Ask the child which correlations its runs are parked on. `null` when the
+  // query fails, times out, or the cohort is torn down before it answers.
+  async function queryParkedCorrelations(
+    controlSender: ControlChannelSender,
+  ): Promise<ParkedCorrelations | null> {
     const requestId = `pc-${String((parkedQuerySeq += 1))}`;
     const responded = new Promise<ParkedCorrelations | null>((resolve) => {
       pendingParkedQueries.set(requestId, { settle: resolve });
@@ -2128,25 +2255,32 @@ export function createWorkflowSupervisor(
       if (timeoutHandle !== null) clearTimeout(timeoutHandle);
       const message = cause instanceof Error ? cause.message : String(cause);
       logger.warn`reEmitParkedCorrelations query failed: ${message}; re-registration retries on the next re-establishment`;
-      return;
+      return null;
     }
     if (timeoutHandle !== null) clearTimeout(timeoutHandle);
     // `timeout` (watchdog fired) or `null` (cohort torn down before the child
     // answered): nothing to re-emit; the next re-establishment re-drives.
-    if (outcome === "timeout" || outcome === null) return;
-    for (const parked of outcome) {
-      if (parked.parkKind === "input") {
+    if (outcome === "timeout") return null;
+    return outcome;
+  }
+
+  function registerParkedCorrelations(outcome: ParkedCorrelations): void {
+    for (const entry of outcome) {
+      if (entry.parkKind === "input") {
+        // A parked supervisor has no cohort to route input to; the respawned
+        // child's own re-emit registers the channel.
+        if (state.phase === "parked") continue;
         // Register cohort membership BEFORE the input channel so the run is
         // never a channel-without-cohort entry: the dispatch loop's routing
         // hygiene drops exactly such entries, and a live resumed run must not
         // be mistaken for a dead one and have its channel deleted.
-        cohortRunIds.add(parked.runId);
-        runInputChannels.set(parked.runId, {
-          correlationId: parked.correlationId,
+        cohortRunIds.add(entry.runId);
+        runInputChannels.set(entry.runId, {
+          correlationId: entry.correlationId,
           parkKind: "input",
         });
       } else {
-        registerSuspension({ ...parked, parkKind: "approval" });
+        registerSuspension({ ...entry, parkKind: "approval" });
       }
     }
   }
@@ -2961,7 +3095,9 @@ export function createWorkflowSupervisor(
       // Nothing has sent on this channel yet: the host reaches a supervisor
       // only once `spawn` resolves, and the dispatch loop and upstream pump
       // start after `ready`.
-      await sendChildStartup(wired.wiring.controlSender, credentialsSnapshot);
+      await sendChildStartup(wired.wiring.controlSender, credentialsSnapshot, {
+        hold: opts.parked === true,
+      });
 
       // Replay any orphaned `processing/` entries back to `inbox/`
       // BEFORE the dispatch loop's first dequeue. A crash mid-dispatch
@@ -3227,10 +3363,14 @@ export function createWorkflowSupervisor(
         });
       }
 
+      // Started before the dispatch loop's first dequeue, which waits on the
+      // processing replay, so no mail reaches the held child.
+      const parked = opts.parked === true ? park() : undefined;
       return {
         pid: readyInfo.childPid,
         channelId,
         credentialsSnapshot,
+        ...(parked !== undefined ? { parked } : {}),
       };
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
@@ -3343,15 +3483,23 @@ export function createWorkflowSupervisor(
     runId: string,
     payload: Mail,
   ): Promise<string> {
-    await sender.send({
-      type: "trigger.fire",
-      data: {
-        runId,
-        messageId,
-        receivedAt,
-        payload,
-      },
-    });
+    const requestId = nextInputRequest();
+    dispatchRequestId = requestId;
+    try {
+      await sender.send({
+        type: "trigger.fire",
+        data: {
+          runId,
+          messageId,
+          receivedAt,
+          requestId,
+          payload,
+        },
+      });
+    } catch (cause) {
+      inputCommits.delete(requestId);
+      throw cause;
+    }
     cohortRunIds.add(runId);
     return runId;
   }
@@ -3443,11 +3591,12 @@ export function createWorkflowSupervisor(
    * authorize until the next trigger's barrier. Unwired, the deploy-time
    * snapshot is the only grants source. The credential material is
    * the live mirror, read at send time so a rotation delivered earlier is
-   * reflected.
+   * reflected. `hold` starts the child held, for a supervisor spawned parked.
    */
   async function sendChildStartup(
     sender: ControlChannelSender,
     credentialsSnapshot: CredentialsSnapshot,
+    { hold }: { hold: boolean } = { hold: false },
   ): Promise<void> {
     let snapshot: CredentialsSnapshot | null = credentialsSnapshot;
     if (bindings.onRunStart !== undefined) {
@@ -3480,6 +3629,7 @@ export function createWorkflowSupervisor(
                 })),
               },
         delivery: currentCredentialDelivery,
+        ...(hold ? { hold: true as const } : {}),
       },
     });
   }
@@ -3580,6 +3730,7 @@ export function createWorkflowSupervisor(
     const envelope = dequeued.envelope;
     const runId = deriveWorkflowRunId(bindings.deploymentMailAddress);
     const messageId = envelope.messageId;
+    untakenMessageId = messageId;
     let rejection:
       | {
           code: string;
@@ -3713,18 +3864,27 @@ export function createWorkflowSupervisor(
             // a terminal the resumed run reaches right after applying the signal
             // is not missed; the park watcher is armed inside
             // waitForRunTerminalOrPark.
+            if (!(await deliveryAllowed(cohortAbort))) break;
             const iter = broadcaster.source(runId)[Symbol.asyncIterator]();
             let waitEntered = false;
             try {
-              await sender.send({
-                type: "signal.deliver",
-                data: {
-                  runId,
-                  signalName: signalName(inputChannel.correlationId),
-                  signalId: envelope.messageId,
-                  payload: prepared.mail,
-                },
-              });
+              const requestId = nextInputRequest();
+              dispatchRequestId = requestId;
+              await sender
+                .send({
+                  type: "signal.deliver",
+                  data: {
+                    runId,
+                    signalName: signalName(inputChannel.correlationId),
+                    signalId: envelope.messageId,
+                    payload: prepared.mail,
+                    requestId,
+                  },
+                })
+                .catch((cause: unknown) => {
+                  inputCommits.delete(requestId);
+                  throw cause;
+                });
               // Invalidate the cached input channel: its correlation is now
               // consumed by this delivery, so the NEXT mail must not reuse it.
               // The resumed run re-parks on a FRESH correlation (a new
@@ -3750,13 +3910,17 @@ export function createWorkflowSupervisor(
               // in processing/ for replayProcessingToInbox to re-deliver; after
               // it, the resumed run owns the mail and the supervisor consumes it
               // once the run next parks or ends. On cohort abort the wait returns
-              // and the post-loop guard skips markConsumed.
+              // and the post-loop guard skips markConsumed. A park does not wait
+              // out this wait, for the same reason: once the child has committed
+              // the signal, the run owns the mail.
               waitEntered = true;
-              await waitForRunTerminalOrPark(
-                iter,
-                cohortAbort.signal,
-                runId,
-                sinceGen,
+              await whileDispatchWaits(
+                waitForRunTerminalOrPark(
+                  iter,
+                  cohortAbort.signal,
+                  runId,
+                  sinceGen,
+                ),
               );
             } finally {
               // waitForRunTerminalOrPark finalizes the iterator it consumes; the
@@ -3792,6 +3956,7 @@ export function createWorkflowSupervisor(
             // before-fire contract), so a terminal that lands while
             // forwardDispatchedEntry is in flight would be lost and the wait
             // would hang to the backstop.
+            if (!(await deliveryAllowed(cohortAbort))) break;
             const iter = broadcaster.source(runId)[Symbol.asyncIterator]();
             let waitEntered = false;
             try {
@@ -3815,13 +3980,16 @@ export function createWorkflowSupervisor(
               // committed, so a crash before RunStarted leaves the entry in
               // processing/ for replayProcessingToInbox to re-deliver. On cohort
               // abort the wait returns and the post-loop guard skips
-              // markConsumed.
+              // markConsumed. As on the signal path, a park does not wait this
+              // out once the child has committed `RunStarted`.
               waitEntered = true;
-              await waitForRunTerminalOrPark(
-                iter,
-                cohortAbort.signal,
-                runId,
-                sinceGen,
+              await whileDispatchWaits(
+                waitForRunTerminalOrPark(
+                  iter,
+                  cohortAbort.signal,
+                  runId,
+                  sinceGen,
+                ),
               );
             } finally {
               // waitForRunTerminalOrPark finalizes the iterator it consumes; the
@@ -3835,12 +4003,11 @@ export function createWorkflowSupervisor(
             }
             break;
           }
+          // The mail waits here undelivered, so a park that stops the child
+          // leaves it untaken and the child is woken again for it.
           const iter = broadcaster.source(runId)[Symbol.asyncIterator]();
-          const outcome = await waitForRunTerminalOrPark(
-            iter,
-            cohortAbort.signal,
-            runId,
-            sinceGen,
+          const outcome = await whileDispatchWaits(
+            waitForRunTerminalOrPark(iter, cohortAbort.signal, runId, sinceGen),
           );
           if (outcome === "aborted") break;
           if (outcome === "terminal") {
@@ -4061,7 +4228,14 @@ export function createWorkflowSupervisor(
       // dispatchOne would await the fresh, unresolved promise and strand that
       // mail until some later wake.
       const wake = dispatchWake.promise;
+      const attempt = parking;
+      if (attempt !== null) {
+        // A park takes no new mail; a parked child is respawned for it.
+        await Promise.race([attempt.settled, abortedPromise(cohortAbort)]);
+        continue;
+      }
       let dispatched: boolean;
+      dispatching = true;
       try {
         dispatched = await dispatchOne(sender, cohortAbort, broadcaster);
       } catch (cause) {
@@ -4072,25 +4246,41 @@ export function createWorkflowSupervisor(
         // not wedge the deployment -- but the loop pauses on the
         // wake so we do not busy-spin against a persistent fault.
         dispatched = false;
+      } finally {
+        dispatching = false;
+        // A stopped child leaves its untaken mail for the wake.
+        if (!cohortAbort.signal.aborted) {
+          untakenMessageId = null;
+          dispatchRequestId = null;
+        }
+        noteParkProgress();
       }
       if (dispatched) continue;
       if (cohortAbort.signal.aborted) return;
-      const abortPromise = new Promise<void>((resolve) => {
-        if (cohortAbort.signal.aborted) {
-          resolve();
-          return;
-        }
-        cohortAbort.signal.addEventListener("abort", () => resolve(), {
-          once: true,
-        });
-      });
-      await Promise.race([wake, abortPromise]);
+      await Promise.race([wake, abortedPromise(cohortAbort)]);
     }
+  }
+
+  function abortedPromise(controller: AbortController): Promise<void> {
+    return new Promise<void>((resolve) => {
+      if (controller.signal.aborted) {
+        resolve();
+        return;
+      }
+      controller.signal.addEventListener("abort", () => resolve(), {
+        once: true,
+      });
+    });
   }
 
   async function requestCancel(
     opts: CancelRequestOpts,
   ): Promise<CancelCommitInfo> {
+    const attempt = parking;
+    if (attempt !== null) {
+      abandonPark(attempt, "a cancellation was requested");
+      await attempt.settled;
+    }
     if (
       state.phase === "stopping" ||
       state.phase === "stopped" ||
@@ -4119,6 +4309,15 @@ export function createWorkflowSupervisor(
       }
     };
     const cohort = state;
+    if (cohort.phase === "parked") {
+      // A parked child cannot settle the run; the respawned one applies the
+      // committed cancellation when it resumes.
+      const committed = await commitCancellation();
+      void wakeParked("cancel").catch((cause: unknown) => {
+        logger.error`waking a parked child for a cancellation failed: ${cause instanceof Error ? cause.message : String(cause)}`;
+      });
+      return committed;
+    }
     if (
       cohort.phase !== "starting" &&
       cohort.phase !== "running" &&
@@ -4210,6 +4409,13 @@ export function createWorkflowSupervisor(
   async function performShutdown(opts: ShutdownOptions): Promise<void> {
     const prior = state;
     state = { phase: "stopping" };
+    if (parking !== null) {
+      abandonPark(parking, "the workflow supervisor is shutting down");
+    }
+    if (parked !== null) {
+      if (parked.wakeTimer !== null) readyClearTimer(parked.wakeTimer);
+      parked = null;
+    }
     for (const retry of ownedConsumeRetries) readyClearTimer(retry);
     ownedConsumeRetries.clear();
     // shutdownInternal is designed to be TOTAL: when a child is up it must
@@ -4232,7 +4438,8 @@ export function createWorkflowSupervisor(
     if (
       prior.phase === "starting" ||
       prior.phase === "running" ||
-      prior.phase === "recycling"
+      prior.phase === "recycling" ||
+      prior.phase === "parked"
     )
       childrenToStop.add(prior.handle);
     const childTerminations: Promise<void>[] = [];
@@ -4279,7 +4486,8 @@ export function createWorkflowSupervisor(
       if (
         prior.phase === "starting" ||
         prior.phase === "running" ||
-        prior.phase === "recycling"
+        prior.phase === "recycling" ||
+        prior.phase === "parked"
       ) {
         prior.terminalCohortAbort.abort();
         // Reject every pending merge round-trip and park-notify waiter
@@ -4328,7 +4536,8 @@ export function createWorkflowSupervisor(
       if (
         (prior.phase === "starting" ||
           prior.phase === "running" ||
-          prior.phase === "recycling") &&
+          prior.phase === "recycling" ||
+          prior.phase === "parked") &&
         prior.replayDone !== null
       ) {
         // Await the spawn-time replayProcessingToInbox before tearing
@@ -4346,7 +4555,8 @@ export function createWorkflowSupervisor(
       if (
         (prior.phase === "starting" ||
           prior.phase === "running" ||
-          prior.phase === "recycling") &&
+          prior.phase === "recycling" ||
+          prior.phase === "parked") &&
         prior.sweepDone !== null
       ) {
         // Await the spawn-time compaction sweep before teardown so an
@@ -4392,7 +4602,8 @@ export function createWorkflowSupervisor(
       if (
         prior.phase === "starting" ||
         prior.phase === "running" ||
-        prior.phase === "recycling"
+        prior.phase === "recycling" ||
+        prior.phase === "parked"
       ) {
         if (prior.mailUnsubscribe !== null) {
           try {
@@ -4428,7 +4639,8 @@ export function createWorkflowSupervisor(
       if (
         prior.phase === "starting" ||
         prior.phase === "running" ||
-        prior.phase === "recycling"
+        prior.phase === "recycling" ||
+        prior.phase === "parked"
       ) {
         await prior.eventPump.catch(() => {
           /* swallowed for the same reason as above. */
@@ -4584,15 +4796,340 @@ export function createWorkflowSupervisor(
     });
   }
 
+  // `setTimeout` fires at once past this many ms, so a far wake is re-armed.
+  const MAX_TIMER_MS = 2_147_483_647;
+
+  function noteParkProgress(): void {
+    const attempt = parking;
+    if (attempt === null) return;
+    const reached = attempt.progress;
+    attempt.progress = Promise.withResolvers<undefined>();
+    reached.resolve(undefined);
+  }
+
+  function abandonPark(attempt: Parking, reason: string): void {
+    if (!attempt.abandon.signal.aborted) {
+      attempt.abandon.abort(new ParkRefusedError(reason));
+    }
+  }
+
+  function park(): Promise<ParkOutcome> {
+    if (state.phase === "parked" && parked !== null) {
+      return Promise.resolve(parked.outcome);
+    }
+    if (parking !== null) return parking.outcome;
+    if (state.phase !== "running" || respawnInProgress || waking !== null) {
+      return Promise.reject(
+        new ParkRefusedError(`the workflow child is ${state.phase}`),
+      );
+    }
+    const done = Promise.withResolvers<ParkOutcome>();
+    const attempt: Parking = {
+      generation: childGeneration,
+      abandon: new AbortController(),
+      outcome: done.promise,
+      settled: done.promise.then(
+        () => undefined,
+        () => undefined,
+      ),
+      progress: Promise.withResolvers<undefined>(),
+      fence: null,
+    };
+    parking = attempt;
+    void (async () => {
+      let outcome: ParkOutcome | undefined;
+      let failure: unknown;
+      try {
+        outcome = await runPark(attempt);
+      } catch (cause) {
+        failure = cause;
+      }
+      // Cleared before the outcome settles, so the dispatch loop that wakes
+      // on it sees no park.
+      if (parking === attempt) parking = null;
+      wakeDispatch();
+      if (outcome !== undefined) done.resolve(outcome);
+      else done.reject(failure);
+    })();
+    return done.promise;
+  }
+
+  async function unpark(): Promise<void> {
+    const attempt = parking;
+    if (attempt !== null) {
+      abandonPark(attempt, "the deployment was unparked");
+      await attempt.settled;
+    }
+    // A park past its final check stops the child anyway.
+    await wakeParked("unpark");
+  }
+
+  async function runPark(attempt: Parking): Promise<ParkOutcome> {
+    const steps = bindings.definitionSteps;
+    if (steps === undefined) {
+      throw new ParkRefusedError(
+        "the deployment's definition steps are not wired for parking",
+      );
+    }
+    const runStore = createWorkflowRunRepoStore({
+      substrate: bindings.repoStore,
+      repoId: bindings.workflowRunRepoId,
+      principal: bindings.readPrincipal,
+      ref: bindings.workflowRunRef,
+    });
+    const runId = deriveWorkflowRunId(bindings.deploymentMailAddress);
+    // Undefined while some run still has work to finish.
+    const judge = async (): Promise<ParkOutcome | undefined> => {
+      const anchorLog = await runStore.read(runId);
+      if (
+        anchorLog.length > 0 &&
+        isTerminalRunPhase(resumeFromLog(runId, anchorLog).phase)
+      ) {
+        throw new ParkRefusedError("the workflow run has ended");
+      }
+      const classified = await classifyParkedRun({
+        anchorRunId: runId,
+        steps,
+        readRun: (id) => runStore.read(id),
+        mode: "park",
+      });
+      // Input the run has not acted on would sit frozen with nothing to wake
+      // it, as mail that arrives after the park would not; the run handles it.
+      if (classified.pendingInput === true) {
+        throw new ParkRefusedError(classified.reason);
+      }
+      if (classified.verdict === "unknown") {
+        throw new ParkRefusedError(classified.reason);
+      }
+      if (classified.verdict === "not-parked") return undefined;
+      return classified.wakeAt === undefined
+        ? {}
+        : { wakeAt: classified.wakeAt };
+    };
+    await currentParkCohort(attempt).controlSender.send({
+      type: "hold",
+      data: {},
+    });
+    try {
+      for (;;) {
+        const progress = attempt.progress.promise;
+        currentParkCohort(attempt);
+        const outcome = isParkQuiet() ? await judge() : undefined;
+        if (outcome === undefined) {
+          await untilParkProgress(attempt, progress);
+          continue;
+        }
+        attempt.fence = [];
+        while (detachedWrites.size > 0) await Promise.all([...detachedWrites]);
+        const final = isParkQuiet() ? await judge() : undefined;
+        if (final === undefined) {
+          releaseParkFence(attempt);
+          continue;
+        }
+        return await stopParkedChild(attempt, final);
+      }
+    } catch (cause) {
+      releaseParkFence(attempt);
+      const live = state;
+      if (live.phase === "running" && childGeneration === attempt.generation) {
+        await live.controlSender
+          .send({ type: "hold.lift", data: {} })
+          .catch((liftCause: unknown) => {
+            logger.warn`lifting the hold after an abandoned park failed: ${liftCause instanceof Error ? liftCause.message : String(liftCause)}`;
+          });
+      }
+      throw cause;
+    }
+  }
+
+  // The cohort a park is for, or a refusal when it has been abandoned or the
+  // child it held is gone.
+  function currentParkCohort(
+    attempt: Parking,
+  ): Extract<SupervisorState, { phase: "running" }> {
+    attempt.abandon.signal.throwIfAborted();
+    if (state.phase !== "running" || childGeneration !== attempt.generation) {
+      throw new ParkRefusedError("the workflow child restarted while parking");
+    }
+    return state;
+  }
+
+  // Nothing the supervisor drives for the child is in flight.
+  function isParkQuiet(): boolean {
+    return (
+      (!dispatching || dispatchWaiting) &&
+      detachedWrites.size === 0 &&
+      cancellationCommits.size === 0 &&
+      deliveringSignals === 0 &&
+      inputCommits.size === 0
+    );
+  }
+
+  async function untilParkProgress(
+    attempt: Parking,
+    progress: Promise<undefined>,
+  ): Promise<void> {
+    await Promise.race([progress, abortedPromise(attempt.abandon)]);
+    attempt.abandon.signal.throwIfAborted();
+  }
+
+  // Apply the writes the fence held, in the order the child sent them.
+  function releaseParkFence(attempt: Parking): void {
+    const held = attempt.fence;
+    attempt.fence = null;
+    if (held === null) return;
+    for (const data of held) {
+      ownDetachedWrite(
+        handleSubstrateWriteRequest(data).catch((cause) => {
+          const message =
+            cause instanceof Error ? cause.message : String(cause);
+          logger.error`substrate.write.request handler crashed: ${message}`;
+        }),
+      );
+    }
+  }
+
+  async function stopParkedChild(
+    attempt: Parking,
+    outcome: ParkOutcome,
+  ): Promise<ParkOutcome> {
+    const cohort = currentParkCohort(attempt);
+    const correlations =
+      (await queryParkedCorrelations(cohort.controlSender)) ?? [];
+    const live = currentParkCohort(attempt);
+    // From here the child's exit is planned, not a crash.
+    state = { ...live, phase: "parked" };
+    const exited = live.handle.exited.then(
+      () => true,
+      () => true,
+    );
+    await live.controlSender
+      .send({ type: "shutdown", data: { reason: "parked" } })
+      .catch((cause: unknown) => {
+        logger.warn`sending shutdown to the parked child failed: ${cause instanceof Error ? cause.message : String(cause)}`;
+      });
+    const deadline = waitDeadline(readySetTimer, DEFAULT_KILL_TIMEOUT_MS);
+    const stopped = await Promise.race([
+      exited,
+      deadline.promise.then(() => false),
+    ]);
+    readyClearTimer(deadline.handle);
+    if (!stopped) {
+      await killChildHandle(live.handle, DEFAULT_KILL_TIMEOUT_MS, {
+        setTimer: readySetTimer,
+        clearTimer: readyClearTimer,
+        logger,
+      }).catch((cause: unknown) => {
+        logger.warn`killing the parked child failed: ${cause instanceof Error ? cause.message : String(cause)}`;
+      });
+    }
+    await live.eventPump.catch(() => {
+      /* the child is gone; its event channel ending is expected */
+    });
+    live.terminalCohortAbort.abort();
+    rejectCohortAwaiters("park");
+    if (pendingChildExit?.generation === attempt.generation) {
+      pendingChildExit = null;
+    }
+    // The stopped child's held writes never land.
+    attempt.fence = null;
+    if (state.phase !== "parked") {
+      throw new ParkRefusedError(
+        "the workflow supervisor shut down while parking",
+      );
+    }
+    parked = {
+      correlations,
+      outcome,
+      wakeTimer:
+        outcome.wakeAt === undefined ? null : armParkWakeTimer(outcome.wakeAt),
+    };
+    // Mail dispatch had not taken when the park began waits in the inbox, or
+    // in processing/ when the dispatch took it but the child never committed
+    // it; mail enqueued after this read finds the child parked and wakes it.
+    const mailWaiting =
+      untakenMessageId !== null ||
+      (await inboxPrimitives
+        .hasInboxEntries(
+          bindings.repoStore,
+          inboxWritePrincipal,
+          bindings.workflowRunRepoId,
+          bindings.deploymentMailAddress,
+        )
+        .catch((cause: unknown) => {
+          logger.error`reading the parked child's inbox failed; waking it in case mail waits there: ${cause instanceof Error ? cause.message : String(cause)}`;
+          return true;
+        }));
+    if (mailWaiting) {
+      void wakeParked("mail").catch((cause: unknown) => {
+        logger.error`waking a parked child for mail waiting in its inbox failed: ${cause instanceof Error ? cause.message : String(cause)}`;
+      });
+    }
+    return outcome;
+  }
+
+  function armParkWakeTimer(wakeAt: string): unknown {
+    const delay = Math.max(0, Date.parse(wakeAt) - drainNow());
+    return readySetTimer(
+      () => {
+        if (state.phase !== "parked" || parked === null) return;
+        if (delay > MAX_TIMER_MS) {
+          parked.wakeTimer = armParkWakeTimer(wakeAt);
+          return;
+        }
+        void wakeParked("timer").catch((cause: unknown) => {
+          logger.error`waking a parked child for its timer failed: ${cause instanceof Error ? cause.message : String(cause)}`;
+        });
+      },
+      Math.min(delay, MAX_TIMER_MS),
+    );
+  }
+
+  // Respawn a parked child through the recycle path: its drain and kill steps
+  // have nothing left to do, and the respawn and cohort install are the ones
+  // a recycle runs.
+  async function wakeParked(reason: string): Promise<void> {
+    // A park still stopping the child finishes first.
+    const attempt = parking;
+    if (attempt !== null) await attempt.settled;
+    if (waking !== null) return waking;
+    if (state.phase !== "parked") return;
+    const prior = state;
+    const priorContext = spawnContext;
+    if (priorContext === null) {
+      throw new Error("a parked workflow supervisor has no spawn context");
+    }
+    if (parked !== null && parked.wakeTimer !== null) {
+      readyClearTimer(parked.wakeTimer);
+    }
+    const woken = runRespawn({
+      origin: "wake",
+      reason,
+      prior,
+      priorContext,
+      drain: async () => undefined,
+    }).then(() => {
+      parked = null;
+      try {
+        bindings.onWake?.({ reason });
+      } catch (cause) {
+        logger.error`onWake sink threw: ${cause instanceof Error ? cause.message : String(cause)}`;
+      }
+    });
+    waking = woken.finally(() => {
+      waking = null;
+    });
+    return waking;
+  }
+
   /**
    * Shared kill/replay/respawn/install driver. The caller has already
-   * verified the supervisor is `running` with a live spawn context and
-   * snapshotted both as `prior`/`priorContext`; this function transitions
-   * to `recycling`, runs the six-step `triggerRecycle` sequence with the
-   * caller-supplied `drain` step, and swaps in the new cohort via the
-   * inline `installNewChild` callback. The operator/policy/self recycle
-   * path is the sole caller today; the crash-respawn path will call it with
-   * a no-op drain (its child is already dead).
+   * snapshotted the supervisor's active state and spawn context as
+   * `prior`/`priorContext`; this function transitions to `recycling`, runs
+   * the six-step `triggerRecycle` sequence with the caller-supplied `drain`
+   * step, and swaps in the new cohort via the inline `installNewChild`
+   * callback. A recycle, a crash respawn, and a parked child's wake call it;
+   * the last two pass a no-op drain, since their child is already dead.
    */
   async function runRespawn(args: {
     origin: RecycleOrigin;
@@ -4747,6 +5284,8 @@ export function createWorkflowSupervisor(
             // child will re-issue substrate writes through fresh
             // handlers under the new cohort's channel.
             rejectCohortAwaiters("recycle");
+            untakenMessageId = null;
+            dispatchRequestId = null;
             // Dispose the prior cohort's broadcaster so any minted
             // iterator still held by the aborted dispatch loop or a
             // stopped accumulator settles with `done: true`. The next
@@ -4901,6 +5440,20 @@ export function createWorkflowSupervisor(
   }
 
   async function deliverSignal(opts: DeliverSignalOpts): Promise<void> {
+    // A signal delivered into a child whose writes are fenced would be
+    // dropped with them, so it waits for the park to settle either way.
+    if (parking !== null && parking.fence !== null) await parking.settled;
+    if (state.phase === "parked") await wakeParked("signal");
+    deliveringSignals += 1;
+    try {
+      await deliverSignalToChild(opts);
+    } finally {
+      deliveringSignals -= 1;
+      noteParkProgress();
+    }
+  }
+
+  async function deliverSignalToChild(opts: DeliverSignalOpts): Promise<void> {
     // The supervisor is the single producer of `signal.deliver` control
     // IPC frames. Routing every signal delivery through the same child
     // makes the workflow-process the single writer of `runs/<runId>/events/`
@@ -4942,18 +5495,54 @@ export function createWorkflowSupervisor(
         `supervisor: deliverSignal raced a recycle in phase ${phaseAfterRefresh}; expected starting/running`,
       );
     }
-    await state.controlSender.send({
-      type: "signal.deliver",
-      data: {
-        runId: opts.runId,
-        signalName: opts.signalName,
-        signalId: opts.signalId,
-        payload: opts.payload,
-        ...(opts.correlationId !== undefined
-          ? { correlationId: opts.correlationId }
-          : {}),
-      },
-    });
+    const requestId = nextInputRequest();
+    try {
+      await state.controlSender.send({
+        type: "signal.deliver",
+        data: {
+          runId: opts.runId,
+          signalName: opts.signalName,
+          signalId: opts.signalId,
+          payload: opts.payload,
+          ...(opts.correlationId !== undefined
+            ? { correlationId: opts.correlationId }
+            : {}),
+          requestId,
+        },
+      });
+    } catch (cause) {
+      inputCommits.delete(requestId);
+      throw cause;
+    }
+  }
+
+  function nextInputRequest(): string {
+    const requestId = `input-${String((inputSeq += 1))}`;
+    inputCommits.add(requestId);
+    return requestId;
+  }
+
+  // A dispatch sends no input while a park is in progress: the input goes
+  // out if the park is abandoned, and waits for the wake if the child stops.
+  async function deliveryAllowed(cohortAbort: AbortController) {
+    for (;;) {
+      const attempt = parking;
+      if (attempt === null) return !cohortAbort.signal.aborted;
+      await whileDispatchWaits(
+        Promise.race([attempt.settled, abortedPromise(cohortAbort)]),
+      );
+      if (cohortAbort.signal.aborted) return false;
+    }
+  }
+
+  async function whileDispatchWaits<T>(wait: Promise<T>): Promise<T> {
+    dispatchWaiting = true;
+    noteParkProgress();
+    try {
+      return await wait;
+    } finally {
+      dispatchWaiting = false;
+    }
   }
 
   function consumeOwnedMessages(runId: string): void {
@@ -5012,7 +5601,9 @@ export function createWorkflowSupervisor(
     // `deliverSignal`: `state.controlSender` still points at the dying
     // child, so a frame would either buffer behind the SIGTERM or write
     // into a closed pipe and be lost. Rejecting surfaces the race so the
-    // caller can retry once the recycle completes.
+    // caller can retry once the recycle completes. A parked child has none
+    // to update: its respawn reads the host's persisted sources.
+    if (state.phase === "parked") return;
     if (state.phase !== "running" && state.phase !== "starting") {
       throw new Error(
         `supervisor: deliverSources called in phase ${state.phase}; expected starting/running`,
@@ -5131,6 +5722,8 @@ export function createWorkflowSupervisor(
     deliverGrants,
     reEmitParkedCorrelations,
     getCredentialsSnapshot,
+    park,
+    unpark,
   };
 }
 
@@ -5146,7 +5739,11 @@ type SupervisorState =
   | { phase: "crash-looping" }
   | ({ phase: "starting" } & ActiveState)
   | ({ phase: "running" } & ActiveState)
-  | ({ phase: "recycling" } & ActiveState);
+  | ({ phase: "recycling" } & ActiveState)
+  // The child was stopped while every run waited. The cohort record is kept,
+  // with its exited handle, so a wake respawns into the same mail
+  // subscription and address registration.
+  | ({ phase: "parked" } & ActiveState);
 
 type ActiveState = {
   handle: SubprocessHandle;

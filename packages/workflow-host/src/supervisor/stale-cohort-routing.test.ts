@@ -197,6 +197,9 @@ function createMemoryInbox(): InboxPrimitives & {
       }
       throw new Error("processing not found");
     },
+    async hasInboxEntries(_s, _p, _r, address) {
+      return get(address).inbox.size > 0;
+    },
     async replayProcessingToInbox(_s, _p, _r, address) {
       const s = get(address);
       for (const [key, value] of s.processing) {

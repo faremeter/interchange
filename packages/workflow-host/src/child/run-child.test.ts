@@ -538,7 +538,7 @@ describe("parseSpawnTimeEnv", () => {
 });
 
 describe("runWorkflowChild", () => {
-  test("emits ready, processes a trigger.fire frame, and shuts down", async () => {
+  test("emits ready, processes a trigger.fire frame, answers it once the run started, and shuts down", async () => {
     const baseDir = await makeTempDir("child-trigger-");
     const supervisorKeyPair = await generateKeyPair();
     const childKeyPair = await generateKeyPair();
@@ -607,9 +607,26 @@ describe("runWorkflowChild", () => {
         runId: "run-1",
         messageId: "msg-1",
         receivedAt: 1,
+        requestId: "input-1",
         payload: textMail("hello from the inbox"),
       },
     });
+    const taken = await waitForUpstreamPayload(
+      childToSupervisor,
+      "input.taken",
+    );
+    expect(taken.data).toEqual({ requestId: "input-1", committed: true });
+    const events = await fs.readdir(
+      path.join(
+        baseDir,
+        "workflow-run",
+        "deployment-x",
+        "runs",
+        "run-1",
+        "events",
+      ),
+    );
+    expect(events.length).toBeGreaterThan(0);
     await supervisorSender.send({
       type: "shutdown",
       data: { reason: "test done" },
@@ -710,7 +727,7 @@ describe("runWorkflowChild", () => {
     ]);
   });
 
-  test("drops a signal.deliver for a run this child is not driving", async () => {
+  test("drops a signal.deliver for a run this child is not driving, and still answers it", async () => {
     const baseDir = await makeTempDir("child-signal-drop-");
     const supervisorKeyPair = await generateKeyPair();
     const childKeyPair = await generateKeyPair();
@@ -783,8 +800,16 @@ describe("runWorkflowChild", () => {
         signalName: "go",
         signalId: "sig-1",
         payload: { x: 1 },
+        requestId: "signal-1",
       },
     });
+    // A park waits for the reply, so a dropped delivery answers too, as not
+    // committed.
+    const delivered = await waitForUpstreamPayload(
+      childToSupervisor,
+      "input.taken",
+    );
+    expect(delivered.data).toEqual({ requestId: "signal-1", committed: false });
     await supervisorSender.send({
       type: "shutdown",
       data: { reason: "test done" },

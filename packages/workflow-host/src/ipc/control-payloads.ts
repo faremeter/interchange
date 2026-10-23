@@ -533,6 +533,9 @@ const controlPayloadFactories = defineControlPayloadFactories({
       data: {
         snapshot: CredentialsSnapshotPayload.or("null"),
         delivery: CredentialDelivery.or("null"),
+        // A parked deployment's child starts held, so a run it resumes
+        // starts no step before the supervisor parks it again.
+        "hold?": "true",
       },
     }),
   "trigger.fire": () =>
@@ -542,6 +545,9 @@ const controlPayloadFactories = defineControlPayloadFactories({
         runId: "string",
         messageId: "string",
         receivedAt: "number",
+        // Asks for an `input.taken` reply once the run's `RunStarted` is
+        // committed.
+        "requestId?": "string",
         // The run's inbound-mail input, resolved by the supervisor (the sole
         // mail owner) before the frame: a decoded `Mail` (headers plus part
         // descriptors that reference the part bytes committed to the workflow-run
@@ -562,6 +568,8 @@ const controlPayloadFactories = defineControlPayloadFactories({
         // Addresses one onTrigger relay park. Omitted, the child commits
         // a name-FIFO delivery.
         "correlationId?": "string > 0",
+        // Asks for an `input.taken` reply once the child's commit settles.
+        "requestId?": "string",
         // The resume decision in FINAL form -- the child commits it as the
         // SignalReceived payload verbatim. Each sender owns any
         // provenance-specific preparation BEFORE this frame: the dispatch loop
@@ -571,6 +579,15 @@ const controlPayloadFactories = defineControlPayloadFactories({
         // polymorphic. Do NOT ship raw inbound mail bytes through here.
         payload: "unknown",
       },
+    }),
+  "input.taken": () =>
+    type({
+      // Answers a `trigger.fire` or `signal.deliver` that carried a
+      // `requestId`, once the child has committed the input or declined it.
+      // A park waits for this, so an input the child took is not dropped with
+      // the stopped child's writes; a declined one still wakes the child.
+      type: "'input.taken'",
+      data: { requestId: "string", committed: "boolean" },
     }),
   drain: () =>
     type({
