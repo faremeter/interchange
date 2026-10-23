@@ -78,6 +78,9 @@ export type ResolvedWorkflowLifecyclePolicy = {
   >;
 };
 
+export const workflowParkStates = ["parking", "parked", "unparking"] as const;
+export type WorkflowParkState = (typeof workflowParkStates)[number];
+
 export const WorkflowLifecycleResponse = type({
   runId: "string",
   status: "'deployed' | 'running' | 'completed' | 'failed' | 'cancelled'",
@@ -87,6 +90,22 @@ export const WorkflowLifecycleResponse = type({
   cancellationDeadline: "string | null",
   cancellationReason: "string | null",
   capacityReleaseAt: "string | null",
+  park: type({
+    state: type
+      .enumerated("unparked", ...workflowParkStates)
+      .describe(
+        "`parking` until the sidecar stops the workflow child, `parked` once the Hub holds the history it left, `unparking` until the child runs again.",
+      ),
+    changedAt: "string | null",
+    wakeAt: type("string | null").describe(
+      "The earliest timer a parked child wakes for by itself.",
+    ),
+    reason: type("string | null").describe(
+      "Why the state last changed other than as requested: the sidecar refused a park or unpark, or an input woke the parked child.",
+    ),
+  })
+    .or("null")
+    .describe("Null once the run is terminal."),
   allocation: type({
     id: "string",
     generation: "number",

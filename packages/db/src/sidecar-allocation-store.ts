@@ -1527,6 +1527,22 @@ function buildSidecarAllocationStore(
           .update(workflowRun)
           .set({ publicKey: null, credentialRefs: null })
           .where(eq(workflowRun.id, updated.anchorRunId));
+        // The replacement copy runs the workflow child again, so a parked
+        // deployment parks again there. A JS date, since the park answer is
+        // matched against this value read back, which drops microseconds.
+        await tx
+          .update(workflowRun)
+          .set({
+            parkState: "parking",
+            parkStateAt: args.now ?? new Date(),
+            parkedWakeAt: null,
+          })
+          .where(
+            and(
+              eq(workflowRun.id, updated.anchorRunId),
+              eq(workflowRun.parkState, "parked"),
+            ),
+          );
 
         return parseSidecarAllocationRow(updated);
       });

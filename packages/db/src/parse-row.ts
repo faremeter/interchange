@@ -16,6 +16,7 @@ import {
   TenantConfig,
   WorkflowLifecyclePolicy,
   workflowDefinitionStatuses,
+  workflowParkStates,
   workflowDefinitionVersionStatuses,
 } from "@intx/types";
 import { WireGrantRule } from "@intx/types/grant-wire";
@@ -77,6 +78,7 @@ const workflowRunStatuses = [
   "cancelled",
 ] as const;
 const WorkflowRunStatusValidator = type.enumerated(...workflowRunStatuses);
+const WorkflowParkStateValidator = type.enumerated(...workflowParkStates);
 const WorkflowRunDispatchStatusValidator = type.enumerated(
   ...workflowRunDispatchStatuses,
 );
@@ -224,6 +226,10 @@ export function parseWorkflowRunRow(row: typeof workflowRun.$inferSelect) {
   return {
     ...row,
     status: WorkflowRunStatusValidator.assert(row.status),
+    parkState:
+      row.parkState === null
+        ? null
+        : WorkflowParkStateValidator.assert(row.parkState),
     lifecyclePolicy:
       row.lifecyclePolicy == null
         ? null

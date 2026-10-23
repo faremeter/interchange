@@ -38,9 +38,13 @@ import {
   workflowRun,
 } from "@intx/db/schema";
 import { getLogger } from "@intx/log";
-import { isSidecarAllocationDispatchable } from "@intx/types";
+import {
+  isSidecarAllocationDispatchable,
+  type WorkflowParkState,
+} from "@intx/types";
 
 import type { WorkflowHistoryReceiveTracker } from "./workflow-history-receives";
+import type { SidecarEventMap } from "./ws/sidecar-events";
 import type { WorkflowRunReader } from "./workflow-run-reader";
 import {
   WorkflowControlRejectedError,
@@ -71,6 +75,9 @@ const RECOVERY_BACKOFF_MIN_MS = 5_000;
 const RECOVERY_BACKOFF_MAX_MS = 5 * 60_000;
 const CANCEL_CONTROL_TIMEOUT_MS = 5_000;
 const STOP_CONTROL_TIMEOUT_MS = 10_000;
+// A park is answered once the step in progress finishes; a longer park is
+// asked again by a later sweep.
+const PARK_CONTROL_TIMEOUT_MS = 60_000;
 const MAX_CONCURRENT_RETAINS_PER_SIDECAR = 8;
 
 type Run = ReturnType<typeof parseWorkflowRunRow>;
@@ -111,6 +118,10 @@ export type WorkflowLifecycleServiceDeps = {
   cancelGraceMs?: number;
   unreachableStopGraceMs?: number;
   sendControl?: SidecarAllocationRouter["sendWorkflowControl"];
+  parkRouter?: Pick<
+    SidecarAllocationRouter,
+    "parkAllocation" | "unparkAllocation"
+  >;
 };
 
 export function createWorkflowLifecycleService({
@@ -122,6 +133,7 @@ export function createWorkflowLifecycleService({
   cancelGraceMs = 30_000,
   unreachableStopGraceMs = 60_000,
   sendControl,
+  parkRouter,
 }: WorkflowLifecycleServiceDeps) {
   if (cancelGraceMs < 0 || !Number.isFinite(cancelGraceMs))
     throw new Error("Cancellation grace must be finite and non-negative");
@@ -147,6 +159,9 @@ export function createWorkflowLifecycleService({
     }
   >();
   const retentionsInFlight = new Set<string>();
+  // The park or unpark each run has outstanding, so a sweep does not repeat
+  // one the sidecar is still answering.
+  const parksInFlight = new Map<string, string>();
   const retentionsPerSidecar = new Map<string, number>();
 
   function hasRetentionRoom(sidecarId: string): boolean {
@@ -406,6 +421,17 @@ export function createWorkflowLifecycleService({
       cancellationDeadline: run.cancellationDeadline?.toISOString() ?? null,
       cancellationReason: run.cancellationReason ?? null,
       capacityReleaseAt: run.capacityReleaseAt?.toISOString() ?? null,
+      park: isLiveWorkflowRunStatus(run.status)
+        ? {
+            state: run.parkState ?? ("unparked" as const),
+            changedAt: run.parkStateAt?.toISOString() ?? null,
+            wakeAt:
+              run.parkState === "parked"
+                ? (run.parkedWakeAt?.toISOString() ?? null)
+                : null,
+            reason: run.parkReason,
+          }
+        : null,
       allocation:
         allocation === null
           ? null
@@ -497,12 +523,19 @@ export function createWorkflowLifecycleService({
     if (run.cancellationRequestedAt !== null) return run;
     const requestedAt = now();
     const deadline = new Date(requestedAt.getTime() + cancelGraceMs);
+    // Cancelling wakes a parked child and abandons a park in progress, so a
+    // park no longer stands.
+    const unpark =
+      run.parkState === null
+        ? {}
+        : { parkState: null, parkStateAt: requestedAt, parkedWakeAt: null };
     await tx
       .update(workflowRun)
       .set({
         cancellationRequestedAt: requestedAt,
         cancellationDeadline: deadline,
         cancellationReason: reason,
+        ...unpark,
       })
       .where(eq(workflowRun.id, run.id));
     return {
@@ -510,6 +543,7 @@ export function createWorkflowLifecycleService({
       cancellationRequestedAt: requestedAt,
       cancellationDeadline: deadline,
       cancellationReason: reason,
+      ...unpark,
     };
   }
 
@@ -540,6 +574,224 @@ export function createWorkflowLifecycleService({
       return "pending" as const;
     });
     return result ?? "not_found";
+  }
+
+  // The Hub records the wanted state and the sweep asks the sidecar for it
+  // until the sidecar answers.
+  async function requestParkState(
+    tenantId: string,
+    runId: string,
+    wanted: "parked" | "unparked",
+  ): Promise<"pending" | "settled" | "terminal" | "cancelling" | "not_found"> {
+    await recoverHistory(tenantId, runId, "request");
+    const [settled, pending] =
+      wanted === "parked"
+        ? (["parked", "parking"] as const)
+        : ([null, "unparking"] as const);
+    const result = await withRun(tenantId, runId, async (tx, run) => {
+      if (!isLiveWorkflowRunStatus(run.status)) return "terminal" as const;
+      if (run.cancellationRequestedAt !== null) return "cancelling" as const;
+      if (run.parkState === settled) return "settled" as const;
+      if (run.parkState !== pending) {
+        await tx
+          .update(workflowRun)
+          .set({
+            parkState: pending,
+            parkStateAt: now(),
+            parkedWakeAt: null,
+            parkReason: null,
+          })
+          .where(eq(workflowRun.id, runId));
+      }
+      return "pending" as const;
+    });
+    return result ?? "not_found";
+  }
+
+  type ParkCommand = {
+    target: AllocatedSidecarTarget;
+    runId: string;
+    action: "park" | "unpark";
+    // The request being carried out; an answer applies only while it stands.
+    stateAt: Date;
+  };
+
+  // Needs no lock: the command carries the request it answers, and the answer
+  // is recorded only while that request stands.
+  async function driveParkState(tenantId: string, runId: string) {
+    const [row] = await db
+      .select({
+        status: workflowRun.status,
+        parkState: workflowRun.parkState,
+        parkStateAt: workflowRun.parkStateAt,
+        cancellationRequestedAt: workflowRun.cancellationRequestedAt,
+        allocationId: sidecarAllocation.id,
+        allocationStatus: sidecarAllocation.status,
+        generation: sidecarAllocation.generation,
+        sidecarId: sidecarAllocation.sidecarId,
+      })
+      .from(workflowRun)
+      .innerJoin(
+        sidecarAllocation,
+        eq(sidecarAllocation.anchorRunId, workflowRun.id),
+      )
+      .where(
+        and(
+          eq(workflowRun.id, runId),
+          eq(workflowRun.tenantId, tenantId),
+          eq(workflowRun.anchorRunId, runId),
+        ),
+      );
+    // A park waits while capacity is placed or replaced.
+    if (
+      row === undefined ||
+      (row.parkState !== "parking" && row.parkState !== "unparking") ||
+      row.parkStateAt === null ||
+      !isLiveWorkflowRunStatus(row.status) ||
+      row.cancellationRequestedAt !== null ||
+      row.allocationStatus !== "allocated" ||
+      row.sidecarId === null
+    )
+      return;
+    const command: ParkCommand = {
+      target: { allocationId: row.allocationId, generation: row.generation },
+      runId,
+      action: row.parkState === "parking" ? "park" : "unpark",
+      stateAt: row.parkStateAt,
+    };
+    const key = JSON.stringify([
+      command.action,
+      command.stateAt.getTime(),
+      command.target.generation,
+    ]);
+    if (parksInFlight.get(runId) === key) return;
+    if (parkRouter === undefined) {
+      logger.warn`Workflow park is unavailable for ${runId}`;
+      return;
+    }
+    parksInFlight.set(runId, key);
+    void sendParkCommand(parkRouter, command).finally(() => {
+      if (parksInFlight.get(runId) === key) parksInFlight.delete(runId);
+    });
+  }
+
+  async function sendParkCommand(
+    router: NonNullable<WorkflowLifecycleServiceDeps["parkRouter"]>,
+    command: ParkCommand,
+  ): Promise<void> {
+    try {
+      if (command.action === "park") {
+        const { wakeAt } = await router.parkAllocation(
+          command.target,
+          PARK_CONTROL_TIMEOUT_MS,
+        );
+        const wake = wakeAt === undefined ? null : new Date(wakeAt);
+        await settleParkCommand(command, {
+          parkState: "parked",
+          parkedWakeAt:
+            wake === null || Number.isNaN(wake.getTime()) ? null : wake,
+        });
+      } else {
+        await router.unparkAllocation(command.target, PARK_CONTROL_TIMEOUT_MS);
+        await settleParkCommand(command, { parkState: null });
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // Only the sidecar's refusal ends a request; the next sweep repeats one
+      // that got no answer.
+      if (!(error instanceof WorkflowControlRejectedError)) {
+        logger.info`Workflow ${command.action} for ${command.runId} deferred: ${message}`;
+        return;
+      }
+      logger.warn`Workflow ${command.action} for ${command.runId} was refused: ${message}`;
+      await settleParkCommand(command, {
+        parkState: null,
+        parkReason: `The sidecar refused to ${command.action} the deployment: ${message}`,
+      }).catch((cause: unknown) => {
+        logger.error`Could not record the refused ${command.action} for ${command.runId}: ${cause instanceof Error ? cause.message : String(cause)}`;
+      });
+    }
+  }
+
+  async function settleParkCommand(
+    command: ParkCommand,
+    change: {
+      parkState: WorkflowParkState | null;
+      parkedWakeAt?: Date | null;
+      parkReason?: string;
+    },
+  ): Promise<void> {
+    await db
+      .update(workflowRun)
+      .set({ parkedWakeAt: null, ...change, parkStateAt: now() })
+      .where(
+        and(
+          eq(workflowRun.id, command.runId),
+          eq(
+            workflowRun.parkState,
+            command.action === "park" ? "parking" : "unparking",
+          ),
+          eq(workflowRun.parkStateAt, command.stateAt),
+        ),
+      );
+  }
+
+  // The sidecar's word on whether the child is parked: each hello reports it,
+  // and a parked child an input woke says why.
+  async function noteDeploymentParked(
+    report: SidecarEventMap["deployment.parked"],
+  ): Promise<void> {
+    const anchor = db
+      .select({ id: sidecarAllocation.anchorRunId })
+      .from(sidecarAllocation)
+      .where(
+        and(
+          eq(sidecarAllocation.id, report.allocationId),
+          eq(sidecarAllocation.generation, report.generation),
+        ),
+      );
+    const changedAt = now();
+    if (report.parked) {
+      // Only a park the Hub asked for keeps a child parked, so one the Hub
+      // lost track of is confirmed again like a requested park.
+      await db
+        .update(workflowRun)
+        .set({
+          parkState: "parking",
+          parkStateAt: changedAt,
+          parkedWakeAt: null,
+          parkReason: null,
+        })
+        .where(
+          and(
+            inArray(workflowRun.id, anchor),
+            isNull(workflowRun.parkState),
+            inArray(workflowRun.status, [...liveWorkflowRunStatuses]),
+            isNull(workflowRun.cancellationRequestedAt),
+          ),
+        );
+      return;
+    }
+    // A woken child ends any park request, and a hello that finds the child
+    // running ends a park the Hub recorded; a park or unpark still pending
+    // is answered by its own request.
+    await db
+      .update(workflowRun)
+      .set({
+        parkState: null,
+        parkStateAt: changedAt,
+        parkedWakeAt: null,
+        parkReason:
+          report.reason ?? "The sidecar reported the workflow child running",
+      })
+      .where(
+        and(
+          inArray(workflowRun.id, anchor),
+          report.reason === undefined
+            ? eq(workflowRun.parkState, "parked")
+            : isNotNull(workflowRun.parkState),
+        ),
+      );
   }
 
   async function markStopped(tx: DBExecutor, run: Run): Promise<void> {
@@ -781,8 +1033,12 @@ export function createWorkflowLifecycleService({
     if (
       retained?.retention !== "refused" &&
       !(await needsLockedPass(tenantId, runId))
-    )
+    ) {
+      // Every locked branch either cancels the run or acts on a terminal one,
+      // and neither leaves a park to carry out.
+      await driveParkState(tenantId, runId);
       return;
+    }
     const command = await withRun(
       tenantId,
       runId,
@@ -996,6 +1252,11 @@ export function createWorkflowLifecycleService({
     releaseCapacity,
     releaseStoppedCleanup,
     requestCancellation,
+    requestPark: (tenantId: string, runId: string) =>
+      requestParkState(tenantId, runId, "parked"),
+    requestUnpark: (tenantId: string, runId: string) =>
+      requestParkState(tenantId, runId, "unparked"),
+    noteDeploymentParked,
     reconcileNext,
   };
 }
@@ -1006,8 +1267,8 @@ export type WorkflowLifecycleService = ReturnType<
 
 /**
  * Selects the deployments `reconcileRun` can act on: a live run that is
- * cancelling or past its expiry, terminal copies needing retention or
- * release, a deferred infrastructure failure, and
+ * cancelling, past its expiry, or waiting on a park or unpark, terminal copies
+ * needing retention or release, a deferred infrastructure failure, and
  * accepted history left unprojected past its grace. A new action there needs a
  * branch here. Deployments are never deleted, so each branch starts from an
  * index over rows still active in its own sense and reaches an anchor only by
@@ -1138,6 +1399,7 @@ export function createLifecycleSweepQueries(
               workflowRun.expiresAt,
               sql.param(sql.placeholder("now"), workflowRun.expiresAt),
             ),
+            sql`${workflowRun.parkState} in ('parking', 'unparking')`,
           ),
           inPass(workflowRun.id),
         ),

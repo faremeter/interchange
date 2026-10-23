@@ -909,6 +909,7 @@ export function createWorkflowAllocationService({
         status: true,
         expiresAt: true,
         cancellationRequestedAt: true,
+        parkState: true,
       },
     });
     if (anchor === undefined) {
@@ -1031,6 +1032,11 @@ export function createWorkflowAllocationService({
         config,
         allocationTarget,
         credentialCipher,
+        // A parked deployment's replacement copy must not run before the
+        // Hub's park reaches it.
+        ...(anchor.parkState === "parking" || anchor.parkState === "parked"
+          ? { parked: true as const }
+          : {}),
       });
     } catch (error) {
       // Keep capacity refusals terminal and leave uncertain deploys and lost

@@ -138,8 +138,8 @@ keeps its reconnect window, since the provisioner may bring the sidecar back
 elsewhere. A provisioner that knows the work will not come back on that
 sidecar passes `endReconnectWindow`. The Hub records that on the sidecar and
 ends the reconnect window of its disconnected work at once, handing it to the
-usual connection loss path, which today replaces a parked run and fails an
-active one. Work that disconnects later, and work a Hub restart would
+usual connection loss path, which today replaces a parked run or a deployment
+the Hub holds parked, and fails an active one. Work that disconnects later, and work a Hub restart would
 otherwise give a fresh window, gets no window either. Work still connected to
 the sidecar contradicts the report; the Hub logs it and leaves that work
 running until it disconnects. `endReconnectWindow` covers allocations only,

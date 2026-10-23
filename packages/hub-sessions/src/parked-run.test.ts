@@ -112,11 +112,16 @@ describe("createParkedRunClassifier", () => {
     await fs.promises.rm(root, { recursive: true, force: true });
   });
 
-  function classify(projection: unknown, address: string | null = ADDRESS) {
+  function classify(
+    projection: unknown,
+    address: string | null = ADDRESS,
+    parked = false,
+  ) {
     return createParkedRunClassifier({
       runReader: createWorkflowRunReader(repoStoreFor(root)),
       addressForAnchor: async () => address,
       projectionForAnchor: async () => projection,
+      isAnchorParked: async () => parked,
     });
   }
 
@@ -483,6 +488,55 @@ describe("createParkedRunClassifier", () => {
     });
   });
 
+  test("a parked deployment is judged as its park was", async () => {
+    await commitFiles(dir, {
+      ...eventFiles(ANCHOR, [
+        runStarted(ANCHOR),
+        stepStarted("nap"),
+        {
+          type: "TimerSet",
+          timerId: "t1",
+          fireAt: "2026-10-02T00:00:00.000Z",
+          stepId: "nap",
+        },
+      ]),
+    });
+    const projection = { steps: { nap: { kind: "sleep" } } };
+
+    expect((await classify(projection)({ anchorRunId: ANCHOR })).verdict).toBe(
+      "not-parked",
+    );
+    expect(
+      await classify(projection, ADDRESS, true)({ anchorRunId: ANCHOR }),
+    ).toEqual({
+      verdict: "parked",
+      reason: "the deployment is parked: no run is mid-invocation",
+      wakeAt: "2026-10-02T00:00:00.000Z",
+    });
+  });
+
+  test("a parked deployment woken mid-step is judged as any other", async () => {
+    await commitFiles(dir, {
+      ...eventFiles(ANCHOR, [
+        runStarted(ANCHOR),
+        stepStarted("think"),
+        stepStarted("hold"),
+        { type: "SignalAwaited", stepId: "hold", signalName: "go" },
+      ]),
+    });
+
+    const verdict = await classify(
+      { steps: { think: { kind: "step" }, hold: { kind: "awaitSignal" } } },
+      ADDRESS,
+      true,
+    )({ anchorRunId: ANCHOR });
+
+    expect(verdict).toEqual({
+      verdict: "parked",
+      reason: "resume guard would re-attach a park",
+    });
+  });
+
   test("a missing repository is unknown", async () => {
     const verdict = await classify(
       { steps: { hold: { kind: "awaitSignal" } } },
@@ -518,6 +572,7 @@ describe("createParkedRunClassifier", () => {
       projectionForAnchor: async () => ({
         steps: { hold: { kind: "awaitSignal" } },
       }),
+      isAnchorParked: async () => false,
     });
 
     const verdict = await classifyThrown({ anchorRunId: ANCHOR });

@@ -1243,7 +1243,7 @@ describe("sendMultiStepDeployFrame", () => {
     const inertProjection = projectLiveToInert(definition);
     const frozenWireHash = await computeWireDefinitionHash(inertProjection);
 
-    await sendMultiStepDeployFrame({
+    const frameArgs = {
       lineage: "source-ref",
       sidecarAllocationRouter: createMockAllocationRouter(mockRouter),
       allocationTarget: { allocationId: "alloc-test", generation: 1 },
@@ -1252,7 +1252,8 @@ describe("sendMultiStepDeployFrame", () => {
       sources,
       approvedWireHash: frozenWireHash,
       sourceRef: { source, closure },
-    });
+    } as const;
+    await sendMultiStepDeployFrame(frameArgs);
 
     const sent = sentWorkflows[0];
     if (sent === undefined) throw new Error("missing workflow projection");
@@ -1263,6 +1264,11 @@ describe("sendMultiStepDeployFrame", () => {
     // `definition` field; the sidecar derives it from the closure the pin
     // materializes. The source-ref pin rides the frame as one co-required object.
     expect(sent.sourceRef).toEqual({ source, closure });
+    expect(sent.parked).toBeUndefined();
+
+    // A deployment the Hub holds parked tells the sidecar to park its child.
+    await sendMultiStepDeployFrame({ ...frameArgs, parked: true });
+    expect(sentWorkflows[1]?.parked).toBe(true);
   });
 });
 

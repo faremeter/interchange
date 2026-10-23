@@ -479,6 +479,13 @@ export async function createHubServer({
       const spec = await launchSpecs.get(anchorRunId);
       return spec?.frozenApprovalBundle.projection ?? null;
     },
+    isAnchorParked: async (anchorRunId) => {
+      const row = await db.query.workflowRun.findFirst({
+        where: (run, { eq }) => eq(run.id, anchorRunId),
+        columns: { parkState: true },
+      });
+      return row?.parkState === "parked";
+    },
   });
   const workflowLifecycleService = createWorkflowLifecycleService({
     db,
@@ -487,6 +494,7 @@ export async function createHubServer({
     historyReceives: workflowHistoryReceives,
     sendControl: (target, command, timeoutMs) =>
       sidecarRouter.sendWorkflowControl(target, command, timeoutMs),
+    parkRouter: sidecarRouter,
   });
   const dispatchProjection = createWorkflowDispatchProjection({
     db,
@@ -563,6 +571,9 @@ export async function createHubServer({
   // reconciliation reads what the sidecar reported.
   sidecarRouter.events.on("deployment.stopped", (allocated) =>
     sidecarAllocationReconciler.handleConnected(allocated),
+  );
+  sidecarRouter.events.on("deployment.parked", (report) =>
+    workflowLifecycleService.noteDeploymentParked(report),
   );
   sidecarRouter.events.on(
     "mail.inbound.acknowledged",

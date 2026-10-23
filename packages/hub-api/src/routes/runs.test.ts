@@ -1393,11 +1393,15 @@ function lifecycleService(
       cancellationDeadline: null,
       cancellationReason: null,
       capacityReleaseAt: null,
+      park: null,
       allocation: null,
     }),
     releaseCapacity: async () => "pending",
     releaseStoppedCleanup: async () => "released",
     requestCancellation: async () => "pending",
+    requestPark: async () => "pending",
+    requestUnpark: async () => "pending",
+    noteDeploymentParked: async () => undefined,
     reconcileNext: async () => false,
     ...overrides,
   };
@@ -1441,6 +1445,59 @@ describe("workflow lifecycle endpoints", () => {
     expect(response.status).toBe(202);
     expect(response.headers.get("Location")).toBe(`${runURL()}/lifecycle`);
     expect(calls).toEqual([[TENANT_ID, RUN_ID]]);
+  });
+
+  test("reading a run does not grant parking it", async () => {
+    let called = false;
+    const app = createTestApp({
+      grants: [makeGrant({ action: "read" })],
+      lifecycleService: lifecycleService({
+        requestPark: async () => {
+          called = true;
+          return "pending";
+        },
+      }),
+    });
+    expect(
+      (await app.request(`${runURL()}/park`, { method: "POST" })).status,
+    ).toBe(403);
+    expect(called).toBe(false);
+  });
+
+  test.each([
+    ["park", "pending", 202],
+    ["park", "settled", 204],
+    ["park", "terminal", 409],
+    ["park", "cancelling", 409],
+    ["park", "not_found", 404],
+    ["unpark", "pending", 202],
+    ["unpark", "settled", 204],
+    ["unpark", "cancelling", 409],
+  ] as const)("%s reports %s as %d", async (wanted, result, status) => {
+    const calls: string[] = [];
+    const app = createTestApp({
+      grants: [
+        makeGrant({ resource: `workflow-run:${RUN_ID}`, action: "manage" }),
+      ],
+      lifecycleService: lifecycleService({
+        requestPark: async (tenantId, runId) => {
+          calls.push(`park ${tenantId} ${runId}`);
+          return result;
+        },
+        requestUnpark: async (tenantId, runId) => {
+          calls.push(`unpark ${tenantId} ${runId}`);
+          return result;
+        },
+      }),
+    });
+    const response = await app.request(`${runURL()}/${wanted}`, {
+      method: "POST",
+    });
+    expect(response.status).toBe(status);
+    expect(response.headers.get("Location")).toBe(
+      status === 202 ? `${runURL()}/lifecycle` : null,
+    );
+    expect(calls).toEqual([`${wanted} ${TENANT_ID} ${RUN_ID}`]);
   });
 
   test("exhausted cleanup reports the required intervention", async () => {

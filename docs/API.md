@@ -46,6 +46,8 @@
 | GET | /api/tenants/:tenantId/workflows/runs/:runId/lifecycle | Get workflow lifecycle status |
 | POST | /api/tenants/:tenantId/workflows/runs/:runId/capacity/release | Release workflow capacity |
 | POST | /api/tenants/:tenantId/workflows/runs/:runId/capacity/recover | Release capacity whose cleanup stopped |
+| POST | /api/tenants/:tenantId/workflows/runs/:runId/park | Park a deployment |
+| POST | /api/tenants/:tenantId/workflows/runs/:runId/unpark | Unpark a deployment |
 | GET | /api/tenants/:tenantId/workflows/runs/:runId/events | Read a run's event log |
 | POST | /api/tenants/:tenantId/workflows/runs/:runId/mail | Send mail to a run |
 | GET | /api/tenants/:tenantId/workflows/runs/:runId/mail | List mail for a run |
@@ -555,6 +557,28 @@ Body: RecoverWorkflowCapacityRequest
 204: (no content) -- Capacity released
 404: ErrorResponse -- Run or allocation not found
 409: ErrorResponse -- Cleanup has not stopped, or the allocation generation changed
+503: ErrorResponse -- Workflow lifecycle service unavailable
+
+### POST /api/tenants/:tenantId/workflows/runs/:runId/park
+Park a deployment
+
+Durably requests that a live top-level run's workflow child stop while every run of the deployment waits. A step in progress finishes first, and the deployment keeps its capacity. Mail, a signal, an approval decision, or a due timer runs the child again, as does `POST .../unpark`. Poll the Location header for progress; a park the sidecar refuses returns to `unparked` with its reason.
+
+202: (no content) -- Park requested
+204: (no content) -- The deployment is already parked
+404: ErrorResponse -- Run not found
+409: ErrorResponse -- Run is terminal or being cancelled
+503: ErrorResponse -- Workflow lifecycle service unavailable
+
+### POST /api/tenants/:tenantId/workflows/runs/:runId/unpark
+Unpark a deployment
+
+Durably requests that a parked deployment's workflow child run again, or that a park in progress be abandoned. Poll the Location header for progress.
+
+202: (no content) -- Unpark requested
+204: (no content) -- The deployment is not parked
+404: ErrorResponse -- Run not found
+409: ErrorResponse -- Run is terminal or being cancelled
 503: ErrorResponse -- Workflow lifecycle service unavailable
 
 ### GET /api/tenants/:tenantId/workflows/runs/:runId/events
@@ -1727,8 +1751,10 @@ Source: packages/types/src/workflows.ts
 **status**: Deployment lifecycle status. `recovering` means the Hub is replacing deployment capacity. `failed` is a terminal allocation failure with no infrastructure. `destroy_failed` means automatic cleanup stopped. Read `GET /api/tenants/:tenantId/workflows/runs/:runId/lifecycle` for the allocation's failure code and message.
 
 ### WorkflowLifecycleResponse
-`{ allocation: { failureCode: string | null, failureMessage: string | null, generation: number, id: string, status: "allocated" | "destroy_failed" | "failed" | "pending" | "provisioning" | "released" | "releasing" | "replacing" } | null, cancellationDeadline: string | null, cancellationReason: string | null, cancellationRequestedAt: string | null, capacityReleaseAt: string | null, expiresAt: string | null, policy: { capacityRetention?: { cancelled?: string , completed?: string , failed?: string , + (undeclared): reject }, maxDisconnected?: string , maxLifetime?: string , + (undeclared): reject }, runId: string, status: "cancelled" | "completed" | "deployed" | "failed" | "running" }`
+`{ allocation: { failureCode: string | null, failureMessage: string | null, generation: number, id: string, status: "allocated" | "destroy_failed" | "failed" | "pending" | "provisioning" | "released" | "releasing" | "replacing" } | null, cancellationDeadline: string | null, cancellationReason: string | null, cancellationRequestedAt: string | null, capacityReleaseAt: string | null, expiresAt: string | null, park: { changedAt: string | null, reason: string | null, state: "parked" | "parking" | "unparked" | "unparking", wakeAt: string | null } | null, policy: { capacityRetention?: { cancelled?: string , completed?: string , failed?: string , + (undeclared): reject }, maxDisconnected?: string , maxLifetime?: string , + (undeclared): reject }, runId: string, status: "cancelled" | "completed" | "deployed" | "failed" | "running" }`
 Source: packages/types/src/workflow-lifecycle.ts
+
+**park**: Null once the run is terminal.
 
 ### WorkflowRollbackRequest
 `{ version: string }`

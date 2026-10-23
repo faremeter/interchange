@@ -102,8 +102,8 @@ The platform default is not a ceiling: a tenant or installed workflow may set a
 longer duration. To effectively disable an action, set its field to `36500d`.
 
 `maxLifetime` measures wall-clock time from creation of the deployment's anchor
-run. Provisioning and waiting count; restarts and any future hibernation do
-not reset the clock. This also covers deployments that
+run. Provisioning, waiting, and parking count; restarts and any future
+hibernation do not reset the clock. This also covers deployments that
 never receive their first trigger. If still live at expiry, the Hub stops the
 deployment as `cancelled`, allowing a 30-second cancellation grace period before stopping the process.
 Forced stop preempts a pending cooperative cancellation. The sidecar acknowledges
@@ -208,11 +208,16 @@ and it contains a park the runtime would re-attach, the Hub replaces the worker
 and restores the run onto it. The live runs of loop and onTrigger bodies and of
 child workflows are judged the same way, at any depth, against their own inline
 definitions; a live child whose definition is only a ref cannot be judged.
+A deployment the Hub records as `parked` is judged as its park was: it is
+replaced when no run is mid-invocation, even with no park to re-attach, such as
+one parked before its first trigger. One that is mid-invocation, because an
+input woke it before the Hub heard, is judged as any other.
 Otherwise it releases the allocation and logs the
-anchor, the allocation, and the reason. Sleep with no signal park, a park that
-was not pushed to the committed ref, and an approval that was never flushed to
-the log stay on the release path: the first has no re-attachable park, and the
-other two are not visible on the committed ref. A replacement that dies while
+anchor, the allocation, and the reason. For a deployment not recorded `parked`,
+sleep with no signal park, a park that was not pushed to the committed ref, and
+an approval that was never flushed to the log stay on the release path: the
+first has no re-attachable park, and the other two are not visible on the
+committed ref. A replacement that dies while
 its initialization lease is still set is released on the next boot without
 another park classification. A destroy that cannot be retried still fails the
 run through the existing destroy-failed path. Replacing a worker does not by
@@ -225,10 +230,11 @@ cleanup binding without workflow routes.
 Lifecycle reconciliation uses the shared reconciliation scheduler with eight
 independent slots per Hub. Each slot selects one run at a time, and active
 runs are excluded from further selection until their work finishes. Selection
-considers only deployments with work due: a live run that is cancelling or
-past its expiry, terminal copies awaiting retention, retained capacity whose
-release time has passed or is not yet recorded, a capacity loss waiting on
-reconciliation, and accepted history left unprojected past its grace. A
+considers only deployments with work due: a live run that is cancelling, past
+its expiry, or waiting on a park or unpark, terminal copies awaiting
+retention, retained capacity whose release time has passed or is not yet
+recorded, a capacity loss waiting on reconciliation, and accepted history left
+unprojected past its grace. A
 deployment that ended without a saved policy is released only on request.
 Selection walks run IDs up to a captured upper bound, then waits one second
 before another scan. Work that becomes due during a scan can wait for the next
@@ -308,6 +314,27 @@ whose cleanup has not stopped, or whose generation changed, returns `409`.
 `DELETE /api/tenants/:tenantId/workflows/runs/:runId` requests
 cancellation of a live run and returns `202`; its cancellation retention
 policy then applies.
+
+`POST /api/tenants/:tenantId/workflows/runs/:runId/park` parks a live
+deployment: its sidecar stops the workflow child while every run waits, and the
+deployment keeps its capacity. The child starts no new step, a step in progress
+finishes first, and the sidecar refuses a park it cannot make, for example
+when the run has ended, a run cannot be judged, or a run has taken input it
+has not acted on yet, such as mail that just arrived, which the run then
+handles. The Hub records `parking`, and the lifecycle sweep sends the request
+in the background until the sidecar answers, without repeating one the
+sidecar is still answering. It records `parked` only once it holds the history
+tips the sidecar reports, together with the earliest timer the child wakes
+for. Mail, a signal, an approval decision, a due timer, or cancellation runs
+the child again, and the sidecar reports why. `POST .../unpark` runs it again
+on request, or abandons a park in progress. The lifecycle status's `park`
+field shows the state and the reason for a refused park or unpark or a wake.
+A parked deployment stays parked across a sidecar restart and on replacement
+capacity: the Hub deploys the replacement marked parked, and either way the
+child starts held and is parked before it runs anything or takes mail.
+Cancellation and expiry end a park. Both routes need `manage` on the run and
+return `202` while the change is pending, `204` when the deployment is
+already in the requested state, and `409` for a terminal or cancelling run.
 
 Beginning release removes workflow routes. The allocation reaches `released`
 only after the provider's hold is released and deployment cleanup is

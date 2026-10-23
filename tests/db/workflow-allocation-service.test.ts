@@ -956,6 +956,79 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(anchorVisibleDuringDeploy).toBe(true);
     });
 
+    test.each([
+      [null, undefined],
+      ["parking", true],
+      ["parked", true],
+      ["unparking", undefined],
+    ] as const)(
+      "a deployment whose park state is %s deploys with parked %s",
+      async (parkState, expected) => {
+        const provisioner = makeProvisioner({
+          id: "parked-deploy",
+          ensureCalls: [],
+          destroyCalls: [],
+        });
+        const deployed: (true | undefined)[] = [];
+        const service = createWorkflowAllocationService({
+          db: h.db,
+          workflowRunRepoStore: UNUSED_WORKFLOW_RUN_REPO_STORE,
+          ...sharedPluginPools([provisioner]),
+          preparedDeployer: {
+            installAndApproveWorkflowSource: (params) => freeze(params),
+            deployPreparedCodeSourcedWorkflow: async (params) => {
+              deployed.push(params.parked);
+              return {
+                anchorRunId: params.anchorRunId,
+                deploymentAddress: params.agentAddress,
+                publicKey: "public-key",
+              };
+            },
+          },
+          credentialCipher: CIPHER,
+          allocationRouter: {
+            getSidecarInventory: () => ({
+              capacity: DEFAULT_SIDECAR_CAPACITY,
+              retainedIncarnations: [],
+            }),
+            waitForSidecarInventory: async () => undefined,
+            fenceAllocation: () => undefined,
+            retireAllocation: () => undefined,
+            waitForAllocatedSidecar: async () => undefined,
+            sendProbeToAllocation: async () => probeResult(),
+            isAllocatedWorkflowActive: async () => false,
+            reportedDeploymentFailure: () => undefined,
+            stoppedDeploymentHistory: async () => undefined,
+            detachAllocation: () => undefined,
+            syncSidecar: async () => undefined,
+          },
+          hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
+          defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
+          createAllocationId: () => "sal-parked-deploy",
+          createSidecarId: () => "sc-parked-deploy",
+          createToken: () => "parked-deploy-token",
+        });
+        const prepared = await service.prepareProvisionedDeployment(
+          prepareArgs("run-parked-deploy"),
+        );
+        await h.db
+          .update(workflowRun)
+          .set({ parkState, parkStateAt: new Date() })
+          .where(eq(workflowRun.id, prepared.anchorRunId));
+        const allocation = await createSidecarAllocationStore(
+          h.db,
+        ).findByAnchorRunId(prepared.anchorRunId);
+        if (allocation === null) throw new Error("expected adopted allocation");
+
+        await service.deployReadyAllocation(allocation, {
+          signal: new AbortController().signal,
+          leaseId: "initialization-test",
+        });
+
+        expect(deployed).toEqual([expected]);
+      },
+    );
+
     // The deploy reads its approval back from the launch spec, so the approved
     // commit must survive that round trip.
     test("deploys the approved asset commit stored in the launch spec", async () => {

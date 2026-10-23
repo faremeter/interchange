@@ -86,6 +86,30 @@ function workflowRunOperationUnsupported(
   );
 }
 
+function parkResponse(
+  c: Context<TenantEnv>,
+  tenantId: string,
+  runId: string,
+  result: Awaited<ReturnType<WorkflowLifecycleService["requestPark"]>>,
+): Response {
+  switch (result) {
+    case "not_found":
+      return errorResponse(c, "not_found", "Run not found");
+    case "terminal":
+      return errorResponse(c, "conflict", "Run is already terminal");
+    case "cancelling":
+      return errorResponse(c, "conflict", "Run is being cancelled");
+    case "settled":
+      return c.body(null, 204);
+    case "pending":
+      c.header(
+        "Location",
+        `/api/tenants/${tenantId}/workflows/runs/${runId}/lifecycle`,
+      );
+      return c.body(null, 202);
+  }
+}
+
 type RunStatusFilter =
   | "deployed"
   | "running"
@@ -847,6 +871,80 @@ export function createRunRoutes({
         `/api/tenants/${tenantId}/workflows/runs/${runId}/lifecycle`,
       );
       return c.body(null, 202);
+    },
+  );
+
+  app.post(
+    "/:runId/park",
+    requireGrant(idResource("workflow-run", "runId"), "manage"),
+    describeRoute({
+      tags: ["Runs"],
+      summary: "Park a deployment",
+      description:
+        "Durably requests that a live top-level run's workflow child stop while every run of the deployment waits. A step in progress finishes first, and the deployment keeps its capacity. Mail, a signal, an approval decision, or a due timer runs the child again, as does `POST .../unpark`. Poll the Location header for progress; a park the sidecar refuses returns to `unparked` with its reason.",
+      responses: {
+        202: { description: "Park requested" },
+        204: { description: "The deployment is already parked" },
+        404: jsonResponse("Run not found", ErrorResponse),
+        409: jsonResponse("Run is terminal or being cancelled", ErrorResponse),
+        503: jsonResponse(
+          "Workflow lifecycle service unavailable",
+          ErrorResponse,
+        ),
+      },
+    }),
+    async (c) => {
+      if (lifecycleService === null)
+        return errorResponse(
+          c,
+          "unavailable",
+          "Workflow lifecycle service unavailable",
+        );
+      const tenantId = c.get("tenant").id;
+      const runId = c.req.param("runId");
+      return parkResponse(
+        c,
+        tenantId,
+        runId,
+        await lifecycleService.requestPark(tenantId, runId),
+      );
+    },
+  );
+
+  app.post(
+    "/:runId/unpark",
+    requireGrant(idResource("workflow-run", "runId"), "manage"),
+    describeRoute({
+      tags: ["Runs"],
+      summary: "Unpark a deployment",
+      description:
+        "Durably requests that a parked deployment's workflow child run again, or that a park in progress be abandoned. Poll the Location header for progress.",
+      responses: {
+        202: { description: "Unpark requested" },
+        204: { description: "The deployment is not parked" },
+        404: jsonResponse("Run not found", ErrorResponse),
+        409: jsonResponse("Run is terminal or being cancelled", ErrorResponse),
+        503: jsonResponse(
+          "Workflow lifecycle service unavailable",
+          ErrorResponse,
+        ),
+      },
+    }),
+    async (c) => {
+      if (lifecycleService === null)
+        return errorResponse(
+          c,
+          "unavailable",
+          "Workflow lifecycle service unavailable",
+        );
+      const tenantId = c.get("tenant").id;
+      const runId = c.req.param("runId");
+      return parkResponse(
+        c,
+        tenantId,
+        runId,
+        await lifecycleService.requestUnpark(tenantId, runId),
+      );
     },
   );
 

@@ -317,6 +317,10 @@ function makeWorkflowRunRow(
     cancellationRequestedAt: null,
     cancellationReason: null,
     cancellationDeadline: null,
+    parkState: null,
+    parkStateAt: null,
+    parkedWakeAt: null,
+    parkReason: null,
     capacityReleaseAt: null,
     infrastructureFailedAt: null,
     failureCode: null,
@@ -350,6 +354,20 @@ describe("parseWorkflowRunRow", () => {
     expect(() =>
       parseWorkflowRunRow(
         makeWorkflowRunRow({ modelPreferences: [{ model: "opus" }] }),
+      ),
+    ).toThrow();
+  });
+
+  test("rejects a park state outside the known states", () => {
+    expect(parseWorkflowRunRow(makeWorkflowRunRow()).parkState).toBeNull();
+    expect(
+      parseWorkflowRunRow(makeWorkflowRunRow({ parkState: "parked" }))
+        .parkState,
+    ).toBe("parked");
+    // The column is plain text, so a row can hold any string.
+    expect(() =>
+      parseWorkflowRunRow(
+        Object.assign(makeWorkflowRunRow(), { parkState: "stopped" }),
       ),
     ).toThrow();
   });

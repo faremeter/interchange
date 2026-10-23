@@ -201,6 +201,8 @@ export type DeployPreparedCodeSourcedWorkflowParams = {
   reconciliation: SidecarReconciliationContext;
   /** Cipher for the definition's tenant-owned credential bindings, if any. */
   credentialCipher?: CredentialCipher;
+  /** The Hub holds the deployment parked, so its child is parked before it runs. */
+  parked?: true;
 };
 
 export type PreparedWorkflowDeployer = {
@@ -413,6 +415,8 @@ export type SourceRefDeployFrameArgs = DeployFrameCommonArgs & {
    * are fetched over HTTP).
    */
   assets?: readonly WorkflowSourceAssetMount[];
+  /** The Hub holds the deployment parked, so its child is parked before it runs. */
+  parked?: true;
 };
 
 export type SendMultiStepDeployFrameArgs = SourceRefDeployFrameArgs;
@@ -456,6 +460,7 @@ export async function sendMultiStepDeployFrame(
     ...(args.assets !== undefined && args.assets.length > 0
       ? { assets: [...args.assets] }
       : {}),
+    ...(args.parked === true ? { parked: true as const } : {}),
   };
   return args.sidecarAllocationRouter.sendAgentDeployToAllocation(
     args.allocationTarget,
@@ -814,6 +819,7 @@ async function emitSourceRefDeployFrame(
     allocationTarget?: AllocatedSidecarTarget;
     sidecarAllocationRouter?: SidecarAllocationRouter;
     onInitializationCleared(): void;
+    parked?: true;
   },
   reconciliation: SidecarReconciliationContext,
 ): Promise<{
@@ -823,7 +829,12 @@ async function emitSourceRefDeployFrame(
 }> {
   const { signal, leaseId } = reconciliation;
   signal.throwIfAborted();
-  const { definitionId, sendArgs } = await prepareSourceRefDeploy(args);
+  const prepared = await prepareSourceRefDeploy(args);
+  const { definitionId } = prepared;
+  const sendArgs: SendMultiStepDeployFrameArgs =
+    args.parked === true
+      ? { ...prepared.sendArgs, parked: true }
+      : prepared.sendArgs;
   signal.throwIfAborted();
   const allocationStore = createSidecarAllocationStore(args.db);
   const initialization = {
@@ -1714,6 +1725,7 @@ export function createSessionService(
       ...(params.credentialCipher !== undefined
         ? { credentialCipher: params.credentialCipher }
         : {}),
+      ...(params.parked === true ? { parked: true as const } : {}),
     };
     // Branch on the source discriminant so the emit args match the asset/registry
     // arms: an asset arm carries the rebuilt attachment resolver (asserted

@@ -1,6 +1,8 @@
 // Whether a lost worker's committed log is a park the runtime would
 // re-attach. The judgment is the workflow runtime's `classifyParkedRun`;
 // this module reads the anchor's committed log and frozen projection for it.
+// A deployment the Hub parked is judged as its park was: the stopped child
+// left a log a fresh child continues from.
 
 import {
   classifyParkedRun,
@@ -23,11 +25,16 @@ export type ParkedRunClassifier = (allocation: {
   readonly anchorRunId: string;
 }) => Promise<ParkedRunClassification>;
 
-export function createParkedRunClassifier(deps: {
+type ClassifierDeps = {
   readonly runReader: WorkflowRunReader;
   readonly addressForAnchor: (anchorRunId: string) => Promise<string | null>;
   readonly projectionForAnchor: (anchorRunId: string) => Promise<unknown>;
-}): ParkedRunClassifier {
+  readonly isAnchorParked: (anchorRunId: string) => Promise<boolean>;
+};
+
+export function createParkedRunClassifier(
+  deps: ClassifierDeps,
+): ParkedRunClassifier {
   return async (allocation) => {
     try {
       return await classifyAnchor(deps, allocation.anchorRunId);
@@ -41,11 +48,7 @@ export function createParkedRunClassifier(deps: {
 }
 
 async function classifyAnchor(
-  deps: {
-    readonly runReader: WorkflowRunReader;
-    readonly addressForAnchor: (anchorRunId: string) => Promise<string | null>;
-    readonly projectionForAnchor: (anchorRunId: string) => Promise<unknown>;
-  },
+  deps: ClassifierDeps,
   anchorRunId: string,
 ): Promise<ParkedRunClassification> {
   const address = await deps.addressForAnchor(anchorRunId);
@@ -61,19 +64,32 @@ async function classifyAnchor(
   if (steps === undefined) {
     return { verdict: "unknown", reason: "anchor has no frozen projection" };
   }
-  return classifyParkedRun({
-    anchorRunId,
-    steps,
-    readRun: async (runId) => {
-      const events = await deps.runReader.readRunEvents(
-        repoId,
-        WORKFLOW_RUN_REF,
-        runId,
-      );
-      return events.map(toWorkflowEvent);
-    },
-    mode: "replace",
-  });
+  const judge = (mode: "replace" | "park") =>
+    classifyParkedRun({
+      anchorRunId,
+      steps,
+      readRun: async (runId) => {
+        const events = await deps.runReader.readRunEvents(
+          repoId,
+          WORKFLOW_RUN_REF,
+          runId,
+        );
+        return events.map(toWorkflowEvent);
+      },
+      mode,
+    });
+  // An input may have woken the parked child before the Hub heard, so a
+  // parked deployment that is not parked now is judged as any other.
+  if (await deps.isAnchorParked(anchorRunId)) {
+    const parked = await judge("park");
+    if (parked.verdict === "parked") {
+      return {
+        ...parked,
+        reason: `the deployment is parked: ${parked.reason}`,
+      };
+    }
+  }
+  return judge("replace");
 }
 
 function toWorkflowEvent(event: WorkflowRunEvent): WorkflowEvent {

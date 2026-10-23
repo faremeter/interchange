@@ -9,6 +9,8 @@ import {
   uniqueIndex,
 } from "drizzle-orm/pg-core";
 
+import type { WorkflowParkState } from "@intx/types";
+
 import { principal } from "./principals";
 import { sidecar } from "./sidecar";
 import { tenant } from "./tenants";
@@ -110,6 +112,17 @@ export const workflowRun = pgTable(
     cancellationRequestedAt: timestamp("cancellation_requested_at"),
     cancellationReason: text("cancellation_reason"),
     cancellationDeadline: timestamp("cancellation_deadline"),
+    // Where a deployment anchor's workflow child stands in a park: `parking`
+    // until its sidecar stops the child, `parked` once the Hub holds the
+    // history the child left, `unparking` until the child runs again. Null
+    // while the child runs and no park is asked for.
+    parkState: text("park_state").$type<WorkflowParkState>(),
+    parkStateAt: timestamp("park_state_at"),
+    // The earliest pending timer a parked child is woken for.
+    parkedWakeAt: timestamp("parked_wake_at"),
+    // Why the park state last changed other than as requested: the sidecar
+    // refused a park or unpark, or an input woke the parked child.
+    parkReason: text("park_reason"),
     capacityReleaseAt: timestamp("capacity_release_at"),
     // When unrecoverable capacity loss happened while accepted history could
     // still settle some runs. Set on the anchor instead of failing its live

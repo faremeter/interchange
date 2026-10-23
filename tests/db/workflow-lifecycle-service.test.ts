@@ -43,6 +43,7 @@ import {
   createWorkflowLifecycleService,
   SidecarIdentityValidationError,
   WorkflowControlInitializingError,
+  WorkflowControlRejectedError,
   WorkflowControlTimeoutError,
   WorkflowControlUnconfirmedError,
   WorkflowControlUnreachableError,
@@ -70,7 +71,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       options: Partial<
         Pick<
           WorkflowLifecycleServiceDeps,
-          "db" | "sendControl" | "historyReceives"
+          "db" | "sendControl" | "historyReceives" | "parkRouter"
         >
       > & {
         runReader?: Partial<WorkflowRunReader>;
@@ -3384,6 +3385,245 @@ describe.skipIf(!harnessDbEnvAvailable())(
       current = new Date(current.getTime() + 1_000);
       expect(await lifecycle.reconcileNext()).toBe(true);
       expect(await runStates()).toEqual({ [runId]: "failed" });
+    });
+
+    describe("parking", () => {
+      type ParkCall = {
+        action: "park" | "unpark";
+        target: { allocationId: string; generation: number };
+        answer: PromiseWithResolvers<{ wakeAt?: string }>;
+      };
+
+      function parkRouter(calls: ParkCall[]) {
+        return {
+          parkAllocation: (target: ParkCall["target"]) => {
+            const answer = Promise.withResolvers<{ wakeAt?: string }>();
+            calls.push({ action: "park", target, answer });
+            return answer.promise;
+          },
+          unparkAllocation: async (target: ParkCall["target"]) => {
+            const answer = Promise.withResolvers<{ wakeAt?: string }>();
+            calls.push({ action: "unpark", target, answer });
+            await answer.promise;
+          },
+        };
+      }
+
+      async function park() {
+        return (await service().getStatus(tenantId, runId))?.park;
+      }
+
+      // The sweep pauses for its interval after each pass.
+      async function nextPass(lifecycle: ReturnType<typeof service>) {
+        current = new Date(current.getTime() + 1_000);
+        return lifecycle.reconcileNext();
+      }
+
+      // The sidecar's answer is recorded after the sweep that sent it returns.
+      async function parkBecomes(state: string) {
+        for (let attempt = 0; attempt < 200; attempt++) {
+          const status = await park();
+          if (status?.state === state) return status;
+          await Bun.sleep(5);
+        }
+        throw new Error(`The park state never became ${state}`);
+      }
+
+      async function setParkState(
+        parkState: "parking" | "parked" | "unparking" | null,
+      ) {
+        await h.db
+          .update(workflowRun)
+          .set({ parkState, parkStateAt: current })
+          .where(eq(workflowRun.id, runId));
+      }
+
+      test("a park is asked of the sidecar once at a time and records its wake time", async () => {
+        const calls: ParkCall[] = [];
+        const lifecycle = service({ parkRouter: parkRouter(calls) });
+        expect(await lifecycle.requestPark(tenantId, runId)).toBe("pending");
+        expect(await park()).toEqual({
+          state: "parking",
+          changedAt: current.toISOString(),
+          wakeAt: null,
+          reason: null,
+        });
+
+        expect(await lifecycle.reconcileNext()).toBe(true);
+        expect(await nextPass(lifecycle)).toBe(true);
+        expect(calls.map((call) => call.action)).toEqual(["park"]);
+        expect(calls[0]?.target).toEqual({ allocationId, generation: 1 });
+
+        current = new Date(current.getTime() + 1_000);
+        const wakeAt = new Date(current.getTime() + 60_000).toISOString();
+        calls[0]?.answer.resolve({ wakeAt });
+        expect(await parkBecomes("parked")).toEqual({
+          state: "parked",
+          changedAt: current.toISOString(),
+          wakeAt,
+          reason: null,
+        });
+        expect(await lifecycle.requestPark(tenantId, runId)).toBe("settled");
+        expect(await nextPass(lifecycle)).toBe(false);
+        expect(calls).toHaveLength(1);
+      });
+
+      test("an unpark runs the child again and a repeated one is settled", async () => {
+        await setParkState("parked");
+        const calls: ParkCall[] = [];
+        const lifecycle = service({ parkRouter: parkRouter(calls) });
+        expect(await lifecycle.requestUnpark(tenantId, runId)).toBe("pending");
+        expect((await park())?.state).toBe("unparking");
+        await lifecycle.reconcileNext();
+        expect(calls.map((call) => call.action)).toEqual(["unpark"]);
+        calls[0]?.answer.resolve({});
+        await parkBecomes("unparked");
+        expect(await lifecycle.requestUnpark(tenantId, runId)).toBe("settled");
+      });
+
+      test("a refused park records why and an unanswered one is asked again", async () => {
+        const calls: ParkCall[] = [];
+        const lifecycle = service({ parkRouter: parkRouter(calls) });
+        await lifecycle.requestPark(tenantId, runId);
+        await lifecycle.reconcileNext();
+        calls[0]?.answer.reject(
+          new WorkflowControlUnreachableError("No current connection"),
+        );
+        for (let attempt = 0; calls.length < 2 && attempt < 200; attempt++) {
+          await Bun.sleep(5);
+          await nextPass(lifecycle);
+        }
+        expect(calls.map((call) => call.action)).toEqual(["park", "park"]);
+        expect((await park())?.state).toBe("parking");
+
+        calls[1]?.answer.reject(
+          new WorkflowControlRejectedError(
+            "The deployment was not parked: the workflow run has ended",
+          ),
+        );
+        expect(await parkBecomes("unparked")).toMatchObject({
+          reason:
+            "The sidecar refused to park the deployment: The deployment was not parked: the workflow run has ended",
+        });
+      });
+
+      test("an answer to a park that was since unparked is dropped", async () => {
+        const calls: ParkCall[] = [];
+        const lifecycle = service({ parkRouter: parkRouter(calls) });
+        await lifecycle.requestPark(tenantId, runId);
+        await lifecycle.reconcileNext();
+        current = new Date(current.getTime() + 1_000);
+        expect(await lifecycle.requestUnpark(tenantId, runId)).toBe("pending");
+        await nextPass(lifecycle);
+        expect(calls.map((call) => call.action)).toEqual(["park", "unpark"]);
+
+        calls[0]?.answer.resolve({});
+        await Bun.sleep(20);
+        expect((await park())?.state).toBe("unparking");
+        calls[1]?.answer.resolve({});
+        await parkBecomes("unparked");
+      });
+
+      test("a park waits for capacity being replaced, and replacement parks a parked deployment again", async () => {
+        await setParkState("parked");
+        await h.db
+          .update(sidecarAllocation)
+          .set({
+            reconciliationLeaseId: "lease",
+            reconciliationLeaseExpiresAt: new Date(Date.now() + 60_000),
+          })
+          .where(eq(sidecarAllocation.id, allocationId));
+        const replacing = await createSidecarAllocationStore(
+          h.db,
+        ).beginReplacement({
+          allocationId,
+          expectedStatus: "allocated",
+          expectedGeneration: 1,
+          expectedLeaseId: "lease",
+          firstAttemptAt: current,
+          nextAttemptAt: current,
+          failureCode: "sidecar_lost",
+          failureMessage: "The sidecar was lost",
+          now: current,
+        });
+        expect(replacing?.status).toBe("replacing");
+        expect(await park()).toMatchObject({
+          state: "parking",
+          changedAt: current.toISOString(),
+        });
+
+        const calls: ParkCall[] = [];
+        const lifecycle = service({ parkRouter: parkRouter(calls) });
+        await lifecycle.reconcileNext();
+        expect(calls).toEqual([]);
+        await h.db
+          .update(sidecarAllocation)
+          .set({ status: "allocated", generation: 3 })
+          .where(eq(sidecarAllocation.id, allocationId));
+        await nextPass(lifecycle);
+        expect(calls.map((call) => call.target)).toEqual([
+          { allocationId, generation: 3 },
+        ]);
+      });
+
+      test("cancellation ends a park, and a stopping or ended run refuses one", async () => {
+        const lifecycle = service();
+        await lifecycle.requestPark(tenantId, runId);
+        expect(
+          await lifecycle.requestCancellation(tenantId, runId, "Stop"),
+        ).toBe("pending");
+        expect((await park())?.state).toBe("unparked");
+        expect(await lifecycle.requestPark(tenantId, runId)).toBe("cancelling");
+        expect(await lifecycle.requestUnpark(tenantId, runId)).toBe(
+          "cancelling",
+        );
+        expect(await lifecycle.requestPark("tnt_other", runId)).toBe(
+          "not_found",
+        );
+
+        await h.db
+          .update(workflowRun)
+          .set({ status: "completed", parkState: "parking" })
+          .where(eq(workflowRun.id, runId));
+        expect(await lifecycle.requestPark(tenantId, runId)).toBe("terminal");
+        expect(await park()).toBeNull();
+      });
+
+      test("the sidecar's reports correct the recorded park", async () => {
+        const lifecycle = service();
+        const report = { allocationId, generation: 1 };
+
+        await lifecycle.noteDeploymentParked({ ...report, parked: true });
+        expect((await park())?.state).toBe("parking");
+
+        // A hello finding the child running leaves a park still pending.
+        await lifecycle.noteDeploymentParked({ ...report, parked: false });
+        expect((await park())?.state).toBe("parking");
+
+        await setParkState("parked");
+        await lifecycle.noteDeploymentParked({
+          ...report,
+          generation: 2,
+          parked: false,
+        });
+        expect((await park())?.state).toBe("parked");
+        await lifecycle.noteDeploymentParked({ ...report, parked: false });
+        expect(await park()).toMatchObject({
+          state: "unparked",
+          reason: "The sidecar reported the workflow child running",
+        });
+
+        await setParkState("parking");
+        await lifecycle.noteDeploymentParked({
+          ...report,
+          parked: false,
+          reason: "Woken by mail",
+        });
+        expect(await park()).toMatchObject({
+          state: "unparked",
+          reason: "Woken by mail",
+        });
+      });
     });
   },
 );
