@@ -521,6 +521,20 @@ function createMailboxCallResponseData() {
 // A message's discriminant selects its validator. Keep each schema factory lazy
 // so a process constructs only the payload schemas it actually receives.
 const controlPayloadFactories = defineControlPayloadFactories({
+  startup: () =>
+    type({
+      // The first frame on every child's control channel. The child resumes
+      // no run before it holds these, so a resumed run that moves on without a
+      // new trigger or signal (a timer, a gate settled before a restart) never
+      // authorizes against absent grants or credentials. `snapshot` is null
+      // when no run is live to resume; `delivery` is null when the deployment
+      // binds no credentials.
+      type: "'startup'",
+      data: {
+        snapshot: CredentialsSnapshotPayload.or("null"),
+        delivery: CredentialDelivery.or("null"),
+      },
+    }),
   "trigger.fire": () =>
     type({
       type: "'trigger.fire'",

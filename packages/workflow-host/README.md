@@ -305,10 +305,12 @@ forking a process.
    and substrate-shaped seams (`createWorkflowHostSignalChannel`,
    plus the host-process scheduler singleton carried on
    `bindings.scheduler`).
-3. Self-discover in-flight runs by enumerating `runs/<runId>/` and
+3. Read the supervisor's `startup` frame, which carries the grants and
+   credentials a resumed run needs before it moves on.
+4. Self-discover in-flight runs by enumerating `runs/<runId>/` and
    resuming any whose log lacks a terminal event.
-4. Emit `ready` on the control channel.
-5. Loop on `trigger.fire`, `grants-updated`, `drain`, `recycle`,
+5. Emit `ready` on the control channel.
+6. Loop on `trigger.fire`, `grants-updated`, `drain`, `recycle`,
    `shutdown`, and `signal.deliver` frames.
 
 ### Authorize Closure

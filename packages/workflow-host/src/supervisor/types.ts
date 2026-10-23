@@ -356,12 +356,14 @@ export interface WorkflowSupervisorBindings {
    * loop fails that run (a synthesized `RunFailed`) rather than firing the
    * trigger against absent grants.
    *
-   * When this binding is wired, it is the SOLE grants push: `spawn` does not
-   * push a spawn-time snapshot, so the per-run push is the only thing that
-   * satisfies the child's throw-on-null authorize guard. A caller that
-   * injects no per-run sink -- today, the supervisor's own tests -- keeps the
-   * spawn-time push instead. Production (the sidecar) wires it to the
-   * walk-derived per-step credentials assembly.
+   * When this binding is wired, it is also the grants source of a child's
+   * `startup` frame: a child that resumes the live top-level run gets that
+   * run's snapshot before the run resumes, and otherwise none, so the
+   * per-run push is what satisfies the child's throw-on-null authorize guard
+   * for a new run. A caller that injects no per-run sink -- today, the
+   * supervisor's own tests -- gets the deploy-time snapshot in `startup`
+   * instead. Production (the sidecar) wires it to the walk-derived per-step
+   * credentials assembly.
    */
   onRunStart?: (args: {
     runId: string;
@@ -369,8 +371,8 @@ export interface WorkflowSupervisorBindings {
   }) => Promise<import("./credentials").CredentialsSnapshot>;
   /**
    * Decrypted credential material for the deployment's binding consumers and
-   * inference sources, delivered to the child on the pre-trigger barrier
-   * alongside the grants. Absent when the deployment binds no credentials. A
+   * inference sources, the seed of what the child gets in every `startup`
+   * frame and at the pre-trigger barrier, alongside the grants. Absent when the deployment binds no credentials. A
    * rotation flows through `deliverCredentials`, not this static binding.
    */
   credentialDelivery?: import("@intx/types/credential-delivery").CredentialDelivery;

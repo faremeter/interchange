@@ -635,7 +635,7 @@ function toLiveClosureDefinition(
  * described without threading it through the frame.
  */
 function makeMultistepFrame(args: MultistepDeployArgs): AgentDeployFrame {
-  const agentAddress = args.agentAddress ?? "multi@example.com";
+  const agentAddress = args.agentAddress ?? "run_multi@example.com";
   deployDefinitionRegistry.set(
     deriveWorkflowRunRepoId(agentAddress),
     toLiveClosureDefinition(args.definition),
@@ -1065,8 +1065,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     expect(observedBinary).toBe("/fake/bin/multistep-workflow-child");
     expect(env).toMatchObject({
       SIDECAR_DATA_DIR: multiDataDir,
-      DEPLOYMENT_ID: "multi-example-com",
-      MAILBOX_ADDRESS: "multi@example.com",
+      DEPLOYMENT_ID: "run_multi-example-com",
+      MAILBOX_ADDRESS: "run_multi@example.com",
     });
     expect(env.DEFINITION_HASH).toBe(approvedWireHash);
     expect(env[STEP_INFERENCE_SOURCES_ENV_KEY]).toBe(JSON.stringify(sources));

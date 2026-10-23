@@ -571,16 +571,6 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
           resolvedBy: null,
         }),
         ipcChildKeyPairFactory: () => Promise.resolve(childKeyPair),
-        initialCredentialsSnapshot: {
-          steps: [
-            {
-              stepId: STEP_ID,
-              address: MAILBOX,
-              grants: [],
-              contentHash: "deadbeef",
-            },
-          ],
-        },
       };
 
       const env = parseSpawnTimeEnv({
@@ -601,6 +591,23 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
         privateKeySeed: supervisorKeyPair.privateKey,
         channelId,
         writer: supervisorToChild.writer,
+      });
+      // The sender serializes frames, so later sends follow this one.
+      void supervisorSender.send({
+        type: "startup",
+        data: {
+          snapshot: {
+            steps: [
+              {
+                stepId: STEP_ID,
+                address: MAILBOX,
+                grants: [],
+                contentHash: "deadbeef",
+              },
+            ],
+          },
+          delivery: null,
+        },
       });
 
       const runPromise = runWorkflowChild({

@@ -75,6 +75,17 @@ test("dispatching control payloads preserves validation and parsed values", () =
       type: "credentials-updated",
       data: { delivery: { bindings: [], materials: [] }, revoke: [1] },
     },
+    { type: "startup", data: { snapshot: null, delivery: null } },
+    {
+      type: "startup",
+      data: {
+        snapshot: {
+          steps: [{ stepId: "s", address: "a", grants: [], contentHash: "h" }],
+        },
+        delivery: { bindings: [], materials: [] },
+      },
+    },
+    { type: "startup", data: { snapshot: null } },
     {
       type: "substrate.write.response",
       data: { requestId: "request", result: { ok: true, commitSha: "sha" } },

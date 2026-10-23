@@ -48,6 +48,8 @@ import {
   generateChannelId,
   generateHmacKey,
   receiveControlChannel,
+  type ControlChannelSender,
+  type ControlPayload,
 } from "../ipc/index";
 import { createSidecarActionCredentialsFactory } from "./action-credentials";
 import { parseSpawnTimeEnv, runWorkflowChild } from "./index";
@@ -353,7 +355,16 @@ function buildBindings(baseDir: string): RunWorkflowChildBindings {
       matchingGrants: [],
       resolvedBy: null,
     }),
-    initialCredentialsSnapshot: {
+  };
+}
+
+type StartupData = Extract<ControlPayload, { type: "startup" }>["data"];
+
+// The child reads `startup` before it resumes or announces `ready`.
+async function sendStartup(
+  sender: ControlChannelSender,
+  data: StartupData = {
+    snapshot: {
       steps: [
         {
           stepId: "main",
@@ -363,7 +374,10 @@ function buildBindings(baseDir: string): RunWorkflowChildBindings {
         },
       ],
     },
-  };
+    delivery: null,
+  },
+): Promise<void> {
+  await sender.send({ type: "startup", data });
 }
 
 function makeSourceRefEnv(opts: {
@@ -469,6 +483,7 @@ describe("source-ref run child", () => {
       channelId,
       writer: supervisorToChild.writer,
     });
+    await sendStartup(supervisorSender);
 
     const runPromise = runWorkflowChild({
       env,
@@ -657,6 +672,7 @@ describe("source-ref run child", () => {
       channelId,
       writer: supervisorToChild.writer,
     });
+    await sendStartup(supervisorSender);
 
     const runPromise = runWorkflowChild({
       env,
@@ -760,56 +776,60 @@ export async function resolveToken(input, ctx) {
             builtinCredentialProviders(),
           ),
         }),
-      initialCredentialMaterial: {
-        bindings: [{ handle: "api-token", credentialId: "cred-1", consumer }],
-        materials: [
-          {
-            credentialId: "cred-1",
-            providerKey: "http",
-            origin: "https://api.example.com",
-            secret: "sk-top-level",
-          },
-        ],
-      },
-      initialCredentialsSnapshot: {
-        steps: [
-          {
-            stepId: "fetch",
-            address: "deployment-x-fetch@example.com",
-            grants: [
-              {
-                id: "grant-use",
-                resource: "credential:cred-1",
-                action: "use",
-                effect: "allow",
-                origin: "system",
-                conditions: { tool: consumer },
-                expiresAt: null,
-                roleId: null,
-                principalId: null,
-              },
-              {
-                id: "grant-effect",
-                resource: "effect:resolve",
-                action: "invoke",
-                effect: "allow",
-                origin: "creator",
-                conditions: null,
-                expiresAt: null,
-                roleId: null,
-                principalId: null,
-              },
-            ],
-            contentHash: "deadbeef",
-          },
-        ],
-      },
+    };
+    const startupDelivery: StartupData["delivery"] = {
+      bindings: [{ handle: "api-token", credentialId: "cred-1", consumer }],
+      materials: [
+        {
+          credentialId: "cred-1",
+          providerKey: "http",
+          origin: "https://api.example.com",
+          secret: "sk-top-level",
+        },
+      ],
+    };
+    const startupSnapshot: StartupData["snapshot"] = {
+      steps: [
+        {
+          stepId: "fetch",
+          address: "deployment-x-fetch@example.com",
+          grants: [
+            {
+              id: "grant-use",
+              resource: "credential:cred-1",
+              action: "use",
+              effect: "allow",
+              origin: "system",
+              conditions: { tool: consumer },
+              expiresAt: null,
+              roleId: null,
+              principalId: null,
+            },
+            {
+              id: "grant-effect",
+              resource: "effect:resolve",
+              action: "invoke",
+              effect: "allow",
+              origin: "creator",
+              conditions: null,
+              expiresAt: null,
+              roleId: null,
+              principalId: null,
+            },
+          ],
+          contentHash: "deadbeef",
+        },
+      ],
     };
 
     const supervisorSender = createControlChannelSender({
       privateKeySeed: supervisorKeyPair.privateKey,
       channelId,
       writer: supervisorToChild.writer,
+    });
+    await sendStartup(supervisorSender, {
+      snapshot: startupSnapshot,
+      delivery: startupDelivery,
     });
     const runPromise = runWorkflowChild({
       env,

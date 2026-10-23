@@ -64,6 +64,19 @@ function parseSignalDeliverRunIds(lines: readonly string[]): string[] {
   return ids;
 }
 
+function parseControlFrameTypes(lines: readonly string[]): string[] {
+  const types: string[] = [];
+  for (const line of lines) {
+    const raw: unknown = JSON.parse(line);
+    const signed = SignedEnvelope(raw);
+    if (signed instanceof type.errors) continue;
+    const payload = ControlPayload(signed.envelope.payload);
+    if (payload instanceof type.errors) continue;
+    types.push(payload.type);
+  }
+  return types;
+}
+
 async function makeTempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
 }
@@ -670,6 +683,36 @@ describe("supervisor recycle: operator-initiated", () => {
     // The new child's channelId is reflected in the second spawn's
     // env so a downstream verifier could pin the rotation.
     expect(secondChild.channelId).toBe(attempt.newChannelId);
+
+    await supervisor.shutdown();
+  });
+
+  test("the respawned child receives startup as its first control frame", async () => {
+    const baseDir = await makeTempDir("recycle-startup-");
+    const ipcKeypair = await generateKeyPair();
+    const mailBus = createMockMailBus();
+    const tracker = createSpawnTracker({});
+    const { supervisor } = await spawnSupervisor({
+      baseDir,
+      tracker,
+      mailBus,
+      ipcKeypair,
+    });
+
+    const recyclePromise = supervisor.recycle({ reason: "startup" });
+    await tracker.awaitChildren(2);
+    const secondChild = tracker.children[1];
+    if (secondChild === undefined) {
+      throw new Error("second child missing after recycle spawn");
+    }
+    await driveReady(secondChild, ipcKeypair);
+    await recyclePromise;
+
+    const frameTypes = parseControlFrameTypes(
+      secondChild.supervisorToChild.flushed(),
+    );
+    expect(frameTypes[0]).toBe("startup");
+    expect(frameTypes.filter((t) => t === "startup")).toHaveLength(1);
 
     await supervisor.shutdown();
   });

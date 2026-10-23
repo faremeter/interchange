@@ -418,6 +418,19 @@ function parseCredentialsUpdatedData(lines: readonly string[]) {
   });
 }
 
+function parseStartupData(lines: readonly string[]) {
+  return lines.flatMap((line) => {
+    if (!line.includes("startup")) return [];
+    const raw: unknown = JSON.parse(line);
+    const signed = SignedEnvelope(raw);
+    if (signed instanceof type.errors) return [];
+    const payload = ControlPayload(signed.envelope.payload);
+    if (payload instanceof type.errors) return [];
+    if (payload.type !== "startup") return [];
+    return [payload.data];
+  });
+}
+
 const CancelRequestedBlob = type({
   type: "string",
   seq: "number",
@@ -2394,9 +2407,9 @@ describe("createWorkflowSupervisor", () => {
     );
 
     // The per-run sink reads the step's grants exactly as `spawn` does, but
-    // per run rather than once per spawn. When `onRunStart` is wired the
-    // spawn-time push is suppressed, so a `grants-updated` on the child
-    // stream can only come from this per-run barrier.
+    // per run rather than once per spawn. Spawn sends grants only in
+    // `startup`, so a `grants-updated` on the child stream can only come
+    // from this per-run barrier.
     const runStartCalls: { runId: string; anchorRunId: string }[] = [];
     const onRunStart: WorkflowSupervisorBindings["onRunStart"] = async (
       args,
@@ -2414,7 +2427,7 @@ describe("createWorkflowSupervisor", () => {
 
     const wired = await spawnWithRunStart({ baseDir, onRunStart });
 
-    // No grants-updated is pushed at spawn time when onRunStart is wired.
+    // Spawn pushes no grants-updated; its grants ride the startup frame.
     expect(
       parseControlFrameTypes(wired.supervisorToChild.flushed()),
     ).not.toContain("grants-updated");
@@ -2453,6 +2466,98 @@ describe("createWorkflowSupervisor", () => {
       type: "terminal.event",
       data: { runId: firedRunId, seq: 0, kind: "RunCompleted", at: "test" },
     });
+    await wired.supervisor.shutdown();
+  });
+
+  test("spawn sends startup first, with no grants while no run is live", async () => {
+    const baseDir = await makeTempDir("supervisor-startup-idle-");
+    await seedStepGrants(
+      baseDir,
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+    const runStartCalls: string[] = [];
+    const wired = await spawnWithRunStart({
+      baseDir,
+      onRunStart: async ({ runId }) => {
+        runStartCalls.push(runId);
+        throw new Error(`run ${runId} has no grants file`);
+      },
+      credentialDelivery: {
+        bindings: [],
+        materials: [
+          {
+            credentialId: "cred_a",
+            providerKey: "http",
+            origin: "https://api.example.test",
+            secret: "sk-a",
+          },
+        ],
+      },
+    });
+
+    const frameTypes = parseControlFrameTypes(
+      wired.supervisorToChild.flushed(),
+    );
+    expect(frameTypes[0]).toBe("startup");
+    expect(frameTypes).not.toContain("credentials-updated");
+    const [startup] = parseStartupData(wired.supervisorToChild.flushed());
+    expect(startup?.snapshot).toBeNull();
+    expect(startup?.delivery?.materials.map((m) => m.credentialId)).toEqual([
+      "cred_a",
+    ]);
+    expect(runStartCalls).toEqual([]);
+
+    await wired.supervisor.shutdown();
+  });
+
+  test("spawn sends the live top-level run's grants in startup", async () => {
+    const baseDir = await makeTempDir("supervisor-startup-live-");
+    await seedStepGrants(
+      baseDir,
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+    const runEventsDir = path.join(
+      baseDir,
+      "workflow-run",
+      "run_deployment-x",
+      "runs",
+      "run_deployment-x",
+      "events",
+    );
+    await fs.mkdir(runEventsDir, { recursive: true });
+    await fs.writeFile(
+      path.join(runEventsDir, "0.json"),
+      JSON.stringify({ type: "RunStarted", seq: 0 }),
+    );
+
+    const runStartCalls: { runId: string; anchorRunId: string }[] = [];
+    const wired = await spawnWithRunStart({
+      baseDir,
+      onRunStart: async (args) => {
+        runStartCalls.push(args);
+        return assembleCredentialsSnapshot({
+          repoStore: createStubRepoStore({ baseDir }),
+          principal: { kind: "supervisor" },
+          stepOrder: ["step-1"],
+          anchorRunId: "run_deployment-x",
+          deriveStepAddress: ({ runId, stepId }) =>
+            `${runId}-${stepId}@example.com`,
+        });
+      },
+    });
+
+    expect(parseControlFrameTypes(wired.supervisorToChild.flushed())[0]).toBe(
+      "startup",
+    );
+    const [startup] = parseStartupData(wired.supervisorToChild.flushed());
+    expect(startup?.snapshot?.steps.map((s) => s.stepId)).toEqual(["step-1"]);
+    expect(startup?.delivery).toBeNull();
+    expect(runStartCalls).toEqual([
+      { runId: "run_deployment-x", anchorRunId: "run_deployment-x" },
+    ]);
+
     await wired.supervisor.shutdown();
   });
 
@@ -4199,7 +4304,7 @@ describe("createWorkflowSupervisor", () => {
       [],
     ); // nothing sent
 
-    // Now spawn: the spawn re-assertion must carry the post-revoke mirror.
+    // Now spawn: the child's startup frame must carry the post-revoke mirror.
     const spawnPromise = supervisor.spawn({
       stepOrder: ["step-1"],
       definitionHash: "def-hash-idle",
@@ -4229,13 +4334,11 @@ describe("createWorkflowSupervisor", () => {
     });
     await spawnPromise;
 
-    const deliveries = parseCredentialsUpdatedFrames(
-      supervisorToChild.flushed(),
-    );
-    const last = deliveries[deliveries.length - 1];
-    expect(last).toBeDefined();
-    expect(last?.materials.map((m) => m.credentialId)).toEqual(["cred_b"]);
-    expect(last?.bindings).toEqual([]);
+    const [startup] = parseStartupData(supervisorToChild.flushed());
+    expect(startup?.delivery?.materials.map((m) => m.credentialId)).toEqual([
+      "cred_b",
+    ]);
+    expect(startup?.delivery?.bindings).toEqual([]);
 
     await supervisor.shutdown();
   });

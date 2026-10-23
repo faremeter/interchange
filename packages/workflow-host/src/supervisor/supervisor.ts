@@ -735,13 +735,13 @@ export function createWorkflowSupervisor(
   // Replacement processes belong to shutdown before their ready handshake
   // transfers ownership to the active state.
   const uninstalledChildren = new Set<SubprocessHandle>();
-  // The live credential delivery to seed the child on every spawn and every
-  // pre-trigger barrier. Initialized from the deploy-time delivery and MUTATED
-  // by `deliverCredentials` on every runtime update, so a mid-life revocation or
-  // rotation is durable: the re-assertion sites read THIS mirror, not the frozen
-  // `bindings.credentialDelivery`. Reading the frozen delivery would re-add an
-  // evicted credential on the next spawn/barrier, and the warm-recycle path
-  // (seeded only by the barrier) would lose every runtime update. Normalized on
+  // The live credential delivery the child is seeded with in every `startup`
+  // frame and at every pre-trigger barrier. Initialized from the deploy-time
+  // delivery and MUTATED by `deliverCredentials` on every runtime update, so a
+  // mid-life revocation or rotation is durable: the re-assertion sites read
+  // THIS mirror, not the frozen `bindings.credentialDelivery`. Reading the
+  // frozen delivery would re-add an evicted credential on the next spawn,
+  // respawn or barrier, and lose every runtime update. Normalized on
   // init via the same merge the child applies, so the mirror matches the child's
   // deduped cell from step zero. Lives outside `state` because `state` is a
   // phase union replaced on every transition; this must survive them.
@@ -2892,8 +2892,8 @@ export function createWorkflowSupervisor(
 
     // The ready handshake below folds `wired.readyPromise` into an
     // outcome value, handling its rejection. But a startup teardown that
-    // fires BEFORE the handshake -- a throw during credentials assembly
-    // or mail registration -- kills the child, and that kill rejects
+    // fires BEFORE the handshake -- a throw during credentials assembly,
+    // the startup send, or mail registration -- kills the child, and that kill rejects
     // `readyPromise` (the control channel ends). Attach a benign handler
     // now so the rejection is never unhandled on that path; the
     // handshake's own fold still observes the outcome when it runs.
@@ -2928,8 +2928,8 @@ export function createWorkflowSupervisor(
 
     // Everything from here to the successful `return` runs with the state
     // record in "starting" (then "running"). A throw at any of these
-    // steps -- credentials assembly, mail registration, the ready
-    // handshake, the credentials push, the dispatch-loop start -- routes
+    // steps -- credentials assembly, the startup send, mail registration,
+    // the ready handshake, the dispatch-loop start -- routes
     // through shutdownInternal, the single owner of starting/running
     // teardown: it kills the handle and releases the mail subscription
     // and address registration installed below.
@@ -2945,6 +2945,10 @@ export function createWorkflowSupervisor(
           : {}),
       });
       state.credentialsSnapshot = credentialsSnapshot;
+      // Nothing has sent on this channel yet: the host reaches a supervisor
+      // only once `spawn` resolves, and the dispatch loop and upstream pump
+      // start after `ready`.
+      await sendChildStartup(wired.wiring.controlSender, credentialsSnapshot);
 
       // Replay any orphaned `processing/` entries back to `inbox/`
       // BEFORE the dispatch loop's first dequeue. A crash mid-dispatch
@@ -3086,58 +3090,6 @@ export function createWorkflowSupervisor(
         throw readyRace.err;
       }
       const readyInfo = readyRace.info;
-
-      // Push the assembled credentialsSnapshot to the child before the
-      // mail buffer drains. Without this, the child's
-      // `createCredentialsBackedAuthorize` closure observes a null
-      // snapshot ref on the first authorize call and throws "no
-      // credentialsSnapshot active"; the run's first step fails before
-      // the runtime body can commit `StepCompleted`. The send rides the
-      // same control channel `trigger.fire` uses, so the ordering
-      // guarantee (`grants-updated` lands before `trigger.fire`) holds
-      // for buffered and post-ready inbound mail alike.
-      //
-      // Suppressed when `onRunStart` is wired: that binding makes the
-      // dispatch loop push a per-run snapshot before each `trigger.fire`,
-      // so the spawn-time push would only mask a broken per-run barrier
-      // (the child would already hold grants and never hit its throw-on-
-      // null guard). The per-run push is then the sole grants source.
-      if (bindings.onRunStart === undefined) {
-        await wired.wiring.controlSender.send({
-          type: "grants-updated",
-          data: {
-            snapshot: {
-              steps: credentialsSnapshot.steps.map((s) => ({
-                stepId: s.stepId,
-                address: s.address,
-                grants: [...s.grants],
-                contentHash: s.contentHash,
-              })),
-            },
-          },
-        });
-      }
-
-      // Deliver the run's credential material to the child on EVERY spawn, not
-      // only through the per-trigger `onRunStart` barrier. A restored run resumes
-      // from its parked state without a fresh `trigger.fire` (a signal wakes it),
-      // so the barrier would never re-deliver the cell and the resumed run's
-      // inference would fail closed. Seeding the live cell here at spawn lets an
-      // offline restart resolve each source's credential from the persisted
-      // (unsealed) delivery without waiting on a hub reconnect. Unlike the grants
-      // push above this is NOT suppressed when `onRunStart` is wired: the barrier
-      // fires per trigger, but a resume has no trigger, so the spawn push is the
-      // only credential source on the resume path. Idempotent with the barrier's
-      // own push on a fresh run: the child merges both, and both carry the same
-      // mirror. Absent when the deployment binds no credentials. Reads the live
-      // mirror, not the frozen deploy delivery, so a credential revoked earlier
-      // this process stays evicted.
-      if (currentCredentialDelivery !== null) {
-        await wired.wiring.controlSender.send({
-          type: "credentials-updated",
-          data: { delivery: currentCredentialDelivery },
-        });
-      }
 
       // Transition to running. The dispatch loop (started below)
       // picks up any pre-ready buffered mail through the FIFO inbox
@@ -3462,11 +3414,66 @@ export function createWorkflowSupervisor(
   }
 
   /**
+   * Send a freshly spawned child the grants and credential material it needs
+   * before it resumes any run, as the first frame on its channel. A resumed run
+   * can move on with no trigger or signal to carry them -- a timer fires, a
+   * gate whose signal landed before the restart settles -- so neither the
+   * per-trigger barrier nor a signal's grants refresh would reach it.
+   *
+   * The child resumes only the deployment's top-level run; its child runs
+   * inherit its grants. With `onRunStart` wired, that run's grants file is the
+   * snapshot while the run is live, and a live run without one fails the spawn
+   * as it would fail the barrier. With no live run there is nothing to
+   * authorize until the next trigger's barrier. Unwired, the deploy-time
+   * snapshot is the only grants source. The credential material is
+   * the live mirror, read at send time so a rotation delivered earlier is
+   * reflected.
+   */
+  async function sendChildStartup(
+    sender: ControlChannelSender,
+    credentialsSnapshot: CredentialsSnapshot,
+  ): Promise<void> {
+    let snapshot: CredentialsSnapshot | null = credentialsSnapshot;
+    if (bindings.onRunStart !== undefined) {
+      const runId = deriveWorkflowRunId(bindings.deploymentMailAddress);
+      const lifecycle = await readWorkflowRunLifecycle(
+        bindings.repoStore,
+        bindings.workflowRunRepoId,
+        runId,
+      );
+      snapshot =
+        lifecycle === "live"
+          ? await bindings.onRunStart({
+              runId,
+              anchorRunId: bindings.anchorRunId,
+            })
+          : null;
+    }
+    await sender.send({
+      type: "startup",
+      data: {
+        snapshot:
+          snapshot === null
+            ? null
+            : {
+                steps: snapshot.steps.map((s) => ({
+                  stepId: s.stepId,
+                  address: s.address,
+                  grants: [...s.grants],
+                  contentHash: s.contentHash,
+                })),
+              },
+        delivery: currentCredentialDelivery,
+      },
+    });
+  }
+
+  /**
    * Push the run's grants snapshot to the child ahead of its
    * `trigger.fire`. Returns `true` if the barrier FAILED (the caller must
    * skip the fire; the run has already been settled as `RunFailed`) and
    * `false` if the barrier passed or is not armed (`onRunStart` unwired,
-   * where `spawn` supplied the snapshot instead).
+   * where the child's `startup` frame carried the snapshot instead).
    *
    * The sink is a request/response contract: the supervisor awaits the
    * returned snapshot and awaits the `grants-updated` send so both land on
@@ -4656,6 +4663,7 @@ export function createWorkflowSupervisor(
             prior.terminalCohortAbort.abort();
             wakeDispatch();
           },
+          sendChildStartup,
           // Kept inline rather than extracted: this cohort-swap closes over
           // the supervisor's full mutable cohort state (drainAccumulators,
           // cohortRunIds, runInputChannels, parkNotifyWaiters, parkGenerations,

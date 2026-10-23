@@ -20,11 +20,13 @@
 //      adapters (RepoStore, BlobSubstrate, StepInvoker, SpawnChild)
 //      and the substrate-shaped seams (signal channel; scheduler is a
 //      host-process singleton supplied by the binary).
-//   3. Discover any in-flight runs via the workflow-run repo's `runs/`
+//   3. Read the supervisor's `startup` frame, which carries the grants
+//      and credentials a resumed run needs before it moves on.
+//   4. Discover any in-flight runs via the workflow-run repo's `runs/`
 //      subdirectory and call `runtimeRun` with `resumeFromEvents` for
 //      each one whose log lacks a terminal event.
-//   4. Emit `ready` on the control channel.
-//   5. Loop on control-channel frames:
+//   5. Emit `ready` on the control channel.
+//   6. Loop on control-channel frames:
 //        - `trigger.fired` -> first-fire the deployment's top-level run via
 //          `runtimeRun` (the supervisor only sends this for an absent log).
 //        - `grants-updated` -> replace the credentialsSnapshot.
@@ -33,12 +35,10 @@
 //          loop.
 //
 // The `WorkflowAuthorize` closure evaluates grants against the active
-// `credentialsSnapshot`. The snapshot's initial value can arrive in
-// the spawn-time env bootstrap (multi-step deploys whose host wires
-// the snapshot up-front) or via the first `grants-updated` control
-// frame; the closure re-reads the closure-local snapshot on every
-// invocation so a live update applies to subsequent steps without
-// reconstructing the env.
+// `credentialsSnapshot`. Its initial value arrives in the `startup`
+// frame, and a `grants-updated` frame replaces it; the closure re-reads
+// the closure-local snapshot on every invocation so a live update
+// applies to subsequent steps without reconstructing the env.
 //
 // The DrainController is wired here against the production
 // `createWorkflowHostDrainController`: on receipt of the supervisor's
@@ -406,13 +406,6 @@ export interface RunWorkflowChildBindings {
   /** Optional id generator override; production wires a monotonic one. */
   newId?: (prefix: string) => string;
   /**
-   * Optional bootstrap credentialsSnapshot. The host's production
-   * wiring supplies this for multi-step deploys whose snapshot is
-   * baked at spawn time; tests can pre-seed it directly. Absent
-   * value defers to the first `grants-updated` control frame.
-   */
-  initialCredentialsSnapshot?: CredentialsSnapshot;
-  /**
    * Bootstrap per-step inference-source table (keyed by stepId), parsed
    * from the spawn env by the host's substrate factory. Seeds the
    * mutable `sourcesRef` the build path reads. Absent value defers to an
@@ -420,15 +413,6 @@ export interface RunWorkflowChildBindings {
    * rather than resolving a default.
    */
   initialSources?: Record<string, InferenceSource[]>;
-  /**
-   * Bootstrap credential material for the deployment's binding consumers and
-   * inference sources, decrypted hub-side and delivered on the deploy frame so
-   * it is resident before any step runs. Seeds the mutable
-   * `credentialMaterialRef` the gated capability reads. Absent when the
-   * deployment binds no credentials; a later `credentials-updated` control
-   * frame refreshes it on rotation.
-   */
-  initialCredentialMaterial?: CredentialDelivery;
   /**
    * Optional override for the child's Ed25519 keypair factory. The
    * child mints a fresh keypair at startup, holds the private half
@@ -583,15 +567,12 @@ export interface RunWorkflowChildResult {
 export async function runWorkflowChild(
   opts: RunWorkflowChildOpts,
 ): Promise<RunWorkflowChildResult> {
-  const credentialsRef: CredentialsSnapshotRef = {
-    current: opts.bindings.initialCredentialsSnapshot ?? null,
-  };
+  // Both are set from the supervisor's `startup` frame before any run resumes.
+  const credentialsRef: CredentialsSnapshotRef = { current: null };
   const sourcesRef: SourcesSnapshotRef = {
     current: opts.bindings.initialSources ?? {},
   };
-  const credentialMaterialRef: CredentialMaterialRef = {
-    current: opts.bindings.initialCredentialMaterial ?? null,
-  };
+  const credentialMaterialRef: CredentialMaterialRef = { current: null };
   // The per-run credential wiring the top-level step invoker carries to the
   // substrate: the live material cell and a resolver for a step's grants from
   // the same credentials snapshot `authorize` reads. Built once over the two
@@ -851,6 +832,33 @@ export async function runWorkflowChild(
       writer: opts.controlWriter,
     });
 
+  // The receiver iterator yields one verified payload per call; any
+  // signature/channelId/seq violation crashes the receiver via `onCrash` and
+  // ends the iterator. Built before self-discovery so the `startup` frame is
+  // read off it before any run resumes; the control loop below continues on
+  // the same iterator.
+  const iter = receiveControlChannel({
+    publicKey: opts.env.hostPublicKey,
+    channelId: opts.env.channelId,
+    reader: opts.controlReader,
+    onCrash: (reason) => {
+      logger.error`workflow-child control channel crash: ${reason}`;
+    },
+  });
+  const startup = await iter.next();
+  if (startup.done === true) {
+    throw new Error(
+      "workflow-child: the control channel ended before the supervisor sent `startup`",
+    );
+  }
+  if (startup.value.type !== "startup") {
+    throw new Error(
+      `workflow-child: expected \`startup\` as the first control frame, got \`${startup.value.type}\``,
+    );
+  }
+  credentialsRef.current = startup.value.data.snapshot;
+  credentialMaterialRef.current = startup.value.data.delivery;
+
   // Self-discovery before announcing `ready`. The runtime body must
   // see every in-flight run before the supervisor starts forwarding
   // `trigger.fired` frames; otherwise a fresh trigger could land
@@ -958,18 +966,6 @@ export async function runWorkflowChild(
   });
 
   const triggeredRunIds: string[] = [];
-
-  // Control-loop. The receiver iterator yields one verified payload
-  // per call; any signature/channelId/seq violation crashes the
-  // receiver via `onCrash` and ends the iterator.
-  const iter = receiveControlChannel({
-    publicKey: opts.env.hostPublicKey,
-    channelId: opts.env.channelId,
-    reader: opts.controlReader,
-    onCrash: (reason) => {
-      logger.error`workflow-child control channel crash: ${reason}`;
-    },
-  });
 
   // Resolve the mailbox watch registry the control loop routes `mailbox.notify`
   // frames to. Production wires it on the bindings (the substrate factory builds
@@ -1597,6 +1593,12 @@ async function handleControlPayload(
         data: { requestId: payload.data.requestId, parked },
       });
       return false;
+    }
+    case "startup": {
+      // Read once, as the channel's first frame, before the control loop.
+      throw new Error(
+        "workflow-child received a second `startup` frame; the supervisor sends it once, first",
+      );
     }
     case "resumed.runs": {
       // `resumed.runs` is the child->supervisor self-discovery report;

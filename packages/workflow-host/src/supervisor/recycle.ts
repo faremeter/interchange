@@ -214,6 +214,16 @@ export interface RecycleContext {
    */
   readonly abortPriorCohort: () => void;
   /**
+   * Send the respawned child its `startup` frame: the grants and credential
+   * material it must hold before it resumes any run. Called with the
+   * re-assembled credentialsSnapshot, before the child is installed, so it is
+   * the first frame on the new channel.
+   */
+  readonly sendChildStartup: (
+    sender: ControlChannelSender,
+    credentialsSnapshot: CredentialsSnapshot,
+  ) => Promise<void>;
+  /**
    * Onward sink the supervisor uses to install the new child wiring
    * once the freshly-spawned child has emitted `ready` and the
    * credentialsSnapshot has been re-assembled.
@@ -388,8 +398,8 @@ export async function triggerRecycle(
   const eventPump = pumpEvents(eventIter, ctx.onInferenceEvent);
 
   // The child handshake below is deadline-bounded and needs these timer
-  // bindings; the pre-handshake credentials-read reap needs them too, so
-  // derive them before that read.
+  // bindings; the startup-failure reap needs them too, so derive them
+  // before the credentials read.
   const setTimer = ctx.setTimer ?? defaultSetTimer;
   const clearTimer = ctx.clearTimer ?? defaultClearTimer;
 
@@ -406,8 +416,8 @@ export async function triggerRecycle(
   // `state`, so the supervisor's recycle-failure teardown (which reaps
   // the PRIOR cohort) cannot see it; reap it here on failure or it
   // leaks. The spawn path routes this same throw through its teardown
-  // owner. The try wraps only the awaited read: the handle and pumps it
-  // reaps are all constructed above, so the reap always has live
+  // owner. The try wraps the read and the startup send: the handle and
+  // pumps it reaps are all constructed above, so the reap always has live
   // handles.
   let credentialsSnapshot: CredentialsSnapshot;
   try {
@@ -421,12 +431,14 @@ export async function triggerRecycle(
         ? { deriveStepRepoId: ctx.bindings.deriveStepRepoId }
         : {}),
     });
+    // The channel is not yet installed, so nothing else has sent on it.
+    await ctx.sendChildStartup(controlSender, credentialsSnapshot);
   } catch (cause) {
     await reapUnreadyChild(handle, eventPump, controlIncoming, {
       killTimeoutMs,
       setTimer,
       clearTimer,
-      phase: "credentials read failure",
+      phase: "startup failure",
     });
     throw cause;
   }

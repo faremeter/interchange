@@ -395,17 +395,31 @@ function buildBindings(opts: {
     ...(childKeyPair !== undefined
       ? { ipcChildKeyPairFactory: () => Promise.resolve(childKeyPair) }
       : {}),
-    initialCredentialsSnapshot: {
-      steps: [
-        {
-          stepId: "step-1",
-          address: "deployment-x-step-1@example.com",
-          grants: [],
-          contentHash: "deadbeef",
-        },
-      ],
-    },
   };
+}
+
+type StartupData = Extract<ControlPayload, { type: "startup" }>["data"];
+
+const TEST_STARTUP_SNAPSHOT: StartupData["snapshot"] = {
+  steps: [
+    {
+      stepId: "step-1",
+      address: "deployment-x-step-1@example.com",
+      grants: [],
+      contentHash: "deadbeef",
+    },
+  ],
+};
+
+// The child reads `startup` before it resumes or announces `ready`.
+async function sendStartup(
+  sender: ControlChannelSender,
+  snapshot: StartupData["snapshot"] = TEST_STARTUP_SNAPSHOT,
+): Promise<void> {
+  await sender.send({
+    type: "startup",
+    data: { snapshot, delivery: null },
+  });
 }
 
 function makeSpawnEnv(opts: {
@@ -572,6 +586,7 @@ describe("runWorkflowChild", () => {
       channelId,
       writer: supervisorToChild.writer,
     });
+    await sendStartup(supervisorSender);
 
     const runPromise = runWorkflowChild({
       env,
@@ -635,6 +650,7 @@ describe("runWorkflowChild", () => {
       channelId,
       writer: supervisorToChild.writer,
     });
+    await sendStartup(supervisorSender);
 
     // The watch callback is the delivery signal: `fire` schedules it on a
     // microtask, so the test reports the arrival from the callback rather
@@ -747,6 +763,7 @@ describe("runWorkflowChild", () => {
       channelId,
       writer: supervisorToChild.writer,
     });
+    await sendStartup(supervisorSender);
 
     const runPromise = runWorkflowChild({
       env,
@@ -853,6 +870,7 @@ describe("runWorkflowChild", () => {
       channelId,
       writer: supervisorToChild.writer,
     });
+    await sendStartup(supervisorSender);
 
     const runPromise = runWorkflowChild({
       env,
@@ -956,6 +974,7 @@ describe("runWorkflowChild", () => {
       channelId,
       writer: supervisorToChild.writer,
     });
+    await sendStartup(supervisorSender);
 
     const runPromise = runWorkflowChild({
       env,
@@ -1096,6 +1115,7 @@ describe("runWorkflowChild", () => {
       channelId,
       writer: supervisorToChild.writer,
     });
+    await sendStartup(supervisorSender);
 
     const runPromise = runWorkflowChild({
       env,
@@ -1228,6 +1248,7 @@ describe("runWorkflowChild", () => {
       channelId,
       writer: supervisorToChild.writer,
     });
+    await sendStartup(supervisorSender);
 
     // Capture the child's error diagnostics. A second concurrent driver
     // loses the race to settle the crashed residual and its uncaught
@@ -1361,6 +1382,7 @@ describe("runWorkflowChild", () => {
       channelId,
       writer: supervisorToChild.writer,
     });
+    await sendStartup(supervisorSender);
 
     const runPromise = runWorkflowChild({
       env,
@@ -1436,6 +1458,7 @@ describe("runWorkflowChild", () => {
       channelId,
       writer: supervisorToChild.writer,
     });
+    await sendStartup(supervisorSender);
 
     const runPromise = runWorkflowChild({
       env,
@@ -1501,6 +1524,7 @@ describe("runWorkflowChild", () => {
       channelId,
       writer: supervisorToChild.writer,
     });
+    await sendStartup(supervisorSender);
 
     const runPromise = runWorkflowChild({
       env,
@@ -1558,6 +1582,13 @@ describe("runWorkflowChild", () => {
       childKeyPair,
     });
 
+    const supervisorSender = createControlChannelSender({
+      privateKeySeed: supervisorKeyPair.privateKey,
+      channelId,
+      writer: supervisorToChild.writer,
+    });
+    await sendStartup(supervisorSender);
+
     // Run the child, capture its ready frame, verify via the
     // receiver iterator's bootstrap mode. The receiver extracts the
     // child's public key from the first frame's payload -- the
@@ -1592,11 +1623,6 @@ describe("runWorkflowChild", () => {
     expect(crashes).toHaveLength(0);
 
     // Tear down.
-    const supervisorSender = createControlChannelSender({
-      privateKeySeed: supervisorKeyPair.privateKey,
-      channelId,
-      writer: supervisorToChild.writer,
-    });
     await supervisorSender.send({
       type: "shutdown",
       data: { reason: "test done" },
@@ -1604,6 +1630,56 @@ describe("runWorkflowChild", () => {
     supervisorToChild.close();
     childToSupervisor.close();
     await runPromise;
+  });
+
+  test("fails when the first control frame is not startup", async () => {
+    const baseDir = await makeTempDir("child-no-startup-");
+    const supervisorKeyPair = await generateKeyPair();
+    const childKeyPair = await generateKeyPair();
+    const channelId = generateChannelId();
+    const hmacKey = generateHmacKey();
+    const { packageDir: closurePackageDir, approvedHash: definitionHash } =
+      await materializeClosure("child-def-", emptyWorkflowDefinition());
+
+    const supervisorToChild = createMemoryNdjsonStream();
+    const childToSupervisor = createMemoryNdjsonStream();
+    const eventStream = createMemoryFrameStream();
+    const env = parseSpawnTimeEnv(
+      makeSpawnEnv({
+        channelId,
+        hmacKeyHex: hexEncode(hmacKey),
+        hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
+        definitionHash,
+        closurePackageDir,
+      }),
+    );
+    const supervisorSender = createControlChannelSender({
+      privateKeySeed: supervisorKeyPair.privateKey,
+      channelId,
+      writer: supervisorToChild.writer,
+    });
+    await supervisorSender.send({
+      type: "trigger.fire",
+      data: {
+        runId: "run-1",
+        messageId: "msg-1",
+        receivedAt: 1,
+        payload: textMail("too early"),
+      },
+    });
+
+    await expect(
+      runWorkflowChild({
+        env,
+        controlReader: supervisorToChild.reader,
+        controlWriter: childToSupervisor.writer,
+        eventWriter: eventStream.writer,
+        bindings: buildBindings({ baseDir, childKeyPair }),
+      }),
+    ).rejects.toThrow(/expected `startup` as the first control frame/);
+    // The child never resumed a run or announced readiness.
+    expect(childToSupervisor.flushed()).toHaveLength(0);
+    supervisorToChild.close();
   });
 
   test("rejects a control frame whose signature does not verify", async () => {
@@ -1637,7 +1713,14 @@ describe("runWorkflowChild", () => {
 
     // Sign with the WRONG key -- the receiver iterator's signature
     // check should reject the frame and the loop should end without
-    // recording a triggered run.
+    // recording a triggered run. The genuine `startup` frame goes first so
+    // the forged frame reaches the control loop.
+    const supervisorSender = createControlChannelSender({
+      privateKeySeed: supervisorKeyPair.privateKey,
+      channelId,
+      writer: supervisorToChild.writer,
+    });
+    await sendStartup(supervisorSender);
     const wrongSender = createControlChannelSender({
       privateKeySeed: otherKeyPair.privateKey,
       channelId,
@@ -2036,16 +2119,16 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
         resolvedBy: null,
       }),
       ipcChildKeyPairFactory: () => Promise.resolve(childKeyPair),
-      initialCredentialsSnapshot: {
-        steps: [
-          {
-            stepId,
-            address: "deployment-x@example.com",
-            grants: [],
-            contentHash: "deadbeef",
-          },
-        ],
-      },
+    };
+    const startupSnapshot: StartupData["snapshot"] = {
+      steps: [
+        {
+          stepId,
+          address: "deployment-x@example.com",
+          grants: [],
+          contentHash: "deadbeef",
+        },
+      ],
     };
 
     const supervisorToChild = createMemoryNdjsonStream();
@@ -2072,6 +2155,7 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
       channelId,
       writer: supervisorToChild.writer,
     });
+    await sendStartup(supervisorSender, startupSnapshot);
 
     const runPromise = runWorkflowChild({
       env,
@@ -2226,16 +2310,16 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
         resolvedBy: null,
       }),
       ipcChildKeyPairFactory: () => Promise.resolve(childKeyPair),
-      initialCredentialsSnapshot: {
-        steps: [
-          {
-            stepId,
-            address: "deployment-x@example.com",
-            grants: [],
-            contentHash: "deadbeef",
-          },
-        ],
-      },
+    };
+    const startupSnapshot: StartupData["snapshot"] = {
+      steps: [
+        {
+          stepId,
+          address: "deployment-x@example.com",
+          grants: [],
+          contentHash: "deadbeef",
+        },
+      ],
     };
 
     const supervisorToChild = createMemoryNdjsonStream();
@@ -2258,6 +2342,7 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
       channelId,
       writer: supervisorToChild.writer,
     });
+    await sendStartup(supervisorSender, startupSnapshot);
 
     const runPromise = runWorkflowChild({
       env,
