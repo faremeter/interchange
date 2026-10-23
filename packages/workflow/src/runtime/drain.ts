@@ -46,6 +46,16 @@ export interface DrainController {
    * level decision (continue waiting vs cascade through cancel).
    */
   behaviorFor(stepId: string): DrainBehavior;
+  /**
+   * Pending while the host holds this process from starting new steps, so
+   * it can stop the process once every run waits; `null` otherwise. A step
+   * already running continues to its end or to a park, and a resumed park
+   * re-parks: only a step with no `StepStarted` yet waits for the lift. A
+   * spawned child workflow or onTrigger body runs under its own controller,
+   * so it goes on to its next wait as part of the parent's current step.
+   * Resolves when the hold is lifted.
+   */
+  readonly hold: Promise<void> | null;
 }
 
 /**
@@ -145,6 +155,7 @@ export function createNoopDrainController(
     behaviorFor(stepId) {
       return resolveDrainBehavior(definition, stepId);
     },
+    hold: null,
   };
 }
 

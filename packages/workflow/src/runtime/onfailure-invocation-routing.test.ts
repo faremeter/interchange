@@ -101,7 +101,11 @@ function routedTo(log: readonly WorkflowEvent[], stepId: string): unknown {
 function abortedDrain(): WorkflowRuntimeEnv["drain"] {
   const controller = new AbortController();
   controller.abort();
-  return { signal: controller.signal, behaviorFor: () => "cancel" };
+  return {
+    signal: controller.signal,
+    behaviorFor: () => "cancel",
+    hold: null,
+  };
 }
 
 describe("onFailure action / childWorkflow routing", () => {

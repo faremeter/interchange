@@ -79,6 +79,7 @@ function createControllableDrain(
       for (const wake of waiters.splice(0)) wake(stepId);
       return resolveDrainBehavior(definition, stepId);
     },
+    hold: null,
     trigger() {
       controller.abort();
     },

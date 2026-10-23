@@ -31,6 +31,8 @@
 //          `runtimeRun` (the supervisor only sends this for an absent log).
 //        - `grants-updated` -> replace the credentialsSnapshot.
 //        - `drain` -> forward to the drain controller (no-op here).
+//        - `hold` / `hold.lift` -> hold the runs from starting steps
+//          their logs have not started, or lift the hold.
 //        - `shutdown` -> stop accepting new triggers and exit the
 //          loop.
 //
@@ -1363,6 +1365,14 @@ async function handleControlPayload(
       // deadline.
       logger.info`workflow-child drain requested (deadlineMs=${String(payload.data.deadlineMs)})`;
       ctx.drainController.requestDrain();
+      return false;
+    }
+    case "hold": {
+      ctx.drainController.holdSteps();
+      return false;
+    }
+    case "hold.lift": {
+      ctx.drainController.liftHold();
       return false;
     }
     case "shutdown": {

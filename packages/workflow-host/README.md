@@ -310,8 +310,8 @@ forking a process.
 4. Self-discover in-flight runs by enumerating `runs/<runId>/` and
    resuming any whose log lacks a terminal event.
 5. Emit `ready` on the control channel.
-6. Loop on `trigger.fire`, `grants-updated`, `drain`, `recycle`,
-   `shutdown`, and `signal.deliver` frames.
+6. Loop on `trigger.fire`, `grants-updated`, `drain`, `hold`,
+   `hold.lift`, `recycle`, `shutdown`, and `signal.deliver` frames.
 
 ### Authorize Closure
 

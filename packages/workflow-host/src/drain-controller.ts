@@ -8,7 +8,7 @@
 // supplies the production controller the workflow-process child wires
 // against the runtime env.
 //
-// The controller owns three pieces of state:
+// The controller owns four pieces of state:
 //   1. An `AbortController` whose signal exposes drain status to the
 //      runtime body.
 //   2. A reference to the live `WorkflowDefinition` the child loaded;
@@ -17,6 +17,8 @@
 //   3. An `accumulatedCancelMs` counter the supervisor's drainTimeout
 //      accumulator reads. The runtime body increments it; the
 //      supervisor consults it without owning the writer.
+//   4. The hold in force, if any: a pending promise the runtime body's
+//      main loop awaits before starting a step the log has not started.
 //
 // The supervisor calls `requestDrain()` when its control-loop receives
 // the `drain` mail; the controller flips its signal and the runtime
@@ -39,6 +41,13 @@ export interface WorkflowHostDrainController extends DrainController {
    * has been aborted but a downstream observer has not yet read it.
    */
   readonly drainRequested: boolean;
+  /**
+   * Hold the process from starting new steps, so the supervisor can stop it
+   * once every run waits. Idempotent while a hold is in force.
+   */
+  holdSteps(): void;
+  /** Lift a hold in force, letting held steps start. Idempotent. */
+  liftHold(): void;
 }
 
 export interface CreateWorkflowHostDrainControllerOpts {
@@ -66,6 +75,7 @@ export function createWorkflowHostDrainController(
 ): WorkflowHostDrainController {
   const controller = new AbortController();
   let requested = false;
+  let hold: PromiseWithResolvers<undefined> | null = null;
   return {
     signal: controller.signal,
     behaviorFor(stepId) {
@@ -80,6 +90,19 @@ export function createWorkflowHostDrainController(
     },
     get drainRequested() {
       return requested;
+    },
+    get hold() {
+      return hold === null ? null : hold.promise;
+    },
+    holdSteps() {
+      if (hold !== null) return;
+      hold = Promise.withResolvers<undefined>();
+    },
+    liftHold() {
+      if (hold === null) return;
+      const lifted = hold;
+      hold = null;
+      lifted.resolve(undefined);
     },
   };
 }

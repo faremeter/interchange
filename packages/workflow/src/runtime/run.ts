@@ -1069,6 +1069,10 @@ async function executeRunBody(
   // One waiter for the whole loop. A flush that already failed resolves
   // it immediately, so the next race observes it without a new registration.
   const flushFailed = whenRunFlushFails(runId);
+  // A held run with nothing in flight has no step to wake it on a cancel.
+  const cancelled = new Promise<void>((resolve) => {
+    bridgeAbort(cancelController.signal, resolve);
+  });
   function throwRememberedWriteFailure(): void {
     if (repoWriteFailure === undefined) {
       repoWriteFailure = flushFailureCause(runId);
@@ -1133,7 +1137,17 @@ async function executeRunBody(
         if (inFlight.size === 0 && isRunDone(definition, state)) break;
       }
 
-      const ready = nextSchedulable(definition, state, inFlight);
+      // Under a host hold only a step the log already started is offered, so
+      // a resumed park re-parks and a step with no `StepStarted` waits. An
+      // aborted run is not held: its steps start and settle as they would.
+      const hold = cancelController.signal.aborted ? null : env.drain.hold;
+      const schedulable = nextSchedulable(definition, state, inFlight);
+      const ready =
+        hold === null
+          ? schedulable
+          : schedulable.filter((primitive) => state.steps.has(primitive.id));
+      const held =
+        hold !== null && ready.length < schedulable.length ? hold : null;
       for (const primitive of ready) {
         inFlight.add(primitive.id);
         const ctx: SelectorContext = {
@@ -1209,6 +1223,16 @@ async function executeRunBody(
 
       if (stepPromises.size === 0) {
         throwRememberedWriteFailure();
+        if (held !== null) {
+          // A hold is a pause the host drives, like a park: what the run
+          // buffered is made durable before it waits, so a host that stops
+          // the held run loses nothing it reported.
+          await flush(env, runId);
+          await Promise.race([held, cancelled, flushFailed]);
+          throwRememberedWriteFailure();
+          state = await reloadState(env, runId);
+          continue;
+        }
         if (ready.length === 0) {
           throw new Error(
             `workflow ${definition.id} run ${runId} stalled with no schedulable primitives`,
@@ -1230,6 +1254,7 @@ async function executeRunBody(
           p.catch(() => undefined),
         ),
         flushFailed,
+        ...(held !== null ? [held] : []),
       ]);
       throwRememberedWriteFailure();
       state = await reloadState(env, runId);

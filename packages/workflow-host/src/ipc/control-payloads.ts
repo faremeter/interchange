@@ -579,6 +579,18 @@ const controlPayloadFactories = defineControlPayloadFactories({
         deadlineMs: "number",
       },
     }),
+  hold: () =>
+    type({
+      // Start no new step until `hold.lift`; running steps go on to their end
+      // or a park, so a supervisor can stop the child once every run waits.
+      type: "'hold'",
+      data: {},
+    }),
+  "hold.lift": () =>
+    type({
+      type: "'hold.lift'",
+      data: {},
+    }),
   shutdown: () =>
     type({
       type: "'shutdown'",

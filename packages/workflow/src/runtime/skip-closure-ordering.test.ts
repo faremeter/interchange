@@ -80,7 +80,11 @@ function buildEnv(
 function abortedDrain(): WorkflowRuntimeEnv["drain"] {
   const controller = new AbortController();
   controller.abort();
-  return { signal: controller.signal, behaviorFor: () => "cancel" };
+  return {
+    signal: controller.signal,
+    behaviorFor: () => "cancel",
+    hold: null,
+  };
 }
 
 // A step whose invocation settles only after several microtasks, so it wakes

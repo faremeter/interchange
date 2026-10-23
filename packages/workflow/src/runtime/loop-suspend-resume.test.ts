@@ -881,6 +881,7 @@ function createControllableDrain(
   return {
     signal: controller.signal,
     behaviorFor: (stepId) => resolveDrainBehavior(definition, stepId),
+    hold: null,
     trigger: () => controller.abort(),
   };
 }

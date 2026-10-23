@@ -88,7 +88,11 @@ function buildEnv(
 function abortedDrain(): WorkflowRuntimeEnv["drain"] {
   const controller = new AbortController();
   controller.abort();
-  return { signal: controller.signal, behaviorFor: () => "cancel" };
+  return {
+    signal: controller.signal,
+    behaviorFor: () => "cancel",
+    hold: null,
+  };
 }
 
 // A pruned step reaches a terminal StepCompleted carrying a skip sentinel, but

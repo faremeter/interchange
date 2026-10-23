@@ -228,7 +228,11 @@ describe("awaitSignal onTimeout routing", () => {
           return blobs.recordOutput(stepId, attempt, value);
         },
       },
-      drain: { signal: drain.signal, behaviorFor: () => "cancel" },
+      drain: {
+        signal: drain.signal,
+        behaviorFor: () => "cancel",
+        hold: null,
+      },
     });
     await runtimeRun(def, env, { runId: "r", triggerPayload: null }).complete;
 
