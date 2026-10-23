@@ -7,7 +7,7 @@
 // pure registry functions and whose `onExhausted` routes to an
 // `escalation`. Runs three scenarios end-to-end without an LLM: the
 // amendment loop converging, the loop exhausting to escalation, and a
-// mid-loop crash resuming to exactly-once effects.
+// mid-loop crash re-driven with a shared ledger that runs each effect once.
 //
 // The demo's real agents (planner/critic/fixer/...) are stubbed behind
 // the invokeStep seam here, which keeps this the fast, deterministic,
@@ -294,7 +294,7 @@ describe("dispatch demo shape", () => {
     expect("consolidate" in result.outputs).toBe(false);
   });
 
-  test("a mid-amendment crash resumes to exactly-once effects", async () => {
+  test("a mid-amendment crash re-drive with a shared ledger runs each effect once", async () => {
     const blobs = createInMemoryBlobSubstrate();
     const effects = inMemoryLedger();
     const effectRuns = { n: 0 };

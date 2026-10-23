@@ -183,9 +183,8 @@ export function isResumableOnTriggerStep(
  * `runAction`), so a lone crash of either always leaves this residual.
  * The resume guard settles such a step as a terminal `StepFailed`
  * (at-most-once refusal) rather than throwing. For an `action` the
- * per-effect ledger is a deeper exactly-once line of defense for effects
- * routed through the EffectContext; the barrier is what makes the action
- * non-re-invocable at this layer.
+ * barrier is what makes the action non-re-invocable, not the per-effect
+ * ledger (see `EffectLedger`).
  *
  * A `map` outer step left `in-flight` is deliberately excluded: rebuilding
  * its iteration state is a re-arm surface this runtime body lacks, so it

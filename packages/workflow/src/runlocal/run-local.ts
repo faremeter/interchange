@@ -59,8 +59,8 @@ export interface RunLocalOptions extends RuntimeRunOptions {
   /**
    * Override the action-runner. The default resolves the handler ref via
    * `actionResolver`, builds an `EffectContext` against the in-memory
-   * ledger, and runs the handler. Tests that need a shared durable
-   * ledger across a re-run construct the env directly instead.
+   * ledger, and runs the handler. Tests that need a ledger shared across
+   * a re-run construct the env directly instead.
    */
   invokeAction?: ActionInvoker;
   /**

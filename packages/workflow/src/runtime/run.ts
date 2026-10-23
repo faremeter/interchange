@@ -2126,9 +2126,7 @@ async function runStep(
  * Like `runStep`, the action's `StepStarted` is flushed durably via
  * `commitDurable` BEFORE `env.invokeAction` runs, not left in the run-body
  * buffer. An action handler can perform observable side effects the
- * runtime cannot record exactly-once: the EffectContext ledger dedups
- * only effects routed through `perform`, which is an author obligation the
- * runtime cannot enforce. Flushing the marker first means a crash
+ * runtime cannot record. Flushing the marker first means a crash
  * mid-invocation leaves a durable `StepStarted` with no `StepCompleted`,
  * which the recovery path in `executeRunBody` settles as a terminal
  * failure rather than re-invoking the handler (at-most-once). On a fresh
@@ -2137,9 +2135,8 @@ async function runStep(
  *
  * No retry loop: an action is single-attempt, so a thrown effect lands
  * `StepFailed` through `runPrimitiveSafe` like every other non-step
- * runner. The per-effect ledger is a deeper exactly-once line of defense
- * for effects routed through `perform`; the barrier here is what makes the
- * action non-re-invocable at the runtime layer.
+ * runner. The barrier here is what makes the action non-re-invocable at
+ * the runtime layer, not the per-effect ledger (see `EffectLedger`).
  *
  * Cancellation splits along the same line. The runtime owes that a handler
  * is never STARTED for a run already known to be cancelled, which the

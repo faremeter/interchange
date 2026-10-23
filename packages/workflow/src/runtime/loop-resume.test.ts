@@ -174,7 +174,7 @@ function buildEnv(
 }
 
 describe("loop resume", () => {
-  test("a mid-iteration crash resumes to exactly-once", async () => {
+  test("a mid-iteration crash re-drive with a shared ledger runs each effect once", async () => {
     const blobs = createInMemoryBlobSubstrate();
     const effects = inMemoryLedger();
     const effectRuns = { n: 0 };

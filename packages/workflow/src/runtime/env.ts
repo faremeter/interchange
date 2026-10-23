@@ -259,22 +259,29 @@ export interface ActionInvokeResult {
 }
 
 /**
- * Crash-safe exactly-once substrate for action effects. It is a
- * substrate DISTINCT from the run event log: recording an effect must
- * NOT enter the run-log commit chain or trigger a segment flush, so a
- * dropped run-log buffer never takes the ledger with it.
+ * Per-effect record of the outputs an action's `perform` calls returned,
+ * keyed on the run, the step, the `effectId` and the action's input. A
+ * `perform` with a recorded key returns the recorded output and does not
+ * run its effect, so a handler that performs the same effect twice in one
+ * call runs it once.
  *
- * `record` MUST be durable on return (synchronous with respect to
- * durability), independent of the run-log buffer, and MUST NOT be
- * co-located with `StepCompleted` in a shared batch -- the crash-dedup
- * contract depends on the ledger surviving a dropped run-log buffer.
- * The in-memory implementation is trivially durable; a production
- * substrate owns this contract.
+ * It is separate from the run event log: a record does not enter the
+ * run-log commit chain or trigger a segment flush.
+ *
+ * The ledger is not what stops an effect from repeating across a crash; the
+ * `ActionPrimitive` doc comment states that rule, its premise and its
+ * exceptions. While the premise holds, no resume needs a record written
+ * before the crash, so an in-memory ledger is enough. A ledger that fsyncs
+ * its records would only narrow the host-crash exception, because an effect
+ * that ran before its record still repeats. A re-drive from a trimmed or
+ * dropped log with one ledger shared across it is the case where a resume
+ * hits a record written before the crash; tests use it to pin the ledger-hit
+ * path.
  */
 export interface EffectLedger {
   /** Return the recorded output for a key, or `undefined` on a miss. */
   lookup(effectKey: string): Promise<{ output: unknown } | undefined>;
-  /** Durably record an effect's output under its key (see contract above). */
+  /** Record an effect's output under its key. */
   record(effectKey: string, output: unknown): Promise<void>;
 }
 
@@ -282,7 +289,7 @@ export interface EffectLedger {
  * Capability- and ledger-checked handle passed to an action handler.
  * Every external effect the handler performs must run through `perform`
  * so it is (a) authorized against the operator-approved effect floor and
- * (b) deduplicated by the effect ledger across a crash re-run. `perform`
+ * (b) deduplicated by the effect ledger (see `EffectLedger`). `perform`
  * refuses any `capability` not in the action's declared `requires` set,
  * calls `env.authorize` before the effect, and on a ledger hit returns
  * the recorded result without running `run`.
@@ -291,7 +298,7 @@ export interface EffectLedger {
  * credentials, so every authenticated call that `run` awaits is gated by the
  * effect grant and recorded in the ledger. A call that `run` starts and does
  * not await can finish after the record, so its result is not recorded. On a
- * ledger hit `run` does not run, so a replay resolves no credential.
+ * ledger hit `run` does not run, so it resolves no credential.
  */
 export interface EffectContext {
   perform(opts: {
@@ -664,7 +671,7 @@ export interface WorkflowRuntimeEnv {
    */
   invokeAction?: ActionInvoker;
   /**
-   * Effect ledger for crash-safe exactly-once action effects. On the env
+   * Effect ledger for action effects (see `EffectLedger`). On the env
    * only so the host's `invokeAction` can build its `EffectContext`
    * against it; the runtime body never calls it directly (same as
    * `authorize`). Optional for the same reason as `invokeAction`.
