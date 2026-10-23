@@ -87,6 +87,12 @@ export {
 export type { ResumeResidual, StepKindLookup } from "./dag";
 
 export {
+  classifyParkedRun,
+  type ParkedRunClassification,
+  type ParkedRunVerdict,
+} from "./parked-run";
+
+export {
   scopedStepId,
   baseStepId,
   loopBodyRunId,
