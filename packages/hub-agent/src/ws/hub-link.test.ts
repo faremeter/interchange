@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-non-null-assertion -- refs[0]! always follows expect(refs).toHaveLength(1) */
-import { describe, test, expect, afterAll } from "bun:test";
+import { describe, test, expect, afterAll, spyOn } from "bun:test";
 import { type } from "arktype";
 import { Hono } from "hono";
 import { upgradeWebSocket, websocket } from "hono/bun";
@@ -1959,30 +1959,21 @@ describe("sidecar↔hub integration", () => {
     }
   });
 
-  // The hub-link's `pushWorkflowRunPack` retries the FIRST push to a
-  // never-bootstrapped `(repoId, ref)` once on failure, absorbing the
-  // hub-side `initRepo` CAS race. The retry guard is a Set keyed by
-  // `(repoId, ref)`; the per-(repoId, ref) queue serializes pushes so
-  // a second-from-this-sender push only fires after the first has
-  // settled. Without the queue, two concurrent first-pushes from a
-  // single sender could each observe `workflowRunPackBootstrapped.has`
-  // as `false` and each fire its own bootstrap retry — a spurious
-  // double retry the queue+flag combination is supposed to prevent.
-  // This test pins the queue+retry interaction so a future change to
-  // the bootstrap-retry surface cannot quietly introduce that
-  // spurious retry.
-  test("two concurrent first-pushes to the same (repoId, ref) fire exactly one bootstrap retry", async () => {
+  test("two pushes to the same (repoId, ref) reach the Hub one at a time", async () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
 
-    // Fail the very first workflow-run pack push so the hub-link
-    // observes a rejection on its first send and exercises the
-    // bootstrap-retry arm. Every subsequent push (the retry, the
-    // second concurrent push) succeeds.
+    // The order in which the sidecar writes each `repo.pack.done` frame to
+    // its socket and the Hub answers each push. The spy logs a frame as the
+    // sidecar sends it, before the Hub sees it, so the log shows when the
+    // sender put each push on the wire.
+    const events: string[] = [];
+    const transferIds: string[] = [];
+    let running = 0;
+    let maxRunning = 0;
     let receiveCount = 0;
-    const receiveRecord: {
-      transferIds: string[];
-    } = { transferIds: [] };
+    const aEntered = Promise.withResolvers<undefined>();
+    const releaseA = Promise.withResolvers<undefined>();
     const wfrRouter = createSidecarRouter({
       withExecutableWorkflowRun: async (_target, send) => send(),
       ...acceptAnySidecar,
@@ -1992,13 +1983,21 @@ describe("sidecar↔hub integration", () => {
       lookups: {
         async receiveWorkflowRunPack(_repoId, _pack, _ref, _commitSha) {
           receiveCount += 1;
-          if (receiveCount === 1) {
-            // Mirror the hub's wire-level translation of an
-            // `initRepo` non-fast-forward race: surface a `corrupt`
-            // rejection so the sender's bootstrap arm runs once.
-            return { accepted: false, reason: "corrupt" };
+          const isA = receiveCount === 1;
+          running += 1;
+          maxRunning = Math.max(maxRunning, running);
+          try {
+            if (isA) {
+              aEntered.resolve(undefined);
+              await releaseA.promise;
+              events.push("answer A");
+              return { accepted: false, reason: "corrupt" };
+            }
+            events.push("answer B");
+            return { accepted: true };
+          } finally {
+            running -= 1;
           }
-          return { accepted: true };
         },
       },
     });
@@ -2021,29 +2020,9 @@ describe("sidecar↔hub integration", () => {
             wfrRouter.handleOpen(handle);
           },
           onMessage(evt, _ws) {
-            if (typeof evt.data === "string") {
-              // Capture every inbound `repo.pack.done` frame so the
-              // test can assert how many sends the link actually
-              // issued — one per (initial-attempt | retry | second
-              // push). A spurious second retry adds a fourth entry.
-              try {
-                const parsed: unknown = JSON.parse(evt.data);
-                if (
-                  typeof parsed === "object" &&
-                  parsed !== null &&
-                  "type" in parsed &&
-                  parsed.type === "repo.pack.done" &&
-                  "transferId" in parsed &&
-                  typeof parsed.transferId === "string"
-                ) {
-                  receiveRecord.transferIds.push(parsed.transferId);
-                }
-              } catch {
-                /* not a JSON frame — ignore */
-              }
-              prepareAllocationFrame(wfrRouter, evt.data);
-              wfrRouter.handleMessage(handle, evt.data);
-            }
+            if (typeof evt.data !== "string") return;
+            prepareAllocationFrame(wfrRouter, evt.data);
+            wfrRouter.handleMessage(handle, evt.data);
           },
           onClose(_evt, _ws) {
             wfrRouter.handleClose(handle);
@@ -2062,7 +2041,7 @@ describe("sidecar↔hub integration", () => {
     const client = createHubLink({
       capacity: DEFAULT_SIDECAR_CAPACITY,
       hubURL: `ws://localhost:${wfrServer.port}/ws`,
-      sidecarId: "sc-wfr-bootstrap-race",
+      sidecarId: "sc-wfr-serialize",
       token: "test-token",
       transport,
       sessions,
@@ -2072,14 +2051,36 @@ describe("sidecar↔hub integration", () => {
       },
     });
 
-    client.connect();
+    const originalSend = WebSocket.prototype.send;
+    let sendSpy: ReturnType<typeof spyOn> | undefined;
     try {
+      sendSpy = spyOn(WebSocket.prototype, "send").mockImplementation(function (
+        this: WebSocket,
+        data,
+      ) {
+        if (typeof data === "string") {
+          const parsed: unknown = JSON.parse(data);
+          if (
+            typeof parsed === "object" &&
+            parsed !== null &&
+            "type" in parsed &&
+            parsed.type === "repo.pack.done" &&
+            "transferId" in parsed &&
+            typeof parsed.transferId === "string"
+          ) {
+            transferIds.push(parsed.transferId);
+            events.push(transferIds.length === 1 ? "done A" : "done B");
+          }
+        }
+        originalSend.call(this, data);
+      });
+      client.connect();
       await welcomed.promise;
 
       // Deploy an agent so the sender's outbound pack frames carry a
       // routable address; otherwise the hub drops the push as
       // "unrouted agent" before it ever reaches `receiveWorkflowRunPack`.
-      const agentAddress = "race-agent@test.interchange";
+      const agentAddress = "serialize-agent@test.interchange";
       await sendAgentDeploy(wfrRouter, agentAddress, TEST_CONFIG);
       await waitUntil(() =>
         wfrRouter.getRoutableAddresses().includes(agentAddress),
@@ -2089,15 +2090,14 @@ describe("sidecar↔hub integration", () => {
         kind: "workflow-run",
         // `deriveWorkflowRunRepoId(agentAddress)`; kept literal here so this
         // package's tests do not acquire a runtime dependency on the deployer.
-        id: "race-agent-test-interchange",
+        id: "serialize-agent-test-interchange",
       } as const;
       const ref = "refs/heads/events";
       const commitSha = "a".repeat(40);
       const pack = new Uint8Array([1, 2, 3, 4, 5]);
 
-      // Kick both pushes off in the same tick so they both observe the
-      // queue's pre-A state and B genuinely chains through A's
-      // promise.
+      // Both pushes start in the same tick. A sender that does not hold B
+      // writes every frame of both pushes before A reaches the Hub.
       const pushA = client.pushWorkflowRunPack({
         agentAddress,
         generation: 1,
@@ -2115,125 +2115,127 @@ describe("sidecar↔hub integration", () => {
         commitSha,
       });
 
-      // Both pushes must resolve cleanly. If the bootstrap-retry path
-      // double-fired, the second push's send would reuse a
-      // transferId from a still-pending transfer and reject before
-      // the hub ever responded.
-      await Promise.all([pushA, pushB]);
+      // A's receive is held, so the Hub has not answered A. Only the
+      // per-(repoId, ref) queue keeps B off the wire until it does.
+      await aEntered.promise;
+      expect(events).toEqual(["done A"]);
+      releaseA.resolve(undefined);
 
-      // The hub sees exactly three packs:
-      //   1. A's first attempt — rejected with `corrupt`.
-      //   2. A's bootstrap retry — accepted.
-      //   3. B's single attempt — accepted (the flag is already set).
-      // A spurious second retry would push the count to 4.
-      expect(receiveCount).toBe(3);
-      expect(receiveRecord.transferIds).toHaveLength(3);
-      // Each send mints a fresh transferId; the queue+retry must not
-      // collapse the two pushes into a shared in-flight id.
-      const uniqueTransferIds = new Set(receiveRecord.transferIds);
-      expect(uniqueTransferIds.size).toBe(3);
+      await expect(pushA).rejects.toThrow(/reason=corrupt/);
+      await pushB;
+
+      expect(maxRunning).toBe(1);
+      expect(events).toEqual(["done A", "answer A", "done B", "answer B"]);
+      expect(transferIds).toHaveLength(2);
+      expect(new Set(transferIds).size).toBe(2);
     } finally {
+      sendSpy?.mockRestore();
       client.close();
       await waitUntil(
-        () =>
-          !wfrRouter.getConnectedSidecars().includes("sc-wfr-bootstrap-race"),
+        () => !wfrRouter.getConnectedSidecars().includes("sc-wfr-serialize"),
       );
       await wfrServer.stop(true);
     }
   });
 
-  test("a push the Hub rejects for any reason but corrupt is not resent", async () => {
-    const doneFrames: string[] = [];
-    const rejectingRouter = createSidecarRouter({
-      withExecutableWorkflowRun: async (_target, send) => send(),
-      ...acceptAnySidecar,
-      validateSidecarIdentity: async () => true,
-      requestTimeoutMs: 5000,
-      hubPublicKey: "a".repeat(64),
-      lookups: {
-        async receiveWorkflowRunPack() {
-          return { accepted: false, reason: "path_violation" };
+  test.each(["corrupt", "path_violation"] as const)(
+    "a push the Hub rejects is not resent (%s)",
+    async (reason) => {
+      const doneFrames: string[] = [];
+      const rejectingRouter = createSidecarRouter({
+        withExecutableWorkflowRun: async (_target, send) => send(),
+        ...acceptAnySidecar,
+        validateSidecarIdentity: async () => true,
+        requestTimeoutMs: 5000,
+        hubPublicKey: "a".repeat(64),
+        lookups: {
+          async receiveWorkflowRunPack() {
+            return { accepted: false, reason };
+          },
         },
-      },
-    });
-    const rejectingApp = new Hono();
-    rejectingApp.get(
-      "/ws",
-      upgradeWebSocket((_c) => {
-        let handle: WsHandle;
-        return {
-          onOpen(_evt, ws) {
-            handle = {
-              send(data: string) {
-                ws.send(data);
-              },
-              close() {
-                ws.close();
-              },
-            };
-            rejectingRouter.handleOpen(handle);
-          },
-          onMessage(evt, _ws) {
-            if (typeof evt.data !== "string") return;
-            if (evt.data.includes('"repo.pack.done"'))
-              doneFrames.push(evt.data);
-            prepareAllocationFrame(rejectingRouter, evt.data);
-            rejectingRouter.handleMessage(handle, evt.data);
-          },
-          onClose(_evt, _ws) {
-            rejectingRouter.handleClose(handle);
-          },
-        };
-      }),
-    );
-    const rejectingServer = Bun.serve({
-      fetch: rejectingApp.fetch,
-      websocket,
-      port: 0,
-    });
-    const welcomed = Promise.withResolvers<boolean>();
-    const client = createHubLink({
-      capacity: DEFAULT_SIDECAR_CAPACITY,
-      hubURL: `ws://localhost:${rejectingServer.port}/ws`,
-      sidecarId: "sc-wfr-no-retry",
-      token: "test-token",
-      transport: createInMemoryTransport(),
-      sessions: createMockSessionManager(),
-      ...withTestDeployBindings(),
-      onWorkflowAddressesRoutable: () => {
-        welcomed.resolve(true);
-      },
-    });
-
-    client.connect();
-    try {
-      await welcomed.promise;
-      const agentAddress = "no-retry-agent@test.interchange";
-      await sendAgentDeploy(rejectingRouter, agentAddress, TEST_CONFIG);
-      await waitUntil(() =>
-        rejectingRouter.getRoutableAddresses().includes(agentAddress),
+      });
+      const rejectingApp = new Hono();
+      rejectingApp.get(
+        "/ws",
+        upgradeWebSocket((_c) => {
+          let handle: WsHandle;
+          return {
+            onOpen(_evt, ws) {
+              handle = {
+                send(data: string) {
+                  ws.send(data);
+                },
+                close() {
+                  ws.close();
+                },
+              };
+              rejectingRouter.handleOpen(handle);
+            },
+            onMessage(evt, _ws) {
+              if (typeof evt.data !== "string") return;
+              if (evt.data.includes('"repo.pack.done"'))
+                doneFrames.push(evt.data);
+              prepareAllocationFrame(rejectingRouter, evt.data);
+              rejectingRouter.handleMessage(handle, evt.data);
+            },
+            onClose(_evt, _ws) {
+              rejectingRouter.handleClose(handle);
+            },
+          };
+        }),
       );
-
-      const pushed = client.pushWorkflowRunPack({
-        agentAddress,
-        generation: 1,
-        repoId: { kind: "workflow-run", id: "no-retry-agent-test-interchange" },
-        pack: new Uint8Array([1, 2, 3]),
-        ref: "refs/heads/events",
-        commitSha: "b".repeat(40),
+      const rejectingServer = Bun.serve({
+        fetch: rejectingApp.fetch,
+        websocket,
+        port: 0,
+      });
+      const welcomed = Promise.withResolvers<boolean>();
+      const client = createHubLink({
+        capacity: DEFAULT_SIDECAR_CAPACITY,
+        hubURL: `ws://localhost:${rejectingServer.port}/ws`,
+        sidecarId: "sc-wfr-no-retry",
+        token: "test-token",
+        transport: createInMemoryTransport(),
+        sessions: createMockSessionManager(),
+        ...withTestDeployBindings(),
+        onWorkflowAddressesRoutable: () => {
+          welcomed.resolve(true);
+        },
       });
 
-      await expect(pushed).rejects.toThrow(/reason=path_violation/);
-      expect(doneFrames).toHaveLength(1);
-    } finally {
-      client.close();
-      await waitUntil(
-        () =>
-          !rejectingRouter.getConnectedSidecars().includes("sc-wfr-no-retry"),
-      );
-      await rejectingServer.stop(true);
-    }
-  });
+      client.connect();
+      try {
+        await welcomed.promise;
+        const agentAddress = "no-retry-agent@test.interchange";
+        await sendAgentDeploy(rejectingRouter, agentAddress, TEST_CONFIG);
+        await waitUntil(() =>
+          rejectingRouter.getRoutableAddresses().includes(agentAddress),
+        );
+
+        const pushed = client.pushWorkflowRunPack({
+          agentAddress,
+          generation: 1,
+          repoId: {
+            kind: "workflow-run",
+            id: "no-retry-agent-test-interchange",
+          },
+          pack: new Uint8Array([1, 2, 3]),
+          ref: "refs/heads/events",
+          commitSha: "b".repeat(40),
+        });
+
+        await expect(pushed).rejects.toThrow(new RegExp(`reason=${reason}`));
+        expect(doneFrames).toHaveLength(1);
+      } finally {
+        client.close();
+        await waitUntil(
+          () =>
+            !rejectingRouter.getConnectedSidecars().includes("sc-wfr-no-retry"),
+        );
+        await rejectingServer.stop(true);
+      }
+    },
+  );
 });
 
 describe("initial handshake on connect", () => {

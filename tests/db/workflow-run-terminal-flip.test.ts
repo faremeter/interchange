@@ -231,8 +231,21 @@ describe.skipIf(!harnessDbEnvAvailable())(
       terminalType: string,
     ): Promise<void> {
       const { pack, tip } = await buildPack([{ runId, terminalType }]);
-      const verdict = await receiveWith(h.db, pack, tip);
+      const repoStore = createAgentRepoStore({
+        dataDir: await makeTempDir("wfr-terminal-data-"),
+        signingKey,
+      });
+      const verdict = await receiveWith(h.db, pack, tip, repoStore);
       expect(verdict).toEqual({ accepted: true });
+      // The pack's line shares no commit with the genesis that `initRepo`
+      // writes, so a ref at the pushed tip shows that one receive replaced it.
+      expect(
+        await repoStore.repoStore.resolveRef(
+          { kind: "hub" },
+          { kind: "workflow-run", id: DEPLOYMENT_REPO_ID },
+          WFR_REF,
+        ),
+      ).toBe(tip);
     }
 
     async function recordMailRejection(store: RepoStore, messageId: string) {

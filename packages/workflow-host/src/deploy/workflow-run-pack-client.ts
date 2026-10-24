@@ -638,9 +638,10 @@ export function createMultistepCredentialsRouter(): MultistepCredentialsRouter {
  * commit's parent against its existing-commits set; as long as the
  * pack carries the full chain from prior acked tip to current tip,
  * every intermediate commit is validated by the receiver. Coalescing
- * multiple local commits into one network push therefore preserves
- * the receive-time CAS invariant while collapsing N hub round-trips
- * into 1.
+ * multiple local commits into one network push therefore keeps every
+ * commit transition validated, while collapsing N hub round-trips
+ * into 1. The hub keeps the newest tip this store sent: a push of a
+ * tip the hub ref already holds changes nothing.
  *
  * Reconnect-safe re-shipping: the substrate advances its shipped-tip
  * cursor on the ack (`push` calls `commitPackedTip` only after
